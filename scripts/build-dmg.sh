@@ -27,8 +27,8 @@ esac
 
 BUNDLE_DIR="$REPO_ROOT/target/$TARGET/release/bundle"
 APP_PATH="$BUNDLE_DIR/macos/Said.app"
-SIDECAR_SRC="$REPO_ROOT/target/$TARGET/release/polish-backend"
-SIDECAR_DEST="$TAURI_DIR/binaries/polish-backend-$TARGET"
+SIDECAR_SRC="$REPO_ROOT/target/$TARGET/release/said-backend"
+SIDECAR_DEST="$TAURI_DIR/binaries/said-backend-$TARGET"
 BUNDLE_ID="com.voicepolish.desktop"
 
 # Read the workspace version from Cargo.toml. Single source of truth — bumped
@@ -79,12 +79,12 @@ rm -f "$BUNDLE_DIR"/macos/rw.*.Said_*.dmg 2>/dev/null || true
 ok "pre-clean done"
 
 # ── Build the Rust sidecar ────────────────────────────────────────────────────
-step "Build polish-backend (release, $TARGET)"
+step "Build said-backend (release, $TARGET)"
 cd "$REPO_ROOT"
 # Bust the Cargo fingerprint cache for the binary entry point.
 touch crates/backend/src/main.rs
-cargo build -p polish-backend --release --target "$TARGET"
-ok "polish-backend built"
+cargo build -p said-backend --release --target "$TARGET"
+ok "said-backend built"
 
 step "Sync sidecar to Tauri externalBin slot"
 mkdir -p "$TAURI_DIR/binaries"
@@ -134,9 +134,9 @@ ACTUAL_ID=$(codesign -dv "$APP_PATH" 2>&1 | awk -F= '/^Identifier=/ {print $2}')
 ok "outer bundle: Identifier=$ACTUAL_ID, signature=adhoc"
 
 # Tauri strips the target triple when injecting externalBin into the bundle —
-# the file inside Contents/MacOS is `polish-backend`, not the triple-suffixed
+# the file inside Contents/MacOS is `said-backend`, not the triple-suffixed
 # source name.
-EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/polish-backend"
+EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/said-backend"
 [ -x "$EMBEDDED_BACKEND" ] || fail "embedded sidecar not found at $EMBEDDED_BACKEND"
 codesign --verify --strict "$EMBEDDED_BACKEND"
 ok "embedded sidecar signed: $(codesign -dv "$EMBEDDED_BACKEND" 2>&1 | awk -F= '/^Identifier=/ {print $2}')"

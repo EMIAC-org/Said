@@ -5,15 +5,15 @@
 set -e
 cd "$(dirname "$0")"
 
-echo "▶ building polish-backend..."
+echo "▶ building said-backend..."
 touch crates/backend/src/main.rs   # bust Cargo fingerprint cache
-cargo build -p polish-backend
+cargo build -p said-backend
 
 echo "▶ syncing binary to Tauri externalBin..."
-# Tauri copies binaries/polish-backend-aarch64-apple-darwin into the build,
-# overwriting target/debug/polish-backend. Keep them in sync.
-cp target/debug/polish-backend \
-   desktop/src-tauri/binaries/polish-backend-aarch64-apple-darwin
+# Tauri copies binaries/said-backend-aarch64-apple-darwin into the build,
+# overwriting target/debug/said-backend. Keep them in sync.
+cp target/debug/said-backend \
+   desktop/src-tauri/binaries/said-backend-aarch64-apple-darwin
 
 echo "▶ launching tauri dev..."
 cd desktop
