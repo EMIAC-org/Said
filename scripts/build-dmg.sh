@@ -21,6 +21,20 @@ SIDECAR_SRC="$REPO_ROOT/target/release/polish-backend"
 SIDECAR_DEST="$TAURI_DIR/binaries/polish-backend-aarch64-apple-darwin"
 BUNDLE_ID="com.voicepolish.desktop"
 
+# Read the workspace version from Cargo.toml. Single source of truth — bumped
+# via scripts/bump-version.sh, never hand-edited here.
+VERSION=$(awk '
+  /^\[workspace\.package\]/ { in_section = 1; next }
+  /^\[/                     { in_section = 0 }
+  in_section && /^[[:space:]]*version[[:space:]]*=/ {
+    gsub(/.*=[[:space:]]*"/, "")
+    gsub(/".*/, "")
+    print
+    exit
+  }
+' "$REPO_ROOT/Cargo.toml")
+[ -n "$VERSION" ] || { echo "could not parse [workspace.package].version from Cargo.toml"; exit 1; }
+
 bold='\033[1m'; green='\033[0;32m'; yellow='\033[1;33m'; red='\033[0;31m'; nc='\033[0m'
 step()  { echo -e "\n${bold}▶ $*${nc}"; }
 ok()    { echo -e "  ${green}✓ $*${nc}"; }
@@ -127,7 +141,7 @@ ok "embedded sidecar signed: $(codesign -dv "$EMBEDDED_BACKEND" 2>&1 | awk -F= '
 step "Build DMG with hdiutil"
 
 STAGING="$BUNDLE_DIR/dmg-staging"
-DMG_OUT="$BUNDLE_DIR/dmg/Said_0.1.0_aarch64.dmg"
+DMG_OUT="$BUNDLE_DIR/dmg/Said_${VERSION}_aarch64.dmg"
 VOLNAME="Said"
 
 # Ensure no leftover staging from a prior run.
