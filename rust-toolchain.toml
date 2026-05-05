@@ -1,0 +1,14 @@
+# Pin the Rust toolchain so `cargo`, CI, and editor tooling all agree.
+#
+# Channel: stable. The workspace requires edition = "2024" (Rust 1.85+),
+# enforced by `rust-version = "1.85"` in [workspace.package]. Pinning to
+# stable means contributors get the latest compiler that satisfies that
+# minimum without us having to bump a literal version every release.
+#
+# Components: rustfmt + clippy. CI calls both, and rust-analyzer in your
+# editor uses them too — bundling the install removes a step from the
+# contributor onboarding path.
+[toolchain]
+channel    = "stable"
+components = ["rustfmt", "clippy"]
+profile    = "minimal"
