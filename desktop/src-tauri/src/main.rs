@@ -29,71 +29,20 @@ const DEBUG_LOG_MAX_BYTES: u64 = 240_000;
 use voice_polish_hotkey as hotkey;
 
 #[cfg(target_os = "macos")]
-fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
-    use objc::Message;
-    use objc::runtime::{Object, Sel};
-
-    let Ok(ns_window) = win.ns_window() else {
-        tracing::warn!("[status-bar] macOS tune failed: ns_window unavailable");
-        return;
-    };
-    if ns_window.is_null() {
-        tracing::warn!("[status-bar] macOS tune failed: ns_window was null");
-        return;
-    }
-
-    // Match VoiceInk's recorder HUD window behavior as closely as Tauri's
-    // NSWindow allows: a non-activating floating panel, available on every
-    // Space, allowed over fullscreen apps, stationary during Space transitions,
-    // and kept out of Cmd-` window cycling.
-    const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
-    const STATIONARY: usize = 1 << 4;
-    const IGNORES_CYCLE: usize = 1 << 6;
-    const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
-    const NONACTIVATING_PANEL_STYLE: usize = 1 << 7;
-    const FULL_SIZE_CONTENT_VIEW_STYLE: usize = 1 << 15;
-    const NS_STATUS_WINDOW_LEVEL_PLUS_THREE: isize = 28;
-
-    unsafe {
-        let ns_window = &*(ns_window as *mut Object);
-        let style_mask: usize = ns_window
-            .send_message(Sel::register("styleMask"), ())
-            .unwrap_or(0);
-        let panel_style = style_mask | NONACTIVATING_PANEL_STYLE | FULL_SIZE_CONTENT_VIEW_STYLE;
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setStyleMask:"), (panel_style,));
-
-        let behavior = CAN_JOIN_ALL_SPACES | STATIONARY | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY;
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setCollectionBehavior:"), (behavior,));
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setLevel:"), (NS_STATUS_WINDOW_LEVEL_PLUS_THREE,));
-        let _: Result<(), _> = ns_window.send_message(Sel::register("setCanHide:"), (false,));
-        let _: Result<(), _> = ns_window.send_message(Sel::register("setIgnoresMouseEvents:"), (false,));
-        for (selector_name, value) in [("setHidesOnDeactivate:", false), ("setFloatingPanel:", true)] {
-            let selector = Sel::register(selector_name);
-            let responds: bool = ns_window
-                .send_message(Sel::register("respondsToSelector:"), (selector,))
-                .unwrap_or(false);
-            if responds {
-                let _: Result<(), _> = ns_window.send_message(selector, (value,));
-            }
-        }
-        let _: Result<(), _> = ns_window.send_message(Sel::register("orderFrontRegardless"), ());
-        tracing::info!(
-            "[status-bar] macOS tuned style={panel_style:#x} behavior={behavior:#x} level={NS_STATUS_WINDOW_LEVEL_PLUS_THREE}"
-        );
-    }
-}
+use tauri_nspanel::{
+    CollectionBehavior, ManagerExt as PanelManagerExt, PanelBuilder, PanelLevel, StyleMask,
+    tauri_panel,
+};
 
 #[cfg(target_os = "macos")]
-fn schedule_status_bar_macos_tune(win: &tauri::WebviewWindow) {
-    let win_for_main = win.clone();
-    if let Err(e) = win.run_on_main_thread(move || {
-        configure_status_bar_macos(&win_for_main);
-    }) {
-        tracing::warn!("[status-bar] could not schedule macOS tune on main thread: {e}");
-    }
+tauri_panel! {
+    panel!(StatusHudPanel {
+        config: {
+            can_become_key_window: false,
+            can_become_main_window: false,
+            is_floating_panel: true
+        }
+    })
 }
 
 // ── Keystroke reconstruction (edit detection for AX-blind apps) ──────────────
@@ -782,6 +731,12 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
                 return;
             }
             if let Some(win) = app.get_webview_window("status-bar") {
+                #[cfg(target_os = "macos")]
+                if let Ok(panel) = app.get_webview_panel("status-bar") {
+                    panel.hide();
+                    tracing::info!("[status-bar] hidden after idle");
+                    return;
+                }
                 match win.hide() {
                     Ok(_) => tracing::info!("[status-bar] hidden after idle"),
                     Err(e) => tracing::warn!("[status-bar] hide after idle failed: {e}"),
@@ -799,12 +754,17 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
         Ok(_) => tracing::info!("[status-bar] set_visible_on_all_workspaces ok"),
         Err(e) => tracing::warn!("[status-bar] set_visible_on_all_workspaces failed: {e}"),
     }
+    #[cfg(target_os = "macos")]
+    if let Ok(panel) = handle.get_webview_panel("status-bar") {
+        panel.show();
+        panel.order_front_regardless();
+        tracing::info!("[status-bar] NSPanel show ok for state={state}");
+        return;
+    }
     match win.show() {
         Ok(_) => tracing::info!("[status-bar] show ok for state={state}"),
         Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
     }
-    #[cfg(target_os = "macos")]
-    schedule_status_bar_macos_tune(&win);
 }
 
 /// Re-render the tray icon title + menu from the cached prefs (no async needed).
@@ -864,6 +824,47 @@ fn create_status_bar(app: &tauri::AppHandle) {
         "[status-bar] creating window url={url} x={x:.0} y={y:.0} size={idle_w:.0}x{idle_h:.0} visible=false"
     );
 
+    #[cfg(target_os = "macos")]
+    let build_result = PanelBuilder::<_, StatusHudPanel>::new(app, "status-bar")
+        .url(tauri::WebviewUrl::App(url.into()))
+        .title("Said")
+        .level(PanelLevel::Custom(28))
+        .floating(true)
+        .has_shadow(false)
+        .opaque(false)
+        .transparent(true)
+        .hides_on_deactivate(false)
+        .becomes_key_only_if_needed(true)
+        .ignores_mouse_events(false)
+        .movable_by_window_background(false)
+        .released_when_closed(false)
+        .collection_behavior(
+            CollectionBehavior::new()
+                .can_join_all_spaces()
+                .full_screen_auxiliary()
+                .stationary()
+                .ignores_cycle(),
+        )
+        .style_mask(StyleMask::empty().nonactivating_panel().full_size_content_view())
+        .no_activate(true)
+        .with_window(move |w| {
+            w.inner_size(idle_w, idle_h)
+                .position(x, y)
+                .decorations(false)
+                .always_on_top(true)
+                .visible_on_all_workspaces(true)
+                .skip_taskbar(true)
+                .focused(false)
+                .resizable(false)
+                .shadow(false)
+                .transparent(true)
+                .visible(false)
+        })
+        .build()
+        .map(|_| ());
+
+    #[cfg(not(target_os = "macos"))]
+    let build_result =
     match tauri::WebviewWindowBuilder::new(app, "status-bar", tauri::WebviewUrl::App(url.into()))
         .title("Said")
         .inner_size(idle_w, idle_h)
@@ -879,14 +880,23 @@ fn create_status_bar(app: &tauri::AppHandle) {
         .visible(false)
         .build()
     {
-        Ok(win) => {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e),
+    };
+
+    match build_result {
+        Ok(()) => {
+            let Some(win) = app.get_webview_window("status-bar") else {
+                tracing::warn!("[status-bar] built, but webview window lookup failed");
+                return;
+            };
             tracing::info!("[status-bar] window created label={}", win.label());
             match win.url() {
                 Ok(url) => tracing::info!("[status-bar] resolved url={url}"),
                 Err(e) => tracing::warn!("[status-bar] could not read window url: {e}"),
             }
             #[cfg(target_os = "macos")]
-            schedule_status_bar_macos_tune(&win);
+            tracing::info!("[status-bar] created via tauri-nspanel");
             sync_status_bar(app, "idle");
         }
         Err(e) => tracing::warn!("[status-bar] could not create window: {e}"),
@@ -3350,6 +3360,7 @@ fn main() {
     let backend_arc = Arc::new(Mutex::new(None::<BackendEndpoint>));
 
     tauri::Builder::default()
+        .plugin(tauri_nspanel::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
