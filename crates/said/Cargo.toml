@@ -1,5 +1,5 @@
 [package]
-name              = "voice-polish"
+name              = "said"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace   = true
 build = "build.rs"
 
 [[bin]]
-name = "voice-polish"
+name = "said"
 path = "src/main.rs"
 
 [lints]
@@ -29,8 +29,8 @@ tracing            = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url                = "2"
 
-polish-backend       = { path = "../backend" }
-voice-polish-core    = { path = "../core" }
-voice-polish-hotkey  = { path = "../hotkey" }
-voice-polish-paster  = { path = "../paster" }
-voice-polish-recorder = { path = "../recorder" }
+said-backend  = { path = "../backend" }
+said-core     = { path = "../core" }
+said-hotkey   = { path = "../hotkey" }
+said-paster   = { path = "../paster" }
+said-recorder = { path = "../recorder" }

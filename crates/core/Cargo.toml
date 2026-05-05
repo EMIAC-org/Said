@@ -1,5 +1,5 @@
 [package]
-name              = "voice-polish-core"
+name              = "said-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

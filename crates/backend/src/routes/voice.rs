@@ -31,7 +31,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
-use voice_polish_core::deepgram::{BiasPackage, TranscriptMeta};
+use said_core::deepgram::{BiasPackage, TranscriptMeta};
 
 // ── Audio file helpers ────────────────────────────────────────────────────────
 
@@ -254,7 +254,7 @@ pub async fn repair_transcript(
 
         let gateway_key = prefs.gateway_api_key.clone()
             .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
-            .or_else(|| { let k = voice_polish_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
+            .or_else(|| { let k = said_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
             .unwrap_or_default();
         let gemini_key = prefs.gemini_api_key.clone()
             .or_else(|| std::env::var("GEMINI_API_KEY").ok())
@@ -268,7 +268,7 @@ pub async fn repair_transcript(
         let sys_p = system_prompt.clone();
         let usr_m = user_message.clone();
         let client_c = http_client.clone();
-        let model = voice_polish_core::resolve_model(&prefs.selected_model).to_string();
+        let model = said_core::resolve_model(&prefs.selected_model).to_string();
         let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
             let pool_tok = pool.clone();
             let uid_tok = user_id.clone();
@@ -494,7 +494,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             .unwrap_or_default();
         let gateway_key = prefs.gateway_api_key.clone()
             .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
-            .or_else(|| { let k = voice_polish_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
+            .or_else(|| { let k = said_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
             .unwrap_or_default();
         let groq_key = prefs.groq_api_key.clone()
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
@@ -632,7 +632,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let embed_ms = embed_t0.elapsed().as_millis() as i64;
         info!("[timing] embed={}ms ({})", embed_ms, if embedding.is_some() { "cache-hit" } else { "cache-miss/nonblocking" });
 
-        let model = voice_polish_core::resolve_model(&prefs.selected_model).to_string();
+        let model = said_core::resolve_model(&prefs.selected_model).to_string();
 
         // ── STEP 3: RAG retrieval — k-NN over preference_vectors ──────────────────
         let rag_examples = match &embedding {

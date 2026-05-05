@@ -31,7 +31,7 @@ async fn main() {
         .expect("cannot open backend.log");
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::from_default_env().add_directive("polish_backend=debug".parse().unwrap()),
+            EnvFilter::from_default_env().add_directive("said_backend=debug".parse().unwrap()),
         )
         .with_ansi(false)
         .with_writer(std::sync::Mutex::new(log_file))
@@ -40,7 +40,7 @@ async fn main() {
     start_parent_death_watch();
 
     // ── Load env vars ─────────────────────────────────────────────────────────
-    voice_polish_core::load_env();
+    said_core::load_env();
 
     let cli = Cli::parse();
 
@@ -48,7 +48,7 @@ async fn main() {
     let db_path = if let Some(ref path) = cli.db {
         std::path::PathBuf::from(path)
     } else {
-        polish_backend::store::default_db_path()
+        said_backend::store::default_db_path()
     };
 
     // ── Fingerprint — visible in logs so we can confirm binary version ───────
@@ -58,8 +58,8 @@ async fn main() {
     );
 
     // ── Open DB + ensure default user ─────────────────────────────────────────
-    let pool = polish_backend::store::open(&db_path);
-    let user_id = polish_backend::store::ensure_default_user(&pool);
+    let pool = said_backend::store::open(&db_path);
+    let user_id = said_backend::store::ensure_default_user(&pool);
     let secret = std::env::var("POLISH_SHARED_SECRET").unwrap_or_else(|_| "dev-secret".into());
 
     let http_client = reqwest::Client::builder()
@@ -68,7 +68,7 @@ async fn main() {
         .build()
         .expect("failed to build shared HTTP client");
 
-    let state = polish_backend::AppState {
+    let state = said_backend::AppState {
         pool: pool.clone(),
         shared_secret: std::sync::Arc::new(secret),
         default_user_id: std::sync::Arc::new(user_id.clone()),
@@ -76,10 +76,10 @@ async fn main() {
         lexicon_cache: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         http_client,
     };
-    polish_backend::routes::vocabulary::spawn_prompt_artifact_repair(state.clone());
+    said_backend::routes::vocabulary::spawn_prompt_artifact_repair(state.clone());
 
     // ── Build router ──────────────────────────────────────────────────────────
-    let router = polish_backend::router_with_state(state.clone());
+    let router = said_backend::router_with_state(state.clone());
 
     // ── Bind listener ─────────────────────────────────────────────────────────
     let addr = format!("127.0.0.1:{}", cli.port);
@@ -97,8 +97,8 @@ async fn main() {
             interval.tick().await; // skip first immediate tick
             loop {
                 interval.tick().await;
-                polish_backend::store::history::cleanup_old_recordings(&pool2);
-                polish_backend::routes::voice::cleanup_old_audio();
+                said_backend::store::history::cleanup_old_recordings(&pool2);
+                said_backend::routes::voice::cleanup_old_audio();
                 info!("[cleanup] 7-day recording + 24h audio sweep complete");
             }
         });
@@ -129,7 +129,7 @@ async fn main() {
             interval.tick().await; // skip immediate startup run
             loop {
                 interval.tick().await;
-                polish_backend::stt::background::run_pending_alias_reviews(state2.clone(), 12)
+                said_backend::stt::background::run_pending_alias_reviews(state2.clone(), 12)
                     .await;
             }
         });
@@ -213,12 +213,12 @@ fn start_parent_death_watch() {}
 /// Aggregate recording counts from the last ~24h and POST to the cloud
 /// metering endpoint. Silently skips if the user has no cloud token.
 async fn send_metering_report(
-    pool: &polish_backend::store::DbPool,
+    pool: &said_backend::store::DbPool,
     user_id: &str,
     http: &reqwest::Client,
     cloud_url: &str,
 ) {
-    use polish_backend::store::users;
+    use said_backend::store::users;
     use tracing::{debug, warn};
 
     // Read cloud token
@@ -236,7 +236,7 @@ async fn send_metering_report(
             Ok(c) => c,
             Err(_) => return,
         };
-        let cutoff_ms: i64 = (polish_backend::store::now_ms()) - (7 * 24 * 3600 * 1000);
+        let cutoff_ms: i64 = (said_backend::store::now_ms()) - (7 * 24 * 3600 * 1000);
 
         match conn.prepare(
             "SELECT DATE(datetime(timestamp_ms / 1000, 'unixepoch')) as date,

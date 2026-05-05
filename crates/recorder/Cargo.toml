@@ -1,5 +1,5 @@
 [package]
-name              = "voice-polish-recorder"
+name              = "said-recorder"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

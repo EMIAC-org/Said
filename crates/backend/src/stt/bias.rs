@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use voice_polish_core::deepgram::{BiasPackage, ReplacementRule, resolve_stt_mode};
+use said_core::deepgram::{BiasPackage, ReplacementRule, resolve_stt_mode};
 
 use crate::{
     llm::phonetics,
@@ -243,7 +243,7 @@ pub fn build_bias_package(
         if seen_terms.insert(lowered) {
             keyterms.push(term.term.clone());
         }
-        if keyterms.len() >= voice_polish_core::deepgram::MAX_KEYTERMS {
+        if keyterms.len() >= said_core::deepgram::MAX_KEYTERMS {
             break;
         }
     }
@@ -294,7 +294,7 @@ pub fn build_bias_package(
     replacement_candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
     let replacements = replacement_candidates
         .into_iter()
-        .take(voice_polish_core::deepgram::MAX_REPLACEMENTS)
+        .take(said_core::deepgram::MAX_REPLACEMENTS)
         .map(|(_, rule)| rule)
         .collect();
 

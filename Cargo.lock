@@ -3599,35 +3599,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "polish-backend"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "axum",
- "bytes",
- "clap",
- "dirs 5.0.1",
- "futures",
- "hex",
- "libc",
- "r2d2",
- "r2d2_sqlite",
- "reqwest 0.12.28",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tokio-util",
- "tower-http 0.5.2",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "voice-polish-core",
-]
-
-[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4228,6 +4199,138 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "said"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "dirs 5.0.1",
+ "futures",
+ "reqwest 0.12.28",
+ "said-backend",
+ "said-core",
+ "said-hotkey",
+ "said-paster",
+ "said-recorder",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "said-backend"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "axum",
+ "bytes",
+ "clap",
+ "dirs 5.0.1",
+ "futures",
+ "hex",
+ "libc",
+ "r2d2",
+ "r2d2_sqlite",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "said-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-util",
+ "tower-http 0.5.2",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "said-core"
+version = "0.1.0"
+dependencies = [
+ "dotenvy",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "said-desktop"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "bytes",
+ "cocoa",
+ "core-foundation 0.10.1",
+ "core-graphics 0.24.0",
+ "cpal",
+ "dirs 5.0.1",
+ "dispatch",
+ "dotenvy",
+ "futures",
+ "hound",
+ "libc",
+ "objc",
+ "open",
+ "reqwest 0.12.28",
+ "said-core",
+ "said-hotkey",
+ "said-paster",
+ "said-recorder",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "sysinfo",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-notification",
+ "tauri-plugin-single-instance",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "said-hotkey"
+version = "0.1.0"
+dependencies = [
+ "cocoa",
+ "core-foundation 0.10.1",
+ "core-graphics 0.24.0",
+ "libc",
+ "tracing",
+]
+
+[[package]]
+name = "said-paster"
+version = "0.1.0"
+dependencies = [
+ "cocoa",
+ "core-foundation 0.10.1",
+ "core-graphics 0.24.0",
+ "libc",
+ "objc",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "said-recorder"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+ "hound",
+]
 
 [[package]]
 name = "same-file"
@@ -5890,109 +5993,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "voice-polish"
-version = "0.1.0"
-dependencies = [
- "clap",
- "dirs 5.0.1",
- "futures",
- "polish-backend",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "url",
- "voice-polish-core",
- "voice-polish-hotkey",
- "voice-polish-paster",
- "voice-polish-recorder",
-]
-
-[[package]]
-name = "voice-polish-core"
-version = "0.1.0"
-dependencies = [
- "dotenvy",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "voice-polish-desktop"
-version = "0.1.0"
-dependencies = [
- "block",
- "bytes",
- "cocoa",
- "core-foundation 0.10.1",
- "core-graphics 0.24.0",
- "cpal",
- "dirs 5.0.1",
- "dispatch",
- "dotenvy",
- "futures",
- "hound",
- "libc",
- "objc",
- "open",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "signal-hook",
- "sysinfo",
- "tauri",
- "tauri-build",
- "tauri-plugin-notification",
- "tauri-plugin-single-instance",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "voice-polish-core",
- "voice-polish-hotkey",
- "voice-polish-paster",
- "voice-polish-recorder",
-]
-
-[[package]]
-name = "voice-polish-hotkey"
-version = "0.1.0"
-dependencies = [
- "cocoa",
- "core-foundation 0.10.1",
- "core-graphics 0.24.0",
- "libc",
- "tracing",
-]
-
-[[package]]
-name = "voice-polish-paster"
-version = "0.1.0"
-dependencies = [
- "cocoa",
- "core-foundation 0.10.1",
- "core-graphics 0.24.0",
- "libc",
- "objc",
- "serde",
- "tracing",
-]
-
-[[package]]
-name = "voice-polish-recorder"
-version = "0.1.0"
-dependencies = [
- "cpal",
- "hound",
-]
 
 [[package]]
 name = "vswhom"

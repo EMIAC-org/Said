@@ -8,7 +8,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, warn};
-use voice_polish_core::deepgram::{BiasPackage, TranscriptMeta};
+use said_core::deepgram::{BiasPackage, TranscriptMeta};
 
 use crate::backend::BackendEndpoint;
 

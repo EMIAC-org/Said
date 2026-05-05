@@ -6,7 +6,7 @@
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, info, warn};
-use voice_polish_core::deepgram::{BiasPackage, TranscriptMeta, build_batch_url};
+use said_core::deepgram::{BiasPackage, TranscriptMeta, build_batch_url};
 
 const DEEPGRAM_URL: &str = "https://api.deepgram.com/v1/listen";
 
@@ -91,10 +91,10 @@ pub async fn transcribe(
             "[stt] biasing Deepgram with {} keyterm(s), {} replacement(s)",
             bias.keyterms
                 .len()
-                .min(voice_polish_core::deepgram::MAX_KEYTERMS),
+                .min(said_core::deepgram::MAX_KEYTERMS),
             bias.replacements
                 .len()
-                .min(voice_polish_core::deepgram::MAX_REPLACEMENTS),
+                .min(said_core::deepgram::MAX_REPLACEMENTS),
         );
     }
 
@@ -220,7 +220,7 @@ fn enrich_words(words: &[DGWord]) -> (String, usize, f64, usize, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::DEEPGRAM_URL;
-    use voice_polish_core::deepgram::{
+    use said_core::deepgram::{
         BiasPackage, ReplacementRule, build_batch_url, resolve_stt_mode,
     };
 

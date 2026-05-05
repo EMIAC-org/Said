@@ -1,5 +1,5 @@
 [package]
-name              = "voice-polish-desktop"
+name              = "said-desktop"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -45,16 +45,16 @@ tauri-plugin-notification = "2"
 tauri-plugin-single-instance = "2"
 
 # Workspace crates
-voice-polish-core     = { path = "../../crates/core" }
-voice-polish-paster   = { path = "../../crates/paster" }
-voice-polish-recorder = { path = "../../crates/recorder" }
+said-core     = { path = "../../crates/core" }
+said-paster   = { path = "../../crates/paster" }
+said-recorder = { path = "../../crates/recorder" }
 
 # Recording (still needed; cpal uses its own thread model)
 cpal  = "0.15"
 hound = "3.5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-voice-polish-hotkey = { path = "../../crates/hotkey" }
+said-hotkey = { path = "../../crates/hotkey" }
 cocoa           = "0.26"
 objc            = "0.2"
 core-graphics   = "0.24"

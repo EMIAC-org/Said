@@ -22,7 +22,7 @@
 
 use serde::Deserialize;
 
-use polish_backend::llm::{
+use said_backend::llm::{
     classifier::{EditClass, ExtractedTerm, LabelledHunk},
     edit_diff::{self, Hunk},
     phonetics, pre_filter, promotion_gate,

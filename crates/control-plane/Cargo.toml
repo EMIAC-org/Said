@@ -6,7 +6,7 @@
 [workspace]
 
 [package]
-name    = "voice-polish-control-plane"
+name    = "said-control-plane"
 version = "0.1.0"
 edition = "2024"
 
