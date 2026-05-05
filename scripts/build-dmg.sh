@@ -15,10 +15,20 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DESKTOP_DIR="$REPO_ROOT/desktop"
 TAURI_DIR="$DESKTOP_DIR/src-tauri"
-BUNDLE_DIR="$REPO_ROOT/target/release/bundle"
+
+# Target triple — first arg, or default to the host arch (aarch64 on Apple
+# Silicon dev machines). CI passes both targets explicitly via the matrix.
+TARGET="${1:-aarch64-apple-darwin}"
+case "$TARGET" in
+  aarch64-apple-darwin) ARCH_SHORT="aarch64" ;;
+  x86_64-apple-darwin)  ARCH_SHORT="x86_64"  ;;
+  *) echo "unsupported target: $TARGET (expected aarch64-apple-darwin or x86_64-apple-darwin)" >&2; exit 1 ;;
+esac
+
+BUNDLE_DIR="$REPO_ROOT/target/$TARGET/release/bundle"
 APP_PATH="$BUNDLE_DIR/macos/Said.app"
-SIDECAR_SRC="$REPO_ROOT/target/release/polish-backend"
-SIDECAR_DEST="$TAURI_DIR/binaries/polish-backend-aarch64-apple-darwin"
+SIDECAR_SRC="$REPO_ROOT/target/$TARGET/release/polish-backend"
+SIDECAR_DEST="$TAURI_DIR/binaries/polish-backend-$TARGET"
 BUNDLE_ID="com.voicepolish.desktop"
 
 # Read the workspace version from Cargo.toml. Single source of truth — bumped
@@ -69,11 +79,11 @@ rm -f "$BUNDLE_DIR"/macos/rw.*.Said_*.dmg 2>/dev/null || true
 ok "pre-clean done"
 
 # ── Build the Rust sidecar ────────────────────────────────────────────────────
-step "Build polish-backend (release)"
+step "Build polish-backend (release, $TARGET)"
 cd "$REPO_ROOT"
 # Bust the Cargo fingerprint cache for the binary entry point.
 touch crates/backend/src/main.rs
-cargo build -p polish-backend --release
+cargo build -p polish-backend --release --target "$TARGET"
 ok "polish-backend built"
 
 step "Sync sidecar to Tauri externalBin slot"
@@ -83,10 +93,10 @@ chmod +x "$SIDECAR_DEST"
 ok "synced to $SIDECAR_DEST"
 
 # ── Tauri build ──────────────────────────────────────────────────────────────
-step "Run tauri build"
+step "Run tauri build (--target $TARGET)"
 cd "$DESKTOP_DIR"
-[ -d node_modules ] || npm install
-npm run tauri:build
+[ -d node_modules ] || npm ci
+npm run tauri:build -- --target "$TARGET"
 ok "tauri build finished"
 
 # ── Post-verify: ensure deep ad-hoc signature ────────────────────────────────
@@ -141,7 +151,7 @@ ok "embedded sidecar signed: $(codesign -dv "$EMBEDDED_BACKEND" 2>&1 | awk -F= '
 step "Build DMG with hdiutil"
 
 STAGING="$BUNDLE_DIR/dmg-staging"
-DMG_OUT="$BUNDLE_DIR/dmg/Said_${VERSION}_aarch64.dmg"
+DMG_OUT="$BUNDLE_DIR/dmg/Said_${VERSION}_${ARCH_SHORT}.dmg"
 VOLNAME="Said"
 
 # Ensure no leftover staging from a prior run.

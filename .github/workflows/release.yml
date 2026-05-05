@@ -1,54 +1,115 @@
 name: Release
 
+# Triggered by pushing a v* tag. Use scripts/bump-version.sh to bump first,
+# then `git tag vX.Y.Z && git push --tags` to fire this workflow.
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build:
+    name: Build (${{ matrix.target }})
     runs-on: macos-latest
     strategy:
+      fail-fast: false
       matrix:
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
+        include:
+          - target: aarch64-apple-darwin
+            arch_short: aarch64
+          - target: x86_64-apple-darwin
+            arch_short: x86_64
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Read workspace version
+        id: ver
+        run: |
+          VERSION=$(awk '
+            /^\[workspace\.package\]/ { in_section = 1; next }
+            /^\[/                     { in_section = 0 }
+            in_section && /^[[:space:]]*version[[:space:]]*=/ {
+              gsub(/.*=[[:space:]]*"/, ""); gsub(/".*/, ""); print; exit
+            }
+          ' Cargo.toml)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "workspace version: $VERSION"
+
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
 
-      - name: Package
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build CLI binary (voice-polish)
         run: |
+          cargo build -p voice-polish --release --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/release/voice-polish voice-polish-${{ matrix.target }}
           chmod +x voice-polish-${{ matrix.target }}
 
-      - name: Upload artifact
+      - name: Build Said.app + DMG
+        run: ./scripts/build-dmg.sh ${{ matrix.target }}
+
+      - name: Stage release artifacts
+        run: |
+          mkdir -p release-artifacts
+          cp voice-polish-${{ matrix.target }} release-artifacts/
+          cp "target/${{ matrix.target }}/release/bundle/dmg/Said_${{ steps.ver.outputs.version }}_${{ matrix.arch_short }}.dmg" release-artifacts/
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: voice-polish-${{ matrix.target }}
-          path: voice-polish-${{ matrix.target }}
+          name: artifacts-${{ matrix.target }}
+          path: release-artifacts/
+          retention-days: 7
 
   release:
+    name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Create Release
+      - name: Flatten and checksum
+        working-directory: artifacts
+        run: |
+          # Move every file out of its per-arch subdir and into the artifacts root.
+          find . -mindepth 2 -type f -exec mv -f {} . \;
+          find . -mindepth 1 -type d -empty -delete
+          # Deterministic, sorted SHA256SUMS file alongside the binaries.
+          # Users verify with: sha256sum -c SHA256SUMS
+          sha256sum * | sort -k 2 > SHA256SUMS
+          echo "── released files ──"
+          ls -lh
+          echo "── checksums ──"
+          cat SHA256SUMS
+
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*/voice-polish-*
+          files: artifacts/*
           generate_release_notes: true
+          fail_on_unmatched_files: true

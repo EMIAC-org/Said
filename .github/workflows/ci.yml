@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+# Cancel superseded runs on the same ref. Saves macOS minutes on rapid pushes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust workspace (fmt, clippy, test)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --all-targets
+
+  control-plane:
+    name: control-plane (excluded crate)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/control-plane
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/control-plane
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo build
+        run: cargo build
+
+  desktop:
+    name: Desktop (typecheck + vite build)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: vite build
+        run: npm run build
+
+  landing:
+    name: Landing (typecheck)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: landing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: landing/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: typecheck
+        run: npm run typecheck
