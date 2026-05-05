@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use voice_polish_core::{AppSnapshot, ProcessSummary, all_modes};
 use voice_polish_paster::is_accessibility_granted;
-use voice_polish_recorder::{AudioRecorder, ChunkReceiver, LevelReceiver};
+use voice_polish_recorder::{AudioRecorder, ChunkReceiver, LevelReceiver, MIN_DURATION_S};
 
 #[cfg(target_os = "macos")]
 use voice_polish_hotkey::is_input_monitoring_granted;
@@ -33,6 +33,8 @@ impl AppState {
         }
     }
 }
+
+pub const RECORDING_TOO_SHORT_ERROR: &str = "recording too short";
 
 // ── DesktopApp ────────────────────────────────────────────────────────────────
 
@@ -113,22 +115,37 @@ impl DesktopApp {
         if self.state != AppState::Recording {
             return Err("not recording".into());
         }
+        let was_too_short = self
+            .recording_started
+            .map(|started| started.elapsed().as_secs_f32() < MIN_DURATION_S)
+            .unwrap_or(false);
         self.state = AppState::Processing;
-        self.recorder
-            .stop()
-            .ok_or_else(|| "no audio captured".to_string())
+        match self.recorder.stop() {
+            Some(wav) => Ok(wav),
+            None if was_too_short => Err(RECORDING_TOO_SHORT_ERROR.to_string()),
+            None => Err("no audio captured".to_string()),
+        }
+    }
+
+    pub fn finish_cancelled(&mut self) -> AppSnapshot {
+        self.state = AppState::Idle;
+        self.last_error = None;
+        self.recording_started = None;
+        self.snapshot()
     }
 
     pub fn finish_ok(&mut self, result: ProcessSummary) -> AppSnapshot {
         self.state = AppState::Idle;
         self.last_result = Some(result);
         self.last_error = None;
+        self.recording_started = None;
         self.snapshot()
     }
 
     pub fn finish_err(&mut self, err: String) -> AppSnapshot {
         self.state = AppState::Idle;
         self.last_error = Some(err);
+        self.recording_started = None;
         self.snapshot()
     }
 }

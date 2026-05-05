@@ -26,6 +26,21 @@ use voice_polish_paster as paster;
 const DEBUG_LOG_MAX_BYTES: u64 = 240_000;
 const STREAM_RESET_SENTINEL: &str = "\u{1F}__RESET__\u{1F}";
 
+fn is_short_recording_cancel(err: &str) -> bool {
+    err == desktop::RECORDING_TOO_SHORT_ERROR
+}
+
+fn emit_short_recording_error(app: &tauri::AppHandle) {
+    let _ = app.emit(
+        "voice-error",
+        serde_json::json!({
+            "message": "Hold Option to record",
+            "audio_id": null,
+            "auto_hide_ms": 1800,
+        }),
+    );
+}
+
 #[cfg(target_os = "macos")]
 use voice_polish_hotkey as hotkey;
 
@@ -1489,13 +1504,26 @@ fn toggle_recording(
                 .ok()
                 .and_then(|mut target| target.take());
 
-            // Extract wav bytes synchronously, then hand off the async SSE pipeline
-            let wav = state
-                .0
-                .lock()
-                .map_err(|_| "lock failed")?
-                .stop_and_extract()?;
-            let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+            // Extract wav bytes synchronously, then hand off the async SSE pipeline.
+            // A very short press is an accidental tap, not a user-visible error.
+            let (wav, snap) = {
+                let mut d = state.0.lock().map_err(|_| "lock failed")?;
+                match d.stop_and_extract() {
+                    Ok(wav) => {
+                        let snap = d.snapshot();
+                        (wav, snap)
+                    }
+                    Err(e) if is_short_recording_cancel(&e) => {
+                        tracing::info!("[record] short recording cancelled from UI toggle");
+                        let snap = d.finish_cancelled();
+                        sync_tray(&app, &snap);
+                        emit_short_recording_error(&app);
+                        let _ = app.emit("app-state", &snap);
+                        return Ok(snap);
+                    }
+                    Err(e) => return Err(e),
+                }
+            };
             sync_tray(&app, &snap);
 
             // Kick off the SSE pipeline in the background (same as hotkey release)
@@ -1806,7 +1834,16 @@ fn do_finish_recording(
                 w
             }
             Err(e) => {
+                if is_short_recording_cancel(&e) {
+                    tracing::info!("[record] short Option tap — cancelled recording");
+                    let snap = d.finish_cancelled();
+                    sync_tray(&app, &snap);
+                    emit_short_recording_error(&app);
+                    let _ = app.emit("app-state", &snap);
+                    return;
+                }
                 let snap = d.finish_err(e);
+                sync_tray(&app, &snap);
                 let _ = app.emit("voice-error", serde_json::json!({
                     "message": snap.last_error.clone().unwrap_or_else(|| "Recording failed".to_string()),
                     "audio_id": null,

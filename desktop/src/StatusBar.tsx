@@ -16,6 +16,12 @@ type BarState =
   | { kind: "manual_paste" }
   | { kind: "error"; message: string; audioId?: string };
 
+type VoiceErrorPayload = {
+  message: string;
+  audio_id?: string;
+  auto_hide_ms?: number;
+};
+
 type PillKind = BarState["kind"];
 type HoverPanel = "language" | "tone" | null;
 
@@ -235,11 +241,14 @@ export default function StatusBar() {
     }).catch((err) => console.warn("[status-bar] voice-output subscribe failed", err));
 
     // ── Error: show message + optional retry ──────────────────────────────
-    listen<{ message: string; audio_id?: string }>("voice-error", (e) => {
-      const { message, audio_id } = e.payload;
-      console.info("[status-bar] voice-error event", { message, hasAudioId: Boolean(audio_id) });
+    listen<VoiceErrorPayload>("voice-error", (e) => {
+      const { message, audio_id, auto_hide_ms } = e.payload;
+      console.info("[status-bar] voice-error event", { message, hasAudioId: Boolean(audio_id), autoHideMs: auto_hide_ms });
       if (doneTimer.current) clearTimeout(doneTimer.current);
       setBar({ kind: "error", message, audioId: audio_id });
+      if (typeof auto_hide_ms === "number" && auto_hide_ms > 0) {
+        doneTimer.current = setTimeout(() => setBar({ kind: "idle" }), auto_hide_ms);
+      }
     }).then((fn) => {
       console.info("[status-bar] subscribed voice-error");
       subs.push(fn);
