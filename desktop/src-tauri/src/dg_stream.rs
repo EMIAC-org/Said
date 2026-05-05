@@ -10,14 +10,14 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
+use said_core::deepgram::{BiasPackage, TranscriptMeta, build_ws_url};
+use said_recorder::{ChunkReceiver, SAMPLE_RATE, resample_to_16k};
 use serde_json::Value;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{Message, client::IntoClientRequest},
 };
 use tracing::{debug, info, warn};
-use said_core::deepgram::{BiasPackage, TranscriptMeta, build_ws_url};
-use said_recorder::{ChunkReceiver, SAMPLE_RATE, resample_to_16k};
 
 /// Confidence threshold — words below this get [word?XX%] markers for the LLM.
 const LOW_CONFIDENCE_THRESHOLD: f64 = 0.85;
@@ -525,9 +525,9 @@ fn plain_for_embed(parts: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::extract_result_chunk;
-    use serde_json::json;
     use said_core::deepgram::{BiasPackage, ReplacementRule, build_ws_url};
     use said_recorder::SAMPLE_RATE;
+    use serde_json::json;
 
     #[test]
     fn ws_url_uses_multi_mode_and_replacements() {

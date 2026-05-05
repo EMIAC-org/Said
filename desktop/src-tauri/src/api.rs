@@ -5,10 +5,10 @@
 
 use futures::StreamExt;
 use reqwest::Client;
+use said_core::deepgram::{BiasPackage, TranscriptMeta};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, warn};
-use said_core::deepgram::{BiasPackage, TranscriptMeta};
 
 use crate::backend::BackendEndpoint;
 

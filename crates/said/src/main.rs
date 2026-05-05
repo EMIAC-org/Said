@@ -11,11 +11,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use clap::{Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
+use reqwest::Client;
 use said_backend::{
     llm::{openai_codex, prompt::build_user_message},
     stt::deepgram,
 };
-use reqwest::Client;
+use said_recorder::{AudioRecorder, ChunkReceiver, SAMPLE_RATE, resample_to_16k};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
@@ -26,7 +27,6 @@ use tokio_tungstenite::{
 use tracing::{error, warn};
 use tracing_subscriber::EnvFilter;
 use url::Url;
-use said_recorder::{AudioRecorder, ChunkReceiver, SAMPLE_RATE, resample_to_16k};
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_URL: &str = "https://auth.openai.com/oauth/authorize";
@@ -931,8 +931,7 @@ async fn watch_for_user_correction(
         return Ok(());
     }
 
-    let initial_pid =
-        blocking_ax_option("focused_pid initial", said_paster::focused_pid).await;
+    let initial_pid = blocking_ax_option("focused_pid initial", said_paster::focused_pid).await;
     let post_paste = {
         let mut val = blocking_ax_option(
             "read_focused_value_first initial",
@@ -981,8 +980,7 @@ async fn watch_for_user_correction(
             return Ok(());
         }
 
-        let now_pid =
-            blocking_ax_option("focused_pid poll", said_paster::focused_pid).await;
+        let now_pid = blocking_ax_option("focused_pid poll", said_paster::focused_pid).await;
         let pid_switched = matches!((initial_pid, now_pid), (Some(a), Some(b)) if a != b);
         if pid_switched {
             break;
@@ -1039,11 +1037,10 @@ async fn watch_for_user_correction(
         }
         extract_kept(&polished, &post_paste, &effective_val)
     } else if matches!((initial_pid, final_pid), (Some(a), Some(b)) if a == b) {
-        let captured =
-            tokio::task::spawn_blocking(said_paster::capture_focused_text_via_selection)
-                .await
-                .map_err(|e| format!("clipboard capture join failed: {e}"))?
-                .unwrap_or_default();
+        let captured = tokio::task::spawn_blocking(said_paster::capture_focused_text_via_selection)
+            .await
+            .map_err(|e| format!("clipboard capture join failed: {e}"))?
+            .unwrap_or_default();
         let captured = captured.trim().to_string();
         if captured.is_empty() {
             return Ok(());
