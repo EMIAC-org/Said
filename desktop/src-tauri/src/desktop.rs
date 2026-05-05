@@ -6,12 +6,12 @@
 
 use std::time::Instant;
 
-use voice_polish_core::{AppSnapshot, ProcessSummary, all_modes};
-use voice_polish_paster::is_accessibility_granted;
-use voice_polish_recorder::{AudioRecorder, ChunkReceiver, LevelReceiver, MIN_DURATION_S};
+use said_core::{AppSnapshot, ProcessSummary, all_modes};
+use said_paster::is_accessibility_granted;
+use said_recorder::{AudioRecorder, ChunkReceiver, LevelReceiver, MIN_DURATION_S};
 
 #[cfg(target_os = "macos")]
-use voice_polish_hotkey::is_input_monitoring_granted;
+use said_hotkey::is_input_monitoring_granted;
 
 use crate::permissions;
 

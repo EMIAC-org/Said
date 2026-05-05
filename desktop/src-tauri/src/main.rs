@@ -20,8 +20,8 @@ use tokio_util::sync::CancellationToken;
 
 use backend::BackendEndpoint;
 use desktop::DesktopApp;
-use voice_polish_core::{AppSnapshot, ProcessSummary};
-use voice_polish_paster as paster;
+use said_core::{AppSnapshot, ProcessSummary};
+use said_paster as paster;
 
 const DEBUG_LOG_MAX_BYTES: u64 = 240_000;
 const STREAM_RESET_SENTINEL: &str = "\u{1F}__RESET__\u{1F}";
@@ -62,7 +62,7 @@ fn emit_short_recording_error(app: &tauri::AppHandle) {
 }
 
 #[cfg(target_os = "macos")]
-use voice_polish_hotkey as hotkey;
+use said_hotkey as hotkey;
 
 #[cfg(target_os = "macos")]
 fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
@@ -673,7 +673,7 @@ struct HotPathCacheInner {
     /// Personal vocabulary terms sent to Deepgram as `keyterm=` biases.
     keyterms: Vec<String>,
     /// Trusted upstream replacement rules sent as `replace=`.
-    replacements: Vec<voice_polish_core::deepgram::ReplacementRule>,
+    replacements: Vec<said_core::deepgram::ReplacementRule>,
 }
 
 /// Holds one pre-warmed Deepgram WS connection ready for the next recording.
@@ -1587,7 +1587,7 @@ fn toggle_recording(
                     Err(_) => return,
                 };
                 let finished_snap = match result {
-                    Ok(done) => d.finish_ok(voice_polish_core::ProcessSummary {
+                    Ok(done) => d.finish_ok(said_core::ProcessSummary {
                         transcript: done.transcript.clone(),
                         polished: done.polished,
                         model: done.model_used,
@@ -1709,9 +1709,9 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 );
                 return;
             }
-            let bias = voice_polish_core::deepgram::BiasPackage {
+            let bias = said_core::deepgram::BiasPackage {
                 stt_mode: if stt_mode.is_empty() {
-                    voice_polish_core::deepgram::resolve_stt_mode(&language)
+                    said_core::deepgram::resolve_stt_mode(&language)
                 } else {
                     stt_mode
                 },
@@ -3971,7 +3971,7 @@ fn simple_char_distance(a: &str, b: &str) -> usize {
 
 fn main() {
     // 1. Load env vars from .env files
-    voice_polish_core::load_env();
+    said_core::load_env();
 
     let default_panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -3997,7 +3997,7 @@ fn main() {
         use tracing_subscriber::prelude::*;
 
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "info,voice_polish_hotkey=debug,voice_polish_paster=debug".into());
+            .unwrap_or_else(|_| "info,said_hotkey=debug,said_paster=debug".into());
 
         let file_layer = fmt::layer()
             .with_ansi(false)

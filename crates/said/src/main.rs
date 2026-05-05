@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use clap::{Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
-use polish_backend::{
+use said_backend::{
     llm::{openai_codex, prompt::build_user_message},
     stt::deepgram,
 };
@@ -26,7 +26,7 @@ use tokio_tungstenite::{
 use tracing::{error, warn};
 use tracing_subscriber::EnvFilter;
 use url::Url;
-use voice_polish_recorder::{AudioRecorder, ChunkReceiver, SAMPLE_RATE, resample_to_16k};
+use said_recorder::{AudioRecorder, ChunkReceiver, SAMPLE_RATE, resample_to_16k};
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_URL: &str = "https://auth.openai.com/oauth/authorize";
@@ -125,8 +125,8 @@ async fn main() -> Result<(), String> {
         Commands::DeepgramKey { key, clear } => set_deepgram_key(&ctx, key, clear),
         Commands::DisconnectOpenai => disconnect_openai(&ctx),
         Commands::Permissions => {
-            voice_polish_paster::request_input_monitoring();
-            voice_polish_paster::request_permission();
+            said_paster::request_input_monitoring();
+            said_paster::request_permission();
             println!("Opened Input Monitoring and Accessibility in System Settings.");
             Ok(())
         }
@@ -158,7 +158,7 @@ fn setup_logging() -> Result<(), String> {
         .with_env_filter(
             EnvFilter::from_default_env()
                 .add_directive("voice_polish=info".parse().unwrap())
-                .add_directive("polish_backend=info".parse().unwrap()),
+                .add_directive("said_backend=info".parse().unwrap()),
         )
         .with_writer(std::sync::Mutex::new(log_file))
         .init();
@@ -245,7 +245,7 @@ fn show_status(ctx: &AppCtx) -> Result<(), String> {
     }
     println!(
         "Input Mon : {}",
-        if voice_polish_hotkey::is_input_monitoring_granted() {
+        if said_hotkey::is_input_monitoring_granted() {
             "granted"
         } else {
             "missing"
@@ -253,7 +253,7 @@ fn show_status(ctx: &AppCtx) -> Result<(), String> {
     );
     println!(
         "AX Paste  : {}",
-        if voice_polish_paster::is_accessibility_granted() {
+        if said_paster::is_accessibility_granted() {
             "granted"
         } else {
             "missing"
@@ -406,12 +406,12 @@ async fn run_listener(ctx: AppCtx) -> Result<(), String> {
     if let Ok(device) = AudioRecorder::preflight() {
         println!("Mic ready: {device}");
     }
-    if !voice_polish_hotkey::is_input_monitoring_granted() {
+    if !said_hotkey::is_input_monitoring_granted() {
         println!(
             "Input Monitoring is not granted yet. Run `voice-polish permissions`, grant it, then restart."
         );
     }
-    if !voice_polish_paster::is_accessibility_granted() {
+    if !said_paster::is_accessibility_granted() {
         println!(
             "Accessibility is not granted yet. Run `voice-polish permissions`, grant it, then restart."
         );
@@ -449,7 +449,7 @@ async fn run_listener(ctx: AppCtx) -> Result<(), String> {
         }
     });
 
-    voice_polish_hotkey::start_hold_listener(on_press, on_release);
+    said_hotkey::start_hold_listener(on_press, on_release);
     tokio::signal::ctrl_c()
         .await
         .map_err(|e| format!("ctrl-c listener failed: {e}"))?;
@@ -475,7 +475,7 @@ fn start_recording(
     }
     guard.watch_generation += 1;
 
-    let _ = voice_polish_paster::unlock_focused_app_now();
+    let _ = said_paster::unlock_focused_app_now();
 
     let mut recorder = AudioRecorder::new();
     recorder.start()?;
@@ -586,8 +586,8 @@ async fn await_transcript_or_batch(
         }
     }
 
-    let bias = voice_polish_core::deepgram::BiasPackage {
-        stt_mode: voice_polish_core::deepgram::resolve_stt_mode(&cfg.language),
+    let bias = said_core::deepgram::BiasPackage {
+        stt_mode: said_core::deepgram::resolve_stt_mode(&cfg.language),
         ..Default::default()
     };
     let dg = deepgram::transcribe(&ctx.http, deepgram_key, wav, &bias).await?;
@@ -656,7 +656,7 @@ async fn stream_polish_and_paste(
             failed_any = true;
             continue;
         }
-        match voice_polish_paster::type_text(&token) {
+        match said_paster::type_text(&token) {
             Ok(true) => typed_any = true,
             Ok(false) => failed_any = true,
             Err(e) => {
@@ -671,10 +671,10 @@ async fn stream_polish_and_paste(
         .map_err(|e| format!("llm task join failed: {e}"))??;
 
     if typed_any && failed_any {
-        voice_polish_paster::paste_replacing(&result.polished)
+        said_paster::paste_replacing(&result.polished)
             .map_err(|e| format!("paste replacing failed: {e}"))?;
     } else if !typed_any {
-        voice_polish_paster::paste(&result.polished).map_err(|e| format!("paste failed: {e}"))?;
+        said_paster::paste(&result.polished).map_err(|e| format!("paste failed: {e}"))?;
     }
 
     Ok(result.polished)
@@ -932,11 +932,11 @@ async fn watch_for_user_correction(
     }
 
     let initial_pid =
-        blocking_ax_option("focused_pid initial", voice_polish_paster::focused_pid).await;
+        blocking_ax_option("focused_pid initial", said_paster::focused_pid).await;
     let post_paste = {
         let mut val = blocking_ax_option(
             "read_focused_value_first initial",
-            voice_polish_paster::read_focused_value_first,
+            said_paster::read_focused_value_first,
         )
         .await
         .unwrap_or_default();
@@ -947,7 +947,7 @@ async fn watch_for_user_correction(
             }
             val = blocking_ax_option(
                 "read_focused_value_first retry1",
-                voice_polish_paster::read_focused_value_first,
+                said_paster::read_focused_value_first,
             )
             .await
             .unwrap_or_default();
@@ -959,7 +959,7 @@ async fn watch_for_user_correction(
             }
             val = blocking_ax_option(
                 "read_focused_value_first retry2",
-                voice_polish_paster::read_focused_value_first,
+                said_paster::read_focused_value_first,
             )
             .await
             .unwrap_or_default();
@@ -982,7 +982,7 @@ async fn watch_for_user_correction(
         }
 
         let now_pid =
-            blocking_ax_option("focused_pid poll", voice_polish_paster::focused_pid).await;
+            blocking_ax_option("focused_pid poll", said_paster::focused_pid).await;
         let pid_switched = matches!((initial_pid, now_pid), (Some(a), Some(b)) if a != b);
         if pid_switched {
             break;
@@ -992,13 +992,13 @@ async fn watch_for_user_correction(
             last_pid = now_pid;
             blocking_ax_option(
                 "read_focused_value_first focus-change",
-                voice_polish_paster::read_focused_value_first,
+                said_paster::read_focused_value_first,
             )
             .await
         } else {
             blocking_ax_option(
                 "read_focused_value_fast poll",
-                voice_polish_paster::read_focused_value_fast,
+                said_paster::read_focused_value_fast,
             )
             .await
         }
@@ -1030,7 +1030,7 @@ async fn watch_for_user_correction(
     } else {
         last_val.clone()
     };
-    let final_pid = blocking_ax_option("focused_pid final", voice_polish_paster::focused_pid).await;
+    let final_pid = blocking_ax_option("focused_pid final", said_paster::focused_pid).await;
 
     let user_kept = if !post_paste.is_empty() {
         if effective_val == post_paste {
@@ -1040,7 +1040,7 @@ async fn watch_for_user_correction(
         extract_kept(&polished, &post_paste, &effective_val)
     } else if matches!((initial_pid, final_pid), (Some(a), Some(b)) if a == b) {
         let captured =
-            tokio::task::spawn_blocking(voice_polish_paster::capture_focused_text_via_selection)
+            tokio::task::spawn_blocking(said_paster::capture_focused_text_via_selection)
                 .await
                 .map_err(|e| format!("clipboard capture join failed: {e}"))?
                 .unwrap_or_default();
@@ -1158,7 +1158,7 @@ async fn analyze_edit_with_codex(
     polished: &str,
     user_kept: &str,
 ) -> Result<Option<learning::CorrectionObservation>, String> {
-    let app_hint = blocking_ax_option("focused_pid app hint", voice_polish_paster::focused_pid)
+    let app_hint = blocking_ax_option("focused_pid app hint", said_paster::focused_pid)
         .await
         .and_then(focused_app_hint_for_pid);
 

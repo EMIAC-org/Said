@@ -1,5 +1,5 @@
 [package]
-name              = "polish-backend"
+name              = "said-backend"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,11 @@ license.workspace      = true
 repository.workspace   = true
 
 [lib]
-name = "polish_backend"
+name = "said_backend"
 path = "src/lib.rs"
 
 [[bin]]
-name = "polish-backend"
+name = "said-backend"
 path = "src/main.rs"
 
 [lints]
@@ -45,5 +45,5 @@ tokio-util  = { version = "0.7", features = ["io"] }
 anyhow      = "1"
 libc        = "0.2"
 
-voice-polish-core = { path = "../core" }
+said-core = { path = "../core" }
 dirs              = "5"

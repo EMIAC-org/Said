@@ -195,7 +195,7 @@ pub async fn polish(
         let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
         let gateway_key = prefs.gateway_api_key.clone()
             .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
-            .or_else(|| { let k = voice_polish_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
+            .or_else(|| { let k = said_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
             .unwrap_or_default();
         let gemini_key_text = prefs.gemini_api_key.clone()
             .or_else(|| std::env::var("GEMINI_API_KEY").ok())
@@ -207,7 +207,7 @@ pub async fn polish(
         // Resolve model + provider
         let llm_provider = prefs.llm_provider.clone();
         let llm_provider_for_task = llm_provider.clone();
-        let model = voice_polish_core::resolve_model(&prefs.selected_model).to_string();
+        let model = said_core::resolve_model(&prefs.selected_model).to_string();
         let sys_p       = system_prompt.clone();
         let usr_m       = user_message.clone();
         let client_c    = http_client.clone();
@@ -425,7 +425,7 @@ pub async fn refine_last(
         let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
         let gateway_key = prefs.gateway_api_key.clone()
             .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
-            .or_else(|| { let k = voice_polish_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
+            .or_else(|| { let k = said_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
             .unwrap_or_default();
         let gemini_key_text = prefs.gemini_api_key.clone()
             .or_else(|| std::env::var("GEMINI_API_KEY").ok())
@@ -436,7 +436,7 @@ pub async fn refine_last(
 
         let llm_provider = prefs.llm_provider.clone();
         let llm_provider_for_task = llm_provider.clone();
-        let model = voice_polish_core::resolve_model(&prefs.selected_model).to_string();
+        let model = said_core::resolve_model(&prefs.selected_model).to_string();
         let sys_p = system_prompt.clone();
         let usr_m = user_message.clone();
         let client_c = http_client.clone();
