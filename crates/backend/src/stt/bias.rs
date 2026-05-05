@@ -106,7 +106,10 @@ fn replacement_threshold(term: &vocabulary::VocabTerm, alias: &str) -> Option<i6
     }
 }
 
-fn replacement_trust_score(term: &vocabulary::VocabTerm, rule: &stt_replacements::SttReplacement) -> Option<f64> {
+fn replacement_trust_score(
+    term: &vocabulary::VocabTerm,
+    rule: &stt_replacements::SttReplacement,
+) -> Option<f64> {
     let alias = rule.transcript_form.trim();
     let canonical = rule.correct_form.trim();
     if alias.is_empty() || canonical.is_empty() {
@@ -152,7 +155,12 @@ pub fn deterministic_export_tier(
     if rule.contradiction_count >= 4 {
         return ExportTier::Blocked;
     }
-    if alias_is_commonish(&rule.transcript_form) && !matches!(canonical.term_type.as_deref(), Some("acronym" | "code_identifier")) {
+    if alias_is_commonish(&rule.transcript_form)
+        && !matches!(
+            canonical.term_type.as_deref(),
+            Some("acronym" | "code_identifier")
+        )
+    {
         return ExportTier::LocalOnly;
     }
     if replacement_trust_score(canonical, rule).is_some() {
@@ -169,10 +177,7 @@ pub fn deterministic_export_tier(
     ExportTier::LocalOnly
 }
 
-fn effective_export_tier(
-    canonical: &vocabulary::VocabTerm,
-    rule: &SttReplacement,
-) -> ExportTier {
+fn effective_export_tier(canonical: &vocabulary::VocabTerm, rule: &SttReplacement) -> ExportTier {
     if rule.review_status == ReviewStatus::Blocked || rule.export_tier == ExportTier::Blocked {
         return ExportTier::Blocked;
     }
@@ -231,8 +236,7 @@ pub fn build_bias_package(
                 .get(&a.term.to_ascii_lowercase())
                 .copied()
                 .unwrap_or(0.0);
-        sb.partial_cmp(&sa)
-            .unwrap_or(Ordering::Equal)
+        sb.partial_cmp(&sa).unwrap_or(Ordering::Equal)
     });
     for term in keyterm_candidates {
         let lowered = term.term.to_ascii_lowercase();

@@ -214,7 +214,12 @@ pub fn recent_example_texts(pool: &DbPool, user_id: &str, term: &str, limit: usi
 ///
 /// This gives the background meaning LLM a better view of the term than
 /// "just the newest sentence", while keeping prompt size bounded.
-pub fn support_example_texts(pool: &DbPool, user_id: &str, term: &str, limit: usize) -> Vec<String> {
+pub fn support_example_texts(
+    pool: &DbPool,
+    user_id: &str,
+    term: &str,
+    limit: usize,
+) -> Vec<String> {
     let Ok(conn) = pool.get() else {
         return vec![];
     };
@@ -256,12 +261,10 @@ pub fn support_example_texts(pool: &DbPool, user_id: &str, term: &str, limit: us
     };
 
     // Earliest useful anchor-rich example.
-    if let Some((text, _)) = rows.iter().max_by_key(|(text, recorded_at)| {
-        (
-            anchor_score(text),
-            std::cmp::Reverse(*recorded_at),
-        )
-    }) {
+    if let Some((text, _)) = rows
+        .iter()
+        .max_by_key(|(text, recorded_at)| (anchor_score(text), std::cmp::Reverse(*recorded_at)))
+    {
         push_unique(&mut chosen, text);
     }
 
@@ -279,13 +282,19 @@ pub fn support_example_texts(pool: &DbPool, user_id: &str, term: &str, limit: us
     let seed = chosen.first().cloned().unwrap_or_else(|| rows[0].0.clone());
     let seed_tokens: std::collections::HashSet<String> = seed
         .split_whitespace()
-        .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase())
+        .map(|t| {
+            t.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_ascii_lowercase()
+        })
         .filter(|t| !t.is_empty())
         .collect();
     if let Some((text, _)) = rows.iter().max_by_key(|(text, _)| {
         let tokens: std::collections::HashSet<String> = text
             .split_whitespace()
-            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase())
+            .map(|t| {
+                t.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_ascii_lowercase()
+            })
             .filter(|t| !t.is_empty())
             .collect();
         let overlap = tokens.intersection(&seed_tokens).count();
@@ -969,7 +978,14 @@ mod tests {
     #[test]
     fn support_examples_curate_stable_meaning_contexts() {
         let pool = mem_pool();
-        seed(&pool, "EMIAC", 2.0, "manual", &vec4(1.0, 0.0, 0.0, 0.0), "hinglish");
+        seed(
+            &pool,
+            "EMIAC",
+            2.0,
+            "manual",
+            &vec4(1.0, 0.0, 0.0, 0.0),
+            "hinglish",
+        );
         let conn = pool.get().unwrap();
         let emb = crate::embedder::gemini::floats_to_blob(&vec4(1.0, 0.0, 0.0, 0.0));
         let cases = [

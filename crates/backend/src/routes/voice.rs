@@ -402,7 +402,9 @@ pub async fn repair_transcript(
         ));
     };
 
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response {
@@ -989,7 +991,9 @@ fn derive_repair_hints(
 
     let overlap = token_overlap_ratio(transcript, previous_output);
     if overlap < 0.7 {
-        hints.push("Token overlap with the transcript is low; stay closer to the spoken wording.".into());
+        hints.push(
+            "Token overlap with the transcript is low; stay closer to the spoken wording.".into(),
+        );
     }
 
     if output_language == "hinglish" {
@@ -1019,10 +1023,28 @@ fn count_numeric_tokens(text: &str) -> usize {
 fn count_hindi_like_tokens(text: &str) -> usize {
     text.split_whitespace()
         .filter(|token| {
-            token.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c))
+            token
+                .chars()
+                .any(|c| ('\u{0900}'..='\u{097F}').contains(&c))
                 || matches!(
                     token.to_ascii_lowercase().as_str(),
-                    "hai" | "haan" | "tha" | "thi" | "the" | "nahi" | "nhi" | "kya" | "aur" | "ka" | "ki" | "ke" | "mein" | "me" | "yeh" | "woh" | "kyunki"
+                    "hai"
+                        | "haan"
+                        | "tha"
+                        | "thi"
+                        | "the"
+                        | "nahi"
+                        | "nhi"
+                        | "kya"
+                        | "aur"
+                        | "ka"
+                        | "ki"
+                        | "ke"
+                        | "mein"
+                        | "me"
+                        | "yeh"
+                        | "woh"
+                        | "kyunki"
                 )
         })
         .count()

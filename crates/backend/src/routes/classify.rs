@@ -1082,12 +1082,7 @@ mod tests {
     fn stt_disposition_queues_weak_but_structurally_valid_signal() {
         let cand = test_stt_candidate("return", "return", "Atlas", "return", "Atlas", 0.41);
         assert_eq!(
-            stt_promotion_disposition(
-                &cand,
-                "Atlas",
-                "Can you open Atlas for me?",
-                "english"
-            ),
+            stt_promotion_disposition(&cand, "Atlas", "Can you open Atlas for me?", "english"),
             SttPromotionDisposition::QueuePending
         );
     }

@@ -86,7 +86,15 @@ pub async fn review_alias(
     );
 
     let groq_result = if !groq_key.is_empty() {
-        call_chat(client, GROQ_ENDPOINT, groq_key, REVIEW_MODEL, &user_prompt, "groq").await
+        call_chat(
+            client,
+            GROQ_ENDPOINT,
+            groq_key,
+            REVIEW_MODEL,
+            &user_prompt,
+            "groq",
+        )
+        .await
     } else {
         None
     };
@@ -121,10 +129,7 @@ pub async fn review_alias(
     };
     info!(
         "[alias-review] {:?} -> {:?} for alias {:?} -> {:?}",
-        input.current_tier,
-        tier,
-        input.alias,
-        input.canonical
+        input.current_tier, tier, input.alias, input.canonical
     );
     Some(AliasReviewDecision {
         export_tier: tier,

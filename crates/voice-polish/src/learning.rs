@@ -37,23 +37,23 @@ pub enum RuleStage {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuleStats {
-    pub accepts:                 u32,
-    pub reverts:                 u32,
-    pub dropped_word_penalties:  u32,
-    pub translation_penalties:   u32,
+    pub accepts: u32,
+    pub reverts: u32,
+    pub dropped_word_penalties: u32,
+    pub translation_penalties: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextFingerprint {
-    pub left_context:    Vec<String>,
-    pub right_context:   Vec<String>,
+    pub left_context: Vec<String>,
+    pub right_context: Vec<String>,
     pub source_sentence: String,
     pub target_sentence: String,
-    pub app_hint:        Option<String>,
-    pub language_mode:   String,
+    pub app_hint: Option<String>,
+    pub language_mode: String,
     pub output_language: String,
     pub confidence_band: ConfidenceBand,
-    pub topic_hints:     Vec<String>,
+    pub topic_hints: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,62 +61,62 @@ pub struct CorrectionObservation {
     pub source_span: String,
     pub target_span: String,
     pub error_class: ErrorClass,
-    pub context:     ContextFingerprint,
+    pub context: ContextFingerprint,
     pub why_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorrectionEvent {
-    pub event_id:      u64,
-    pub observed_at_ms:i64,
-    pub observation:   CorrectionObservation,
+    pub event_id: u64,
+    pub observed_at_ms: i64,
+    pub observation: CorrectionObservation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LearnedRule {
-    pub kind:           MemoryKind,
-    pub stage:          RuleStage,
-    pub source_span:    String,
-    pub target_span:    String,
-    pub error_class:    ErrorClass,
-    pub seed_context:   ContextFingerprint,
-    pub why_summary:    Option<String>,
+    pub kind: MemoryKind,
+    pub stage: RuleStage,
+    pub source_span: String,
+    pub target_span: String,
+    pub error_class: ErrorClass,
+    pub seed_context: ContextFingerprint,
+    pub why_summary: Option<String>,
     pub evidence_count: u32,
-    pub stats:          RuleStats,
+    pub stats: RuleStats,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManualCorrectionInput {
-    pub transcript:       String,
-    pub polished:         String,
-    pub corrected:        String,
-    pub app_hint:         Option<String>,
-    pub language_mode:    String,
-    pub output_language:  String,
-    pub confidence_band:  ConfidenceBand,
+    pub transcript: String,
+    pub polished: String,
+    pub corrected: String,
+    pub app_hint: Option<String>,
+    pub language_mode: String,
+    pub output_language: String,
+    pub confidence_band: ConfidenceBand,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PolicySnapshot {
-    pub event_count:     usize,
+    pub event_count: usize,
     pub candidate_count: usize,
-    pub entity_count:    usize,
-    pub phrase_count:    usize,
-    pub guard_count:     usize,
+    pub entity_count: usize,
+    pub phrase_count: usize,
+    pub guard_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObserveOutcome {
-    pub event:              CorrectionEvent,
-    pub created_candidate:  bool,
-    pub candidate_index:    usize,
+    pub event: CorrectionEvent,
+    pub created_candidate: bool,
+    pub candidate_index: usize,
     pub candidate_evidence: u32,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimePolicy {
-    events:      VecDeque<CorrectionEvent>,
-    candidates:  Vec<LearnedRule>,
+    events: VecDeque<CorrectionEvent>,
+    candidates: Vec<LearnedRule>,
 }
 
 impl RuntimePolicy {
@@ -126,9 +126,9 @@ impl RuntimePolicy {
 
     pub fn observe(&mut self, observation: CorrectionObservation) -> ObserveOutcome {
         let event = CorrectionEvent {
-            event_id:       self.events.back().map(|e| e.event_id + 1).unwrap_or(1),
+            event_id: self.events.back().map(|e| e.event_id + 1).unwrap_or(1),
             observed_at_ms: now_ms(),
-            observation:    observation.clone(),
+            observation: observation.clone(),
         };
         self.push_event(event.clone());
 
@@ -198,7 +198,8 @@ impl RuntimePolicy {
             return None;
         }
 
-        let lines = self.candidates
+        let lines = self
+            .candidates
             .iter()
             .take(8)
             .map(|rule| match rule.kind {
@@ -237,8 +238,11 @@ impl RuntimePolicy {
 
     fn find_candidate(&self, observation: &CorrectionObservation) -> Option<usize> {
         self.candidates.iter().position(|rule| {
-            rule.source_span.eq_ignore_ascii_case(&observation.source_span)
-                && rule.target_span.eq_ignore_ascii_case(&observation.target_span)
+            rule.source_span
+                .eq_ignore_ascii_case(&observation.source_span)
+                && rule
+                    .target_span
+                    .eq_ignore_ascii_case(&observation.target_span)
                 && rule.error_class == observation.error_class
                 && rule.seed_context.language_mode == observation.context.language_mode
                 && rule.seed_context.output_language == observation.context.output_language
@@ -270,14 +274,21 @@ pub fn observation_from_manual_correction(
         && dst_end - prefix == 1
         && src_end < polished_tokens.len()
         && dst_end < corrected_tokens.len()
-        && normalize_for_compare(polished_tokens[src_end]) == normalize_for_compare(corrected_tokens[dst_end])
+        && normalize_for_compare(polished_tokens[src_end])
+            == normalize_for_compare(corrected_tokens[dst_end])
     {
         src_end += 1;
         dst_end += 1;
     }
 
-    let source_span = polished_tokens[prefix..src_end].join(" ").trim().to_string();
-    let target_span = corrected_tokens[prefix..dst_end].join(" ").trim().to_string();
+    let source_span = polished_tokens[prefix..src_end]
+        .join(" ")
+        .trim()
+        .to_string();
+    let target_span = corrected_tokens[prefix..dst_end]
+        .join(" ")
+        .trim()
+        .to_string();
     if source_span.is_empty() || target_span.is_empty() {
         return None;
     }
@@ -294,11 +305,11 @@ pub fn observation_from_manual_correction(
     let error_class = classify_error(&input.transcript, &source_span, &target_span);
     let topic_hints = derive_topic_hints(&input.transcript, &source_span, &target_span);
 
-        Some(CorrectionObservation {
-            source_span,
-            target_span,
-            error_class,
-            context: ContextFingerprint {
+    Some(CorrectionObservation {
+        source_span,
+        target_span,
+        error_class,
+        context: ContextFingerprint {
             left_context,
             right_context,
             source_sentence: input.polished,
@@ -306,11 +317,11 @@ pub fn observation_from_manual_correction(
             app_hint: input.app_hint,
             language_mode: input.language_mode,
             output_language: input.output_language,
-                confidence_band: input.confidence_band,
-                topic_hints,
-            },
-            why_summary: None,
-        })
+            confidence_band: input.confidence_band,
+            topic_hints,
+        },
+        why_summary: None,
+    })
 }
 
 fn classify_memory_kind(observation: &CorrectionObservation) -> MemoryKind {

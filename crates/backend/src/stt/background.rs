@@ -100,8 +100,8 @@ async fn review_one_alias(
         weight: rule.weight,
         example_contexts: &examples,
     };
-    let decision = alias_review::review_alias(&state.http_client, &groq_key, &openai_key, &input)
-        .await;
+    let decision =
+        alias_review::review_alias(&state.http_client, &groq_key, &openai_key, &input).await;
     let (tier, status, reason) = match decision {
         Some(d) => (d.export_tier, d.review_status, d.reason),
         None => (

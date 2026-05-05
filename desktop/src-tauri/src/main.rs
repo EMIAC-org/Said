@@ -102,11 +102,17 @@ fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
         let behavior = CAN_JOIN_ALL_SPACES | STATIONARY | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY;
         let _: Result<(), _> =
             ns_window.send_message(Sel::register("setCollectionBehavior:"), (behavior,));
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setLevel:"), (NS_STATUS_WINDOW_LEVEL_PLUS_THREE,));
+        let _: Result<(), _> = ns_window.send_message(
+            Sel::register("setLevel:"),
+            (NS_STATUS_WINDOW_LEVEL_PLUS_THREE,),
+        );
         let _: Result<(), _> = ns_window.send_message(Sel::register("setCanHide:"), (false,));
-        let _: Result<(), _> = ns_window.send_message(Sel::register("setIgnoresMouseEvents:"), (false,));
-        for (selector_name, value) in [("setHidesOnDeactivate:", false), ("setFloatingPanel:", true)] {
+        let _: Result<(), _> =
+            ns_window.send_message(Sel::register("setIgnoresMouseEvents:"), (false,));
+        for (selector_name, value) in [
+            ("setHidesOnDeactivate:", false),
+            ("setFloatingPanel:", true),
+        ] {
             let selector = Sel::register(selector_name);
             let responds: bool = ns_window
                 .send_message(Sel::register("respondsToSelector:"), (selector,))
@@ -844,14 +850,14 @@ fn build_tray_menu(
         true,
         None::<&str>,
     )?;
-    let p_prof = MenuItem::with_id(app, "tray_polish_professional", "Professional English  ⌥2", true, None::<&str>)?;
-    let p_casual = MenuItem::with_id(
+    let p_prof = MenuItem::with_id(
         app,
-        "tray_polish_casual",
-        "Casual  ⌥3",
+        "tray_polish_professional",
+        "Professional English  ⌥2",
         true,
         None::<&str>,
     )?;
+    let p_casual = MenuItem::with_id(app, "tray_polish_casual", "Casual  ⌥3", true, None::<&str>)?;
     let p_concise = MenuItem::with_id(
         app,
         "tray_polish_concise",
@@ -1557,7 +1563,8 @@ fn toggle_recording(
             // UI button path: no WS streaming pre-transcript (hotkey path handles it)
             let pre_tx_ui: Option<dg_stream::StreamingTranscript> = None;
             tauri::async_runtime::spawn(async move {
-                let result = run_voice_polish_sse(&back_arc2, wav, None, pre_tx_ui, None, &app2).await;
+                let result =
+                    run_voice_polish_sse(&back_arc2, wav, None, pre_tx_ui, None, &app2).await;
 
                 // Spawn edit-watcher immediately after paste (non-blocking).
                 // Capture watch_start NOW — before the spawn — so the ring
@@ -2150,7 +2157,16 @@ async fn run_voice_polish_sse(
         )
         .await?
     } else {
-        api::stream_voice_polish(&ep, wav, target_app, None, None, repair_mode, &mut on_polish_event).await?
+        api::stream_voice_polish(
+            &ep,
+            wav,
+            target_app,
+            None,
+            None,
+            repair_mode,
+            &mut on_polish_event,
+        )
+        .await?
     };
 
     let n_typed = token_count.load(std::sync::atomic::Ordering::Relaxed);
@@ -2270,47 +2286,45 @@ async fn run_voice_repair_sse(
     let fail_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let fail_count2 = fail_count.clone();
 
-    let mut on_polish_event = move |event| {
-        match &event {
-            api::PolishEvent::Token { token } => {
-                if token == "\u{1F}__RESET__\u{1F}" {
+    let mut on_polish_event = move |event| match &event {
+        api::PolishEvent::Token { token } => {
+            if token == "\u{1F}__RESET__\u{1F}" {
+                fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+            let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
+            match paster::type_text(token) {
+                Ok(true) => {
+                    typed_any2.store(true, std::sync::atomic::Ordering::Relaxed);
+                    token_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(false) => {
                     fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return;
                 }
-                let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
-                match paster::type_text(token) {
-                    Ok(true) => {
-                        typed_any2.store(true, std::sync::atomic::Ordering::Relaxed);
-                        token_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Ok(false) => {
-                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        tracing::warn!("[voice-repair] type_text error: {e}");
-                    }
+                Err(e) => {
+                    fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    tracing::warn!("[voice-repair] type_text error: {e}");
                 }
             }
-            api::PolishEvent::Status { phase, transcript } => {
-                let _ = app_clone.emit(
-                    "voice-status",
-                    serde_json::json!({ "phase": phase, "transcript": transcript }),
-                );
-            }
-            api::PolishEvent::Done(done) => {
-                let _ = app_clone.emit("voice-done", done);
-            }
-            api::PolishEvent::Error { message, audio_id } => {
-                let human = humanize_error(message);
-                let _ = app_clone.emit(
-                    "voice-error",
-                    serde_json::json!({
-                        "message": human,
-                        "audio_id": audio_id,
-                    }),
-                );
-            }
+        }
+        api::PolishEvent::Status { phase, transcript } => {
+            let _ = app_clone.emit(
+                "voice-status",
+                serde_json::json!({ "phase": phase, "transcript": transcript }),
+            );
+        }
+        api::PolishEvent::Done(done) => {
+            let _ = app_clone.emit("voice-done", done);
+        }
+        api::PolishEvent::Error { message, audio_id } => {
+            let human = humanize_error(message);
+            let _ = app_clone.emit(
+                "voice-error",
+                serde_json::json!({
+                    "message": human,
+                    "audio_id": audio_id,
+                }),
+            );
         }
     };
 
@@ -2327,7 +2341,14 @@ async fn run_voice_repair_sse(
     )
     .await?;
 
-    finalize_typed_or_pasted_output(app, &done, typed_any, token_count, fail_count, LastRepairStage::FastRepair)?;
+    finalize_typed_or_pasted_output(
+        app,
+        &done,
+        typed_any,
+        token_count,
+        fail_count,
+        LastRepairStage::FastRepair,
+    )?;
     Ok(done)
 }
 
@@ -2352,42 +2373,40 @@ async fn run_text_refine_sse(
     let fail_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let fail_count2 = fail_count.clone();
 
-    let mut on_polish_event = move |event| {
-        match &event {
-            api::PolishEvent::Token { token } => {
-                let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
-                match paster::type_text(token) {
-                    Ok(true) => {
-                        typed_any2.store(true, std::sync::atomic::Ordering::Relaxed);
-                        token_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Ok(false) => {
-                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        tracing::warn!("[text-refine] type_text error: {e}");
-                    }
+    let mut on_polish_event = move |event| match &event {
+        api::PolishEvent::Token { token } => {
+            let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
+            match paster::type_text(token) {
+                Ok(true) => {
+                    typed_any2.store(true, std::sync::atomic::Ordering::Relaxed);
+                    token_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(false) => {
+                    fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Err(e) => {
+                    fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    tracing::warn!("[text-refine] type_text error: {e}");
                 }
             }
-            api::PolishEvent::Status { phase, transcript } => {
-                let _ = app_clone.emit(
-                    "voice-status",
-                    serde_json::json!({ "phase": phase, "transcript": transcript }),
-                );
-            }
-            api::PolishEvent::Done(done) => {
-                let _ = app_clone.emit("voice-done", done);
-            }
-            api::PolishEvent::Error { message, audio_id } => {
-                let _ = app_clone.emit(
-                    "voice-error",
-                    serde_json::json!({
-                        "message": humanize_error(message),
-                        "audio_id": audio_id,
-                    }),
-                );
-            }
+        }
+        api::PolishEvent::Status { phase, transcript } => {
+            let _ = app_clone.emit(
+                "voice-status",
+                serde_json::json!({ "phase": phase, "transcript": transcript }),
+            );
+        }
+        api::PolishEvent::Done(done) => {
+            let _ = app_clone.emit("voice-done", done);
+        }
+        api::PolishEvent::Error { message, audio_id } => {
+            let _ = app_clone.emit(
+                "voice-error",
+                serde_json::json!({
+                    "message": humanize_error(message),
+                    "audio_id": audio_id,
+                }),
+            );
         }
     };
 
@@ -2400,8 +2419,20 @@ async fn run_text_refine_sse(
     )
     .await?;
 
-    finalize_typed_or_pasted_output(app, &done, typed_any, token_count, fail_count, LastRepairStage::None)?;
-    cache_last_text_transform(app, source_text, done.polished.clone(), tone.unwrap_or_else(|| "neutral".into()));
+    finalize_typed_or_pasted_output(
+        app,
+        &done,
+        typed_any,
+        token_count,
+        fail_count,
+        LastRepairStage::None,
+    )?;
+    cache_last_text_transform(
+        app,
+        source_text,
+        done.polished.clone(),
+        tone.unwrap_or_else(|| "neutral".into()),
+    );
     Ok(done)
 }
 
@@ -2441,7 +2472,11 @@ fn finalize_typed_or_pasted_output(
         }
     }
 
-    let output_status = if output_pasted { "pasted" } else { "manual_paste" };
+    let output_status = if output_pasted {
+        "pasted"
+    } else {
+        "manual_paste"
+    };
     let output_message = if output_pasted {
         "Pasted"
     } else {
@@ -3833,9 +3868,7 @@ fn is_meaningful_edit(polished: &str, user_kept: &str) -> bool {
         let kw_raw = k_raw_words.get(i).copied().unwrap_or("");
         let pw_core = alnum_word_core(pw);
         let kw_core = alnum_word_core(kw);
-        if pw_core != kw_core
-            && (!pw_core.is_empty() || !kw_core.is_empty())
-        {
+        if pw_core != kw_core && (!pw_core.is_empty() || !kw_core.is_empty()) {
             word_diffs += 1;
             // Jargon signal: if EITHER side of the diff has digits, the edit
             // is almost certainly a meaningful jargon correction (n8n, k8s,
@@ -3887,7 +3920,8 @@ fn normalize_spacing_and_punctuation(s: &str) -> String {
 }
 
 fn looks_jargon_like_word(word: &str) -> bool {
-    let trimmed = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.');
+    let trimmed =
+        word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.');
     if trimmed.is_empty() {
         return false;
     }
@@ -3896,7 +3930,9 @@ fn looks_jargon_like_word(word: &str) -> bool {
     let alpha_len = trimmed.chars().filter(|c| c.is_ascii_alphabetic()).count();
     let all_caps_alpha = alpha_len >= 2
         && alpha_len <= 8
-        && trimmed.chars().all(|c| !c.is_ascii_lowercase() || !c.is_ascii_alphabetic())
+        && trimmed
+            .chars()
+            .all(|c| !c.is_ascii_lowercase() || !c.is_ascii_alphabetic())
         && trimmed.chars().any(|c| c.is_ascii_uppercase());
     let has_upper = trimmed.chars().any(|c| c.is_ascii_uppercase());
     let has_lower = trimmed.chars().any(|c| c.is_ascii_lowercase());

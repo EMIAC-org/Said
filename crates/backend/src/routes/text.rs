@@ -26,9 +26,9 @@ use crate::{
     llm::{
         gateway, gemini_direct, groq, openai_codex,
         prompt::{
-            VocabEntry, build_system_prompt_with_vocab_entries, build_tray_system_prompt,
-            build_user_message, build_refine_last_transform_prompt,
-            build_refine_last_transform_user_message, resolved_vocab_terms_to_entries,
+            VocabEntry, build_refine_last_transform_prompt,
+            build_refine_last_transform_user_message, build_system_prompt_with_vocab_entries,
+            build_tray_system_prompt, build_user_message, resolved_vocab_terms_to_entries,
             vocab_terms_to_entries,
         },
         script,
@@ -554,7 +554,9 @@ pub async fn refine_last(
         ));
     };
 
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 #[cfg(test)]
