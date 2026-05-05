@@ -4202,7 +4202,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "said"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "clap",
  "dirs 5.0.1",
@@ -4225,7 +4225,7 @@ dependencies = [
 
 [[package]]
 name = "said-backend"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4254,7 +4254,7 @@ dependencies = [
 
 [[package]]
 name = "said-core"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "dotenvy",
  "serde",
@@ -4263,7 +4263,7 @@ dependencies = [
 
 [[package]]
 name = "said-desktop"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "block",
  "bytes",
@@ -4302,7 +4302,7 @@ dependencies = [
 
 [[package]]
 name = "said-hotkey"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "cocoa",
  "core-foundation 0.10.1",
@@ -4313,7 +4313,7 @@ dependencies = [
 
 [[package]]
 name = "said-paster"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "cocoa",
  "core-foundation 0.10.1",
@@ -4326,7 +4326,7 @@ dependencies = [
 
 [[package]]
 name = "said-recorder"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "cpal",
  "hound",
