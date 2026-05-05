@@ -14,9 +14,9 @@ mod store;
 use std::{sync::Arc, time::Instant};
 
 use axum::{
-    http::{header, Method},
-    routing::{get, post},
     Router,
+    http::{Method, header},
+    routing::{get, post},
 };
 use clap::Parser;
 use tower_http::cors::{Any, CorsLayer};
@@ -25,7 +25,11 @@ use tracing::info;
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "control-plane", version, about = "Voice Polish Studio cloud control plane")]
+#[command(
+    name = "control-plane",
+    version,
+    about = "Voice Polish Studio cloud control plane"
+)]
 struct Cli {
     /// TCP port to listen on
     #[arg(long, env = "PORT", default_value = "3100")]
@@ -40,7 +44,7 @@ struct Cli {
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db:         store::Db,
+    pub db: store::Db,
     pub started_at: Arc<Instant>,
 }
 
@@ -54,8 +58,7 @@ async fn main() {
     // 2. Tracing
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -82,13 +85,13 @@ async fn main() {
     // 6. Router
     let app = Router::new()
         // Public
-        .route("/v1/health",          get(routes::health::handler))
-        .route("/v1/auth/signup",     post(routes::auth::signup))
-        .route("/v1/auth/login",      post(routes::auth::login))
+        .route("/v1/health", get(routes::health::handler))
+        .route("/v1/auth/signup", post(routes::auth::signup))
+        .route("/v1/auth/login", post(routes::auth::login))
         // Authenticated
-        .route("/v1/auth/logout",     post(routes::auth::logout))
-        .route("/v1/auth/me",         get(routes::auth::me))
-        .route("/v1/license/check",   get(routes::license::check))
+        .route("/v1/auth/logout", post(routes::auth::logout))
+        .route("/v1/auth/me", get(routes::auth::me))
+        .route("/v1/license/check", get(routes::license::check))
         .route("/v1/metering/report", post(routes::metering::report))
         .layer(cors)
         .with_state(state);

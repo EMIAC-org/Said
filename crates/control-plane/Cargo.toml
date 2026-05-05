@@ -1,3 +1,10 @@
+# Standalone workspace — control-plane is intentionally NOT a member of the
+# top-level Cargo workspace (its sqlx-postgres feature conflicts with
+# rusqlite's libsqlite3-sys). The empty `[workspace]` table below tells cargo
+# this crate is its own root; without it, cargo walks up to find the parent
+# Cargo.toml and gets confused under git worktrees.
+[workspace]
+
 [package]
 name    = "voice-polish-control-plane"
 version = "0.1.0"

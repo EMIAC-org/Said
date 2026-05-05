@@ -5,47 +5,43 @@
 //!   GET  /v1/auth/me       — current account + license
 
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use axum::{Json, extract::State, http::StatusCode};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{auth::AuthUser, AppState};
+use crate::{AppState, auth::AuthUser};
 
 // ── Request / response types ──────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct AuthBody {
-    pub email:    String,
+    pub email: String,
     pub password: String,
 }
 
 #[derive(Serialize)]
 pub struct AuthResponse {
-    pub token:   Uuid,
+    pub token: Uuid,
     pub account: AccountInfo,
 }
 
 #[derive(Serialize)]
 pub struct AccountInfo {
-    pub id:            Uuid,
-    pub email:         String,
-    pub license_tier:  String,
+    pub id: Uuid,
+    pub email: String,
+    pub license_tier: String,
 }
 
 // ── Signup ────────────────────────────────────────────────────────────────────
 
 pub async fn signup(
     State(state): State<AppState>,
-    Json(body):   Json<AuthBody>,
+    Json(body): Json<AuthBody>,
 ) -> Result<Json<AuthResponse>, (StatusCode, Json<Value>)> {
     let email = body.email.trim().to_lowercase();
     if email.is_empty() || body.password.len() < 8 {
@@ -56,13 +52,11 @@ pub async fn signup(
     }
 
     // Check email uniqueness
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM accounts WHERE email = $1)"
-    )
-    .bind(&email)
-    .fetch_one(&state.db)
-    .await
-    .map_err(db_err)?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE email = $1)")
+        .bind(&email)
+        .fetch_one(&state.db)
+        .await
+        .map_err(db_err)?;
 
     if exists {
         return Err((
@@ -75,12 +69,17 @@ pub async fn signup(
     let salt = SaltString::generate(&mut OsRng);
     let hash = Argon2::default()
         .hash_password(body.password.as_bytes(), &salt)
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "hash failed"}))))?
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "hash failed"})),
+            )
+        })?
         .to_string();
 
     // Insert account
     let account_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO accounts (email, password_hash) VALUES ($1, $2) RETURNING id"
+        "INSERT INTO accounts (email, password_hash) VALUES ($1, $2) RETURNING id",
     )
     .bind(&email)
     .bind(&hash)
@@ -89,13 +88,11 @@ pub async fn signup(
     .map_err(db_err)?;
 
     // Create free license key
-    sqlx::query(
-        "INSERT INTO license_keys (account_id, tier, active) VALUES ($1, 'free', true)"
-    )
-    .bind(account_id)
-    .execute(&state.db)
-    .await
-    .map_err(db_err)?;
+    sqlx::query("INSERT INTO license_keys (account_id, tier, active) VALUES ($1, 'free', true)")
+        .bind(account_id)
+        .execute(&state.db)
+        .await
+        .map_err(db_err)?;
 
     // Create session (30 days)
     let token = issue_session(&state, account_id).await?;
@@ -103,7 +100,7 @@ pub async fn signup(
     Ok(Json(AuthResponse {
         token,
         account: AccountInfo {
-            id:           account_id,
+            id: account_id,
             email,
             license_tier: "free".into(),
         },
@@ -114,29 +111,40 @@ pub async fn signup(
 
 pub async fn login(
     State(state): State<AppState>,
-    Json(body):   Json<AuthBody>,
+    Json(body): Json<AuthBody>,
 ) -> Result<Json<AuthResponse>, (StatusCode, Json<Value>)> {
     let email = body.email.trim().to_lowercase();
 
-    let row: Option<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, password_hash FROM accounts WHERE email = $1"
-    )
-    .bind(&email)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(db_err)?;
+    let row: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT id, password_hash FROM accounts WHERE email = $1")
+            .bind(&email)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(db_err)?;
 
     let (account_id, hash) = row.ok_or_else(|| {
         // Constant-time failure (don't leak account existence)
-        (StatusCode::UNAUTHORIZED, Json(json!({"error": "invalid credentials"})))
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "invalid credentials"})),
+        )
     })?;
 
-    let parsed = PasswordHash::new(&hash)
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "hash parse failed"}))))?;
+    let parsed = PasswordHash::new(&hash).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "hash parse failed"})),
+        )
+    })?;
 
     Argon2::default()
         .verify_password(body.password.as_bytes(), &parsed)
-        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(json!({"error": "invalid credentials"}))))?;
+        .map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "invalid credentials"})),
+            )
+        })?;
 
     let token = issue_session(&state, account_id).await?;
 
@@ -144,7 +152,7 @@ pub async fn login(
     let tier: String = sqlx::query_scalar(
         "SELECT tier FROM license_keys
           WHERE account_id = $1 AND active = true
-          ORDER BY created_at DESC LIMIT 1"
+          ORDER BY created_at DESC LIMIT 1",
     )
     .bind(account_id)
     .fetch_optional(&state.db)
@@ -154,7 +162,11 @@ pub async fn login(
 
     Ok(Json(AuthResponse {
         token,
-        account: AccountInfo { id: account_id, email, license_tier: tier },
+        account: AccountInfo {
+            id: account_id,
+            email,
+            license_tier: tier,
+        },
     }))
 }
 
@@ -162,7 +174,7 @@ pub async fn login(
 
 pub async fn logout(
     State(state): State<AppState>,
-    user:         AuthUser,
+    user: AuthUser,
 ) -> Result<StatusCode, (StatusCode, Json<Value>)> {
     // Delete all sessions for this account (single-device in v1)
     sqlx::query("DELETE FROM sessions WHERE account_id = $1")
@@ -178,12 +190,12 @@ pub async fn logout(
 
 pub async fn me(
     State(state): State<AppState>,
-    user:         AuthUser,
+    user: AuthUser,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let tier: String = sqlx::query_scalar(
         "SELECT tier FROM license_keys
           WHERE account_id = $1 AND active = true
-          ORDER BY created_at DESC LIMIT 1"
+          ORDER BY created_at DESC LIMIT 1",
     )
     .bind(user.account_id)
     .fetch_optional(&state.db)
@@ -209,13 +221,13 @@ pub async fn me(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async fn issue_session(
-    state:      &AppState,
+    state: &AppState,
     account_id: Uuid,
 ) -> Result<Uuid, (StatusCode, Json<Value>)> {
     let expires_at = Utc::now() + Duration::days(30);
     let token: Uuid = sqlx::query_scalar(
         "INSERT INTO sessions (account_id, expires_at)
-         VALUES ($1, $2) RETURNING token"
+         VALUES ($1, $2) RETURNING token",
     )
     .bind(account_id)
     .bind(expires_at)
@@ -226,7 +238,10 @@ async fn issue_session(
 }
 
 fn db_err(_e: sqlx::Error) -> (StatusCode, Json<Value>) {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "database error"})))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error": "database error"})),
+    )
 }
 
 /// Return the feature set for a given tier.
