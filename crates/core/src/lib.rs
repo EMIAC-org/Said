@@ -1,5 +1,3 @@
-use std::sync::atomic::AtomicUsize;
-
 use serde::{Deserialize, Serialize};
 
 pub mod deepgram;
@@ -25,8 +23,6 @@ pub const MODES: &[Mode] = &[Mode {
     model: "gpt-5.4-mini",
     icon: "fast",
 }];
-
-static MODE_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 pub fn current_mode() -> &'static Mode {
     &MODES[0]

@@ -586,7 +586,11 @@ async fn await_transcript_or_batch(
         }
     }
 
-    let dg = deepgram::transcribe(&ctx.http, deepgram_key, wav, &cfg.language, &[]).await?;
+    let bias = voice_polish_core::deepgram::BiasPackage {
+        stt_mode: voice_polish_core::deepgram::resolve_stt_mode(&cfg.language),
+        ..Default::default()
+    };
+    let dg = deepgram::transcribe(&ctx.http, deepgram_key, wav, &bias).await?;
     Ok(dg.transcript)
 }
 

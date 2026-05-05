@@ -15,6 +15,9 @@ path = "src/lib.rs"
 name = "polish-backend"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 axum               = { version = "0.7", features = ["multipart"] }
 async-stream       = "0.3"

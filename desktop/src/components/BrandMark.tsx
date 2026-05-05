@@ -1,5 +1,3 @@
-import React from "react";
-
 /**
  * The Said brand mark — mint-green rounded tile with double curly-quote
  * glyphs and a voice baseline wave. Single source of truth used by the

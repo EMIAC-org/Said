@@ -27,7 +27,6 @@ import {
   sendNotification,
   cloudLogin,
   cloudSignup,
-  getCloudStatus,
   getOpenAIStatus,
   initiateOpenAIOAuth,
   requestInputMonitoring,

@@ -1063,11 +1063,12 @@ export function SettingsView({
           {/* Provider option list */}
           {([
             {
-              id:    "gateway",
-              icon:  <Wifi size={15} />,
-              label: "Gateway",
-              desc:  "gpt-5.4-mini via gateway.voicepolish.app — no key needed",
-              badge: "Default",
+              id:       "gateway",
+              icon:     <Wifi size={15} />,
+              label:    "Gateway",
+              desc:     "gpt-5.4-mini via gateway.voicepolish.app — no key needed",
+              badge:    "Default",
+              needsKey: false,
             },
             {
               id:    "groq",

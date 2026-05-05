@@ -25,6 +25,7 @@ struct CFRange {
 
 // ── FFI ───────────────────────────────────────────────────────────────────────
 
+#[allow(clippy::duplicated_attributes)] // both `#[link]`s share kind="framework" intentionally
 #[link(name = "CoreFoundation", kind = "framework")]
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -248,10 +249,7 @@ unsafe fn find_text_in_children(el: *const c_void, depth: usize) -> Option<Strin
         }
     }
 
-    let children_cf = unsafe { ax_get(el, "AXChildren") };
-    let Some(children) = children_cf else {
-        return None;
-    };
+    let children = unsafe { ax_get(el, "AXChildren") }?;
 
     let n = unsafe { CFArrayGetCount(children as *const _) };
     for i in 0..n {

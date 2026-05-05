@@ -16,7 +16,7 @@ const config: Config = {
       fontFamily: {
         sans: fontFamily.sans as unknown as string[],
       },
-      fontSize: fontSize as NonNullable<Config['theme']>['fontSize'],
+      fontSize: fontSize as unknown as NonNullable<Config['theme']>['fontSize'],
       spacing: {
         'token-xs': spacing.xs,
         'token-sm': spacing.sm,
