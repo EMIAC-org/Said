@@ -102,7 +102,7 @@ export function OnboardingFlow({
     {
       id: "input",
       label: "Input Monitoring",
-      description: "Listen for Caps Lock and global shortcuts.",
+      description: "Listen for the recording hotkey and global shortcuts.",
       granted: inputMonitoringGranted,
       required: true,
       icon: <Key size={16} />,

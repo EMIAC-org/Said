@@ -7,6 +7,7 @@
 pub enum RecordHotkey {
     CapsLock,
     RightOption,
+    Function,
 }
 
 #[cfg(target_os = "macos")]
@@ -47,6 +48,8 @@ mod imp {
         pub const K_CG_FLAG_ALT:       u64 = 0x0008_0000;
         /// kCGEventFlagMaskCommand
         pub const K_CG_FLAG_COMMAND:   u64 = 0x0010_0000;
+        /// kCGEventFlagMaskSecondaryFn — Fn / Globe key
+        pub const K_CG_FLAG_SECONDARY_FN: u64 = 0x0080_0000;
         /// Device-dependent left/right option bits from IOLLEvent.h
         pub const NX_DEVICELALTKEYMASK: u64 = 0x0000_0020;
         pub const NX_DEVICERALTKEYMASK: u64 = 0x0000_0040;
@@ -73,6 +76,7 @@ mod imp {
         pub const KC_Z:         i64 = 6;   // Cmd+Z = undo
         pub const KC_LEFT_OPTION: i64 = 58;
         pub const KC_RIGHT_OPTION: i64 = 61;
+        pub const KC_FUNCTION: i64 = 63;
 
         unsafe extern "C" {
             pub fn CGEventTapCreate(
@@ -180,6 +184,7 @@ mod imp {
     fn current_record_hotkey() -> RecordHotkey {
         match RECORD_HOTKEY.load(Ordering::Relaxed) {
             1 => RecordHotkey::RightOption,
+            2 => RecordHotkey::Function,
             _ => RecordHotkey::CapsLock,
         }
     }
@@ -188,6 +193,7 @@ mod imp {
         let encoded = match hotkey {
             RecordHotkey::CapsLock => 0,
             RecordHotkey::RightOption => 1,
+            RecordHotkey::Function => 2,
         };
         RECORD_HOTKEY.store(encoded, Ordering::Relaxed);
         tracing::info!("[hotkey] record hotkey set to {:?}", hotkey);
@@ -566,6 +572,20 @@ mod imp {
                             } else if !right_alt_on && s.is_down {
                                 s.is_down = false;
                                 tracing::info!("[hotkey] Right Option released → process");
+                                (s.on_release)();
+                            }
+                        }
+                    }
+                    RecordHotkey::Function => {
+                        let fn_on = (flags & ffi::K_CG_FLAG_SECONDARY_FN) != 0;
+                        if keycode == ffi::KC_FUNCTION {
+                            if fn_on && !s.is_down {
+                                s.is_down = true;
+                                tracing::info!("[hotkey] Fn held → start recording");
+                                (s.on_press)();
+                            } else if !fn_on && s.is_down {
+                                s.is_down = false;
+                                tracing::info!("[hotkey] Fn released → process");
                                 (s.on_release)();
                             }
                         }

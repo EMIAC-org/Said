@@ -680,6 +680,7 @@ fn now_ms() -> i64 {
 fn parse_record_hotkey(raw: &str) -> hotkey::RecordHotkey {
     match raw {
         "right_option" => hotkey::RecordHotkey::RightOption,
+        "fn" => hotkey::RecordHotkey::Function,
         _ => hotkey::RecordHotkey::CapsLock,
     }
 }

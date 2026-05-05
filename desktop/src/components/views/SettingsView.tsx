@@ -192,7 +192,10 @@ export function SettingsView({
   const [debugCopied,  setDebugCopied]  = useState<"combined" | "desktop" | "backend" | null>(null);
   const [debugTab,     setDebugTab]     = useState<"combined" | "desktop" | "backend">("combined");
   const recordHotkey = prefs?.record_hotkey ?? "caps_lock";
-  const recordHotkeyLabel = recordHotkey === "right_option" ? "Right Option" : "Caps Lock";
+  const recordHotkeyLabel =
+    recordHotkey === "right_option" ? "Right Option" :
+    recordHotkey === "fn" ? "Fn" :
+    "Caps Lock";
 
   useEffect(() => {
     let alive = true;
@@ -617,6 +620,7 @@ export function SettingsView({
               {([
                 { key: "caps_lock", label: "Caps Lock" },
                 { key: "right_option", label: "Right Option" },
+                { key: "fn", label: "Fn" },
               ] as const).map((opt) => {
                 const isActive = recordHotkey === opt.key;
                 return (
