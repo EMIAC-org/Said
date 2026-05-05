@@ -3362,11 +3362,11 @@ fn main() {
             move |app| {
                 #[cfg(target_os = "macos")]
                 {
-                    // Keep Said visible as a normal macOS app so it appears in
-                    // Dock, Cmd-Tab, and Force Quit. The floating HUD is tuned
-                    // separately as a taskbar-skipped all-Spaces utility window.
-                    app.set_activation_policy(tauri::ActivationPolicy::Regular);
-                    tracing::info!("[main] macOS activation policy set to Regular");
+                    // Accessory policy keeps the recorder HUD available across
+                    // macOS Spaces/fullscreen desktops. A regular foreground
+                    // app made the HUD Space-bound on this Tauri/WebKit stack.
+                    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    tracing::info!("[main] macOS activation policy set to Accessory");
                 }
 
                 // ── Spawn backend daemon ──────────────────────────────────────
