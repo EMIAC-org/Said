@@ -29,7 +29,7 @@ BUNDLE_DIR="$REPO_ROOT/target/$TARGET/release/bundle"
 APP_PATH="$BUNDLE_DIR/macos/Said.app"
 SIDECAR_SRC="$REPO_ROOT/target/$TARGET/release/said-backend"
 SIDECAR_DEST="$TAURI_DIR/binaries/said-backend-$TARGET"
-BUNDLE_ID="com.voicepolish.desktop"
+BUNDLE_ID="com.emiac.said.desktop"
 
 # Read the workspace version from Cargo.toml. Single source of truth — bumped
 # via scripts/bump-version.sh, never hand-edited here.
