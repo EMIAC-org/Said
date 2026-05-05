@@ -129,8 +129,7 @@ async fn main() {
             interval.tick().await; // skip immediate startup run
             loop {
                 interval.tick().await;
-                said_backend::stt::background::run_pending_alias_reviews(state2.clone(), 12)
-                    .await;
+                said_backend::stt::background::run_pending_alias_reviews(state2.clone(), 12).await;
             }
         });
     }

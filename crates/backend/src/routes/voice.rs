@@ -24,6 +24,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
 };
+use said_core::deepgram::{BiasPackage, TranscriptMeta};
 use serde::Deserialize;
 use serde_json::json;
 use std::convert::Infallible;
@@ -31,7 +32,6 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
-use said_core::deepgram::{BiasPackage, TranscriptMeta};
 
 // ── Audio file helpers ────────────────────────────────────────────────────────
 

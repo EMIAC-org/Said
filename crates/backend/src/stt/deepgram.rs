@@ -4,9 +4,9 @@
 //! API docs: https://developers.deepgram.com/reference/listen-file
 
 use reqwest::Client;
+use said_core::deepgram::{BiasPackage, TranscriptMeta, build_batch_url};
 use serde::Deserialize;
 use tracing::{debug, info, warn};
-use said_core::deepgram::{BiasPackage, TranscriptMeta, build_batch_url};
 
 const DEEPGRAM_URL: &str = "https://api.deepgram.com/v1/listen";
 
@@ -89,9 +89,7 @@ pub async fn transcribe(
     if !bias.keyterms.is_empty() || !bias.replacements.is_empty() {
         debug!(
             "[stt] biasing Deepgram with {} keyterm(s), {} replacement(s)",
-            bias.keyterms
-                .len()
-                .min(said_core::deepgram::MAX_KEYTERMS),
+            bias.keyterms.len().min(said_core::deepgram::MAX_KEYTERMS),
             bias.replacements
                 .len()
                 .min(said_core::deepgram::MAX_REPLACEMENTS),
@@ -220,9 +218,7 @@ fn enrich_words(words: &[DGWord]) -> (String, usize, f64, usize, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::DEEPGRAM_URL;
-    use said_core::deepgram::{
-        BiasPackage, ReplacementRule, build_batch_url, resolve_stt_mode,
-    };
+    use said_core::deepgram::{BiasPackage, ReplacementRule, build_batch_url, resolve_stt_mode};
 
     #[test]
     fn auto_maps_to_multi_for_batch() {
