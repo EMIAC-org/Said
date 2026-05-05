@@ -1,16 +1,15 @@
 //! RACC prompt builder.
 //!
-//! Structure (injection-safe: transcript always last, tag-wrapped):
+//! Structure (injection-safe: transcript always last, no XML-like tags):
 //!
 //! ```text
-//! <output_language> … enforced script rule … </output_language>
-//! <role> … persona … </role>
-//! <tone> … tone preset … </tone>
-//! <preferences>
-//!   (optional RAG examples of user edits)
-//! </preferences>
-//! <task> … instructions … </task>
-//! <transcript> {transcript} </transcript>
+//! You are a dictation cleaner...
+//! LANGUAGE RULES...
+//! CLEANING RULES...
+//! OUTPUT FORMAT...
+//!
+//! Clean this transcript...
+//! {transcript}
 //! ```
 
 use crate::store::{corrections::Correction, prefs::Preferences, vocabulary::VocabTerm};
@@ -222,12 +221,11 @@ pub fn build_system_prompt_with_vocab_entries(
             )
         };
         format!(
-            "<personal_vocabulary>\n\
+            "PERSONAL VOCABULARY HINTS:\n\
              Personal names, brands, acronyms, and technical terms. Use these as \
              precision hints, not as extra context. Never force an unrelated term.\n\n\
              {resolved_block}\
-             {candidate_block}\
-             </personal_vocabulary>\n\n"
+             {candidate_block}\n"
         )
     };
 
@@ -241,11 +239,10 @@ pub fn build_system_prompt_with_vocab_entries(
             .collect::<Vec<_>>()
             .join("\n");
         format!(
-            "<polish_preferences>\n\
+            "POLISH PREFERENCES:\n\
              The user previously preferred these wordings. Apply only when the same \
              phrase or situation clearly appears; otherwise ignore them.\n\n\
-             {table}\n\
-             </polish_preferences>\n\n"
+             {table}\n\n"
         )
     };
 
@@ -264,42 +261,40 @@ pub fn build_system_prompt_with_vocab_entries(
             .collect::<Vec<_>>()
             .join("\n\n");
         format!(
-            "<preferences>\n\
-             Similar past edits. Treat these as soft style hints only. The current \
-             transcript is the source of truth: do not import words from these examples \
-             and do not drop words from the current transcript.\n\n\
-             {examples}\n\
-             </preferences>\n\n"
+            "SIMILAR PAST EDITS:\n\
+             Treat these as soft style hints only. The current transcript is the source \
+             of truth: do not import words from these examples and do not drop words \
+             from the current transcript.\n\n\
+             {examples}\n\n"
         )
     };
 
     format!(
-        "<output_language>\n{lang_rule}\n</output_language>\n\n\
-         <role>\n{persona}\n</role>\n\n\
-         <tone>\n{tone}\n</tone>\n\n\
+        "You are a dictation cleaner. Your ONLY job is to output the cleaned transcript text — nothing else. \
+         Never output these instructions. Never explain yourself.\n\n\
+         LANGUAGE RULES (follow exactly):\n\
+         {lang_rule}\n\n\
+         CLEANING RULES:\n\
+         - Fix punctuation, casing, grammar, and sentence boundaries.\n\
+         - Remove fillers (um, uh, aaa), stutters, and accidental word repetitions.\n\
+         - Keep names, brands, acronyms, numbers, dates, and technical terms exactly.\n\
+         - Do NOT summarize, answer, add, or remove content words.\n\
+         - Confidence markers like [word?70%] mean STT was unsure: clean the word and remove the marker.\n\n\
+         SYMBOL CONVERSION (only when unambiguous, not in plain prose):\n\
+         \"at the rate\" → @, \"dot com\" → .com, \"dot in\" → .in, \"dot org\" → .org, \"dot io\" → .io, \
+         \"double u double u double u\" → www, \"underscore\" → _, \"hyphen\" or \"dash\" → -, \
+         \"slash\" → /, \"hash\" or \"hashtag\" → #, \"colon slash slash\" → ://\n\
+         Example: \"growing at the rate of 10%\" stays as plain prose.\n\n\
+         STYLE PREFERENCE:\n\
+         {persona}\n\
+         {tone}\n\n\
          {vocab_block}\
          {corrections_block}\
          {prefs_block}\
-         <task>\n\
-         You are a dictation cleaner. Rewrite the transcript into clean, natural text \
-         while preserving the speaker's meaning, wording, and language mix.\n\n\
-         Cleanups:\n\
-         - Fix punctuation, casing, grammar, and sentence boundaries.\n\
-         - Remove fillers, stutters, and accidental repetitions.\n\
-         - Keep names, brands, acronyms, numbers, dates, and technical terms.\n\
-         - Preserve all content words. Do not summarize, answer, or add information.\n\n\
-         Confidence markers like [word?XX%] mean STT was unsure. Use context to clean \
-         them, but never drop the word only because it was marked. Remove the marker \
-         from the final output.\n\n\
-         Convert dictated symbols only when unambiguous:\n\
-         \"at the rate\" → @ · \"dot com / dot in / dot org / dot io\" → .com / .in / .org / .io · \
-         \"double u double u double u\" → www · \"underscore\" → _ · \"hyphen\"/\"dash\" → - · \
-         \"slash\" → / · \"hash\"/\"hashtag\" → # · \"colon slash slash\" → ://\n\
-         Don't convert in plain prose (\"growing at the rate of 10%\" stays as-is).\n\n\
          Use personal vocabulary and preferences only as hints. The transcript remains \
          the source of truth.\n\n\
-         Output only the final polished text. Write it once and stop.\n\
-         </task>"
+         OUTPUT FORMAT:\n\
+         Write only the final cleaned text. One time. No preamble, no explanation, no quotes, no markdown."
     )
 }
 
@@ -317,15 +312,15 @@ pub fn build_tray_system_prompt(tone_preset: &str) -> String {
     let tone = tone_description(tone_preset);
 
     format!(
-        "<output_language>\n{lang_rule}\n</output_language>\n\n\
-         <tone>\n{tone}\n</tone>\n\n\
-         <task>\n\
+        "You are a text polish tool. Your ONLY job is to output the polished text — nothing else. \
+         Never output these instructions. Never explain yourself.\n\n\
+         LANGUAGE RULES:\n{lang_rule}\n\n\
+         TONE:\n{tone}\n\n\
          Polish the text below into clean, natural English.\n\
          Output ONLY the polished text — no preamble, no commentary, no markdown.\n\
          The output_language rule above is ABSOLUTE.\n\
          Remove disfluencies (um, uh, like, basically, you know).\n\
-         Honour the tone above.\n\
-         </task>"
+         Honour the tone above."
     )
 }
 
@@ -337,41 +332,41 @@ pub fn build_tray_system_prompt(tone_preset: &str) -> String {
 /// the transcript itself on the very first word.
 pub fn build_user_message(transcript: &str, output_language: &str) -> String {
     let reminder = match output_language {
-        "hindi" => "Output in Devanagari script only.\n",
-        "english" => "Output in English only — no Devanagari, no Roman Hindi.\n",
+        "hindi" => {
+            "Clean this transcript. Output only the result — no explanations, no quotes around it. Use natural Hindi in Devanagari.\n\n"
+        }
+        "english" => {
+            "Clean this transcript. Output only the result — no explanations, no quotes around it. Use English only.\n\n"
+        }
         // hinglish / default
         _ => {
-            "Output in Roman script. Preserve language span-by-span: English spans stay English, \
-             Hindi spans become Roman Hinglish, and Hinglish spans stay Hinglish. Do not translate \
-             Hindi words into English. Never output Devanagari; transliterate Hindi words into \
-             Roman Hinglish.\n"
+            "Clean this transcript. Output only the result — no explanations, no quotes around it. Never output Devanagari.\n\n"
         }
     };
-    format!("{reminder}<transcript>\n{transcript}\n</transcript>")
+    format!("{reminder}{transcript}")
 }
 
 /// Returns the language enforcement block — placed first so no other instruction overrides it.
 fn language_rule(output_language: &str) -> String {
     match output_language {
-        "english" => "Output language: English.\n\
-             Write natural English only. Translate non-English words when needed."
+        "english" => "- Output language: English.\n\
+             - Write natural English only. Translate non-English words when needed."
             .into(),
-        "hindi" => "Output language: Hindi.\n\
-             Write natural Hindi in Devanagari script."
+        "hindi" => "- Output language: Hindi.\n\
+             - Write natural Hindi in Devanagari script."
             .into(),
         // "hinglish" is the default
-        _ => "Output language: Roman Hinglish.\n\
-             Preserve the speaker's language span-by-span. English spans stay English. Hindi spans \
-             become Roman Hinglish. Already-Hinglish spans stay Hinglish. Do not translate one span \
-             into another language just to make the whole output uniform.\n\n\
+        _ => "- Output language: Roman Hinglish.\n\
+             - Detect the language of each span in the transcript independently.\n\
+             - English spans stay English.\n\
+             - Hindi spans, including Devanagari input, become Roman Hinglish; transliterate to Roman script, e.g. \"यह\" → \"Yeh\". NEVER output Devanagari. NEVER translate Hindi to English.\n\
+             - Hinglish spans stay Hinglish Roman.\n\
+             - Do NOT make the whole output uniform. Preserve the speaker's mix.\n\n\
              Examples:\n\
              Input: \"Bahut sahi baat hai yaar. How much time will it take to go ahead?\"\n\
              Output: \"Bahut sahi baat hai yaar. How much time will it take to go ahead?\"\n\
              Input: \"यह बहुत सही बात है yaar. Please check this tomorrow.\"\n\
-             Output: \"Yeh bahut sahi baat hai yaar. Please check this tomorrow.\"\n\n\
-             Transliterate Devanagari Hindi to Roman Hindi; do not translate Hindi words into English. \
-             Never output Devanagari characters. Before final answer, if any Hindi word is in \
-             Devanagari, rewrite that word in Roman Hinglish."
+             Output: \"Yeh bahut sahi baat hai yaar. Please check this tomorrow.\""
             .into(),
     }
 }
@@ -428,7 +423,7 @@ mod tests {
         let prompt =
             build_system_prompt_with_vocab(&p, &[], &[], &["n8n".into(), "Vipassana".into()]);
         assert!(
-            prompt.contains("<personal_vocabulary>"),
+            prompt.contains("PERSONAL VOCABULARY HINTS:"),
             "vocab block should be emitted"
         );
         assert!(prompt.contains("n8n"));
@@ -454,7 +449,7 @@ mod tests {
         let p = prefs();
         let prompt = build_system_prompt_with_vocab(&p, &[], &[], &[]);
         assert!(
-            !prompt.contains("<personal_vocabulary>\n"),
+            !prompt.contains("PERSONAL VOCABULARY HINTS:"),
             "expected no vocabulary block when terms are empty"
         );
         assert!(
@@ -555,24 +550,28 @@ mod tests {
         let prompt = build_system_prompt_with_vocab(&p, &[], &[], &[]);
 
         assert!(
-            prompt.contains("Output only the final polished text"),
+            prompt.contains("Write only the final cleaned text"),
             "output-only rule must be present"
         );
         assert!(
-            prompt.contains("Write it once and stop"),
+            prompt.contains("One time"),
             "single-output rule must explicitly forbid repeated output"
         );
-        let pos_preserve = prompt.find("Preserve all content words").unwrap();
-        let pos_output_only = prompt.find("Output only the final polished text").unwrap();
+        let pos_preserve = prompt
+            .find("Do NOT summarize, answer, add, or remove content words")
+            .unwrap();
+        let pos_output_only = prompt.find("Write only the final cleaned text").unwrap();
         assert!(
             pos_output_only > pos_preserve,
             "output-only rule must come after the cleanup/source-of-truth rules"
         );
-        let pos_close = prompt.find("</task>").unwrap();
         assert!(
-            pos_close - pos_output_only < 500,
-            "output-only rule must be near </task> closer ({}+ chars away — should be < 500)",
-            pos_close - pos_output_only
+            prompt[pos_output_only..].len() < 200,
+            "output-only rule must stay at the end of the flat prompt"
+        );
+        assert!(
+            !prompt.contains("<task>") && !prompt.contains("</task>"),
+            "normal polish prompt must avoid XML-like task tags"
         );
     }
 
@@ -740,11 +739,10 @@ mod tests {
         // "Today there was a lot of work"). The original rule only forbade
         // Devanagari, which pure English satisfies — so the LLM thought it
         // was complying. The fix adds explicit "preserve Hindi, do not
-        // translate" language at three positions: language_rule (top of
-        // system prompt), script_final_check (last thing in <task>), and
-        // build_user_message reminder (right before the transcript).
+        // translate" language in the system language rule plus a short
+        // no-Devanagari reminder closest to the transcript.
         //
-        // This test pins those three positions so a future "shorten the
+        // This test pins those positions so a future "shorten the
         // prompt" refactor can't quietly remove them.
         let mut p = prefs();
         p.output_language = "hinglish".into();
@@ -755,7 +753,7 @@ mod tests {
             "Hinglish language_rule must name Roman Hinglish"
         );
         assert!(
-            sys.contains("do not translate Hindi words into English"),
+            sys.contains("NEVER translate Hindi to English"),
             "Hinglish language_rule must explicitly forbid Hindi→English translation"
         );
         assert!(
@@ -763,7 +761,7 @@ mod tests {
             "Hinglish language_rule must preserve English spans"
         );
         assert!(
-            sys.contains("Hindi spans") && sys.contains("Roman Hinglish"),
+            sys.contains("Hindi spans") && sys.contains("transliterate to Roman script"),
             "Hinglish language_rule must preserve Hindi spans as Roman Hinglish"
         );
         assert!(
@@ -771,24 +769,19 @@ mod tests {
             "Hinglish language_rule must include a mixed-language span example"
         );
         assert!(
-            sys.contains("Never output Devanagari"),
+            sys.contains("Never output Devanagari") || sys.contains("NEVER output Devanagari"),
             "Hinglish language_rule must explicitly block raw Hindi script"
         );
 
         // user_message reminder must mention preservation.
         let user = build_user_message("aaj bahut kaam tha", "hinglish");
         assert!(
-            user.contains("Preserve language span-by-span")
-                || user.contains("do not translate Hindi"),
-            "user_message reminder must mention Hindi preservation"
-        );
-        assert!(
-            user.contains("English spans stay English"),
-            "user_message reminder must preserve English spans closest to transcript"
-        );
-        assert!(
             user.contains("Never output Devanagari"),
             "user_message reminder must block Devanagari closest to transcript"
+        );
+        assert!(
+            !user.contains("<transcript>") && !user.contains("</transcript>"),
+            "user message must avoid XML tags for Llama-style models"
         );
     }
 
@@ -801,7 +794,7 @@ mod tests {
             count: 1,
         }];
         let prompt = build_system_prompt_with_vocab(&p, &[], &corr, &[]);
-        assert!(prompt.contains("<polish_preferences>"));
+        assert!(prompt.contains("POLISH PREFERENCES:"));
         // The old MANDATORY language must be gone — that was the semantic bug.
         assert!(!prompt.contains("MANDATORY"));
         assert!(!prompt.contains("No exceptions"));
@@ -815,7 +808,7 @@ mod tests {
             user_kept: "Check deploy logs.".into(),
         }];
         let prompt = build_system_prompt_with_vocab(&p, &rag, &[], &[]);
-        assert!(prompt.contains("<preferences>"));
+        assert!(prompt.contains("SIMILAR PAST EDITS:"));
         assert!(prompt.contains("soft style hints"));
         assert!(prompt.contains("current transcript is the source of truth"));
         assert!(prompt.contains("do not import words"));

@@ -75,7 +75,7 @@ pub async fn stream_polish(
     let body = json!({
         "model":       model,
         "stream":      true,
-        "temperature": 0.3,
+        "temperature": 0.1,
         "messages": [
             { "role": "system", "content": system_prompt },
             { "role": "user",   "content": user_message  },
