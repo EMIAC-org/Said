@@ -19,7 +19,7 @@ export function SpeedSection() {
             href="/download"
             className="inline-flex items-center justify-center rounded-full bg-[#eef0f3] px-7 py-3 text-[15px] font-medium text-text transition hover:bg-[#e4e7ec] active:bg-[#dde0e6]"
           >
-            Write faster with Aqua
+            Write faster with Said
           </a>
         </div>
 
@@ -42,7 +42,7 @@ function Comparison() {
 
         <ComparisonColumn
           icon={<WaveformIcon />}
-          label="Using Aqua 3.1"
+          label="Using Said 3.1"
           wpm="230"
           side="left"
         >

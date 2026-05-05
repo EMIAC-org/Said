@@ -10,7 +10,7 @@ export function Hero() {
         </h1>
 
         <p className="mt-8 max-w-[560px] text-[18px] leading-[1.55] text-text/85 md:text-[22px] md:leading-[1.5]">
-          Aqua turns your voice into clear text in real time,
+          Said turns your voice into clear text in real time,
           <br />
           for everything from AI prompts to essays.
           <span

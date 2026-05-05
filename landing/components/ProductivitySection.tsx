@@ -38,7 +38,7 @@ const SLIDES: Slide[] = [
     id: 'imessage',
     title: 'Your voice, in the right style',
     description:
-      'Skip the awkward. Aqua shifts your writing style to match the context — professional for work, casual for friends.',
+      'Skip the awkward. Said shifts your writing style to match the context — professional for work, casual for friends.',
     visual: <SlideIMessage />,
     designedFor: [
       { name: 'iMessage', mark: <IMessageMark /> },
@@ -94,7 +94,7 @@ export function ProductivitySection() {
               Faster updates. Less effort.
             </h2>
             <p className="mt-3 max-w-[520px] text-[14px] leading-[1.5] text-muted md:text-[15px]">
-              Speak your updates, and Aqua turns them into polished messages,
+              Speak your updates, and Said turns them into polished messages,
               summaries, and replies across all your favorite tools.
             </p>
           </div>

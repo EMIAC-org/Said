@@ -9,7 +9,7 @@ export function SpeakSection() {
         </h2>
 
         <p className="mx-auto mt-6 max-w-[560px] text-[18px] leading-[1.55] text-text/80 md:text-[20px]">
-          Speak naturally, and let Aqua&rsquo;s AI refine your words as you talk.
+          Speak naturally, and let Said&rsquo;s AI refine your words as you talk.
           <br />
           Fast, accurate, and works with every app.
         </p>

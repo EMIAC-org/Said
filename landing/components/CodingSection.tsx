@@ -101,7 +101,7 @@ export function CodingSection() {
               Prompt faster with your voice
             </h2>
             <p className="mt-3 max-w-[520px] text-[14px] leading-[1.5] text-white/55 md:text-[15px]">
-              Speak your ideas into existence with ease. Aqua understands
+              Speak your ideas into existence with ease. Said understands
               syntax, libraries, and frameworks as you speak.
             </p>
           </div>

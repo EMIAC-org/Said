@@ -1,5 +1,5 @@
 /**
- * Centralized design tokens — the single source of truth for the Aqua landing page.
+ * Centralized design tokens — the single source of truth for the Said landing page.
  * Tailwind config and runtime code both consume these values.
  */
 
