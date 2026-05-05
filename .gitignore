@@ -1,5 +1,10 @@
 # Secrets
 .env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
 
 # Rust
 /target

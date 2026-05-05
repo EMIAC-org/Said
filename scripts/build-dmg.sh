@@ -80,6 +80,17 @@ step "Re-sign deep (ad-hoc) and verify"
 
 [ -d "$APP_PATH" ] || fail ".app not found at $APP_PATH"
 
+# Copy local-only runtime secrets into this build when a root .env exists.
+# .env is gitignored; the copy lands under target/ and is included only in the
+# locally produced app/DMG.
+if [ -f "$REPO_ROOT/.env" ]; then
+  cp "$REPO_ROOT/.env" "$APP_PATH/Contents/MacOS/.env"
+  chmod 600 "$APP_PATH/Contents/MacOS/.env"
+  ok "embedded local .env into app bundle"
+else
+  warn "no root .env found; packaged app will rely on external runtime env"
+fi
+
 # Strip quarantine so future user-side `xattr -dr com.apple.quarantine` is
 # unnecessary for local testing.
 xattr -cr "$APP_PATH" 2>/dev/null || true

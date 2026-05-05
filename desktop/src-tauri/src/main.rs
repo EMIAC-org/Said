@@ -42,48 +42,46 @@ fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
         return;
     }
 
-    // Match a global HUD-style utility window: available on every Space,
-    // allowed over fullscreen apps, stationary during Space transitions, and
-    // kept out of Cmd-` window cycling. Tauri's visible_on_all_workspaces only
-    // sets CanJoinAllSpaces, which is not enough for the three-finger Spaces
-    // swipe behavior users expect from always-hovering status pills.
+    // Match VoiceInk's recorder HUD window behavior as closely as Tauri's
+    // NSWindow allows: a non-activating floating panel, available on every
+    // Space, allowed over fullscreen apps, stationary during Space transitions,
+    // and kept out of Cmd-` window cycling.
     const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
-    const MANAGED: usize = 1 << 2;
-    const TRANSIENT: usize = 1 << 3;
     const STATIONARY: usize = 1 << 4;
     const IGNORES_CYCLE: usize = 1 << 6;
-    const FULL_SCREEN_PRIMARY: usize = 1 << 7;
     const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
-    const FULL_SCREEN_NONE: usize = 1 << 9;
-    const PRIMARY: usize = 1 << 16;
-    const AUXILIARY: usize = 1 << 17;
-    const CAN_JOIN_ALL_APPLICATIONS: usize = 1 << 18;
-    const NS_STATUS_WINDOW_LEVEL: isize = 25;
+    const NONACTIVATING_PANEL_STYLE: usize = 1 << 7;
+    const FULL_SIZE_CONTENT_VIEW_STYLE: usize = 1 << 15;
+    const NS_STATUS_WINDOW_LEVEL_PLUS_THREE: isize = 28;
 
     unsafe {
         let ns_window = &*(ns_window as *mut Object);
-        let current: usize = ns_window
-            .send_message(Sel::register("collectionBehavior"), ())
+        let style_mask: usize = ns_window
+            .send_message(Sel::register("styleMask"), ())
             .unwrap_or(0);
-        let behavior = (current
-            & !(MANAGED
-                | TRANSIENT
-                | FULL_SCREEN_PRIMARY
-                | FULL_SCREEN_NONE
-                | PRIMARY
-                | AUXILIARY))
-            | CAN_JOIN_ALL_SPACES
-            | STATIONARY
-            | IGNORES_CYCLE
-            | FULL_SCREEN_AUXILIARY
-            | CAN_JOIN_ALL_APPLICATIONS;
+        let panel_style = style_mask | NONACTIVATING_PANEL_STYLE | FULL_SIZE_CONTENT_VIEW_STYLE;
+        let _: Result<(), _> =
+            ns_window.send_message(Sel::register("setStyleMask:"), (panel_style,));
+
+        let behavior = CAN_JOIN_ALL_SPACES | STATIONARY | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY;
         let _: Result<(), _> =
             ns_window.send_message(Sel::register("setCollectionBehavior:"), (behavior,));
         let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setLevel:"), (NS_STATUS_WINDOW_LEVEL,));
+            ns_window.send_message(Sel::register("setLevel:"), (NS_STATUS_WINDOW_LEVEL_PLUS_THREE,));
+        let _: Result<(), _> = ns_window.send_message(Sel::register("setCanHide:"), (false,));
+        let _: Result<(), _> = ns_window.send_message(Sel::register("setIgnoresMouseEvents:"), (false,));
+        for (selector_name, value) in [("setHidesOnDeactivate:", false), ("setFloatingPanel:", true)] {
+            let selector = Sel::register(selector_name);
+            let responds: bool = ns_window
+                .send_message(Sel::register("respondsToSelector:"), (selector,))
+                .unwrap_or(false);
+            if responds {
+                let _: Result<(), _> = ns_window.send_message(selector, (value,));
+            }
+        }
         let _: Result<(), _> = ns_window.send_message(Sel::register("orderFrontRegardless"), ());
         tracing::info!(
-            "[status-bar] macOS tuned behavior={behavior:#x} level={NS_STATUS_WINDOW_LEVEL}"
+            "[status-bar] macOS tuned style={panel_style:#x} behavior={behavior:#x} level={NS_STATUS_WINDOW_LEVEL_PLUS_THREE}"
         );
     }
 }
@@ -801,12 +799,12 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
         Ok(_) => tracing::info!("[status-bar] set_visible_on_all_workspaces ok"),
         Err(e) => tracing::warn!("[status-bar] set_visible_on_all_workspaces failed: {e}"),
     }
-    #[cfg(target_os = "macos")]
-    schedule_status_bar_macos_tune(&win);
     match win.show() {
         Ok(_) => tracing::info!("[status-bar] show ok for state={state}"),
         Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
     }
+    #[cfg(target_os = "macos")]
+    schedule_status_bar_macos_tune(&win);
 }
 
 /// Re-render the tray icon title + menu from the cached prefs (no async needed).
@@ -1506,17 +1504,25 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                     *pw_arc2.lock().await = Some(pw);
                     tracing::info!("[dg_stream] next WS pre-warmed and ready");
 
-                    // ── Keepalive heartbeat ─────────────────────────────────────
-                    // Deepgram kills idle connections after ~10s. Send KeepAlive
-                    // every 7s to hold this pre-warm alive until the next recording
-                    // takes it. Stops when the Mutex is empty (recording consumed
-                    // it) or on any send error (connection died).
+                    // ── Short keepalive heartbeat ───────────────────────────────
+                    // Keep the next socket fresh for back-to-back recordings, then
+                    // drop it. Holding it forever creates background WS work while
+                    // stream_to_deepgram would reject the stale socket anyway.
                     let pw_ka = Arc::clone(&pw_arc2);
                     tauri::async_runtime::spawn(async move {
                         loop {
                             tokio::time::sleep(std::time::Duration::from_secs(7)).await;
                             let mut guard = pw_ka.lock().await;
                             let Some(pw) = guard.as_mut() else { break };
+                            let age = pw.created_at.elapsed();
+                            if age > dg_stream::PREWARM_MAX_AGE {
+                                tracing::debug!(
+                                    "[dg_stream] pre-warm expired after {}ms — dropping idle WS",
+                                    age.as_millis()
+                                );
+                                *guard = None;
+                                break;
+                            }
                             use futures::SinkExt;
                             let ka = tokio_tungstenite::tungstenite::Message::Text(
                                 r#"{"type":"KeepAlive"}"#.into(),
@@ -2486,8 +2492,10 @@ fn get_debug_logs() -> DebugLogs {
 
 const EDIT_WATCH_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 const EDIT_WATCH_MAX_DURATION: Duration = Duration::from_secs(30);
-const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(30);
-const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
+// AX reads can be expensive in Electron/Chromium apps, so keep this responsive
+// without polling at frame-rate cadence.
+const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(150);
+const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(500);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
 
 async fn blocking_ax_option<T, F>(label: &'static str, f: F) -> Option<T>
@@ -3354,12 +3362,11 @@ fn main() {
             move |app| {
                 #[cfg(target_os = "macos")]
                 {
-                    // Tauri/macOS currently keeps normal app windows tied to
-                    // fullscreen Spaces more strongly than menu-bar accessory
-                    // apps. Accessory policy is the reliable path for a global
-                    // HUD-style status pill that floats over other apps.
-                    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                    tracing::info!("[status-bar] macOS activation policy set to Accessory");
+                    // Keep Said visible as a normal macOS app so it appears in
+                    // Dock, Cmd-Tab, and Force Quit. The floating HUD is tuned
+                    // separately as a taskbar-skipped all-Spaces utility window.
+                    app.set_activation_policy(tauri::ActivationPolicy::Regular);
+                    tracing::info!("[main] macOS activation policy set to Regular");
                 }
 
                 // ── Spawn backend daemon ──────────────────────────────────────

@@ -39,9 +39,9 @@ pub struct StreamingTranscript {
     pub meta: TranscriptMeta,
 }
 
-/// Deepgram closes idle sockets after ~10s with no audio or KeepAlive.
-/// Discard pre-warms older than this to avoid handing a dead socket to streaming.
-const PREWARM_MAX_AGE: Duration = Duration::from_secs(8);
+/// Keep pre-warms short-lived. Beyond this, the speed win is unlikely and the
+/// background socket becomes idle work that can make the app feel sticky.
+pub const PREWARM_MAX_AGE: Duration = Duration::from_secs(15);
 
 /// Open a fresh Deepgram WebSocket connection and return it ready for audio.
 /// Called both for cold-start and for pre-warming the next recording's connection.
