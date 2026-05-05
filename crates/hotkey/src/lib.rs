@@ -264,6 +264,10 @@ mod imp {
     /// Debounce: epoch-ms of last live permission check.
     static LAST_IM_CHECK_MS: AtomicU64 = AtomicU64::new(0);
 
+    /// Last authoritative Input Monitoring result. Debounced snapshot reads
+    /// must return this instead of manufacturing a temporary denial.
+    static LAST_IM_GRANTED: AtomicBool = AtomicBool::new(false);
+
     /// Returns true if Input Monitoring TCC permission is granted.
     ///
     /// Uses `CGPreflightListenEventAccess()` — the authoritative macOS 10.15+ API.
@@ -286,12 +290,15 @@ mod imp {
             .unwrap_or_default()
             .as_millis() as u64;
         let last = LAST_IM_CHECK_MS.load(Ordering::Relaxed);
-        if now_ms.saturating_sub(last) < 2_000 { return false; }
+        if now_ms.saturating_sub(last) < 2_000 {
+            return LAST_IM_GRANTED.load(Ordering::Relaxed);
+        }
         LAST_IM_CHECK_MS.store(now_ms, Ordering::Relaxed);
 
         // CGPreflightListenEventAccess() is the correct TCC API — no tap created,
         // no false positives, works on macOS 10.15+.
         let granted = unsafe { ffi::CGPreflightListenEventAccess() };
+        LAST_IM_GRANTED.store(granted, Ordering::Relaxed);
         if !granted { return false; }
 
         // Permission IS granted.  But only restart the listener if
@@ -303,6 +310,7 @@ mod imp {
             // start_hold_listener was called earlier but its tap creation failed.
             // Now permission is granted — spawn a new tap.
             TAP_CREATED.store(true, Ordering::Relaxed);
+            LAST_IM_GRANTED.store(true, Ordering::Relaxed);
             tracing::info!("[hotkey] Input Monitoring newly granted — restarting hold listener");
 
             let (on_press, on_release) = HOLD_CALLBACKS.get().unwrap();
