@@ -27,7 +27,9 @@ use crate::{
         gateway, gemini_direct, groq, openai_codex,
         prompt::{
             VocabEntry, build_system_prompt_with_vocab_entries, build_tray_system_prompt,
-            build_user_message, resolved_vocab_terms_to_entries, vocab_terms_to_entries,
+            build_user_message, build_refine_last_transform_prompt,
+            build_refine_last_transform_user_message, resolved_vocab_terms_to_entries,
+            vocab_terms_to_entries,
         },
         script, vocab_resolver,
     },
@@ -46,6 +48,13 @@ pub struct TextPolishBody {
     /// When set (by tray "Polish my message"), overrides the user's stored tone_preset
     /// and forces English output — the preset label already encodes the output language.
     pub tone_override: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct TextRefineBody {
+    pub source_text: String,
+    pub previous_output: String,
+    pub tone: Option<String>,
 }
 
 fn invalidate_openai_session_on_auth_error(
@@ -324,9 +333,14 @@ pub async fn polish(
         yield Ok(Event::default().event("done").data(
             json!({
                 "recording_id": recording_id,
+                "transcript":   resolved_transcript,
                 "polished":     llm_result.polished,
                 "model_used":   model,  // resolved string e.g. "gpt-5.4"
                 "confidence":   null,
+                "audio_id":     null,
+                "source":       "text",
+                "target_app":   target_app,
+                "output_language": if tone_override.is_some() { "english" } else { &prefs.output_language },
                 "latency_ms": {
                     "transcribe": 0,
                     "embed":      embed_ms,
@@ -343,6 +357,178 @@ pub async fn polish(
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+pub async fn refine_last(
+    State(state): State<AppState>,
+    Json(body): Json<TextRefineBody>,
+) -> impl IntoResponse {
+    if body.source_text.trim().is_empty() || body.previous_output.trim().is_empty() {
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    }
+
+    let user_id = state.default_user_id.as_str().to_string();
+    let pool = state.pool.clone();
+    let prefs_opt = crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id).await;
+    let http_client = state.http_client.clone();
+    let source_text = body.source_text.clone();
+    let previous_output = body.previous_output.clone();
+    let tone_override = body.tone.clone();
+
+    let stream = async_stream::stream! {
+        let total_start = Instant::now();
+        let prefs = match prefs_opt {
+            Some(p) => p,
+            None => {
+                yield Ok::<Event, Infallible>(Event::default().event("error")
+                    .data(json!({"message": "preferences not found"}).to_string()));
+                return;
+            }
+        };
+
+        let tone = tone_override
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| prefs.tone_preset.clone());
+        let system_prompt = build_refine_last_transform_prompt(&tone);
+        let user_message = build_refine_last_transform_user_message(&source_text, &previous_output);
+
+        yield Ok(Event::default().event("status")
+            .data(json!({"phase": "polishing", "transcript": source_text}).to_string()));
+
+        let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
+        let gateway_key = prefs.gateway_api_key.clone()
+            .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
+            .or_else(|| { let k = voice_polish_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
+            .unwrap_or_default();
+        let gemini_key_text = prefs.gemini_api_key.clone()
+            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+            .unwrap_or_default();
+        let groq_key_text = prefs.groq_api_key.clone()
+            .or_else(|| std::env::var("GROQ_API_KEY").ok())
+            .unwrap_or_default();
+
+        let llm_provider = prefs.llm_provider.clone();
+        let llm_provider_for_task = llm_provider.clone();
+        let model = voice_polish_core::resolve_model(&prefs.selected_model).to_string();
+        let sys_p = system_prompt.clone();
+        let usr_m = user_message.clone();
+        let client_c = http_client.clone();
+        let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
+            let tok = openai_oauth::get_token(&pool, &user_id);
+            let m = if prefs.selected_model == "mini" || prefs.selected_model == "fast" {
+                openai_codex::MODEL_MINI.to_string()
+            } else {
+                openai_codex::MODEL_SMART.to_string()
+            };
+            (m, tok.map(|t| t.access_token))
+        } else if llm_provider == "gemini_direct" {
+            (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
+        } else if llm_provider == "groq" {
+            (groq::GROQ_MODEL_DEFAULT.to_string(), None)
+        } else {
+            (model.clone(), None)
+        };
+
+        let llm_task = tokio::spawn(async move {
+            if llm_provider_for_task == "openai_codex" {
+                let access_token = openai_token_opt.as_deref().unwrap_or("");
+                if access_token.is_empty() {
+                    return Err("OpenAI not connected — go to Settings to connect your account".to_string());
+                }
+                openai_codex::stream_polish(
+                    &client_c, access_token, &model_for_llm, &sys_p, &usr_m, token_tx,
+                ).await
+            } else if llm_provider_for_task == "gemini_direct" {
+                gemini_direct::stream_polish(
+                    &client_c, &gemini_key_text, &model_for_llm, &sys_p, &usr_m, token_tx,
+                ).await
+            } else if llm_provider_for_task == "groq" {
+                groq::stream_polish(
+                    &client_c, &groq_key_text, &model_for_llm, &sys_p, &usr_m, token_tx,
+                ).await
+            } else {
+                gateway::stream_polish(&client_c, &gateway_key, &model_for_llm, &sys_p, &usr_m, token_tx).await
+            }
+        });
+
+        while let Some(token) = token_rx.recv().await {
+            yield Ok(Event::default().event("token")
+                .data(json!({"token": token}).to_string()));
+        }
+
+        let llm_result = match llm_task.await {
+            Ok(Ok(r))  => r,
+            Ok(Err(e)) => {
+                let message = if invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e) {
+                    "OpenAI not connected — go to Settings to connect your account".to_string()
+                } else {
+                    e.clone()
+                };
+                warn!("[text-refine] LLM error: {e}");
+                yield Ok(Event::default().event("error")
+                    .data(json!({"message": message}).to_string()));
+                return;
+            }
+            Err(_) => {
+                yield Ok(Event::default().event("error")
+                    .data(json!({"message": "internal error"}).to_string()));
+                return;
+            }
+        };
+
+        let total_ms = total_start.elapsed().as_millis() as i64;
+        let recording_id = Uuid::new_v4().to_string();
+        let word_count = llm_result.polished.split_whitespace().count() as i64;
+        {
+            let pool2  = pool.clone();
+            let id2    = recording_id.clone();
+            let uid2   = user_id.clone();
+            let t2     = source_text.clone();
+            let p2     = llm_result.polished.clone();
+            let model2 = model.clone();
+            let p_ms   = llm_result.polish_ms as i64;
+            tokio::spawn(async move {
+                insert_recording(&pool2, InsertRecording {
+                    id: &id2, user_id: &uid2,
+                    transcript: &t2, polished: &p2,
+                    word_count, recording_seconds: (total_ms as f64 / 1000.0),
+                    model_used: &model2,
+                    confidence:    None,
+                    transcribe_ms: None,
+                    embed_ms:      None,
+                    polish_ms:     Some(p_ms),
+                    target_app:    None,
+                    source:        "text_refine",
+                    audio_id:      None,
+                });
+            });
+        }
+
+        yield Ok(Event::default().event("done").data(
+            json!({
+                "recording_id": recording_id,
+                "transcript":   source_text,
+                "polished":     llm_result.polished,
+                "model_used":   model,
+                "confidence":   null,
+                "audio_id":     null,
+                "source":       "text_refine",
+                "target_app":   null,
+                "output_language": null,
+                "latency_ms": {
+                    "transcribe": 0,
+                    "embed":      0,
+                    "retrieve":   0,
+                    "polish":     llm_result.polish_ms,
+                    "total":      total_ms,
+                },
+                "examples_used": 0,
+            }).to_string()
+        ));
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
 }
 
 #[cfg(test)]

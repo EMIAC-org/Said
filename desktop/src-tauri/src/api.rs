@@ -26,6 +26,7 @@ pub struct Preferences {
     pub auto_paste: bool,
     pub edit_capture: bool,
     pub polish_text_hotkey: String,
+    pub record_hotkey: String,
     // API keys (stored in SQLite; None if not set yet)
     #[serde(default)]
     pub deepgram_api_key: Option<String>,
@@ -62,6 +63,8 @@ pub struct PrefsUpdate {
     pub edit_capture: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub polish_text_hotkey: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_hotkey: Option<String>,
     // API keys — Some(value) = set; None = don't touch (field omitted from JSON)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway_api_key: Option<String>,
@@ -100,9 +103,16 @@ pub struct Recording {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolishDone {
     pub recording_id: String,
+    pub transcript: String,
     pub polished: String,
     pub model_used: String,
     pub confidence: Option<f64>,
+    pub audio_id: Option<String>,
+    pub source: Option<String>,
+    pub target_app: Option<String>,
+    pub output_language: Option<String>,
+    #[serde(default)]
+    pub enriched_transcript: Option<String>,
     pub examples_used: u32,
     pub latency_ms: PolishLatency,
 }
@@ -146,6 +156,7 @@ pub async fn stream_voice_polish<F>(
     target_app: Option<String>,
     pre_transcript: Option<String>,
     pre_transcript_meta: Option<TranscriptMeta>,
+    repair_mode: Option<String>,
     on_event: F,
 ) -> Result<PolishDone, String>
 where
@@ -176,6 +187,9 @@ where
             "pre_transcript_meta",
             serde_json::to_string(&meta).map_err(|e| format!("encode transcript meta: {e}"))?,
         );
+    }
+    if let Some(mode) = repair_mode {
+        form = form.text("repair_mode", mode);
     }
 
     let resp = client
@@ -325,6 +339,94 @@ where
     consume_sse(resp.bytes_stream(), on_event).await
 }
 
+pub async fn stream_text_refine_last<F>(
+    ep: &BackendEndpoint,
+    source_text: String,
+    previous_output: String,
+    tone: Option<String>,
+    on_event: F,
+) -> Result<PolishDone, String>
+where
+    F: FnMut(PolishEvent),
+{
+    let url = format!("{}/v1/text/refine-last", ep.url);
+    let client = Client::new();
+    let body = serde_json::json!({
+        "source_text": source_text,
+        "previous_output": previous_output,
+        "tone": tone,
+    });
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .header("Accept", "text/event-stream")
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| format!("text refine request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "text/refine-last error {status}: {}",
+            &body[..body.len().min(300)]
+        ));
+    }
+
+    consume_sse(resp.bytes_stream(), on_event).await
+}
+
+pub async fn stream_voice_repair<F>(
+    ep: &BackendEndpoint,
+    transcript: String,
+    previous_output: String,
+    target_app: Option<String>,
+    output_language: String,
+    audio_id: Option<String>,
+    enriched_transcript: Option<String>,
+    reason: Option<String>,
+    on_event: F,
+) -> Result<PolishDone, String>
+where
+    F: FnMut(PolishEvent),
+{
+    let url = format!("{}/v1/voice/repair", ep.url);
+    let client = Client::new();
+    let body = serde_json::json!({
+        "transcript": transcript,
+        "previous_output": previous_output,
+        "target_app": target_app,
+        "output_language": output_language,
+        "audio_id": audio_id,
+        "enriched_transcript": enriched_transcript,
+        "reason": reason,
+    });
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .header("Accept", "text/event-stream")
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| format!("voice repair request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "voice/repair error {status}: {}",
+            &body[..body.len().min(300)]
+        ));
+    }
+
+    consume_sse(resp.bytes_stream(), on_event).await
+}
+
 // ── SSE parser ────────────────────────────────────────────────────────────────
 
 async fn consume_sse<S, F>(mut stream: S, mut on_event: F) -> Result<PolishDone, String>
@@ -458,6 +560,7 @@ fn parse_and_dispatch(
 
 fn parse_done(val: &Value) -> Option<PolishDone> {
     let recording_id = val["recording_id"].as_str()?.to_string();
+    let transcript = val["transcript"].as_str().unwrap_or("").to_string();
     let polished = val["polished"].as_str().unwrap_or("").to_string();
     let model_used = val["model_used"].as_str().unwrap_or("").to_string();
     let confidence = val["confidence"].as_f64();
@@ -465,9 +568,21 @@ fn parse_done(val: &Value) -> Option<PolishDone> {
     let lat = val.get("latency_ms").cloned().unwrap_or_default();
     Some(PolishDone {
         recording_id,
+        transcript,
         polished,
         model_used,
         confidence,
+        audio_id: val.get("audio_id").and_then(Value::as_str).map(str::to_string),
+        source: val.get("source").and_then(Value::as_str).map(str::to_string),
+        target_app: val.get("target_app").and_then(Value::as_str).map(str::to_string),
+        output_language: val
+            .get("output_language")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        enriched_transcript: val
+            .get("enriched_transcript")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         examples_used: examples,
         latency_ms: PolishLatency {
             transcribe: lat["transcribe"].as_i64().unwrap_or(0),

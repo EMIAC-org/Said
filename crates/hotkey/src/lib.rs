@@ -3,6 +3,12 @@
 //!   - `start_listener`      — fires a callback on every Caps Lock press (toggle mode)
 //!   - `start_hold_listener` — fires `on_press` when Caps Lock is held down, `on_release` when lifted
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordHotkey {
+    CapsLock,
+    RightOption,
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
     use core_foundation::runloop::kCFRunLoopCommonModes;
@@ -41,6 +47,9 @@ mod imp {
         pub const K_CG_FLAG_ALT:       u64 = 0x0008_0000;
         /// kCGEventFlagMaskCommand
         pub const K_CG_FLAG_COMMAND:   u64 = 0x0010_0000;
+        /// Device-dependent left/right option bits from IOLLEvent.h
+        pub const NX_DEVICELALTKEYMASK: u64 = 0x0000_0020;
+        pub const NX_DEVICERALTKEYMASK: u64 = 0x0000_0040;
 
         // macOS virtual key codes for the number row
         pub const KC_1: i64 = 18;
@@ -62,6 +71,8 @@ mod imp {
         pub const KC_V:         i64 = 9;   // Ctrl+Cmd+V = paste-latest
         pub const KC_X:         i64 = 7;   // Cmd+X = cut
         pub const KC_Z:         i64 = 6;   // Cmd+Z = undo
+        pub const KC_LEFT_OPTION: i64 = 58;
+        pub const KC_RIGHT_OPTION: i64 = 61;
 
         unsafe extern "C" {
             pub fn CGEventTapCreate(
@@ -137,7 +148,9 @@ mod imp {
 
     use std::collections::VecDeque;
     use std::sync::{Mutex, OnceLock};
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+
+    use crate::RecordHotkey;
 
     /// Timestamped key event stored in the ring buffer.
     pub struct TimedKeyEvt {
@@ -162,6 +175,23 @@ mod imp {
     // ── Option+1..5 tone shortcuts ────────────────────────────────────────────
 
     static SHORTCUT_CB: OnceLock<Arc<dyn Fn(u8) + Send + Sync>> = OnceLock::new();
+    static RECORD_HOTKEY: AtomicU8 = AtomicU8::new(0);
+
+    fn current_record_hotkey() -> RecordHotkey {
+        match RECORD_HOTKEY.load(Ordering::Relaxed) {
+            1 => RecordHotkey::RightOption,
+            _ => RecordHotkey::CapsLock,
+        }
+    }
+
+    pub fn set_record_hotkey(hotkey: RecordHotkey) {
+        let encoded = match hotkey {
+            RecordHotkey::CapsLock => 0,
+            RecordHotkey::RightOption => 1,
+        };
+        RECORD_HOTKEY.store(encoded, Ordering::Relaxed);
+        tracing::info!("[hotkey] record hotkey set to {:?}", hotkey);
+    }
 
     /// Register a callback invoked when the user presses Option+1 through Option+5.
     /// The callback receives the digit (1–5). Must be called before the tap starts.
@@ -174,6 +204,8 @@ mod imp {
     unsafe fn check_and_fire_shortcut(event: ffi::CGEventRef) -> bool {
         let flags = unsafe { ffi::CGEventGetFlags(event) };
         let alt   = (flags & ffi::K_CG_FLAG_ALT)     != 0;
+        let left_alt = (flags & ffi::NX_DEVICELALTKEYMASK) != 0;
+        let right_alt = (flags & ffi::NX_DEVICERALTKEYMASK) != 0;
         let cmd   = (flags & ffi::K_CG_FLAG_COMMAND)  != 0;
         let shift = (flags & ffi::K_CG_FLAG_SHIFT)    != 0;
         let ctrl  = (flags & ffi::K_CG_FLAG_CONTROL)  != 0;
@@ -188,6 +220,15 @@ mod imp {
         if !alt || cmd || shift || ctrl {
             if alt { tracing::info!("[hotkey] option+{kc} rejected — other modifier held cmd={cmd} shift={shift} ctrl={ctrl}"); }
             return false;
+        }
+
+        if matches!(current_record_hotkey(), RecordHotkey::RightOption) {
+            if !left_alt || right_alt {
+                tracing::info!(
+                    "[hotkey] option+{kc} ignored — Right Option reserved for hold-to-record, left_alt={left_alt} right_alt={right_alt}"
+                );
+                return false;
+            }
         }
 
         let digit: Option<u8> = match kc {
@@ -497,18 +538,37 @@ mod imp {
             if event_type != ffi::K_CG_EVENT_FLAGS_CHANGED { return event; }
 
             let keycode = ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE);
-            let caps_on = (ffi::CGEventGetFlags(event) & ffi::K_CG_FLAG_CAPS_LOCK) != 0;
+            let flags = ffi::CGEventGetFlags(event);
 
-            if keycode == CAPS_LOCK_KEYCODE {
-                if let Some(ref mut s) = HOLD_STATE {
-                    if caps_on && !s.is_down {
-                        s.is_down = true;
-                        tracing::info!("[hotkey] Caps Lock held → start recording");
-                        (s.on_press)();
-                    } else if !caps_on && s.is_down {
-                        s.is_down = false;
-                        tracing::info!("[hotkey] Caps Lock released → process");
-                        (s.on_release)();
+            if let Some(ref mut s) = HOLD_STATE {
+                match current_record_hotkey() {
+                    RecordHotkey::CapsLock => {
+                        let caps_on = (flags & ffi::K_CG_FLAG_CAPS_LOCK) != 0;
+                        if keycode == CAPS_LOCK_KEYCODE {
+                            if caps_on && !s.is_down {
+                                s.is_down = true;
+                                tracing::info!("[hotkey] Caps Lock held → start recording");
+                                (s.on_press)();
+                            } else if !caps_on && s.is_down {
+                                s.is_down = false;
+                                tracing::info!("[hotkey] Caps Lock released → process");
+                                (s.on_release)();
+                            }
+                        }
+                    }
+                    RecordHotkey::RightOption => {
+                        let right_alt_on = (flags & ffi::NX_DEVICERALTKEYMASK) != 0;
+                        if keycode == ffi::KC_RIGHT_OPTION {
+                            if right_alt_on && !s.is_down {
+                                s.is_down = true;
+                                tracing::info!("[hotkey] Right Option held → start recording");
+                                (s.on_press)();
+                            } else if !right_alt_on && s.is_down {
+                                s.is_down = false;
+                                tracing::info!("[hotkey] Right Option released → process");
+                                (s.on_release)();
+                            }
+                        }
                     }
                 }
             }
@@ -578,7 +638,7 @@ mod imp {
         if unsafe { !ffi::CGEventTapIsEnabled(tap) } {
             tracing::info!("[hotkey] tap disabled — grant Input Monitoring permission, then restart");
         } else {
-            tracing::info!("[hotkey] CGEventTap active — listening for Caps Lock");
+            tracing::info!("[hotkey] CGEventTap active — listening for hold hotkey");
         }
 
         // SAFETY: tap is valid; null allocator uses default CF allocator
@@ -598,6 +658,9 @@ mod imp {
 
 #[cfg(target_os = "macos")]
 pub use imp::*;
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_record_hotkey(_hotkey: RecordHotkey) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn is_input_monitoring_granted() -> bool { false }

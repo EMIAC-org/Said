@@ -191,6 +191,8 @@ export function SettingsView({
   const [debugBusy,    setDebugBusy]    = useState(false);
   const [debugCopied,  setDebugCopied]  = useState<"combined" | "desktop" | "backend" | null>(null);
   const [debugTab,     setDebugTab]     = useState<"combined" | "desktop" | "backend">("combined");
+  const recordHotkey = prefs?.record_hotkey ?? "caps_lock";
+  const recordHotkeyLabel = recordHotkey === "right_option" ? "Right Option" : "Caps Lock";
 
   useEffect(() => {
     let alive = true;
@@ -590,6 +592,50 @@ export function SettingsView({
               </select>
             </div>
           </div>
+
+          <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+
+          <div className="px-5 py-4">
+            <div className="flex items-center gap-4">
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
+                style={{ background: "hsl(var(--surface-4))" }}
+              >
+                <Key size={16} />
+              </div>
+              <div className="flex-1">
+                <p className="text-[13px] font-medium text-foreground mb-1">Recording Hotkey</p>
+                <p className="text-[12px] text-muted-foreground">
+                  Choose which key you hold to start recording.
+                </p>
+              </div>
+            </div>
+            <div
+              className="flex mt-3 rounded-xl p-0.5 gap-0.5"
+              style={{ background: "hsl(var(--surface-4))" }}
+            >
+              {([
+                { key: "caps_lock", label: "Caps Lock" },
+                { key: "right_option", label: "Right Option" },
+              ] as const).map((opt) => {
+                const isActive = recordHotkey === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    onClick={() => patch({ record_hotkey: opt.key })}
+                    className="flex-1 text-[13px] font-medium rounded-[10px] py-1.5 transition-all"
+                    style={{
+                      background: isActive ? "hsl(var(--surface-1))" : "transparent",
+                      color: isActive ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
+                      boxShadow: isActive ? "0 1px 3px rgba(0,0,0,0.25)" : "none",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </Section>
         </Show>
 
@@ -612,7 +658,7 @@ export function SettingsView({
                 <p>• <strong>Accessibility</strong> — lets Said paste text directly into any app.</p>
               )}
               {!imGranted && (
-                <p>• <strong>Input Monitoring</strong> — lets Said listen for the Caps Lock hotkey.</p>
+                <p>• <strong>Input Monitoring</strong> — lets Said listen for the {recordHotkeyLabel} recording hotkey.</p>
               )}
               <p className="mt-1.5 opacity-70">
                 After granting a permission, return to Said. This page updates automatically.
@@ -782,8 +828,8 @@ export function SettingsView({
                 <p className="text-[13px] font-medium text-foreground">Input Monitoring</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
                   {imGranted
-                    ? "Granted — Caps Lock hotkey is active."
-                    : "Required for the Caps Lock hotkey to work. Opens System Settings → Privacy & Security → Input Monitoring."}
+                    ? `Granted — ${recordHotkeyLabel} recording hotkey is active.`
+                    : `Required for the ${recordHotkeyLabel} recording hotkey to work. Opens System Settings → Privacy & Security → Input Monitoring.`}
                 </p>
               </div>
               <div className="flex-shrink-0 ml-4">

@@ -38,6 +38,7 @@ const MIGRATION_016: &str = include_str!("migrations/016_vocab_term_type.sql");
 const MIGRATION_017: &str = include_str!("migrations/017_centroid_decay_fts.sql");
 const MIGRATION_018: &str = include_str!("migrations/018_vocab_meaning.sql");
 const MIGRATION_019: &str = include_str!("migrations/019_background_learning_trust.sql");
+const MIGRATION_020: &str = include_str!("migrations/020_record_hotkey.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -236,6 +237,14 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 19")
             .expect("failed to set user_version to 19");
     }
+
+    if version < 20 {
+        info!("running migration 020_record_hotkey");
+        conn.execute_batch(MIGRATION_020)
+            .expect("migration 020 failed");
+        conn.execute_batch("PRAGMA user_version = 20")
+            .expect("failed to set user_version to 20");
+    }
 }
 
 /// Return the default database path: ~/Library/Application Support/VoicePolish/db.sqlite
@@ -278,8 +287,8 @@ pub fn ensure_default_user(pool: &DbPool) -> String {
     // Create default preferences
     conn.execute(
         "INSERT INTO preferences (user_id, selected_model, tone_preset, language,
-         auto_paste, edit_capture, polish_text_hotkey, updated_at)
-         VALUES (?1, 'smart', 'neutral', 'auto', 1, 1, 'cmd+shift+p', ?2)",
+         auto_paste, edit_capture, polish_text_hotkey, record_hotkey, updated_at)
+         VALUES (?1, 'smart', 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', ?2)",
         params![id, now_ms],
     )
     .expect("failed to create default preferences");

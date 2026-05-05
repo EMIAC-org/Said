@@ -82,6 +82,7 @@ use crate::{
         gateway, gemini_direct, groq, openai_codex,
         prompt::{
             VocabEntry, build_system_prompt_with_vocab_entries, build_user_message,
+            build_voice_repair_system_prompt, build_voice_repair_user_message,
             resolved_vocab_terms_to_entries, vocab_terms_to_entries,
         },
         script, vocab_resolver,
@@ -115,6 +116,7 @@ struct VoicePolishInput {
     target_app: Option<String>,
     pre_transcript: Option<String>,
     pre_transcript_meta: Option<TranscriptMeta>,
+    repair_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,12 +127,26 @@ pub struct TranscriptPolishRequest {
     pre_transcript_meta: Option<TranscriptMeta>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct VoiceRepairRequest {
+    transcript: String,
+    previous_output: String,
+    target_app: Option<String>,
+    output_language: Option<String>,
+    audio_id: Option<String>,
+    #[serde(default)]
+    enriched_transcript: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
 pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> impl IntoResponse {
     // ── Extract multipart fields ───────────────────────────────────────────────
     let mut wav_data: Vec<u8> = Vec::new();
     let mut target_app: Option<String> = None;
     let mut pre_transcript: Option<String> = None; // P5: from Deepgram WS
     let mut pre_transcript_meta: Option<TranscriptMeta> = None;
+    let mut repair_mode: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name() {
@@ -150,6 +166,9 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
                     .ok()
                     .and_then(|s| serde_json::from_str::<TranscriptMeta>(&s).ok());
             }
+            Some("repair_mode") => {
+                repair_mode = field.text().await.ok().filter(|s| !s.is_empty());
+            }
             _ => {}
         }
     }
@@ -161,6 +180,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             target_app,
             pre_transcript,
             pre_transcript_meta,
+            repair_mode,
         },
     )
     .await
@@ -183,9 +203,202 @@ pub async fn polish_transcript(
             target_app: req.target_app,
             pre_transcript: Some(transcript),
             pre_transcript_meta: req.pre_transcript_meta,
+            repair_mode: None,
         },
     )
     .await
+}
+
+pub async fn repair_transcript(
+    State(state): State<AppState>,
+    Json(req): Json<VoiceRepairRequest>,
+) -> impl IntoResponse {
+    let transcript = req.transcript.trim().to_string();
+    let previous_output = req.previous_output.trim().to_string();
+    if transcript.is_empty() || previous_output.is_empty() {
+        warn!("[voice-repair] received empty transcript or previous output");
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    let user_id = state.default_user_id.as_str().to_string();
+    let pool = state.pool.clone();
+    let prefs_opt = crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id).await;
+    let http_client = state.http_client.clone();
+
+    let stream = async_stream::stream! {
+        let total_start = Instant::now();
+        let prefs = match prefs_opt {
+            Some(p) => p,
+            None => {
+                yield Ok::<Event, Infallible>(Event::default().event("error")
+                    .data(json!({"message": "preferences not found", "audio_id": req.audio_id}).to_string()));
+                return;
+            }
+        };
+
+        let output_language = req
+            .output_language
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| prefs.output_language.clone());
+        let hints = derive_repair_hints(&transcript, &previous_output, req.enriched_transcript.as_deref(), &output_language);
+        let system_prompt = build_voice_repair_system_prompt(&output_language, &hints);
+        let user_message = build_voice_repair_user_message(&transcript, &previous_output, &output_language);
+
+        yield Ok(Event::default().event("status")
+            .data(json!({"phase": "polishing", "transcript": transcript}).to_string()));
+
+        let gateway_key = prefs.gateway_api_key.clone()
+            .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
+            .or_else(|| { let k = voice_polish_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
+            .unwrap_or_default();
+        let gemini_key = prefs.gemini_api_key.clone()
+            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+            .unwrap_or_default();
+        let groq_key = prefs.groq_api_key.clone()
+            .or_else(|| std::env::var("GROQ_API_KEY").ok())
+            .unwrap_or_default();
+        let llm_provider = prefs.llm_provider.clone();
+        let llm_provider_for_task = llm_provider.clone();
+        let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
+        let sys_p = system_prompt.clone();
+        let usr_m = user_message.clone();
+        let client_c = http_client.clone();
+        let model = voice_polish_core::resolve_model(&prefs.selected_model).to_string();
+        let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
+            let pool_tok = pool.clone();
+            let uid_tok = user_id.clone();
+            let tok = tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
+                .await
+                .unwrap_or(None);
+            (openai_codex::MODEL_MINI.to_string(), tok.map(|t| t.access_token))
+        } else if llm_provider == "gemini_direct" {
+            (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
+        } else if llm_provider == "groq" {
+            (groq::GROQ_MODEL_DEFAULT.to_string(), None)
+        } else {
+            (model.clone(), None)
+        };
+
+        let llm_task = tokio::spawn(async move {
+            if llm_provider_for_task == "openai_codex" {
+                let access_token = openai_token_opt.as_deref().unwrap_or("");
+                if access_token.is_empty() {
+                    return Err("OpenAI not connected — go to Settings to connect your account".to_string());
+                }
+                openai_codex::stream_polish(
+                    &client_c, access_token, &model_for_llm, &sys_p, &usr_m, token_tx,
+                ).await
+            } else if llm_provider_for_task == "gemini_direct" {
+                gemini_direct::stream_polish(
+                    &client_c, &gemini_key, &model_for_llm, &sys_p, &usr_m, token_tx,
+                ).await
+            } else if llm_provider_for_task == "groq" {
+                groq::stream_polish(
+                    &client_c, &groq_key, &model_for_llm, &sys_p, &usr_m, token_tx,
+                ).await
+            } else {
+                gateway::stream_polish(&client_c, &gateway_key, &model_for_llm, &sys_p, &usr_m, token_tx).await
+            }
+        });
+
+        let enforce_roman_hinglish = output_language == "hinglish";
+        while let Some(token) = token_rx.recv().await {
+            let token = if enforce_roman_hinglish && script::contains_devanagari(&token) {
+                script::enforce_roman_hinglish(&token)
+            } else {
+                token
+            };
+            yield Ok(Event::default().event("token")
+                .data(json!({"token": token}).to_string()));
+        }
+
+        let mut llm_result = match llm_task.await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                let message = if invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e) {
+                    "OpenAI not connected — go to Settings to connect your account".to_string()
+                } else {
+                    e.clone()
+                };
+                warn!("[voice-repair] LLM error: {e}");
+                yield Ok(Event::default().event("error").data(
+                    json!({"message": message, "audio_id": req.audio_id}).to_string()
+                ));
+                return;
+            }
+            Err(e) => {
+                warn!("[voice-repair] LLM task panicked: {e}");
+                yield Ok(Event::default().event("error").data(
+                    json!({"message": "internal error", "audio_id": req.audio_id}).to_string()
+                ));
+                return;
+            }
+        };
+
+        let scrubbed = strip_confidence_markers(&llm_result.polished);
+        if scrubbed != llm_result.polished {
+            llm_result.polished = scrubbed;
+        }
+        if enforce_roman_hinglish && script::contains_devanagari(&llm_result.polished) {
+            llm_result.polished = script::enforce_roman_hinglish(&llm_result.polished);
+        }
+
+        let total_ms = total_start.elapsed().as_millis() as i64;
+        let recording_id = Uuid::new_v4().to_string();
+        let word_count = llm_result.polished.split_whitespace().count() as i64;
+        {
+            let pool2 = pool.clone();
+            let id2 = recording_id.clone();
+            let uid2 = user_id.clone();
+            let t2 = transcript.clone();
+            let p2 = llm_result.polished.clone();
+            let ta2 = req.target_app.clone();
+            let aid2 = req.audio_id.clone();
+            let model2 = model.clone();
+            let p_ms = llm_result.polish_ms as i64;
+            tokio::spawn(async move {
+                insert_recording(&pool2, InsertRecording {
+                    id: &id2, user_id: &uid2,
+                    transcript: &t2, polished: &p2,
+                    word_count, recording_seconds: (total_ms as f64 / 1000.0),
+                    model_used: &model2,
+                    confidence: None,
+                    transcribe_ms: None,
+                    embed_ms: None,
+                    polish_ms: Some(p_ms),
+                    target_app: ta2.as_deref(),
+                    source: "voice_repair",
+                    audio_id: aid2.as_deref(),
+                });
+            });
+        }
+
+        yield Ok(Event::default().event("done").data(
+            json!({
+                "recording_id": recording_id,
+                "transcript": transcript,
+                "polished": llm_result.polished,
+                "model_used": model,
+                "confidence": null,
+                "audio_id": req.audio_id,
+                "source": "voice_repair",
+                "target_app": req.target_app,
+                "output_language": output_language,
+                "latency_ms": {
+                    "transcribe": 0,
+                    "embed": 0,
+                    "retrieve": 0,
+                    "polish": llm_result.polish_ms,
+                    "total": total_ms,
+                },
+                "examples_used": 0,
+                "reason": req.reason,
+            }).to_string()
+        ));
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
 }
 
 async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response {
@@ -194,6 +407,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         target_app,
         pre_transcript,
         pre_transcript_meta,
+        repair_mode,
     } = input;
 
     // Allow empty WAV when the caller supplied a pre_transcript (P5 / WS path).
@@ -404,20 +618,13 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let status_payload = json!({"phase": "polishing", "transcript": &stt_transcript}).to_string();
         yield Ok(Event::default().event("status").data(status_payload));
 
-        // ── STEP 2: Embed (awaited — needed for vocab relevance selection) ─────────
-        // Earlier this was fire-and-forget for hot-path latency. We now await
-        // it because vocab relevance selection (step 4) needs a query
-        // embedding to pick the right vocab entries. The embedding still
-        // populates the cache so the NEXT recording's RAG benefits too.
-        // Cache hits are < 1ms; cold call is 50-150ms.
-        let transcript_for_embed = stt_transcript.clone();
-        let http_for_embed       = http_client.clone();
-        let pool_for_embed       = pool.clone();
-        let gemini_key_embed     = gemini_key.clone();
+        // ── STEP 2: Embed cache lookup only ───────────────────────────────────────
+        // Never wait on a fresh Gemini call in the dictation hot path. The desktop's
+        // /v1/pre-embed hook populates this cache opportunistically for future runs.
         let embed_t0 = tokio::time::Instant::now();
-        let embedding = gemini::embed(&http_for_embed, &pool_for_embed, &transcript_for_embed, &gemini_key_embed).await;
+        let embedding = gemini::cached(&pool, &stt_transcript).await;
         let embed_ms = embed_t0.elapsed().as_millis() as i64;
-        info!("[timing] embed={}ms ({})", embed_ms, if embedding.is_some() { "ok" } else { "skip/no-key" });
+        info!("[timing] embed={}ms ({})", embed_ms, if embedding.is_some() { "cache-hit" } else { "cache-miss/nonblocking" });
 
         let model = voice_polish_core::resolve_model(&prefs.selected_model).to_string();
 
@@ -487,9 +694,18 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         };
         let user_message = build_user_message(&resolved_transcript, &prefs.output_language);
 
-        let system_prompt = build_system_prompt_with_vocab_entries(
-            &prefs, &rag_examples, &word_corrections, &vocab_entries,
-        );
+        let system_prompt = if repair_mode.as_deref() == Some("preserve_recall") {
+            format!(
+                "{}\n\nREPAIR OVERRIDE:\n- The user explicitly asked to reprocess this recording because the previous output likely missed words or drifted in language.\n- Be extra conservative about deleting words.\n- Prefer keeping uncertain transcript content over compressing it.\n- Preserve numbers, names, acronyms, dates, and mixed Hindi-English spans.",
+                build_system_prompt_with_vocab_entries(
+                    &prefs, &rag_examples, &word_corrections, &vocab_entries,
+                )
+            )
+        } else {
+            build_system_prompt_with_vocab_entries(
+                &prefs, &rag_examples, &word_corrections, &vocab_entries,
+            )
+        };
 
         // ── STEP 5: LLM stream ────────────────────────────────────────────────────
         let llm_provider = prefs.llm_provider.clone();
@@ -671,15 +887,21 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         yield Ok(Event::default().event("done").data(
             json!({
                 "recording_id": recording_id,
+                "transcript":   resolved_transcript,
+                "audio_id":     saved_audio_id,
+                "source":       "voice",
+                "target_app":   target_app,
+                "output_language": prefs.output_language,
+                "enriched_transcript": enriched_raw,
                 "polished":     llm_result.polished,
                 "model_used":   model,
                 "confidence":   stt_confidence,
                 "latency_ms": {
-                    "stt":      transcribe_ms,
-                    "embed":    embed_ms,
-                    "rag":      rag_ms,
-                    "llm":      llm_ms,
-                    "total":    total_ms,
+                    "transcribe": transcribe_ms,
+                    "embed":      embed_ms,
+                    "retrieve":   rag_ms,
+                    "polish":     llm_ms,
+                    "total":      total_ms,
                 },
                 "examples_used": examples_used,
             })
@@ -707,6 +929,95 @@ struct QualityAssessment {
     code_switch_hint: bool,
     protected_hits: usize,
     too_short: bool,
+}
+
+fn derive_repair_hints(
+    transcript: &str,
+    previous_output: &str,
+    enriched_transcript: Option<&str>,
+    output_language: &str,
+) -> Vec<String> {
+    let transcript_tokens: Vec<&str> = transcript.split_whitespace().collect();
+    let output_tokens: Vec<&str> = previous_output.split_whitespace().collect();
+    let mut hints = Vec::new();
+
+    if output_tokens.len() + 2 < transcript_tokens.len() {
+        hints.push(format!(
+            "The previous output is shorter than the transcript ({} vs {} words); recover omitted content.",
+            output_tokens.len(),
+            transcript_tokens.len()
+        ));
+    }
+
+    let transcript_numbers = count_numeric_tokens(transcript);
+    let output_numbers = count_numeric_tokens(previous_output);
+    if transcript_numbers > output_numbers {
+        hints.push("Numbers or dates may have been dropped; preserve them explicitly.".into());
+    }
+
+    let overlap = token_overlap_ratio(transcript, previous_output);
+    if overlap < 0.7 {
+        hints.push("Token overlap with the transcript is low; stay closer to the spoken wording.".into());
+    }
+
+    if output_language == "hinglish" {
+        let transcript_hindi = count_hindi_like_tokens(transcript);
+        let output_hindi = count_hindi_like_tokens(previous_output);
+        if transcript_hindi > output_hindi {
+            hints.push("Hindi or Hinglish spans appear to have drifted toward English; preserve the speaker's original mix.".into());
+        }
+    }
+
+    if enriched_transcript
+        .map(|t| t.contains('[') && t.contains('?'))
+        .unwrap_or(false)
+    {
+        hints.push("The transcript had low-confidence spans; preserve uncertain words instead of deleting them.".into());
+    }
+
+    hints
+}
+
+fn count_numeric_tokens(text: &str) -> usize {
+    text.split_whitespace()
+        .filter(|token| token.chars().any(|c| c.is_ascii_digit()))
+        .count()
+}
+
+fn count_hindi_like_tokens(text: &str) -> usize {
+    text.split_whitespace()
+        .filter(|token| {
+            token.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c))
+                || matches!(
+                    token.to_ascii_lowercase().as_str(),
+                    "hai" | "haan" | "tha" | "thi" | "the" | "nahi" | "nhi" | "kya" | "aur" | "ka" | "ki" | "ke" | "mein" | "me" | "yeh" | "woh" | "kyunki"
+                )
+        })
+        .count()
+}
+
+fn token_overlap_ratio(a: &str, b: &str) -> f64 {
+    let a_tokens: std::collections::BTreeSet<String> = a
+        .split_whitespace()
+        .map(normalize_token)
+        .filter(|t| !t.is_empty())
+        .collect();
+    let b_tokens: std::collections::BTreeSet<String> = b
+        .split_whitespace()
+        .map(normalize_token)
+        .filter(|t| !t.is_empty())
+        .collect();
+    if a_tokens.is_empty() {
+        return 1.0;
+    }
+    let shared = a_tokens.intersection(&b_tokens).count();
+    shared as f64 / a_tokens.len() as f64
+}
+
+fn normalize_token(token: &str) -> String {
+    token
+        .trim_matches(|c: char| !c.is_alphanumeric() && !('\u{0900}'..='\u{097F}').contains(&c))
+        .to_ascii_lowercase()
 }
 
 async fn maybe_rescue_transcript(

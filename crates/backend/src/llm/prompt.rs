@@ -324,6 +324,56 @@ pub fn build_tray_system_prompt(tone_preset: &str) -> String {
     )
 }
 
+pub fn build_voice_repair_system_prompt(output_language: &str, hints: &[String]) -> String {
+    let lang_rule = language_rule(output_language);
+    let hint_block = if hints.is_empty() {
+        String::new()
+    } else {
+        format!("REPAIR HINTS:\n{}\n\n", hints.iter().map(|h| format!("- {h}")).collect::<Vec<_>>().join("\n"))
+    };
+
+    format!(
+        "You are repairing a previous dictation output that the user was not satisfied with.\n\
+         Your first priority is fidelity to what was spoken. Recover missing words and preserve the intended language mix.\n\n\
+         LANGUAGE RULES:\n{lang_rule}\n\n\
+         {hint_block}\
+         RULES:\n\
+         - Compare the original transcript to the previous polished output.\n\
+         - Restore omitted content words, clauses, numbers, dates, entities, and mixed-language spans.\n\
+         - Prefer preserving uncertain words over deleting them.\n\
+         - Do not summarize.\n\
+         - Do not aggressively rewrite for style.\n\
+         - Only improve awkwardness after recall and language fidelity are correct.\n\
+         - Output only the repaired final text.\n"
+    )
+}
+
+pub fn build_voice_repair_user_message(
+    transcript: &str,
+    previous_output: &str,
+    output_language: &str,
+) -> String {
+    format!(
+        "Configured output language: {output_language}\n\nOriginal transcript:\n{transcript}\n\nPrevious polished output:\n{previous_output}\n\nRepair the previous polished output so it better preserves what was said."
+    )
+}
+
+pub fn build_refine_last_transform_prompt(tone_preset: &str) -> String {
+    let tone = tone_description(tone_preset);
+    format!(
+        "You are refining a previous text transformation.\n\
+         Improve the prior output without changing its meaning or drifting away from the requested tone.\n\
+         Preserve important words, names, numbers, and intent.\n\
+         Do not add commentary.\n\nTONE:\n{tone}"
+    )
+}
+
+pub fn build_refine_last_transform_user_message(source_text: &str, previous_output: &str) -> String {
+    format!(
+        "Original source text:\n{source_text}\n\nPrevious transformed output:\n{previous_output}\n\nProduce a better version of the previous transformed output."
+    )
+}
+
 /// Build the user message (transcript wrapped in tags — injection-safe).
 ///
 /// `output_language` drives a one-line script reminder prepended to the
@@ -408,6 +458,7 @@ mod tests {
             auto_paste: true,
             edit_capture: true,
             polish_text_hotkey: "cmd+shift+p".into(),
+            record_hotkey: "caps_lock".into(),
             deepgram_api_key: None,
             gemini_api_key: None,
             gateway_api_key: None,

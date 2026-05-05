@@ -14,6 +14,7 @@ pub struct Preferences {
     pub auto_paste: bool,
     pub edit_capture: bool,
     pub polish_text_hotkey: String,
+    pub record_hotkey: String,
     pub updated_at: i64,
     // API keys — stored in SQLite, never leave the device
     pub gateway_api_key: Option<String>,
@@ -35,6 +36,7 @@ pub struct PrefsUpdate {
     pub auto_paste: Option<bool>,
     pub edit_capture: Option<bool>,
     pub polish_text_hotkey: Option<String>,
+    pub record_hotkey: Option<String>,
     // API keys — Some(None) = clear; None = don't touch; Some(Some(s)) = set
     pub gateway_api_key: Option<Option<String>>,
     pub deepgram_api_key: Option<Option<String>>,
@@ -48,7 +50,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
     let conn = pool.get().ok()?;
     conn.query_row(
         "SELECT user_id, selected_model, tone_preset, custom_prompt, language,
-                output_language, auto_paste, edit_capture, polish_text_hotkey, updated_at,
+                output_language, auto_paste, edit_capture, polish_text_hotkey, record_hotkey, updated_at,
                 gateway_api_key, deepgram_api_key, gemini_api_key, llm_provider, groq_api_key
          FROM preferences WHERE user_id = ?1",
         params![user_id],
@@ -65,14 +67,17 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                 auto_paste: row.get::<_, i64>(6)? != 0,
                 edit_capture: row.get::<_, i64>(7)? != 0,
                 polish_text_hotkey: row.get(8)?,
-                updated_at: row.get(9)?,
-                gateway_api_key: row.get(10)?,
-                deepgram_api_key: row.get(11)?,
-                gemini_api_key: row.get(12)?,
+                record_hotkey: row
+                    .get::<_, Option<String>>(9)?
+                    .unwrap_or_else(|| "caps_lock".into()),
+                updated_at: row.get(10)?,
+                gateway_api_key: row.get(11)?,
+                deepgram_api_key: row.get(12)?,
+                gemini_api_key: row.get(13)?,
                 llm_provider: row
-                    .get::<_, Option<String>>(13)?
+                    .get::<_, Option<String>>(14)?
                     .unwrap_or_else(|| "openai_codex".into()),
-                groq_api_key: row.get(14)?,
+                groq_api_key: row.get(15)?,
             })
         },
     )
@@ -135,6 +140,13 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
     if let Some(v) = update.polish_text_hotkey {
         conn.execute(
             "UPDATE preferences SET polish_text_hotkey = ?1, updated_at = ?2 WHERE user_id = ?3",
+            params![v, now, user_id],
+        )
+        .ok()?;
+    }
+    if let Some(v) = update.record_hotkey {
+        conn.execute(
+            "UPDATE preferences SET record_hotkey = ?1, updated_at = ?2 WHERE user_id = ?3",
             params![v, now, user_id],
         )
         .ok()?;

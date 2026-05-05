@@ -145,6 +145,32 @@ pub async fn embed(client: &Client, pool: &DbPool, text: &str, api_key: &str) ->
     None
 }
 
+/// Hot-path lookup only. Never calls Gemini; use this when latency matters and
+/// background pre-embed can populate the cache for future recordings.
+pub async fn cached(pool: &DbPool, text: &str) -> Option<Vec<f32>> {
+    let t0 = Instant::now();
+    let hash = sha256_hex(text);
+    let pool_c = pool.clone();
+    let hash_c = hash.clone();
+    let cached = tokio::task::spawn_blocking(move || read_from_cache(&pool_c, &hash_c))
+        .await
+        .unwrap_or(None);
+    if cached.is_some() {
+        info!(
+            "[embedder] GAP-4: hot cache HIT in {}ms ({DIMENSIONS}d, {} chars)",
+            t0.elapsed().as_millis(),
+            text.len()
+        );
+    } else {
+        debug!(
+            "[embedder] GAP-4: hot cache MISS in {}ms ({} chars)",
+            t0.elapsed().as_millis(),
+            text.len()
+        );
+    }
+    cached
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn sha256_hex(text: &str) -> String {

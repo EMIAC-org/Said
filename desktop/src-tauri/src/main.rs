@@ -9,7 +9,7 @@ mod permissions;
 
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::{
     Emitter, Manager, State,
@@ -551,6 +551,42 @@ struct StreamingState(
 /// cleared after it's pasted via Ctrl+Cmd+V or the `paste_latest` Tauri command.
 struct LatestResult(std::sync::Arc<Mutex<Option<String>>>);
 
+#[derive(Clone, Debug)]
+enum LastRepairStage {
+    None,
+    FastRepair,
+}
+
+#[derive(Clone, Debug)]
+struct LastVoiceAction {
+    recording_id: String,
+    audio_id: Option<String>,
+    raw_transcript: String,
+    enriched_transcript: Option<String>,
+    polished: String,
+    output_language: String,
+    target_app: Option<String>,
+    completed_at_ms: i64,
+    last_repair_stage: LastRepairStage,
+    last_repair_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+struct LastTextTransformAction {
+    source_text: String,
+    polished: String,
+    tone: String,
+    completed_at_ms: i64,
+}
+
+#[derive(Clone, Debug)]
+enum LastAction {
+    Voice(LastVoiceAction),
+    TextTransform(LastTextTransformAction),
+}
+
+struct LastActionState(Mutex<Option<LastAction>>);
+
 /// Hot-path cache: language setting + personal vocabulary keyterms.
 ///
 /// Populated once when the backend becomes ready; refreshed in the background
@@ -572,10 +608,14 @@ struct HotPathCacheInner {
     replacements: Vec<voice_polish_core::deepgram::ReplacementRule>,
 }
 
-/// Holds a pre-warmed Deepgram WS connection ready for the next recording.
-/// Populated immediately after each recording session ends so the TLS handshake
-/// is never on the hot path (~150ms saved normally, up to 3s saved on rapid use).
-struct PrewarmedWsState(Arc<tokio::sync::Mutex<Option<dg_stream::PrewarmedWs>>>);
+/// Holds one pre-warmed Deepgram WS connection ready for the next recording.
+/// The `connecting` flag prevents overlapping background prewarm attempts.
+#[derive(Default)]
+struct PrewarmState {
+    ws: Option<dg_stream::PrewarmedWs>,
+    connecting: bool,
+}
+struct PrewarmedWsState(Arc<tokio::sync::Mutex<PrewarmState>>);
 
 #[derive(serde::Serialize)]
 struct DebugLogs {
@@ -585,6 +625,67 @@ struct DebugLogs {
     backend: String,
     combined: String,
     truncated: bool,
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+#[cfg(target_os = "macos")]
+fn parse_record_hotkey(raw: &str) -> hotkey::RecordHotkey {
+    match raw {
+        "right_option" => hotkey::RecordHotkey::RightOption,
+        _ => hotkey::RecordHotkey::CapsLock,
+    }
+}
+
+fn cache_last_voice_action(
+    app: &tauri::AppHandle,
+    done: &api::PolishDone,
+    repair_stage: LastRepairStage,
+) {
+    let output_language = done
+        .output_language
+        .clone()
+        .unwrap_or_else(|| "hinglish".into());
+    let action = LastAction::Voice(LastVoiceAction {
+        recording_id: done.recording_id.clone(),
+        audio_id: done.audio_id.clone(),
+        raw_transcript: done.transcript.clone(),
+        enriched_transcript: done.enriched_transcript.clone(),
+        polished: done.polished.clone(),
+        output_language,
+        target_app: done.target_app.clone(),
+        completed_at_ms: now_ms(),
+        last_repair_stage: repair_stage.clone(),
+        last_repair_at_ms: match repair_stage {
+            LastRepairStage::FastRepair => Some(now_ms()),
+            LastRepairStage::None => None,
+        },
+    });
+    if let Ok(mut guard) = app.state::<LastActionState>().0.lock() {
+        *guard = Some(action);
+    }
+}
+
+fn cache_last_text_transform(
+    app: &tauri::AppHandle,
+    source_text: String,
+    polished: String,
+    tone: String,
+) {
+    let action = LastAction::TextTransform(LastTextTransformAction {
+        source_text,
+        polished,
+        tone,
+        completed_at_ms: now_ms(),
+    });
+    if let Ok(mut guard) = app.state::<LastActionState>().0.lock() {
+        *guard = Some(action);
+    }
 }
 
 /// Lightweight cache of tray-relevant prefs so `sync_tray` never needs async.
@@ -671,25 +772,32 @@ fn build_tray_menu(
 
     // ── 4. "Polish my message" submenu ─────────────────────────────────
     // Shortcut hints: Option+1..5 (global hotkeys registered in setup).
-    let p_prof = MenuItem::with_id(
+    let p_repair = MenuItem::with_id(
         app,
-        "tray_polish_professional",
-        "Professional English  ⌥1",
+        "tray_smart_repair",
+        "Smart Repair Last  ⌥1",
         true,
         None::<&str>,
     )?;
-    let p_casual = MenuItem::with_id(app, "tray_polish_casual", "Casual  ⌥2", true, None::<&str>)?;
+    let p_prof = MenuItem::with_id(app, "tray_polish_professional", "Professional English  ⌥2", true, None::<&str>)?;
+    let p_casual = MenuItem::with_id(
+        app,
+        "tray_polish_casual",
+        "Casual  ⌥3",
+        true,
+        None::<&str>,
+    )?;
     let p_concise = MenuItem::with_id(
         app,
         "tray_polish_concise",
-        "Concise  ⌥3",
+        "Concise  ⌥4",
         true,
         None::<&str>,
     )?;
     let p_hinglish = MenuItem::with_id(
         app,
         "tray_polish_hinglish",
-        "Hinglish  ⌥4",
+        "Hinglish  ⌥5",
         true,
         None::<&str>,
     )?;
@@ -704,6 +812,7 @@ fn build_tray_menu(
 
     let polish_refs: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = {
         let mut v: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = vec![
+            Box::new(p_repair),
             Box::new(p_prof),
             Box::new(p_casual),
             Box::new(p_concise),
@@ -714,7 +823,7 @@ fn build_tray_menu(
         // Add "Custom  ⌥5" only when the user has set a custom prompt in Settings
         if custom_prompt.map(|s| !s.trim().is_empty()).unwrap_or(false) {
             let p_custom =
-                MenuItem::with_id(app, "tray_polish_custom", "Custom  ⌥5", true, None::<&str>)?;
+                MenuItem::with_id(app, "tray_polish_custom", "Custom", true, None::<&str>)?;
             v.push(Box::new(p_custom));
         }
         v
@@ -954,6 +1063,7 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
 
     let tone_owned = tone.to_string();
     let app_clone = app.clone();
+    let source_text = text.clone();
 
     tauri::async_runtime::spawn(async move {
         tracing::info!(
@@ -966,7 +1076,7 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
             &ep,
             text,
             None,
-            Some(tone_owned),
+            Some(tone_owned.clone()),
             |_event| {}, // fire-and-forget on events; we paste the final result
         )
         .await;
@@ -983,6 +1093,15 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
                 if let Err(e) = paster::paste(&done.polished) {
                     tracing::warn!("[tray_polish] paste failed: {e}");
                 }
+                if let Ok(mut g) = app_clone.state::<LatestResult>().0.lock() {
+                    *g = Some(done.polished.clone());
+                }
+                cache_last_text_transform(
+                    &app_clone,
+                    source_text,
+                    done.polished.clone(),
+                    tone_owned.clone(),
+                );
             }
             Ok(_) => tracing::warn!("[tray_polish] empty result from backend"),
             Err(e) => {
@@ -1007,6 +1126,55 @@ fn tray_open_settings(app: &tauri::AppHandle) {
         let _ = w.set_focus();
     }
     let _ = app.emit("nav-settings", ());
+}
+
+fn smart_repair_last(app: &tauri::AppHandle) {
+    let last_action = app
+        .state::<LastActionState>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
+    let Some(last_action) = last_action else {
+        let _ = app.emit(
+            "voice-error",
+            serde_json::json!({
+                "message": "Nothing recent to repair yet.",
+                "audio_id": null,
+            }),
+        );
+        return;
+    };
+
+    match last_action {
+        LastAction::Voice(action) => {
+            let now = now_ms();
+            let should_escalate = matches!(action.last_repair_stage, LastRepairStage::FastRepair)
+                && action
+                    .last_repair_at_ms
+                    .map(|t| now.saturating_sub(t) <= 20_000)
+                    .unwrap_or(false);
+
+            if should_escalate {
+                if let Some(audio_id) = action.audio_id.clone() {
+                    retry_recording_internal(app.clone(), audio_id);
+                } else {
+                    let _ = app.emit(
+                        "voice-error",
+                        serde_json::json!({
+                            "message": "Saved audio is no longer available for full reprocess.",
+                            "audio_id": null,
+                        }),
+                    );
+                }
+            } else {
+                run_fast_voice_repair(app.clone(), action);
+            }
+        }
+        LastAction::TextTransform(action) => {
+            run_refine_last_transform(app.clone(), action);
+        }
+    }
 }
 
 /// Switch output language from the tray menu and persist to SQLite.
@@ -1121,6 +1289,8 @@ async fn patch_preferences(
                 "[patch_prefs] backend returned: llm_provider={:?}",
                 p.llm_provider
             );
+            #[cfg(target_os = "macos")]
+            hotkey::set_record_hotkey(parse_record_hotkey(&p.record_hotkey));
             // Keep tray cache in sync so sync_tray never needs async
             if let Ok(mut cache) = tray_cache.0.lock() {
                 cache.custom_prompt = p.custom_prompt.clone();
@@ -1308,7 +1478,7 @@ fn toggle_recording(
             // UI button path: no WS streaming pre-transcript (hotkey path handles it)
             let pre_tx_ui: Option<dg_stream::StreamingTranscript> = None;
             tauri::async_runtime::spawn(async move {
-                let result = run_voice_polish_sse(&back_arc2, wav, None, pre_tx_ui, &app2).await;
+                let result = run_voice_polish_sse(&back_arc2, wav, None, pre_tx_ui, None, &app2).await;
 
                 // Spawn edit-watcher immediately after paste (non-blocking).
                 // Capture watch_start NOW — before the spawn — so the ring
@@ -1332,7 +1502,7 @@ fn toggle_recording(
                 };
                 let finished_snap = match result {
                     Ok(done) => d.finish_ok(voice_polish_core::ProcessSummary {
-                        transcript: done.polished.clone(),
+                        transcript: done.transcript.clone(),
                         polished: done.polished,
                         model: done.model_used,
                         confidence: done.confidence.unwrap_or(0.0),
@@ -1358,6 +1528,8 @@ fn toggle_recording(
 
 /// Start recording. Called when user presses Caps Lock (or taps the button).
 fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
+    cancel_edit_watcher(app, "new recording");
+
     // Lock and pre-unlock the frontmost app's AX tree BEFORE recording begins.
     // Chrome / Electron need ~150-200 ms to build their accessibility cache after
     // AXEnhancedUserInterface / AXManualAccessibility is set.  By unlocking here
@@ -1462,7 +1634,10 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             };
 
             // Take the pre-warmed WS (if one is ready) so this recording skips TLS handshake.
-            let prewarmed = prewarm_arc.lock().await.take();
+            let prewarmed = {
+                let mut guard = prewarm_arc.lock().await;
+                guard.ws.take()
+            };
 
             let pre_embed_info: Option<(String, String)> =
                 backend_for_pe.lock().ok().and_then(|g| {
@@ -1500,44 +1675,72 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             let bias2 = bias.clone();
             let pw_arc2 = Arc::clone(&prewarm_arc);
             tauri::async_runtime::spawn(async move {
-                if let Some(pw) = dg_stream::connect_ws(&key2, &bias2).await {
-                    *pw_arc2.lock().await = Some(pw);
-                    tracing::info!("[dg_stream] next WS pre-warmed and ready");
-
-                    // ── Short keepalive heartbeat ───────────────────────────────
-                    // Keep the next socket fresh for back-to-back recordings, then
-                    // drop it. Holding it forever creates background WS work while
-                    // stream_to_deepgram would reject the stale socket anyway.
-                    let pw_ka = Arc::clone(&pw_arc2);
-                    tauri::async_runtime::spawn(async move {
-                        loop {
-                            tokio::time::sleep(std::time::Duration::from_secs(7)).await;
-                            let mut guard = pw_ka.lock().await;
-                            let Some(pw) = guard.as_mut() else { break };
-                            let age = pw.created_at.elapsed();
-                            if age > dg_stream::PREWARM_MAX_AGE {
-                                tracing::debug!(
-                                    "[dg_stream] pre-warm expired after {}ms — dropping idle WS",
-                                    age.as_millis()
-                                );
-                                *guard = None;
-                                break;
-                            }
-                            use futures::SinkExt;
-                            let ka = tokio_tungstenite::tungstenite::Message::Text(
-                                r#"{"type":"KeepAlive"}"#.into(),
+                {
+                    let mut guard = pw_arc2.lock().await;
+                    if guard.connecting {
+                        tracing::debug!("[dg_stream] pre-warm skipped — connect already in flight");
+                        return;
+                    }
+                    if let Some(existing) = guard.ws.as_ref() {
+                        let fresh = existing.bias == bias2
+                            && existing.created_at.elapsed() <= dg_stream::PREWARM_MAX_AGE;
+                        if fresh {
+                            tracing::debug!(
+                                "[dg_stream] pre-warm skipped — fresh WS already ready"
                             );
-                            if pw.ws.send(ka).await.is_err() {
-                                tracing::warn!(
-                                    "[dg_stream] pre-warm keepalive failed — dropping stale WS"
-                                );
-                                *guard = None;
-                                break;
-                            }
-                            tracing::debug!("[dg_stream] pre-warm keepalive sent");
+                            return;
                         }
-                    });
+                        guard.ws = None;
+                    }
+                    guard.connecting = true;
                 }
+
+                let connected = dg_stream::connect_ws(&key2, &bias2).await;
+                let Some(pw) = connected else {
+                    pw_arc2.lock().await.connecting = false;
+                    return;
+                };
+
+                {
+                    let mut guard = pw_arc2.lock().await;
+                    guard.connecting = false;
+                    guard.ws = Some(pw);
+                    tracing::info!("[dg_stream] next WS pre-warmed and ready");
+                }
+
+                // ── Short keepalive heartbeat ───────────────────────────────
+                // Keep the next socket fresh for back-to-back recordings, then
+                // drop it. Holding it forever creates background WS work while
+                // stream_to_deepgram would reject the stale socket anyway.
+                let pw_ka = Arc::clone(&pw_arc2);
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(7)).await;
+                        let mut guard = pw_ka.lock().await;
+                        let Some(pw) = guard.ws.as_mut() else { break };
+                        let age = pw.created_at.elapsed();
+                        if age > dg_stream::PREWARM_MAX_AGE {
+                            tracing::debug!(
+                                "[dg_stream] pre-warm expired after {}ms — dropping idle WS",
+                                age.as_millis()
+                            );
+                            guard.ws = None;
+                            break;
+                        }
+                        use futures::SinkExt;
+                        let ka = tokio_tungstenite::tungstenite::Message::Text(
+                            r#"{"type":"KeepAlive"}"#.into(),
+                        );
+                        if pw.ws.send(ka).await.is_err() {
+                            tracing::warn!(
+                                "[dg_stream] pre-warm keepalive failed — dropping stale WS"
+                            );
+                            guard.ws = None;
+                            break;
+                        }
+                        tracing::debug!("[dg_stream] pre-warm keepalive sent");
+                    }
+                });
             });
         });
     } else {
@@ -1663,7 +1866,7 @@ fn do_finish_recording(
             None
         };
 
-        let result = run_voice_polish_sse(&back_arc2, wav, None, pre_transcript, &app2).await;
+        let result = run_voice_polish_sse(&back_arc2, wav, None, pre_transcript, None, &app2).await;
 
         // Spawn edit-watcher immediately after paste (non-blocking).
         // Capture watch_start NOW — before the spawn — so the ring
@@ -1687,7 +1890,7 @@ fn do_finish_recording(
         };
         let snap = match result {
             Ok(done) => d.finish_ok(ProcessSummary {
-                transcript: done.polished.clone(),
+                transcript: done.transcript.clone(),
                 polished: done.polished,
                 model: done.model_used,
                 confidence: done.confidence.unwrap_or(0.0),
@@ -1708,6 +1911,7 @@ async fn run_voice_polish_sse(
     wav: Vec<u8>,
     target_app: Option<String>,
     pre_transcript: Option<dg_stream::StreamingTranscript>,
+    repair_mode: Option<String>,
     app: &tauri::AppHandle,
 ) -> Result<api::PolishDone, String> {
     let ep = {
@@ -1850,11 +2054,12 @@ async fn run_voice_polish_sse(
             target_app,
             Some(transcript.transcript),
             Some(transcript.meta),
+            repair_mode,
             &mut on_polish_event,
         )
         .await?
     } else {
-        api::stream_voice_polish(&ep, wav, target_app, None, None, &mut on_polish_event).await?
+        api::stream_voice_polish(&ep, wav, target_app, None, None, repair_mode, &mut on_polish_event).await?
     };
 
     let n_typed = token_count.load(std::sync::atomic::Ordering::Relaxed);
@@ -1909,6 +2114,7 @@ async fn run_voice_polish_sse(
         if let Ok(mut g) = app.state::<LatestResult>().0.lock() {
             *g = Some(done.polished.clone());
         }
+        cache_last_voice_action(app, &done, LastRepairStage::None);
         tracing::info!(
             "[main] result stored ({} chars) — Ctrl+Cmd+V to paste again",
             done.polished.len()
@@ -1949,6 +2155,217 @@ async fn run_voice_polish_sse(
     Ok(done)
 }
 
+async fn run_voice_repair_sse(
+    back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
+    action: &LastVoiceAction,
+    app: &tauri::AppHandle,
+) -> Result<api::PolishDone, String> {
+    let ep = {
+        let lock = back_arc.lock().map_err(|_| "backend lock failed")?;
+        lock.clone().ok_or("backend not started")?
+    };
+    let transcript = action.raw_transcript.clone();
+    let previous_output = action.polished.clone();
+    let target_app = action.target_app.clone();
+    let output_language = action.output_language.clone();
+    let audio_id = action.audio_id.clone();
+    let enriched_transcript = action.enriched_transcript.clone();
+    let app_clone = app.clone();
+
+    let typed_any = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let typed_any2 = typed_any.clone();
+    let token_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let token_count2 = token_count.clone();
+    let fail_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fail_count2 = fail_count.clone();
+
+    let mut on_polish_event = move |event| {
+        match &event {
+            api::PolishEvent::Token { token } => {
+                if token == "\u{1F}__RESET__\u{1F}" {
+                    fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
+                let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
+                match paster::type_text(token) {
+                    Ok(true) => {
+                        typed_any2.store(true, std::sync::atomic::Ordering::Relaxed);
+                        token_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Ok(false) => {
+                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        tracing::warn!("[voice-repair] type_text error: {e}");
+                    }
+                }
+            }
+            api::PolishEvent::Status { phase, transcript } => {
+                let _ = app_clone.emit(
+                    "voice-status",
+                    serde_json::json!({ "phase": phase, "transcript": transcript }),
+                );
+            }
+            api::PolishEvent::Done(done) => {
+                let _ = app_clone.emit("voice-done", done);
+            }
+            api::PolishEvent::Error { message, audio_id } => {
+                let human = humanize_error(message);
+                let _ = app_clone.emit(
+                    "voice-error",
+                    serde_json::json!({
+                        "message": human,
+                        "audio_id": audio_id,
+                    }),
+                );
+            }
+        }
+    };
+
+    let done = api::stream_voice_repair(
+        &ep,
+        transcript,
+        previous_output,
+        target_app,
+        output_language,
+        audio_id,
+        enriched_transcript,
+        Some("user_requested_repair".into()),
+        &mut on_polish_event,
+    )
+    .await?;
+
+    finalize_typed_or_pasted_output(app, &done, typed_any, token_count, fail_count, LastRepairStage::FastRepair)?;
+    Ok(done)
+}
+
+async fn run_text_refine_sse(
+    back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
+    action: &LastTextTransformAction,
+    app: &tauri::AppHandle,
+) -> Result<api::PolishDone, String> {
+    let ep = {
+        let lock = back_arc.lock().map_err(|_| "backend lock failed")?;
+        lock.clone().ok_or("backend not started")?
+    };
+    let source_text = action.source_text.clone();
+    let previous_output = action.polished.clone();
+    let tone = Some(action.tone.clone());
+    let app_clone = app.clone();
+
+    let typed_any = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let typed_any2 = typed_any.clone();
+    let token_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let token_count2 = token_count.clone();
+    let fail_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fail_count2 = fail_count.clone();
+
+    let mut on_polish_event = move |event| {
+        match &event {
+            api::PolishEvent::Token { token } => {
+                let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
+                match paster::type_text(token) {
+                    Ok(true) => {
+                        typed_any2.store(true, std::sync::atomic::Ordering::Relaxed);
+                        token_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Ok(false) => {
+                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        tracing::warn!("[text-refine] type_text error: {e}");
+                    }
+                }
+            }
+            api::PolishEvent::Status { phase, transcript } => {
+                let _ = app_clone.emit(
+                    "voice-status",
+                    serde_json::json!({ "phase": phase, "transcript": transcript }),
+                );
+            }
+            api::PolishEvent::Done(done) => {
+                let _ = app_clone.emit("voice-done", done);
+            }
+            api::PolishEvent::Error { message, audio_id } => {
+                let _ = app_clone.emit(
+                    "voice-error",
+                    serde_json::json!({
+                        "message": humanize_error(message),
+                        "audio_id": audio_id,
+                    }),
+                );
+            }
+        }
+    };
+
+    let done = api::stream_text_refine_last(
+        &ep,
+        source_text.clone(),
+        previous_output,
+        tone.clone(),
+        &mut on_polish_event,
+    )
+    .await?;
+
+    finalize_typed_or_pasted_output(app, &done, typed_any, token_count, fail_count, LastRepairStage::None)?;
+    cache_last_text_transform(app, source_text, done.polished.clone(), tone.unwrap_or_else(|| "neutral".into()));
+    Ok(done)
+}
+
+fn finalize_typed_or_pasted_output(
+    app: &tauri::AppHandle,
+    done: &api::PolishDone,
+    typed_any: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    token_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    fail_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    repair_stage: LastRepairStage,
+) -> Result<(), String> {
+    let n_typed = token_count.load(std::sync::atomic::Ordering::Relaxed);
+    let n_failed = fail_count.load(std::sync::atomic::Ordering::Relaxed);
+    let mut output_pasted = false;
+    if typed_any.load(std::sync::atomic::Ordering::Relaxed) {
+        if n_failed > 0 {
+            if !done.polished.is_empty() {
+                paster::paste_replacing(&done.polished)
+                    .map_err(|e| format!("paste replacing failed: {e}"))?;
+                output_pasted = true;
+            }
+        } else {
+            tracing::info!("[main] word-by-word complete — {n_typed} token(s) typed directly");
+            output_pasted = true;
+        }
+    } else if !done.polished.is_empty() {
+        paster::paste(&done.polished).map_err(|e| format!("paste failed: {e}"))?;
+        output_pasted = true;
+    }
+
+    if !done.polished.is_empty() {
+        if let Ok(mut g) = app.state::<LatestResult>().0.lock() {
+            *g = Some(done.polished.clone());
+        }
+        if matches!(done.source.as_deref(), Some("voice") | Some("voice_repair")) {
+            cache_last_voice_action(app, done, repair_stage);
+        }
+    }
+
+    let output_status = if output_pasted { "pasted" } else { "manual_paste" };
+    let output_message = if output_pasted {
+        "Pasted"
+    } else {
+        "Press Ctrl+Cmd+V to paste anywhere"
+    };
+    let _ = app.emit(
+        "voice-output",
+        serde_json::json!({
+            "status": output_status,
+            "message": output_message,
+        }),
+    );
+    Ok(())
+}
+
 /// Paste the most-recently stored polished result into the focused app.
 /// Invoked by the Ctrl+Cmd+V hotkey and by the UI's "Paste latest" button.
 #[tauri::command]
@@ -1968,6 +2385,92 @@ fn paste_latest(latest: State<'_, LatestResult>) -> Result<bool, String> {
             Ok(true)
         }
     }
+}
+
+fn run_fast_voice_repair(app: tauri::AppHandle, action: LastVoiceAction) {
+    let shared = app.state::<SharedApp>();
+    let backend = app.state::<BackendState>();
+    {
+        let Ok(mut d) = shared.0.lock() else { return };
+        if d.state != desktop::AppState::Idle {
+            let _ = app.emit(
+                "voice-error",
+                serde_json::json!({
+                    "message": "Busy — wait for the current operation to finish.",
+                    "audio_id": null,
+                }),
+            );
+            return;
+        }
+        d.state = desktop::AppState::Processing;
+    }
+
+    let shared2 = Arc::clone(&shared.0);
+    let app2 = app.clone();
+    let back_arc2 = Arc::clone(&backend.0);
+    tauri::async_runtime::spawn(async move {
+        let result = run_voice_repair_sse(&back_arc2, &action, &app2).await;
+        let mut d = match shared2.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let snap = match result {
+            Ok(done) => d.finish_ok(ProcessSummary {
+                transcript: done.transcript.clone(),
+                polished: done.polished,
+                model: done.model_used,
+                confidence: done.confidence.unwrap_or(0.0),
+                transcribe_ms: done.latency_ms.transcribe as u64,
+                polish_ms: done.latency_ms.polish as u64,
+            }),
+            Err(e) => d.finish_err(e),
+        };
+        sync_tray(&app2, &snap);
+        let _ = app2.emit("app-state", &snap);
+    });
+}
+
+fn run_refine_last_transform(app: tauri::AppHandle, action: LastTextTransformAction) {
+    let shared = app.state::<SharedApp>();
+    let backend = app.state::<BackendState>();
+    {
+        let Ok(mut d) = shared.0.lock() else { return };
+        if d.state != desktop::AppState::Idle {
+            let _ = app.emit(
+                "voice-error",
+                serde_json::json!({
+                    "message": "Busy — wait for the current operation to finish.",
+                    "audio_id": null,
+                }),
+            );
+            return;
+        }
+        d.state = desktop::AppState::Processing;
+    }
+
+    let shared2 = Arc::clone(&shared.0);
+    let app2 = app.clone();
+    let back_arc2 = Arc::clone(&backend.0);
+    tauri::async_runtime::spawn(async move {
+        let result = run_text_refine_sse(&back_arc2, &action, &app2).await;
+        let mut d = match shared2.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let snap = match result {
+            Ok(done) => d.finish_ok(ProcessSummary {
+                transcript: done.transcript.clone(),
+                polished: done.polished,
+                model: done.model_used,
+                confidence: done.confidence.unwrap_or(0.0),
+                transcribe_ms: done.latency_ms.transcribe as u64,
+                polish_ms: done.latency_ms.polish as u64,
+            }),
+            Err(e) => d.finish_err(e),
+        };
+        sync_tray(&app2, &snap);
+        let _ = app2.emit("app-state", &snap);
+    });
 }
 
 /// Delete a recording from the backend (SQLite + WAV file).
@@ -2074,6 +2577,21 @@ fn retry_recording(
     backend: State<'_, BackendState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    retry_recording_spawn(audio_id, Arc::clone(&state.0), Arc::clone(&backend.0), app)
+}
+
+fn retry_recording_internal(app: tauri::AppHandle, audio_id: String) {
+    let shared = Arc::clone(&app.state::<SharedApp>().0);
+    let backend = Arc::clone(&app.state::<BackendState>().0);
+    let _ = retry_recording_spawn(audio_id, shared, backend, app);
+}
+
+fn retry_recording_spawn(
+    audio_id: String,
+    shared: Arc<Mutex<DesktopApp>>,
+    backend: Arc<Mutex<Option<BackendEndpoint>>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     // Read WAV from the saved file
     let audio_dir = {
         let base = dirs::data_local_dir()
@@ -2086,19 +2604,27 @@ fn retry_recording(
 
     // Mark as processing so the UI shows a spinner
     {
-        let mut d = state.0.lock().map_err(|_| "lock failed")?;
+        let mut d = shared.lock().map_err(|_| "lock failed")?;
         if d.state != desktop::AppState::Idle {
             return Err("busy — wait for current operation to finish".into());
         }
         d.state = desktop::AppState::Processing;
     }
 
-    let shared2 = Arc::clone(&state.0);
+    let shared2 = Arc::clone(&shared);
     let app2 = app.clone();
-    let back_arc2 = Arc::clone(&backend.0);
+    let back_arc2 = Arc::clone(&backend);
 
     tauri::async_runtime::spawn(async move {
-        let result = run_voice_polish_sse(&back_arc2, wav, None, None, &app2).await;
+        let result = run_voice_polish_sse(
+            &back_arc2,
+            wav,
+            None,
+            None,
+            Some("preserve_recall".into()),
+            &app2,
+        )
+        .await;
 
         let watch_start = std::time::Instant::now();
         if let Ok(ref done) = result {
@@ -2119,7 +2645,7 @@ fn retry_recording(
         };
         let snap = match result {
             Ok(done) => d.finish_ok(ProcessSummary {
-                transcript: done.polished.clone(),
+                transcript: done.transcript.clone(),
                 polished: done.polished,
                 model: done.model_used,
                 confidence: done.confidence.unwrap_or(0.0),
@@ -2520,6 +3046,21 @@ async fn cancellable_sleep(token: &CancellationToken, duration: Duration) -> boo
     tokio::select! {
         _ = token.cancelled() => false,
         _ = tokio::time::sleep(duration) => true,
+    }
+}
+
+fn cancel_edit_watcher(app: &tauri::AppHandle, reason: &str) {
+    let st = app.state::<EditWatcherState>();
+    let mut guard = match st.0.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            tracing::warn!("[edit-watch] watcher state lock poisoned; cannot cancel");
+            return;
+        }
+    };
+    if let Some(prev) = guard.take() {
+        tracing::info!("[edit-watch] cancelling watcher — {reason}");
+        prev.cancel();
     }
 }
 
@@ -3405,6 +3946,8 @@ fn main() {
                                 api::get_stt_bias(&ep),
                             );
                             if let Ok(prefs) = &prefs_res {
+                                #[cfg(target_os = "macos")]
+                                hotkey::set_record_hotkey(parse_record_hotkey(&prefs.record_hotkey));
                                 if let Ok(mut cache) = app_h.state::<TrayCache>().0.lock() {
                                     cache.custom_prompt   = prefs.custom_prompt.clone();
                                     cache.output_language = prefs.output_language.clone();
@@ -3550,6 +4093,7 @@ fn main() {
                                 let lang = &id["tray_lang_".len()..];
                                 tray_set_output_language(app, lang);
                             }
+                            "tray_smart_repair" => smart_repair_last(app),
                             // Polish my message — tone preset suffix
                             _ if id.starts_with("tray_polish_") => {
                                 let tone = &id["tray_polish_".len()..];
@@ -3574,14 +4118,31 @@ fn main() {
                 // ── Floating status bar ────────────────────────────────────────
                 create_status_bar(app.handle());
 
-                // ── Caps Lock click-to-toggle recording (macOS only) ──────────
+                // ── Hold-to-record hotkey (macOS only) ────────────────────────
                 #[cfg(target_os = "macos")]
                 {
-                    let h_toggle = app.handle().clone();
-                    hotkey::start_listener(Arc::new(move || {
-                        let h = h_toggle.clone();
-                        std::thread::spawn(move || tray_toggle_recording(&h));
-                    }));
+                    let shared_hold_press = Arc::clone(&app.state::<SharedApp>().0);
+                    let shared_hold_release = Arc::clone(&app.state::<SharedApp>().0);
+                    let back_hold = Arc::clone(&app.state::<BackendState>().0);
+                    let app_press = app.handle().clone();
+                    let app_release = app.handle().clone();
+                    hotkey::start_hold_listener(
+                        Arc::new(move || {
+                            let shared = Arc::clone(&shared_hold_press);
+                            let app_h = app_press.clone();
+                            std::thread::spawn(move || {
+                                do_start_recording(&shared, &app_h);
+                            });
+                        }),
+                        Arc::new(move || {
+                            let shared = Arc::clone(&shared_hold_release);
+                            let back = Arc::clone(&back_hold);
+                            let app_h = app_release.clone();
+                            std::thread::spawn(move || {
+                                do_finish_recording(shared, app_h, back);
+                            });
+                        }),
+                    );
 
                     // ── Option+1..5 tone shortcuts ─────────────────────────────
                     // Select text in any app, press Option+N to polish with a preset tone.
@@ -3593,21 +4154,19 @@ fn main() {
                     // lets the tap callback return immediately so the run-loop is unblocked.
                     let app_shortcut = app.handle().clone();
                     hotkey::register_shortcut_callback(Arc::new(move |n: u8| {
-                        let tone: &str = match n {
-                            1 => "professional",
-                            2 => "casual",
-                            3 => "concise",
-                            4 => "hinglish",
-                            5 => "custom",
-                            _ => return,
-                        };
                         let app_clone = app_shortcut.clone();
-                        let tone_owned = tone.to_string();
                         std::thread::spawn(move || {
                             // Small delay to let the tap callback return and the
                             // CFRunLoop process queued events before we try Cmd+C.
                             std::thread::sleep(std::time::Duration::from_millis(50));
-                            tray_polish_message(&app_clone, &tone_owned);
+                            match n {
+                                1 => smart_repair_last(&app_clone),
+                                2 => tray_polish_message(&app_clone, "professional"),
+                                3 => tray_polish_message(&app_clone, "casual"),
+                                4 => tray_polish_message(&app_clone, "concise"),
+                                5 => tray_polish_message(&app_clone, "hinglish"),
+                                _ => {}
+                            }
                         });
                     }));
 
@@ -3645,8 +4204,11 @@ fn main() {
         .manage(StreamingState(Mutex::new(None)))
         .manage(TrayCache(Mutex::new(TrayCacheInner::default())))
         .manage(LatestResult(std::sync::Arc::new(Mutex::new(None))))
+        .manage(LastActionState(Mutex::new(None)))
         .manage(HotPathCache(Arc::new(tokio::sync::RwLock::new(HotPathCacheInner::default()))))
-        .manage(PrewarmedWsState(Arc::new(tokio::sync::Mutex::new(None))))
+        .manage(PrewarmedWsState(Arc::new(tokio::sync::Mutex::new(
+            PrewarmState::default(),
+        ))))
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             get_snapshot,

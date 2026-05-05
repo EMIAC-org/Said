@@ -63,6 +63,7 @@ export interface Preferences {
   auto_paste:         boolean;
   edit_capture:       boolean;
   polish_text_hotkey: string;
+  record_hotkey:      string;
   // API keys stored in SQLite — never leave the device
   gateway_api_key:    string | null;
   deepgram_api_key:   string | null;
@@ -81,6 +82,7 @@ export interface PrefsUpdate {
   auto_paste?:         boolean;
   edit_capture?:       boolean;
   polish_text_hotkey?: string;
+  record_hotkey?:      string;
   // API keys — set to null to clear
   gateway_api_key?:    string | null;
   deepgram_api_key?:   string | null;
@@ -119,9 +121,15 @@ export interface BackendEndpoint {
 /** Streaming result from a polish operation */
 export interface PolishDone {
   recording_id:  string;
+  transcript:    string;
   polished:      string;
   model_used:    string;
   confidence:    number | null;
+  audio_id?:     string | null;
+  source?:       string | null;
+  target_app?:   string | null;
+  output_language?: string | null;
+  enriched_transcript?: string | null;
   examples_used: number;
   latency_ms: {
     transcribe: number;
