@@ -31,7 +31,11 @@ use crate::{
             build_refine_last_transform_user_message, resolved_vocab_terms_to_entries,
             vocab_terms_to_entries,
         },
-        script, vocab_resolver,
+        script,
+        stream_safety::{
+            STREAM_RESET_SENTINEL, StreamProvider, StreamSafetyFilter, scrub_polished_output,
+        },
+        vocab_resolver,
     },
     store::{
         history::{InsertRecording, insert_recording},
@@ -249,21 +253,29 @@ pub async fn polish(
         });
 
         let enforce_roman_hinglish = tone_override.is_none() && prefs.output_language == "hinglish";
+        let mut stream_filter =
+            StreamSafetyFilter::new(StreamProvider::from_llm_provider(&llm_provider), &resolved_transcript);
 
         let mut saw_script_rewrite = false;
-        while let Some(token) = token_rx.recv().await {
-            let token = if enforce_roman_hinglish && script::contains_devanagari(&token) {
-                if !saw_script_rewrite {
-                    saw_script_rewrite = true;
-                    yield Ok(Event::default().event("token")
-                        .data(json!({"token": "\u{1F}__RESET__\u{1F}"}).to_string()));
-                }
-                script::enforce_roman_hinglish(&token)
-            } else {
-                token
-            };
-            yield Ok(Event::default().event("token")
-                .data(json!({"token": token}).to_string()));
+        while let Some(raw_token) = token_rx.recv().await {
+            let filtered = stream_filter.push_token(raw_token);
+            if filtered.unsafe_detected {
+                warn!("[text] stream safety disabled live typing for provider={llm_provider}");
+            }
+            for token in filtered.tokens {
+                let token = if enforce_roman_hinglish && token != STREAM_RESET_SENTINEL && script::contains_devanagari(&token) {
+                    if !saw_script_rewrite {
+                        saw_script_rewrite = true;
+                        yield Ok(Event::default().event("token")
+                            .data(json!({"token": STREAM_RESET_SENTINEL}).to_string()));
+                    }
+                    script::enforce_roman_hinglish(&token)
+                } else {
+                    token
+                };
+                yield Ok(Event::default().event("token")
+                    .data(json!({"token": token}).to_string()));
+            }
         }
 
         let mut llm_result = match llm_task.await {
@@ -294,6 +306,20 @@ pub async fn polish(
                 romanized.len(),
             );
             llm_result.polished = romanized;
+        }
+
+        let scrubbed = scrub_polished_output(
+            &llm_result.polished,
+            &resolved_transcript,
+            stream_filter.saw_unsafe_content(),
+        );
+        if scrubbed != llm_result.polished {
+            warn!(
+                "[text] scrubbed prompt/transcript leakage from final output {} → {} chars",
+                llm_result.polished.len(),
+                scrubbed.len(),
+            );
+            llm_result.polished = scrubbed;
         }
 
         let total_ms     = total_start.elapsed().as_millis() as i64;

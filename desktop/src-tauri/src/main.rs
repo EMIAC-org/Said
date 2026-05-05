@@ -24,6 +24,7 @@ use voice_polish_core::{AppSnapshot, ProcessSummary};
 use voice_polish_paster as paster;
 
 const DEBUG_LOG_MAX_BYTES: u64 = 240_000;
+const STREAM_RESET_SENTINEL: &str = "\u{1F}__RESET__\u{1F}";
 
 #[cfg(target_os = "macos")]
 use voice_polish_hotkey as hotkey;
@@ -236,6 +237,32 @@ fn humanize_error(raw: &str) -> String {
 
     // Generic fallback — never expose raw error text.
     "Something went wrong with that recording. Please try again.".to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveTypingDecision {
+    ResetAndDisable,
+    PreviewOnly,
+    TypeToken,
+}
+
+#[derive(Debug, Default)]
+struct LiveTypingGuard {
+    disabled: bool,
+}
+
+impl LiveTypingGuard {
+    fn on_token(&mut self, token: &str) -> LiveTypingDecision {
+        if token == STREAM_RESET_SENTINEL {
+            self.disabled = true;
+            return LiveTypingDecision::ResetAndDisable;
+        }
+        if self.disabled {
+            LiveTypingDecision::PreviewOnly
+        } else {
+            LiveTypingDecision::TypeToken
+        }
+    }
 }
 
 /// (Cmd+Z, Cmd+X).  Mouse clicks are handled by trying every possible cursor
@@ -1928,6 +1955,8 @@ async fn run_voice_polish_sse(
     let token_count2 = token_count.clone();
     let fail_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let fail_count2 = fail_count.clone();
+    let live_guard = std::sync::Arc::new(std::sync::Mutex::new(LiveTypingGuard::default()));
+    let live_guard2 = live_guard.clone();
 
     tracing::info!(
         "[pipeline] → sending to backend: wav={}KB pre_transcript={}",
@@ -1948,24 +1977,25 @@ async fn run_voice_polish_sse(
     let mut on_polish_event = move |event| {
         match &event {
             api::PolishEvent::Token { token } => {
-                // RESET sentinel — emitted by openai_codex SSE parser when a
-                // new message output_item replaces a draft (gpt-5 reasoning
-                // models sometimes emit drafts followed by finals). The
-                // sentinel tells us to stop word-by-word typing and let the
-                // safety-paste path replace whatever was already typed with
-                // the final polished text.
-                if token == "\u{1F}__RESET__\u{1F}" {
-                    tracing::warn!(
-                        "[main] LLM emitted draft + final — disabling word-by-word for this recording, will paste full output at end"
-                    );
-                    // Mark as failed so the safety-paste path fires at the end.
-                    // Doesn't matter that we typed some draft tokens; the safety
-                    // paste will select-all-and-replace.
-                    fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return;
-                }
+                let decision = live_guard2
+                    .lock()
+                    .map(|mut guard| guard.on_token(token))
+                    .unwrap_or(LiveTypingDecision::PreviewOnly);
                 // Emit to UI for live preview
                 let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
+                match decision {
+                    LiveTypingDecision::ResetAndDisable => {
+                        tracing::warn!(
+                            "[main] live typing reset — disabling word-by-word for this recording, will paste full output at end"
+                        );
+                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
+                    LiveTypingDecision::PreviewOnly => {
+                        return;
+                    }
+                    LiveTypingDecision::TypeToken => {}
+                }
                 // Type word-by-word directly into focused app via AX
                 match paster::type_text(token) {
                     Ok(true) => {
@@ -4338,5 +4368,21 @@ mod meaningful_edit_tests {
     #[test]
     fn rejects_zero_alphanumeric_word_changes() {
         assert!(!is_meaningful_edit("hello world", "hello   world"));
+    }
+}
+
+#[cfg(test)]
+mod live_typing_guard_tests {
+    use super::{LiveTypingDecision, LiveTypingGuard, STREAM_RESET_SENTINEL};
+
+    #[test]
+    fn reset_disables_future_live_typing() {
+        let mut guard = LiveTypingGuard::default();
+        assert_eq!(guard.on_token("Hello"), LiveTypingDecision::TypeToken);
+        assert_eq!(
+            guard.on_token(STREAM_RESET_SENTINEL),
+            LiveTypingDecision::ResetAndDisable
+        );
+        assert_eq!(guard.on_token("world"), LiveTypingDecision::PreviewOnly);
     }
 }

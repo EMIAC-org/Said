@@ -40,8 +40,8 @@ use crate::{
         meaning, phonetic_triage, phonetics, pre_filter, promotion_gate,
     },
     store::{
-        corrections, history, pending_edits, prefs::get_prefs, stt_replacements, vocab_embeddings,
-        vocab_fts, vocabulary,
+        corrections, history, pending_edits, pending_promotions, prefs::get_prefs,
+        stt_replacements, vocab_embeddings, vocab_fts, vocabulary,
     },
     stt::{background as stt_background, bias as stt_bias},
 };
@@ -355,18 +355,43 @@ pub async fn classify(
                 if !auto_promote_allowed {
                     continue;
                 }
-                if !stt_promotion_allowed(cand, correct, &body.user_kept, &output_language) {
-                    continue;
+                let mut promoted_via_pending = false;
+                match stt_promotion_disposition(cand, correct, &body.user_kept, &output_language) {
+                    SttPromotionDisposition::Reject => continue,
+                    SttPromotionDisposition::QueuePending => {
+                        let Some(decision) = pending_promotions::record_sighting(
+                            &state.pool,
+                            &state.default_user_id,
+                            correct,
+                            cand.transcript_form(),
+                            &output_language,
+                            pending_promotions::DEFAULT_K,
+                        ) else {
+                            continue;
+                        };
+                        match decision {
+                            pending_promotions::PromotionDecision::Pending { .. } => {
+                                if !queued_terms.iter().any(|t| t.eq_ignore_ascii_case(correct)) {
+                                    queued_terms.push(correct.to_string());
+                                }
+                                continue;
+                            }
+                            pending_promotions::PromotionDecision::Promote { .. } => {
+                                promoted_via_pending = true;
+                                is_repeat = true;
+                            }
+                        }
+                    }
+                    SttPromotionDisposition::PromoteNow => {}
                 }
 
                 // Promote on the first sighting. The capture-confidence gate
                 // (auto_promote_allowed) and semantic safety gate
-                // (stt_promotion_allowed: appears-in-kept + script match +
-                // hallucination guard) already filter low-trust signals out;
-                // an additional sighting-count gate here was redundant defense
-                // and made the system feel slow. Bad promotions are
-                // recoverable via cascade-clean delete + the demotion pass on
-                // user_kept; good promotions should land immediately.
+                // (stt_promotion_disposition: hard structural gates + strong
+                // plausibility signal) already filter low-trust signals out.
+                // Weak-but-plausible STT corrections now take the pending-
+                // promotions path above so they can accumulate repeat
+                // evidence instead of disappearing.
                 let from = cand.transcript_form().trim();
 
                 // Capture the surrounding sentence as example_context.
@@ -478,6 +503,14 @@ pub async fn classify(
                 {
                     is_repeat = true;
                 }
+                if promoted_via_pending {
+                    pending_promotions::delete(
+                        &state.pool,
+                        &state.default_user_id,
+                        correct,
+                        &output_language,
+                    );
+                }
             }
             EditClass::PolishError => {
                 if !auto_promote_allowed {
@@ -574,24 +607,35 @@ pub async fn classify(
     )
 }
 
-/// Defense-in-depth gate for STT_ERROR auto-promotion.
-fn stt_promotion_allowed(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SttPromotionDisposition {
+    PromoteNow,
+    QueuePending,
+    Reject,
+}
+
+/// Defense-in-depth decision for STT_ERROR learning.
+///
+/// Hard structural failures are rejected outright. Candidates that are
+/// structurally valid but too weak for immediate promotion are sent to the
+/// pending-promotions queue so repeated corrections can accumulate.
+fn stt_promotion_disposition(
     cand: &LabelledHunk,
     correct: &str,
     user_kept: &str,
     output_language: &str,
-) -> bool {
+) -> SttPromotionDisposition {
     if !promotion_gate::appears_in_user_kept(correct, user_kept) {
         warn!(
             "[classify] STT_ERROR rejected — correct_form {correct:?} not in user_kept (LLM hallucination?)"
         );
-        return false;
+        return SttPromotionDisposition::Reject;
     }
     if !promotion_gate::script_matches(correct, output_language) {
         warn!(
             "[classify] STT_ERROR rejected — script of {correct:?} doesn't match output_language={output_language:?}"
         );
-        return false;
+        return SttPromotionDisposition::Reject;
     }
 
     // Concatenation guard: when correct_form contains polish_form as a
@@ -610,7 +654,7 @@ fn stt_promotion_allowed(
             cand.polish_form(),
             correct,
         );
-        return false;
+        return SttPromotionDisposition::Reject;
     }
 
     // Plausibility: the candidate must look STT-error-like.
@@ -622,12 +666,12 @@ fn stt_promotion_allowed(
 
     if phon_sim < 0.5 && jargon < 0.4 && !confident {
         info!(
-            "[classify] STT_ERROR rejected — weak signal (phon={phon_sim:.2}, jargon={jargon:.2}, conf={:.2}) for {correct:?}",
+            "[classify] STT_ERROR queued — weak signal (phon={phon_sim:.2}, jargon={jargon:.2}, conf={:.2}) for {correct:?}",
             cand.confidence,
         );
-        return false;
+        return SttPromotionDisposition::QueuePending;
     }
-    true
+    SttPromotionDisposition::PromoteNow
 }
 
 /// Gate for POLISH_ERROR auto-promotion.
@@ -954,6 +998,30 @@ fn empty_response(class: &str, reason: &str) -> ClassifyResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::{classifier::ExtractedTerm, edit_diff::Hunk};
+
+    fn test_stt_candidate(
+        transcript_window: &str,
+        polish_window: &str,
+        kept_window: &str,
+        transcript_form: &str,
+        correct_form: &str,
+        confidence: f64,
+    ) -> LabelledHunk {
+        LabelledHunk {
+            hunk: Hunk {
+                transcript_window: transcript_window.to_string(),
+                polish_window: polish_window.to_string(),
+                kept_window: kept_window.to_string(),
+            },
+            class: EditClass::SttError,
+            confidence,
+            extracted_term: Some(ExtractedTerm {
+                transcript_form: transcript_form.to_string(),
+                correct_form: correct_form.to_string(),
+            }),
+        }
+    }
 
     #[test]
     fn surrounding_sentence_returns_the_containing_clause() {
@@ -999,5 +1067,42 @@ mod tests {
         // Unknown values default to refused (safe fallback).
         assert!(!capture_allows_auto_promote(""));
         assert!(!capture_allows_auto_promote("anything_else"));
+    }
+
+    #[test]
+    fn stt_disposition_rejects_hallucinated_term() {
+        let cand = test_stt_candidate("hrmmn", "HRMMN", "HRM8", "HRMMN", "MACOBS", 0.61);
+        assert_eq!(
+            stt_promotion_disposition(&cand, "MACOBS", "Aur kya raha hai HRM8?", "hinglish"),
+            SttPromotionDisposition::Reject
+        );
+    }
+
+    #[test]
+    fn stt_disposition_queues_weak_but_structurally_valid_signal() {
+        let cand = test_stt_candidate("return", "return", "Atlas", "return", "Atlas", 0.41);
+        assert_eq!(
+            stt_promotion_disposition(
+                &cand,
+                "Atlas",
+                "Can you open Atlas for me?",
+                "english"
+            ),
+            SttPromotionDisposition::QueuePending
+        );
+    }
+
+    #[test]
+    fn stt_disposition_promotes_confident_signal_now() {
+        let cand = test_stt_candidate("MacOps", "MacOps", "MACOBS", "MacOps", "MACOBS", 0.93);
+        assert_eq!(
+            stt_promotion_disposition(
+                &cand,
+                "MACOBS",
+                "MACOBS ka kitna profit hai is saal?",
+                "hinglish"
+            ),
+            SttPromotionDisposition::PromoteNow
+        );
     }
 }
