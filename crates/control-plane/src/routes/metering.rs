@@ -5,12 +5,12 @@
 //!
 //! Body: { "events": [{ "date": "YYYY-MM-DD", "polish_count": n, "word_count": n, "model": "fast" }] }
 
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::{auth::AuthUser, AppState};
+use crate::{AppState, auth::AuthUser};
 
 #[derive(Deserialize)]
 pub struct MeteringReport {
@@ -19,16 +19,16 @@ pub struct MeteringReport {
 
 #[derive(Deserialize)]
 pub struct UsageEvent {
-    pub date:         String,   // "YYYY-MM-DD"
+    pub date: String, // "YYYY-MM-DD"
     pub polish_count: i32,
-    pub word_count:   i32,
-    pub model:        String,
+    pub word_count: i32,
+    pub model: String,
 }
 
 pub async fn report(
     State(state): State<AppState>,
-    user:         AuthUser,
-    Json(body):   Json<MeteringReport>,
+    user: AuthUser,
+    Json(body): Json<MeteringReport>,
 ) -> StatusCode {
     for event in &body.events {
         // Parse date — skip malformed

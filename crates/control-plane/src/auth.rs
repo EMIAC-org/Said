@@ -8,7 +8,7 @@
 use axum::{
     async_trait,
     extract::{FromRef, FromRequestParts},
-    http::{request::Parts, StatusCode},
+    http::{StatusCode, request::Parts},
 };
 use uuid::Uuid;
 
@@ -18,7 +18,7 @@ use crate::AppState;
 #[derive(Clone)]
 pub struct AuthUser {
     pub account_id: Uuid,
-    pub email:      String,
+    pub email: String,
 }
 
 #[async_trait]
@@ -58,8 +58,8 @@ where
         .await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "database error"))?;
 
-        let (account_id, email) = row
-            .ok_or((StatusCode::UNAUTHORIZED, "invalid or expired token"))?;
+        let (account_id, email) =
+            row.ok_or((StatusCode::UNAUTHORIZED, "invalid or expired token"))?;
 
         Ok(AuthUser { account_id, email })
     }
