@@ -14,7 +14,7 @@ export function Navbar() {
     <header className="relative z-10 mx-auto flex w-full max-w-[1280px] items-center justify-between px-token-md pt-8">
       <Link
         href="/"
-        aria-label="Aqua — home"
+        aria-label="Said — home"
         className="text-[22px] font-bold tracking-[-0.04em] text-ink"
       >
         AQUA

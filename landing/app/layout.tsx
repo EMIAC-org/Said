@@ -10,14 +10,14 @@ const interTight = Inter_Tight({
 });
 
 export const metadata: Metadata = {
-  title: 'Aqua — Speak. Don’t type.',
+  title: 'Said — Speak. Don’t type.',
   description:
-    'Aqua turns your voice into clear text in real time, for everything from AI prompts to essays.',
-  metadataBase: new URL('https://withaqua.com'),
+    'Said turns your voice into clear text in real time, for everything from AI prompts to essays.',
+  metadataBase: new URL('https://said.app'),
   openGraph: {
-    title: 'Aqua — Speak. Don’t type.',
+    title: 'Said — Speak. Don’t type.',
     description:
-      'Aqua turns your voice into clear text in real time, for everything from AI prompts to essays.',
+      'Said turns your voice into clear text in real time, for everything from AI prompts to essays.',
     type: 'website',
   },
 };

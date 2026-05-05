@@ -9,7 +9,7 @@ export function ResultsSection() {
             immediately
           </h2>
           <p className="mt-4 max-w-[420px] text-[15px] leading-[1.55] text-white/55">
-            Aqua helps developers ship faster, stay focused,
+            Said helps developers ship faster, stay focused,
             <br />
             and spend less time on repetitive typing.
           </p>
