@@ -30,11 +30,31 @@ fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
 }
 
+fn record_hotkey_label(raw: &str) -> &'static str {
+    match raw {
+        "right_option" => "Right Option",
+        "fn" => "Fn",
+        _ => "Caps Lock",
+    }
+}
+
 fn emit_short_recording_error(app: &tauri::AppHandle) {
+    let record_hotkey = app
+        .try_state::<TrayCache>()
+        .map(|cache| {
+            cache
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .record_hotkey
+                .clone()
+        })
+        .unwrap_or_else(|| "caps_lock".to_string());
+    let message = format!("Hold {} to record", record_hotkey_label(&record_hotkey));
     let _ = app.emit(
         "voice-error",
         serde_json::json!({
-            "message": "Hold Option to record",
+            "message": message,
             "audio_id": null,
             "auto_hide_ms": 1800,
         }),
@@ -736,12 +756,14 @@ struct TrayCache(Mutex<TrayCacheInner>);
 struct TrayCacheInner {
     custom_prompt: Option<String>,
     output_language: String, // "hinglish" | "english" | "hindi"
+    record_hotkey: String,   // "caps_lock" | "right_option" | "fn"
 }
 impl Default for TrayCacheInner {
     fn default() -> Self {
         Self {
             custom_prompt: None,
             output_language: "hinglish".into(),
+            record_hotkey: "caps_lock".into(),
         }
     }
 }
@@ -1338,6 +1360,7 @@ async fn patch_preferences(
             if let Ok(mut cache) = tray_cache.0.lock() {
                 cache.custom_prompt = p.custom_prompt.clone();
                 cache.output_language = p.output_language.clone();
+                cache.record_hotkey = p.record_hotkey.clone();
             }
             // Re-render tray menu to show updated checkmark
             let shared = app.state::<SharedApp>();
@@ -4019,6 +4042,7 @@ fn main() {
                                 if let Ok(mut cache) = app_h.state::<TrayCache>().0.lock() {
                                     cache.custom_prompt   = prefs.custom_prompt.clone();
                                     cache.output_language = prefs.output_language.clone();
+                                    cache.record_hotkey   = prefs.record_hotkey.clone();
                                 }
                                 // Re-render now that we have real data
                                 let shared = app_h.state::<SharedApp>();
