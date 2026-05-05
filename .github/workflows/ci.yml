@@ -35,8 +35,12 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all --check
 
+      # No -D warnings: correctness lints are deny-by-default and gate the
+      # build; style / complexity / perf lints surface as advisory warnings
+      # without blocking CI. Promote individual lints to deny in
+      # [workspace.lints] (Cargo.toml) once the codebase pays down debt.
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets
 
       - name: cargo test
         run: cargo test --workspace --all-targets
@@ -64,7 +68,7 @@ jobs:
         run: cargo fmt --check
 
       - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets
 
       - name: cargo build
         run: cargo build

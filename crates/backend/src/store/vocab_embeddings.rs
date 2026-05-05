@@ -455,7 +455,7 @@ fn decay_factor(last_used_ms: i64, now_ms: i64) -> f32 {
     let elapsed_ms = (now_ms - last_used_ms).max(0) as f32;
     let elapsed_days = elapsed_ms / (1000.0 * 60.0 * 60.0 * 24.0);
     // exp(-λ Δt) where λ = ln(2) / half_life
-    (-(0.6931472_f32) * elapsed_days / HALF_LIFE_DAYS).exp()
+    (-std::f32::consts::LN_2 * elapsed_days / HALF_LIFE_DAYS).exp()
 }
 
 /// Use-count factor: log(1 + use_count). Diminishing returns — a term used

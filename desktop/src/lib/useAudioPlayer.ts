@@ -50,7 +50,9 @@ export function useAudioPlayer() {
       const bytes = await getRecordingAudioBytes(recordingId);
       if (!bytes) return;
 
-      const blob  = new Blob([bytes], { type: "audio/wav" });
+      // TS 5.7+ tightened Uint8Array generics; cast to BlobPart since the
+      // runtime value is already a valid blob source.
+      const blob  = new Blob([bytes as BlobPart], { type: "audio/wav" });
       const url   = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audioRef.current   = audio;

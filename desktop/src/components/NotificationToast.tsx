@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import { useEffect } from "react";
 import { X, RotateCcw, Check, Sparkles, BookOpen, Star, Undo2, History, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Mic } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -37,11 +37,8 @@ export function DashboardView({
   onNavigate,
   statusPhase    = "",
   liveText       = "",
-  pendingEdits   = [],
-  onResolvePending,
   onDownloadSuccess,
 }: DashboardViewProps) {
-  const [reviewOpen, setReviewOpen] = useState(false);
   const [recordings, setRecordings] = useState<Recording[]>([]);
 
   const isRecording  = snapshot?.state === "recording";

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X, Send, Check, Loader2, Heart, AlertCircle } from "lucide-react";
 import { sendInviteEmail, openExternal } from "@/lib/invoke";
 

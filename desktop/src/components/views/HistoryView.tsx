@@ -335,6 +335,7 @@ export function HistoryView({ onDownloadSuccess }: { onDownloadSuccess?: (path: 
     transcribe_ms:     r.transcribe_ms ?? 0,
     embed_ms:          r.embed_ms ?? 0,
     polish_ms:         r.polish_ms ?? 0,
+    audio_id:          r.audio_id,
   }));
   const timeline = groupHistory(items);
 

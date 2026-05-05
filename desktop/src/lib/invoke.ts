@@ -29,6 +29,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     transcribe_ms: 420,
     embed_ms: 210,
     polish_ms: 610,
+    audio_id: null,
   },
   {
     timestamp_ms: now - DAY - 2 * 60 * 60 * 1000,
@@ -40,6 +41,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     transcribe_ms: 640,
     embed_ms: 290,
     polish_ms: 980,
+    audio_id: null,
   },
   {
     timestamp_ms: now - DAY - 2 * 60 * 60 * 1000 - 60 * 1000,
@@ -51,6 +53,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     transcribe_ms: 710,
     embed_ms: 0,
     polish_ms: 890,
+    audio_id: null,
   },
   {
     timestamp_ms: now - DAY - 9 * 60 * 60 * 1000,
@@ -61,6 +64,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     transcribe_ms: 510,
     embed_ms: 180,
     polish_ms: 730,
+    audio_id: null,
   },
   {
     timestamp_ms: now - DAY - 9 * 60 * 60 * 1000 - 3 * 60 * 1000,
@@ -71,6 +75,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     transcribe_ms: 280,
     embed_ms: 0,
     polish_ms: 330,
+    audio_id: null,
   },
   {
     timestamp_ms: now - 2 * DAY - 3 * 60 * 60 * 1000,
@@ -81,6 +86,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     transcribe_ms: 590,
     embed_ms: 240,
     polish_ms: 840,
+    audio_id: null,
   },
   {
     timestamp_ms: now - 3 * DAY - 11 * 60 * 60 * 1000,
@@ -91,6 +97,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     transcribe_ms: 480,
     embed_ms: 195,
     polish_ms: 700,
+    audio_id: null,
   },
 ];
 
@@ -135,7 +142,7 @@ const mockSnapshot: AppSnapshot = {
 
 async function mockInvoke(
   command: string,
-  args?: Record<string, unknown>
+  _args?: Record<string, unknown>
 ): Promise<AppSnapshot> {
   if (command === "bootstrap" || command === "request_accessibility") {
     return structuredClone(mockSnapshot);
@@ -171,7 +178,9 @@ async function mockInvoke(
       recording_seconds: 4.5,
       model: mockSnapshot.current_model,
       transcribe_ms: 580,
+      embed_ms: 0,
       polish_ms: 910,
+      audio_id: null,
     };
 
     mockSnapshot.history = [newItem, ...mockSnapshot.history];
@@ -620,8 +629,10 @@ export async function sendNotification(title: string, body: string): Promise<voi
     const { isPermissionGranted, sendNotification: pluginSend } = await import(
       "@tauri-apps/plugin-notification"
     );
-    const state = await isPermissionGranted();
-    if (state === "granted") {
+    // Tauri v2 plugin-notification's isPermissionGranted returns boolean, not
+    // the string "granted" — the previous string check meant notifications
+    // never fired.
+    if (await isPermissionGranted()) {
       await pluginSend({ title, body });
     }
   } catch {

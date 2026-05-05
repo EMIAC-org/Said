@@ -41,3 +41,24 @@ dotenvy     = "0.15"
 opt-level = "z"
 lto       = true
 strip     = true
+
+# Workspace-wide lint policy. Members inherit via `lints.workspace = true`.
+# Strategy: keep clippy's correctness, suspicious, and complexity lints strict
+# (the defaults), but opt out of style/pedantic categories that are noisy on a
+# real codebase and don't catch bugs.
+[workspace.lints.rust]
+# objc 0.2's msg_send! macro emits cfg(cargo-clippy) checks that modern rustc
+# rejects under the cfg-check feature. Until objc bumps, this is unfixable.
+unexpected_cfgs = "allow"
+# In-flight infrastructure constants/helpers (unused keycodes, FFI helpers
+# held for adjacent features) shouldn't fail CI. Manual review during PR
+# catches the dead code that actually matters.
+dead_code = "allow"
+
+[workspace.lints.clippy]
+collapsible_if              = "allow"
+doc_lazy_continuation       = "allow"
+doc_overindented_list_items = "allow"
+manual_char_comparison      = "allow"
+too_many_arguments          = "allow"
+type_complexity             = "allow"

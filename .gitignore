@@ -17,6 +17,9 @@ desktop/node_modules/
 # Frontend build output
 desktop/dist/
 
+# TypeScript incremental build cache
+**/tsconfig.tsbuildinfo
+
 # Python (legacy)
 venv/
 __pycache__/
