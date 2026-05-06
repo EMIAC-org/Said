@@ -1,4 +1,4 @@
-//! Best-effort guardrails for leaked `polish-backend` processes.
+//! Best-effort guardrails for leaked `said-backend` processes.
 //!
 //! The normal owner is `backend::BackendHandle::Drop`. This module covers
 //! starts after crashes, stale PID files, and signal/panic paths that might
@@ -10,13 +10,13 @@ use std::time::{Duration, Instant};
 use sysinfo::{Pid, System};
 use tracing::{info, warn};
 
-const BACKEND_NAME: &str = "polish-backend";
+const BACKEND_NAME: &str = "said-backend";
 
 pub fn pid_file() -> PathBuf {
     let base = dirs::data_local_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
         .unwrap_or_else(|| std::env::temp_dir());
-    base.join("Said").join("polish-backend.pid")
+    base.join("Said").join("said-backend.pid")
 }
 
 pub fn reap_previous() {

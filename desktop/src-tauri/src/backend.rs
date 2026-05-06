@@ -1,6 +1,6 @@
 //! Backend daemon lifecycle management.
 //!
-//! Spawns `polish-backend` at Tauri startup, polls health, and exposes
+//! Spawns `said-backend` at Tauri startup, polls health, and exposes
 //! the URL + shared secret to the rest of the app.
 
 use std::path::PathBuf;
@@ -89,9 +89,9 @@ impl Drop for BackendHandle {
 /// Spawn the backend daemon and return a handle once it is healthy.
 ///
 /// Binary resolution order (first existing path wins):
-///   1. `target/debug/polish-backend`        — cargo dev build
-///   2. `target/release/polish-backend`      — cargo release build
-///   3. Sibling of current executable        — bundled in .app
+///   1. `target/debug/said-backend`        — cargo dev build
+///   2. `target/release/said-backend`      — cargo release build
+///   3. Sibling of current executable      — bundled in .app
 pub fn spawn() -> Result<BackendHandle, String> {
     let secret = uuid::Uuid::new_v4().to_string();
     let port = free_port()?;
@@ -130,7 +130,7 @@ pub fn spawn() -> Result<BackendHandle, String> {
 
     let child = command
         .spawn()
-        .map_err(|e| format!("failed to spawn polish-backend ({bin:?}): {e}"))?;
+        .map_err(|e| format!("failed to spawn said-backend ({bin:?}): {e}"))?;
 
     let url = format!("http://127.0.0.1:{port}");
     let endpoint = BackendEndpoint {
@@ -176,7 +176,7 @@ fn free_port() -> Result<u16, String> {
     Ok(listener.local_addr().unwrap().port())
 }
 
-/// Locate the `polish-backend` binary.
+/// Locate the `said-backend` binary.
 ///
 /// Resolution order (first existing path wins):
 ///   1. Sibling of current exe — bundled .app (Tauri `externalBin`)
@@ -187,31 +187,30 @@ fn find_binary() -> Result<PathBuf, String> {
 
     let mut candidates: Vec<PathBuf> = Vec::new();
 
-    // ── 1. Bundled app: exe is Contents/MacOS/<exe>, backend is Contents/MacOS/polish-backend
+    // ── 1. Bundled app: exe is Contents/MacOS/<exe>, backend is Contents/MacOS/said-backend
     //       (Tauri externalBin strips the target triple suffix in the bundle)
     if let Some(exe_dir) = exe.parent() {
-        candidates.push(exe_dir.join("polish-backend"));
+        candidates.push(exe_dir.join("said-backend"));
     }
 
     // ── 2. Walk up from exe directory — covers target/debug and target/release layouts
     let mut dir = exe.parent().map(|p| p.to_path_buf());
     for _ in 0..8 {
         if let Some(ref d) = dir {
-            candidates.push(d.join("debug").join("polish-backend"));
-            candidates.push(d.join("release").join("polish-backend"));
-            candidates.push(d.join("polish-backend"));
+            candidates.push(d.join("debug").join("said-backend"));
+            candidates.push(d.join("release").join("said-backend"));
+            candidates.push(d.join("said-backend"));
             dir = d.parent().map(|p| p.to_path_buf());
         }
     }
 
     // ── 3. Explicit workspace-relative paths for `cargo tauri dev`
     if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("target").join("debug").join("polish-backend"));
-        candidates.push(cwd.join("target").join("release").join("polish-backend"));
+        candidates.push(cwd.join("target").join("debug").join("said-backend"));
+        candidates.push(cwd.join("target").join("release").join("said-backend"));
     }
 
     candidates.into_iter().find(|p| p.exists()).ok_or_else(|| {
-        "polish-backend binary not found — run `cargo build -p polish-backend --release` first"
-            .into()
+        "said-backend binary not found — run `cargo build -p said-backend --release` first".into()
     })
 }
