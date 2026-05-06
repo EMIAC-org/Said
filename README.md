@@ -95,7 +95,7 @@ The same word lands right the second time.
   DASHBOARD IMAGE — replace with the desktop app screenshot.
   Recommended: 1200px wide, captures the Home / Dashboard / History view.
 -->
-<img src="docs/assets/dashboard.png" alt="Said desktop dashboard" width="1100" />
+<img src="https://github.com/user-attachments/assets/16e6564c-c752-4515-b3df-8db9d49ddca5" alt="Said desktop dashboard" width="1100" />
 
 <sub>The desktop app. History, vocabulary, and learning insights live here — but you'll spend most of your time never opening it.</sub>
 
