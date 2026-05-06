@@ -1,4 +1,5 @@
-<!-- <img width="282" height="100" alt="Screenshot 2026-05-06 at 7 46 34 AM" src="https://github.com/user-attachments/assets/1455e803-0170-4e4b-85c5-f73feeb65641" /> -->
+<img width="2752" height="1536" alt="Untitled design (1)" src="https://github.com/user-attachments/assets/6c89ecc1-1f30-4f85-ad6e-7ed35e4c8f1e" />
+
 <div align="center">
 
 # Said
@@ -20,7 +21,7 @@ in English, Hindi, Hinglish, or whatever mix comes out of your mouth.
   showing Said live (the small pill that appears while recording).
   Recommended: 720px wide, dark background, transparent PNG.
 -->
-<img src="https://github.com/user-attachments/assets/1455e803-0170-4e4b-85c5-f73feeb65641" alt="Said running in the macOS menu bar" width="720" />
+<img src="https://github.com/user-attachments/assets/6c89ecc1-1f30-4f85-ad6e-7ed35e4c8f1e" alt="Said running in the macOS menu bar" width="720" />
 
 </div>
 
