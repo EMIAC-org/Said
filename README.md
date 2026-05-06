@@ -1,5 +1,3 @@
-<img width="2752" height="1536" alt="Untitled design (1)" src="https://github.com/user-attachments/assets/6c89ecc1-1f30-4f85-ad6e-7ed35e4c8f1e" />
-
 <div align="center">
 
 # Said
