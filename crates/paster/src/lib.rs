@@ -1159,10 +1159,19 @@ mod imp {
             ffi::CGEventPost(K_CG_HID_EVENT_TAP, dn);
             ffi::CFRelease(dn);
 
+            // Give the HID stack time to dispatch keydown before keyup.
+            // Without this, rapid token delivery floods the queue and the
+            // receiving app drops/merges characters (e.g. "bhi kaam" → "bhiam").
+            thread::sleep(Duration::from_millis(6));
+
             let up = ffi::CGEventCreateKeyboardEvent(source, 0, false);
             ffi::CGEventKeyboardSetUnicodeString(up, len, ptr);
             ffi::CGEventPost(K_CG_HID_EVENT_TAP, up);
             ffi::CFRelease(up);
+
+            // Pause after keyup so the next token's keydown doesn't arrive
+            // before this event pair is fully processed.
+            thread::sleep(Duration::from_millis(6));
 
             if !source.is_null() { ffi::CFRelease(source); }
         }
