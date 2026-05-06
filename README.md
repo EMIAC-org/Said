@@ -109,12 +109,14 @@ Same word lands right the second time.
 + Mereko lagta hai ki ye wali approach better hai — because faster hai, aur cheaper bhi.
 ```
 
-```diff
-- आज बहुत काम था मैं थक गया हूँ
-+ Aaj bahut kaam tha, main thak gaya hoon.
+And when the model has a bad day and emits Devanagari, the post-LLM romanizer pulls it back:
+
+```text
+model emits:   आज बहुत काम था, मैं थक गया हूँ
+Said outputs:  Aaj bahut kaam tha, main thak gaya hoon.
 ```
 
-The third example is the romanizer guarantee in action: even if you accidentally speak in pure Hindi (or the model emits Devanagari), the post-LLM pass forces Roman Hinglish. [`script.rs:104`](crates/backend/src/llm/script.rs)
+Always Roman, never Devanagari — guaranteed by a deterministic 80-glyph romanizer that runs *after* every polish ([`script.rs:104`](crates/backend/src/llm/script.rs)).
 
 ---
 
