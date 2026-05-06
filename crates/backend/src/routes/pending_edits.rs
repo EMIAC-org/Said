@@ -17,8 +17,8 @@ use reqwest::Client;
 use crate::{
     AppState,
     embedder::gemini,
-    stt::background as stt_background,
     store::{corrections, history, pending_edits, prefs::get_prefs, vectors},
+    stt::background as stt_background,
 };
 
 // ── Create ────────────────────────────────────────────────────────────────────
@@ -104,14 +104,18 @@ pub async fn resolve(
                         info!("[pending-edits] stored {} word correction(s)", diffs.len());
                     }
 
-                    let contradicted = crate::store::stt_replacements::note_negative_signals_for_edit(
-                        &state.pool,
-                        &state.default_user_id,
-                        &pe.ai_output,
-                        &pe.user_kept,
-                    );
+                    let contradicted =
+                        crate::store::stt_replacements::note_negative_signals_for_edit(
+                            &state.pool,
+                            &state.default_user_id,
+                            &pe.ai_output,
+                            &pe.user_kept,
+                        );
                     if contradicted > 0 {
-                        info!("[pending-edits] downgraded {} alias export signal(s)", contradicted);
+                        info!(
+                            "[pending-edits] downgraded {} alias export signal(s)",
+                            contradicted
+                        );
                         let state2 = state.clone();
                         tokio::spawn(async move {
                             stt_background::run_pending_alias_reviews(state2, 8).await;

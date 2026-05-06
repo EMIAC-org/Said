@@ -21,12 +21,12 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::{client::IntoClientRequest, Message},
+    tungstenite::{Message, client::IntoClientRequest},
 };
 use tracing::{error, warn};
 use tracing_subscriber::EnvFilter;
 use url::Url;
-use voice_polish_recorder::{resample_to_16k, AudioRecorder, ChunkReceiver, SAMPLE_RATE};
+use voice_polish_recorder::{AudioRecorder, ChunkReceiver, SAMPLE_RATE, resample_to_16k};
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_URL: &str = "https://auth.openai.com/oauth/authorize";
@@ -57,7 +57,7 @@ enum Commands {
     Status,
     /// Save or clear the Deepgram API key in the standalone config file.
     DeepgramKey {
-        key:   Option<String>,
+        key: Option<String>,
         #[arg(long)]
         clear: bool,
     },
@@ -69,31 +69,31 @@ enum Commands {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredOpenAiToken {
-    access_token:  String,
+    access_token: String,
     refresh_token: Option<String>,
-    expires_at:    i64,
-    connected_at:  i64,
+    expires_at: i64,
+    connected_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StandaloneConfig {
     deepgram_api_key: Option<String>,
-    openai:           Option<StoredOpenAiToken>,
-    language:         String,
-    output_language:  String,
-    tone_preset:      String,
-    custom_prompt:    Option<String>,
+    openai: Option<StoredOpenAiToken>,
+    language: String,
+    output_language: String,
+    tone_preset: String,
+    custom_prompt: Option<String>,
 }
 
 impl Default for StandaloneConfig {
     fn default() -> Self {
         Self {
             deepgram_api_key: None,
-            openai:           None,
-            language:         "auto".into(),
-            output_language:  "hinglish".into(),
-            tone_preset:      "neutral".into(),
-            custom_prompt:    None,
+            openai: None,
+            language: "auto".into(),
+            output_language: "hinglish".into(),
+            tone_preset: "neutral".into(),
+            custom_prompt: None,
         }
     }
 }
@@ -101,14 +101,14 @@ impl Default for StandaloneConfig {
 #[derive(Clone)]
 struct AppCtx {
     config_path: PathBuf,
-    http:        Client,
+    http: Client,
 }
 
 struct RunnerState {
-    recorder:      Option<AudioRecorder>,
+    recorder: Option<AudioRecorder>,
     transcript_rx: Option<oneshot::Receiver<String>>,
-    processing:    bool,
-    policy:        learning::RuntimePolicy,
+    processing: bool,
+    policy: learning::RuntimePolicy,
     watch_generation: u64,
 }
 
@@ -143,8 +143,7 @@ fn setup_logging() -> Result<(), String> {
     let log_dir = match fs::create_dir_all(&primary) {
         Ok(_) => primary,
         Err(_) => {
-            fs::create_dir_all(&fallback)
-                .map_err(|e| format!("create log dir failed: {e}"))?;
+            fs::create_dir_all(&fallback).map_err(|e| format!("create log dir failed: {e}"))?;
             fallback
         }
     };
@@ -204,8 +203,8 @@ fn load_config(ctx: &AppCtx) -> Result<StandaloneConfig, String> {
     if !ctx.config_path.exists() {
         return Ok(StandaloneConfig::default());
     }
-    let raw = fs::read_to_string(&ctx.config_path)
-        .map_err(|e| format!("read config failed: {e}"))?;
+    let raw =
+        fs::read_to_string(&ctx.config_path).map_err(|e| format!("read config failed: {e}"))?;
     serde_json::from_str(&raw).map_err(|e| format!("parse config failed: {e}"))
 }
 
@@ -213,8 +212,8 @@ fn save_config(ctx: &AppCtx, cfg: &StandaloneConfig) -> Result<(), String> {
     if let Some(parent) = ctx.config_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("config dir create failed: {e}"))?;
     }
-    let raw = serde_json::to_string_pretty(cfg)
-        .map_err(|e| format!("serialize config failed: {e}"))?;
+    let raw =
+        serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize config failed: {e}"))?;
     fs::write(&ctx.config_path, raw).map_err(|e| format!("write config failed: {e}"))
 }
 
@@ -224,10 +223,7 @@ fn show_status(ctx: &AppCtx) -> Result<(), String> {
 
     println!("Voice Polish standalone status");
     println!("─────────────────────────────");
-    println!(
-        "Config    : {}",
-        ctx.config_path.display()
-    );
+    println!("Config    : {}", ctx.config_path.display());
     println!(
         "Deepgram  : {}",
         if cfg
@@ -385,7 +381,10 @@ async fn connect_openai(ctx: &AppCtx) -> Result<(), String> {
     });
     save_config(ctx, &cfg)?;
 
-    println!("OpenAI connected. Token saved to {}", ctx.config_path.display());
+    println!(
+        "OpenAI connected. Token saved to {}",
+        ctx.config_path.display()
+    );
     Ok(())
 }
 
@@ -408,10 +407,14 @@ async fn run_listener(ctx: AppCtx) -> Result<(), String> {
         println!("Mic ready: {device}");
     }
     if !voice_polish_hotkey::is_input_monitoring_granted() {
-        println!("Input Monitoring is not granted yet. Run `voice-polish permissions`, grant it, then restart.");
+        println!(
+            "Input Monitoring is not granted yet. Run `voice-polish permissions`, grant it, then restart."
+        );
     }
     if !voice_polish_paster::is_accessibility_granted() {
-        println!("Accessibility is not granted yet. Run `voice-polish permissions`, grant it, then restart.");
+        println!(
+            "Accessibility is not granted yet. Run `voice-polish permissions`, grant it, then restart."
+        );
     }
 
     println!("Voice Polish standalone is listening.");
@@ -553,7 +556,8 @@ async fn process_recording(
         .and_then(|guard| guard.policy.prompt_block());
     let system_prompt = build_minimal_system_prompt(&cfg, policy_block.as_deref());
     let user_message = build_user_message(&transcript, &cfg.output_language);
-    let polished = stream_polish_and_paste(&ctx.http, &access_token, &system_prompt, &user_message).await?;
+    let polished =
+        stream_polish_and_paste(&ctx.http, &access_token, &system_prompt, &user_message).await?;
     println!("Polished: {polished}");
     spawn_learning_watch(state, ctx, cfg, transcript, polished);
     Ok(())
@@ -601,7 +605,9 @@ async fn ensure_openai_access_token(ctx: &AppCtx) -> Result<String, String> {
     let refresh_token = tok
         .refresh_token
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| "OpenAI token expired and has no refresh token. Run `voice-polish auth`.".to_string())?;
+        .ok_or_else(|| {
+            "OpenAI token expired and has no refresh token. Run `voice-polish auth`.".to_string()
+        })?;
 
     let refreshed = openai_codex::refresh_token(&ctx.http, &refresh_token).await?;
     cfg.openai = Some(StoredOpenAiToken {
@@ -664,8 +670,7 @@ async fn stream_polish_and_paste(
         voice_polish_paster::paste_replacing(&result.polished)
             .map_err(|e| format!("paste replacing failed: {e}"))?;
     } else if !typed_any {
-        voice_polish_paster::paste(&result.polished)
-            .map_err(|e| format!("paste failed: {e}"))?;
+        voice_polish_paster::paste(&result.polished).map_err(|e| format!("paste failed: {e}"))?;
     }
 
     Ok(result.polished)
@@ -785,7 +790,11 @@ async fn stream_to_deepgram_ws(
     }
 
     let joined = transcript_parts.join(" ").trim().to_string();
-    if joined.is_empty() { None } else { Some(joined) }
+    if joined.is_empty() {
+        None
+    } else {
+        Some(joined)
+    }
 }
 
 fn enrich_from_words(words: &Value) -> String {
@@ -897,7 +906,9 @@ fn spawn_learning_watch(
     };
 
     tokio::spawn(async move {
-        if let Err(e) = watch_for_user_correction(watch_id, state, ctx, cfg, transcript, polished).await {
+        if let Err(e) =
+            watch_for_user_correction(watch_id, state, ctx, cfg, transcript, polished).await
+        {
             warn!("[learning] watcher failed: {e}");
         }
     });
@@ -916,12 +927,15 @@ async fn watch_for_user_correction(
         return Ok(());
     }
 
-    let initial_pid = blocking_ax_option("focused_pid initial", voice_polish_paster::focused_pid).await;
+    let initial_pid =
+        blocking_ax_option("focused_pid initial", voice_polish_paster::focused_pid).await;
     let post_paste = {
         let mut val = blocking_ax_option(
             "read_focused_value_first initial",
             voice_polish_paster::read_focused_value_first,
-        ).await.unwrap_or_default();
+        )
+        .await
+        .unwrap_or_default();
         if val.is_empty() {
             tokio::time::sleep(Duration::from_millis(300)).await;
             if !watch_is_current(&state, watch_id) {
@@ -930,7 +944,9 @@ async fn watch_for_user_correction(
             val = blocking_ax_option(
                 "read_focused_value_first retry1",
                 voice_polish_paster::read_focused_value_first,
-            ).await.unwrap_or_default();
+            )
+            .await
+            .unwrap_or_default();
         }
         if val.is_empty() {
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -940,7 +956,9 @@ async fn watch_for_user_correction(
             val = blocking_ax_option(
                 "read_focused_value_first retry2",
                 voice_polish_paster::read_focused_value_first,
-            ).await.unwrap_or_default();
+            )
+            .await
+            .unwrap_or_default();
         }
         val
     };
@@ -959,7 +977,8 @@ async fn watch_for_user_correction(
             return Ok(());
         }
 
-        let now_pid = blocking_ax_option("focused_pid poll", voice_polish_paster::focused_pid).await;
+        let now_pid =
+            blocking_ax_option("focused_pid poll", voice_polish_paster::focused_pid).await;
         let pid_switched = matches!((initial_pid, now_pid), (Some(a), Some(b)) if a != b);
         if pid_switched {
             break;
@@ -970,13 +989,16 @@ async fn watch_for_user_correction(
             blocking_ax_option(
                 "read_focused_value_first focus-change",
                 voice_polish_paster::read_focused_value_first,
-            ).await
+            )
+            .await
         } else {
             blocking_ax_option(
                 "read_focused_value_fast poll",
                 voice_polish_paster::read_focused_value_fast,
-            ).await
-        }.unwrap_or_default();
+            )
+            .await
+        }
+        .unwrap_or_default();
 
         if now_val != last_val {
             idle_at = Instant::now();
@@ -990,7 +1012,9 @@ async fn watch_for_user_correction(
             current_interval = EDIT_WATCH_SLOW_INTERVAL;
         }
 
-        if idle_at.elapsed() > EDIT_WATCH_IDLE_TIMEOUT || started.elapsed() > EDIT_WATCH_MAX_DURATION {
+        if idle_at.elapsed() > EDIT_WATCH_IDLE_TIMEOUT
+            || started.elapsed() > EDIT_WATCH_MAX_DURATION
+        {
             break;
         }
     }
@@ -1011,10 +1035,11 @@ async fn watch_for_user_correction(
         }
         extract_kept(&polished, &post_paste, &effective_val)
     } else if matches!((initial_pid, final_pid), (Some(a), Some(b)) if a == b) {
-        let captured = tokio::task::spawn_blocking(voice_polish_paster::capture_focused_text_via_selection)
-            .await
-            .map_err(|e| format!("clipboard capture join failed: {e}"))?
-            .unwrap_or_default();
+        let captured =
+            tokio::task::spawn_blocking(voice_polish_paster::capture_focused_text_via_selection)
+                .await
+                .map_err(|e| format!("clipboard capture join failed: {e}"))?
+                .unwrap_or_default();
         let captured = captured.trim().to_string();
         if captured.is_empty() {
             return Ok(());
@@ -1047,7 +1072,9 @@ async fn watch_for_user_correction(
         &transcript,
         &polished,
         &user_kept,
-    ).await? else {
+    )
+    .await?
+    else {
         return Ok(());
     };
 
@@ -1060,7 +1087,11 @@ async fn watch_for_user_correction(
     let rule = &guard.policy.candidates()[outcome.candidate_index];
     println!(
         "[learning] {} {:?} candidate: {:?} -> {:?} · evidence={} · why={} · totals: events={} candidates={}",
-        if outcome.created_candidate { "created" } else { "updated" },
+        if outcome.created_candidate {
+            "created"
+        } else {
+            "updated"
+        },
         rule.kind,
         observation.source_span,
         observation.target_span,
@@ -1109,9 +1140,9 @@ fn log_policy_accept(state: &Arc<Mutex<RunnerState>>) {
 
 #[derive(Debug, Deserialize)]
 struct LearningAnalysis {
-    learn:       bool,
+    learn: bool,
     error_class: Option<String>,
-    why:         Option<String>,
+    why: Option<String>,
     topic_hints: Option<Vec<String>>,
 }
 
@@ -1127,8 +1158,8 @@ async fn analyze_edit_with_codex(
         .await
         .and_then(focused_app_hint_for_pid);
 
-    let Some(mut observation) = learning::observation_from_manual_correction(
-        learning::ManualCorrectionInput {
+    let Some(mut observation) =
+        learning::observation_from_manual_correction(learning::ManualCorrectionInput {
             transcript: transcript.to_string(),
             polished: polished.to_string(),
             corrected: user_kept.to_string(),
@@ -1136,8 +1167,8 @@ async fn analyze_edit_with_codex(
             language_mode: cfg.language.clone(),
             output_language: cfg.output_language.clone(),
             confidence_band: learning::ConfidenceBand::Unknown,
-        },
-    ) else {
+        })
+    else {
         return Ok(None);
     };
 
@@ -1191,7 +1222,10 @@ If this should not be learned, return:
     .await?;
 
     let analysis = parse_learning_analysis(&result.polished).ok_or_else(|| {
-        format!("learning analysis returned non-JSON output: {}", result.polished.trim())
+        format!(
+            "learning analysis returned non-JSON output: {}",
+            result.polished.trim()
+        )
     })?;
 
     if !analysis.learn {
@@ -1201,7 +1235,12 @@ If this should not be learned, return:
     if let Some(error_class) = analysis.error_class.as_deref().and_then(parse_error_class) {
         observation.error_class = error_class;
     }
-    if let Some(why_text) = analysis.why.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(why_text) = analysis
+        .why
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         observation.why_summary = Some(why_text.to_string());
     }
     if let Some(hints) = analysis.topic_hints {
@@ -1211,7 +1250,10 @@ If this should not be learned, return:
             if trimmed.is_empty() {
                 continue;
             }
-            if !merged.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed)) {
+            if !merged
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(trimmed))
+            {
                 merged.push(trimmed.to_string());
             }
         }
@@ -1305,8 +1347,7 @@ fn is_format_transformation(text: &str) -> bool {
     }
     let digits = t.chars().filter(|c| c.is_ascii_digit()).count();
     if digits >= 7
-        && t
-            .chars()
+        && t.chars()
             .all(|c| c.is_ascii_digit() || " -.+()\u{00A0}".contains(c))
     {
         return true;

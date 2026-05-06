@@ -572,9 +572,18 @@ fn parse_done(val: &Value) -> Option<PolishDone> {
         polished,
         model_used,
         confidence,
-        audio_id: val.get("audio_id").and_then(Value::as_str).map(str::to_string),
-        source: val.get("source").and_then(Value::as_str).map(str::to_string),
-        target_app: val.get("target_app").and_then(Value::as_str).map(str::to_string),
+        audio_id: val
+            .get("audio_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        source: val
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        target_app: val
+            .get("target_app")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         output_language: val
             .get("output_language")
             .and_then(Value::as_str)

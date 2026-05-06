@@ -223,10 +223,7 @@ pub fn insert_edit_event(
     Some(id)
 }
 
-pub fn should_embed_event(
-    pool: &DbPool,
-    edit_event_id: &str,
-) -> bool {
+pub fn should_embed_event(pool: &DbPool, edit_event_id: &str) -> bool {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return false,
@@ -245,28 +242,35 @@ pub fn derive_learning_meta(transcript: &str, ai_output: &str, user_kept: &str) 
     let norm_ai = normalize_text(ai_output);
     let norm_kept = normalize_text(user_kept);
 
-    let learning_kind = if !norm_transcript.is_empty() && norm_kept == norm_transcript && norm_ai != norm_kept {
-        LearningKind::Polish
-    } else if norm_ai.is_empty() || norm_kept.is_empty() {
-        LearningKind::Rewrite
-    } else {
-        let ai_tokens = token_set(&norm_ai);
-        let kept_tokens = token_set(&norm_kept);
-        let overlap = ai_tokens.intersection(&kept_tokens).count();
-        let max_len = ai_tokens.len().max(kept_tokens.len()).max(1);
-        let overlap_ratio = overlap as f64 / max_len as f64;
-        if overlap_ratio < 0.35 {
+    let learning_kind =
+        if !norm_transcript.is_empty() && norm_kept == norm_transcript && norm_ai != norm_kept {
+            LearningKind::Polish
+        } else if norm_ai.is_empty() || norm_kept.is_empty() {
             LearningKind::Rewrite
-        } else if looks_jargon_shift(&norm_ai, &norm_kept) {
-            LearningKind::Stt
         } else {
-            LearningKind::Style
-        }
-    };
+            let ai_tokens = token_set(&norm_ai);
+            let kept_tokens = token_set(&norm_kept);
+            let overlap = ai_tokens.intersection(&kept_tokens).count();
+            let max_len = ai_tokens.len().max(kept_tokens.len()).max(1);
+            let overlap_ratio = overlap as f64 / max_len as f64;
+            if overlap_ratio < 0.35 {
+                LearningKind::Rewrite
+            } else if looks_jargon_shift(&norm_ai, &norm_kept) {
+                LearningKind::Stt
+            } else {
+                LearningKind::Style
+            }
+        };
 
     let low_info = norm_ai == norm_kept
         || token_set(&norm_ai) == token_set(&norm_kept)
-        || (!norm_ai.is_empty() && !norm_kept.is_empty() && token_set(&norm_ai).symmetric_difference(&token_set(&norm_kept)).count() <= 1 && (norm_ai.len() as i64 - norm_kept.len() as i64).abs() <= 2);
+        || (!norm_ai.is_empty()
+            && !norm_kept.is_empty()
+            && token_set(&norm_ai)
+                .symmetric_difference(&token_set(&norm_kept))
+                .count()
+                <= 1
+            && (norm_ai.len() as i64 - norm_kept.len() as i64).abs() <= 2);
 
     let fingerprint_src = format!(
         "{}\n{}\n{}\n{}",
@@ -308,7 +312,8 @@ fn token_set(text: &str) -> std::collections::HashSet<String> {
 fn looks_jargon_shift(ai_output: &str, user_kept: &str) -> bool {
     let ai = token_set(ai_output);
     let kept = token_set(user_kept);
-    kept.iter().any(|tok| crate::llm::phonetics::jargon_score(tok) >= 0.4 && !ai.contains(tok))
+    kept.iter()
+        .any(|tok| crate::llm::phonetics::jargon_score(tok) >= 0.4 && !ai.contains(tok))
 }
 
 #[inline]

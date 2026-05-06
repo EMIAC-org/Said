@@ -574,7 +574,8 @@ pub fn note_negative_signals_for_edit(
     let mut updated = 0;
     for rule in load_all(pool, user_id) {
         let canonical = rule.correct_form.to_ascii_lowercase();
-        if canonical.is_empty() || !ai_lower.contains(&canonical) || kept_lower.contains(&canonical) {
+        if canonical.is_empty() || !ai_lower.contains(&canonical) || kept_lower.contains(&canonical)
+        {
             continue;
         }
         if seen.insert(canonical.clone()) {

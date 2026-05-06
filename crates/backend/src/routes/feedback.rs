@@ -14,8 +14,8 @@ use tracing::{debug, info, warn};
 use crate::{
     AppState,
     embedder::gemini,
-    stt::background as stt_background,
     store::{corrections, history, prefs::get_prefs, vectors},
+    stt::background as stt_background,
 };
 
 #[derive(Deserialize)]
@@ -79,7 +79,10 @@ pub async fn submit(State(state): State<AppState>, Json(body): Json<FeedbackBody
         &body.user_kept,
     );
     if contradicted > 0 {
-        info!("[feedback] downgraded {} alias export signal(s)", contradicted);
+        info!(
+            "[feedback] downgraded {} alias export signal(s)",
+            contradicted
+        );
         let state2 = state.clone();
         tokio::spawn(async move {
             stt_background::run_pending_alias_reviews(state2, 8).await;

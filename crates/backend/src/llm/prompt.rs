@@ -329,7 +329,14 @@ pub fn build_voice_repair_system_prompt(output_language: &str, hints: &[String])
     let hint_block = if hints.is_empty() {
         String::new()
     } else {
-        format!("REPAIR HINTS:\n{}\n\n", hints.iter().map(|h| format!("- {h}")).collect::<Vec<_>>().join("\n"))
+        format!(
+            "REPAIR HINTS:\n{}\n\n",
+            hints
+                .iter()
+                .map(|h| format!("- {h}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
     };
 
     format!(
@@ -368,7 +375,10 @@ pub fn build_refine_last_transform_prompt(tone_preset: &str) -> String {
     )
 }
 
-pub fn build_refine_last_transform_user_message(source_text: &str, previous_output: &str) -> String {
+pub fn build_refine_last_transform_user_message(
+    source_text: &str,
+    previous_output: &str,
+) -> String {
     format!(
         "Original source text:\n{source_text}\n\nPrevious transformed output:\n{previous_output}\n\nProduce a better version of the previous transformed output."
     )

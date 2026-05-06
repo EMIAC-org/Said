@@ -7,21 +7,24 @@ pub mod deepgram;
 // ── Gateway constants ─────────────────────────────────────────────────────────
 
 pub const GATEWAY_BASE: &str = "https://gateway.outreachdeal.com";
-pub const VOICE_URL:    &str = "https://gateway.outreachdeal.com/v1/voice/polish";
+pub const VOICE_URL: &str = "https://gateway.outreachdeal.com/v1/voice/polish";
 
 // ── Mode registry ─────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Mode {
-    pub key:   &'static str,
+    pub key: &'static str,
     pub label: &'static str,
     pub model: &'static str,
-    pub icon:  &'static str,
+    pub icon: &'static str,
 }
 
-pub const MODES: &[Mode] = &[
-    Mode { key: "mini", label: "Fast (gpt-5.4-mini)", model: "gpt-5.4-mini", icon: "fast" },
-];
+pub const MODES: &[Mode] = &[Mode {
+    key: "mini",
+    label: "Fast (gpt-5.4-mini)",
+    model: "gpt-5.4-mini",
+    icon: "fast",
+}];
 
 static MODE_INDEX: AtomicUsize = AtomicUsize::new(0);
 
@@ -63,46 +66,46 @@ pub fn validate_api_key() {
 /// A single persisted recording entry — stored in SQLite in Phase B+.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HistoryItem {
-    pub timestamp_ms:       u64,
-    pub polished:           String,
-    pub word_count:         u32,
-    pub recording_seconds:  f32,
-    pub model:              String,
-    pub transcribe_ms:      u64,
-    pub polish_ms:          u64,
+    pub timestamp_ms: u64,
+    pub polished: String,
+    pub word_count: u32,
+    pub recording_seconds: f32,
+    pub model: String,
+    pub transcribe_ms: u64,
+    pub polish_ms: u64,
 }
 
 /// Result of a single polish operation.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ProcessSummary {
-    pub transcript:     String,
-    pub polished:       String,
-    pub model:          String,
-    pub confidence:     f64,
-    pub transcribe_ms:  u64,
-    pub polish_ms:      u64,
+    pub transcript: String,
+    pub polished: String,
+    pub model: String,
+    pub confidence: f64,
+    pub transcribe_ms: u64,
+    pub polish_ms: u64,
 }
 
 /// Full state snapshot sent to the Tauri frontend on every command.
 #[derive(Serialize)]
 pub struct AppSnapshot {
-    pub state:                String,
-    pub platform:             String,
-    pub current_mode:         &'static str,
-    pub current_mode_label:   &'static str,
-    pub current_model:        &'static str,
-    pub auto_paste_supported:      bool,
-    pub accessibility_granted:     bool,
-    pub microphone_granted:        bool,
-    pub input_monitoring_granted:  bool,
-    pub screen_recording_granted:  bool,
-    pub modes:                Vec<Mode>,
-    pub last_result:          Option<ProcessSummary>,
-    pub last_error:           Option<String>,
-    pub history:              Vec<HistoryItem>,
-    pub total_words:          u64,
-    pub daily_streak:         u32,
-    pub avg_wpm:              u32,
+    pub state: String,
+    pub platform: String,
+    pub current_mode: &'static str,
+    pub current_mode_label: &'static str,
+    pub current_model: &'static str,
+    pub auto_paste_supported: bool,
+    pub accessibility_granted: bool,
+    pub microphone_granted: bool,
+    pub input_monitoring_granted: bool,
+    pub screen_recording_granted: bool,
+    pub modes: Vec<Mode>,
+    pub last_result: Option<ProcessSummary>,
+    pub last_error: Option<String>,
+    pub history: Vec<HistoryItem>,
+    pub total_words: u64,
+    pub daily_streak: u32,
+    pub avg_wpm: u32,
 }
 
 // ── .env loader ───────────────────────────────────────────────────────────────
@@ -122,9 +125,7 @@ pub fn load_env() {
     // 2. ~/VoicePolish/.env
     if std::env::var("GATEWAY_API_KEY").is_err() {
         if let Ok(home) = std::env::var("HOME") {
-            let fallback = std::path::Path::new(&home)
-                .join("VoicePolish")
-                .join(".env");
+            let fallback = std::path::Path::new(&home).join("VoicePolish").join(".env");
             let _ = dotenvy::from_path(fallback);
         }
     }

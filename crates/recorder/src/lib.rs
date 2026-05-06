@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 // ── Recording constants ───────────────────────────────────────────────────────
 
-pub const SAMPLE_RATE: u32  = 16_000;
-pub const CHANNELS:    u16  = 1;
+pub const SAMPLE_RATE: u32 = 16_000;
+pub const CHANNELS: u16 = 1;
 pub const MIN_DURATION_S: f32 = 0.5;
 
 // ── Internal command ──────────────────────────────────────────────────────────
@@ -20,16 +20,18 @@ enum RecCmd {
 /// Downsample/upsample `samples` from `src_rate` to `SAMPLE_RATE` (16 kHz)
 /// using linear interpolation.  Pure-Rust, no external crate needed.
 pub fn resample_to_16k(samples: &[f32], src_rate: u32) -> Vec<f32> {
-    if src_rate == SAMPLE_RATE { return samples.to_vec(); }
-    let ratio   = src_rate as f64 / SAMPLE_RATE as f64;
+    if src_rate == SAMPLE_RATE {
+        return samples.to_vec();
+    }
+    let ratio = src_rate as f64 / SAMPLE_RATE as f64;
     let out_len = (samples.len() as f64 / ratio).ceil() as usize;
     (0..out_len)
         .map(|i| {
-            let pos  = i as f64 * ratio;
-            let idx  = pos as usize;
+            let pos = i as f64 * ratio;
+            let idx = pos as usize;
             let frac = (pos - idx as f64) as f32;
-            let a    = samples.get(idx    ).copied().unwrap_or(0.0);
-            let b    = samples.get(idx + 1).copied().unwrap_or(a);
+            let a = samples.get(idx).copied().unwrap_or(0.0);
+            let b = samples.get(idx + 1).copied().unwrap_or(a);
             a + (b - a) * frac
         })
         .collect()
@@ -40,7 +42,7 @@ pub fn resample_to_16k(samples: &[f32], src_rate: u32) -> Vec<f32> {
 /// A live handle to raw audio chunks as they arrive from the microphone.
 /// Used by the Deepgram WebSocket streaming pipeline (P5).
 pub struct ChunkReceiver {
-    pub rx:          mpsc::Receiver<Vec<f32>>,
+    pub rx: mpsc::Receiver<Vec<f32>>,
     pub native_rate: u32,
 }
 
@@ -53,45 +55,43 @@ pub struct LevelReceiver {
 // ── Public recorder ───────────────────────────────────────────────────────────
 
 pub struct AudioRecorder {
-    cmd_tx:      Option<mpsc::Sender<RecCmd>>,
+    cmd_tx: Option<mpsc::Sender<RecCmd>>,
     /// Held until `take_chunk_receiver()` is called — then moved to the WS task.
-    chunk_rx:    Option<mpsc::Receiver<Vec<f32>>>,
+    chunk_rx: Option<mpsc::Receiver<Vec<f32>>>,
     /// Recorder's own copy of the chunk sender; dropped explicitly in `stop()`
     /// so the WS task sees the channel close when the cpal stream also ends.
-    chunk_tx:    Option<mpsc::SyncSender<Vec<f32>>>,
-    level_rx:    Option<mpsc::Receiver<f32>>,
-    level_tx:    Option<mpsc::SyncSender<f32>>,
+    chunk_tx: Option<mpsc::SyncSender<Vec<f32>>>,
+    level_rx: Option<mpsc::Receiver<f32>>,
+    level_tx: Option<mpsc::SyncSender<f32>>,
     native_rate: Option<u32>,
 }
 
 impl AudioRecorder {
     pub fn new() -> Self {
         Self {
-            cmd_tx:      None,
-            chunk_rx:    None,
-            chunk_tx:    None,
-            level_rx:    None,
-            level_tx:    None,
+            cmd_tx: None,
+            chunk_rx: None,
+            chunk_tx: None,
+            level_rx: None,
+            level_tx: None,
             native_rate: None,
         }
     }
 
     pub fn start(&mut self) -> Result<(), String> {
         let host = cpal::default_host();
-        let _device = host
-            .default_input_device()
-            .ok_or("no input device found")?;
+        let _device = host.default_input_device().ok_or("no input device found")?;
 
         let frames: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
         let frames_for_reply = Arc::clone(&frames);
 
-        let (cmd_tx,   cmd_rx)   = mpsc::channel::<RecCmd>();
+        let (cmd_tx, cmd_rx) = mpsc::channel::<RecCmd>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<u32, String>>();
 
         // Chunk channel for WS streaming (P5): buffer 256 cpal frames
         let (chunk_tx, chunk_rx) = mpsc::sync_channel::<Vec<f32>>(256);
-        let chunk_tx_cb = chunk_tx.clone();  // moved into cpal callback
-        self.chunk_tx = Some(chunk_tx);      // dropped in stop() to close the channel
+        let chunk_tx_cb = chunk_tx.clone(); // moved into cpal callback
+        self.chunk_tx = Some(chunk_tx); // dropped in stop() to close the channel
         self.chunk_rx = Some(chunk_rx);
 
         let (level_tx, level_rx) = mpsc::sync_channel::<f32>(64);
@@ -119,7 +119,7 @@ impl AudioRecorder {
 
             let native_rate = default_config.sample_rate().0;
             let config = cpal::StreamConfig {
-                channels:    CHANNELS,
+                channels: CHANNELS,
                 sample_rate: cpal::SampleRate(native_rate),
                 buffer_size: cpal::BufferSize::Default,
             };
@@ -180,7 +180,7 @@ impl AudioRecorder {
     /// Take the chunk receiver for the Deepgram WS streaming pipeline.
     /// Can only be called once per recording session (after `start()`).
     pub fn take_chunk_receiver(&mut self) -> Option<ChunkReceiver> {
-        let rx          = self.chunk_rx.take()?;
+        let rx = self.chunk_rx.take()?;
         let native_rate = self.native_rate?;
         Some(ChunkReceiver { rx, native_rate })
     }
@@ -209,7 +209,7 @@ impl AudioRecorder {
         }
 
         let duration = samples_f32.len() as f32 / native_rate as f32;
-        let max_amp  = samples_f32.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        let max_amp = samples_f32.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         println!("[rec] {duration:.1}s recorded ({native_rate}Hz → 16kHz, peak={max_amp:.4})");
 
         if max_amp < 0.0001 {
@@ -227,12 +227,12 @@ impl AudioRecorder {
         let resampled = resample_to_16k(&samples_f32, native_rate);
 
         // Convert F32 → I16 WAV at 16 kHz
-        let mut buf  = Cursor::new(Vec::new());
+        let mut buf = Cursor::new(Vec::new());
         let spec = hound::WavSpec {
-            channels:        CHANNELS,
-            sample_rate:     SAMPLE_RATE,   // 16_000 Hz
+            channels: CHANNELS,
+            sample_rate: SAMPLE_RATE, // 16_000 Hz
             bits_per_sample: 16,
-            sample_format:   hound::SampleFormat::Int,
+            sample_format: hound::SampleFormat::Int,
         };
         let mut writer = hound::WavWriter::new(&mut buf, spec).ok()?;
         for &sample in &resampled {
@@ -245,7 +245,7 @@ impl AudioRecorder {
     }
 
     pub fn preflight() -> Result<String, String> {
-        let host   = cpal::default_host();
+        let host = cpal::default_host();
         let device = host
             .default_input_device()
             .ok_or("no input device found — check microphone connection")?;
