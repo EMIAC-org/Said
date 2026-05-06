@@ -211,7 +211,6 @@ fn find_binary() -> Result<PathBuf, String> {
     }
 
     candidates.into_iter().find(|p| p.exists()).ok_or_else(|| {
-        "said-backend binary not found — run `cargo build -p said-backend --release` first"
-            .into()
+        "said-backend binary not found — run `cargo build -p said-backend --release` first".into()
     })
 }
