@@ -33,3 +33,4 @@ __pycache__/
 
 # Claude Code worktrees & local config
 .claude/
+.context/
