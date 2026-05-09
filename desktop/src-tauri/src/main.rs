@@ -949,7 +949,7 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
         tauri::async_runtime::spawn(async move {
             // Let the React HUD finish its short "done/pasted/manual paste" flash,
             // then make the native window invisible if no new recording started.
-            tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
             let still_idle = app
                 .try_state::<SharedApp>()
                 .and_then(|shared| {
@@ -1327,6 +1327,15 @@ fn get_snapshot(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
     Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
 }
 
+#[tauri::command]
+fn dismiss_status_bar(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("status-bar") {
+        win.hide()
+            .map_err(|e| format!("hide status bar failed: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Return `{url, secret}` so the frontend can hit the backend directly.
 #[tauri::command]
 fn get_backend_endpoint(backend: State<'_, BackendState>) -> Result<serde_json::Value, String> {
@@ -1537,14 +1546,14 @@ fn toggle_recording(
                 .ok()
                 .and_then(|mut target| target.take());
 
-            // Extract wav bytes synchronously, then hand off the async SSE pipeline.
-            // A very short press is an accidental tap, not a user-visible error.
-            let (wav, snap) = {
+            // Tell CoreAudio to stop while holding the app mutex, then collect
+            // and encode the WAV after releasing it.
+            let (stop_rx, was_too_short, snap) = {
                 let mut d = state.0.lock().map_err(|_| "lock failed")?;
-                match d.stop_and_extract() {
-                    Ok(wav) => {
+                match d.begin_stop() {
+                    Ok((stop_rx, was_too_short)) => {
                         let snap = d.snapshot();
-                        (wav, snap)
+                        (stop_rx, was_too_short, snap)
                     }
                     Err(e) if is_short_recording_cancel(&e) => {
                         tracing::info!("[record] short recording cancelled from UI toggle");
@@ -1558,6 +1567,34 @@ fn toggle_recording(
                 }
             };
             sync_tray(&app, &snap);
+            let wav = match desktop::DesktopApp::finish_stop(stop_rx, was_too_short) {
+                Ok(wav) => wav,
+                Err(e) if is_short_recording_cancel(&e) => {
+                    tracing::info!("[record] short recording cancelled from UI toggle");
+                    let mut d = state.0.lock().map_err(|_| "lock failed")?;
+                    let snap = d.finish_cancelled();
+                    drop(d);
+                    sync_tray(&app, &snap);
+                    emit_short_recording_error(&app);
+                    let _ = app.emit("app-state", &snap);
+                    return Ok(snap);
+                }
+                Err(e) => {
+                    let mut d = state.0.lock().map_err(|_| "lock failed")?;
+                    let snap = d.finish_err(e.clone());
+                    drop(d);
+                    sync_tray(&app, &snap);
+                    let _ = app.emit(
+                        "voice-error",
+                        serde_json::json!({
+                            "message": snap.last_error.clone().unwrap_or_else(|| "Recording failed".to_string()),
+                            "audio_id": null,
+                        }),
+                    );
+                    let _ = app.emit("app-state", &snap);
+                    return Err(e);
+                }
+            };
 
             // Kick off the SSE pipeline in the background (same as hotkey release)
             let shared2 = Arc::clone(&state.0);
@@ -1850,9 +1887,9 @@ fn do_finish_recording(
         .ok()
         .and_then(|mut target| target.take());
 
-    // Extract wav bytes synchronously (near-instant, no I/O).
-    // This also drops the recorder's chunk_tx, signalling the WS task to close.
-    let wav = {
+    // Signal the recorder to stop while holding the app mutex, then wait for
+    // samples and encode WAV after releasing it.
+    let (stop_rx, was_too_short) = {
         let mut d = match shared.lock() {
             Ok(g) => g,
             Err(_) => return,
@@ -1860,12 +1897,12 @@ fn do_finish_recording(
         if let Some(t) = app.tray_by_id("said") {
             let _ = t.set_title(Some("[  …  ]  Said"));
         }
-        match d.stop_and_extract() {
-            Ok(w) => {
+        match d.begin_stop() {
+            Ok((stop_rx, was_too_short)) => {
                 let snap = d.snapshot();
                 sync_tray(&app, &snap);
                 let _ = app.emit("app-state", &snap);
-                w
+                (stop_rx, was_too_short)
             }
             Err(e) => {
                 if is_short_recording_cancel(&e) {
@@ -1888,6 +1925,35 @@ fn do_finish_recording(
         }
     };
 
+    let wav = match desktop::DesktopApp::finish_stop(stop_rx, was_too_short) {
+        Ok(wav) => wav,
+        Err(e) => {
+            let mut d = match shared.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            if is_short_recording_cancel(&e) {
+                tracing::info!("[record] short Option tap — cancelled recording");
+                let snap = d.finish_cancelled();
+                sync_tray(&app, &snap);
+                emit_short_recording_error(&app);
+                let _ = app.emit("app-state", &snap);
+                return;
+            }
+            let snap = d.finish_err(e);
+            sync_tray(&app, &snap);
+            let _ = app.emit(
+                "voice-error",
+                serde_json::json!({
+                    "message": snap.last_error.clone().unwrap_or_else(|| "Recording failed".to_string()),
+                    "audio_id": null,
+                }),
+            );
+            let _ = app.emit("app-state", &snap);
+            return;
+        }
+    };
+
     // ── P5: Take the transcript receiver before spawning the async task ────────
     // Use ok() so a poisoned mutex from a previous panic doesn't cascade-crash.
     let transcript_rx = app
@@ -1904,7 +1970,7 @@ fn do_finish_recording(
 
     tauri::async_runtime::spawn(async move {
         // ── P5: Wait up to 2 s for the Deepgram WS transcript ─────────────────
-        // stop_and_extract() dropped chunk_tx, which closes the audio channel and
+        // begin_stop() dropped chunk_tx, which closes the audio channel and
         // triggers CloseStream inside the WS task.  Deepgram usually finalises in
         // 100–200 ms, so the transcript should arrive quickly.
         // Wait up to 4 s for the Deepgram WS transcript.
@@ -4358,6 +4424,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             get_snapshot,
+            dismiss_status_bar,
             get_backend_endpoint,
             get_preferences,
             patch_preferences,

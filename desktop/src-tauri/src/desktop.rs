@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use said_core::{AppSnapshot, ProcessSummary, all_modes};
 use said_paster::is_accessibility_granted;
-use said_recorder::{AudioRecorder, ChunkReceiver, LevelReceiver, MIN_DURATION_S};
+use said_recorder::{AudioRecorder, ChunkReceiver, LevelReceiver, MIN_DURATION_S, StopReceiver};
 
 #[cfg(target_os = "macos")]
 use said_hotkey::is_input_monitoring_granted;
@@ -121,6 +121,35 @@ impl DesktopApp {
             .unwrap_or(false);
         self.state = AppState::Processing;
         match self.recorder.stop() {
+            Some(wav) => Ok(wav),
+            None if was_too_short => Err(RECORDING_TOO_SHORT_ERROR.to_string()),
+            None => Err("no audio captured".to_string()),
+        }
+    }
+
+    /// Initiate recorder stop without waiting for the CoreAudio thread to return
+    /// samples or for WAV encoding to finish. The caller must collect the WAV
+    /// outside the shared app mutex.
+    pub fn begin_stop(&mut self) -> Result<(StopReceiver, bool), String> {
+        if self.state != AppState::Recording {
+            return Err("not recording".into());
+        }
+        let was_too_short = self
+            .recording_started
+            .map(|started| started.elapsed().as_secs_f32() < MIN_DURATION_S)
+            .unwrap_or(false);
+        match self.recorder.initiate_stop() {
+            Some(rx) => {
+                self.state = AppState::Processing;
+                Ok((rx, was_too_short))
+            }
+            None if was_too_short => Err(RECORDING_TOO_SHORT_ERROR.to_string()),
+            None => Err("no audio captured".to_string()),
+        }
+    }
+
+    pub fn finish_stop(stop_rx: StopReceiver, was_too_short: bool) -> Result<Vec<u8>, String> {
+        match AudioRecorder::collect_wav(stop_rx) {
             Some(wav) => Ok(wav),
             None if was_too_short => Err(RECORDING_TOO_SHORT_ERROR.to_string()),
             None => Err("no audio captured".to_string()),

@@ -52,6 +52,8 @@ pub struct LevelReceiver {
     pub rx: mpsc::Receiver<f32>,
 }
 
+pub type StopReceiver = mpsc::Receiver<(Vec<f32>, u32)>;
+
 // ── Public recorder ───────────────────────────────────────────────────────────
 
 pub struct AudioRecorder {
@@ -190,7 +192,7 @@ impl AudioRecorder {
         Some(LevelReceiver { rx })
     }
 
-    pub fn stop(&mut self) -> Option<Vec<u8>> {
+    pub fn initiate_stop(&mut self) -> Option<StopReceiver> {
         let cmd_tx = self.cmd_tx.take()?;
 
         // Drop our copy of the chunk sender BEFORE the recording thread exits.
@@ -201,6 +203,10 @@ impl AudioRecorder {
 
         let (reply_tx, reply_rx) = mpsc::channel();
         let _ = cmd_tx.send(RecCmd::Stop(reply_tx));
+        Some(reply_rx)
+    }
+
+    pub fn collect_wav(reply_rx: StopReceiver) -> Option<Vec<u8>> {
         let (samples_f32, native_rate) = reply_rx.recv().ok()?;
 
         if samples_f32.is_empty() {
@@ -242,6 +248,11 @@ impl AudioRecorder {
         writer.finalize().ok()?;
 
         Some(buf.into_inner())
+    }
+
+    pub fn stop(&mut self) -> Option<Vec<u8>> {
+        let reply_rx = self.initiate_stop()?;
+        Self::collect_wav(reply_rx)
     }
 
     pub fn preflight() -> Result<String, String> {
