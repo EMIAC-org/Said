@@ -461,12 +461,12 @@ export function onVoiceDone(
 
 /** Listen for error events. `audioId` is the saved WAV id for retrying. */
 export function onVoiceError(
-  handler: (message: string, audioId?: string) => void
+  handler: (message: string, audioId?: string, errorCode?: string) => void
 ): Unsubscribe {
   if (!isTauriRuntime()) return () => {};
   let unsub: Unsubscribe = () => {};
-  listen<{ message: string; audio_id?: string }>("voice-error", (e) =>
-    handler(e.payload.message, e.payload.audio_id)
+  listen<{ message: string; audio_id?: string; error_code?: string }>("voice-error", (e) =>
+    handler(e.payload.message, e.payload.audio_id, e.payload.error_code)
   ).then((fn) => { unsub = fn; });
   return () => unsub();
 }

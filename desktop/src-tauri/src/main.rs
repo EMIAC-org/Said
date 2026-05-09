@@ -266,6 +266,9 @@ fn humanize_error(raw: &str) -> String {
     if lower.contains("preferences not found") {
         return "Settings aren't loaded yet. Wait a moment and try again.".to_string();
     }
+    if lower.contains("missing_api_keys") || lower.contains("api keys required") {
+        return "API keys required — open Settings to add them.".to_string();
+    }
 
     // Network / transport
     if lower.contains("timeout") || lower.contains("timed out") {
@@ -2116,13 +2119,18 @@ async fn run_voice_polish_sse(
                 tracing::info!("[pipeline] polished text: {preview:?}{suffix}");
                 let _ = app_clone.emit("voice-done", done);
             }
-            api::PolishEvent::Error { message, audio_id } => {
-                let human = humanize_error(&message);
+            api::PolishEvent::Error {
+                message,
+                audio_id,
+                error_code,
+            } => {
+                let human = humanize_error(message);
                 let _ = app_clone.emit(
                     "voice-error",
                     serde_json::json!({
                         "message":  human.clone(),
                         "audio_id": audio_id,
+                        "error_code": error_code,
                     }),
                 );
                 // Native macOS banner — informational only.  In dev mode the
@@ -2316,13 +2324,18 @@ async fn run_voice_repair_sse(
         api::PolishEvent::Done(done) => {
             let _ = app_clone.emit("voice-done", done);
         }
-        api::PolishEvent::Error { message, audio_id } => {
+        api::PolishEvent::Error {
+            message,
+            audio_id,
+            error_code,
+        } => {
             let human = humanize_error(message);
             let _ = app_clone.emit(
                 "voice-error",
                 serde_json::json!({
                     "message": human,
                     "audio_id": audio_id,
+                    "error_code": error_code,
                 }),
             );
         }
@@ -2399,12 +2412,17 @@ async fn run_text_refine_sse(
         api::PolishEvent::Done(done) => {
             let _ = app_clone.emit("voice-done", done);
         }
-        api::PolishEvent::Error { message, audio_id } => {
+        api::PolishEvent::Error {
+            message,
+            audio_id,
+            error_code,
+        } => {
             let _ = app_clone.emit(
                 "voice-error",
                 serde_json::json!({
                     "message": humanize_error(message),
                     "audio_id": audio_id,
+                    "error_code": error_code,
                 }),
             );
         }

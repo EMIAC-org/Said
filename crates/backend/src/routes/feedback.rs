@@ -102,8 +102,15 @@ pub async fn submit(State(state): State<AppState>, Json(body): Json<FeedbackBody
         let event_id2 = edit_event_id.clone();
         let http_client = state.http_client.clone();
         // Resolve Gemini key from prefs, fall back to env var
-        let gemini_key = get_prefs(&pool, &rec.user_id)
-            .and_then(|p| p.gemini_api_key)
+        let Some(prefs) = get_prefs(&pool, &rec.user_id) else {
+            return StatusCode::NO_CONTENT;
+        };
+        if !prefs.learning_enabled {
+            info!("[feedback] learning disabled — skipped vector embedding");
+            return StatusCode::NO_CONTENT;
+        }
+        let gemini_key = prefs
+            .gemini_api_key
             .or_else(|| std::env::var("GEMINI_API_KEY").ok())
             .unwrap_or_default();
 

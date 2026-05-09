@@ -465,6 +465,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         crate::get_lexicon_cached(&state.lexicon_cache, &pool, &user_id),
         async { vocab_task.await.unwrap_or_default() },
     );
+    let Some(prefs_for_guard) = prefs_opt.as_ref() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let missing =
+        crate::routes::key_guard::missing_voice_api_keys(&pool, &user_id, prefs_for_guard);
+    if !missing.is_empty() {
+        return crate::routes::key_guard::missing_api_keys_response(missing);
+    }
     // The polish-prompt vocab slice is computed below, AFTER the transcript
     // embedding lands, so we can do relevance retrieval.
 

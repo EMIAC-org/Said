@@ -15,6 +15,7 @@ pub struct Preferences {
     pub edit_capture: bool,
     pub polish_text_hotkey: String,
     pub record_hotkey: String,
+    pub learning_enabled: bool,
     pub updated_at: i64,
     // API keys — stored in SQLite, never leave the device
     pub gateway_api_key: Option<String>,
@@ -37,6 +38,7 @@ pub struct PrefsUpdate {
     pub edit_capture: Option<bool>,
     pub polish_text_hotkey: Option<String>,
     pub record_hotkey: Option<String>,
+    pub learning_enabled: Option<bool>,
     // API keys — Some(None) = clear; None = don't touch; Some(Some(s)) = set
     pub gateway_api_key: Option<Option<String>>,
     pub deepgram_api_key: Option<Option<String>>,
@@ -50,7 +52,8 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
     let conn = pool.get().ok()?;
     conn.query_row(
         "SELECT user_id, selected_model, tone_preset, custom_prompt, language,
-                output_language, auto_paste, edit_capture, polish_text_hotkey, record_hotkey, updated_at,
+                output_language, auto_paste, edit_capture, polish_text_hotkey, record_hotkey,
+                learning_enabled, updated_at,
                 gateway_api_key, deepgram_api_key, gemini_api_key, llm_provider, groq_api_key
          FROM preferences WHERE user_id = ?1",
         params![user_id],
@@ -70,14 +73,15 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                 record_hotkey: row
                     .get::<_, Option<String>>(9)?
                     .unwrap_or_else(|| "caps_lock".into()),
-                updated_at: row.get(10)?,
-                gateway_api_key: row.get(11)?,
-                deepgram_api_key: row.get(12)?,
-                gemini_api_key: row.get(13)?,
+                learning_enabled: row.get::<_, i64>(10)? != 0,
+                updated_at: row.get(11)?,
+                gateway_api_key: row.get(12)?,
+                deepgram_api_key: row.get(13)?,
+                gemini_api_key: row.get(14)?,
                 llm_provider: row
-                    .get::<_, Option<String>>(14)?
+                    .get::<_, Option<String>>(15)?
                     .unwrap_or_else(|| "openai_codex".into()),
-                groq_api_key: row.get(15)?,
+                groq_api_key: row.get(16)?,
             })
         },
     )
@@ -148,6 +152,13 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
         conn.execute(
             "UPDATE preferences SET record_hotkey = ?1, updated_at = ?2 WHERE user_id = ?3",
             params![v, now, user_id],
+        )
+        .ok()?;
+    }
+    if let Some(v) = update.learning_enabled {
+        conn.execute(
+            "UPDATE preferences SET learning_enabled = ?1, updated_at = ?2 WHERE user_id = ?3",
+            params![v as i64, now, user_id],
         )
         .ok()?;
     }

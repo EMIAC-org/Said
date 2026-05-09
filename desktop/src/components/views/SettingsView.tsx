@@ -197,6 +197,17 @@ export function SettingsView({
     recordHotkey === "fn" ? "Fn" :
     "Caps Lock";
 
+  function syncApiKeyInputs(nextPrefs: Preferences) {
+    setGatewayKey(nextPrefs.gateway_api_key ?? "");
+    setDeepgramKey(nextPrefs.deepgram_api_key ?? "");
+    setGeminiKey(nextPrefs.gemini_api_key ?? "");
+    setGroqKey(nextPrefs.groq_api_key ?? "");
+    setShowGateway(false);
+    setShowDeepgram(false);
+    setShowGemini(false);
+    setShowGroq(false);
+  }
+
   useEffect(() => {
     let alive = true;
     const refresh = () => {
@@ -239,16 +250,17 @@ export function SettingsView({
       if (p) {
         setPrefs(p);
         setCustomPrompt(p.custom_prompt ?? "");
-        // Prefill key fields with masked placeholders only if keys already stored
-        // (don't reveal the actual key — user can re-enter to change)
-        setGatewayKey(p.gateway_api_key ? "••••••••••••••••" : "");
-        setDeepgramKey(p.deepgram_api_key ? "••••••••••••••••" : "");
-        setGeminiKey(p.gemini_api_key ? "••••••••••••••••" : "");
-        setGroqKey(p.groq_api_key ? "••••••••••••••••" : "");
+        syncApiKeyInputs(p);
       }
     });
     getCloudStatus().then((s) => { if (s) setCloudStatus(s); });
     getOpenAIStatus().then((s) => { if (s) setOpenAIStatus(s); });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (keySaveTimer.current) clearTimeout(keySaveTimer.current);
+    };
   }, []);
 
   async function handleCloudAuth() {
@@ -340,38 +352,46 @@ export function SettingsView({
   }
 
   async function saveApiKeys() {
+    if (!prefs) return;
     setKeySaving(true);
     setSaveError("");
     try {
       const update: Partial<Preferences> = {};
-      // Only send if the user has entered a real key (not the placeholder bullets)
-      if (gatewayKey  && !gatewayKey.startsWith("••"))   update.gateway_api_key  = gatewayKey;
-      if (deepgramKey && !deepgramKey.startsWith("••"))  update.deepgram_api_key = deepgramKey;
-      if (geminiKey   && !geminiKey.startsWith("••"))    update.gemini_api_key   = geminiKey;
-      if (groqKey     && !groqKey.startsWith("••"))      update.groq_api_key     = groqKey;
+      const currentGateway = prefs.gateway_api_key ?? "";
+      const currentDeepgram = prefs.deepgram_api_key ?? "";
+      const currentGemini = prefs.gemini_api_key ?? "";
+      const currentGroq = prefs.groq_api_key ?? "";
+      const nextGateway = gatewayKey.trim();
+      const nextDeepgram = deepgramKey.trim();
+      const nextGemini = geminiKey.trim();
+      const nextGroq = groqKey.trim();
+
+      if (nextGateway !== currentGateway) update.gateway_api_key = nextGateway || null;
+      if (nextDeepgram !== currentDeepgram) update.deepgram_api_key = nextDeepgram || null;
+      if (nextGemini !== currentGemini) update.gemini_api_key = nextGemini || null;
+      if (nextGroq !== currentGroq) update.groq_api_key = nextGroq || null;
+      if (prefs.learning_enabled && currentGemini !== "" && nextGemini === "") {
+        update.learning_enabled = false;
+      }
+
+      if (Object.keys(update).length === 0) {
+        setKeySaved(true);
+        if (keySaveTimer.current) clearTimeout(keySaveTimer.current);
+        keySaveTimer.current = setTimeout(() => setKeySaved(false), 2500);
+        return;
+      }
+
       const updated = await patchPreferences(update);
+      if (!updated) throw new Error("preferences update returned no data");
       if (updated) {
         setPrefs(updated);
-        // Re-mask the inputs to bullets so the UI clearly reflects "saved"
-        // (otherwise the user keeps seeing the raw key they just typed and
-        // wonders whether it persisted)
-        const MASK = "••••••••••••••••";
-        if (updated.gateway_api_key)  setGatewayKey(MASK);
-        if (updated.deepgram_api_key) setDeepgramKey(MASK);
-        if (updated.gemini_api_key)   setGeminiKey(MASK);
-        if (updated.groq_api_key)     setGroqKey(MASK);
-        // Hide reveal-toggles after save so bullets aren't accidentally exposed
-        setShowGateway(false);
-        setShowDeepgram(false);
-        setShowGemini(false);
-        setShowGroq(false);
+        syncApiKeyInputs(updated);
       }
-      // Show brief "Saved ✓" feedback
       setKeySaved(true);
       if (keySaveTimer.current) clearTimeout(keySaveTimer.current);
       keySaveTimer.current = setTimeout(() => setKeySaved(false), 2500);
-    } catch {
-      setSaveError("Failed to save — is the backend running?");
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Failed to save — is the backend running?");
     } finally {
       setKeySaving(false);
     }
@@ -406,6 +426,8 @@ export function SettingsView({
   }, [activeSection]);
 
   const tone = (prefs?.tone_preset ?? "neutral") as ToneKey;
+  const hasStoredGeminiKey = Boolean(prefs?.gemini_api_key);
+  const learningEnabled = prefs?.learning_enabled ?? true;
 
   // Inner content that gets either wrapped in ScrollArea (full view) or rendered
   // bare (modal embeds it inside its own scroll container).
@@ -911,8 +933,7 @@ export function SettingsView({
           <p className="section-label px-1 mb-2.5">API Keys</p>
           <div className="panel p-5 space-y-4">
             <p className="text-[12px] text-muted-foreground leading-relaxed">
-              Keys are stored locally in SQLite — they never leave your Mac.
-              Enter each key once; you only need to re-enter to change it.
+              Keys are loaded from the local SQLite database and stored only on this Mac.
             </p>
 
             {/* Gateway API Key */}
@@ -927,9 +948,6 @@ export function SettingsView({
                   placeholder="sk-…"
                   value={gatewayKey}
                   onChange={(e) => setGatewayKey(e.target.value)}
-                  onFocus={() => {
-                    if (gatewayKey.startsWith("••")) setGatewayKey("");
-                  }}
                   className="input pr-9 font-mono text-[12px]"
                 />
                 <button
@@ -955,9 +973,6 @@ export function SettingsView({
                   placeholder="Token …"
                   value={deepgramKey}
                   onChange={(e) => setDeepgramKey(e.target.value)}
-                  onFocus={() => {
-                    if (deepgramKey.startsWith("••")) setDeepgramKey("");
-                  }}
                   className="input pr-9 font-mono text-[12px]"
                 />
                 <button
@@ -973,19 +988,21 @@ export function SettingsView({
 
             {/* Gemini API Key */}
             <div>
-              <p className="text-[12px] font-semibold text-foreground mb-1.5 flex items-center gap-1.5">
-                <Sparkles size={12} className="text-muted-foreground" />
-                Gemini API Key
-              </p>
+              <div className="mb-1.5">
+                <p className="text-[12px] font-semibold text-foreground flex items-center gap-1.5">
+                  <Sparkles size={12} className="text-muted-foreground" />
+                  Gemini API Key
+                </p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Optional — enables smart learning
+                </p>
+              </div>
               <div className="relative">
                 <input
                   type={showGemini ? "text" : "password"}
                   placeholder="AIza…"
                   value={geminiKey}
                   onChange={(e) => setGeminiKey(e.target.value)}
-                  onFocus={() => {
-                    if (geminiKey.startsWith("••")) setGeminiKey("");
-                  }}
                   className="input pr-9 font-mono text-[12px]"
                 />
                 <button
@@ -995,6 +1012,41 @@ export function SettingsView({
                   tabIndex={-1}
                 >
                   {showGemini ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+
+              <div className="mt-3 flex items-center justify-between gap-4 rounded-xl px-3 py-2.5"
+                   style={{ background: "hsl(var(--surface-3))" }}>
+                <div className="min-w-0">
+                  <p className="text-[12px] font-semibold text-foreground">Enable smart learning</p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    Uses Gemini embeddings to remember corrected words and context.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={learningEnabled}
+                  disabled={!hasStoredGeminiKey}
+                  title={!hasStoredGeminiKey ? "Enter a Gemini key above to enable" : undefined}
+                  onClick={() => patch({ learning_enabled: !learningEnabled })}
+                  className="relative h-6 w-11 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{
+                    background: learningEnabled && hasStoredGeminiKey
+                      ? "hsl(var(--primary))"
+                      : "hsl(var(--surface-4))",
+                  }}
+                >
+                  <span
+                    className="absolute top-1 h-4 w-4 rounded-full transition-transform"
+                    style={{
+                      left: 4,
+                      transform: learningEnabled && hasStoredGeminiKey
+                        ? "translateX(20px)"
+                        : "translateX(0)",
+                      background: "hsl(var(--foreground))",
+                    }}
+                  />
                 </button>
               </div>
             </div>
@@ -1018,9 +1070,6 @@ export function SettingsView({
                   placeholder="gsk_…"
                   value={groqKey}
                   onChange={(e) => setGroqKey(e.target.value)}
-                  onFocus={() => {
-                    if (groqKey.startsWith("••")) setGroqKey("");
-                  }}
                   className="input pr-9 font-mono text-[12px]"
                 />
                 <button
@@ -1077,7 +1126,7 @@ export function SettingsView({
               desc:  "llama-3.3-70b-versatile — fastest (~200ms TTFT), free tier",
               badge: "Fast",
               // Key is present if: already saved in prefs OR user has typed one in the input
-              needsKey: !prefs?.groq_api_key && !(groqKey && !groqKey.startsWith("••")),
+              needsKey: !prefs?.groq_api_key && !groqKey,
             },
             {
               id:    "gemini_direct",
@@ -1085,7 +1134,7 @@ export function SettingsView({
               label: "Gemini Direct",
               desc:  "gemini-2.0-flash-thinking via Google AI — needs Gemini API key",
               badge: null,
-              needsKey: !prefs?.gemini_api_key && !(geminiKey && !geminiKey.startsWith("••")),
+              needsKey: !prefs?.gemini_api_key && !geminiKey,
             },
             {
               id:    "openai_codex",

@@ -19,6 +19,7 @@ type BarState =
 type VoiceErrorPayload = {
   message: string;
   audio_id?: string;
+  error_code?: string;
   auto_hide_ms?: number;
 };
 
