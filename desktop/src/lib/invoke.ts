@@ -388,17 +388,22 @@ export async function getRecordingAudioBytes(id: string): Promise<Uint8Array | n
   }
 }
 
-/** Save a recording WAV to the user's Downloads folder. Returns the saved path. */
+/** Save a recording WAV. Native app shows a save dialog and returns the saved path. */
 export async function downloadRecordingAudio(
   id: string,
   filename: string
 ): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   try {
-    return await tauriInvoke<string>("download_recording_audio", { id, filename });
+    return await tauriInvoke<string | null>("download_recording_audio", { id, filename });
   } catch {
     return null;
   }
+}
+
+export async function revealDownloadedFile(path: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await tauriInvoke("reveal_downloaded_file", { path });
 }
 
 /** Submit edit feedback so the backend can learn from user corrections. */

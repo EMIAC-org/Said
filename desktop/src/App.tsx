@@ -37,6 +37,7 @@ import {
   deleteVocabularyTerm,
   checkNotificationPermission,
   requestNotifications,
+  revealDownloadedFile,
   type NotifPermission,
   type VocabToastPayload,
 } from "@/lib/invoke";
@@ -123,7 +124,7 @@ export default function App() {
   const [vocabToast, setVocabToast] = useState<VocabToastPayload | null>(null);
 
   // ── Download success toast ────────────────────────────────────────────────
-  const [downloadToast, setDownloadToast] = useState<{ filename: string } | null>(null);
+  const [downloadToast, setDownloadToast] = useState<{ path: string } | null>(null);
 
   // ── Pending edits ─────────────────────────────────────────────────────────
   const [pendingEdits, setPendingEdits] = useState<PendingEdit[]>([]);
@@ -238,8 +239,7 @@ export default function App() {
   }, []);
 
   const handleDownloadSuccess = useCallback((path: string) => {
-    const filename = path.split(/[\\/]/).pop() || "recording.wav";
-    setDownloadToast({ filename });
+    setDownloadToast({ path });
   }, []);
 
   // ── Auth submit ────────────────────────────────────────────────────────────
@@ -932,7 +932,12 @@ export default function App() {
       {/* ── Download success toast (bottom-center) ─── */}
       {downloadToast && !retryToast && !editToast && !vocabToast && (
         <DownloadSuccessToast
-          filename={downloadToast.filename}
+          path={downloadToast.path}
+          onReveal={() => {
+            void revealDownloadedFile(downloadToast.path).catch((err) => {
+              setErrorBanner(err instanceof Error ? err.message : String(err));
+            });
+          }}
           onDismiss={() => setDownloadToast(null)}
         />
       )}

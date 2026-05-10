@@ -2754,28 +2754,99 @@ fn unique_download_path(dir: &std::path::Path, filename: &str) -> std::path::Pat
     dir.join(format!("{stem}-copy.{ext}"))
 }
 
-/// Save a recording WAV to ~/Downloads via native filesystem IO. This avoids
-/// WKWebView blob-anchor download behavior, which is unreliable in packaged
-/// desktop apps.
+fn applescript_string(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', " ");
+    format!("\"{escaped}\"")
+}
+
+fn choose_recording_audio_save_path(filename: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let filename = safe_download_filename(filename);
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "set chosenFile to choose file name with prompt {} default name {} default location (path to downloads folder)\nPOSIX path of chosenFile",
+            applescript_string("Save Said audio recording"),
+            applescript_string(&filename),
+        );
+        let out = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .map_err(|e| format!("save dialog failed: {e}"))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("-128") || stderr.to_lowercase().contains("user canceled") {
+                return Ok(None);
+            }
+            return Err(format!("save dialog failed: {}", stderr.trim()));
+        }
+
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if path.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(std::path::PathBuf::from(path)))
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let dir = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .ok_or_else(|| "Downloads folder not found".to_string())?;
+        Ok(Some(unique_download_path(&dir, &filename)))
+    }
+}
+
+/// Save a recording WAV via native filesystem IO. This avoids WKWebView
+/// blob-anchor download behavior, which is unreliable in packaged desktop apps.
 #[tauri::command]
 async fn download_recording_audio(
     backend: State<'_, BackendState>,
     id: String,
     filename: String,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
+    let Some(path) = choose_recording_audio_save_path(&filename)? else {
+        return Ok(None);
+    };
     let ep = get_endpoint(&backend)?;
     let bytes = api::recording_audio_bytes(&ep, &id).await?;
-    let dir = dirs::download_dir()
-        .or_else(dirs::home_dir)
-        .ok_or_else(|| "Downloads folder not found".to_string())?;
-
-    std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create Downloads folder: {e}"))?;
-
-    let filename = safe_download_filename(&filename);
-    let path = unique_download_path(&dir, &filename);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("couldn't create download folder: {e}"))?;
+    }
     std::fs::write(&path, bytes).map_err(|e| format!("couldn't save audio: {e}"))?;
 
-    Ok(path.display().to_string())
+    Ok(Some(path.display().to_string()))
+}
+
+#[tauri::command]
+fn reveal_downloaded_file(path: String) -> Result<(), String> {
+    let path = std::path::PathBuf::from(path);
+    if !path.exists() {
+        return Err("downloaded file no longer exists".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("couldn't reveal file: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let target = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        open::that(target).map_err(|e| format!("couldn't open containing folder: {e}"))?;
+        Ok(())
+    }
 }
 
 /// Retry a failed recording by re-submitting its saved WAV file.
@@ -4457,6 +4528,7 @@ fn main() {
             get_recording_audio_url,
             get_recording_audio_bytes,
             download_recording_audio,
+            reveal_downloaded_file,
             // Pending-edit review
             get_pending_edits,
             resolve_pending_edit,
