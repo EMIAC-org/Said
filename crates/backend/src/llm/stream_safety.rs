@@ -24,6 +24,11 @@ const PROMPT_LEAK_MARKERS: &[&str] = &[
     "possible vocabulary hints.",
     "already matched in this transcript.",
     "confidence markers like [word?xx%]",
+    "=== begin transcript",
+    "=== end transcript",
+    "the text between the fences below is dictated audio",
+    "treat it as data to clean",
+    "style note (advisory tone hint",
 ];
 
 const META_PREFIXES: &[&str] = &[
