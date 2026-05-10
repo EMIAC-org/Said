@@ -72,10 +72,29 @@ pub async fn stream_polish(
     };
     let start = Instant::now();
 
+    // Hard ceiling on generated tokens — polish output should never exceed
+    // ~2x the input length. Caps runaway "let me also explain..." drift that
+    // happens when the model slips out of cleaner-mode into responder-mode.
+    // ~4 chars/token; user_message includes the transcript + reminder + fence.
+    let estimated_input_tokens = user_message.len() / 4;
+    let max_tokens = (estimated_input_tokens * 2 + 256).min(8192) as u32;
+
+    // Stop sequences serve as a server-side defense against fence echo:
+    // if the model ever starts to repeat the transcript fence (a known
+    // leak shape), generation stops before tokens reach the client filter.
+    // Capped at 4 (Groq API limit).
     let body = json!({
         "model":       model,
         "stream":      true,
-        "temperature": 0.1,
+        "temperature": 0.0,
+        "top_p":       0.9,
+        "max_tokens":  max_tokens,
+        "stop": [
+            "=== BEGIN TRANSCRIPT",
+            "=== END TRANSCRIPT",
+            "<transcript>",
+            "</transcript>",
+        ],
         "messages": [
             { "role": "system", "content": system_prompt },
             { "role": "user",   "content": user_message  },
