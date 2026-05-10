@@ -266,6 +266,9 @@ fn humanize_error(raw: &str) -> String {
     if lower.contains("preferences not found") {
         return "Settings aren't loaded yet. Wait a moment and try again.".to_string();
     }
+    if lower.contains("missing_api_keys") || lower.contains("api keys required") {
+        return "API keys required — open Settings to add them.".to_string();
+    }
 
     // Network / transport
     if lower.contains("timeout") || lower.contains("timed out") {
@@ -946,7 +949,7 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
         tauri::async_runtime::spawn(async move {
             // Let the React HUD finish its short "done/pasted/manual paste" flash,
             // then make the native window invisible if no new recording started.
-            tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
             let still_idle = app
                 .try_state::<SharedApp>()
                 .and_then(|shared| {
@@ -1324,6 +1327,15 @@ fn get_snapshot(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
     Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
 }
 
+#[tauri::command]
+fn dismiss_status_bar(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("status-bar") {
+        win.hide()
+            .map_err(|e| format!("hide status bar failed: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Return `{url, secret}` so the frontend can hit the backend directly.
 #[tauri::command]
 fn get_backend_endpoint(backend: State<'_, BackendState>) -> Result<serde_json::Value, String> {
@@ -1534,14 +1546,14 @@ fn toggle_recording(
                 .ok()
                 .and_then(|mut target| target.take());
 
-            // Extract wav bytes synchronously, then hand off the async SSE pipeline.
-            // A very short press is an accidental tap, not a user-visible error.
-            let (wav, snap) = {
+            // Tell CoreAudio to stop while holding the app mutex, then collect
+            // and encode the WAV after releasing it.
+            let (stop_rx, was_too_short, snap) = {
                 let mut d = state.0.lock().map_err(|_| "lock failed")?;
-                match d.stop_and_extract() {
-                    Ok(wav) => {
+                match d.begin_stop() {
+                    Ok((stop_rx, was_too_short)) => {
                         let snap = d.snapshot();
-                        (wav, snap)
+                        (stop_rx, was_too_short, snap)
                     }
                     Err(e) if is_short_recording_cancel(&e) => {
                         tracing::info!("[record] short recording cancelled from UI toggle");
@@ -1555,6 +1567,34 @@ fn toggle_recording(
                 }
             };
             sync_tray(&app, &snap);
+            let wav = match desktop::DesktopApp::finish_stop(stop_rx, was_too_short) {
+                Ok(wav) => wav,
+                Err(e) if is_short_recording_cancel(&e) => {
+                    tracing::info!("[record] short recording cancelled from UI toggle");
+                    let mut d = state.0.lock().map_err(|_| "lock failed")?;
+                    let snap = d.finish_cancelled();
+                    drop(d);
+                    sync_tray(&app, &snap);
+                    emit_short_recording_error(&app);
+                    let _ = app.emit("app-state", &snap);
+                    return Ok(snap);
+                }
+                Err(e) => {
+                    let mut d = state.0.lock().map_err(|_| "lock failed")?;
+                    let snap = d.finish_err(e.clone());
+                    drop(d);
+                    sync_tray(&app, &snap);
+                    let _ = app.emit(
+                        "voice-error",
+                        serde_json::json!({
+                            "message": snap.last_error.clone().unwrap_or_else(|| "Recording failed".to_string()),
+                            "audio_id": null,
+                        }),
+                    );
+                    let _ = app.emit("app-state", &snap);
+                    return Err(e);
+                }
+            };
 
             // Kick off the SSE pipeline in the background (same as hotkey release)
             let shared2 = Arc::clone(&state.0);
@@ -1847,9 +1887,9 @@ fn do_finish_recording(
         .ok()
         .and_then(|mut target| target.take());
 
-    // Extract wav bytes synchronously (near-instant, no I/O).
-    // This also drops the recorder's chunk_tx, signalling the WS task to close.
-    let wav = {
+    // Signal the recorder to stop while holding the app mutex, then wait for
+    // samples and encode WAV after releasing it.
+    let (stop_rx, was_too_short) = {
         let mut d = match shared.lock() {
             Ok(g) => g,
             Err(_) => return,
@@ -1857,12 +1897,12 @@ fn do_finish_recording(
         if let Some(t) = app.tray_by_id("said") {
             let _ = t.set_title(Some("[  …  ]  Said"));
         }
-        match d.stop_and_extract() {
-            Ok(w) => {
+        match d.begin_stop() {
+            Ok((stop_rx, was_too_short)) => {
                 let snap = d.snapshot();
                 sync_tray(&app, &snap);
                 let _ = app.emit("app-state", &snap);
-                w
+                (stop_rx, was_too_short)
             }
             Err(e) => {
                 if is_short_recording_cancel(&e) {
@@ -1885,6 +1925,35 @@ fn do_finish_recording(
         }
     };
 
+    let wav = match desktop::DesktopApp::finish_stop(stop_rx, was_too_short) {
+        Ok(wav) => wav,
+        Err(e) => {
+            let mut d = match shared.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            if is_short_recording_cancel(&e) {
+                tracing::info!("[record] short Option tap — cancelled recording");
+                let snap = d.finish_cancelled();
+                sync_tray(&app, &snap);
+                emit_short_recording_error(&app);
+                let _ = app.emit("app-state", &snap);
+                return;
+            }
+            let snap = d.finish_err(e);
+            sync_tray(&app, &snap);
+            let _ = app.emit(
+                "voice-error",
+                serde_json::json!({
+                    "message": snap.last_error.clone().unwrap_or_else(|| "Recording failed".to_string()),
+                    "audio_id": null,
+                }),
+            );
+            let _ = app.emit("app-state", &snap);
+            return;
+        }
+    };
+
     // ── P5: Take the transcript receiver before spawning the async task ────────
     // Use ok() so a poisoned mutex from a previous panic doesn't cascade-crash.
     let transcript_rx = app
@@ -1901,7 +1970,7 @@ fn do_finish_recording(
 
     tauri::async_runtime::spawn(async move {
         // ── P5: Wait up to 2 s for the Deepgram WS transcript ─────────────────
-        // stop_and_extract() dropped chunk_tx, which closes the audio channel and
+        // begin_stop() dropped chunk_tx, which closes the audio channel and
         // triggers CloseStream inside the WS task.  Deepgram usually finalises in
         // 100–200 ms, so the transcript should arrive quickly.
         // Wait up to 4 s for the Deepgram WS transcript.
@@ -1917,15 +1986,15 @@ fn do_finish_recording(
             match tokio::time::timeout(std::time::Duration::from_secs(4), rx).await {
                 Ok(Ok(t)) if !t.transcript.is_empty() => {
                     // Quality gate: reject suspiciously short transcripts.
-                    // Typical Hindi/English speech: ~2 words/second.
-                    // If we get fewer than 1 word per 2 seconds of audio,
-                    // the WS likely returned a partial — fall back to HTTP STT.
+                    // Normal speech is 2–3 words/sec (120–180 WPM).
+                    // Require at least 1 word/sec (60 WPM) — anything below
+                    // that means the WS likely dropped segments during drain.
                     let word_count = if t.meta.word_count > 0 {
                         t.meta.word_count
                     } else {
                         t.transcript.split_whitespace().count()
                     };
-                    let expected_min_words = (wav_duration_s / 2.0).max(1.0) as usize;
+                    let expected_min_words = wav_duration_s.max(1.0) as usize;
                     if word_count < expected_min_words && wav_duration_s > 3.0 {
                         tracing::warn!(
                             "[finish] WS transcript too short: {} words for {:.1}s recording (expected ≥{}) — falling back to HTTP STT. transcript={:?}",
@@ -2116,13 +2185,18 @@ async fn run_voice_polish_sse(
                 tracing::info!("[pipeline] polished text: {preview:?}{suffix}");
                 let _ = app_clone.emit("voice-done", done);
             }
-            api::PolishEvent::Error { message, audio_id } => {
-                let human = humanize_error(&message);
+            api::PolishEvent::Error {
+                message,
+                audio_id,
+                error_code,
+            } => {
+                let human = humanize_error(message);
                 let _ = app_clone.emit(
                     "voice-error",
                     serde_json::json!({
                         "message":  human.clone(),
                         "audio_id": audio_id,
+                        "error_code": error_code,
                     }),
                 );
                 // Native macOS banner — informational only.  In dev mode the
@@ -2316,13 +2390,18 @@ async fn run_voice_repair_sse(
         api::PolishEvent::Done(done) => {
             let _ = app_clone.emit("voice-done", done);
         }
-        api::PolishEvent::Error { message, audio_id } => {
+        api::PolishEvent::Error {
+            message,
+            audio_id,
+            error_code,
+        } => {
             let human = humanize_error(message);
             let _ = app_clone.emit(
                 "voice-error",
                 serde_json::json!({
                     "message": human,
                     "audio_id": audio_id,
+                    "error_code": error_code,
                 }),
             );
         }
@@ -2399,12 +2478,17 @@ async fn run_text_refine_sse(
         api::PolishEvent::Done(done) => {
             let _ = app_clone.emit("voice-done", done);
         }
-        api::PolishEvent::Error { message, audio_id } => {
+        api::PolishEvent::Error {
+            message,
+            audio_id,
+            error_code,
+        } => {
             let _ = app_clone.emit(
                 "voice-error",
                 serde_json::json!({
                     "message": humanize_error(message),
                     "audio_id": audio_id,
+                    "error_code": error_code,
                 }),
             );
         }
@@ -2670,28 +2754,99 @@ fn unique_download_path(dir: &std::path::Path, filename: &str) -> std::path::Pat
     dir.join(format!("{stem}-copy.{ext}"))
 }
 
-/// Save a recording WAV to ~/Downloads via native filesystem IO. This avoids
-/// WKWebView blob-anchor download behavior, which is unreliable in packaged
-/// desktop apps.
+fn applescript_string(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', " ");
+    format!("\"{escaped}\"")
+}
+
+fn choose_recording_audio_save_path(filename: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let filename = safe_download_filename(filename);
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "set chosenFile to choose file name with prompt {} default name {} default location (path to downloads folder)\nPOSIX path of chosenFile",
+            applescript_string("Save Said audio recording"),
+            applescript_string(&filename),
+        );
+        let out = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .map_err(|e| format!("save dialog failed: {e}"))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("-128") || stderr.to_lowercase().contains("user canceled") {
+                return Ok(None);
+            }
+            return Err(format!("save dialog failed: {}", stderr.trim()));
+        }
+
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if path.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(std::path::PathBuf::from(path)))
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let dir = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .ok_or_else(|| "Downloads folder not found".to_string())?;
+        Ok(Some(unique_download_path(&dir, &filename)))
+    }
+}
+
+/// Save a recording WAV via native filesystem IO. This avoids WKWebView
+/// blob-anchor download behavior, which is unreliable in packaged desktop apps.
 #[tauri::command]
 async fn download_recording_audio(
     backend: State<'_, BackendState>,
     id: String,
     filename: String,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
+    let Some(path) = choose_recording_audio_save_path(&filename)? else {
+        return Ok(None);
+    };
     let ep = get_endpoint(&backend)?;
     let bytes = api::recording_audio_bytes(&ep, &id).await?;
-    let dir = dirs::download_dir()
-        .or_else(dirs::home_dir)
-        .ok_or_else(|| "Downloads folder not found".to_string())?;
-
-    std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create Downloads folder: {e}"))?;
-
-    let filename = safe_download_filename(&filename);
-    let path = unique_download_path(&dir, &filename);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("couldn't create download folder: {e}"))?;
+    }
     std::fs::write(&path, bytes).map_err(|e| format!("couldn't save audio: {e}"))?;
 
-    Ok(path.display().to_string())
+    Ok(Some(path.display().to_string()))
+}
+
+#[tauri::command]
+fn reveal_downloaded_file(path: String) -> Result<(), String> {
+    let path = std::path::PathBuf::from(path);
+    if !path.exists() {
+        return Err("downloaded file no longer exists".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("couldn't reveal file: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let target = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        open::that(target).map_err(|e| format!("couldn't open containing folder: {e}"))?;
+        Ok(())
+    }
 }
 
 /// Retry a failed recording by re-submitting its saved WAV file.
@@ -4340,6 +4495,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             get_snapshot,
+            dismiss_status_bar,
             get_backend_endpoint,
             get_preferences,
             patch_preferences,
@@ -4372,6 +4528,7 @@ fn main() {
             get_recording_audio_url,
             get_recording_audio_bytes,
             download_recording_audio,
+            reveal_downloaded_file,
             // Pending-edit review
             get_pending_edits,
             resolve_pending_edit,

@@ -517,6 +517,7 @@ mod tests {
             edit_capture: true,
             polish_text_hotkey: "cmd+shift+p".into(),
             record_hotkey: "caps_lock".into(),
+            learning_enabled: true,
             deepgram_api_key: None,
             gemini_api_key: None,
             gateway_api_key: None,

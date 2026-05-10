@@ -1,0 +1,1 @@
+ALTER TABLE preferences ADD COLUMN learning_enabled INTEGER NOT NULL DEFAULT 1;

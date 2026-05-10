@@ -37,6 +37,7 @@ import {
   deleteVocabularyTerm,
   checkNotificationPermission,
   requestNotifications,
+  revealDownloadedFile,
   type NotifPermission,
   type VocabToastPayload,
 } from "@/lib/invoke";
@@ -46,6 +47,7 @@ import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } f
 
 export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "settings";
 const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "settings"];
+type SettingsSectionId = "writing" | "permissions" | "api-keys" | "account" | "debug" | "about";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -86,6 +88,7 @@ function recordingToHistoryItem(r: Recording): HistoryItem {
     embed_ms:          r.embed_ms ?? 0,
     polish_ms:         r.polish_ms ?? 0,
     audio_id:          r.audio_id,
+    edit_count:        r.edit_count,
   };
 }
 
@@ -101,6 +104,7 @@ export default function App() {
   const [activeView,  setActiveView]  = useState<ActiveView>("dashboard");
   const [inviteOpen,  setInviteOpen]  = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("writing");
   const [onboardingComplete, setOnboardingComplete] = useState(() => {
     try {
       return localStorage.getItem("said:onboarding-complete") === "true";
@@ -121,7 +125,7 @@ export default function App() {
   const [vocabToast, setVocabToast] = useState<VocabToastPayload | null>(null);
 
   // ── Download success toast ────────────────────────────────────────────────
-  const [downloadToast, setDownloadToast] = useState<{ filename: string } | null>(null);
+  const [downloadToast, setDownloadToast] = useState<{ path: string } | null>(null);
 
   // ── Pending edits ─────────────────────────────────────────────────────────
   const [pendingEdits, setPendingEdits] = useState<PendingEdit[]>([]);
@@ -236,8 +240,7 @@ export default function App() {
   }, []);
 
   const handleDownloadSuccess = useCallback((path: string) => {
-    const filename = path.split(/[\\/]/).pop() || "recording.wav";
-    setDownloadToast({ filename });
+    setDownloadToast({ path });
   }, []);
 
   // ── Auth submit ────────────────────────────────────────────────────────────
@@ -290,12 +293,18 @@ export default function App() {
     });
 
     // Voice error → show retry toast
-    const unsubError = onVoiceError((msg, audioId) => {
+    const unsubError = onVoiceError((msg, audioId, errorCode) => {
       setRetryToast({ message: msg, audioId: audioId ?? "" });
       setBusy(false);
       setSnapshot((p) => (p ? { ...p, state: "idle" } : p));
       setStatusPhase("");
       setTokenBuf("");
+      if (errorCode === "missing_api_keys") {
+        setRetryToast(null);
+        setErrorBanner("API keys required — open Settings to add them.");
+        setSettingsSection("api-keys");
+        setSettingsOpen(true);
+      }
       if (msg.toLowerCase().includes("openai isn't connected")) {
         setConnectBusy(false);
         void syncOpenAIConnection();
@@ -333,7 +342,10 @@ export default function App() {
     const unsubVocabToast = onVocabToast(setVocabToast);
 
     // Tray menu → navigate to Settings
-    const unsubNav = onNavSettings(() => setSettingsOpen(true));
+    const unsubNav = onNavSettings(() => {
+      setSettingsSection("writing");
+      setSettingsOpen(true);
+    });
 
     // Tray "Reconnect OpenAI…" — browser already opened by Rust; start polling
     const unsubReconnect = onOpenAIReconnectInitiated(() => {
@@ -496,6 +508,7 @@ export default function App() {
   const handleViewChange = useCallback((view: string) => {
     // Settings is now a modal — intercept the route and open the modal instead
     if (view === "settings") {
+      setSettingsSection("writing");
       setSettingsOpen(true);
       return;
     }
@@ -518,7 +531,8 @@ export default function App() {
           if (!recent.length) return 0;
           const tw = recent.reduce((s, h) => s + h.word_count, 0);
           const tm = recent.reduce((s, h) => s + h.recording_seconds / 60, 0);
-          return tm > 0 ? Math.round(tw / tm) : 0;
+          const raw = tm > 0 ? Math.round(tw / tm) : 0;
+          return Math.min(raw, 300);
         })(),
       }
     : null;
@@ -821,6 +835,7 @@ export default function App() {
         onInputMonitoring={handleInputMonitoring}
         onMicrophone={handleMicrophone}
         onScreenRecording={handleScreenRecording}
+        initialSection={settingsSection}
       />
 
       {/* ── Right column: topbar + content ───────────── */}
@@ -919,7 +934,12 @@ export default function App() {
       {/* ── Download success toast (bottom-center) ─── */}
       {downloadToast && !retryToast && !editToast && !vocabToast && (
         <DownloadSuccessToast
-          filename={downloadToast.filename}
+          path={downloadToast.path}
+          onReveal={() => {
+            void revealDownloadedFile(downloadToast.path).catch((err) => {
+              setErrorBanner(err instanceof Error ? err.message : String(err));
+            });
+          }}
           onDismiss={() => setDownloadToast(null)}
         />
       )}

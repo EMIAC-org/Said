@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import { Mic } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  HeroStat,
   DonutCard,
   TimeSavedCard,
   PaceCard,
   RecordingsTable,
-  ActivityHeatmap,
+  TimelineCard,
+  AppBreakdownCard,
 } from "@/components/DashboardCards";
 import { listHistory } from "@/lib/invoke";
 import type { AppSnapshot, PendingEdit, Recording } from "@/types";
@@ -32,7 +32,7 @@ interface DashboardViewProps {
 export function DashboardView({
   snapshot,
   busy,
-  onToggle,
+  onToggle: _onToggle,
   onAccessibility,
   onNavigate,
   statusPhase    = "",
@@ -46,11 +46,11 @@ export function DashboardView({
 
   const history = snapshot?.history ?? [];
 
-  // Fetch full Recording[] (with .id and .audio_id) for the table.
-  // Re-fetch whenever a new recording lands (snapshot.history.length changes).
+  // Fetch full Recording[] — 300 records gives ~30 days of data for the
+  // timeline and app breakdown cards without a separate API call.
   useEffect(() => {
     let alive = true;
-    listHistory(10).then((r) => { if (alive) setRecordings(r); });
+    listHistory(300).then((r) => { if (alive) setRecordings(r); });
     return () => { alive = false; };
   }, [history.length]);
 
@@ -92,15 +92,13 @@ export function DashboardView({
            ─────────────────────────────────────────────────────────────── */}
         <div className="space-y-4">
 
-          {/* Stat tiles — auto-fit so cards re-flow naturally as the
-              window shrinks (4 → 3 → 2 → 1 across) */}
+          {/* ── 3 stat tiles: WPM · Total Words · Time Saved ── */}
           <div
             className="grid gap-4"
             style={{
               gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
             }}
           >
-            <HeroStat snapshot={snapshot} />
             <PaceCard snapshot={snapshot} />
             <DonutCard
               snapshot={snapshot}
@@ -110,18 +108,15 @@ export function DashboardView({
             <TimeSavedCard snapshot={snapshot} />
           </div>
 
-          {/* Activity heatmap */}
-          <ActivityHeatmap
-            snapshot={snapshot}
-            isRecording={isRecording}
-            isProcessing={isProcessing}
-            onToggle={onToggle}
-            onView={() => onNavigate?.("history")}
-          />
+          {/* ── Words over time — 7d / 30d bar chart ── */}
+          <TimelineCard recordings={recordings} />
 
-          {/* Recordings list */}
+          {/* ── Fixes by app ── */}
+          <AppBreakdownCard recordings={recordings} />
+
+          {/* ── Recent recordings ── */}
           <RecordingsTable
-            recordings={recordings}
+            recordings={recordings.slice(0, 10)}
             onSeeAll={() => onNavigate?.("history")}
             onDownloadSuccess={onDownloadSuccess}
           />

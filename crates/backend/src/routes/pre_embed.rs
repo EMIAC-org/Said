@@ -37,9 +37,15 @@ pub async fn handler(State(state): State<AppState>, Json(body): Json<PreEmbedBod
     // Fire-and-forget — caller gets 202 immediately, embedding stores in SQLite cache.
     tokio::spawn(async move {
         // Use the in-memory prefs cache (30 s TTL) — zero SQLite hits on warm path.
-        let gemini_key = crate::get_prefs_cached(&prefs_cache, &pool, &user_id)
-            .await
-            .and_then(|p| p.gemini_api_key)
+        let Some(prefs) = crate::get_prefs_cached(&prefs_cache, &pool, &user_id).await else {
+            return;
+        };
+        if !prefs.learning_enabled {
+            debug!("[pre-embed] skipped — learning disabled");
+            return;
+        }
+        let gemini_key = prefs
+            .gemini_api_key
             .or_else(|| std::env::var("GEMINI_API_KEY").ok())
             .unwrap_or_default();
 

@@ -19,6 +19,7 @@ type BarState =
 type VoiceErrorPayload = {
   message: string;
   audio_id?: string;
+  error_code?: string;
   auto_hide_ms?: number;
 };
 
@@ -129,11 +130,7 @@ export default function StatusBar() {
     if (bar.kind === "idle") {
       setHoverPanel(null);
       setIdleHovered(false);
-      win.hide().catch((err) => console.warn("[status-bar] hide failed", err));
-      return;
     }
-
-    win.show().catch((err) => console.warn("[status-bar] show failed", err));
   }, [bar.kind]);
 
   // Seed from current snapshot on mount so we reflect any in-progress state
@@ -245,6 +242,7 @@ export default function StatusBar() {
       const { message, audio_id, auto_hide_ms } = e.payload;
       console.info("[status-bar] voice-error event", { message, hasAudioId: Boolean(audio_id), autoHideMs: auto_hide_ms });
       if (doneTimer.current) clearTimeout(doneTimer.current);
+      win.show().catch((err) => console.warn("[status-bar] show failed for error", err));
       setBar({ kind: "error", message, audioId: audio_id });
       if (typeof auto_hide_ms === "number" && auto_hide_ms > 0) {
         doneTimer.current = setTimeout(() => setBar({ kind: "idle" }), auto_hide_ms);
@@ -406,7 +404,12 @@ export default function StatusBar() {
               className="sb-icon-btn sb-icon-btn--dismiss"
               title="Dismiss"
               aria-label="Dismiss"
-              onClick={() => setBar({ kind: "idle" })}
+              onClick={() => {
+                setBar({ kind: "idle" });
+                invoke("dismiss_status_bar").catch((err) => {
+                  console.warn("[status-bar] dismiss failed", err);
+                });
+              }}
             >
               <X size={13} />
             </button>

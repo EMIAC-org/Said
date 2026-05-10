@@ -96,13 +96,14 @@ export function RetryToast({
 // ── Download Success Toast ───────────────────────────────────────────────────
 
 interface DownloadSuccessToastProps {
-  filename:  string;
+  path:      string;
+  onReveal:  () => void;
   onDismiss: () => void;
 }
 
-export function DownloadSuccessToast({ filename, onDismiss }: DownloadSuccessToastProps) {
+export function DownloadSuccessToast({ path, onReveal, onDismiss }: DownloadSuccessToastProps) {
   useEffect(() => {
-    const t = setTimeout(onDismiss, 4000);
+    const t = setTimeout(onDismiss, 7000);
     return () => clearTimeout(t);
   }, [onDismiss]);
 
@@ -127,10 +128,24 @@ export function DownloadSuccessToast({ filename, onDismiss }: DownloadSuccessToa
         <p className="text-[12px] font-semibold text-foreground leading-tight">
           Download complete
         </p>
-        <p className="text-[11px] text-muted-foreground leading-tight mt-0.5 truncate" title={filename}>
-          Saved {filename} to Downloads.
+        <p className="text-[11px] text-muted-foreground leading-tight mt-0.5 truncate" title={path}>
+          Saved to {path}
         </p>
       </div>
+
+      <button
+        onClick={onReveal}
+        title="Show in Finder"
+        className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors flex-shrink-0"
+        style={{
+          background: "hsl(var(--surface-4))",
+          color:      "hsl(var(--foreground))",
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-hover))"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = "hsl(var(--surface-4))"; }}
+      >
+        Show
+      </button>
 
       <button
         onClick={onDismiss}

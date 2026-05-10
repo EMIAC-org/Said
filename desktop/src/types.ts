@@ -27,6 +27,7 @@ export interface HistoryItem {
   embed_ms: number;
   polish_ms: number;
   audio_id: string | null;
+  edit_count: number;
 }
 
 export interface AppSnapshot {
@@ -64,6 +65,7 @@ export interface Preferences {
   edit_capture:       boolean;
   polish_text_hotkey: string;
   record_hotkey:      string;
+  learning_enabled:   boolean;
   // API keys stored in SQLite — never leave the device
   gateway_api_key:    string | null;
   deepgram_api_key:   string | null;
@@ -83,6 +85,7 @@ export interface PrefsUpdate {
   edit_capture?:       boolean;
   polish_text_hotkey?: string;
   record_hotkey?:      string;
+  learning_enabled?:   boolean;
   // API keys — set to null to clear
   gateway_api_key?:    string | null;
   deepgram_api_key?:   string | null;

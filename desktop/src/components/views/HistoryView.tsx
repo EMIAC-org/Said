@@ -16,7 +16,7 @@ function audioFilename(recording: Recording): string {
   return `said-${stamp}-${recording.word_count}-words.wav`;
 }
 
-/** Ask Tauri to save the WAV to Downloads. Returns the saved path on success. */
+/** Ask Tauri to save the WAV. Native app prompts for the destination path. */
 async function downloadRecordingAudio(recording: Recording): Promise<string | null> {
   if (!recording.audio_id) return null;
   return await saveRecordingAudio(recording.id, audioFilename(recording));
@@ -336,6 +336,7 @@ export function HistoryView({ onDownloadSuccess }: { onDownloadSuccess?: (path: 
     embed_ms:          r.embed_ms ?? 0,
     polish_ms:         r.polish_ms ?? 0,
     audio_id:          r.audio_id,
+    edit_count:        r.edit_count,
   }));
   const timeline = groupHistory(items);
 

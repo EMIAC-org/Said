@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { Brain, Zap, Bot, Sparkles, Info } from "lucide-react";
+import { Info, CheckCircle2, PenLine } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { AppSnapshot, HistoryItem } from "@/types";
@@ -63,8 +63,22 @@ function WpmGauge({ wpm }: { wpm: number }) {
 // ── Heatmap helpers ────────────────────────────────────────────────────────────
 
 const DAYS      = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS    = ["Jan", "Feb", "Mar", "Apr"];
 const COL_COUNT = 18;
+
+function heatmapMonths(): string[] {
+  const now  = new Date();
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (let w = COL_COUNT - 1; w >= 0; w--) {
+    const d = new Date(now.getTime() - w * 7 * 86_400_000);
+    const label = d.toLocaleDateString("en-US", { month: "short" });
+    if (!seen.has(label)) {
+      seen.add(label);
+      result.push(label);
+    }
+  }
+  return result;
+}
 
 // Local-calendar day index — UTC `floor(ms / DAY)` would split IST evenings
 // onto the wrong cell (UTC+5:30 means 1am IST is actually 7:30pm UTC the
@@ -92,29 +106,21 @@ function wordCountToLevel(words: number): 0 | 1 | 2 | 3 | 4 {
   return 4;
 }
 
-// ── Usage rows ─────────────────────────────────────────────────────────────────
+// ── Accuracy helpers ───────────────────────────────────────────────────────────
 
-function buildUsageRows(history: HistoryItem[]) {
-  const modelCounts: Record<string, number> = {};
-  let totalWords = 0;
-  for (const h of history) {
-    modelCounts[h.model] = (modelCounts[h.model] ?? 0) + h.word_count;
-    totalWords += h.word_count;
-  }
+function computeAccuracy(history: HistoryItem[]) {
+  if (history.length === 0) return { allTime: 0, recent: 0, accepted: 0, edited: 0, total: 0 };
+  const accepted = history.filter((h) => (h.edit_count ?? 0) === 0).length;
+  const edited   = history.length - accepted;
+  const allTime  = Math.round((accepted / history.length) * 100);
 
-  const MODELS = [
-    { key: "gpt-5.4",                       Icon: Brain,    label: "Smart",  primary: true  },
-    { key: "gpt-5.4-mini",                  Icon: Zap,      label: "Fast",   primary: false },
-    { key: "claude-sonnet-4-6",             Icon: Bot,      label: "Claude", primary: false },
-    { key: "gemini-3.1-flash-lite-preview", Icon: Sparkles, label: "Gemini", primary: false },
-  ];
+  const weekAgo  = Date.now() - 7 * 86_400_000;
+  const recent7  = history.filter((h) => h.timestamp_ms >= weekAgo);
+  const recent   = recent7.length > 0
+    ? Math.round((recent7.filter((h) => (h.edit_count ?? 0) === 0).length / recent7.length) * 100)
+    : 0;
 
-  return MODELS.map((m) => {
-    const words = modelCounts[m.key] ?? 0;
-    const pct   = totalWords > 0 ? Math.round((words / totalWords) * 100) : 0;
-    const uses  = history.filter((h) => h.model === m.key).length;
-    return { Icon: m.Icon, value: pct, uses, label: m.label, primary: m.primary };
-  });
+  return { allTime, recent, accepted, edited, total: history.length };
 }
 
 // ── View ───────────────────────────────────────────────────────────────────────
@@ -126,7 +132,7 @@ export function InsightsView({ snapshot }: InsightsViewProps) {
   const streak        = snapshot?.daily_streak ?? 0;
 
   const dayMap        = useMemo(() => buildDayMap(history), [history]);
-  const usageRows     = useMemo(() => buildUsageRows(history), [history]);
+  const accuracy      = useMemo(() => computeAccuracy(history), [history]);
   // Local day index — matches dayMap keys built from `localDayIdx`.
   const todayUnixDay  = localDayIdx(Date.now());
 
@@ -228,64 +234,89 @@ export function InsightsView({ snapshot }: InsightsViewProps) {
         {/* ── Bottom grid: 2 cols ──────────────────── */}
         <div className="grid grid-cols-2 gap-4">
 
-          {/* Usage chart */}
+          {/* Accuracy card */}
           <div className="panel p-5">
             <div className="flex items-baseline justify-between mb-5">
-              <h2 className="text-[14px] font-semibold text-foreground">Model usage</h2>
-              <span className="section-label">{history.length} sessions</span>
+              <h2 className="text-[14px] font-semibold text-foreground">Accuracy</h2>
+              <span className="section-label">{accuracy.total} sessions</span>
             </div>
-            <div className="space-y-3">
-              {usageRows.map((row) => (
-                <div key={row.label} className="flex items-center gap-3">
-                  <span className="w-6 flex items-center justify-center flex-shrink-0 text-muted-foreground">
-                    <row.Icon size={14} />
-                  </span>
-                  <div
-                    className="flex-1 relative h-8 rounded-lg overflow-hidden"
-                    style={{ background: "hsl(var(--surface-4))" }}
-                  >
-                    {row.value > 0 && (
-                      <div
-                        className="h-full rounded-lg transition-all"
-                        style={{
-                          width:      `${row.value}%`,
-                          background: row.primary
-                            ? "hsl(var(--primary))"
-                            : "hsl(var(--primary) / 0.35)",
-                        }}
-                      />
-                    )}
-                    {/*
-                      Two-layer text trick: render the percentage twice with
-                      different colors, then clip each layer to the half of
-                      the bar where its color contrasts. Lime fill → dark
-                      text; empty fill → light text. Always legible.
-                    */}
-                    <span
-                      className="absolute inset-0 flex items-center justify-center text-[12px] font-semibold tabular-nums"
-                      style={{
-                        color:     "hsl(var(--foreground))",
-                        clipPath:  `inset(0 0 0 ${row.value}%)`,
-                      }}
+
+            {accuracy.total === 0 ? (
+              <p className="text-[12px] text-muted-foreground">
+                Record something to see your accuracy.
+              </p>
+            ) : (
+              <>
+                {/* Big accuracy ring */}
+                <div className="flex flex-col items-center mb-5">
+                  <svg width="100" height="100" viewBox="0 0 100 100">
+                    <circle
+                      cx="50" cy="50" r="42"
+                      strokeWidth="7" fill="none"
+                      stroke="hsl(var(--surface-4))"
+                    />
+                    <circle
+                      cx="50" cy="50" r="42"
+                      strokeWidth="7" fill="none"
+                      stroke="hsl(var(--primary))"
+                      strokeLinecap="round"
+                      strokeDasharray={2 * Math.PI * 42}
+                      strokeDashoffset={2 * Math.PI * 42 * (1 - accuracy.allTime / 100)}
+                      transform="rotate(-90 50 50)"
+                      style={{ transition: "stroke-dashoffset 0.6s ease" }}
+                    />
+                    <text
+                      x="50" y="46" textAnchor="middle"
+                      fill="hsl(var(--foreground))"
+                      fontSize="22" fontWeight="bold"
+                      style={{ fontVariantNumeric: "tabular-nums" }}
                     >
-                      {row.value}%
+                      {accuracy.allTime}%
+                    </text>
+                    <text
+                      x="50" y="62" textAnchor="middle"
+                      fill="hsl(var(--muted-foreground))"
+                      fontSize="10"
+                    >
+                      accepted
+                    </text>
+                  </svg>
+                </div>
+
+                {/* Stats rows */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between text-[13px]">
+                    <span className="flex items-center gap-2 text-foreground">
+                      <CheckCircle2 size={13} className="text-muted-foreground" />
+                      Accepted as-is
                     </span>
-                    <span
-                      className="absolute inset-0 flex items-center justify-center text-[12px] font-semibold tabular-nums"
-                      style={{
-                        color:     "hsl(var(--primary-foreground))",
-                        clipPath:  `inset(0 ${100 - row.value}% 0 0)`,
-                      }}
-                    >
-                      {row.value}%
+                    <span className="tabular-nums font-semibold text-foreground">
+                      {accuracy.accepted}
                     </span>
                   </div>
-                  <span className="text-[11px] font-medium text-muted-foreground w-24 flex-shrink-0 truncate tabular-nums">
-                    {row.uses} {row.label} use{row.uses !== 1 ? "s" : ""}
-                  </span>
+                  <div className="flex items-center justify-between text-[13px]">
+                    <span className="flex items-center gap-2 text-foreground">
+                      <PenLine size={13} className="text-muted-foreground" />
+                      Edited after paste
+                    </span>
+                    <span className="tabular-nums font-semibold text-foreground">
+                      {accuracy.edited}
+                    </span>
+                  </div>
+                  {accuracy.recent > 0 && (
+                    <div
+                      className="mt-2 pt-3 flex items-center justify-between text-[12px]"
+                      style={{ borderTop: "1px solid hsl(var(--border))" }}
+                    >
+                      <span className="text-muted-foreground">Last 7 days</span>
+                      <span className="tabular-nums font-semibold text-foreground">
+                        {accuracy.recent}%
+                      </span>
+                    </div>
+                  )}
                 </div>
-              ))}
-            </div>
+              </>
+            )}
           </div>
 
           {/* Heatmap */}
@@ -299,11 +330,9 @@ export function InsightsView({ snapshot }: InsightsViewProps) {
 
             {/* Month labels */}
             <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-3 px-1">
-              <button className="hover:text-foreground transition-colors">‹</button>
-              {MONTHS.map((m) => (
-                <span key={m} className={cn(m === "Apr" && "text-foreground font-medium")}>{m}</span>
+              {heatmapMonths().map((m, i, arr) => (
+                <span key={m} className={cn(i === arr.length - 1 && "text-foreground font-medium")}>{m}</span>
               ))}
-              <button className="hover:text-foreground transition-colors">›</button>
             </div>
 
             {/* Grid — proper week × weekday calendar:

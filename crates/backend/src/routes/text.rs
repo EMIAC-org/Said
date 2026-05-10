@@ -7,6 +7,7 @@
 use axum::{
     Json,
     extract::State,
+    http::StatusCode,
     response::{
         IntoResponse,
         sse::{Event, KeepAlive, Sse},
@@ -96,6 +97,13 @@ pub async fn polish(
         tokio::task::spawn_blocking(move || vocabulary::top_terms(&pool_c, &uid_c, 500))
     };
     let prefs_opt = crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id).await;
+    let Some(prefs_for_guard) = prefs_opt.as_ref() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let missing = crate::routes::key_guard::missing_text_api_keys(&pool, &user_id, prefs_for_guard);
+    if !missing.is_empty() {
+        return crate::routes::key_guard::missing_api_keys_response(missing);
+    }
     let (word_corrections_cached, stt_replacement_rules) =
         crate::get_lexicon_cached(&state.lexicon_cache, &pool, &user_id).await;
     let vocab_full = vocab_task.await.unwrap_or_default();
@@ -341,7 +349,7 @@ pub async fn polish(
                 insert_recording(&pool2, InsertRecording {
                     id: &id2, user_id: &uid2,
                     transcript: &t2, polished: &p2,
-                    word_count, recording_seconds: (total_ms as f64 / 1000.0),
+                    word_count, recording_seconds: word_count as f64 * 60.0 / 130.0,
                     model_used: &model2,
                     confidence:    None,
                     transcribe_ms: None,
@@ -518,7 +526,7 @@ pub async fn refine_last(
                 insert_recording(&pool2, InsertRecording {
                     id: &id2, user_id: &uid2,
                     transcript: &t2, polished: &p2,
-                    word_count, recording_seconds: (total_ms as f64 / 1000.0),
+                    word_count, recording_seconds: word_count as f64 * 60.0 / 130.0,
                     model_used: &model2,
                     confidence:    None,
                     transcribe_ms: None,

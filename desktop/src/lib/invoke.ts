@@ -30,6 +30,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     embed_ms: 210,
     polish_ms: 610,
     audio_id: null,
+    edit_count: 0,
   },
   {
     timestamp_ms: now - DAY - 2 * 60 * 60 * 1000,
@@ -42,6 +43,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     embed_ms: 290,
     polish_ms: 980,
     audio_id: null,
+    edit_count: 0,
   },
   {
     timestamp_ms: now - DAY - 2 * 60 * 60 * 1000 - 60 * 1000,
@@ -54,6 +56,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     embed_ms: 0,
     polish_ms: 890,
     audio_id: null,
+    edit_count: 1,
   },
   {
     timestamp_ms: now - DAY - 9 * 60 * 60 * 1000,
@@ -65,6 +68,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     embed_ms: 180,
     polish_ms: 730,
     audio_id: null,
+    edit_count: 0,
   },
   {
     timestamp_ms: now - DAY - 9 * 60 * 60 * 1000 - 3 * 60 * 1000,
@@ -76,6 +80,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     embed_ms: 0,
     polish_ms: 330,
     audio_id: null,
+    edit_count: 0,
   },
   {
     timestamp_ms: now - 2 * DAY - 3 * 60 * 60 * 1000,
@@ -87,6 +92,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     embed_ms: 240,
     polish_ms: 840,
     audio_id: null,
+    edit_count: 0,
   },
   {
     timestamp_ms: now - 3 * DAY - 11 * 60 * 60 * 1000,
@@ -98,6 +104,7 @@ const MOCK_HISTORY: HistoryItem[] = [
     embed_ms: 195,
     polish_ms: 700,
     audio_id: null,
+    edit_count: 0,
   },
 ];
 
@@ -181,6 +188,7 @@ async function mockInvoke(
       embed_ms: 0,
       polish_ms: 910,
       audio_id: null,
+      edit_count: 0,
     };
 
     mockSnapshot.history = [newItem, ...mockSnapshot.history];
@@ -388,17 +396,22 @@ export async function getRecordingAudioBytes(id: string): Promise<Uint8Array | n
   }
 }
 
-/** Save a recording WAV to the user's Downloads folder. Returns the saved path. */
+/** Save a recording WAV. Native app shows a save dialog and returns the saved path. */
 export async function downloadRecordingAudio(
   id: string,
   filename: string
 ): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   try {
-    return await tauriInvoke<string>("download_recording_audio", { id, filename });
+    return await tauriInvoke<string | null>("download_recording_audio", { id, filename });
   } catch {
     return null;
   }
+}
+
+export async function revealDownloadedFile(path: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await tauriInvoke("reveal_downloaded_file", { path });
 }
 
 /** Submit edit feedback so the backend can learn from user corrections. */
@@ -461,12 +474,12 @@ export function onVoiceDone(
 
 /** Listen for error events. `audioId` is the saved WAV id for retrying. */
 export function onVoiceError(
-  handler: (message: string, audioId?: string) => void
+  handler: (message: string, audioId?: string, errorCode?: string) => void
 ): Unsubscribe {
   if (!isTauriRuntime()) return () => {};
   let unsub: Unsubscribe = () => {};
-  listen<{ message: string; audio_id?: string }>("voice-error", (e) =>
-    handler(e.payload.message, e.payload.audio_id)
+  listen<{ message: string; audio_id?: string; error_code?: string }>("voice-error", (e) =>
+    handler(e.payload.message, e.payload.audio_id, e.payload.error_code)
   ).then((fn) => { unsub = fn; });
   return () => unsub();
 }

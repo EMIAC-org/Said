@@ -69,6 +69,8 @@ pub struct HistoryItem {
     pub model: String,
     pub transcribe_ms: u64,
     pub polish_ms: u64,
+    #[serde(default)]
+    pub edit_count: u32,
 }
 
 /// Result of a single polish operation.

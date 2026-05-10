@@ -140,6 +140,16 @@ pub async fn classify(
     };
     let transcript = rec.transcript;
     let prefs = get_prefs(&state.pool, &state.default_user_id);
+    if prefs.as_ref().map(|p| !p.learning_enabled).unwrap_or(false) {
+        info!(
+            "[classify] learning disabled — skipping {}",
+            body.recording_id
+        );
+        return (
+            StatusCode::OK,
+            Json(empty_response("USER_REPHRASE", "learning disabled")),
+        );
+    }
     let output_language = prefs
         .as_ref()
         .map(|p| p.output_language.clone())
@@ -797,8 +807,14 @@ fn merge_triage_with_llm(
 fn spawn_vocab_embedding(state: AppState, term: String, example_context: Option<String>) {
     tokio::spawn(async move {
         // Resolve Gemini key from prefs, fall back to env var.
-        let key = get_prefs(&state.pool, &state.default_user_id)
-            .and_then(|p| p.gemini_api_key)
+        let Some(prefs) = get_prefs(&state.pool, &state.default_user_id) else {
+            return;
+        };
+        if !prefs.learning_enabled {
+            return;
+        }
+        let key = prefs
+            .gemini_api_key
             .or_else(|| std::env::var("GEMINI_API_KEY").ok())
             .unwrap_or_default();
         if key.is_empty() {

@@ -27,6 +27,8 @@ pub struct Preferences {
     pub edit_capture: bool,
     pub polish_text_hotkey: String,
     pub record_hotkey: String,
+    #[serde(default = "default_learning_enabled")]
+    pub learning_enabled: bool,
     // API keys (stored in SQLite; None if not set yet)
     #[serde(default)]
     pub deepgram_api_key: Option<String>,
@@ -43,6 +45,10 @@ pub struct Preferences {
 
 fn default_llm_provider() -> String {
     "gateway".to_string()
+}
+
+fn default_learning_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -65,15 +71,17 @@ pub struct PrefsUpdate {
     pub polish_text_hotkey: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub record_hotkey: Option<String>,
-    // API keys — Some(value) = set; None = don't touch (field omitted from JSON)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub gateway_api_key: Option<String>,
+    pub learning_enabled: Option<bool>,
+    // API keys — Some(Some(value)) = set; Some(None) = clear; None = don't touch
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub deepgram_api_key: Option<String>,
+    pub gateway_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub gemini_api_key: Option<String>,
+    pub deepgram_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub groq_api_key: Option<String>,
+    pub gemini_api_key: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groq_api_key: Option<Option<String>>,
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_provider: Option<String>,
@@ -141,7 +149,57 @@ pub enum PolishEvent {
     Error {
         message: String,
         audio_id: Option<String>,
+        error_code: Option<String>,
     },
+}
+
+fn http_error_event(
+    path: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> (String, Option<String>) {
+    let preview = &body[..body.len().min(300)];
+    if let Ok(val) = serde_json::from_str::<Value>(body) {
+        let error_code = val
+            .get("error_code")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let message = val
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("request failed");
+        return (
+            format!("{path} error {status}: {preview}"),
+            error_code.or_else(|| {
+                if message == "API keys required" {
+                    Some("missing_api_keys".to_string())
+                } else {
+                    None
+                }
+            }),
+        );
+    }
+    (format!("{path} error {status}: {preview}"), None)
+}
+
+fn redact_pref_key_fields(raw: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(raw) else {
+        return raw.to_string();
+    };
+    for field in [
+        "gateway_api_key",
+        "deepgram_api_key",
+        "gemini_api_key",
+        "groq_api_key",
+    ] {
+        if let Some(slot) = value.get_mut(field) {
+            *slot = match slot {
+                Value::Null => Value::Null,
+                _ => Value::String("<redacted>".to_string()),
+            };
+        }
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| raw.to_string())
 }
 
 // ── Voice polish ──────────────────────────────────────────────────────────────
@@ -157,7 +215,7 @@ pub async fn stream_voice_polish<F>(
     pre_transcript: Option<String>,
     pre_transcript_meta: Option<TranscriptMeta>,
     repair_mode: Option<String>,
-    on_event: F,
+    mut on_event: F,
 ) -> Result<PolishDone, String>
 where
     F: FnMut(PolishEvent),
@@ -205,10 +263,13 @@ where
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "voice/polish error {status}: {}",
-            &body[..body.len().min(300)]
-        ));
+        let (message, error_code) = http_error_event("voice/polish", status, &body);
+        on_event(PolishEvent::Error {
+            message: message.clone(),
+            audio_id: None,
+            error_code,
+        });
+        return Err(message);
     }
 
     consume_sse(resp.bytes_stream(), on_event).await
@@ -222,7 +283,7 @@ pub async fn stream_voice_polish_transcript<F>(
     transcript: String,
     target_app: Option<String>,
     pre_transcript_meta: Option<TranscriptMeta>,
-    on_event: F,
+    mut on_event: F,
 ) -> Result<PolishDone, String>
 where
     F: FnMut(PolishEvent),
@@ -248,10 +309,13 @@ where
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "voice/polish-transcript error {status}: {}",
-            &body[..body.len().min(300)]
-        ));
+        let (message, error_code) = http_error_event("voice/polish-transcript", status, &body);
+        on_event(PolishEvent::Error {
+            message: message.clone(),
+            audio_id: None,
+            error_code,
+        });
+        return Err(message);
     }
 
     consume_sse(resp.bytes_stream(), on_event).await
@@ -304,7 +368,7 @@ pub async fn stream_text_polish<F>(
     text: String,
     target_app: Option<String>,
     tone_override: Option<String>,
-    on_event: F,
+    mut on_event: F,
 ) -> Result<PolishDone, String>
 where
     F: FnMut(PolishEvent),
@@ -330,10 +394,13 @@ where
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "text/polish error {status}: {}",
-            &body[..body.len().min(300)]
-        ));
+        let (message, error_code) = http_error_event("text/polish", status, &body);
+        on_event(PolishEvent::Error {
+            message: message.clone(),
+            audio_id: None,
+            error_code,
+        });
+        return Err(message);
     }
 
     consume_sse(resp.bytes_stream(), on_event).await
@@ -521,6 +588,10 @@ fn parse_and_dispatch(
                 on_event(PolishEvent::Error {
                     message: msg.to_string(),
                     audio_id,
+                    error_code: val
+                        .get("error_code")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 });
             }
         }
@@ -552,6 +623,10 @@ fn parse_and_dispatch(
                 on_event(PolishEvent::Error {
                     message: msg.to_string(),
                     audio_id,
+                    error_code: val
+                        .get("error_code")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 });
             }
         }
@@ -624,7 +699,10 @@ pub async fn patch_preferences(
 ) -> Result<Preferences, String> {
     let url = format!("{}/v1/preferences", ep.url);
     let body = serde_json::to_string(&update).unwrap_or_else(|e| format!("<serialize error: {e}>"));
-    tracing::info!("[patch_prefs] → PATCH {url}  body={body}");
+    tracing::info!(
+        "[patch_prefs] → PATCH {url}  body={}",
+        redact_pref_key_fields(&body)
+    );
     let resp = Client::new()
         .patch(&url)
         .header("Authorization", ep.bearer())
@@ -634,7 +712,10 @@ pub async fn patch_preferences(
         .map_err(|e| format!("patch prefs failed: {e}"))?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
-    tracing::info!("[patch_prefs] ← {status}  body={text}");
+    tracing::info!(
+        "[patch_prefs] ← {status}  body={}",
+        redact_pref_key_fields(&text)
+    );
     serde_json::from_str::<Preferences>(&text).map_err(|e| {
         format!(
             "parse prefs failed: {e} — raw: {}",
