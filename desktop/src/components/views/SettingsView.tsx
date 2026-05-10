@@ -399,12 +399,10 @@ export function SettingsView({
 
   async function patch(update: Partial<Preferences>) {
     if (!prefs) return;
-    console.log("[patch] calling patchPreferences with:", JSON.stringify(update));
     setSaving(true);
     setSaveError("");
     try {
       const updated = await patchPreferences(update);
-      console.log("[patch] got back:", updated ? JSON.stringify({ llm_provider: updated.llm_provider }) : "null");
       if (updated) setPrefs(updated);
     } catch (err) {
       console.error("[patch] error:", err);

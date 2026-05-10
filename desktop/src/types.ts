@@ -27,6 +27,7 @@ export interface HistoryItem {
   embed_ms: number;
   polish_ms: number;
   audio_id: string | null;
+  edit_count: number;
 }
 
 export interface AppSnapshot {

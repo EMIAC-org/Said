@@ -35,6 +35,25 @@ use uuid::Uuid;
 
 // ── Audio file helpers ────────────────────────────────────────────────────────
 
+/// Extract actual speech duration from WAV header (byte_rate at offset 28, data size at offset 40).
+fn wav_duration_secs(wav: &[u8]) -> f64 {
+    if wav.len() < 44 {
+        return 0.0;
+    }
+    let byte_rate = u32::from_le_bytes([wav[28], wav[29], wav[30], wav[31]]) as f64;
+    let data_size = u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]) as f64;
+    if byte_rate > 0.0 {
+        data_size / byte_rate
+    } else {
+        0.0
+    }
+}
+
+/// Estimate speaking duration from word count at 130 WPM (used when no audio is available).
+fn estimated_secs(word_count: i64) -> f64 {
+    word_count as f64 * 60.0 / 130.0
+}
+
 /// Directory where WAV recordings are saved locally (1-day retention).
 fn audio_dir() -> std::path::PathBuf {
     let base = dirs::data_local_dir()
@@ -348,6 +367,19 @@ pub async fn repair_transcript(
             llm_result.polished = script::enforce_roman_hinglish(&llm_result.polished);
         }
 
+        // Content guard: if the LLM dropped more than half the words,
+        // fall back to the cleaned transcript.
+        let repair_transcript_wc = transcript.split_whitespace().count();
+        let repair_polished_wc   = llm_result.polished.split_whitespace().count();
+        if repair_transcript_wc > 4 && repair_polished_wc < repair_transcript_wc / 2 {
+            let cleaned = strip_confidence_markers(&transcript);
+            warn!(
+                "[voice-repair] polish dropped too much content: transcript={} words → polished={} words — falling back to cleaned transcript",
+                repair_transcript_wc, repair_polished_wc,
+            );
+            llm_result.polished = cleaned;
+        }
+
         let total_ms = total_start.elapsed().as_millis() as i64;
         let recording_id = Uuid::new_v4().to_string();
         let word_count = llm_result.polished.split_whitespace().count() as i64;
@@ -365,7 +397,7 @@ pub async fn repair_transcript(
                 insert_recording(&pool2, InsertRecording {
                     id: &id2, user_id: &uid2,
                     transcript: &t2, polished: &p2,
-                    word_count, recording_seconds: (total_ms as f64 / 1000.0),
+                    word_count, recording_seconds: estimated_secs(word_count),
                     model_used: &model2,
                     confidence: None,
                     transcribe_ms: None,
@@ -443,6 +475,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
     } else {
         None
     };
+
+    let audio_secs = wav_duration_secs(&wav_data);
 
     let user_id = state.default_user_id.as_str().to_string();
     let pool = state.pool.clone();
@@ -872,6 +906,20 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
 
         let llm_ms   = llm_start.elapsed().as_millis() as i64;
         let total_ms = total_start.elapsed().as_millis() as i64;
+
+        // Content guard: if the LLM dropped more than half the transcript
+        // words, fall back to the cleaned transcript (markers stripped).
+        let transcript_wc = resolved_transcript.split_whitespace().count();
+        let polished_wc   = llm_result.polished.split_whitespace().count();
+        if transcript_wc > 4 && polished_wc < transcript_wc / 2 {
+            let cleaned = strip_confidence_markers(&resolved_transcript);
+            warn!(
+                "[voice] polish dropped too much content: transcript={} words → polished={} words — falling back to cleaned transcript",
+                transcript_wc, polished_wc,
+            );
+            llm_result.polished = cleaned;
+        }
+
         let word_count = llm_result.polished.split_whitespace().count() as i64;
         info!("[timing] LLM={}ms (TTFT inside) | total={}ms ← STT={}ms embed={}ms rag={}ms llm={}ms",
             llm_ms, total_ms, transcribe_ms, embed_ms, rag_ms, llm_ms);
@@ -897,7 +945,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 insert_recording(&pool2, InsertRecording {
                     id: &id2, user_id: &uid2,
                     transcript: &t2, polished: &p2,
-                    word_count, recording_seconds: (total_ms as f64 / 1000.0),
+                    word_count, recording_seconds: if audio_secs > 0.0 { audio_secs } else { estimated_secs(word_count) },
                     model_used: &model2,
                     confidence:    Some(conf),
                     transcribe_ms: Some(t_ms),

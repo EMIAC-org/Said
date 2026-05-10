@@ -1986,15 +1986,15 @@ fn do_finish_recording(
             match tokio::time::timeout(std::time::Duration::from_secs(4), rx).await {
                 Ok(Ok(t)) if !t.transcript.is_empty() => {
                     // Quality gate: reject suspiciously short transcripts.
-                    // Typical Hindi/English speech: ~2 words/second.
-                    // If we get fewer than 1 word per 2 seconds of audio,
-                    // the WS likely returned a partial — fall back to HTTP STT.
+                    // Normal speech is 2–3 words/sec (120–180 WPM).
+                    // Require at least 1 word/sec (60 WPM) — anything below
+                    // that means the WS likely dropped segments during drain.
                     let word_count = if t.meta.word_count > 0 {
                         t.meta.word_count
                     } else {
                         t.transcript.split_whitespace().count()
                     };
-                    let expected_min_words = (wav_duration_s / 2.0).max(1.0) as usize;
+                    let expected_min_words = wav_duration_s.max(1.0) as usize;
                     if word_count < expected_min_words && wav_duration_s > 3.0 {
                         tracing::warn!(
                             "[finish] WS transcript too short: {} words for {:.1}s recording (expected ≥{}) — falling back to HTTP STT. transcript={:?}",

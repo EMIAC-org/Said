@@ -349,7 +349,7 @@ pub async fn polish(
                 insert_recording(&pool2, InsertRecording {
                     id: &id2, user_id: &uid2,
                     transcript: &t2, polished: &p2,
-                    word_count, recording_seconds: (total_ms as f64 / 1000.0),
+                    word_count, recording_seconds: word_count as f64 * 60.0 / 130.0,
                     model_used: &model2,
                     confidence:    None,
                     transcribe_ms: None,
@@ -526,7 +526,7 @@ pub async fn refine_last(
                 insert_recording(&pool2, InsertRecording {
                     id: &id2, user_id: &uid2,
                     transcript: &t2, polished: &p2,
-                    word_count, recording_seconds: (total_ms as f64 / 1000.0),
+                    word_count, recording_seconds: word_count as f64 * 60.0 / 130.0,
                     model_used: &model2,
                     confidence:    None,
                     transcribe_ms: None,

@@ -1,11 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  ChevronUp, ChevronDown, ChevronRight,
+  ChevronRight,
   Filter, Play, Pause, Check, Copy, Download,
   ChevronDown as CaretDown,
-  Search,
-  Mic, Zap, Sparkles, Database, FileText, Send, Activity,
-  CircleCheck, AlertCircle,
 } from "lucide-react";
 import { useAudioPlayer } from "@/lib/useAudioPlayer";
 import { downloadRecordingAudio } from "@/lib/invoke";
@@ -110,31 +107,6 @@ function StatTile({ title, subtitle, value, delta, status }: StatTileProps) {
   );
 }
 
-/* ════════════════════════════════════════════════════════════════════════════
-   1) HeroStat — "Recordings" total + week-over-week delta.
-   ════════════════════════════════════════════════════════════════════════════ */
-
-export function HeroStat({ snapshot }: { snapshot: AppSnapshot | null }) {
-  const history    = snapshot?.history ?? [];
-  const recordings = history.length;
-
-  const now      = Date.now();
-  const D7       = 7 * 86_400_000;
-  const last7    = history.filter((h) => h.timestamp_ms >= now - D7).length;
-  const prev7    = history.filter((h) => h.timestamp_ms >= now - 2 * D7 && h.timestamp_ms < now - D7).length;
-  const deltaPct = prev7 > 0
-    ? Math.round(((last7 - prev7) / prev7) * 100)
-    : last7 > 0 ? 100 : 0;
-
-  return (
-    <StatTile
-      title="Recordings"
-      subtitle="Last 30 days, all sessions"
-      value={recordings.toLocaleString()}
-      delta={<DeltaChip value={deltaPct} />}
-    />
-  );
-}
 
 /* ════════════════════════════════════════════════════════════════════════════
    2) DonutCard — total words polished. Donut visualization dropped so the
@@ -642,959 +614,278 @@ function Row({
   );
 }
 
+
 /* ════════════════════════════════════════════════════════════════════════════
-   5) ActivityHeatmap — Sentinel-style: month labels across top, circular
-      mint dots, "Daily avg" + More/Less legend in the footer.
+   NEW) TimelineCard — words dictated per day, 7d / 30d toggle.
    ════════════════════════════════════════════════════════════════════════════ */
 
-const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+type TimeRange = "7d" | "30d";
 
-function wordsToLevel(words: number, max: number): 0 | 1 | 2 | 3 | 4 {
-  if (words === 0)        return 0;
-  if (words < max * 0.25) return 1;
-  if (words < max * 0.50) return 2;
-  if (words < max * 0.75) return 3;
-  return 4;
-}
+export function TimelineCard({ recordings }: { recordings: Recording[] }) {
+  const [range, setRange] = useState<TimeRange>("7d");
 
-/* Local-calendar day index — Math.floor(ms / DAY) gives a UTC day index, which
- * splits days mid-evening for IST users (UTC+5:30) and other east-of-UTC zones.
- * This helper rebuilds a date at the LOCAL midnight then floors that, so all
- * recordings made on the same local calendar date share the same index. */
-function localDayIdx(ms: number): number {
-  const d = new Date(ms);
-  const localMidnight = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  return Math.floor(localMidnight / 86_400_000);
-}
+  const days = range === "7d" ? 7 : 30;
+  const now  = Date.now();
 
-function SideStat({
-  label, value, unit, highlight,
-}: {
-  label:      string;
-  value:      number | string;
-  unit?:      string;
-  highlight?: boolean;
-}) {
-  return (
-    <div>
-      <p className="text-[10.5px] font-bold uppercase tracking-[0.14em]"
-         style={{ color: "hsl(var(--muted-foreground))" }}>
-        {label}
-      </p>
-      <p
-        className="font-bold tabular-nums leading-none tracking-tight mt-1"
-        style={{
-          fontSize: 24,
-          color: highlight ? "hsl(var(--primary))" : "hsl(var(--foreground))",
-          letterSpacing: "-0.02em",
-        }}
-      >
-        {typeof value === "number" ? value.toLocaleString() : value}
-        {unit && (
-          <span className="text-[11px] ml-1.5"
-                style={{ color: "hsl(var(--muted-foreground))", fontWeight: 600 }}>
-            {unit}
-          </span>
-        )}
-      </p>
-    </div>
-  );
-}
-
-type HeatmapRange = "1m" | "3m" | "6m" | "12m";
-const RANGE_COLS:  Record<HeatmapRange, number> = { "1m": 5,  "3m": 13, "6m": 26, "12m": 52 };
-const RANGE_LABEL: Record<HeatmapRange, string> = {
-  "1m":  "Last 30 days",
-  "3m":  "Last 3 months",
-  "6m":  "Last 6 months",
-  "12m": "Last 12 months",
-};
-
-export function ActivityHeatmap({
-  snapshot,
-  isRecording,
-  isProcessing,
-  onToggle,
-  onView,
-}: {
-  snapshot:     AppSnapshot | null;
-  isRecording:  boolean;
-  isProcessing: boolean;
-  onToggle:     () => void;
-  onView:       () => void;
-}) {
-  const history = snapshot?.history ?? [];
-
-  const dayMap = new Map<number, number>();
-  for (const h of history) {
-    const d = localDayIdx(h.timestamp_ms);
-    dayMap.set(d, (dayMap.get(d) ?? 0) + h.word_count);
-  }
-
-  // Range selector — drives column count and grid width
-  const [range,    setRange]    = useState<HeatmapRange>("6m");
-  const [rangeOpen, setRangeOpen] = useState(false);
-  const rangeRef = useRef<HTMLDivElement>(null);
-
-  // Hover tooltip state — { x/y in viewport, info text }
-  const [hover, setHover] = useState<{ x: number; y: number; words: number; date: string } | null>(null);
-
-  // Close range dropdown on outside click / esc
-  useEffect(() => {
-    if (!rangeOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (rangeRef.current && !rangeRef.current.contains(e.target as Node)) setRangeOpen(false);
-    };
-    const onEsc = (e: KeyboardEvent) => { if (e.key === "Escape") setRangeOpen(false); };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onEsc);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onEsc);
-    };
-  }, [rangeOpen]);
-
-  const COLS    = RANGE_COLS[range];
-  const ROWS    = 7;
-  // Use the LOCAL day index (matches dayMap keys) — Math.floor of UTC ms
-  // would give a UTC day, splitting IST evenings onto the wrong cell.
-  const todayIdx = localDayIdx(Date.now());
-  const todayDow = new Date().getDay();   // local day-of-week (0 = Sun)
-  const lastSundayIdx = todayIdx - todayDow;
-  const startIdx      = lastSundayIdx - (COLS - 1) * 7;
-
-  // Fixed cell size keeps the section's HEIGHT constant when the user
-  // toggles between 1m / 3m / 6m / 12m — the grid just gets narrower /
-  // wider, the panel never grows or shrinks vertically.
-  const CELL_PX = 18;
-
-  let max = 1;
-  for (let c = 0; c < COLS; c++) {
-    for (let r = 0; r < ROWS; r++) {
-      const idx = startIdx + c * 7 + r;
-      const w   = dayMap.get(idx) ?? 0;
-      if (w > max) max = w;
-    }
-  }
-  max = Math.max(max, 30);
-
-  // Build a real Date for any day-index, in LOCAL time (no UTC drift).
-  function localDateFromIdx(idx: number): Date {
-    const daysAgo = todayIdx - idx;
-    const d = new Date();
+  // Build one entry per calendar day, oldest → newest
+  const dayData: { key: string; label: string; words: number }[] = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now - i * 86_400_000);
     d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() - daysAgo);
-    return d;
+    const key   = d.toISOString().slice(0, 10);
+    const label = range === "7d"
+      ? d.toLocaleDateString("en-US", { weekday: "short" })
+      : d.getDate() === 1
+        ? d.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+        : String(d.getDate());
+    dayData.push({ key, label, words: 0 });
   }
 
-  const inWindow: number[] = [];
-  for (let c = 0; c < COLS; c++) {
-    for (let r = 0; r < ROWS; r++) {
-      const idx = startIdx + c * 7 + r;
-      if (idx > todayIdx) continue;
-      inWindow.push(dayMap.get(idx) ?? 0);
-    }
-  }
-  const totalWords     = inWindow.reduce((s, w) => s + w, 0);
-  const activeDayCount = inWindow.filter((w) => w > 0).length;
-  const totalDays      = inWindow.length;
-  const dailyAvg       = activeDayCount > 0 ? Math.round(totalWords / activeDayCount) : 0;
-
-  // Current streak — count back from today over consecutive non-zero days
-  let streak = 0;
-  for (let i = 0; i < totalDays; i++) {
-    const idx = todayIdx - i;
-    if ((dayMap.get(idx) ?? 0) > 0) streak += 1;
-    else break;
+  // Accumulate words per day from full recording list
+  for (const r of recordings) {
+    const d = new Date(r.timestamp_ms);
+    d.setHours(0, 0, 0, 0);
+    const key   = d.toISOString().slice(0, 10);
+    const entry = dayData.find((e) => e.key === key);
+    if (entry) entry.words += r.word_count;
   }
 
-  const colMonthLabel: (string | null)[] = Array(COLS).fill(null);
-  let lastMonth = -1;
-  for (let c = 0; c < COLS; c++) {
-    const colStartIdx = startIdx + c * 7;
-    const d           = localDateFromIdx(colStartIdx);
-    const m           = d.getMonth();
-    if (m !== lastMonth) {
-      colMonthLabel[c] = MONTH_LABELS[m];
-      lastMonth        = m;
-    }
-  }
+  const maxWords     = Math.max(...dayData.map((d) => d.words), 1);
+  const totalInRange = dayData.reduce((s, d) => s + d.words, 0);
 
-  return (
-    <div className="panel p-5">
-      {/* Header — Sentinel format */}
-      <div className="flex items-start justify-between mb-5">
-        <div>
-          <h3 className="text-[15px] font-bold tracking-tight"
-              style={{ color: "hsl(var(--foreground))" }}>
-            Recording Activity
-          </h3>
-          <p className="text-[12px] mt-0.5"
-             style={{ color: "hsl(var(--muted-foreground))" }}>
-            Words polished per day across all sessions
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {/* Range dropdown */}
-          <div ref={rangeRef} className="relative">
-            <button
-              onClick={() => setRangeOpen((o) => !o)}
-              className="flex items-center gap-1.5 px-3 h-8 rounded-md text-[12px] font-medium transition-colors"
-              style={{
-                background: rangeOpen ? "hsl(var(--surface-hover))" : "hsl(var(--surface-3))",
-                color:      "hsl(var(--foreground))",
-                boxShadow:  "inset 0 0 0 1px hsl(var(--border))",
-              }}
-            >
-              {RANGE_LABEL[range]}
-              <CaretDown
-                size={11}
-                style={{ transition: "transform 0.15s", transform: rangeOpen ? "rotate(180deg)" : "none" }}
-              />
-            </button>
-            {rangeOpen && (
-              <div
-                className="absolute right-0 top-full mt-1 z-30 rounded-md py-1 min-w-[160px]"
-                style={{
-                  background: "hsl(var(--surface-3))",
-                  boxShadow:
-                    "inset 0 0 0 1px hsl(var(--border)), 0 8px 24px hsl(0 0% 0% / 0.12)",
-                }}
-              >
-                {(Object.keys(RANGE_LABEL) as HeatmapRange[]).map((k) => {
-                  const active = range === k;
-                  return (
-                    <button
-                      key={k}
-                      onClick={() => { setRange(k); setRangeOpen(false); }}
-                      className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-[12px] font-medium text-left transition-colors"
-                      style={{
-                        color:      active ? "hsl(var(--primary))" : "hsl(var(--foreground))",
-                        background: active ? "hsl(var(--primary) / 0.08)" : "transparent",
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!active) e.currentTarget.style.background = "hsl(var(--surface-hover))";
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!active) e.currentTarget.style.background = "transparent";
-                      }}
-                    >
-                      {RANGE_LABEL[k]}
-                      {active && <Check size={11} strokeWidth={2.5} />}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <button
-            onClick={onToggle}
-            disabled={isProcessing}
-            className="px-4 h-8 rounded-md text-[12px] font-semibold transition-all flex items-center gap-1.5"
-            style={{
-              background: isRecording
-                ? "hsl(var(--recording))"
-                : "hsl(var(--pill-active-bg))",
-              color: isRecording ? "white" : "hsl(var(--pill-active-fg))",
-              opacity: isProcessing ? 0.6 : 1,
-              cursor:  isProcessing ? "not-allowed" : "pointer",
-            }}
-          >
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${isRecording ? "orb-recording" : ""}`}
-              style={{ background: isRecording ? "white" : "hsl(var(--primary))" }}
-            />
-            {isRecording ? "Stop" : isProcessing ? "Working…" : "Record"}
-          </button>
-          <button
-            onClick={onView}
-            className="px-3 h-8 rounded-md text-[12px] font-semibold transition-colors"
-            style={{
-              background: "hsl(var(--surface-3))",
-              color:      "hsl(var(--foreground))",
-              boxShadow:  "inset 0 0 0 1px hsl(var(--border))",
-            }}
-          >
-            View all
-          </button>
-        </div>
-      </div>
-
-      {/* Two-column layout: heatmap on the left, derived stats on the right.
-          Heatmap container uses fixed-px tracks so the section's HEIGHT stays
-          identical regardless of which range (1m / 3m / 6m / 12m) is selected
-          — only the WIDTH of the dot cluster changes. Horizontal scroll kicks
-          in for very wide ranges so we never overflow the panel. */}
-      <div className="flex gap-8 items-start">
-
-        {/* Heatmap — fixed-px cells, scrolls horizontally if too wide */}
-        <div className="min-w-0 flex-shrink overflow-x-auto" style={{ paddingBottom: 2 }}>
-          {/* Month labels strip */}
-          <div
-            className="grid mb-2"
-            style={{
-              gridTemplateColumns: `repeat(${COLS}, ${CELL_PX}px)`,
-              columnGap: 4,
-            }}
-          >
-            {colMonthLabel.map((label, i) => (
-              <span
-                key={i}
-                className="text-[10.5px] font-medium tabular-nums whitespace-nowrap"
-                style={{
-                  color: "hsl(var(--muted-foreground))",
-                  opacity: label ? 1 : 0,
-                  minHeight: 14,
-                }}
-              >
-                {label ?? ""}
-              </span>
-            ))}
-          </div>
-
-          {/* Heatmap grid — fixed pixel cell size keeps section height stable */}
-          <div
-            className="grid"
-            style={{
-              gridTemplateColumns: `repeat(${COLS}, ${CELL_PX}px)`,
-              gridTemplateRows:    `repeat(${ROWS}, ${CELL_PX}px)`,
-              gridAutoFlow:        "column",
-              columnGap: 4,
-              rowGap:    4,
-            }}
-            onMouseLeave={() => setHover(null)}
-          >
-            {Array.from({ length: COLS * ROWS }).map((_, i) => {
-              const c   = Math.floor(i / ROWS);
-              const r   = i % ROWS;
-              const idx = startIdx + c * 7 + r;
-              const future = idx > todayIdx;
-              const words  = future ? 0 : (dayMap.get(idx) ?? 0);
-              const level  = future ? 0 : wordsToLevel(words, max);
-              const isToday = idx === todayIdx;
-              return (
-                <span
-                  key={i}
-                  className={`block rounded-full transition-transform ${isToday ? "heat-current" : `heat-${level}`}`}
-                  style={{
-                    width:    CELL_PX,
-                    height:   CELL_PX,
-                    opacity:  future ? 0.3 : 1,
-                    cursor:   future ? "default" : "pointer",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (future) return;
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    const localDate = localDateFromIdx(idx);
-                    setHover({
-                      x:     rect.left + rect.width / 2,
-                      y:     rect.top,
-                      words,
-                      date:  localDate.toLocaleDateString("en-US", {
-                        weekday: "short",
-                        month:   "short",
-                        day:     "numeric",
-                        year:    "numeric",
-                      }),
-                    });
-                    e.currentTarget.style.transform = "scale(1.4)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.transform = "scale(1)";
-                  }}
-                />
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Side stats — different metrics from the top stat tiles to avoid
-            duplicating "Words polished" data when there's only one active day. */}
-        <div
-          className="flex-1 flex flex-col gap-4 pl-6"
-          style={{
-            minWidth: 140,
-            borderLeft: "1px solid hsl(var(--border))",
-          }}
-        >
-          <SideStat
-            label="Streak"
-            value={streak}
-            unit={streak === 1 ? "day" : "days"}
-            highlight
-          />
-          <SideStat
-            label="Avg / day"
-            value={dailyAvg > 0 ? dailyAvg : "—"}
-            unit={dailyAvg > 0 ? "words on active days" : ""}
-          />
-          <SideStat
-            label="Active"
-            value={activeDayCount}
-            unit={`of ${totalDays} days`}
-          />
-        </div>
-      </div>
-
-      {/* Footer */}
-      <div className="flex items-center justify-between mt-5">
-        <p className="text-[12px] font-medium"
-           style={{ color: "hsl(var(--muted-foreground))" }}>
-          Daily avg:{" "}
-          <span style={{ color: "hsl(var(--foreground))", fontWeight: 600 }}>
-            {dailyAvg.toLocaleString()} words / day
-          </span>
-        </p>
-
-        <div className="flex items-center gap-1.5 text-[10.5px]"
-             style={{ color: "hsl(var(--muted-foreground))" }}>
-          <span>Less</span>
-          {([0, 1, 2, 3, 4] as const).map((l) => (
-            <span
-              key={l}
-              className={`heat-${l} rounded-sm`}
-              style={{ width: 11, height: 11 }}
-            />
-          ))}
-          <span>More</span>
-        </div>
-      </div>
-
-      {/* Floating hover tooltip — fixed-positioned so it lives above everything */}
-      {hover && (
-        <div
-          className="fixed pointer-events-none z-50 px-2.5 py-1.5 rounded-md text-[11.5px] tabular-nums whitespace-nowrap"
-          style={{
-            left: hover.x,
-            top:  hover.y - 10,
-            transform: "translate(-50%, -100%)",
-            background: "hsl(var(--foreground))",
-            color:      "hsl(var(--background))",
-            boxShadow:  "0 6px 20px hsl(0 0% 0% / 0.20)",
-            fontWeight: 500,
-          }}
-        >
-          <span style={{ fontWeight: 700 }}>
-            {hover.words.toLocaleString()} word{hover.words === 1 ? "" : "s"}
-          </span>
-          <span style={{ opacity: 0.6 }}> · </span>
-          {hover.date}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════════════════
-   6) WorkspaceTopBar — Sentinel "Vektora · Enterprise · Invite people" pattern.
-      Adapted: "Said · Personal" + invite button.
-   ════════════════════════════════════════════════════════════════════════════ */
-
-export function WorkspaceTopBar({
-  onInvite,
-}: { onInvite: () => void }) {
-  // Single-user app — show one avatar (the user) plus a "+" indicator
-  return (
-    <div className="flex items-center justify-between gap-4 mb-4">
-      <div className="flex items-center gap-3 min-w-0">
-        {/* Workspace logo — black tile with "S" */}
-        <span
-          className="flex items-center justify-center w-9 h-9 rounded-lg flex-shrink-0 text-[14px] font-bold"
-          style={{
-            background: "hsl(var(--pill-active-bg))",
-            color:      "hsl(var(--pill-active-fg))",
-          }}
-        >
-          S
-        </span>
-        <h1 className="text-[20px] font-bold tracking-tight truncate"
-            style={{ color: "hsl(var(--foreground))" }}>
-          Said
-        </h1>
-        <span
-          className="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] font-semibold flex-shrink-0"
-          style={{
-            background: "hsl(var(--surface-4))",
-            color:      "hsl(var(--muted-foreground))",
-          }}
-        >
-          Personal
-        </span>
-      </div>
-
-      {/* Right cluster: avatar stack + invite */}
-      <div className="flex items-center gap-3 flex-shrink-0">
-        {/* Avatar group — hide entirely below md */}
-        <div className="hidden md:flex items-center -space-x-2">
-          {[
-            { letter: "M", bg: "hsl(220 80% 60%)" },
-            { letter: "D", bg: "hsl(15  80% 60%)" },
-            { letter: "B", bg: "hsl(38  85% 55%)" },
-            { letter: "J", bg: "hsl(150 65% 45%)" },
-          ].map((a) => (
-            <span
-              key={a.letter}
-              className="flex items-center justify-center w-7 h-7 rounded-full text-[10.5px] font-bold"
-              style={{
-                background: a.bg,
-                color:      "white",
-                boxShadow:  "0 0 0 2px hsl(var(--surface-2))",
-              }}
-            >
-              {a.letter}
-            </span>
-          ))}
-        </div>
-        <button
-          onClick={onInvite}
-          className="px-4 h-9 rounded-md text-[12.5px] font-semibold transition-all flex items-center gap-2 whitespace-nowrap"
-          style={{
-            background: "hsl(var(--pill-active-bg))",
-            color:      "hsl(var(--pill-active-fg))",
-          }}
-        >
-          {/* Short label on small screens, full on larger */}
-          <span className="sm:hidden">Invite</span>
-          <span className="hidden sm:inline">Invite people</span>
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════════════════
-   7) FilterBar — Sentinel "Recent PRs · April 2026 · + · branch · repo · Search"
-      Adapted: "Recent · Today · + new · search" with ⌘K hint.
-   ════════════════════════════════════════════════════════════════════════════ */
-
-interface FilterBarProps {
-  onNewRecording?: () => void;
-}
-
-// Currently only the search field is wired up; chips/branch/workspace icons were
-// dead decorations and have been removed. New-recording is reachable via the
-// "Record" button inside the heatmap header, so the "+" is gone too.
-export function FilterBar({ onNewRecording: _ }: FilterBarProps) {
-  return (
-    <div className="flex items-center mb-4">
-      {/* Search — flexes to fill the row */}
-      <div className="relative w-full" style={{ maxWidth: 480 }}>
-        <Search
-          size={13}
-          className="absolute pointer-events-none"
-          style={{
-            left: 12, top: "50%", transform: "translateY(-50%)",
-            color: "hsl(var(--muted-foreground))",
-          }}
-        />
-        <input
-          type="search"
-          placeholder="Search recordings…"
-          className="w-full pl-8 pr-12 py-2 rounded-md text-[12.5px] transition-all"
-          style={{
-            background: "hsl(var(--surface-3))",
-            color:      "hsl(var(--foreground))",
-            boxShadow:  "inset 0 0 0 1px hsl(var(--border))",
-            outline:    "none",
-            height:     34,
-          }}
-        />
-        <span
-          className="absolute text-[10.5px] font-semibold tabular-nums px-1.5 py-0.5 rounded hidden sm:block"
-          style={{
-            right: 8, top: "50%", transform: "translateY(-50%)",
-            background: "hsl(var(--surface-4))",
-            color:      "hsl(var(--muted-foreground))",
-          }}
-        >
-          ⌘K
-        </span>
-      </div>
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════════════════
-   8) PolishPipeline — Sentinel "Six Checks Pipeline" pattern.
-      6 stage cards showing the polish-engine pipeline for the latest recording.
-   ════════════════════════════════════════════════════════════════════════════ */
-
-interface PipelineStage {
-  id:       number;
-  label:    string;            // "Record"
-  icon:     React.ReactNode;
-  ms:       number;            // latency
-  delta:    number;            // delta vs avg
-  ok:       boolean;
-}
-
-export function PolishPipeline({ recordings }: { recordings: Recording[] }) {
-  const latest = recordings[0];
-
-  // Compute averages across last 10 recordings for the delta column
-  const sample = recordings.slice(0, 10);
-  const avg = (key: "transcribe_ms" | "embed_ms" | "polish_ms") => {
-    const xs = sample.map((r) => r[key] ?? 0).filter((n) => n > 0);
-    return xs.length ? Math.round(xs.reduce((s, n) => s + n, 0) / xs.length) : 0;
-  };
-  const avgT = avg("transcribe_ms");
-  const avgE = avg("embed_ms");
-  const avgP = avg("polish_ms");
-
-  const transcribeMs = latest?.transcribe_ms ?? 0;
-  const embedMs      = latest?.embed_ms      ?? 0;
-  const polishMs     = latest?.polish_ms     ?? 0;
-  // Estimated stage timings for stages we don't measure separately
-  const recordMs     = latest ? Math.round((latest.recording_seconds ?? 0) * 1000) : 0;
-  const retrieveMs   = latest?.embed_ms ? Math.max(5, Math.round(embedMs * 0.05)) : 0;
-  const pasteMs      = latest ? 30 : 0;
-
-  const stages: PipelineStage[] = [
-    { id: 1, label: "Record",     icon: <Mic       size={11} />, ms: recordMs,     delta: 0,                                    ok: true                  },
-    { id: 2, label: "Transcribe", icon: <Zap       size={11} />, ms: transcribeMs, delta: avgT > 0 ? transcribeMs - avgT : 0,   ok: transcribeMs > 0      },
-    { id: 3, label: "Embed",      icon: <Sparkles  size={11} />, ms: embedMs,      delta: avgE > 0 ? embedMs - avgE : 0,        ok: embedMs >= 0          },
-    { id: 4, label: "Retrieve",   icon: <Database  size={11} />, ms: retrieveMs,   delta: 0,                                    ok: retrieveMs >= 0       },
-    { id: 5, label: "Polish",     icon: <FileText  size={11} />, ms: polishMs,     delta: avgP > 0 ? polishMs - avgP : 0,       ok: polishMs > 0          },
-    { id: 6, label: "Paste",      icon: <Send      size={11} />, ms: pasteMs,      delta: 0,                                    ok: pasteMs > 0           },
-  ];
-
-  const totalMs = transcribeMs + embedMs + polishMs;
-  const ago     = latest ? relTime(latest.timestamp_ms) : "—";
+  // For 30d, show label only every 5th day and the last day
+  const showLabel = (i: number) =>
+    range === "7d" || i === 0 || i === days - 1 || i % 5 === 4;
 
   return (
     <div className="panel p-5">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 mb-4">
+      <div className="flex items-start justify-between gap-4 mb-5">
         <div>
-          <h3 className="text-[15px] font-bold tracking-tight"
+          <h3 className="text-[13px] font-bold tracking-tight"
               style={{ color: "hsl(var(--foreground))" }}>
-            Polish Pipeline
+            Words over time
           </h3>
-          <p className="text-[12px] mt-0.5"
-             style={{ color: "hsl(var(--muted-foreground))" }}>
-            {latest
-              ? <>Last run · <span style={{ color: "hsl(var(--foreground))", fontWeight: 600 }}>{latest.word_count} words</span> in {totalMs.toLocaleString()} ms · {modelLabel(latest.model_used)} model</>
-              : "No recordings yet — press ⇪ Caps Lock to start"}
+          <p className="text-[11.5px] mt-0.5" style={{ color: "hsl(var(--muted-foreground))" }}>
+            {totalInRange.toLocaleString()} words in the last {range === "7d" ? "7 days" : "30 days"}
           </p>
         </div>
-        <div className="flex items-center gap-1.5 text-[11.5px] flex-shrink-0"
-             style={{ color: "hsl(var(--muted-foreground))" }}>
-          <span
-            className="inline-block w-1.5 h-1.5 rounded-full"
-            style={{ background: "hsl(var(--primary))" }}
-          />
-          {ago}
+
+        {/* 7d / 30d pill toggle */}
+        <div
+          className="flex rounded-md overflow-hidden flex-shrink-0"
+          style={{
+            boxShadow: "inset 0 0 0 1px hsl(var(--border))",
+            background: "hsl(var(--surface-3))",
+          }}
+        >
+          {(["7d", "30d"] as TimeRange[]).map((r) => (
+            <button
+              key={r}
+              onClick={() => setRange(r)}
+              className="px-3 h-7 text-[11.5px] font-semibold transition-colors"
+              style={{
+                background: range === r ? "hsl(var(--pill-active-bg))" : "transparent",
+                color:      range === r ? "hsl(var(--pill-active-fg))" : "hsl(var(--muted-foreground))",
+              }}
+            >
+              {r === "7d" ? "7 days" : "30 days"}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* 6-stage grid — wraps cleanly across breakpoints */}
-      <div
-        className="grid gap-2.5"
-        style={{
-          gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
-        }}
-      >
-        {stages.map((s, i) => (
-          <PipelineCard
-            key={s.id}
-            stage={s}
-            highlighted={i === stages.length - 1 && Boolean(latest)}
-          />
+      {/* Bar chart */}
+      <div className="flex items-end" style={{ height: 80, gap: range === "30d" ? 2 : 4 }}>
+        {dayData.map((day) => (
+          <div
+            key={day.key}
+            className="relative group"
+            style={{ flex: 1, height: "100%", display: "flex", alignItems: "flex-end" }}
+          >
+            <div
+              style={{
+                width:        "100%",
+                height:       day.words > 0
+                  ? `${Math.max(5, (day.words / maxWords) * 100)}%`
+                  : 2,
+                background:   day.words > 0 ? "hsl(var(--primary))" : "hsl(var(--surface-4))",
+                borderRadius: "2px 2px 0 0",
+                opacity:      day.words > 0 ? 1 : 0.35,
+                transition:   "height 0.25s ease",
+              }}
+            />
+            {day.words > 0 && (
+              <div
+                className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 px-2 py-1 rounded text-[10px] whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-20"
+                style={{
+                  background: "hsl(var(--foreground))",
+                  color:      "hsl(var(--background))",
+                  fontWeight: 600,
+                  boxShadow:  "0 4px 12px hsl(0 0% 0% / 0.18)",
+                }}
+              >
+                {day.words.toLocaleString()} words
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* X-axis labels */}
+      <div className="flex mt-1.5" style={{ gap: range === "30d" ? 2 : 4 }}>
+        {dayData.map((day, i) => (
+          <div
+            key={day.key}
+            className="flex-1 text-center truncate"
+            style={{
+              fontSize: 9,
+              color:    "hsl(var(--muted-foreground))",
+              lineHeight: 1.3,
+            }}
+          >
+            {showLabel(i) ? day.label : ""}
+          </div>
         ))}
       </div>
     </div>
   );
 }
 
-function PipelineCard({
-  stage, highlighted,
-}: { stage: PipelineStage; highlighted: boolean }) {
-  const deltaColor = stage.delta === 0
-    ? "hsl(var(--muted-foreground))"
-    : stage.delta < 0
-    ? "hsl(var(--primary))"           // faster than avg = mint
-    : "hsl(38 85% 50%)";              // slower = amber
-
-  return (
-    <div
-      className="relative rounded-xl px-3 py-3 flex flex-col"
-      style={{
-        background: highlighted ? "hsl(var(--primary) / 0.06)" : "hsl(var(--surface-3))",
-        boxShadow:  highlighted
-          ? "inset 0 0 0 1.5px hsl(var(--primary) / 0.45)"
-          : "inset 0 0 0 1px hsl(var(--border))",
-      }}
-    >
-      {/* Step number with icon */}
-      <p
-        className="text-[9.5px] font-bold uppercase tracking-[0.12em] flex items-center gap-1.5"
-        style={{ color: "hsl(var(--muted-foreground))" }}
-      >
-        <span
-          className="inline-flex items-center justify-center w-4 h-4 rounded"
-          style={{
-            background: highlighted ? "hsl(var(--primary) / 0.20)" : "hsl(var(--surface-4))",
-            color:      highlighted ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
-          }}
-        >
-          {stage.icon}
-        </span>
-        Step {String(stage.id).padStart(2, "0")}
-      </p>
-
-      {/* Label */}
-      <p className="text-[14px] font-bold tracking-tight mt-2"
-         style={{ color: "hsl(var(--foreground))" }}>
-        {stage.label}
-      </p>
-
-      {/* Latency + delta — bottom of card */}
-      <div className="flex items-baseline gap-1.5 mt-3 tabular-nums">
-        <span className="text-[14px] font-bold leading-none"
-              style={{ color: "hsl(var(--foreground))" }}>
-          {stage.ms > 0 ? stage.ms.toLocaleString() : "—"}
-        </span>
-        <span className="text-[10.5px]"
-              style={{ color: "hsl(var(--muted-foreground))" }}>
-          ms
-        </span>
-        {stage.delta !== 0 && (
-          <span
-            className="text-[10.5px] font-semibold ml-auto"
-            style={{ color: deltaColor }}
-          >
-            {stage.delta > 0 ? "+" : ""}{stage.delta}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
 /* ════════════════════════════════════════════════════════════════════════════
-   9) LatestRunCard — right-rail "Latest Test Run" equivalent.
-      Shows the most recent recording with id, breakdown, and code-style excerpt.
+   NEW) AppBreakdownCard — fixes per app (target_app breakdown).
    ════════════════════════════════════════════════════════════════════════════ */
 
-export function LatestRunCard({ recordings }: { recordings: Recording[] }) {
-  const r = recordings[0];
+function appLabel(bundleId: string | null | undefined): string {
+  if (!bundleId) return "Unknown";
+  const MAP: Record<string, string> = {
+    "com.apple.Safari":              "Safari",
+    "com.apple.Notes":               "Notes",
+    "com.apple.mail":                "Mail",
+    "com.apple.Messages":            "Messages",
+    "com.apple.TextEdit":            "TextEdit",
+    "com.google.Chrome":             "Chrome",
+    "org.chromium.Chromium":         "Chromium",
+    "com.microsoft.VSCode":          "VS Code",
+    "com.microsoft.Word":            "Word",
+    "com.microsoft.Outlook":         "Outlook",
+    "com.microsoft.PowerPoint":      "PowerPoint",
+    "com.microsoft.Excel":           "Excel",
+    "com.slack.Slack":               "Slack",
+    "com.tinyspeck.slackmacgap":     "Slack",
+    "com.notion.id":                 "Notion",
+    "com.figma.Desktop":             "Figma",
+    "company.thebrowser.Browser":    "Arc",
+    "md.obsidian":                   "Obsidian",
+    "com.apple.dt.Xcode":            "Xcode",
+    "com.googlecode.iterm2":         "iTerm2",
+    "com.apple.Terminal":            "Terminal",
+    "com.spotify.client":            "Spotify",
+    "com.linear.app":                "Linear",
+    "com.discord.Discord":           "Discord",
+    "com.zoom.us":                   "Zoom",
+  };
+  if (MAP[bundleId]) return MAP[bundleId];
+  // Fallback: last segment of bundle ID, title-cased
+  const parts = bundleId.split(".");
+  const last  = parts[parts.length - 1];
+  return last.charAt(0).toUpperCase() + last.slice(1);
+}
+
+// Distinct hues for the top apps so they're visually distinguishable
+const APP_COLORS = [
+  "hsl(var(--primary))",
+  "hsl(210 80% 55%)",
+  "hsl(270 70% 60%)",
+  "hsl(38  85% 55%)",
+  "hsl(150 60% 45%)",
+  "hsl(10  75% 55%)",
+];
+
+export function AppBreakdownCard({ recordings }: { recordings: Recording[] }) {
+  const byApp = new Map<string, { words: number; sessions: number }>();
+  for (const r of recordings) {
+    const key      = r.target_app ?? "__unknown__";
+    const existing = byApp.get(key) ?? { words: 0, sessions: 0 };
+    byApp.set(key, {
+      words:    existing.words    + r.word_count,
+      sessions: existing.sessions + 1,
+    });
+  }
+
+  const entries = Array.from(byApp.entries())
+    .map(([bundleId, stats]) => ({
+      label:    appLabel(bundleId === "__unknown__" ? null : bundleId),
+      bundleId,
+      ...stats,
+    }))
+    .sort((a, b) => b.words - a.words)
+    .slice(0, 6);
+
+  const maxWords = Math.max(...entries.map((e) => e.words), 1);
+
+  if (entries.length === 0) {
+    return (
+      <div className="panel p-5 flex items-center justify-center" style={{ minHeight: 120 }}>
+        <p className="text-[12px]" style={{ color: "hsl(var(--muted-foreground))" }}>
+          No recordings yet
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="panel p-5">
-      <div className="flex items-center gap-2 mb-3">
-        <Activity size={13} style={{ color: "hsl(var(--primary))" }} />
-        <h3 className="text-[14px] font-bold tracking-tight"
+      <div className="mb-4">
+        <h3 className="text-[13px] font-bold tracking-tight"
             style={{ color: "hsl(var(--foreground))" }}>
-          Latest run
+          Fixes by app
         </h3>
+        <p className="text-[11.5px] mt-0.5" style={{ color: "hsl(var(--muted-foreground))" }}>
+          Which apps you dictate into most
+        </p>
       </div>
 
-      {!r ? (
-        <p className="text-[12px] py-4" style={{ color: "hsl(var(--muted-foreground))" }}>
-          No recordings yet.
-        </p>
-      ) : (
-        <>
-          {/* Identity row */}
-          <div className="flex items-center gap-2.5 mb-3">
-            <span
-              className="flex items-center justify-center w-9 h-9 rounded-md text-[12px] font-bold flex-shrink-0"
-              style={{
-                background: "hsl(var(--pill-active-bg))",
-                color:      "hsl(var(--pill-active-fg))",
-              }}
-            >
-              S
-            </span>
-            <div className="min-w-0">
-              <p className="text-[13px] font-semibold tracking-tight flex items-center gap-1.5"
-                 style={{ color: "hsl(var(--foreground))" }}>
-                Said
-                <span className="inline-flex items-center px-1.5 py-px rounded text-[9px] font-bold uppercase"
-                      style={{
-                        background: "hsl(var(--chip-mint-bg))",
-                        color:      "hsl(var(--chip-mint-fg))",
-                      }}>
-                  app
-                </span>
-              </p>
-              <p className="text-[10.5px] tabular-nums"
-                 style={{ color: "hsl(var(--muted-foreground))" }}>
-                {modelLabel(r.model_used)} · {relTime(r.timestamp_ms)}
-              </p>
-            </div>
-          </div>
-
-          {/* Recording reference */}
-          <p className="text-[12.5px] font-medium leading-snug mb-3"
-             style={{ color: "hsl(var(--foreground))" }}>
-            R-{r.id.slice(0, 4).toUpperCase()} · {r.word_count} words polished
-            <br/>
-            <span className="text-[11px]"
-                  style={{ color: "hsl(var(--muted-foreground))" }}>
-              {r.recording_seconds.toFixed(1)}s recording
-            </span>
-          </p>
-
-          {/* Status banner */}
-          <div
-            className="rounded-md px-3 py-2 mb-3 flex items-center gap-2"
-            style={{
-              background: r.edit_count > 0 ? "hsl(354 78% 55% / 0.08)" : "hsl(var(--primary) / 0.08)",
-              boxShadow:  r.edit_count > 0
-                ? "inset 0 0 0 1px hsl(354 78% 55% / 0.18)"
-                : "inset 0 0 0 1px hsl(var(--primary) / 0.18)",
-            }}
-          >
-            {r.edit_count > 0 ? (
-              <>
-                <AlertCircle size={12} style={{ color: "hsl(354 78% 55%)" }} />
-                <span className="text-[11.5px] font-medium"
-                      style={{ color: "hsl(354 78% 45%)" }}>
-                  {r.edit_count} edit{r.edit_count === 1 ? "" : "s"} after paste
-                </span>
-              </>
-            ) : (
-              <>
-                <CircleCheck size={12} style={{ color: "hsl(var(--primary))" }} />
-                <span className="text-[11.5px] font-medium"
-                      style={{ color: "hsl(var(--primary))" }}>
-                  Polished cleanly · no edits
-                </span>
-              </>
-            )}
-          </div>
-
-          {/* Latency breakdown table */}
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[12px] mb-3">
-            <dt style={{ color: "hsl(var(--muted-foreground))" }}>Transcribe</dt>
-            <dd className="text-right tabular-nums font-semibold"
-                style={{ color: "hsl(var(--foreground))" }}>
-              {(r.transcribe_ms ?? 0).toLocaleString()} ms
-            </dd>
-            <dt style={{ color: "hsl(var(--muted-foreground))" }}>Embed</dt>
-            <dd className="text-right tabular-nums font-semibold"
-                style={{ color: r.embed_ms === 0 ? "hsl(var(--primary))" : "hsl(var(--foreground))" }}>
-              {r.embed_ms === 0 ? "0 (cached)" : `${r.embed_ms?.toLocaleString()} ms`}
-            </dd>
-            <dt style={{ color: "hsl(var(--muted-foreground))" }}>Polish</dt>
-            <dd className="text-right tabular-nums font-semibold"
-                style={{ color: "hsl(var(--foreground))" }}>
-              {(r.polish_ms ?? 0).toLocaleString()} ms
-            </dd>
-          </dl>
-
-          {/* Code-style polished excerpt */}
-          <div
-            className="rounded-md px-3 py-2.5"
-            style={{
-              background: "hsl(var(--surface-4) / 0.4)",
-              boxShadow:  "inset 0 0 0 1px hsl(var(--border))",
-              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-              fontSize:   11,
-              lineHeight: 1.55,
-              color:      "hsl(var(--foreground))",
-              maxHeight:  140,
-              overflow:   "auto",
-            }}
-          >
-            <p className="text-[9.5px] font-bold mb-1 tabular-nums tracking-wider uppercase"
-               style={{ color: "hsl(var(--muted-foreground))", fontFamily: "Inter, sans-serif" }}>
-              POLISHED OUTPUT
-            </p>
-            <p>{r.polished.length > 220 ? r.polished.slice(0, 220) + "…" : r.polished}</p>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════════════════
-   10) ActivityFeed — right-rail timeline of recent recordings.
-   ════════════════════════════════════════════════════════════════════════════ */
-
-export function ActivityFeed({ recordings }: { recordings: Recording[] }) {
-  const items = recordings.slice(0, 6);
-  const today = new Date();
-  const todayLabel = today.toLocaleDateString("en-US", { day: "numeric", month: "long", year: "numeric" });
-
-  return (
-    <div className="panel p-5">
-      <div className="flex items-center gap-2 mb-3">
-        <Activity size={13} style={{ color: "hsl(var(--muted-foreground))" }} />
-        <h3 className="text-[14px] font-bold tracking-tight"
-            style={{ color: "hsl(var(--foreground))" }}>
-          Activity
-        </h3>
-      </div>
-
-      <p className="text-[10.5px] font-semibold uppercase tracking-wider mb-3 flex items-center gap-1.5"
-         style={{ color: "hsl(var(--muted-foreground))" }}>
-        <span
-          className="inline-block w-1.5 h-1.5 rounded-full"
-          style={{ background: "hsl(var(--primary))" }}
-        />
-        {todayLabel}
-      </p>
-
-      {items.length === 0 ? (
-        <p className="text-[12px] py-2" style={{ color: "hsl(var(--muted-foreground))" }}>
-          Recent recordings will appear here.
-        </p>
-      ) : (
-        <div className="space-y-3">
-          {items.map((r) => {
-            const initial = modelLabel(r.model_used).charAt(0);
-            const initialBg =
-              initial === "S" ? "hsl(220 80% 60%)" :
-              initial === "F" ? "hsl(38 85% 55%)"  :
-              initial === "C" ? "hsl(15 80% 60%)"  :
-                                "hsl(258 70% 60%)";
-            const snippet = r.polished.length > 56
-              ? r.polished.slice(0, 56) + "…"
-              : r.polished;
-            return (
-              <div key={r.id} className="flex items-start gap-2.5">
+      <div className="space-y-3.5">
+        {entries.map((entry, idx) => {
+          const pct   = (entry.words / maxWords) * 100;
+          const color = APP_COLORS[idx % APP_COLORS.length];
+          return (
+            <div key={entry.bundleId}>
+              <div className="flex items-baseline justify-between mb-1 gap-2">
                 <span
-                  className="flex items-center justify-center w-7 h-7 rounded-full text-[10.5px] font-bold flex-shrink-0 mt-0.5"
-                  style={{
-                    background: initialBg,
-                    color:      "white",
-                  }}
+                  className="text-[12px] font-semibold truncate"
+                  style={{ color: "hsl(var(--foreground))" }}
                 >
-                  {initial}
+                  {entry.label}
                 </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-[12px] leading-snug"
-                     style={{ color: "hsl(var(--foreground))" }}>
-                    Said polished{" "}
-                    <span className="font-bold">{r.word_count} word{r.word_count === 1 ? "" : "s"}</span>
-                    {" "}via{" "}
-                    <span
-                      className="inline-flex items-center px-1.5 py-px rounded font-mono text-[10px]"
-                      style={{
-                        background: "hsl(var(--surface-4))",
-                        color:      "hsl(var(--foreground))",
-                      }}
-                    >
-                      {modelLabel(r.model_used)}
-                    </span>
-                  </p>
-                  <p className="text-[10.5px] mt-0.5 leading-snug truncate"
-                     style={{ color: "hsl(var(--muted-foreground))" }}>
-                    "{snippet}"
-                  </p>
-                </div>
+                <span
+                  className="text-[11px] tabular-nums flex-shrink-0"
+                  style={{ color: "hsl(var(--muted-foreground))" }}
+                >
+                  {entry.words.toLocaleString()} words
+                  <span style={{ opacity: 0.5 }}> · </span>
+                  {entry.sessions} {entry.sessions === 1 ? "session" : "sessions"}
+                </span>
               </div>
-            );
-          })}
-        </div>
-      )}
+              <div
+                className="w-full rounded-full overflow-hidden"
+                style={{ height: 5, background: "hsl(var(--surface-4))" }}
+              >
+                <div
+                  style={{
+                    width:        `${pct}%`,
+                    height:       "100%",
+                    background:   color,
+                    borderRadius: "9999px",
+                    transition:   "width 0.4s ease",
+                  }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
-
-/* (Unused export shims — keep tree-shake happy) */
-void ChevronUp; void ChevronDown;

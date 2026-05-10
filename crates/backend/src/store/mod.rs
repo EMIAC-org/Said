@@ -40,6 +40,7 @@ const MIGRATION_018: &str = include_str!("migrations/018_vocab_meaning.sql");
 const MIGRATION_019: &str = include_str!("migrations/019_background_learning_trust.sql");
 const MIGRATION_020: &str = include_str!("migrations/020_record_hotkey.sql");
 const MIGRATION_021: &str = include_str!("migrations/021_learning_enabled.sql");
+const MIGRATION_022: &str = include_str!("migrations/022_fix_recording_seconds.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -253,6 +254,14 @@ fn run_migrations(pool: &DbPool) {
             .expect("migration 021 failed");
         conn.execute_batch("PRAGMA user_version = 21")
             .expect("failed to set user_version to 21");
+    }
+
+    if version < 22 {
+        info!("running migration 022_fix_recording_seconds");
+        conn.execute_batch(MIGRATION_022)
+            .expect("migration 022 failed");
+        conn.execute_batch("PRAGMA user_version = 22")
+            .expect("failed to set user_version to 22");
     }
 }
 

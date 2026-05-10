@@ -88,6 +88,7 @@ function recordingToHistoryItem(r: Recording): HistoryItem {
     embed_ms:          r.embed_ms ?? 0,
     polish_ms:         r.polish_ms ?? 0,
     audio_id:          r.audio_id,
+    edit_count:        r.edit_count,
   };
 }
 
@@ -530,7 +531,8 @@ export default function App() {
           if (!recent.length) return 0;
           const tw = recent.reduce((s, h) => s + h.word_count, 0);
           const tm = recent.reduce((s, h) => s + h.recording_seconds / 60, 0);
-          return tm > 0 ? Math.round(tw / tm) : 0;
+          const raw = tm > 0 ? Math.round(tw / tm) : 0;
+          return Math.min(raw, 300);
         })(),
       }
     : null;
