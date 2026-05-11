@@ -16,9 +16,6 @@ permissions:
   pages: write
   id-token: write
 
-env:
-  SPARKLE_VERSION: "2.9.1"
-
 jobs:
   release:
     name: Build DMG, publish release, update appcast
@@ -45,30 +42,30 @@ jobs:
         with:
           key: swift-release-${{ runner.os }}
 
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            swift-frontend/.build
+            swift-frontend/.swiftpm
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('swift-frontend/Package.swift', 'swift-frontend/Package.resolved') }}
+          restore-keys: |
+            swiftpm-${{ runner.os }}-
+
       - name: Resolve Swift packages
         working-directory: swift-frontend
         run: swift package resolve
 
-      - name: Build Sparkle generate_appcast
+      - name: Install Sparkle generate_appcast
         run: |
           set -euo pipefail
-          SPARKLE_SRC="$RUNNER_TEMP/Sparkle"
-          SPARKLE_DERIVED="$RUNNER_TEMP/sparkle-derived"
-          git clone \
-            --depth 1 \
-            --branch "$SPARKLE_VERSION" \
-            --single-branch \
-            https://github.com/sparkle-project/Sparkle \
-            "$SPARKLE_SRC"
-          xcodebuild -project "$SPARKLE_SRC/Sparkle.xcodeproj" \
-            -scheme generate_appcast \
-            -configuration Release \
-            -derivedDataPath "$SPARKLE_DERIVED" \
-            CODE_SIGNING_ALLOWED=NO \
-            build
-          install -m 0755 \
-            "$SPARKLE_DERIVED/Build/Products/Release/generate_appcast" \
-            "$RUNNER_TEMP/generate_appcast"
+          GENERATE_APPCAST="$(find swift-frontend/.build/artifacts -path '*/Sparkle/bin/generate_appcast' -type f -print -quit)"
+          if [ -z "$GENERATE_APPCAST" ]; then
+            echo "::error::Sparkle generate_appcast not found after swift package resolve"
+            find swift-frontend/.build/artifacts -name generate_appcast -type f -print || true
+            exit 1
+          fi
+          install -m 0755 "$GENERATE_APPCAST" "$RUNNER_TEMP/generate_appcast"
 
       - name: Generate timestamp build number
         run: echo "SAID_BUILD_NUMBER=$(TZ=Asia/Kolkata date +%Y%m%d%H%M)" >> "$GITHUB_ENV"
