@@ -1488,12 +1488,6 @@ fn request_microphone(state: State<'_, SharedApp>) -> Result<AppSnapshot, String
     Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
 }
 
-#[tauri::command]
-fn request_screen_recording(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
-    permissions::request_screen_recording();
-    Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
-}
-
 /// Run the 5-method AX field reading diagnostic on whatever is focused right now.
 /// The Tauri app already has Accessibility permission, so unlike a fresh standalone
 /// binary, this can always reach the focused application.
@@ -4424,7 +4418,6 @@ fn main() {
             request_accessibility,
             request_input_monitoring,
             request_microphone,
-            request_screen_recording,
             diagnose_ax,
             // Cloud auth
             cloud_signup,

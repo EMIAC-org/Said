@@ -10,12 +10,6 @@ mod imp {
 
     const AV_AUTHORIZED: i64 = 3;
 
-    #[link(name = "CoreGraphics", kind = "framework")]
-    unsafe extern "C" {
-        fn CGPreflightScreenCaptureAccess() -> bool;
-        fn CGRequestScreenCaptureAccess() -> bool;
-    }
-
     fn open_privacy_pane(anchor: &str) {
         let _ = std::process::Command::new("open")
             .arg(format!(
@@ -74,17 +68,6 @@ mod imp {
         }
     }
 
-    pub fn screen_recording_granted() -> bool {
-        unsafe { CGPreflightScreenCaptureAccess() }
-    }
-
-    pub fn request_screen_recording() -> bool {
-        let granted = unsafe { CGRequestScreenCaptureAccess() };
-        if !granted {
-            open_privacy_pane("Privacy_ScreenCapture");
-        }
-        granted
-    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -93,12 +76,6 @@ mod imp {
         true
     }
     pub fn request_microphone() -> bool {
-        true
-    }
-    pub fn screen_recording_granted() -> bool {
-        true
-    }
-    pub fn request_screen_recording() -> bool {
         true
     }
 }

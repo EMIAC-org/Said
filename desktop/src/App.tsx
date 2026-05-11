@@ -31,7 +31,6 @@ import {
   initiateOpenAIOAuth,
   requestInputMonitoring,
   requestMicrophone,
-  requestScreenRecording,
   submitEditFeedback,
   onVocabToast,
   deleteVocabularyTerm,
@@ -475,17 +474,6 @@ export default function App() {
     }
   }, [refreshPermissionsSoon]);
 
-  const handleScreenRecording = useCallback(async () => {
-    setErrorBanner("");
-    try {
-      const next = await requestScreenRecording();
-      setSnapshot(next);
-      refreshPermissionsSoon();
-    } catch (err: unknown) {
-      setErrorBanner(err instanceof Error ? err.message : String(err));
-    }
-  }, [refreshPermissionsSoon]);
-
   const handleNotifications = useCallback(async () => {
     setNotifBusy(true);
     try {
@@ -576,7 +564,7 @@ export default function App() {
         onAccessibility={handleAccessibility}
         onInputMonitoring={handleInputMonitoring}
         onNotifications={handleNotifications}
-        onScreenRecording={handleScreenRecording}
+
         onFinish={handleOnboardingFinish}
       />
     );
@@ -834,7 +822,7 @@ export default function App() {
         onAccessibility={handleAccessibility}
         onInputMonitoring={handleInputMonitoring}
         onMicrophone={handleMicrophone}
-        onScreenRecording={handleScreenRecording}
+
         initialSection={settingsSection}
       />
 

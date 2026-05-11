@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import {
   Shield, Cpu, Key, Info, Wifi, Check, Bot, Sparkles, Zap,
   Languages, MessageSquareText, Loader2, Cloud, LogIn, LogOut, RefreshCw, UserPlus,
-  Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, MonitorUp,
+  Eye, EyeOff, Bell, Bug, Copy, FileText, Mic,
 } from "lucide-react";
 import type { AppSnapshot, CloudStatus, OpenAIStatus, Preferences } from "@/types";
 import {
@@ -120,7 +120,6 @@ interface SettingsViewProps {
   onAccessibility:   () => void;
   onInputMonitoring: () => void;
   onMicrophone:      () => void;
-  onScreenRecording: () => void;
   /** When provided, only the matching section renders (modal mode). */
   activeSection?:    SettingsSection;
   /** Hide the page header entirely (modal mode renders its own). */
@@ -136,7 +135,6 @@ export function SettingsView({
   onAccessibility,
   onInputMonitoring,
   onMicrophone,
-  onScreenRecording,
   activeSection,
   hideHeader,
   embedded,
@@ -147,7 +145,6 @@ export function SettingsView({
   const axGranted  = snapshot?.accessibility_granted    ?? false;
   const imGranted  = snapshot?.input_monitoring_granted ?? false;
   const micGranted = snapshot?.microphone_granted       ?? false;
-  const screenGranted = snapshot?.screen_recording_granted ?? false;
 
   const [notifPerm, setNotifPerm] = useState<NotifPermission>("unknown");
   const [notifBusy, setNotifBusy] = useState(false);
@@ -880,47 +877,6 @@ export function SettingsView({
               </div>
             </div>
 
-            <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
-
-            {/* Row 5: Screen Recording */}
-            <div className="flex items-center gap-4 px-5 py-4">
-              <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
-              >
-                <MonitorUp size={16} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[13px] font-medium text-foreground">Screen Recording</p>
-                <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
-                  {screenGranted
-                    ? "Granted — optional context awareness is available."
-                    : "Optional for future context awareness. Dictation works without it."}
-                </p>
-              </div>
-              <div className="flex-shrink-0 ml-4">
-                {axSupported ? (
-                  screenGranted ? (
-                    <span
-                      className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
-                      style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
-                    >
-                      <Check size={11} /> Granted
-                    </span>
-                  ) : (
-                    <button
-                      onClick={onScreenRecording}
-                      className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
-                      style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-                    >
-                      Allow
-                    </button>
-                  )
-                ) : (
-                  <span className="text-[12px] text-muted-foreground">macOS only</span>
-                )}
-              </div>
-            </div>
           </div>
         </div>
         </Show>
