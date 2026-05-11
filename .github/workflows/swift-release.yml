@@ -70,10 +70,13 @@ jobs:
             "$SPARKLE_DERIVED/Build/Products/Release/generate_appcast" \
             "$RUNNER_TEMP/generate_appcast"
 
+      - name: Generate timestamp build number
+        run: echo "SAID_BUILD_NUMBER=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"
+
       - name: Build Swift DMG
         env:
           SAID_VERSION: ${{ inputs.version }}
-          SAID_BUILD_NUMBER: ${{ github.run_number }}
+          SAID_BUILD_NUMBER: ${{ env.SAID_BUILD_NUMBER }}
           SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
           SPARKLE_FEED_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml
         run: ./scripts/build-swift-dmg.sh
