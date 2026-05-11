@@ -101,6 +101,11 @@ struct NotchContentView: View {
     private func notchContent() -> some View {
         if vm.notchState == .open {
             openLayout
+                .transition(
+                    .scale(scale: 0.8, anchor: .top)
+                    .combined(with: .opacity)
+                    .animation(.smooth(duration: 0.35))
+                )
         } else {
             compactLayout
         }
@@ -116,7 +121,7 @@ struct NotchContentView: View {
                     .padding(.horizontal, 8)
             }
         }
-        .frame(width: vm.closedNotchSize.width, height: compactHeight)
+        .frame(width: vm.closedNotchSize.width - 20, height: compactHeight)
     }
 
     @ViewBuilder
@@ -167,27 +172,9 @@ struct NotchContentView: View {
 
     private var openLayout: some View {
         VStack(spacing: 0) {
-            // Row 1: Title bar
-            HStack {
-                Text("Said")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
-                Spacer()
-                Button {
-                    withAnimation(animationSpring) { vm.close() }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .frame(width: 20, height: 20)
-                        .background(.white.opacity(0.1))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.top, max(24, vm.effectiveClosedNotchHeight))
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
+            notchHeader
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
 
             // Row 2: Two-column content
             HStack(alignment: .top, spacing: 10) {
@@ -304,6 +291,38 @@ struct NotchContentView: View {
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: - Notch Header
+
+    private var notchHeader: some View {
+        HStack(alignment: .bottom, spacing: 0) {
+            Text("Said")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.bottom, 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Rectangle()
+                .fill(vm.metrics.hasNotch ? .black : .clear)
+                .frame(width: vm.closedNotchSize.width)
+                .clipShape(NotchShape())
+
+            Button {
+                withAnimation(animationSpring) { vm.close() }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .frame(width: 20, height: 20)
+                    .background(.white.opacity(0.08))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, 2)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .frame(height: max(24, vm.effectiveClosedNotchHeight))
     }
 
     // MARK: - Status Bar
