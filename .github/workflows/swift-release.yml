@@ -67,10 +67,11 @@ jobs:
             -T /usr/bin/codesign
           CERTIFICATE_TRUST_PATH="$RUNNER_TEMP/said-codesign-certificate.pem"
           security find-certificate -a -p "$KEYCHAIN_PATH" > "$CERTIFICATE_TRUST_PATH"
-          security add-trusted-cert \
+          sudo security add-trusted-cert \
+            -d \
             -r trustRoot \
             -p codeSign \
-            -k "$KEYCHAIN_PATH" \
+            -k /Library/Keychains/System.keychain \
             "$CERTIFICATE_TRUST_PATH"
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
