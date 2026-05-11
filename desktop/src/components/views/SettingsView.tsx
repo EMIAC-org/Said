@@ -3,12 +3,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
   Shield, Cpu, Key, Info, Wifi, Check, Bot, Sparkles, Zap,
-  Languages, MessageSquareText, Loader2, Cloud, LogIn, LogOut, RefreshCw, UserPlus,
+  Languages, MessageSquareText, Loader2, LogIn, LogOut, RefreshCw,
   Eye, EyeOff, Bell, Bug, Copy, FileText, Mic,
 } from "lucide-react";
-import type { AppSnapshot, CloudStatus, OpenAIStatus, Preferences } from "@/types";
+import type { AppSnapshot, OpenAIStatus, Preferences } from "@/types";
 import {
-  cloudLogin, cloudLogout, cloudSignup, getCloudStatus,
   getPreferences, patchPreferences,
   getOpenAIStatus, initiateOpenAIOAuth, disconnectOpenAI,
   getDebugLogs,
@@ -170,18 +169,10 @@ export function SettingsView({
   const [keySaved,      setKeySaved]      = useState(false);
   const keySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Cloud auth state ─────────────────────────────────────────────────────────
   // ── OpenAI OAuth state ──────────────────────────────────────────────────────
   const [openAIStatus,  setOpenAIStatus]  = useState<OpenAIStatus | null>(null);
   const [openAIBusy,    setOpenAIBusy]    = useState(false);
   const [openAIError,   setOpenAIError]   = useState("");
-
-  const [cloudStatus,  setCloudStatus]  = useState<CloudStatus | null>(null);
-  const [cloudEmail,   setCloudEmail]   = useState("");
-  const [cloudPass,    setCloudPass]    = useState("");
-  const [cloudMode,    setCloudMode]    = useState<"login" | "signup">("login");
-  const [cloudBusy,    setCloudBusy]    = useState(false);
-  const [cloudError,   setCloudError]   = useState("");
 
   // ── Debug logs state ───────────────────────────────────────────────────────
   const [debugLogs,    setDebugLogs]    = useState<DebugLogs | null>(null);
@@ -250,7 +241,6 @@ export function SettingsView({
         syncApiKeyInputs(p);
       }
     });
-    getCloudStatus().then((s) => { if (s) setCloudStatus(s); });
     getOpenAIStatus().then((s) => { if (s) setOpenAIStatus(s); });
   }, []);
 
@@ -259,37 +249,6 @@ export function SettingsView({
       if (keySaveTimer.current) clearTimeout(keySaveTimer.current);
     };
   }, []);
-
-  async function handleCloudAuth() {
-    setCloudBusy(true);
-    setCloudError("");
-    try {
-      const resp = cloudMode === "login"
-        ? await cloudLogin(cloudEmail, cloudPass)
-        : await cloudSignup(cloudEmail, cloudPass);
-      setCloudStatus({
-        connected:    true,
-        license_tier: resp.account.license_tier,
-        email:        resp.account.email,
-      });
-      setCloudEmail("");
-      setCloudPass("");
-    } catch (err) {
-      setCloudError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCloudBusy(false);
-    }
-  }
-
-  async function handleCloudLogout() {
-    setCloudBusy(true);
-    try {
-      await cloudLogout();
-      setCloudStatus({ connected: false, license_tier: "free", email: null });
-    } finally {
-      setCloudBusy(false);
-    }
-  }
 
   async function refreshDebugLogs() {
     setDebugBusy(true);
@@ -1245,96 +1204,6 @@ export function SettingsView({
           )}
         </div>
 
-        {/* ── Cloud Account ─────────────────────────────── */}
-        <Section title="Cloud Account">
-          {cloudStatus?.connected ? (
-            /* ── Connected state ───────────────────────── */
-            <Row
-              icon={<Cloud size={16} />}
-              label={cloudStatus.email ?? "Connected"}
-              description={`License: ${cloudStatus.license_tier} tier`}
-              action={
-                <button
-                  onClick={handleCloudLogout}
-                  disabled={cloudBusy}
-                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-red-600 transition-colors"
-                >
-                  <LogOut size={12} />
-                  {cloudBusy ? "…" : "Sign out"}
-                </button>
-              }
-              last
-            />
-          ) : (
-            /* ── Auth form ─────────────────────────────── */
-            <div className="px-5 py-4">
-              <div className="flex items-center gap-3 mb-3">
-                <div
-                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
-                  style={{ background: "hsl(var(--surface-4))" }}
-                >
-                  <Cloud size={16} />
-                </div>
-                <div>
-                  <p className="text-[13px] font-medium text-foreground">Sign in to Said Cloud</p>
-                  <p className="text-[12px] text-muted-foreground mt-0.5">
-                    Enables usage metering and license validation
-                  </p>
-                </div>
-              </div>
-
-              {/* Mode toggle */}
-              <div className="flex gap-2 mb-3">
-                {(["login", "signup"] as const).map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => { setCloudMode(m); setCloudError(""); }}
-                    className={cn("pill", cloudMode === m && "active")}
-                  >
-                    {m === "login" ? <LogIn size={11} /> : <UserPlus size={11} />}
-                    {m === "login" ? "Sign in" : "Create account"}
-                  </button>
-                ))}
-              </div>
-
-              {/* Inputs */}
-              <div className="space-y-2 mb-3">
-                <input
-                  type="email"
-                  placeholder="Email"
-                  value={cloudEmail}
-                  onChange={(e) => setCloudEmail(e.target.value)}
-                  className="input"
-                />
-                <input
-                  type="password"
-                  placeholder="Password"
-                  value={cloudPass}
-                  onChange={(e) => setCloudPass(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") handleCloudAuth(); }}
-                  className="input"
-                />
-              </div>
-
-              {cloudError && (
-                <p className="text-[12px] mb-2" style={{ color: "hsl(0 75% 75%)" }}>
-                  {cloudError}
-                </p>
-              )}
-
-              <button
-                onClick={handleCloudAuth}
-                disabled={cloudBusy || !cloudEmail || !cloudPass}
-                className="btn-primary w-full justify-center"
-              >
-                {cloudBusy ? (
-                  <Loader2 size={13} className="inline animate-spin mr-1" />
-                ) : null}
-                {cloudMode === "login" ? "Sign in" : "Create account"}
-              </button>
-            </div>
-          )}
-        </Section>
         </Show>
 
         {/* ── Debug ───────────────────────────────────── */}
