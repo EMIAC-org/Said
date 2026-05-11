@@ -131,6 +131,19 @@ final class BackendClient {
         return req
     }
 
+    /// Build a request for /v1/text/format-fix (literal dictation formatting repair).
+    func buildTextFormatFixRequest(text: String) -> URLRequest {
+        let url = URL(string: "\(baseURL)/v1/text/format-fix")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue(auth, forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 120
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": text])
+        return req
+    }
+
     func getSTTBias() async throws -> BiasPackage {
         try await get("/v1/stt/bias")
     }

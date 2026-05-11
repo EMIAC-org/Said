@@ -19,7 +19,7 @@ struct SaidApp: App {
             }
 
             Menu("Polish my message") {
-                Button("Smart Repair Last  ⌥1") { appDelegate.engine?.handleShortcutPublic(1) }
+                Button("Format Fix  ⌥1") { appDelegate.engine?.handleShortcutPublic(1) }
                 Button("Professional  ⌥2") { appDelegate.engine?.handleShortcutPublic(2) }
                 Button("Casual  ⌥3") { appDelegate.engine?.handleShortcutPublic(3) }
                 Button("Concise  ⌥4") { appDelegate.engine?.handleShortcutPublic(4) }
