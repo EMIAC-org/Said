@@ -80,20 +80,12 @@ jobs:
             "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
-          if [ -n "$IDENTITY_MATCH" ]; then
-            CODESIGN_IDENTITY="$(
-              security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-                | awk -F '"' -v match="$IDENTITY_MATCH" '$2 ~ match { print $2; exit }'
-            )"
-          else
-            CODESIGN_IDENTITY="$(
-              security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-                | awk -F '"' '/"/ { print $2; exit }'
-            )"
-          fi
+          echo "Available code-signing identities:"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+
+          CODESIGN_IDENTITY="${IDENTITY_MATCH:-Said Code Signing}"
           if [ -z "$CODESIGN_IDENTITY" ]; then
-            echo "::error::No usable code-signing identity found in CODESIGN_CERTIFICATE_BASE64"
-            security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+            echo "::error::Set CODESIGN_IDENTITY_MATCH to the imported certificate name"
             exit 1
           fi
           echo "CODESIGN_IDENTITY=$CODESIGN_IDENTITY" >> "$GITHUB_ENV"
