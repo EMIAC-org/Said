@@ -31,6 +31,8 @@ const HUD_CANVAS_WIDTH = 300;
 const HUD_CANVAS_HEIGHT = 142;
 
 const LEVEL_SHAPE = [0.32, 0.42, 0.58, 0.76, 0.92, 1.0, 0.86, 0.70, 0.86, 1.0, 0.92, 0.76, 0.58, 0.42, 0.32];
+// Per-bar decay rates — edges decay faster than center so the visualizer looks naturally staggered
+const BAR_DECAY = [0.72, 0.74, 0.76, 0.78, 0.80, 0.82, 0.80, 0.78, 0.80, 0.82, 0.80, 0.78, 0.76, 0.74, 0.72];
 const LANG_OPTIONS = [
   { value: "hinglish", label: "Hinglish" },
   { value: "english", label: "English" },
@@ -61,11 +63,9 @@ function processingLabel(phase: string): string {
   return "Transcribing";
 }
 
-function barHeight(index: number, level: number, active: boolean): number {
+function barHeight(barLevel: number, active: boolean): number {
   if (!active) return 4;
-  const lifted = Math.pow(Math.max(0, Math.min(1, level)), 0.72);
-  const motion = 0.7 + (Math.sin(Date.now() / 110 + index * 0.76) + 1) * 0.15;
-  return 4 + LEVEL_SHAPE[index] * (5 + lifted * 22) * motion;
+  return 4 + barLevel * 24;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -79,6 +79,8 @@ export default function StatusBar() {
   const [outputLanguage, setOutputLanguage] = useState("hinglish");
   const [tonePreset, setTonePreset] = useState("professional");
   const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const audioLevelRef = useRef(0);
+  const barTargets = useRef<number[]>(new Array(15).fill(0));
   const [, forceFrame] = useState(0);
   const win = getCurrentWindow();
   const hasTranscript = bar.kind === "processing" && liveTranscript.trim().length > 0;
@@ -119,11 +121,22 @@ export default function StatusBar() {
     if (bar.kind !== "recording") return;
     let raf = 0;
     const tick = () => {
+      const lvl = audioLevelRef.current;
+      barTargets.current = barTargets.current.map((cur, i) => {
+        // Each bar gets a different random slice of the audio energy so bars
+        // look independent even though they share one RMS signal.
+        const target = lvl * LEVEL_SHAPE[i] * (0.80 + Math.random() * 0.40);
+        // Attack immediately, decay at each bar's own rate.
+        return Math.max(cur * BAR_DECAY[i], target);
+      });
       forceFrame((n) => (n + 1) % 1000);
       raf = window.requestAnimationFrame(tick);
     };
     raf = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(raf);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      barTargets.current = new Array(15).fill(0);
+    };
   }, [bar.kind]);
 
   useEffect(() => {
@@ -207,7 +220,9 @@ export default function StatusBar() {
 
     listen<{ level: number }>("voice-level", (e) => {
       const level = Number.isFinite(e.payload.level) ? e.payload.level : 0;
-      setAudioLevel(Math.max(0, Math.min(1, level)));
+      const clamped = Math.max(0, Math.min(1, level));
+      audioLevelRef.current = clamped;
+      setAudioLevel(clamped);
     }).then((fn) => {
       console.info("[status-bar] subscribed voice-level");
       subs.push(fn);
@@ -372,7 +387,7 @@ export default function StatusBar() {
                 <span
                   key={index}
                   style={{
-                    height: `${barHeight(index, audioLevel, bar.kind === "recording")}px`,
+                    height: `${barHeight(barTargets.current[index], bar.kind === "recording")}px`,
                     opacity: bar.kind === "recording" ? 0.54 + audioLevel * 0.46 : 0.5,
                   }}
                 />

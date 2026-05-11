@@ -14,7 +14,5 @@
     <key>NSAppleEventsUsageDescription</key>
     <string>Said uses Apple Events to paste text into other apps.</string>
 
-    <key>NSScreenCaptureUsageDescription</key>
-    <string>Said uses Screen Recording permission for optional context awareness when improving dictation.</string>
 </dict>
 </plist>

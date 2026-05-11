@@ -6,7 +6,6 @@ import {
   Key,
   Loader2,
   Mic,
-  MonitorUp,
   Shield,
   Sparkles,
 } from "lucide-react";
@@ -37,7 +36,6 @@ interface Props {
   onAccessibility: () => void;
   onInputMonitoring: () => void;
   onNotifications: () => void;
-  onScreenRecording: () => void;
   onFinish: () => void;
 }
 
@@ -78,13 +76,11 @@ export function OnboardingFlow({
   onAccessibility,
   onInputMonitoring,
   onNotifications,
-  onScreenRecording,
   onFinish,
 }: Props) {
   const microphoneGranted = snapshot?.microphone_granted ?? false;
   const accessibilityGranted = snapshot?.accessibility_granted ?? false;
   const inputMonitoringGranted = snapshot?.input_monitoring_granted ?? false;
-  const screenRecordingGranted = snapshot?.screen_recording_granted ?? false;
   const notificationsGranted = notifPerm === "granted";
 
   const coreReady = microphoneGranted && accessibilityGranted && inputMonitoringGranted;
@@ -127,15 +123,6 @@ export function OnboardingFlow({
       icon: <Bell size={16} />,
       actionLabel: notifPerm === "denied" ? "Open Settings" : "Allow",
       onAction: onNotifications,
-    },
-    {
-      id: "screen",
-      label: "Screen Recording",
-      description: "Optional context awareness for future smarter dictation.",
-      granted: screenRecordingGranted,
-      icon: <MonitorUp size={16} />,
-      actionLabel: "Allow",
-      onAction: onScreenRecording,
     },
   ];
 

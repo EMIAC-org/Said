@@ -74,7 +74,6 @@ impl DesktopApp {
             input_monitoring_granted: is_input_monitoring_granted(),
             #[cfg(not(target_os = "macos"))]
             input_monitoring_granted: false,
-            screen_recording_granted: permissions::screen_recording_granted(),
             modes: all_modes().to_vec(),
             last_result: self.last_result.clone(),
             last_error: self.last_error.clone(),

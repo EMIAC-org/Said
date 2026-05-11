@@ -126,7 +126,6 @@ const mockSnapshot: AppSnapshot = {
   accessibility_granted: false,
   microphone_granted: false,
   input_monitoring_granted: false,
-  screen_recording_granted: false,
   modes: [
     { key: "mini", label: "Fast (gpt-5.4-mini)", model: "gpt-5.4-mini", icon: "fast" },
   ],
@@ -158,8 +157,7 @@ async function mockInvoke(
   if (
     command === "get_snapshot" ||
     command === "request_microphone" ||
-    command === "request_input_monitoring" ||
-    command === "request_screen_recording"
+    command === "request_input_monitoring"
   ) {
     return structuredClone(mockSnapshot);
   }
@@ -243,9 +241,6 @@ export async function requestMicrophone(): Promise<AppSnapshot> {
   return invoke<AppSnapshot>("request_microphone");
 }
 
-export async function requestScreenRecording(): Promise<AppSnapshot> {
-  return invoke<AppSnapshot>("request_screen_recording");
-}
 
 // ── Backend-aware commands (Phase E) ─────────────────────────────────────────
 

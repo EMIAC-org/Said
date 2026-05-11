@@ -8,6 +8,7 @@ mod dg_stream; // P5: Deepgram WebSocket live streaming
 mod permissions;
 
 use std::io::{Read, Seek, SeekFrom};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -679,14 +680,9 @@ struct HotPathCacheInner {
     replacements: Vec<said_core::deepgram::ReplacementRule>,
 }
 
-/// Holds one pre-warmed Deepgram WS connection ready for the next recording.
-/// The `connecting` flag prevents overlapping background prewarm attempts.
-#[derive(Default)]
-struct PrewarmState {
-    ws: Option<dg_stream::PrewarmedWs>,
-    connecting: bool,
-}
-struct PrewarmedWsState(Arc<tokio::sync::Mutex<PrewarmState>>);
+/// Generation counter for status-bar idle hide timers.
+/// Each idle sync increments this; a timer whose generation no longer matches is silently dropped.
+struct StatusBarHideGen(Arc<AtomicU64>);
 
 #[derive(serde::Serialize)]
 struct DebugLogs {
@@ -945,11 +941,22 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
     tracing::info!("[status-bar] sync state={state}");
     if state == "idle" {
         tracing::info!("[status-bar] idle state — scheduling native hide");
+        let my_gen = handle
+            .try_state::<StatusBarHideGen>()
+            .map(|s| s.0.fetch_add(1, Ordering::Relaxed) + 1)
+            .unwrap_or(0);
+        let hide_gen_arc = handle
+            .try_state::<StatusBarHideGen>()
+            .map(|s| Arc::clone(&s.0));
         let app = handle.clone();
         tauri::async_runtime::spawn(async move {
-            // Let the React HUD finish its short "done/pasted/manual paste" flash,
-            // then make the native window invisible if no new recording started.
             tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+            // If a newer idle sync fired after us, let it own the hide decision.
+            if let Some(counter) = &hide_gen_arc {
+                if counter.load(Ordering::Relaxed) != my_gen {
+                    return;
+                }
+            }
             let still_idle = app
                 .try_state::<SharedApp>()
                 .and_then(|shared| {
@@ -1481,12 +1488,6 @@ fn request_microphone(state: State<'_, SharedApp>) -> Result<AppSnapshot, String
     Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
 }
 
-#[tauri::command]
-fn request_screen_recording(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
-    permissions::request_screen_recording();
-    Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
-}
-
 /// Run the 5-method AX field reading diagnostic on whatever is focused right now.
 /// The Tauri app already has Accessibility permission, so unlike a fresh standalone
 /// binary, this can always reach the focused application.
@@ -1730,7 +1731,6 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
 
         let hot_cache_arc = Arc::clone(&app.state::<HotPathCache>().0);
         let backend_for_pe = Arc::clone(&app.state::<BackendState>().0);
-        let prewarm_arc = Arc::clone(&app.state::<PrewarmedWsState>().0);
 
         tauri::async_runtime::spawn(async move {
             let (deepgram_key, language, stt_mode, keyterms, replacements) = {
@@ -1759,12 +1759,6 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 replacements,
             };
 
-            // Take the pre-warmed WS (if one is ready) so this recording skips TLS handshake.
-            let prewarmed = {
-                let mut guard = prewarm_arc.lock().await;
-                guard.ws.take()
-            };
-
             let pre_embed_info: Option<(String, String)> =
                 backend_for_pe.lock().ok().and_then(|g| {
                     g.as_ref()
@@ -1774,14 +1768,9 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 .as_ref()
                 .map(|(url, secret)| (url.as_str(), secret.as_str()));
 
-            let transcript = dg_stream::stream_to_deepgram(
-                chunk_recv,
-                &deepgram_key,
-                &bias,
-                pre_embed_ref,
-                prewarmed,
-            )
-            .await;
+            let transcript =
+                dg_stream::stream_to_deepgram(chunk_recv, &deepgram_key, &bias, pre_embed_ref)
+                    .await;
 
             tracing::info!(
                 "[dg_stream] pre-transcript: {}",
@@ -1793,81 +1782,6 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             if let Some(transcript) = transcript {
                 let _ = transcript_tx.send(transcript);
             }
-
-            // ── Pre-warm the NEXT recording's WS connection immediately ──────────
-            // Fires right after CloseStream+drain complete. By the time the user
-            // presses the hotkey again, the TLS handshake is already done.
-            let key2 = deepgram_key.clone();
-            let bias2 = bias.clone();
-            let pw_arc2 = Arc::clone(&prewarm_arc);
-            tauri::async_runtime::spawn(async move {
-                {
-                    let mut guard = pw_arc2.lock().await;
-                    if guard.connecting {
-                        tracing::debug!("[dg_stream] pre-warm skipped — connect already in flight");
-                        return;
-                    }
-                    if let Some(existing) = guard.ws.as_ref() {
-                        let fresh = existing.bias == bias2
-                            && existing.created_at.elapsed() <= dg_stream::PREWARM_MAX_AGE;
-                        if fresh {
-                            tracing::debug!(
-                                "[dg_stream] pre-warm skipped — fresh WS already ready"
-                            );
-                            return;
-                        }
-                        guard.ws = None;
-                    }
-                    guard.connecting = true;
-                }
-
-                let connected = dg_stream::connect_ws(&key2, &bias2).await;
-                let Some(pw) = connected else {
-                    pw_arc2.lock().await.connecting = false;
-                    return;
-                };
-
-                {
-                    let mut guard = pw_arc2.lock().await;
-                    guard.connecting = false;
-                    guard.ws = Some(pw);
-                    tracing::info!("[dg_stream] next WS pre-warmed and ready");
-                }
-
-                // ── Short keepalive heartbeat ───────────────────────────────
-                // Keep the next socket fresh for back-to-back recordings, then
-                // drop it. Holding it forever creates background WS work while
-                // stream_to_deepgram would reject the stale socket anyway.
-                let pw_ka = Arc::clone(&pw_arc2);
-                tauri::async_runtime::spawn(async move {
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_secs(7)).await;
-                        let mut guard = pw_ka.lock().await;
-                        let Some(pw) = guard.ws.as_mut() else { break };
-                        let age = pw.created_at.elapsed();
-                        if age > dg_stream::PREWARM_MAX_AGE {
-                            tracing::debug!(
-                                "[dg_stream] pre-warm expired after {}ms — dropping idle WS",
-                                age.as_millis()
-                            );
-                            guard.ws = None;
-                            break;
-                        }
-                        use futures::SinkExt;
-                        let ka = tokio_tungstenite::tungstenite::Message::Text(
-                            r#"{"type":"KeepAlive"}"#.into(),
-                        );
-                        if pw.ws.send(ka).await.is_err() {
-                            tracing::warn!(
-                                "[dg_stream] pre-warm keepalive failed — dropping stale WS"
-                            );
-                            guard.ws = None;
-                            break;
-                        }
-                        tracing::debug!("[dg_stream] pre-warm keepalive sent");
-                    }
-                });
-            });
         });
     } else {
         tracing::debug!("[dg_stream] no chunk receiver — WS streaming not started");
@@ -4489,9 +4403,7 @@ fn main() {
         .manage(LatestResult(std::sync::Arc::new(Mutex::new(None))))
         .manage(LastActionState(Mutex::new(None)))
         .manage(HotPathCache(Arc::new(tokio::sync::RwLock::new(HotPathCacheInner::default()))))
-        .manage(PrewarmedWsState(Arc::new(tokio::sync::Mutex::new(
-            PrewarmState::default(),
-        ))))
+        .manage(StatusBarHideGen(Arc::new(AtomicU64::new(0))))
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             get_snapshot,
@@ -4506,7 +4418,6 @@ fn main() {
             request_accessibility,
             request_input_monitoring,
             request_microphone,
-            request_screen_recording,
             diagnose_ax,
             // Cloud auth
             cloud_signup,

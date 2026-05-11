@@ -723,8 +723,6 @@ async fn stream_to_deepgram_ws(
     let mut transcript_parts: Vec<String> = Vec::new();
     let mut keepalive = tokio::time::interval(Duration::from_secs(8));
     keepalive.tick().await;
-    let mut got_speech_final = false;
-
     loop {
         tokio::select! {
             chunk = async_rx.recv() => {
@@ -748,15 +746,12 @@ async fn stream_to_deepgram_ws(
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                            if v["type"].as_str().unwrap_or("") == "Results" {
-                                if v["is_final"].as_bool().unwrap_or(false) {
-                                    let enriched = enrich_from_words(&v["channel"]["alternatives"][0]["words"]);
-                                    if !enriched.is_empty() {
-                                        transcript_parts.push(enriched);
-                                    }
-                                }
-                                if v["speech_final"].as_bool().unwrap_or(false) {
-                                    got_speech_final = true;
+                            if v["type"].as_str().unwrap_or("") == "Results"
+                                && v["is_final"].as_bool().unwrap_or(false)
+                            {
+                                let enriched = enrich_from_words(&v["channel"]["alternatives"][0]["words"]);
+                                if !enriched.is_empty() {
+                                    transcript_parts.push(enriched);
                                 }
                             }
                         }
@@ -768,12 +763,8 @@ async fn stream_to_deepgram_ws(
         }
     }
 
-    let drain_deadline = if got_speech_final {
-        Instant::now() + Duration::from_millis(500)
-    } else {
-        Instant::now() + Duration::from_millis(2500)
-    };
-
+    // Key released → wait for Deepgram to close (or timeout at 3s).
+    let drain_deadline = Instant::now() + Duration::from_millis(3000);
     while Instant::now() < drain_deadline {
         let remaining = drain_deadline.saturating_duration_since(Instant::now());
         match tokio::time::timeout(remaining, ws_rx.next()).await {
@@ -789,7 +780,10 @@ async fn stream_to_deepgram_ws(
                     }
                 }
             }
-            _ => break,
+            Ok(Some(Ok(Message::Close(_)))) | Ok(None) => break,
+            Ok(Some(Err(_))) => break,
+            Ok(Some(Ok(_))) => {}
+            Err(_) => break,
         }
     }
 
