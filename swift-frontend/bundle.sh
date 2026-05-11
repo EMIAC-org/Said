@@ -15,6 +15,24 @@ VERSION="${SAID_VERSION:-}"
 BUILD_NUMBER="${SAID_BUILD_NUMBER:-}"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://emiac-org.github.io/Said/appcast.xml}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
+CODESIGN_REQUIRE_STABLE="${CODESIGN_REQUIRE_STABLE:-0}"
+CODESIGN_RUNTIME="${CODESIGN_RUNTIME:-1}"
+CODESIGN_TIMESTAMP="${CODESIGN_TIMESTAMP:-0}"
+SIGN_ARGS=(--force --sign "$CODESIGN_IDENTITY")
+
+if [ "$CODESIGN_IDENTITY" = "-" ] && [ "$CODESIGN_REQUIRE_STABLE" = "1" ]; then
+    echo "stable code signing is required for release builds; set CODESIGN_IDENTITY"
+    exit 1
+fi
+
+if [ "$CODESIGN_IDENTITY" != "-" ]; then
+    if [ "$CODESIGN_RUNTIME" = "1" ]; then
+        SIGN_ARGS+=(--options runtime)
+    fi
+    if [ "$CODESIGN_TIMESTAMP" = "1" ]; then
+        SIGN_ARGS+=(--timestamp)
+    fi
+fi
 
 if [ -z "$VERSION" ]; then
     VERSION=$(awk '
@@ -136,12 +154,20 @@ if [ -z "$SPARKLE_PUBLIC_ED_KEY" ]; then
     echo "  ⚠ SPARKLE_PUBLIC_ED_KEY is empty; Sparkle updater is disabled for this build"
 fi
 
-# Ad-hoc sign
 echo "▶ Signing..."
-if [ -d "$FRAMEWORKS/Sparkle.framework" ]; then
-    codesign --force --sign "$CODESIGN_IDENTITY" "$FRAMEWORKS/Sparkle.framework" 2>&1 | sed 's/^/  /'
+if [ "$CODESIGN_IDENTITY" = "-" ]; then
+    echo "  ⚠ ad-hoc signing; macOS permissions may reset after updates"
+else
+    echo "  ✓ signing with identity: $CODESIGN_IDENTITY"
 fi
-codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIR" 2>&1 | sed 's/^/  /'
+
+if [ -f "$MACOS/said-backend" ]; then
+    codesign "${SIGN_ARGS[@]}" "$MACOS/said-backend" 2>&1 | sed 's/^/  /'
+fi
+if [ -d "$FRAMEWORKS/Sparkle.framework" ]; then
+    codesign "${SIGN_ARGS[@]}" "$FRAMEWORKS/Sparkle.framework" 2>&1 | sed 's/^/  /'
+fi
+codesign "${SIGN_ARGS[@]}" --deep "$APP_DIR" 2>&1 | sed 's/^/  /'
 codesign --verify --deep --strict "$APP_DIR" 2>&1 | sed 's/^/  /'
 
 echo ""
