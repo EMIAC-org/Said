@@ -1,5 +1,18 @@
 <?xml version="1.0" standalone="yes"?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
+        <item>
+            <title>0.0.1</title>
+            <pubDate>Mon, 11 May 2026 21:20:46 +0000</pubDate>
+            <link>https://github.com/EMIAC-org/Said/releases</link>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>0.0.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>Said v0.0.1</h2>
+<p>Swift frontend release.</p>
+]]></description>
+            <enclosure url="https://github.com/EMIAC-org/Said/releases/download/v0.0.1/Said_0.0.1_aarch64.dmg" length="4572126" type="application/octet-stream" sparkle:edSignature="sXfbEpL1AmicdYnivmNdcs1K8y4qH7p2C8hCxorKcynUX3SeRyTAo2Ln10YO2swvLQZUyfH5kHOxyCk50tPeDQ=="/>
+        </item>
     </channel>
 </rss>
