@@ -25,7 +25,7 @@ use crate::{
     AppState,
     embedder::gemini,
     llm::{
-        gateway, gemini_direct, groq, openai_codex,
+        groq,
         prompt::{
             VocabEntry, build_refine_last_transform_prompt,
             build_refine_last_transform_user_message, build_system_prompt_with_vocab_entries,
@@ -40,7 +40,7 @@ use crate::{
     },
     store::{
         history::{InsertRecording, insert_recording},
-        openai_oauth, stt_replacements,
+        stt_replacements,
         vectors::retrieve_similar,
         vocab_embeddings, vocabulary,
     },
@@ -62,19 +62,6 @@ pub struct TextRefineBody {
     pub tone: Option<String>,
 }
 
-fn invalidate_openai_session_on_auth_error(
-    pool: &crate::store::DbPool,
-    user_id: &str,
-    llm_provider: &str,
-    err: &str,
-) -> bool {
-    if llm_provider != "openai_codex" || !openai_codex::is_auth_error(err) {
-        return false;
-    }
-    openai_oauth::delete_token(pool, user_id);
-    warn!("[text] invalidated stored OpenAI OAuth token after auth failure");
-    true
-}
 
 pub async fn polish(
     State(state): State<AppState>,
@@ -201,63 +188,23 @@ pub async fn polish(
         let user_message  = build_user_message(&resolved_transcript, &prefs.output_language);
 
         let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
-        let gateway_key = prefs.gateway_api_key.clone()
-            .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
-            .or_else(|| { let k = said_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
-            .unwrap_or_default();
-        let gemini_key_text = prefs.gemini_api_key.clone()
-            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
-            .unwrap_or_default();
         let groq_key_text = prefs.groq_api_key.clone()
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
             .unwrap_or_default();
 
-        // Resolve model + provider
-        let llm_provider = prefs.llm_provider.clone();
-        let llm_provider_for_task = llm_provider.clone();
-        let model = said_core::resolve_model(&prefs.selected_model).to_string();
+        let llm_provider = "groq".to_string();
+        let model_for_llm = groq::GROQ_MODEL_DEFAULT.to_string();
+        let model_for_spawn = model_for_llm.clone();
         let sys_p       = system_prompt.clone();
         let usr_m       = user_message.clone();
         let client_c    = http_client.clone();
 
-        let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
-            let tok = openai_oauth::get_token(&pool, &user_id);
-            let m = if prefs.selected_model == "mini" || prefs.selected_model == "fast" {
-                openai_codex::MODEL_MINI.to_string()
-            } else {
-                openai_codex::MODEL_SMART.to_string()
-            };
-            (m, tok.map(|t| t.access_token))
-        } else if llm_provider == "gemini_direct" {
-            (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
-        } else if llm_provider == "groq" {
-            (groq::GROQ_MODEL_DEFAULT.to_string(), None)
-        } else {
-            (model.clone(), None)
-        };
-
         info!("[text] LLM provider={llm_provider:?} model={model_for_llm:?}");
 
         let llm_task = tokio::spawn(async move {
-            if llm_provider_for_task == "openai_codex" {
-                let access_token = openai_token_opt.as_deref().unwrap_or("");
-                if access_token.is_empty() {
-                    return Err("OpenAI not connected — go to Settings to connect your account".to_string());
-                }
-                openai_codex::stream_polish(
-                    &client_c, access_token, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else if llm_provider_for_task == "gemini_direct" {
-                gemini_direct::stream_polish(
-                    &client_c, &gemini_key_text, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else if llm_provider_for_task == "groq" {
-                groq::stream_polish(
-                    &client_c, &groq_key_text, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else {
-                gateway::stream_polish(&client_c, &gateway_key, &model_for_llm, &sys_p, &usr_m, token_tx).await
-            }
+            groq::stream_polish(
+                &client_c, &groq_key_text, &model_for_spawn, &sys_p, &usr_m, token_tx,
+            ).await
         });
 
         let enforce_roman_hinglish = tone_override.is_none() && prefs.output_language == "hinglish";
@@ -289,11 +236,7 @@ pub async fn polish(
         let mut llm_result = match llm_task.await {
             Ok(Ok(r))  => r,
             Ok(Err(e)) => {
-                let message = if invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e) {
-                    "OpenAI not connected — go to Settings to connect your account".to_string()
-                } else {
-                    e.clone()
-                };
+                let message = e.clone();
                 warn!("[text] LLM error: {e}");
                 yield Ok(Event::default().event("error")
                     .data(json!({"message": message}).to_string()));
@@ -342,7 +285,7 @@ pub async fn polish(
             let t2     = resolved_transcript.clone();
             let p2     = llm_result.polished.clone();
             let ta2    = target_app.clone();
-            let model2 = model.clone(); // resolved string e.g. "gpt-5.4", not mode key "smart"
+            let model2 = model_for_llm.clone();
             let e_ms   = embed_ms;
             let p_ms   = llm_result.polish_ms as i64;
             tokio::spawn(async move {
@@ -369,7 +312,7 @@ pub async fn polish(
                 "recording_id": recording_id,
                 "transcript":   resolved_transcript,
                 "polished":     llm_result.polished,
-                "model_used":   model,  // resolved string e.g. "gpt-5.4"
+                "model_used":   &model_for_llm,
                 "confidence":   null,
                 "audio_id":     null,
                 "source":       "text",
@@ -431,59 +374,20 @@ pub async fn refine_last(
             .data(json!({"phase": "polishing", "transcript": source_text}).to_string()));
 
         let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
-        let gateway_key = prefs.gateway_api_key.clone()
-            .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
-            .or_else(|| { let k = said_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
-            .unwrap_or_default();
-        let gemini_key_text = prefs.gemini_api_key.clone()
-            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
-            .unwrap_or_default();
         let groq_key_text = prefs.groq_api_key.clone()
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
             .unwrap_or_default();
 
-        let llm_provider = prefs.llm_provider.clone();
-        let llm_provider_for_task = llm_provider.clone();
-        let model = said_core::resolve_model(&prefs.selected_model).to_string();
+        let model_for_llm = groq::GROQ_MODEL_DEFAULT.to_string();
+        let model_for_spawn = model_for_llm.clone();
         let sys_p = system_prompt.clone();
         let usr_m = user_message.clone();
         let client_c = http_client.clone();
-        let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
-            let tok = openai_oauth::get_token(&pool, &user_id);
-            let m = if prefs.selected_model == "mini" || prefs.selected_model == "fast" {
-                openai_codex::MODEL_MINI.to_string()
-            } else {
-                openai_codex::MODEL_SMART.to_string()
-            };
-            (m, tok.map(|t| t.access_token))
-        } else if llm_provider == "gemini_direct" {
-            (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
-        } else if llm_provider == "groq" {
-            (groq::GROQ_MODEL_DEFAULT.to_string(), None)
-        } else {
-            (model.clone(), None)
-        };
 
         let llm_task = tokio::spawn(async move {
-            if llm_provider_for_task == "openai_codex" {
-                let access_token = openai_token_opt.as_deref().unwrap_or("");
-                if access_token.is_empty() {
-                    return Err("OpenAI not connected — go to Settings to connect your account".to_string());
-                }
-                openai_codex::stream_polish(
-                    &client_c, access_token, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else if llm_provider_for_task == "gemini_direct" {
-                gemini_direct::stream_polish(
-                    &client_c, &gemini_key_text, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else if llm_provider_for_task == "groq" {
-                groq::stream_polish(
-                    &client_c, &groq_key_text, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else {
-                gateway::stream_polish(&client_c, &gateway_key, &model_for_llm, &sys_p, &usr_m, token_tx).await
-            }
+            groq::stream_polish(
+                &client_c, &groq_key_text, &model_for_spawn, &sys_p, &usr_m, token_tx,
+            ).await
         });
 
         while let Some(token) = token_rx.recv().await {
@@ -494,11 +398,7 @@ pub async fn refine_last(
         let llm_result = match llm_task.await {
             Ok(Ok(r))  => r,
             Ok(Err(e)) => {
-                let message = if invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e) {
-                    "OpenAI not connected — go to Settings to connect your account".to_string()
-                } else {
-                    e.clone()
-                };
+                let message = e.clone();
                 warn!("[text-refine] LLM error: {e}");
                 yield Ok(Event::default().event("error")
                     .data(json!({"message": message}).to_string()));
@@ -520,7 +420,7 @@ pub async fn refine_last(
             let uid2   = user_id.clone();
             let t2     = source_text.clone();
             let p2     = llm_result.polished.clone();
-            let model2 = model.clone();
+            let model2 = model_for_llm.clone();
             let p_ms   = llm_result.polish_ms as i64;
             tokio::spawn(async move {
                 insert_recording(&pool2, InsertRecording {
@@ -544,7 +444,7 @@ pub async fn refine_last(
                 "recording_id": recording_id,
                 "transcript":   source_text,
                 "polished":     llm_result.polished,
-                "model_used":   model,
+                "model_used":   &model_for_llm,
                 "confidence":   null,
                 "audio_id":     null,
                 "source":       "text_refine",

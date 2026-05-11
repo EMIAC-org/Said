@@ -11,13 +11,19 @@ Hold Caps Lock, speak, release — Said types polished text into any focused app
 Hindi, Hinglish, or whatever mix comes out of your mouth.
 
 Core runtime:
-1. Caps Lock triggers `hotkey` crate (CGEventTap)
+1. Caps Lock (or Fn / Right Option) triggers `hotkey` crate (CGEventTap)
 2. `recorder` captures CoreAudio PCM at 16 kHz
-3. `core/dg_stream` streams audio to Deepgram nova-3 (pre-warmed WebSocket)
+3. `dg_stream` streams audio to Deepgram nova-3 (fresh WebSocket per recording)
 4. `backend /v1/voice` (Axum SSE) polishes the transcript via Groq streaming LLM
 5. `script.rs` Devanagari→Roman guard runs after every token (Hinglish guarantee)
 6. `paster` types token-by-token into the focused app via Accessibility API
 7. A 30s edit watch classifies corrections (4-way) → validates (3 gates) → persists to SQLite
+
+> **Migration in progress (2026-05-11):** The desktop frontend is moving from
+> Tauri (React + TypeScript) to native Swift/SwiftUI. See
+> [Swift Frontend Migration](#swift-frontend-migration) section below.
+> The Rust backend (`crates/backend/`) is unchanged — Swift app talks to it
+> via HTTP + SSE, same as Tauri did.
 
 ---
 
@@ -25,11 +31,11 @@ Core runtime:
 
 | Layer | Technology |
 |---|---|
-| Language | Rust 2024 edition (workspace) + TypeScript (React frontend) |
-| Desktop shell | Tauri v2 |
+| Language | Rust 2024 edition (workspace) + Swift/SwiftUI (frontend, migrating) |
+| Desktop shell | Swift/SwiftUI native (migrating from Tauri v2) |
 | HTTP server | Axum (async, SSE streaming) |
 | Database | SQLite via r2d2 + rusqlite (20 migrations, WAL mode) |
-| UI | React + Vite + TypeScript |
+| UI | SwiftUI (migrating from React + Vite + TypeScript) |
 | STT | Deepgram nova-3 (WebSocket streaming + batch fallback) |
 | LLM polish | Groq llama-3.3-70b (primary), OpenAI Codex (fallback) |
 | Embeddings | Gemini text-embedding-004 (256-d, stored in SQLite) |
@@ -80,13 +86,15 @@ cd desktop && npm ci              # reinstall deps
 ```
 /crates/hotkey        global Caps Lock listener (CGEventTap)
 /crates/recorder      CoreAudio capture at 16 kHz
-/crates/core          Deepgram WebSocket client + pre-warm logic
+/crates/core          Deepgram WebSocket client + shared types
 /crates/paster        HID typing into focused field + 30s edit watch
 /crates/backend       local Axum daemon — STT, LLM, SQLite, learning pipeline
 /crates/said          standalone CLI binary
 /crates/control-plane Fly.io cloud backend (Postgres) — EXCLUDED from workspace
-/desktop/src-tauri    Tauri v2 shell — spawns said-backend, 39 commands
-/desktop/src          React + Vite UI
+/swift-frontend       NEW — native Swift/SwiftUI macOS app (notch island + main window)
+/refer                boring.notch clone — reference only, never built or modified
+/desktop/src-tauri    DEPRECATED — Tauri v2 shell (being replaced by swift-frontend)
+/desktop/src          DEPRECATED — React + Vite UI (being replaced by swift-frontend)
 /scripts              build-dmg.sh, bump-version.sh
 /justfile             task runner (just dev, just check, just dmg, etc.)
 ```
@@ -109,10 +117,11 @@ crates/backend/src/lib.rs             AppState, prefs cache (30s TTL), lexicon c
 crates/backend/src/store/mod.rs       SQLite pool (r2d2, max 5 connections)
 crates/backend/src/stt/deepgram.rs    Deepgram batch STT client (30s timeout)
 crates/backend/src/embedder/gemini.rs Gemini embedding client
-desktop/src-tauri/src/backend.rs      spawns said-backend, polls /v1/health, find_binary()
-desktop/src-tauri/src/backend_guard.rs  reaps leaked said-backend processes
-desktop/src-tauri/src/dg_stream.rs    pre-warm Deepgram WS (PREWARM_MAX_AGE = 45s)
-desktop/src-tauri/src/main.rs         all 39 Tauri commands, app lifecycle
+desktop/src-tauri/src/backend.rs      spawns said-backend, polls /v1/health (DEPRECATED — moving to Swift)
+desktop/src-tauri/src/dg_stream.rs    Deepgram WS streaming, fresh-per-recording (DEPRECATED)
+desktop/src-tauri/src/main.rs         Tauri commands, app lifecycle (DEPRECATED)
+swift-frontend/                       NEW — Swift/SwiftUI app (notch island + main window)
+refer/                                boring.notch reference (read-only, key files listed below)
 ```
 
 ---
@@ -149,7 +158,80 @@ See `.env.example` for the full list of optional configuration.
 | v1.0 | Voice Polish — basic dictation + polish | Done |
 | v2.0 | Said rebrand, Hinglish-native, streaming word fix, learning pipeline | Done |
 | v2.x | Performance fixes (faster STT fallback, embed circuit breaker, pool tuning) | Planned |
-| v3.0 | Local-only mode (on-device STT + LLM) | Roadmap |
+| v3.0 | Native Swift/SwiftUI frontend + boring.notch-style notch island | **In progress** |
+| v4.0 | Local-only mode (on-device STT + LLM) | Roadmap |
+
+---
+
+## Swift Frontend Migration
+
+> **Decision:** 2026-05-11. Full wiki page: `Dm8WdxiAuor6LNxBXqhl7rQTgVg`
+
+Said is migrating from Tauri (React + TypeScript + WKWebView) to a fully native
+Swift/SwiftUI macOS frontend. The Rust backend stays unchanged.
+
+### Why
+
+Tauri cannot access `NSScreen.safeAreaInsets`, `CGSSpace`, `NSPanel`, or
+`SkyLight.framework` — all required for a boring.notch-style notch island overlay.
+Building the notch UX in Tauri would require ~70% custom Rust FFI, defeating the
+purpose. Going native gives us the full macOS UX toolkit.
+
+### New frontend structure
+
+```
+swift-frontend/              Swift/SwiftUI Xcode project
+├── Notch/                   Notch island (NSPanel, CGSSpace, hover-expand)
+├── Main/                    Main app window (settings, history, dashboard)
+├── Audio/                   Audio capture + visualizer
+├── Backend/                 HTTP + SSE client to said-backend
+└── ...
+```
+
+### Two surfaces
+
+1. **Notch island** — boring.notch-style `NSPanel` overlay at the notch.
+   Closed = pill with recording glow. Recording = audio visualizer bars.
+   Hover = expand to show recent transcriptions, mode toggle, hotkey indicator.
+   Non-notch Macs get a configurable pill at top-center.
+
+2. **Main app window** — Full SwiftUI window for settings, history, dashboard,
+   onboarding. Replaces everything in `desktop/src/`.
+
+### What stays in Rust
+
+- `said-backend` (Axum, SQLite, LLM polish, Deepgram batch, embeddings, learning)
+- Spawned as sidecar by the Swift app (same pattern as Tauri)
+- All `/v1/*` API routes unchanged
+
+### Reference: boring.notch (`refer/`)
+
+Key files to study (read-only, never modify):
+
+| File | What to learn |
+|---|---|
+| `boringNotchApp.swift` | Window creation, multi-screen, AppDelegate |
+| `ContentView.swift` | Hover detection, animation springs, state machine |
+| `BoringNotchSkyLightWindow.swift` | NSPanel subclass, SkyLight delegation |
+| `sizing/matters.swift` | Notch detection, safe area calculation |
+| `private/CGSSpace.swift` | Custom rendering space for always-on-top |
+| `models/BoringViewModel.swift` | Open/close state machine, size transitions |
+
+### Rules for the migration
+
+1. **`desktop/` is deprecated** — do not add features to it.
+2. **`refer/` is read-only** — never modify, only read for reference.
+3. **New frontend code goes in `swift-frontend/`** only.
+4. **Backend API surface is frozen** — Swift app uses the same HTTP + SSE endpoints.
+5. **Wiki page is the plan** — fetch `Dm8WdxiAuor6LNxBXqhl7rQTgVg` for current state.
+
+### Migration phases
+
+| Phase | Scope |
+|---|---|
+| 1 | Xcode project scaffold, NSPanel notch overlay, sidecar launch, basic recording flow |
+| 2 | Main app window (settings, history, dashboard, onboarding) |
+| 3 | Remove `desktop/`, update CI and build scripts |
 
 ---
 
@@ -194,6 +276,7 @@ Said
 | Reviews & MoMs | `ZApkdhSbpo83jVxhVYWl6t5wgvc` | `Hh5Zw6GKgixy4vku4bKlCM6Gg6g` |
 | Said — Weekly Updates (parent) | `I6TMdmYLForup1x6KTCl2KUngJq` | `E62IweE40i6z0WkvDBNloyVngwc` |
 | Bug: Status Bar + Hang Fixes | `Z54Id6iGCoCJpwxT4Zcldez9gTg` | `VKZcwT45yinWx9kjZmmlqsQOgUh` |
+| Swift Frontend Migration | `Dm8WdxiAuor6LNxBXqhl7rQTgVg` | `XLoAwQrozirTBykpzQ0lQga7gNe` |
 | AGENTS.md | `FuKWd2RZDow8mcx3MvCl5wvygNc` | `RNFVwgB2biyXqbknUa2lShSDgkc` |
 
 **Wiki space ID:** `7635896570625396443` (Tech Hub)
@@ -250,4 +333,5 @@ Treat updating the wiki as the last action you take in every session.
 
 | Feature | Status | Wiki obj_token |
 |---|---|---|
-| Bug: Status Bar + Hang Fixes | In progress — committed, needs push + test | `Z54Id6iGCoCJpwxT4Zcldez9gTg` |
+| Swift Frontend Migration | **Active** — scaffold + notch island next | `Dm8WdxiAuor6LNxBXqhl7rQTgVg` |
+| Bug: Status Bar + Hang Fixes | Done — committed and merged | `Z54Id6iGCoCJpwxT4Zcldez9gTg` |
