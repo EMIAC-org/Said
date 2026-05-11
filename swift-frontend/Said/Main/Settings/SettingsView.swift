@@ -300,6 +300,8 @@ struct DebugTab: View {
     let sidecar: SidecarManager
     @State private var logs: DebugLogs?
     @State private var tab = "combined"
+    @State private var isRefreshing = false
+    @State private var lastUpdated: Date?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -312,11 +314,22 @@ struct DebugTab: View {
                 .pickerStyle(.segmented)
                 .frame(width: 260)
                 Spacer()
+                if let lastUpdated {
+                    Text("Updated \(lastUpdated.formatted(date: .omitted, time: .standard))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Button {
                     Task { await loadLogs() }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    if isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
                 }
+                .disabled(isRefreshing)
                 Button("Copy") {
                     let text: String
                     switch tab {
@@ -338,7 +351,13 @@ struct DebugTab: View {
             .background(Color(nsColor: .textBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
-        .task { await loadLogs() }
+        .task {
+            await loadLogs()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                await loadLogs()
+            }
+        }
     }
 
     private var currentLog: String {
@@ -350,8 +369,14 @@ struct DebugTab: View {
     }
 
     private func loadLogs() async {
-        let client = BackendClient(sidecar: sidecar)
-        logs = try? await client.getDebugLogs()
+        isRefreshing = true
+        let nextLogs = await DebugLogCollector.collect(
+            backendHealthy: sidecar.isHealthy,
+            backendPort: sidecar.port
+        )
+        logs = nextLogs
+        lastUpdated = Date()
+        isRefreshing = false
     }
 }
 
