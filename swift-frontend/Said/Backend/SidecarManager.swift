@@ -7,7 +7,7 @@ final class SidecarManager: ObservableObject {
 
     private var process: Process?
     private var healthTimer: Timer?
-    private let logger = Logger(subsystem: "com.emiac.said", category: "sidecar")
+    private let logger = RuntimeLogger(category: "sidecar")
     private let sharedSecret: String
 
     var baseURL: String { "http://127.0.0.1:\(port)" }
@@ -50,8 +50,10 @@ final class SidecarManager: ObservableObject {
         proc.standardError = pipe
         pipe.fileHandleForReading.readabilityHandler = { [logger] handle in
             let data = handle.availableData
-            if !data.isEmpty, let line = String(data: data, encoding: .utf8) {
-                logger.info("[said-backend] \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
+            if !data.isEmpty, let text = String(data: data, encoding: .utf8) {
+                for line in text.split(whereSeparator: \.isNewline) {
+                    logger.info("[said-backend] \(line)")
+                }
             }
         }
 

@@ -63,6 +63,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        RuntimeLogStore.shared.startRun()
+        RuntimeLogStore.shared.append(
+            level: "INFO",
+            category: "app",
+            message: "Said app launched"
+        )
         sidecar.start()
         engine = DictationEngine(sidecar: sidecar)
 
@@ -78,6 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func cleanup() {
+        RuntimeLogStore.shared.append(level: "INFO", category: "app", message: "Said app cleanup")
         sidecar.stop()
     }
 

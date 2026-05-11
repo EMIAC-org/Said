@@ -2,7 +2,7 @@ import AppKit
 import os
 
 enum TextPaster {
-    private static let logger = Logger(subsystem: "com.emiac.said", category: "paster")
+    private static let logger = RuntimeLogger(category: "paster")
 
     /// Type text directly into focused app using a single synthetic keyboard event
     /// for the entire token. Matches Rust paster's `type_text()` — one CGEvent pair

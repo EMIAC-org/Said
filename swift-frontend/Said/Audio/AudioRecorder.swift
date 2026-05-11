@@ -8,7 +8,7 @@ final class AudioRecorder: ObservableObject {
 
     private var engine: AVAudioEngine?
     private var pcmBuffers: [Data] = []
-    private let logger = Logger(subsystem: "com.emiac.said", category: "audio")
+    private let logger = RuntimeLogger(category: "audio")
     private let targetSampleRate: Double = 16000
 
     var onLevelUpdate: ((Float) -> Void)?

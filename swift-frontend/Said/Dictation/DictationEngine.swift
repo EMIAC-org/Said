@@ -11,7 +11,7 @@ final class DictationEngine: ObservableObject {
     private var backendClient: BackendClient
     private var sseClient = SSEClient()
     private var dgStream = DeepgramStream()
-    private let logger = Logger(subsystem: "com.emiac.said", category: "dictation")
+    private let logger = RuntimeLogger(category: "dictation")
 
     private var deepgramKey: String = ""
     private var sttMode: String = "multi"
@@ -82,7 +82,7 @@ final class DictationEngine: ObservableObject {
 
     func startRecording() {
         guard beginRecordingState() else {
-            logger.info("recording ignored — dictation pipeline is busy")
+            logger.info("recording ignored — dictation pipeline is busy (\(currentPipelineState()))")
             return
         }
         recordingStart = ContinuousClock.now
@@ -275,14 +275,16 @@ final class DictationEngine: ObservableObject {
             await MainActor.run { notchVM.finish(text: trimmed) }
         } catch {
             let totalMs = ms(since: pipelineStart)
-            logger.error("[timing] ✗ FAILED at \(totalMs)ms: \(error)")
+            let rawMessage = error.localizedDescription
+            let message = Self.humanize(rawMessage)
+            logger.error("[timing] ✗ FAILED at \(totalMs)ms: \(message) — \(rawMessage)")
             let trimmed = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
             if typedAny && failCount > 0 && !trimmed.isEmpty {
                 TextPaster.pasteReplacing(trimmed)
             } else if !trimmed.isEmpty && !typedAny {
                 TextPaster.paste(trimmed)
             }
-            await MainActor.run { notchVM.showError(Self.humanize(error.localizedDescription)) }
+            await MainActor.run { notchVM.showError(message) }
         }
     }
 
@@ -475,5 +477,11 @@ final class DictationEngine: ObservableObject {
         stateLock.lock()
         pipelineState = .idle
         stateLock.unlock()
+    }
+
+    private func currentPipelineState() -> PipelineState {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return pipelineState
     }
 }

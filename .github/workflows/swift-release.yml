@@ -16,9 +16,6 @@ permissions:
   pages: write
   id-token: write
 
-env:
-  SPARKLE_VERSION: "2.9.1"
-
 jobs:
   release:
     name: Build DMG, publish release, update appcast
@@ -27,15 +24,71 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Validate Sparkle configuration
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          CODESIGN_CERT_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
+          CODESIGN_CERT_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
         run: |
           test -n "${{ vars.SPARKLE_PUBLIC_ED_KEY }}" || {
             echo "::error::Set repository variable SPARKLE_PUBLIC_ED_KEY"
             exit 1
           }
-          test -n "${{ secrets.SPARKLE_PRIVATE_KEY }}" || {
+          test -n "$SPARKLE_PRIVATE_KEY" || {
             echo "::error::Set repository secret SPARKLE_PRIVATE_KEY"
             exit 1
           }
+          test -n "$CODESIGN_CERT_BASE64" || {
+            echo "::error::Set repository secret CODESIGN_CERTIFICATE_BASE64"
+            exit 1
+          }
+          test -n "$CODESIGN_CERT_PASSWORD" || {
+            echo "::error::Set repository secret CODESIGN_CERTIFICATE_PASSWORD"
+            exit 1
+          }
+
+      - name: Import code-signing certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+          IDENTITY_MATCH: ${{ vars.CODESIGN_IDENTITY_MATCH }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          KEYCHAIN_PATH="$RUNNER_TEMP/said-signing.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/said-codesign-certificate.p12"
+
+          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          if [ -n "$IDENTITY_MATCH" ]; then
+            CODESIGN_IDENTITY="$(
+              security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+                | awk -F '"' -v match="$IDENTITY_MATCH" '$2 ~ match { print $2; exit }'
+            )"
+          else
+            CODESIGN_IDENTITY="$(
+              security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+                | awk -F '"' '/"/ { print $2; exit }'
+            )"
+          fi
+          if [ -z "$CODESIGN_IDENTITY" ]; then
+            echo "::error::No usable code-signing identity found in CODESIGN_CERTIFICATE_BASE64"
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+            exit 1
+          fi
+          echo "CODESIGN_IDENTITY=$CODESIGN_IDENTITY" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -45,30 +98,30 @@ jobs:
         with:
           key: swift-release-${{ runner.os }}
 
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            swift-frontend/.build
+            swift-frontend/.swiftpm
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('swift-frontend/Package.swift', 'swift-frontend/Package.resolved') }}
+          restore-keys: |
+            swiftpm-${{ runner.os }}-
+
       - name: Resolve Swift packages
         working-directory: swift-frontend
         run: swift package resolve
 
-      - name: Build Sparkle generate_appcast
+      - name: Install Sparkle generate_appcast
         run: |
           set -euo pipefail
-          SPARKLE_SRC="$RUNNER_TEMP/Sparkle"
-          SPARKLE_DERIVED="$RUNNER_TEMP/sparkle-derived"
-          git clone \
-            --depth 1 \
-            --branch "$SPARKLE_VERSION" \
-            --single-branch \
-            https://github.com/sparkle-project/Sparkle \
-            "$SPARKLE_SRC"
-          xcodebuild -project "$SPARKLE_SRC/Sparkle.xcodeproj" \
-            -scheme generate_appcast \
-            -configuration Release \
-            -derivedDataPath "$SPARKLE_DERIVED" \
-            CODE_SIGNING_ALLOWED=NO \
-            build
-          install -m 0755 \
-            "$SPARKLE_DERIVED/Build/Products/Release/generate_appcast" \
-            "$RUNNER_TEMP/generate_appcast"
+          GENERATE_APPCAST="$(find swift-frontend/.build/artifacts -path '*/Sparkle/bin/generate_appcast' -type f -print -quit)"
+          if [ -z "$GENERATE_APPCAST" ]; then
+            echo "::error::Sparkle generate_appcast not found after swift package resolve"
+            find swift-frontend/.build/artifacts -name generate_appcast -type f -print || true
+            exit 1
+          fi
+          install -m 0755 "$GENERATE_APPCAST" "$RUNNER_TEMP/generate_appcast"
 
       - name: Generate timestamp build number
         run: echo "SAID_BUILD_NUMBER=$(TZ=Asia/Kolkata date +%Y%m%d%H%M)" >> "$GITHUB_ENV"
@@ -77,6 +130,8 @@ jobs:
         env:
           SAID_VERSION: ${{ inputs.version }}
           SAID_BUILD_NUMBER: ${{ env.SAID_BUILD_NUMBER }}
+          CODESIGN_IDENTITY: ${{ env.CODESIGN_IDENTITY }}
+          CODESIGN_REQUIRE_STABLE: "1"
           SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
           SPARKLE_FEED_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml
         run: ./scripts/build-swift-dmg.sh

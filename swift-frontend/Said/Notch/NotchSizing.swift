@@ -2,7 +2,7 @@ import AppKit
 
 let shadowPadding: CGFloat = 20
 let notchCornerRadius = (
-    opened: (top: CGFloat(19), bottom: CGFloat(24)),
+    opened: (top: CGFloat(24), bottom: CGFloat(36)),
     closed: (top: CGFloat(6), bottom: CGFloat(14))
 )
 

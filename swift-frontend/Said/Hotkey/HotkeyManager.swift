@@ -13,7 +13,7 @@ final class HotkeyManager: ObservableObject {
 
     private var tapThread: Thread?
     private var eventTap: CFMachPort?
-    private let logger = Logger(subsystem: "com.emiac.said", category: "hotkey")
+    private let logger = RuntimeLogger(category: "hotkey")
 
     func start() {
         guard eventTap == nil else { return }

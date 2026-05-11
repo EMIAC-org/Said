@@ -4,10 +4,11 @@ import os
 final class DeepgramStream {
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
-    private let logger = Logger(subsystem: "com.emiac.said", category: "deepgram")
+    private let logger = RuntimeLogger(category: "deepgram")
     private var resultChunks: [ResultChunk] = []
     private var isClosed = false
     private var chunksSent = 0
+    private var sendErrorCount = 0
     private(set) var isConnected = false
 
     private struct ResultChunk {
@@ -59,6 +60,7 @@ final class DeepgramStream {
         resultChunks = []
         isClosed = false
         chunksSent = 0
+        sendErrorCount = 0
         isConnected = true
 
         startReceiveLoop()
@@ -71,7 +73,11 @@ final class DeepgramStream {
         chunksSent += 1
         ws.send(.data(pcm)) { [weak self] error in
             if let error {
-                self?.logger.error("WS send error: \(error.localizedDescription)")
+                guard let self else { return }
+                self.sendErrorCount += 1
+                if self.sendErrorCount == 1 {
+                    self.logger.error("WS send error: \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -93,7 +99,7 @@ final class DeepgramStream {
             try? await Task.sleep(for: .milliseconds(20))
         }
         let drainMs = Self.ms(from: start)
-        logger.info("[timing] drain: \(drainMs)ms, parts=\(self.resultChunks.count), closed=\(self.isClosed)")
+        logger.info("[timing] drain: \(drainMs)ms, parts=\(self.resultChunks.count), closed=\(self.isClosed), send_errors=\(self.sendErrorCount)")
 
         let enriched = enrichedTranscript
         let plain = plainTranscript
