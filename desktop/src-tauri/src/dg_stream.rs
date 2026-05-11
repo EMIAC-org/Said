@@ -22,30 +22,16 @@ use tracing::{debug, info, warn};
 /// Confidence threshold — words below this get [word?XX%] markers for the LLM.
 const LOW_CONFIDENCE_THRESHOLD: f64 = 0.85;
 
-/// A pre-warmed Deepgram WebSocket connection ready to start receiving audio.
-/// Stored in `PrewarmedWsState` between recordings to eliminate the TLS handshake
-/// from the hot path (~150ms saved, up to 3s saved under rapid use).
-pub struct PrewarmedWs {
-    pub ws: tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-    pub bias: BiasPackage,
-    pub created_at: std::time::Instant,
-}
-
 #[derive(Debug, Clone)]
 pub struct StreamingTranscript {
     pub transcript: String,
     pub meta: TranscriptMeta,
 }
 
-/// Keep pre-warms short-lived. Beyond this, the speed win is unlikely and the
-/// background socket becomes idle work that can make the app feel sticky.
-pub const PREWARM_MAX_AGE: Duration = Duration::from_secs(15);
+type DgWs =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// Open a fresh Deepgram WebSocket connection and return it ready for audio.
-/// Called both for cold-start and for pre-warming the next recording's connection.
-pub async fn connect_ws(deepgram_key: &str, bias: &BiasPackage) -> Option<PrewarmedWs> {
+async fn connect_ws(deepgram_key: &str, bias: &BiasPackage) -> Option<DgWs> {
     if deepgram_key.is_empty() {
         return None;
     }
@@ -87,11 +73,7 @@ pub async fn connect_ws(deepgram_key: &str, bias: &BiasPackage) -> Option<Prewar
                 bias.keyterms.len(),
                 bias.replacements.len(),
             );
-            Some(PrewarmedWs {
-                ws,
-                bias: bias.clone(),
-                created_at: std::time::Instant::now(),
-            })
+            Some(ws)
         }
     }
 }
@@ -106,36 +88,13 @@ pub async fn stream_to_deepgram(
     deepgram_key: &str,
     bias: &BiasPackage,
     pre_embed: Option<(&str, &str)>,
-    prewarmed: Option<PrewarmedWs>,
 ) -> Option<StreamingTranscript> {
     if deepgram_key.is_empty() {
         warn!("[dg_stream] no Deepgram API key — WS streaming disabled");
         return None;
     }
 
-    // Use pre-warmed WS if params match AND it's still fresh enough.
-    let ws = if let Some(pw) = prewarmed {
-        let age = pw.created_at.elapsed();
-        if pw.bias != *bias {
-            info!("[dg_stream] pre-warm params mismatch — connecting fresh");
-            connect_ws(deepgram_key, bias).await?.ws
-        } else if age > PREWARM_MAX_AGE {
-            info!(
-                "[dg_stream] pre-warm stale (age={}ms) — connecting fresh",
-                age.as_millis()
-            );
-            connect_ws(deepgram_key, bias).await?.ws
-        } else {
-            info!(
-                "[dg_stream] ✓ using pre-warmed WS (0ms connect, age={}ms)",
-                age.as_millis()
-            );
-            pw.ws
-        }
-    } else {
-        info!("[dg_stream] no pre-warm — connecting fresh");
-        connect_ws(deepgram_key, bias).await?.ws
-    };
+    let ws = connect_ws(deepgram_key, bias).await?;
 
     let (mut ws_tx, mut ws_rx) = ws.split();
 
