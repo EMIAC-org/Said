@@ -10,6 +10,10 @@
 /target
 **/target/
 
+# SwiftPM
+**/.build/
+**/.swiftpm/
+
 # Node / frontend dependencies
 desktop/node_modules/
 **/node_modules/

@@ -1,0 +1,143 @@
+name: Swift Frontend Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without leading v, for example 3.0.0"
+        required: true
+      release_notes:
+        description: "Release notes shown in GitHub and Sparkle"
+        required: false
+        default: "Swift frontend release."
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+env:
+  SPARKLE_VERSION: "2.9.1"
+
+jobs:
+  release:
+    name: Build DMG, publish release, update appcast
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Sparkle configuration
+        run: |
+          test -n "${{ vars.SPARKLE_PUBLIC_ED_KEY }}" || {
+            echo "::error::Set repository variable SPARKLE_PUBLIC_ED_KEY"
+            exit 1
+          }
+          test -n "${{ secrets.SPARKLE_PRIVATE_KEY }}" || {
+            echo "::error::Set repository secret SPARKLE_PRIVATE_KEY"
+            exit 1
+          }
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: swift-release-${{ runner.os }}
+
+      - name: Resolve Swift packages
+        working-directory: swift-frontend
+        run: swift package resolve
+
+      - name: Build Sparkle generate_appcast
+        run: |
+          set -euo pipefail
+          SPARKLE_SRC="$RUNNER_TEMP/Sparkle"
+          SPARKLE_DERIVED="$RUNNER_TEMP/sparkle-derived"
+          git clone \
+            --depth 1 \
+            --branch "$SPARKLE_VERSION" \
+            --single-branch \
+            https://github.com/sparkle-project/Sparkle \
+            "$SPARKLE_SRC"
+          xcodebuild -project "$SPARKLE_SRC/Sparkle.xcodeproj" \
+            -scheme generate_appcast \
+            -configuration Release \
+            -derivedDataPath "$SPARKLE_DERIVED" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+          install -m 0755 \
+            "$SPARKLE_DERIVED/Build/Products/Release/generate_appcast" \
+            "$RUNNER_TEMP/generate_appcast"
+
+      - name: Build Swift DMG
+        env:
+          SAID_VERSION: ${{ inputs.version }}
+          SAID_BUILD_NUMBER: ${{ github.run_number }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_FEED_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml
+        run: ./scripts/build-swift-dmg.sh
+
+      - name: Prepare appcast input
+        id: artifacts
+        env:
+          VERSION: ${{ inputs.version }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: |
+          set -euo pipefail
+          DMG_PATH="$(ls target/swift-frontend/release/bundle/dmg/Said_${VERSION}_*.dmg | head -n 1)"
+          DMG_NAME="$(basename "$DMG_PATH")"
+          HTML_NAME="${DMG_NAME%.dmg}.html"
+          mkdir -p Release
+          cp "$DMG_PATH" "Release/$DMG_NAME"
+          {
+            echo "<h2>Said v${VERSION}</h2>"
+            echo "<p>${RELEASE_NOTES}</p>"
+          } > "Release/$HTML_NAME"
+          echo "dmg_name=$DMG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Generate signed Sparkle appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          SPARKLE_GENERATE_APPCAST: ${{ runner.temp }}/generate_appcast
+          DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/v${{ inputs.version }}/
+          RELEASE_LINK: https://github.com/${{ github.repository }}/releases
+        run: ./scripts/generate-swift-appcast.sh Release
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: |
+          set -euo pipefail
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            gh release upload "v${VERSION}" Release/*.dmg --clobber
+          else
+            gh release create "v${VERSION}" Release/*.dmg \
+              --title "Said v${VERSION}" \
+              --notes "$RELEASE_NOTES" \
+              --target "$GITHUB_SHA"
+          fi
+
+      - name: Commit appcast
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add updater/appcast.xml
+          git commit -m "Update Swift appcast for v${VERSION}" || true
+          git push
+
+      - name: Deploy appcast to GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload updater pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: updater/
+
+      - name: Deploy updater pages
+        uses: actions/deploy-pages@v4
