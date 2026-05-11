@@ -119,7 +119,6 @@ use crate::{
     stt::{bias as stt_bias, deepgram},
 };
 
-
 #[derive(Debug)]
 struct VoicePolishInput {
     wav_data: Vec<u8>,

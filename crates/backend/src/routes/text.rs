@@ -62,7 +62,6 @@ pub struct TextRefineBody {
     pub tone: Option<String>,
 }
 
-
 pub async fn polish(
     State(state): State<AppState>,
     Json(body): Json<TextPolishBody>,
