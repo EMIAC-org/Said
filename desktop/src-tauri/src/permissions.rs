@@ -67,7 +67,6 @@ mod imp {
             granted
         }
     }
-
 }
 
 #[cfg(not(target_os = "macos"))]
