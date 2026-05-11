@@ -4,7 +4,7 @@ import os
 final class BackendClient {
     private let sidecar: SidecarManager
     private let session = URLSession.shared
-    private let logger = Logger(subsystem: "com.emiac.said", category: "backend-client")
+    private let logger = RuntimeLogger(category: "backend-client")
 
     init(sidecar: SidecarManager) {
         self.sidecar = sidecar

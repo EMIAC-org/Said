@@ -3,7 +3,7 @@ import os
 
 final class NotchSpaceManager {
     static let shared = NotchSpaceManager()
-    private let logger = Logger(subsystem: "com.emiac.said", category: "notch-space")
+    private let logger = RuntimeLogger(category: "notch-space")
 
     func addWindow(_ window: NSWindow) {
         window.collectionBehavior = [.fullScreenAuxiliary, .stationary, .canJoinAllSpaces, .ignoresCycle]

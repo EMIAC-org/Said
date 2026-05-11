@@ -4,7 +4,7 @@ import os
 let openNotchSize = CGSize(width: 640, height: 190)
 let windowSize = CGSize(width: openNotchSize.width, height: openNotchSize.height + shadowPadding)
 
-private let notchLogger = Logger(subsystem: "com.emiac.said", category: "notch-view")
+private let notchLogger = RuntimeLogger(category: "notch-view")
 
 struct NotchContentView: View {
     @ObservedObject var vm: NotchViewModel
@@ -172,22 +172,41 @@ struct NotchContentView: View {
 
     private var openLayout: some View {
         VStack(spacing: 0) {
-            notchHeader
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
+            // Dead zone: pure black, hardware notch sits here — no content
+            Color.black
+                .frame(height: max(24, vm.effectiveClosedNotchHeight))
 
-            // Row 2: Two-column content
+            // Sub-header: controls below the notch line
+            HStack {
+                Text("Said")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+                Spacer()
+                Button {
+                    withAnimation(animationSpring) { vm.close() }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .frame(width: 20, height: 20)
+                        .background(.white.opacity(0.08))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+
+            // Two-column content
             HStack(alignment: .top, spacing: 10) {
-                // Left: Last Result
                 lastResultPanel
-                // Right: Quick Polish
                 quickPolishPanel
             }
             .padding(.horizontal, 14)
 
             Spacer(minLength: 6)
 
-            // Row 3: Status bar
+            // Status bar
             statusBar
                 .padding(.horizontal, 14)
                 .padding(.bottom, 10)
@@ -291,38 +310,6 @@ struct NotchContentView: View {
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
-    }
-
-    // MARK: - Notch Header
-
-    private var notchHeader: some View {
-        HStack(alignment: .bottom, spacing: 0) {
-            Text("Said")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(.bottom, 2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            Rectangle()
-                .fill(vm.metrics.hasNotch ? .black : .clear)
-                .frame(width: vm.closedNotchSize.width)
-                .clipShape(NotchShape())
-
-            Button {
-                withAnimation(animationSpring) { vm.close() }
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .frame(width: 20, height: 20)
-                    .background(.white.opacity(0.08))
-                    .clipShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .padding(.bottom, 2)
-            .frame(maxWidth: .infinity, alignment: .trailing)
-        }
-        .frame(height: max(24, vm.effectiveClosedNotchHeight))
     }
 
     // MARK: - Status Bar
@@ -429,7 +416,7 @@ struct NotchContentView: View {
     }
 
     private func handleHover(_ hovering: Bool) {
-        notchLogger.info("hover: \(hovering) state=\(String(describing: vm.notchState)) lifecycle=\(vm.isActiveLifecycle)")
+        notchLogger.debug("hover: \(hovering) state=\(String(describing: vm.notchState)) lifecycle=\(vm.isActiveLifecycle)")
         hoverTask?.cancel()
         guard !vm.isActiveLifecycle else {
             withAnimation(animationSpring) { isHovering = false }

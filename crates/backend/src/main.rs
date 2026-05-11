@@ -24,15 +24,15 @@ async fn main() {
     );
     std::fs::create_dir_all(&log_dir).ok();
     let log_path = format!("{log_dir}/backend.log");
+    trim_log_to_recent_runs(&log_path, "polish-backend build=", 2);
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
         .expect("cannot open backend.log");
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive("said_backend=debug".parse().unwrap()),
-        )
+        .with_env_filter(env_filter)
         .with_ansi(false)
         .with_writer(std::sync::Mutex::new(log_file))
         .init();
@@ -206,6 +206,27 @@ fn start_parent_death_watch() {
 
 #[cfg(not(target_os = "macos"))]
 fn start_parent_death_watch() {}
+
+fn trim_log_to_recent_runs(path: &str, marker: &str, previous_runs_to_keep: usize) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+
+    let mut positions = Vec::new();
+    for (index, _) in text.match_indices(marker) {
+        let line_start = text[..index].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        positions.push(line_start);
+    }
+
+    if positions.len() <= previous_runs_to_keep {
+        return;
+    }
+
+    let start = positions[positions.len() - previous_runs_to_keep];
+    if start > 0 {
+        let _ = std::fs::write(path, &text[start..]);
+    }
+}
 
 // ── Metering batch ────────────────────────────────────────────────────────────
 

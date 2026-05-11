@@ -6,6 +6,7 @@
 use reqwest::Client;
 use said_core::deepgram::{BiasPackage, TranscriptMeta, build_batch_url};
 use serde::Deserialize;
+use std::time::Instant;
 use tracing::{debug, info, warn};
 
 const DEEPGRAM_URL: &str = "https://api.deepgram.com/v1/listen";
@@ -85,6 +86,7 @@ pub async fn transcribe(
     wav_data: Vec<u8>,
     bias: &BiasPackage,
 ) -> Result<TranscriptResult, String> {
+    let started_at = Instant::now();
     let url = build_batch_url(DEEPGRAM_URL, bias);
     if !bias.keyterms.is_empty() || !bias.replacements.is_empty() {
         debug!(
@@ -96,8 +98,8 @@ pub async fn transcribe(
         );
     }
 
-    debug!(
-        "[stt] sending {} bytes to Deepgram (lang={lang})",
+    info!(
+        "[stt] Deepgram batch start bytes={} lang={lang}",
         wav_data.len(),
         lang = bias.stt_mode,
     );
@@ -107,12 +109,18 @@ pub async fn transcribe(
         .header("Authorization", format!("Token {api_key}"))
         .header("Content-Type", "audio/wav")
         .body(wav_data)
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
-        .map_err(|e| format!("Deepgram request failed: {e}"))?;
+        .map_err(|e| {
+            let ms = started_at.elapsed().as_millis();
+            warn!("[stt] Deepgram batch failed after {ms}ms: {e}");
+            format!("Deepgram request failed: {e}")
+        })?;
 
     let status = resp.status();
+    let http_ms = started_at.elapsed().as_millis();
+    info!("[stt] Deepgram batch HTTP {status} in {http_ms}ms");
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
         let preview = &body[..body.len().min(300)];
@@ -152,9 +160,11 @@ pub async fn transcribe(
             enrich_words(&alt.words)
         };
 
-    debug!(
-        "[stt] transcript ({:.2}): {}",
-        alt.confidence, alt.transcript
+    info!(
+        "[stt] Deepgram transcript words={} conf={:.2} total={}ms",
+        word_count,
+        alt.confidence,
+        started_at.elapsed().as_millis()
     );
     if uncertain_count > 0 {
         info!(

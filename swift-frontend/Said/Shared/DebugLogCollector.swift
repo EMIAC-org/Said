@@ -1,35 +1,37 @@
 import Foundation
-import OSLog
 
 enum DebugLogCollector {
-    private static let launchDate = Date()
-    private static let maxLogBytes: UInt64 = 768 * 1024
-    private static let subsystem = "com.emiac.said"
+    private static let maxLogBytes: UInt64 = 256 * 1024
+    private static let backendRunMarker = "polish-backend build="
 
     static func collect(backendHealthy: Bool, backendPort: Int) async -> DebugLogs {
         await Task.detached(priority: .utility) {
-            let app = collectAppLogs()
+            RuntimeLogStore.shared.startRun()
+            let app = RuntimeLogStore.shared.readLastRuns(maxBytes: maxLogBytes)
             let backendPath = backendLogPath()
-            let backend = readRecentLog(
+            let backend = RuntimeLogStore.shared.readLastRuns(
                 at: backendPath,
-                marker: "polish-backend build="
+                marker: backendRunMarker,
+                maxRuns: 3,
+                maxBytes: maxLogBytes
             )
 
             let runtimeHeader = """
             Runtime
             - Backend: \(backendHealthy ? "healthy" : "not healthy")
             - Backend URL: http://127.0.0.1:\(backendPort)
-            - App log source: Unified Logging, subsystem == "\(subsystem)", since this app launch
+            - App log source: \(RuntimeLogStore.shared.appLogURL.path) (last 3 app runs)
             - Backend log source: \(backendPath.path)
+            - Retention: latest 3 app runs + latest 3 backend runs
             """
 
-            let appText = app.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let backendText = backend.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let appText = qualityFilter(app.text).trimmingCharacters(in: .whitespacesAndNewlines)
+            let backendText = qualityFilter(backend.text).trimmingCharacters(in: .whitespacesAndNewlines)
             let combined = """
             \(runtimeHeader)
 
             -- Said app --
-            \(appText.isEmpty ? "(no app logs found for this launch)" : appText)
+            \(appText.isEmpty ? "(no app runtime log found yet)" : appText)
 
             -- said-backend --
             \(backendText.isEmpty ? "(no backend log found)" : backendText)
@@ -39,34 +41,11 @@ enum DebugLogCollector {
                 combined: combined,
                 desktop: appText,
                 backend: backendText,
-                desktop_path: "Unified Logging: subsystem == \(subsystem)",
+                desktop_path: RuntimeLogStore.shared.appLogURL.path,
                 backend_path: backendPath.path,
                 truncated: app.truncated || backend.truncated
             )
         }.value
-    }
-
-    private static func collectAppLogs() -> (text: String, truncated: Bool) {
-        do {
-            let store = try OSLogStore(scope: .currentProcessIdentifier)
-            let position = store.position(date: launchDate)
-            let entries = try store.getEntries(at: position)
-            let formatter = ISO8601DateFormatter()
-
-            var lines: [String] = []
-            for entry in entries {
-                guard let log = entry as? OSLogEntryLog, log.subsystem == subsystem else {
-                    continue
-                }
-                let line = "\(formatter.string(from: log.date)) \(levelName(log.level)) \(log.category): \(log.composedMessage)"
-                lines.append(line)
-            }
-
-            let text = lines.joined(separator: "\n")
-            return trimToRecentBytes(text)
-        } catch {
-            return ("Unable to read app unified logs: \(error.localizedDescription)", false)
-        }
     }
 
     private static func backendLogPath() -> URL {
@@ -74,52 +53,42 @@ enum DebugLogCollector {
             .appendingPathComponent("Library/Logs/Said/backend.log")
     }
 
-    private static func readRecentLog(at url: URL, marker: String) -> (text: String, truncated: Bool) {
-        guard let handle = try? FileHandle(forReadingFrom: url) else {
-            return ("", false)
-        }
-        defer { try? handle.close() }
+    private static func qualityFilter(_ text: String) -> String {
+        var lines: [String] = []
+        var repeatedWebSocketSendErrors = 0
 
-        let length = (try? handle.seekToEnd()) ?? 0
-        let start = length > maxLogBytes ? length - maxLogBytes : 0
-        do {
-            try handle.seek(toOffset: start)
-            let data = try handle.readToEnd() ?? Data()
-            var text = String(decoding: data, as: UTF8.self)
-            if let markerRange = text.range(of: marker, options: .backwards) {
-                let prefix = text[..<markerRange.lowerBound]
-                let lineStart = prefix.lastIndex(of: "\n").map { text.index(after: $0) } ?? text.startIndex
-                text = String(text[lineStart...])
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            if isNoisy(line) {
+                continue
             }
-            return (text, start > 0)
-        } catch {
-            return ("Unable to read backend log: \(error.localizedDescription)", false)
+            if line.contains("WS send error") {
+                if lines.contains(where: { $0.contains("WS send error") }) {
+                    repeatedWebSocketSendErrors += 1
+                    continue
+                }
+            }
+            lines.append(line)
         }
+
+        if repeatedWebSocketSendErrors > 0 {
+            lines.append("[debug] suppressed \(repeatedWebSocketSendErrors) repeated WebSocket send error line(s)")
+        }
+
+        return lines.joined(separator: "\n")
     }
 
-    private static func trimToRecentBytes(_ text: String) -> (text: String, truncated: Bool) {
-        let data = Data(text.utf8)
-        guard data.count > maxLogBytes else {
-            return (text, false)
-        }
-
-        let suffix = data.suffix(Int(maxLogBytes))
-        var trimmed = String(decoding: suffix, as: UTF8.self)
-        if let newline = trimmed.firstIndex(of: "\n") {
-            trimmed = String(trimmed[trimmed.index(after: newline)...])
-        }
-        return (trimmed, true)
-    }
-
-    private static func levelName(_ level: OSLogEntryLog.Level) -> String {
-        switch level {
-        case .undefined: return "UNDEF"
-        case .debug: return "DEBUG"
-        case .info: return "INFO"
-        case .notice: return "NOTICE"
-        case .error: return "ERROR"
-        case .fault: return "FAULT"
-        @unknown default: return "LOG"
-        }
+    private static func isNoisy(_ line: String) -> Bool {
+        let noisyMarkers = [
+            "[groq] token:",
+            "[llm] token:",
+            "[codex] token:",
+            "[gemini_direct] token:",
+            "[prefs-cache]",
+            "[lexicon-cache]",
+            "[embedder] GAP-4",
+            "notch-view: hover:",
+        ]
+        return noisyMarkers.contains { line.contains($0) }
     }
 }

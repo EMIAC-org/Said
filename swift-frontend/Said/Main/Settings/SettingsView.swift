@@ -361,22 +361,39 @@ struct DebugTab: View {
     }
 
     private var currentLog: String {
-        switch tab {
-        case "desktop": return logs?.desktop ?? "(loading…)"
-        case "backend": return logs?.backend ?? "(loading…)"
-        default: return logs?.combined ?? "(loading…)"
+        guard let logs else {
+            return isRefreshing ? "(loading…)" : "(no logs loaded yet)"
         }
+
+        let text: String
+        switch tab {
+        case "desktop": text = logs.desktop
+        case "backend": text = logs.backend
+        default: text = logs.combined
+        }
+
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            switch tab {
+            case "desktop": return "(no Said app logs found yet)\n\(logs.desktop_path ?? "")"
+            case "backend": return "(no backend logs found yet)\n\(logs.backend_path ?? "")"
+            default: return "(no logs found yet)"
+            }
+        }
+        return text
     }
 
+    @MainActor
     private func loadLogs() async {
+        guard !isRefreshing else { return }
         isRefreshing = true
+        defer { isRefreshing = false }
+
         let nextLogs = await DebugLogCollector.collect(
             backendHealthy: sidecar.isHealthy,
             backendPort: sidecar.port
         )
         logs = nextLogs
         lastUpdated = Date()
-        isRefreshing = false
     }
 }
 

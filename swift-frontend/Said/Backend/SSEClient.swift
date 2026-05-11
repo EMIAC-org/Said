@@ -2,7 +2,7 @@ import Foundation
 import os
 
 final class SSEClient {
-    private let logger = Logger(subsystem: "com.emiac.said", category: "sse")
+    private let logger = RuntimeLogger(category: "sse")
 
     func streamTokens(request: URLRequest) -> AsyncThrowingStream<PolishToken, Error> {
         AsyncThrowingStream { continuation in
@@ -31,7 +31,7 @@ private class SSEStreamHandler: NSObject, URLSessionDataDelegate {
     private var totalBytes = 0
     private var firstChunkTime: ContinuousClock.Instant?
     private let startTime = ContinuousClock.now
-    private let logger = Logger(subsystem: "com.emiac.said", category: "sse-handler")
+    private let logger = RuntimeLogger(category: "sse-handler")
 
     init(continuation: AsyncThrowingStream<PolishToken, Error>.Continuation) {
         self.continuation = continuation
