@@ -308,7 +308,7 @@ final class DictationEngine: ObservableObject {
         DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self else { return }
             switch n {
-            case 1: self.smartRepairLast()
+            case 1: self.formatFixSelectedText()
             case 2: self.polishSelectedText(tone: "professional")
             case 3: self.polishSelectedText(tone: "casual")
             case 4: self.polishSelectedText(tone: "concise")
@@ -362,8 +362,61 @@ final class DictationEngine: ObservableObject {
         }
     }
 
-    private func smartRepairLast() {
-        logger.info("Option+1 — smart repair (not yet implemented)")
+    private func formatFixSelectedText() {
+        let selectedText = TextPaster.readSelectedText()?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceText: String
+        if let selectedText, !selectedText.isEmpty {
+            sourceText = selectedText
+        } else {
+            sourceText = latestResult?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+
+        guard !sourceText.isEmpty else {
+            logger.warning("Option+1 — no selected text or latest result to format")
+            return
+        }
+
+        logger.info("format-fixing \(sourceText.count) chars")
+        let request = backendClient.buildTextFormatFixRequest(text: sourceText)
+        activeTextPolishTask?.cancel()
+        DispatchQueue.main.async { self.notchVM.startProcessing(phase: "Formatting") }
+        activeTextPolishTask = Task.detached { [weak self] in
+            guard let self else { return }
+            var fullText = ""
+            var finalDone: PolishDone?
+            do {
+                for try await token in self.sseClient.streamTokens(request: request) {
+                    if Task.isCancelled { return }
+                    if token.done {
+                        finalDone = token.final
+                        break
+                    }
+                    if token.text == STREAM_RESET_SENTINEL {
+                        fullText = ""
+                        continue
+                    }
+                    fullText += token.text
+                    await MainActor.run { self.notchVM.appendToken(token.text) }
+                }
+
+                let trimmed = (finalDone?.polished ?? fullText)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    await MainActor.run { self.notchVM.showError("No formatted text returned") }
+                    return
+                }
+
+                await MainActor.run { self.notchVM.setProcessingPhase("Pasting") }
+                TextPaster.paste(trimmed)
+                self.latestResult = trimmed
+                await MainActor.run {
+                    self.notchVM.finish(text: trimmed)
+                }
+            } catch {
+                self.logger.error("format fix failed: \(error)")
+                await MainActor.run { self.notchVM.showError(Self.humanize(error.localizedDescription)) }
+            }
+        }
     }
 
     // MARK: - Error humanization

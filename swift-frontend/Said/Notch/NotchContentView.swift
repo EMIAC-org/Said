@@ -275,6 +275,7 @@ struct NotchContentView: View {
 
             Spacer(minLength: 2)
 
+            polishButton("Format Fix", shortcut: "1", action: { onPolishShortcut?(1) })
             polishButton("Professional", shortcut: "2", action: { onPolishShortcut?(2) })
             polishButton("Casual", shortcut: "3", action: { onPolishShortcut?(3) })
             polishButton("Concise", shortcut: "4", action: { onPolishShortcut?(4) })
@@ -388,6 +389,7 @@ struct NotchContentView: View {
     private func processingLabel(_ phase: String) -> String {
         let p = phase.lowercased()
         if p.contains("paste") { return "Pasting" }
+        if p.contains("format") { return "Formatting" }
         if p.contains("polish") || p.contains("llm") || p.contains("enhanc") { return "Enhancing" }
         if p.contains("record") { return "Recording" }
         return "Transcribing"

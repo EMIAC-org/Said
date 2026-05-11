@@ -167,6 +167,7 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/voice/repair", post(routes::voice::repair_transcript))
         .route("/v1/text/polish", post(routes::text::polish))
+        .route("/v1/text/format-fix", post(routes::text::format_fix))
         .route("/v1/text/refine-last", post(routes::text::refine_last))
         .route("/v1/edit-feedback", post(routes::feedback::submit))
         .route("/v1/classify-edit", post(routes::classify::classify))

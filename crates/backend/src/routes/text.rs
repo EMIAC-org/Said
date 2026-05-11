@@ -27,10 +27,10 @@ use crate::{
     llm::{
         groq,
         prompt::{
-            VocabEntry, build_refine_last_transform_prompt,
-            build_refine_last_transform_user_message, build_system_prompt_with_vocab_entries,
-            build_tray_system_prompt, build_user_message, resolved_vocab_terms_to_entries,
-            vocab_terms_to_entries,
+            VocabEntry, build_format_fix_system_prompt, build_format_fix_user_message,
+            build_refine_last_transform_prompt, build_refine_last_transform_user_message,
+            build_system_prompt_with_vocab_entries, build_tray_system_prompt, build_user_message,
+            resolved_vocab_terms_to_entries, vocab_terms_to_entries,
         },
         script,
         stream_safety::{
@@ -60,6 +60,12 @@ pub struct TextRefineBody {
     pub source_text: String,
     pub previous_output: String,
     pub tone: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct TextFormatFixBody {
+    pub text: String,
+    pub target_app: Option<String>,
 }
 
 pub async fn polish(
@@ -455,6 +461,166 @@ pub async fn refine_last(
                     "retrieve":   0,
                     "polish":     llm_result.polish_ms,
                     "total":      total_ms,
+                },
+                "examples_used": 0,
+            }).to_string()
+        ));
+    };
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+pub async fn format_fix(
+    State(state): State<AppState>,
+    Json(body): Json<TextFormatFixBody>,
+) -> impl IntoResponse {
+    if body.text.trim().is_empty() {
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    }
+
+    let user_id = state.default_user_id.as_str().to_string();
+    let pool = state.pool.clone();
+    let prefs_opt = crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id).await;
+    let Some(prefs_for_guard) = prefs_opt.as_ref() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let missing = crate::routes::key_guard::missing_text_api_keys(&pool, &user_id, prefs_for_guard);
+    if !missing.is_empty() {
+        return crate::routes::key_guard::missing_api_keys_response(missing);
+    }
+
+    let http_client = state.http_client.clone();
+    let source_text = body.text.clone();
+    let target_app = body.target_app.clone();
+
+    let stream = async_stream::stream! {
+        let total_start = Instant::now();
+        let prefs = match prefs_opt {
+            Some(p) => p,
+            None => {
+                yield Ok::<Event, Infallible>(Event::default().event("error")
+                    .data(json!({"message": "preferences not found"}).to_string()));
+                return;
+            }
+        };
+
+        info!("[text-format] formatting {} chars", source_text.len());
+        yield Ok(Event::default().event("status")
+            .data(json!({"phase": "formatting", "transcript": source_text}).to_string()));
+
+        let system_prompt = build_format_fix_system_prompt();
+        let user_message = build_format_fix_user_message(&source_text);
+        let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
+        let groq_key_text = prefs.groq_api_key.clone()
+            .or_else(|| std::env::var("GROQ_API_KEY").ok())
+            .unwrap_or_default();
+
+        let model_for_llm = groq::GROQ_MODEL_DEFAULT.to_string();
+        let model_for_spawn = model_for_llm.clone();
+        let sys_p = system_prompt.clone();
+        let usr_m = user_message.clone();
+        let client_c = http_client.clone();
+
+        let llm_task = tokio::spawn(async move {
+            groq::stream_polish(
+                &client_c, &groq_key_text, &model_for_spawn, &sys_p, &usr_m, token_tx,
+            ).await
+        });
+
+        let mut stream_filter =
+            StreamSafetyFilter::new(StreamProvider::Groq, &source_text);
+        while let Some(raw_token) = token_rx.recv().await {
+            let filtered = stream_filter.push_token(raw_token);
+            if filtered.unsafe_detected {
+                warn!("[text-format] stream safety detected prompt leakage");
+            }
+            for token in filtered.tokens {
+                yield Ok(Event::default().event("token")
+                    .data(json!({"token": token}).to_string()));
+            }
+        }
+
+        let mut llm_result = match llm_task.await {
+            Ok(Ok(r))  => r,
+            Ok(Err(e)) => {
+                let message = e.clone();
+                warn!("[text-format] LLM error: {e}");
+                yield Ok(Event::default().event("error")
+                    .data(json!({"message": message}).to_string()));
+                return;
+            }
+            Err(_) => {
+                yield Ok(Event::default().event("error")
+                    .data(json!({"message": "internal error"}).to_string()));
+                return;
+            }
+        };
+
+        let scrubbed = scrub_polished_output(
+            &llm_result.polished,
+            &source_text,
+            stream_filter.saw_unsafe_content(),
+        );
+        if scrubbed != llm_result.polished {
+            warn!(
+                "[text-format] scrubbed prompt/transcript leakage from final output {} → {} chars",
+                llm_result.polished.len(),
+                scrubbed.len(),
+            );
+            llm_result.polished = scrubbed;
+        }
+
+        let total_ms = total_start.elapsed().as_millis() as i64;
+        let recording_id = Uuid::new_v4().to_string();
+        let word_count = llm_result.polished.split_whitespace().count() as i64;
+        {
+            let pool2 = pool.clone();
+            let id2 = recording_id.clone();
+            let uid2 = user_id.clone();
+            let t2 = source_text.clone();
+            let p2 = llm_result.polished.clone();
+            let ta2 = target_app.clone();
+            let model2 = model_for_llm.clone();
+            let p_ms = llm_result.polish_ms as i64;
+            tokio::spawn(async move {
+                insert_recording(&pool2, InsertRecording {
+                    id: &id2,
+                    user_id: &uid2,
+                    transcript: &t2,
+                    polished: &p2,
+                    word_count,
+                    recording_seconds: word_count as f64 * 60.0 / 130.0,
+                    model_used: &model2,
+                    confidence: None,
+                    transcribe_ms: None,
+                    embed_ms: None,
+                    polish_ms: Some(p_ms),
+                    target_app: ta2.as_deref(),
+                    source: "text_format",
+                    audio_id: None,
+                });
+            });
+        }
+
+        yield Ok(Event::default().event("done").data(
+            json!({
+                "recording_id": recording_id,
+                "transcript": source_text,
+                "polished": llm_result.polished,
+                "model_used": &model_for_llm,
+                "confidence": null,
+                "audio_id": null,
+                "source": "text_format",
+                "target_app": target_app,
+                "output_language": null,
+                "latency_ms": {
+                    "transcribe": 0,
+                    "embed": 0,
+                    "retrieve": 0,
+                    "polish": llm_result.polish_ms,
+                    "total": total_ms,
                 },
                 "examples_used": 0,
             }).to_string()
