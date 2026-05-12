@@ -2,6 +2,19 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <item>
+            <title>2.0.4</title>
+            <pubDate>Tue, 12 May 2026 05:45:29 +0000</pubDate>
+            <link>https://github.com/EMIAC-org/Said/releases</link>
+            <sparkle:version>202605121114</sparkle:version>
+            <sparkle:shortVersionString>2.0.4</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>Said v2.0.4</h2>
+<p>Swift frontend release.</p>
+]]></description>
+            <enclosure url="https://github.com/EMIAC-org/Said/releases/download/v2.0.4/Said_2.0.4_aarch64.dmg" length="4632495" type="application/octet-stream" sparkle:edSignature="WbSZSM9kF+ar9zLVf2sYm+JfjjyZ7ZRK0f4BG2kNyFy+OL8yGeTJM1ZR4mTPrW1r36jJzxo/DftdJB6bM5G1Dg=="/>
+        </item>
+        <item>
             <title>2.0.3</title>
             <pubDate>Mon, 11 May 2026 23:37:49 +0000</pubDate>
             <link>https://github.com/EMIAC-org/Said/releases</link>
@@ -26,19 +39,6 @@
 <p>Swift frontend release.</p>
 ]]></description>
             <enclosure url="https://github.com/EMIAC-org/Said/releases/download/v2.0.1/Said_2.0.1_aarch64.dmg" length="4616935" type="application/octet-stream" sparkle:edSignature="/5zG1uLTXtx0TB6Bs5MUlNjsMQn70kaJFVryMeBWPdNH3aFFMNxfzL9Ub3mkfkMdlQM2WTj1W+ukH9sni712Aw=="/>
-        </item>
-        <item>
-            <title>2.0.2</title>
-            <pubDate>Mon, 11 May 2026 22:03:08 +0000</pubDate>
-            <link>https://github.com/EMIAC-org/Said/releases</link>
-            <sparkle:version>202605112201</sparkle:version>
-            <sparkle:shortVersionString>2.0.2</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h2>Said v2.0.2</h2>
-<p>Swift frontend release.</p>
-]]></description>
-            <enclosure url="https://github.com/EMIAC-org/Said/releases/download/v2.0.2/Said_2.0.2_aarch64.dmg" length="4612651" type="application/octet-stream" sparkle:edSignature="+CbSDyZQ+UuQRKmmiWStd9jq97dlk1priTkso0/wqfUSj25H9/VvanXlBABnS//lKEJnfgFPe4cyaiXkSeF7DA=="/>
         </item>
     </channel>
 </rss>
