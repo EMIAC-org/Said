@@ -38,16 +38,27 @@ pub use windows::{
 };
 
 /// Which physical key triggers recording. Cross-platform enum; some variants are
-/// platform-specific:
+/// platform-specific.
 ///
-/// | Variant       | macOS                       | Windows                            |
-/// |---------------|-----------------------------|------------------------------------|
-/// | `CapsLock`    | Caps Lock (held)            | (planned P2) Caps Lock — advanced  |
-/// | `RightOption` | Right Option (held)         | (planned P2) Right Alt             |
-/// | `Function`    | Fn / Globe (held)           | Not available — ignored            |
+/// | Variant       | macOS                       | Windows                              |
+/// |---------------|-----------------------------|--------------------------------------|
+/// | `CapsLock`    | Caps Lock (held) — default  | Caps Lock — fragile under RDP/Citrix |
+/// | `RightOption` | Right Option (held)         | Right Alt — conflicts with AltGr     |
+/// | `Function`    | Fn / Globe (held)           | Not available — ignored              |
+/// | `RightCtrl`   | (unused; falls back to CL)  | Right Ctrl (held) — **default**      |
+/// | `F13`         | F13 (held)                  | F13 (held) — clean but rare keyboard |
+/// | `Pause`       | (unused)                    | Pause/Break (held) — universal       |
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordHotkey {
     CapsLock,
     RightOption,
     Function,
+    /// Windows-specific: default on that platform. macOS treats this as
+    /// equivalent to `CapsLock` (CGEventTap can't bind RightCtrl reliably).
+    RightCtrl,
+    /// Available on both platforms when the keyboard has an F13 key.
+    F13,
+    /// Windows-only: Pause/Break key. Ignored on macOS (Apple keyboards
+    /// don't ship a Pause key in the standard layout).
+    Pause,
 }

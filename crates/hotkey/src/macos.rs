@@ -132,6 +132,10 @@ fn current_record_hotkey() -> RecordHotkey {
     match RECORD_HOTKEY.load(Ordering::Relaxed) {
         1 => RecordHotkey::RightOption,
         2 => RecordHotkey::Function,
+        // Windows-only variants fall back to CapsLock on macOS (CGEventTap
+        // can't reliably distinguish right-Ctrl, and Mac keyboards lack a
+        // Pause key entirely). F13 keeps generic CapsLock behavior for now —
+        // a follow-up could wire it to a specific keycode if needed.
         _ => RecordHotkey::CapsLock,
     }
 }
@@ -141,6 +145,15 @@ pub fn set_record_hotkey(hotkey: RecordHotkey) {
         RecordHotkey::CapsLock => 0,
         RecordHotkey::RightOption => 1,
         RecordHotkey::Function => 2,
+        // Windows-only variants on macOS: log and treat as CapsLock so the
+        // user's recording flow still works (some Tauri prefs may carry
+        // Windows-set values into a Mac session via cloud sync, etc.).
+        RecordHotkey::RightCtrl | RecordHotkey::F13 | RecordHotkey::Pause => {
+            tracing::info!(
+                "[hotkey] {hotkey:?} has no native macOS binding — falling back to CapsLock"
+            );
+            0
+        }
     };
     RECORD_HOTKEY.store(encoded, Ordering::Relaxed);
     tracing::info!("[hotkey] record hotkey set to {:?}", hotkey);
@@ -550,6 +563,21 @@ unsafe extern "C" fn hold_tap_callback(
                         } else if !fn_on && s.is_down {
                             s.is_down = false;
                             tracing::info!("[hotkey] Fn released → process");
+                            (s.on_release)();
+                        }
+                    }
+                }
+                // Windows-only variants fall back to CapsLock semantics on macOS.
+                // `set_record_hotkey` already coerces them to encoding 0 so this
+                // arm is unreachable in practice; kept exhaustive for safety.
+                RecordHotkey::RightCtrl | RecordHotkey::F13 | RecordHotkey::Pause => {
+                    let caps_on = (flags & ffi::K_CG_FLAG_CAPS_LOCK) != 0;
+                    if keycode == CAPS_LOCK_KEYCODE {
+                        if caps_on && !s.is_down {
+                            s.is_down = true;
+                            (s.on_press)();
+                        } else if !caps_on && s.is_down {
+                            s.is_down = false;
                             (s.on_release)();
                         }
                     }

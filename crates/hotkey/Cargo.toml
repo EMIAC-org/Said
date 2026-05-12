@@ -19,3 +19,16 @@ core-foundation = "0.10"
 core-graphics   = "0.24"
 cocoa           = "0.26"
 libc            = "0.2"
+
+# Windows only — WH_KEYBOARD_LL / WH_MOUSE_LL low-level hooks.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+] }
+crossbeam-queue = "0.3"
+parking_lot     = "0.12"
+once_cell       = "1"
