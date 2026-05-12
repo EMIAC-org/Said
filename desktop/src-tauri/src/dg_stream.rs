@@ -425,7 +425,8 @@ mod tests {
         };
         let url = build_ws_url("wss://api.deepgram.com/v1/listen", &bias, SAMPLE_RATE);
         assert!(url.contains("language=multi"));
-        assert!(url.contains("endpointing=100"));
+        assert!(url.contains("endpointing=1000"));
+        assert!(url.contains("utterance_end_ms=2000"));
         assert!(url.contains("replace=n10n:n8n"));
     }
 

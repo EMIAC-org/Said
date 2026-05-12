@@ -1897,7 +1897,7 @@ fn do_finish_recording(
         // 100–200 ms, so the transcript should arrive quickly.
         // Wait up to 4 s for the Deepgram WS transcript.
         // In practice the WS path takes ~1.5-2 s from Caps Lock release to final
-        // transcript (CloseStream + Deepgram finalize + 300ms endpointing window).
+        // transcript (CloseStream + Deepgram finalize + the configured endpointing window).
         // If it still doesn't arrive, we fall through to the normal HTTP STT path.
         // Estimate recording duration from WAV size:
         // 16kHz × 16-bit × mono = 32,000 bytes/sec, plus 44 byte WAV header
@@ -2195,9 +2195,9 @@ async fn run_voice_polish_sse(
             output_pasted = true;
         }
     } else {
-        // AX not available at all — fall back to clipboard paste
+        // Live token typing did not produce output — paste the final result.
         tracing::info!(
-            "[main] AX not granted — falling back to clipboard paste ({} chars)",
+            "[main] live typing produced no output — clipboard paste final result ({} chars)",
             done.polished.len()
         );
         if !done.polished.is_empty() {

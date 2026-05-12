@@ -59,7 +59,7 @@ pub fn resolve_stt_mode(language: &str) -> String {
 }
 
 pub fn endpointing_for_mode(stt_mode: &str) -> u32 {
-    if stt_mode == "multi" { 100 } else { 500 }
+    if stt_mode == "multi" { 1000 } else { 700 }
 }
 
 pub fn build_batch_url(base: &str, bias: &BiasPackage) -> String {
@@ -73,7 +73,7 @@ pub fn build_batch_url(base: &str, bias: &BiasPackage) -> String {
 
 pub fn build_ws_url(base: &str, bias: &BiasPackage, sample_rate: u32) -> String {
     let mut url = format!(
-        "{base}?model={DEEPGRAM_MODEL}&language={}&punctuate=true&encoding=linear16&sample_rate={sample_rate}&channels=1&interim_results=true&endpointing={}&utterance_end_ms=1000",
+        "{base}?model={DEEPGRAM_MODEL}&language={}&punctuate=true&encoding=linear16&sample_rate={sample_rate}&channels=1&interim_results=true&endpointing={}&utterance_end_ms=2000",
         urlencode(&bias.stt_mode),
         endpointing_for_mode(&bias.stt_mode),
     );
@@ -165,6 +165,7 @@ mod tests {
     fn ws_url_uses_multi_endpointing() {
         let bias = BiasPackage::default();
         let url = build_ws_url("wss://api.deepgram.com/v1/listen", &bias, 16000);
-        assert!(url.contains("endpointing=100"));
+        assert!(url.contains("endpointing=1000"));
+        assert!(url.contains("utterance_end_ms=2000"));
     }
 }
