@@ -10,7 +10,8 @@ use said_core::{AppSnapshot, ProcessSummary, all_modes};
 use said_paster::is_accessibility_granted;
 use said_recorder::{AudioRecorder, ChunkReceiver, LevelReceiver, MIN_DURATION_S, StopReceiver};
 
-#[cfg(target_os = "macos")]
+// `is_input_monitoring_granted` exists on both platforms after the P0 hotkey
+// refactor (Windows always returns `true` — no equivalent permission gate).
 use said_hotkey::is_input_monitoring_granted;
 
 use crate::permissions;
@@ -67,13 +68,15 @@ impl DesktopApp {
             current_mode: "mini",
             current_mode_label: "Fast (gpt-5.4-mini)",
             current_model: "gpt-5.4-mini",
-            auto_paste_supported: cfg!(target_os = "macos"),
+            // After P3: paster has a real Windows UIA + SendInput
+            // implementation, so auto-paste is supported on both OSes.
+            auto_paste_supported: cfg!(any(target_os = "macos", target_os = "windows")),
             accessibility_granted: is_accessibility_granted(),
             microphone_granted: permissions::microphone_granted(),
-            #[cfg(target_os = "macos")]
+            // Input Monitoring is a macOS-specific TCC permission. On
+            // Windows the LL keyboard hook needs no equivalent consent —
+            // `said_hotkey::is_input_monitoring_granted()` returns `true`.
             input_monitoring_granted: is_input_monitoring_granted(),
-            #[cfg(not(target_os = "macos"))]
-            input_monitoring_granted: false,
             modes: all_modes().to_vec(),
             last_result: self.last_result.clone(),
             last_error: self.last_error.clone(),
