@@ -691,7 +691,7 @@ async fn stream_to_deepgram_ws(
         language
     };
     let url = format!(
-        "wss://api.deepgram.com/v1/listen?model=nova-3&language={lang}&punctuate=true&encoding=linear16&sample_rate={SAMPLE_RATE}&channels=1&interim_results=true&endpointing=700&utterance_end_ms=2000"
+        "wss://api.deepgram.com/v1/listen?model=nova-3&language={lang}&smart_format=true&encoding=linear16&sample_rate={SAMPLE_RATE}&channels=1&interim_results=true&endpointing=1000&utterance_end_ms=2000"
     );
 
     let mut req = url.into_client_request().ok()?;

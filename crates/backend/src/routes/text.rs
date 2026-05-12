@@ -335,6 +335,19 @@ pub async fn polish(
             llm_result.polished = scrubbed;
         }
 
+        // Final safety-net: fold spoken-form emails and recover misheard URL
+        // protocols that the LLM sometimes leaves un-formatted. Deterministic,
+        // idempotent, prose-safe — see crates/backend/src/llm/format_recover.rs.
+        let recovered = crate::llm::format_recover::recover(&llm_result.polished);
+        if recovered != llm_result.polished {
+            info!(
+                "[text] format_recover folded spoken-form tokens ({} → {} chars)",
+                llm_result.polished.len(),
+                recovered.len(),
+            );
+            llm_result.polished = recovered;
+        }
+
         let total_ms     = total_start.elapsed().as_millis() as i64;
         let recording_id = Uuid::new_v4().to_string();
         let word_count   = llm_result.polished.split_whitespace().count() as i64;

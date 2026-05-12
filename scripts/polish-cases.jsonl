@@ -1,0 +1,20 @@
+# polish-bench test cases — one JSON object per line.
+#
+# Schema:
+#   name            — short label shown in the run output
+#   input           — the Deepgram transcript that gets sent to /v1/text/polish
+#   expect_contains — list of substrings that MUST appear in the LLM output (case-insensitive)
+#   expect_not      — list of substrings that must NOT appear (case-insensitive)
+#   tone            — optional per-case override: "format" forces the format-fix prompt
+#
+# Examples below are the failures we hit live. Edit / append freely.
+{"name":"email-vav",        "input":"V abhi dot verma 2678 at the rate gmail dot com.",                     "expect_contains":["@gmail.com","2678"], "expect_not":["at the rate","dot com","at gmail"]}
+{"name":"email-acronym",    "input":"My personal email is A B C dot rahul 99 at the rate Outlook dot in.", "expect_contains":["@outlook.in","99"],  "expect_not":["at the rate","dot in"]}
+{"name":"https-mishear-1",  "input":"Open HATPS://religwav.com.",                                          "expect_contains":["https://religwav.com"], "expect_not":["HATPS","hatps"]}
+{"name":"https-mishear-2",  "input":"Visit ACHTPS://google.co.in for results.",                            "expect_contains":["https://google.co.in"], "expect_not":["ACHTPS","achtps"]}
+{"name":"otp-digits",       "input":"Mera OTP one two three four hai aur pin nine zero seven six hai.",   "expect_contains":["1234","9076"],          "expect_not":["one two three four","nine zero seven six"]}
+{"name":"env-var",          "input":"Set env DEEPGRAM underscore API underscore KEY equals abc one two three.", "expect_contains":["DEEPGRAM_API_KEY","abc123"], "expect_not":["underscore","equals"]}
+{"name":"localhost-url",    "input":"Open localhost colon three thousand slash api slash health.",        "expect_contains":["localhost:3000/api/health"], "expect_not":["colon","slash"]}
+{"name":"percent-prose",    "input":"Growing at the rate of ten percent every year, hum log scale kar rahe hain.", "expect_contains":["10%","at the rate"], "expect_not":["@","ten percent"]}
+{"name":"handle",           "input":"Ping me at abhi verma two zero zero five on GitHub.",                "expect_contains":["@abhiverma2005"], "expect_not":["two zero zero five"]}
+{"name":"prose-no-format",  "input":"yaar mujhe batao what's the best approach for this problem",        "expect_contains":["best approach"], "expect_not":["@","://"]}

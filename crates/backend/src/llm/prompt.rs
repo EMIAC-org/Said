@@ -281,14 +281,38 @@ pub fn build_system_prompt_with_vocab_entries(
          CLEANING RULES:\n\
          - Fix punctuation, casing, grammar, and sentence boundaries.\n\
          - Remove fillers (um, uh, aaa), stutters, and accidental word repetitions.\n\
-         - Keep names, brands, acronyms, numbers, dates, and technical terms exactly.\n\
+         - Keep real names, brands, and technical terms exactly. EXCEPTION: when the surrounding context clearly points to a structured token (URL, email, file path, env var, handle, code identifier), structured-token correctness wins — fold spoken/misheard fragments into the correct form (see FORMATTING below).\n\
          - Do NOT summarize, answer, add, or remove content words.\n\
          - Confidence markers like [word?70%] mean STT was unsure: clean the word and remove the marker.\n\n\
-         SYMBOL CONVERSION (only when unambiguous, not in plain prose):\n\
-         \"at the rate\" → @, \"dot com\" → .com, \"dot in\" → .in, \"dot org\" → .org, \"dot io\" → .io, \
-         \"double u double u double u\" → www, \"underscore\" → _, \"hyphen\" or \"dash\" → -, \
-         \"slash\" → /, \"hash\" or \"hashtag\" → #, \"colon slash slash\" → ://\n\
-         Example: \"growing at the rate of 10%\" stays as plain prose.\n\n\
+         FORMATTING (this is a RULE, not a hint — apply it whenever the context clearly points to a structured token; the only escape is plain prose, shown by the last example):\n\
+         - Spoken-form patterns become structured tokens. \"name at the rate domain dot com\" → email. \"localhost colon port slash path\" → URL. \"WORD underscore WORD\" with code context → identifier.\n\
+         - Misheard protocol acronyms like HATPS, HTPS, HTTP S, HTTPS, ACHTPS, AICHTPS that precede `://` MUST be rewritten to https when the URL shape is clear.\n\
+         - When folding an email or handle, lowercase the parts, drop any internal \"dot\" / spaces / commas between name fragments, and join digit groups directly to the preceding name. \"V A V dot Verma 2678 at the rate Gmail dot com\" → \"vavverma2678@gmail.com\".\n\
+         - Capitalization of source words does NOT block folding. \"VAV\", \"Anish\", \"abhi\" — all fold the same way inside an email/handle.\n\
+         Input:  Mera OTP one two three four hai aur pin nine zero seven six hai.\n\
+         Output: Mera OTP 1234 hai aur pin 9076 hai.\n\
+         Input:  Mail Anish Suman two three zero five at the rate gmail dot com.\n\
+         Output: Mail anishsuman2305@gmail.com.\n\
+         Input:  Send to VAV dot Verma 2678 at the rate Gmail dot com.\n\
+         Output: Send to vavverma2678@gmail.com.\n\
+         Input:  My personal email is A B C dot rahul 99 at the rate Outlook dot in.\n\
+         Output: My personal email is abcrahul99@outlook.in.\n\
+         Input:  Set env DEEPGRAM underscore API underscore KEY equals abc one two three.\n\
+         Output: Set env DEEPGRAM_API_KEY=abc123.\n\
+         Input:  Open localhost colon three thousand slash api slash health.\n\
+         Output: Open localhost:3000/api/health.\n\
+         Input:  Twenty five percent discount laga do.\n\
+         Output: 25% discount laga do.\n\
+         Input:  Ping me at abhi verma two zero zero five on GitHub.\n\
+         Output: Ping me at @abhiverma2005 on GitHub.\n\
+         Input:  Check h t t p s colon slash slash emiac dot app slash login.\n\
+         Output: Check https://emiac.app/login.\n\
+         Input:  Open HATPS://religwav.com.\n\
+         Output: Open https://religwav.com.\n\
+         Input:  Visit ACHTPS://google.co.in for results.\n\
+         Output: Visit https://google.co.in for results.\n\
+         Input:  Growing at the rate of ten percent every year, hum log scale kar rahe hain.\n\
+         Output: Growing at the rate of 10% every year, hum log scale kar rahe hain.\n\n\
          STYLE PREFERENCE:\n\
          {persona}\n\
          {tone}\n\n\
@@ -347,11 +371,24 @@ pub fn build_tray_format_system_prompt() -> String {
      - If unsure, choose the smallest formatting-only change.\n\n\
      WHAT TO FIX:\n\
      - Spoken numbers to digits when numeric form is intended: \"two hundred times\" -> \"200 times\", \"twenty five percent\" -> \"25%\".\n\
+     - In Hinglish math, ID, OTP, port, phone, amount, percent, email, and code contexts, convert spoken numbers aggressively while preserving the Hinglish sentence.\n\
+     - Digit-by-digit sequences become one compact number: \"two three zero five\" -> \"2305\", \"one two three four\" -> \"1234\".\n\
+     - Number phrases become normal numbers: \"fifty five\" -> \"55\", \"two hundred\" -> \"200\", \"twenty five\" -> \"25\".\n\
      - Spoken symbols to symbols when syntax is intended: slash -> /, backslash -> \\, dot -> ., comma -> ,, colon -> :, dash/hyphen -> -, underscore -> _, plus -> +, equals -> =, at/the rate -> @.\n\
      - Compact emails, URLs, file paths, handles, slash commands, env vars, and code identifiers by removing accidental spaces and commas.\n\
      - For emails: lowercase the address, join adjacent name/digit fragments into the local part, and remove spaces/commas before @domain.\n\
      - Keep normal prose as prose. Only fold words together when the surrounding sentence clearly points to a structured token.\n\n\
      EXAMPLES:\n\
+     Input: Two three zero five ko agar fifty five se main agar plus kar doon to kitna answer aana chahiye? Is type ki cheezein isse poochkar dekho tab jaakar samajh mein aayega ki how good is it.\n\
+     Output: 2305 ko agar 55 se main agar plus kar doon to kitna answer aana chahiye? Is type ki cheezein isse poochkar dekho, tab jaakar samajh mein aayega ki how good is it.\n\n\
+     Input: Mera OTP one two three four hai aur pin nine zero seven six hai.\n\
+     Output: Mera OTP 1234 hai aur pin 9076 hai.\n\n\
+     Input: Order ID A B C one two three ko invoice number fifty five se match karo.\n\
+     Output: Order ID ABC123 ko invoice number 55 se match karo.\n\n\
+     Input: Port three thousand slash api hit karo aur response code two hundred hona chahiye.\n\
+     Output: Port 3000/api hit karo aur response code 200 hona chahiye.\n\n\
+     Input: Twenty five percent discount laga do aur quantity two hundred rakh do.\n\
+     Output: 25% discount laga do aur quantity 200 rakh do.\n\n\
      Input: Send a mail to Anish Suman, 2305@gmail.com.\n\
      Output: Send a mail to anishsuman2305@gmail.com.\n\n\
      Input: Send an email to Aneet Suman 2305 at gmail dot com two hundred times, please.\n\
@@ -704,6 +741,105 @@ mod tests {
     }
 
     #[test]
+    fn polish_prompt_uses_few_shot_examples_not_rule_paragraph() {
+        // FOUNDATIONAL: Zhang et al. 2023 ("A Chat About Boring Problems",
+        // arXiv:2309.13426) found that for inverse text normalization with
+        // LLMs, the rule wording in the prompt barely matters — exemplars do
+        // all the work. The previous prompt carried a paragraph of spoken-
+        // symbol rules ("at the rate → @, dot com → .com, ...") that
+        // competed with Deepgram's smart_format and made the polish
+        // inconsistent. The new prompt deletes the rule paragraph and
+        // replaces it with a few-shot block. This test pins both halves so
+        // a future "shorten the prompt" pass cannot quietly reintroduce the
+        // rule paragraph or drop the examples.
+        let p = prefs();
+        let prompt = build_system_prompt_with_vocab(&p, &[], &[], &[]);
+
+        // The old rule paragraph must be GONE.
+        assert!(
+            !prompt.contains("SYMBOL CONVERSION"),
+            "rule-paragraph SYMBOL CONVERSION block must be removed"
+        );
+        assert!(
+            !prompt.contains("\"at the rate\" → @"),
+            "spoken-symbol arrow rules must not be re-introduced as paragraph prose"
+        );
+        assert!(
+            !prompt.contains("\"dot com\" → .com"),
+            "spoken-symbol arrow rules must not be re-introduced as paragraph prose"
+        );
+
+        // The few-shot block and a sampling of high-signal exemplars must be
+        // present. Each exemplar covers a semiotic class Deepgram smart_format
+        // alone may not catch (Hinglish digit sequences, env vars, handles,
+        // and the negative "prose stays prose" case).
+        assert!(
+            prompt.contains("FORMATTING"),
+            "few-shot FORMATTING block must be emitted"
+        );
+        assert!(
+            prompt.contains("this is a RULE, not a hint"),
+            "FORMATTING must be presented as a rule, not a hint, so it overrides 'preserve acronyms exactly'"
+        );
+        // Acronym-preservation rule must carry an explicit exception for
+        // structured tokens. Without it, the model treats spoken-form email
+        // fragments like \"VAV\" as acronyms and refuses to fold them.
+        assert!(
+            prompt.contains("structured-token correctness wins"),
+            "preserve-acronyms rule must carry an explicit structured-token exception"
+        );
+        assert!(
+            prompt.contains("Mera OTP 1234"),
+            "Hinglish digit-sequence exemplar should be present"
+        );
+        assert!(
+            prompt.contains("anishsuman2305@gmail.com"),
+            "email-compaction exemplar should be present"
+        );
+        // Regression exemplars for the live failures the user hit after
+        // the initial smart_format + few-shot rollout. Both must remain.
+        assert!(
+            prompt.contains("vavverma2678@gmail.com"),
+            "mixed-case email exemplar (regression from VAV failure) must be present"
+        );
+        assert!(
+            prompt.contains("abcrahul99@outlook.in"),
+            "letter-acronym + digit email exemplar must be present"
+        );
+        assert!(
+            prompt.contains("Open https://religwav.com"),
+            "misheard-protocol exemplar (HATPS regression) must be present"
+        );
+        assert!(
+            prompt.contains("Visit https://google.co.in"),
+            "second misheard-protocol exemplar must be present"
+        );
+        assert!(
+            prompt.contains("Misheard protocol acronyms"),
+            "explicit rule for protocol acronyms (HATPS/HTPS/...) must be present"
+        );
+        assert!(
+            prompt.contains("DEEPGRAM_API_KEY=abc123"),
+            "env-var exemplar should be present"
+        );
+        assert!(
+            prompt.contains("https://emiac.app/login"),
+            "URL exemplar should be present"
+        );
+        assert!(
+            prompt.contains("@abhiverma2005"),
+            "handle exemplar should be present"
+        );
+        // The negative exemplar — prose stays prose with only the percent
+        // normalized — is critical. Without it the model over-formats
+        // metaphors like "at the rate of 10%" into emails.
+        assert!(
+            prompt.contains("Growing at the rate of 10% every year"),
+            "negative 'prose stays prose' exemplar must be present"
+        );
+    }
+
+    #[test]
     fn task_block_ends_with_single_output_enforcement() {
         // FOUNDATIONAL: the very last instruction the LLM sees before
         // generation must be the single-output enforcement. End-of-prompt
@@ -759,6 +895,21 @@ mod tests {
         assert!(
             prompt.contains("two hundred times") && prompt.contains("200 times"),
             "spoken-number formatting example should be present"
+        );
+        assert!(
+            prompt.contains("Two three zero five ko agar fifty five")
+                && prompt.contains("2305 ko agar 55"),
+            "Hinglish math number formatting example should be present"
+        );
+        assert!(
+            prompt.contains("Mera OTP one two three four") && prompt.contains("Mera OTP 1234"),
+            "Hinglish OTP digit-sequence example should be present"
+        );
+        assert!(
+            prompt.contains("Order ID ABC123")
+                && prompt.contains("Port 3000/api")
+                && prompt.contains("25% discount"),
+            "ID, port, and percent examples should be present"
         );
         assert!(
             prompt.contains("anishsuman2305@gmail.com"),
