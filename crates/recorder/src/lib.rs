@@ -265,6 +265,88 @@ impl AudioRecorder {
     }
 }
 
+// ── Device enumeration ────────────────────────────────────────────────────────
+
+/// Cross-platform description of a single input device. The `id` is the
+/// stable string the UI passes back to select this device.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeviceInfo {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+/// List every input device cpal can see. On Windows this includes WASAPI
+/// shared-mode devices plus any virtual mics (Stereo Mix, NVIDIA Broadcast,
+/// Krisp). On macOS it's the AVAudioEngine input devices.
+///
+/// Returns an empty vec if the host has no input device API at all (cpal
+/// errors are converted to empty lists since the UI just needs a picker).
+pub fn list_input_devices() -> Vec<DeviceInfo> {
+    let host = cpal::default_host();
+    let default_name = host
+        .default_input_device()
+        .and_then(|d| d.name().ok())
+        .unwrap_or_default();
+
+    let Ok(devices) = host.input_devices() else {
+        return vec![];
+    };
+
+    devices
+        .filter_map(|d| {
+            let name = d.name().ok()?;
+            Some(DeviceInfo {
+                id: name.clone(),
+                is_default: name == default_name,
+                name,
+            })
+        })
+        .collect()
+}
+
+// ── Microphone permission probe ───────────────────────────────────────────────
+
+/// Result of a permission probe — distinguishable failure modes for UI hints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum MicPermission {
+    /// At least one input device is reachable.
+    Granted,
+    /// OS-level privacy setting blocks microphone access for this app.
+    DeniedByPrivacySettings,
+    /// No physical / virtual input device present.
+    NoDevice,
+    /// Other audio-stack failure (driver issue, exclusive-mode contention).
+    Unknown,
+}
+
+/// Best-effort microphone permission probe. Does NOT open a stream — just
+/// asks cpal to enumerate. Sufficient to distinguish denied-by-OS from
+/// no-device-attached on Windows (`HRESULT 0x80070005` surfaces as a cpal
+/// `BackendSpecific` error during enumeration).
+pub fn probe_mic_permission() -> MicPermission {
+    let host = cpal::default_host();
+    match host.input_devices() {
+        Ok(mut devices) => {
+            if devices.next().is_some() {
+                MicPermission::Granted
+            } else {
+                MicPermission::NoDevice
+            }
+        }
+        Err(e) => {
+            let msg = format!("{e}").to_lowercase();
+            // Windows: WASAPI returns `Access is denied. (0x80070005)` when
+            // Settings → Privacy → Microphone has disabled desktop apps.
+            if msg.contains("access is denied") || msg.contains("0x80070005") {
+                MicPermission::DeniedByPrivacySettings
+            } else {
+                MicPermission::Unknown
+            }
+        }
+    }
+}
+
 impl Default for AudioRecorder {
     fn default() -> Self {
         Self::new()
