@@ -48,5 +48,15 @@
       "infoPlist": "Info.plist",
       "signingIdentity": "-"
     }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "endpoints": [
+        "https://said.emiac.com/updates/{{target}}/{{current_version}}"
+      ],
+      "pubkey": "TAURI_UPDATER_PUBKEY_PLACEHOLDER"
+    }
   }
 }

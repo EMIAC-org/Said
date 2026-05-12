@@ -4422,6 +4422,10 @@ fn main() {
             }
         })
         .plugin(tauri_plugin_notification::init())
+        // Auto-update via Tauri's built-in updater. Endpoint + public key
+        // come from `tauri.conf.json` under `plugins.updater`. The plugin
+        // is inert until the conf is finalized in CI (P5 release pipeline).
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(SharedApp(shared_app))
         .manage(BackendState(backend_arc))
         .manage(BackendHandleState(Mutex::new(None)))

@@ -44,6 +44,11 @@ sysinfo = "0.32"
 # Native OS notifications via the official Tauri plugin
 tauri-plugin-notification = "2"
 tauri-plugin-single-instance = "2"
+# Auto-update via Tauri's built-in updater plugin. The actual endpoint and
+# public key live in `tauri.conf.json` under `plugins.updater`. See
+# scripts/release/README.md for how to generate the EdDSA keypair and
+# wire the GitHub secrets.
+tauri-plugin-updater = "2"
 
 # Workspace crates
 said-core     = { path = "../../crates/core" }
