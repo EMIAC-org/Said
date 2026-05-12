@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, windows-port, 'release/**']
   pull_request:
 
 permissions:
@@ -18,8 +18,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust:
-    name: Rust workspace (fmt, clippy, test)
+  rust-macos:
+    name: Rust workspace (Mac)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +44,52 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --all-targets
+
+  # Windows port verification.
+  #
+  # Until P3 lands (full paster + hotkey Windows impl), only the refactored
+  # platform crates are expected to compile here. The job is marked
+  # `continue-on-error: true` per the Branching & Release Strategy ref doc
+  # (Mac required green; Windows informational during P0-P2).
+  #
+  # Promote `continue-on-error` to false once paster + hotkey Windows impl
+  # is done (end of P3) — at that point the whole workspace will compile
+  # natively on `windows-latest` and Windows joins Mac as a required gate.
+  rust-windows:
+    name: Rust (Windows port — informational until P3)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      # P0 scope verified via mingw cross-compile from macOS: every
+      # workspace member EXCEPT `said-desktop` compiles on Windows.
+      # `said-desktop` is blocked on:
+      #   - desktop/src-tauri/src/backend.rs (`pre_exec` / `setsid` are
+      #     Unix-only — P1 adds CREATE_NEW_PROCESS_GROUP path)
+      #   - bundled sidecar binary lookup (P5 ships proper Windows sidecar)
+      - name: cargo build (Windows-ready crates)
+        run: cargo build -p said-hotkey -p said-paster -p said-recorder -p said-core -p said-backend -p said
+
+      # --lib --bins --tests (not --all-targets) skips examples; the
+      # `said-paster` test_ax_methods example is macOS-only by design
+      # (links Apple ApplicationServices framework directly).
+      - name: cargo clippy (Windows-ready crates)
+        run: cargo clippy -p said-hotkey -p said-paster -p said-recorder -p said-core -p said-backend -p said --lib --bins --tests
+
+      - name: cargo test (Windows-ready crates)
+        run: cargo test -p said-hotkey -p said-paster -p said-recorder -p said-core -p said-backend -p said --lib --bins --tests
 
   control-plane:
     name: control-plane (excluded crate)
