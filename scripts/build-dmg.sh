@@ -104,16 +104,11 @@ step "Re-sign deep (ad-hoc) and verify"
 
 [ -d "$APP_PATH" ] || fail ".app not found at $APP_PATH"
 
-# Copy local-only runtime secrets into this build when a root .env exists.
-# .env is gitignored; the copy lands under target/ and is included only in the
-# locally produced app/DMG.
-if [ -f "$REPO_ROOT/.env" ]; then
-  cp "$REPO_ROOT/.env" "$APP_PATH/Contents/MacOS/.env"
-  chmod 600 "$APP_PATH/Contents/MacOS/.env"
-  ok "embedded local .env into app bundle"
-else
-  warn "no root .env found; packaged app will rely on external runtime env"
-fi
+# Do not embed local .env secrets in packaged app builds. The desktop app stores
+# user-entered keys in the SQLite preferences DB, and runtime routes read prefs
+# before considering any process-level environment fallback.
+rm -f "$APP_PATH/Contents/MacOS/.env"
+ok "no .env embedded; packaged app will use API keys from preferences DB"
 
 # Strip quarantine so future user-side `xattr -dr com.apple.quarantine` is
 # unnecessary for local testing.
