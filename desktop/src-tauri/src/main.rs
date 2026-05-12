@@ -62,7 +62,9 @@ fn emit_short_recording_error(app: &tauri::AppHandle) {
     );
 }
 
-#[cfg(target_os = "macos")]
+// `said_hotkey` is cross-platform after the P0 refactor (Windows is stubbed
+// scaffolding until P2; calls become no-ops there). The alias makes the rest
+// of this file read the same on both OSes.
 use said_hotkey as hotkey;
 
 #[cfg(target_os = "macos")]
@@ -4223,6 +4225,11 @@ fn main() {
                     }
                 }
 
+                // Graceful shutdown on POSIX signals (Unix). On Windows we
+                // rely on the WM_CLOSE / window-close path Tauri already
+                // forwards through its app lifecycle. SIGINT/SIGTERM don't
+                // exist as user-deliverable signals on Windows.
+                #[cfg(unix)]
                 {
                     let app_handle = app.handle().clone();
                     std::thread::spawn(move || {
