@@ -197,8 +197,14 @@ mod tests {
         let bias = BiasPackage::default();
         let url = build_batch_url("https://api.deepgram.com/v1/listen", &bias);
         assert!(url.contains("smart_format=true"), "smart_format must be on");
-        assert!(!url.contains("numerals=true"), "numerals must NOT be set (Hindi pipeline regression)");
-        assert!(!url.contains("punctuate=true"), "punctuate must NOT be set (smart_format already implies it)");
+        assert!(
+            !url.contains("numerals=true"),
+            "numerals must NOT be set (Hindi pipeline regression)"
+        );
+        assert!(
+            !url.contains("punctuate=true"),
+            "punctuate must NOT be set (smart_format already implies it)"
+        );
     }
 
     #[test]
@@ -208,7 +214,13 @@ mod tests {
         let bias = BiasPackage::default();
         let url = build_ws_url("wss://api.deepgram.com/v1/listen", &bias, 16000);
         assert!(url.contains("smart_format=true"), "smart_format must be on");
-        assert!(!url.contains("numerals=true"), "numerals must NOT be set (Hindi pipeline regression)");
-        assert!(!url.contains("punctuate=true"), "punctuate must NOT be set (smart_format already implies it)");
+        assert!(
+            !url.contains("numerals=true"),
+            "numerals must NOT be set (Hindi pipeline regression)"
+        );
+        assert!(
+            !url.contains("punctuate=true"),
+            "punctuate must NOT be set (smart_format already implies it)"
+        );
     }
 }

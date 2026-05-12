@@ -136,15 +136,14 @@ static SPOKEN_EMAIL: Lazy<Regex> = Lazy::new(|| {
 
 /// Tokens we collapse out of the local/domain parts. Case-insensitive,
 /// whole-word match only.
-static LOCAL_FILLER: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b(?:dot|at the rate|at)\b").unwrap()
-});
+static LOCAL_FILLER: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(?:dot|at the rate|at)\b").unwrap());
 
 fn recover_spoken_emails(text: &str) -> String {
     SPOKEN_EMAIL
         .replace_all(text, |caps: &regex::Captures| {
-            let verb_raw   = caps.name("verb").map_or("", |m| m.as_str());
-            let local_raw  = caps.name("local").map_or("", |m| m.as_str());
+            let verb_raw = caps.name("verb").map_or("", |m| m.as_str());
+            let local_raw = caps.name("local").map_or("", |m| m.as_str());
             let domain_raw = caps.name("domain").map_or("", |m| m.as_str());
 
             // Local part: drop "dot" tokens, collapse all whitespace and
@@ -254,7 +253,7 @@ mod tests {
     #[test]
     fn protocol_leaves_real_https_alone() {
         assert_eq!(recover("https://example.com"), "https://example.com");
-        assert_eq!(recover("http://example.com"),  "http://example.com");
+        assert_eq!(recover("http://example.com"), "http://example.com");
     }
 
     // ── Spoken-form emails ────────────────────────────────────────────────
