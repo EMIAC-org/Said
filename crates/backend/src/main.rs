@@ -17,13 +17,13 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
-    // ── Structured logging — write to ~/Library/Logs/Said/backend.log ────────
-    let log_dir = format!(
-        "{}/Library/Logs/Said",
-        std::env::var("HOME").unwrap_or_else(|_| ".".into())
-    );
+    // ── Structured logging — cross-platform log path ─────────────────────────
+    // macOS  → ~/Library/Logs/Said/backend.log
+    // Windows → %LOCALAPPDATA%\Said\logs\backend.log
+    // Other   → dirs::data_local_dir().join("Said/logs/backend.log")
+    let log_dir = log_dir();
     std::fs::create_dir_all(&log_dir).ok();
-    let log_path = format!("{log_dir}/backend.log");
+    let log_path = log_dir.join("backend.log");
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -38,6 +38,7 @@ async fn main() {
         .init();
 
     start_parent_death_watch();
+    start_stdin_close_watcher();
 
     // ── Load env vars ─────────────────────────────────────────────────────────
     said_core::load_env();
@@ -160,6 +161,49 @@ async fn main() {
 
     info!("polish-backend stopped");
 }
+
+/// Resolve the log directory per OS. See `main()` for the layout.
+fn log_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        std::path::PathBuf::from(home).join("Library/Logs/Said")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        dirs::data_local_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Said")
+            .join("logs")
+    }
+}
+
+/// On non-Unix targets there is no SIGTERM; Tauri signals shutdown by closing
+/// the backend's stdin (handled in the shutdown future below). This thread
+/// converts that EOF into a clean process exit.
+#[cfg(not(unix))]
+fn start_stdin_close_watcher() {
+    std::thread::spawn(|| {
+        use std::io::Read;
+        let mut buf = [0u8; 256];
+        loop {
+            match std::io::stdin().read(&mut buf) {
+                Ok(0) => {
+                    info!("[parent-watch] stdin closed by parent — shutting down");
+                    std::process::exit(0);
+                }
+                Ok(_) => continue,
+                Err(_) => {
+                    // stdin not readable (e.g. detached) — fall back to ppid drift
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+        }
+    });
+}
+
+#[cfg(unix)]
+fn start_stdin_close_watcher() {}
 
 #[cfg(target_os = "macos")]
 fn start_parent_death_watch() {

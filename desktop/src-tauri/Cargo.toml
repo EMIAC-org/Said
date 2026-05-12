@@ -29,15 +29,16 @@ bytes    = "1"
 tracing  = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 
-# WebSocket client for Deepgram live streaming (P5)
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+# WebSocket client for Deepgram live streaming (P5).
+# rustls-tls (not native-tls) — same reasoning as workspace `reqwest`:
+# avoid SChannel/SecureTransport cert-chain failures with Deepgram.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 
 # Open URLs in the system default browser (for OpenAI OAuth)
 open = "5"
 
 # Resolve platform-specific directories (audio retry files)
 dirs = "5"
-signal-hook = "0.3"
 sysinfo = "0.32"
 
 # Native OS notifications via the official Tauri plugin
@@ -48,13 +49,20 @@ tauri-plugin-single-instance = "2"
 said-core     = { path = "../../crates/core" }
 said-paster   = { path = "../../crates/paster" }
 said-recorder = { path = "../../crates/recorder" }
+# said-hotkey is now cross-platform after the P0 refactor (Windows is
+# stubbed scaffolding until P2; macOS keeps the real CGEventTap impl).
+said-hotkey   = { path = "../../crates/hotkey" }
 
 # Recording (still needed; cpal uses its own thread model)
 cpal  = "0.15"
 hound = "3.5"
 
+# Unix-only signal handling (SIGTERM / SIGINT graceful shutdown).
+# Windows uses Ctrl-C handler via `tokio::signal::ctrl_c()` — see main.rs.
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
+
 [target.'cfg(target_os = "macos")'.dependencies]
-said-hotkey = { path = "../../crates/hotkey" }
 cocoa           = "0.26"
 objc            = "0.2"
 core-graphics   = "0.24"

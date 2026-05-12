@@ -67,29 +67,50 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
       - name: cargo fmt --check
         run: cargo fmt --all --check
 
-      # P0 scope verified via mingw cross-compile from macOS: every
-      # workspace member EXCEPT `said-desktop` compiles on Windows.
-      # `said-desktop` is blocked on:
-      #   - desktop/src-tauri/src/backend.rs (`pre_exec` / `setsid` are
-      #     Unix-only — P1 adds CREATE_NEW_PROCESS_GROUP path)
-      #   - bundled sidecar binary lookup (P5 ships proper Windows sidecar)
-      - name: cargo build (Windows-ready crates)
-        run: cargo build -p said-hotkey -p said-paster -p said-recorder -p said-core -p said-backend -p said
+      # After P1: every workspace member compiles on Windows.
+      # said-desktop pulls in a Tauri sidecar via tauri.conf.json
+      # `externalBin: ["binaries/said-backend"]` — Tauri's build script
+      # looks for `binaries/said-backend-<target-triple>.exe` and fails
+      # the build if it's missing. So we build the sidecar first and
+      # copy it into the expected path before building said-desktop.
+      - name: Build said-backend sidecar
+        run: cargo build -p said-backend --release
+
+      - name: Stage sidecar binary for Tauri externalBin lookup
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
+          Copy-Item -Force target/release/said-backend.exe desktop/src-tauri/binaries/said-backend-x86_64-pc-windows-msvc.exe
+
+      - name: npm ci + build frontend dist
+        working-directory: desktop
+        run: |
+          npm ci
+          npm run build
 
       # --lib --bins --tests (not --all-targets) skips examples; the
       # `said-paster` test_ax_methods example is macOS-only by design
       # (links Apple ApplicationServices framework directly).
-      - name: cargo clippy (Windows-ready crates)
-        run: cargo clippy -p said-hotkey -p said-paster -p said-recorder -p said-core -p said-backend -p said --lib --bins --tests
+      - name: cargo build (workspace)
+        run: cargo build --workspace --lib --bins --tests
 
-      - name: cargo test (Windows-ready crates)
-        run: cargo test -p said-hotkey -p said-paster -p said-recorder -p said-core -p said-backend -p said --lib --bins --tests
+      - name: cargo clippy (workspace)
+        run: cargo clippy --workspace --lib --bins --tests
+
+      - name: cargo test (workspace)
+        run: cargo test --workspace --lib --bins --tests
 
   control-plane:
     name: control-plane (excluded crate)

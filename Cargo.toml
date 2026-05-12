@@ -33,7 +33,11 @@ serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
 uuid        = { version = "1", features = ["v4"] }
 tokio       = { version = "1", features = ["full"] }
-reqwest     = { version = "0.12", features = ["json", "multipart", "stream"] }
+# rustls-tls (not default native-tls) so the same TLS backend is used on Mac
+# (SecureTransport) and Windows (SChannel) — both have intermittently failed
+# certificate-chain validation against Deepgram in the wild. rustls is
+# self-contained, predictable, and avoids the OS-specific failure modes.
+reqwest     = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "charset", "http2", "rustls-tls"] }
 tracing     = "0.1"
 dotenvy     = "0.15"
 
