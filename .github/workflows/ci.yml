@@ -45,20 +45,13 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --all-targets
 
-  # Windows port verification.
-  #
-  # Until P3 lands (full paster + hotkey Windows impl), only the refactored
-  # platform crates are expected to compile here. The job is marked
-  # `continue-on-error: true` per the Branching & Release Strategy ref doc
-  # (Mac required green; Windows informational during P0-P2).
-  #
-  # Promote `continue-on-error` to false once paster + hotkey Windows impl
-  # is done (end of P3) — at that point the whole workspace will compile
-  # natively on `windows-latest` and Windows joins Mac as a required gate.
+  # Windows is a required gate from P3 onward — both `crates/hotkey/src/
+  # windows.rs` (LL hooks) and `crates/paster/src/windows.rs` (UIA reader +
+  # SendInput typist) ship their real implementations. The whole workspace
+  # compiles + tests cleanly on `windows-latest` from this point.
   rust-windows:
-    name: Rust (Windows port — informational until P3)
+    name: Rust workspace (Windows)
     runs-on: windows-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
