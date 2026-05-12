@@ -3428,6 +3428,9 @@ async fn watch_for_edit(
         );
         if pid_switched && target_pid.is_none() {
             app_switched_during_capture = true;
+            tracing::info!(
+                "[edit-watch] app_switched_skip for {recording_id} — initial_pid={initial_pid:?} now_pid={now_pid:?}"
+            );
             break;
         } else if pid_switched {
             app_switched_during_capture = true;
@@ -3521,140 +3524,27 @@ async fn watch_for_edit(
     if !post_paste.is_empty() {
         // ── AX was readable — compare values directly ──────────────────────────
         if effective_val == post_paste {
-            tracing::info!("[edit-watch] no edits detected for {recording_id}");
+            tracing::info!("[edit-watch] ax_no_edit for {recording_id}");
             return;
         }
         user_kept = extract_kept(&polished, &post_paste, &effective_val);
         capture_method = "ax";
         tracing::info!(
-            "[edit-watch] edit captured (AX) for {recording_id}: {:?} → {:?}",
+            "[edit-watch] ax_capture for {recording_id}: {:?} → {:?}",
             polished.chars().take(60).collect::<String>(),
             user_kept.chars().take(60).collect::<String>(),
         );
     } else {
         // ── AX blind (Lark, Chrome contenteditable, WebView) ─────────────────
         //
-        // Foundational rule: keystroke replay alone is STRUCTURALLY UNRELIABLE.
-        // CGEventTap doesn't see selection events (mouse drag-select, some
-        // app-level Cmd+A flavours), so a "select MAAR + type EMIAC" edit
-        // looks identical to "type EMIAC at cursor" — we'd reconstruct
-        // "EMIACMAAR" instead of the actual "EMIAC".
-        //
-        // Fix: ALWAYS cross-verify with clipboard. Clipboard reads the actual
-        // final state of the field; it's the ground truth.
-        //   • keystroke + clipboard agree           → high confidence
-        //   • keystroke + clipboard disagree         → trust clipboard
-        //   • clipboard available, keystroke None    → use clipboard
-        //   • clipboard unavailable                  → use keystroke but mark LOW
-        //   • neither available                      → skip
-
-        #[cfg(target_os = "macos")]
-        {
-            let same_app = matches!(
-                (initial_pid, final_front_pid),
-                (Some(a), Some(b)) if a == b
-            );
-
-            // 1. Run keystroke replay (no side effects).
-            let ks_result = reconstruct_from_keystrokes(&polished, watch_start);
-
-            // 2. End-of-loop clipboard read — only meaningful if still in the
-            //    same app.  Doing this DURING the loop would disrupt typing
-            //    (Cmd+A selects the user's content), so we only do it once at
-            //    the end.
-            //
-            //    AX-blind + app-switched scenarios cannot be captured cleanly
-            //    from a third-party tool; we accept that as a structural limit
-            //    rather than disrupt the user mid-edit.
-            let polished_trimmed = polished.trim();
-            let cb_kept: Option<String> = if same_app {
-                let cb_result =
-                    tokio::task::spawn_blocking(paster::capture_focused_text_via_selection)
-                        .await
-                        .unwrap_or(None);
-                cb_result.and_then(|raw| {
-                    let captured = raw.trim().to_string();
-                    if !captured.contains(polished_trimmed) {
-                        return None;
-                    }
-                    let edited = extract_kept(polished_trimmed, polished_trimmed, &captured);
-                    if edited == polished_trimmed {
-                        None
-                    } else {
-                        Some(edited)
-                    }
-                })
-            } else {
-                tracing::warn!(
-                    "[edit-watch] AX-blind + app switched — clipboard unreachable for {recording_id}"
-                );
-                None
-            };
-
-            // 4. Reconcile keystroke vs clipboard.
-            match (ks_result, cb_kept) {
-                (Some(ks_text), Some(cb_text)) => {
-                    // Both available — clipboard is ground truth, keystroke is
-                    // confirmation.  If they agree (modulo trim) → high
-                    // confidence.  If they disagree → trust clipboard.
-                    if ks_text.trim() == cb_text.trim() {
-                        user_kept = cb_text;
-                        capture_method = "keystroke_verified";
-                        tracing::info!(
-                            "[edit-watch] edit captured (keystroke ⊕ clipboard agreed) for {recording_id}: {:?} → {:?}",
-                            polished.chars().take(60).collect::<String>(),
-                            user_kept.chars().take(60).collect::<String>(),
-                        );
-                    } else {
-                        tracing::warn!(
-                            "[edit-watch] keystroke ≠ clipboard — trusting clipboard. ks={:?} cb={:?}",
-                            ks_text.chars().take(60).collect::<String>(),
-                            cb_text.chars().take(60).collect::<String>(),
-                        );
-                        user_kept = cb_text;
-                        capture_method = "clipboard";
-                    }
-                }
-                (None, Some(cb_text)) => {
-                    user_kept = cb_text;
-                    capture_method = "clipboard";
-                    tracing::info!(
-                        "[edit-watch] edit captured (clipboard, keystroke uncertain) for {recording_id}: {:?} → {:?}",
-                        polished.chars().take(60).collect::<String>(),
-                        user_kept.chars().take(60).collect::<String>(),
-                    );
-                }
-                (Some(ks_text), None) => {
-                    // Clipboard unreachable. Use keystroke but mark LOW —
-                    // backend will store as pending instead of auto-promoting.
-                    if ks_text.trim() == polished_trimmed {
-                        tracing::info!(
-                            "[edit-watch] keystroke replay: no change from polished — skipping {recording_id}"
-                        );
-                        return;
-                    }
-                    user_kept = ks_text;
-                    capture_method = "keystroke_only";
-                    tracing::warn!(
-                        "[edit-watch] edit captured (keystroke ONLY, clipboard unreachable) for {recording_id}: {:?} → {:?} (low-confidence — will store as pending only)",
-                        polished.chars().take(60).collect::<String>(),
-                        user_kept.chars().take(60).collect::<String>(),
-                    );
-                }
-                (None, None) => {
-                    tracing::info!(
-                        "[edit-watch] both keystroke and clipboard unavailable — skipping {recording_id}"
-                    );
-                    return;
-                }
-            }
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            tracing::info!("[edit-watch] AX blind — skipping (non-macOS) for {recording_id}");
-            return;
-        }
+        // Safe-learning policy: automatic learning must be read-only and must
+        // never disturb clipboard, selection, focus, or typed input. Earlier
+        // builds used Cmd+A/C clipboard capture here; that felt autonomous in
+        // production apps, so AX-blind learning is intentionally skipped.
+        tracing::info!(
+            "[edit-watch] ax_unreadable_skip for {recording_id} — no clipboard or selection fallback"
+        );
+        return;
     }
 
     // ── Pre-flight gates (cheap, no API call) ─────────────────────────────────
@@ -3700,10 +3590,6 @@ async fn watch_for_edit(
         let capture_meta = api::CaptureMeta {
             time_since_paste_ms: watch_start.elapsed().as_millis() as u64,
             app_switched: app_switched_during_capture,
-            // matches_clipboard is left false for now — wiring it requires
-            // careful sequencing with the end-of-loop Cmd+A+C path; deferred
-            // to a follow-up so this PR stays focused on the four foundational
-            // accuracy fixes.
             matches_clipboard: false,
         };
         match api::classify_edit(
@@ -3718,7 +3604,7 @@ async fn watch_for_edit(
         {
             Ok(resp) => {
                 tracing::info!(
-                    "[edit-watch] classifier: class={} promoted={} repeat={} learned={} notify={} reason={:?} pending={:?}",
+                    "[edit-watch] classify_result class={} promoted={} repeat={} learned={} notify={} reason={:?} pending={:?}",
                     resp.class,
                     resp.promoted_count,
                     resp.is_repeat,
