@@ -26,8 +26,6 @@ jobs:
       - name: Validate Sparkle configuration
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-          CODESIGN_CERT_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
-          CODESIGN_CERT_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
         run: |
           test -n "${{ vars.SPARKLE_PUBLIC_ED_KEY }}" || {
             echo "::error::Set repository variable SPARKLE_PUBLIC_ED_KEY"
@@ -37,58 +35,6 @@ jobs:
             echo "::error::Set repository secret SPARKLE_PRIVATE_KEY"
             exit 1
           }
-          test -n "$CODESIGN_CERT_BASE64" || {
-            echo "::error::Set repository secret CODESIGN_CERTIFICATE_BASE64"
-            exit 1
-          }
-          test -n "$CODESIGN_CERT_PASSWORD" || {
-            echo "::error::Set repository secret CODESIGN_CERTIFICATE_PASSWORD"
-            exit 1
-          }
-
-      - name: Import code-signing certificate
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
-          IDENTITY_MATCH: ${{ vars.CODESIGN_IDENTITY_MATCH }}
-        run: |
-          set -euo pipefail
-          KEYCHAIN_PASSWORD="$(uuidgen)"
-          KEYCHAIN_PATH="$RUNNER_TEMP/said-signing.keychain-db"
-          CERTIFICATE_PATH="$RUNNER_TEMP/said-codesign-certificate.p12"
-
-          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERTIFICATE_PATH" \
-            -k "$KEYCHAIN_PATH" \
-            -P "$CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign
-          CERTIFICATE_TRUST_PATH="$RUNNER_TEMP/said-codesign-certificate.pem"
-          security find-certificate -a -p "$KEYCHAIN_PATH" > "$CERTIFICATE_TRUST_PATH"
-          sudo security add-trusted-cert \
-            -d \
-            -r trustRoot \
-            -p codeSign \
-            -k /Library/Keychains/System.keychain \
-            "$CERTIFICATE_TRUST_PATH"
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s \
-            -k "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
-
-          echo "Available code-signing identities:"
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
-
-          CODESIGN_IDENTITY="${IDENTITY_MATCH:-Said Code Signing}"
-          if [ -z "$CODESIGN_IDENTITY" ]; then
-            echo "::error::Set CODESIGN_IDENTITY_MATCH to the imported certificate name"
-            exit 1
-          fi
-          echo "CODESIGN_IDENTITY=$CODESIGN_IDENTITY" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -130,8 +76,6 @@ jobs:
         env:
           SAID_VERSION: ${{ inputs.version }}
           SAID_BUILD_NUMBER: ${{ env.SAID_BUILD_NUMBER }}
-          CODESIGN_IDENTITY: ${{ env.CODESIGN_IDENTITY }}
-          CODESIGN_REQUIRE_STABLE: "1"
           SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
           SPARKLE_FEED_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml
         run: ./scripts/build-swift-dmg.sh

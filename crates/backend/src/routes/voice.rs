@@ -1038,23 +1038,13 @@ async fn maybe_rescue_transcript(
 ) -> Result<(TranscriptCandidate, i64), String> {
     if let Some(primary) = primary_ws {
         let primary_quality = assess_candidate(&primary, audio_seconds, bias);
-        let Some(rescue_mode) = rescue_mode_for(&primary_quality, &primary.meta.stt_mode) else {
-            return Ok((primary, 0));
-        };
-        if wav_data.is_empty() {
-            return Ok((primary, 0));
+        if primary_quality.poor {
+            info!(
+                "[voice] WS transcript quality flagged poor (score={:.2}, too_short={}); skipping blocking rescue STT to preserve release-to-paste latency",
+                primary_quality.score, primary_quality.too_short
+            );
         }
-        let rescue = run_batch_transcript(
-            client,
-            api_key,
-            wav_data,
-            with_mode(bias, &rescue_mode),
-            format!("rescue:{rescue_mode}"),
-        )
-        .await?;
-        let rescue_quality = assess_candidate(&rescue, audio_seconds, bias);
-        let chosen = choose_candidate(primary, primary_quality, rescue, rescue_quality);
-        return Ok((chosen, 1));
+        return Ok((primary, 0));
     }
 
     let primary = run_batch_transcript(

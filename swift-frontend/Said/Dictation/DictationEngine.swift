@@ -87,7 +87,13 @@ final class DictationEngine: ObservableObject {
         }
         recordingStart = ContinuousClock.now
         DispatchQueue.main.async { self.notchVM.startRecording() }
-        recorder.start()
+        guard recorder.start() else {
+            recordingStart = nil
+            if dgStream.isConnected { dgStream.disconnect() }
+            setPipelineIdle()
+            DispatchQueue.main.async { self.notchVM.showError("Microphone did not start") }
+            return
+        }
 
         if !deepgramKey.isEmpty {
             let connected = dgStream.connect(

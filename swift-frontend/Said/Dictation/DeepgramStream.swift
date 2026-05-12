@@ -9,6 +9,7 @@ final class DeepgramStream {
     private var isClosed = false
     private var chunksSent = 0
     private var sendErrorCount = 0
+    private var currentSTTMode = "multi"
     private(set) var isConnected = false
 
     private struct ResultChunk {
@@ -61,6 +62,7 @@ final class DeepgramStream {
         isClosed = false
         chunksSent = 0
         sendErrorCount = 0
+        currentSTTMode = sttMode
         isConnected = true
 
         startReceiveLoop()
@@ -125,7 +127,7 @@ final class DeepgramStream {
                 low_confidence_count: totalLowConf,
                 word_count: totalWords,
                 languages: allLangs,
-                stt_mode: "multi"
+                stt_mode: currentSTTMode
             )
         )
     }

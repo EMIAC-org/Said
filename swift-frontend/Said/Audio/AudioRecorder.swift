@@ -14,8 +14,9 @@ final class AudioRecorder: ObservableObject {
     var onLevelUpdate: ((Float) -> Void)?
     var onChunk: ((Data) -> Void)?
 
-    func start() {
-        guard !isRecording else { return }
+    @discardableResult
+    func start() -> Bool {
+        guard !isRecording else { return true }
         pcmBuffers = []
 
         let engine = AVAudioEngine()
@@ -45,8 +46,13 @@ final class AudioRecorder: ObservableObject {
             self.engine = engine
             isRecording = true
             logger.info("recording started")
+            return true
         } catch {
+            input.removeTap(onBus: 0)
+            self.engine = nil
+            isRecording = false
             logger.error("engine start failed: \(error)")
+            return false
         }
     }
 

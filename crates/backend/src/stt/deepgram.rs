@@ -10,6 +10,7 @@ use std::time::Instant;
 use tracing::{debug, info, warn};
 
 const DEEPGRAM_URL: &str = "https://api.deepgram.com/v1/listen";
+const DEEPGRAM_BATCH_TIMEOUT_SECS: u64 = 6;
 
 /// Confidence threshold below which a word is flagged as uncertain.
 /// Deepgram typically gives >0.9 for clear words, 0.4–0.8 for ambiguous ones.
@@ -109,7 +110,7 @@ pub async fn transcribe(
         .header("Authorization", format!("Token {api_key}"))
         .header("Content-Type", "audio/wav")
         .body(wav_data)
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(DEEPGRAM_BATCH_TIMEOUT_SECS))
         .send()
         .await
         .map_err(|e| {
