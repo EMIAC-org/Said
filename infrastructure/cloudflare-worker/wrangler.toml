@@ -1,0 +1,30 @@
+name = "said-update-manifest"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+workers_dev = false
+
+# The Worker serves Tauri update manifests for both Mac and Windows
+# release artifacts. See README.md for setup steps.
+
+[[routes]]
+pattern = "said.emiac.com/updates/*"
+zone_name = "emiac.com"
+
+# KV namespace stores:
+#   * `paused`            "true" | "false" — global kill-switch
+#   * `latest:<channel>`  serialized JSON of the latest release manifest
+# Channel values: "stable" / "beta" / "nightly".
+[[kv_namespaces]]
+binding = "UPDATES"
+id      = "REPLACE_ME_PRODUCTION"
+preview_id = "REPLACE_ME_PREVIEW"
+
+[vars]
+GITHUB_REPO = "EMIAC-org/Said"
+DEFAULT_CHANNEL = "stable"
+
+# Triggered by release-windows.yml + release-macos.yml after a release
+# is published. Auth via Bearer token; token stored as repo secret
+# UPDATE_MANIFEST_TRIGGER_TOKEN.
+# Set the matching value with:
+#   wrangler secret put TRIGGER_TOKEN
