@@ -1344,6 +1344,15 @@ fn bootstrap(state: State<'_, SharedApp>, app: tauri::AppHandle) -> Result<AppSn
     Ok(snap)
 }
 
+/// Return a stable platform identifier the React UI can branch on.
+/// Values match `std::env::consts::OS` exactly: `"macos"`, `"windows"`,
+/// `"linux"`. Used by the hotkey picker and permissions panel to hide
+/// platform-irrelevant options.
+#[tauri::command]
+fn get_platform() -> &'static str {
+    std::env::consts::OS
+}
+
 #[tauri::command]
 fn get_snapshot(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
     Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
@@ -4426,6 +4435,7 @@ fn main() {
         .manage(StatusBarHideGen(Arc::new(AtomicU64::new(0))))
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            get_platform,
             get_snapshot,
             dismiss_status_bar,
             get_backend_endpoint,

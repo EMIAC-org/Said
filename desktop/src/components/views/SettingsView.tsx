@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { usePlatform } from "@/lib/usePlatform";
 import {
   Shield, Cpu, Key, Info, Wifi, Check, Bot, Sparkles, Zap,
   Languages, MessageSquareText, Loader2, LogIn, LogOut, RefreshCw,
@@ -179,10 +180,16 @@ export function SettingsView({
   const [debugBusy,    setDebugBusy]    = useState(false);
   const [debugCopied,  setDebugCopied]  = useState<"combined" | "desktop" | "backend" | null>(null);
   const [debugTab,     setDebugTab]     = useState<"combined" | "desktop" | "backend">("combined");
-  const recordHotkey = prefs?.record_hotkey ?? "caps_lock";
+  const platform = usePlatform();
+  const isWindows = platform === "windows";
+  const defaultHotkey = isWindows ? "right_ctrl" : "caps_lock";
+  const recordHotkey = prefs?.record_hotkey ?? defaultHotkey;
   const recordHotkeyLabel =
-    recordHotkey === "right_option" ? "Right Option" :
-    recordHotkey === "fn" ? "Fn" :
+    recordHotkey === "right_option" ? (isWindows ? "Right Alt" : "Right Option") :
+    recordHotkey === "fn"           ? "Fn" :
+    recordHotkey === "right_ctrl"   ? "Right Ctrl" :
+    recordHotkey === "f13"          ? "F13" :
+    recordHotkey === "pause"        ? "Pause" :
     "Caps Lock";
 
   function syncApiKeyInputs(nextPrefs: Preferences) {
@@ -593,11 +600,19 @@ export function SettingsView({
               className="flex mt-3 rounded-xl p-0.5 gap-0.5"
               style={{ background: "hsl(var(--surface-4))" }}
             >
-              {([
-                { key: "caps_lock", label: "Caps Lock" },
-                { key: "right_option", label: "Right Option" },
-                { key: "fn", label: "Fn" },
-              ] as const).map((opt) => {
+              {(isWindows
+                ? ([
+                    { key: "right_ctrl", label: "Right Ctrl" },
+                    { key: "caps_lock", label: "Caps Lock" },
+                    { key: "f13", label: "F13" },
+                    { key: "pause", label: "Pause" },
+                  ] as const)
+                : ([
+                    { key: "caps_lock", label: "Caps Lock" },
+                    { key: "right_option", label: "Right Option" },
+                    { key: "fn", label: "Fn" },
+                  ] as const)
+              ).map((opt) => {
                 const isActive = recordHotkey === opt.key;
                 return (
                   <button
