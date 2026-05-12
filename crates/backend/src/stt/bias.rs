@@ -195,7 +195,16 @@ pub fn build_bias_package(
     transcription_language: &str,
     output_language: &str,
 ) -> BiasPackage {
-    let stt_mode = resolve_stt_mode(transcription_language);
+    let requested_stt_mode = resolve_stt_mode(transcription_language);
+    let stt_mode = if output_language == "hinglish"
+        && (transcription_language.trim().is_empty()
+            || transcription_language == "auto"
+            || transcription_language == "multi")
+    {
+        "hi".to_string()
+    } else {
+        requested_stt_mode
+    };
     let vocab_terms = vocabulary::top_terms_for_language(pool, user_id, output_language, 200);
     let alias_rules = stt_replacements::load_for_language(pool, user_id, output_language);
     let vocab_by_term: HashMap<String, vocabulary::VocabTerm> = vocab_terms
@@ -396,7 +405,7 @@ mod tests {
         );
 
         let bias = build_bias_package(&pool, "u1", "auto", "hinglish");
-        assert_eq!(bias.stt_mode, "multi");
+        assert_eq!(bias.stt_mode, "hi");
         assert!(bias.keyterms.contains(&"EMIAC".to_string()));
         assert!(
             bias.replacements

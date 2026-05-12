@@ -1376,7 +1376,7 @@ mod imp {
                 thread::sleep(Duration::from_millis(20));
             }
 
-            tracing::info!("[paste] sending Cmd+V keypress");
+            tracing::debug!("[paste] sending Cmd+V keypress");
             if !select_all_first {
                 post_key(source, KEY_CMD, true, 0);
                 thread::sleep(Duration::from_millis(10));
@@ -1394,7 +1394,7 @@ mod imp {
 
         thread::sleep(Duration::from_millis(400));
         pbcopy(&original);
-        tracing::info!("[paste] done — clipboard restored");
+        tracing::debug!("[paste] done — clipboard restored");
         Ok(())
     }
 }

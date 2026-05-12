@@ -58,13 +58,23 @@ pub fn resolve_stt_mode(language: &str) -> String {
     }
 }
 
-pub fn endpointing_for_mode(stt_mode: &str) -> u32 {
-    if stt_mode == "multi" { 1000 } else { 700 }
+pub fn endpointing_for_mode(_stt_mode: &str) -> u32 {
+    1000
 }
 
 pub fn build_batch_url(base: &str, bias: &BiasPackage) -> String {
+    // smart_format=true → punctuation + casing + entity formatting (dates,
+    // times, currency in supported languages). Implies `punctuate=true`,
+    // so we do NOT also send `punctuate=true` (redundant + observed to fight
+    // smart_format in Hindi mode).
+    //
+    // We deliberately omit `numerals=true`. In Hindi/multi modes it interacts
+    // badly with smart_format on mixed-script speech (verified via Deepgram
+    // playground A/B). Spoken-form ITN we still need — emails, URL protocols,
+    // env vars — runs as a deterministic post-LLM pass in
+    // `crates/backend/src/llm/format_recover.rs`.
     let mut url = format!(
-        "{base}?model={DEEPGRAM_MODEL}&language={}&punctuate=true",
+        "{base}?model={DEEPGRAM_MODEL}&language={}&smart_format=true",
         urlencode(&bias.stt_mode)
     );
     append_bias_params(&mut url, bias);
@@ -72,8 +82,11 @@ pub fn build_batch_url(base: &str, bias: &BiasPackage) -> String {
 }
 
 pub fn build_ws_url(base: &str, bias: &BiasPackage, sample_rate: u32) -> String {
+    // Same rationale as build_batch_url: smart_format only, no numerals, no
+    // explicit punctuate. utterance_end_ms is kept for the desktop's
+    // end-of-speech event handling — it doesn't affect transcript content.
     let mut url = format!(
-        "{base}?model={DEEPGRAM_MODEL}&language={}&punctuate=true&encoding=linear16&sample_rate={sample_rate}&channels=1&interim_results=true&endpointing={}&utterance_end_ms=2000",
+        "{base}?model={DEEPGRAM_MODEL}&language={}&smart_format=true&encoding=linear16&sample_rate={sample_rate}&channels=1&interim_results=true&endpointing={}&utterance_end_ms=2000",
         urlencode(&bias.stt_mode),
         endpointing_for_mode(&bias.stt_mode),
     );
@@ -167,5 +180,47 @@ mod tests {
         let url = build_ws_url("wss://api.deepgram.com/v1/listen", &bias, 16000);
         assert!(url.contains("endpointing=1000"));
         assert!(url.contains("utterance_end_ms=2000"));
+    }
+
+    #[test]
+    fn batch_url_enables_smart_format_only() {
+        // FOUNDATIONAL: smart_format alone matches the Deepgram playground
+        // configuration that produces the cleanest output for our Hinglish
+        // (lang=hi / lang=multi) workload. Adding `numerals=true` was found
+        // to regress Hindi number handling on mixed-script speech; adding
+        // `punctuate=true` alongside smart_format is redundant and observed
+        // to compete in the Hindi pipeline. Both are intentionally absent.
+        //
+        // Spoken-form entities (emails, URL protocols) that smart_format
+        // does NOT fold in Hindi mode are handled deterministically by
+        // crates/backend/src/llm/format_recover.rs as a post-LLM pass.
+        let bias = BiasPackage::default();
+        let url = build_batch_url("https://api.deepgram.com/v1/listen", &bias);
+        assert!(url.contains("smart_format=true"), "smart_format must be on");
+        assert!(
+            !url.contains("numerals=true"),
+            "numerals must NOT be set (Hindi pipeline regression)"
+        );
+        assert!(
+            !url.contains("punctuate=true"),
+            "punctuate must NOT be set (smart_format already implies it)"
+        );
+    }
+
+    #[test]
+    fn ws_url_enables_smart_format_only() {
+        // Same invariant for the streaming path. Live dictation must use the
+        // same minimal-flag policy as batch.
+        let bias = BiasPackage::default();
+        let url = build_ws_url("wss://api.deepgram.com/v1/listen", &bias, 16000);
+        assert!(url.contains("smart_format=true"), "smart_format must be on");
+        assert!(
+            !url.contains("numerals=true"),
+            "numerals must NOT be set (Hindi pipeline regression)"
+        );
+        assert!(
+            !url.contains("punctuate=true"),
+            "punctuate must NOT be set (smart_format already implies it)"
+        );
     }
 }

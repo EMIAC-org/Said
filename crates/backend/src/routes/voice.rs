@@ -904,6 +904,21 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             }
         };
 
+        // Final safety-net: fold spoken-form emails and recover misheard URL
+        // protocols the LLM left un-formatted. Runs AFTER scrub and Hinglish
+        // romanization so the email shapes are in their cleanest form by the
+        // time the regex sees them. Deterministic + idempotent + prose-safe
+        // — see crates/backend/src/llm/format_recover.rs.
+        let recovered = crate::llm::format_recover::recover(&llm_result.polished);
+        if recovered != llm_result.polished {
+            info!(
+                "[voice] format_recover folded spoken-form tokens ({} → {} chars)",
+                llm_result.polished.len(),
+                recovered.len(),
+            );
+            llm_result.polished = recovered;
+        }
+
         let llm_ms   = llm_start.elapsed().as_millis() as i64;
         let total_ms = total_start.elapsed().as_millis() as i64;
 

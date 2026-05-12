@@ -123,7 +123,7 @@ fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
             }
         }
         let _: Result<(), _> = ns_window.send_message(Sel::register("orderFrontRegardless"), ());
-        tracing::info!(
+        tracing::debug!(
             "[status-bar] macOS tuned style={panel_style:#x} behavior={behavior:#x} level={NS_STATUS_WINDOW_LEVEL_PLUS_THREE}"
         );
     }
@@ -946,9 +946,9 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
         return;
     };
 
-    tracing::info!("[status-bar] sync state={state}");
+    tracing::debug!("[status-bar] sync state={state}");
     if state == "idle" {
-        tracing::info!("[status-bar] idle state — scheduling native hide");
+        tracing::debug!("[status-bar] idle state — scheduling native hide");
         let my_gen = handle
             .try_state::<StatusBarHideGen>()
             .map(|s| s.0.fetch_add(1, Ordering::Relaxed) + 1)
@@ -976,12 +976,12 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
                 })
                 .unwrap_or(true);
             if !still_idle {
-                tracing::info!("[status-bar] hide skipped — app is active again");
+                tracing::debug!("[status-bar] hide skipped — app is active again");
                 return;
             }
             if let Some(win) = app.get_webview_window("status-bar") {
                 match win.hide() {
-                    Ok(_) => tracing::info!("[status-bar] hidden after idle"),
+                    Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
                     Err(e) => tracing::warn!("[status-bar] hide after idle failed: {e}"),
                 }
             }
@@ -990,15 +990,15 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
     }
 
     match win.set_always_on_top(true) {
-        Ok(_) => tracing::info!("[status-bar] set_always_on_top ok"),
+        Ok(_) => tracing::debug!("[status-bar] set_always_on_top ok"),
         Err(e) => tracing::warn!("[status-bar] set_always_on_top failed: {e}"),
     }
     match win.set_visible_on_all_workspaces(true) {
-        Ok(_) => tracing::info!("[status-bar] set_visible_on_all_workspaces ok"),
+        Ok(_) => tracing::debug!("[status-bar] set_visible_on_all_workspaces ok"),
         Err(e) => tracing::warn!("[status-bar] set_visible_on_all_workspaces failed: {e}"),
     }
     match win.show() {
-        Ok(_) => tracing::info!("[status-bar] show ok for state={state}"),
+        Ok(_) => tracing::debug!("[status-bar] show ok for state={state}"),
         Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
     }
     #[cfg(target_os = "macos")]
