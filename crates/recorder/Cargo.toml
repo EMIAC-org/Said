@@ -13,3 +13,4 @@ workspace = true
 [dependencies]
 cpal  = "0.15"
 hound = "3.5"
+serde = { workspace = true }

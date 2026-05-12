@@ -703,12 +703,25 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-#[cfg(target_os = "macos")]
 fn parse_record_hotkey(raw: &str) -> hotkey::RecordHotkey {
     match raw {
+        "caps_lock" => hotkey::RecordHotkey::CapsLock,
         "right_option" => hotkey::RecordHotkey::RightOption,
         "fn" => hotkey::RecordHotkey::Function,
-        _ => hotkey::RecordHotkey::CapsLock,
+        "right_ctrl" => hotkey::RecordHotkey::RightCtrl,
+        "f13" => hotkey::RecordHotkey::F13,
+        "pause" => hotkey::RecordHotkey::Pause,
+        _ => {
+            // Platform-specific default: Windows defaults to RightCtrl, macOS to CapsLock.
+            #[cfg(target_os = "windows")]
+            {
+                hotkey::RecordHotkey::RightCtrl
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                hotkey::RecordHotkey::CapsLock
+            }
+        }
     }
 }
 
