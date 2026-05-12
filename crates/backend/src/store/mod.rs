@@ -265,14 +265,29 @@ fn run_migrations(pool: &DbPool) {
     }
 }
 
-/// Return the default database path: ~/Library/Application Support/VoicePolish/db.sqlite
+/// Return the default database path.
+///
+/// macOS  → `~/Library/Application Support/VoicePolish/db.sqlite` (kept as-is
+///           for backward compatibility with existing v1.x/v2.x installs).
+/// Windows → `%APPDATA%\Said\db.sqlite` (fresh location — no legacy users).
+/// Other   → `dirs::data_dir().join("Said/db.sqlite")` as a last-resort fallback.
 pub fn default_db_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home)
-        .join("Library")
-        .join("Application Support")
-        .join("VoicePolish")
-        .join("db.sqlite")
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("VoicePolish")
+            .join("db.sqlite")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        dirs::data_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Said")
+            .join("db.sqlite")
+    }
 }
 
 /// Ensure the single default local user exists.
