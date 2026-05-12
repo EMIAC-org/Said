@@ -194,6 +194,11 @@ Said
 | Reviews & MoMs | `ZApkdhSbpo83jVxhVYWl6t5wgvc` | `Hh5Zw6GKgixy4vku4bKlCM6Gg6g` |
 | Said — Weekly Updates (parent) | `I6TMdmYLForup1x6KTCl2KUngJq` | `E62IweE40i6z0WkvDBNloyVngwc` |
 | Bug: Status Bar + Hang Fixes | `Z54Id6iGCoCJpwxT4Zcldez9gTg` | `VKZcwT45yinWx9kjZmmlqsQOgUh` |
+| Windows Port (folder) | `PTmrdfMBAosdHpxETBHljNC0g4e` | `Jai3wdymViF7GikUwVJlyuNag3c` |
+| Windows Port — Plan | `U2GcdhHWjoBAa7xpQhclOOL3gwf` | `EB1EwQ0tmiwlcBkSDuclADxygRe` |
+| Windows Port — Updates | `VDcxdDk3roEq2CxAHGQlRExFgpe` | `LkI0wxuwui41xAk5GArlsaXDgKd` |
+| Said — References (parent) | `SvH9d91uookUiFx9NVWl9JXGgce` | `QwyRwm2L8iBfKEkpA5ulfSa6gyc` |
+| Branching & Release Strategy | `QJ3qdzGxLoPy4axu4UEljW9ug9d` | `H2ZdwEPVBirH0xkPbYul9xybgsc` |
 | AGENTS.md | `FuKWd2RZDow8mcx3MvCl5wvygNc` | `RNFVwgB2biyXqbknUa2lShSDgkc` |
 
 **Wiki space ID:** `7635896570625396443` (Tech Hub)
@@ -248,6 +253,20 @@ Treat updating the wiki as the last action you take in every session.
 > Source of truth is the **Lark Wiki** under `Said — Weekly Updates`.
 > Fetch the Updates page at session start to know where things stand.
 
-| Feature | Status | Wiki obj_token |
+| Feature | Status | Branch | Wiki obj_token |
+|---|---|---|---|
+| **Windows Port** | **Active** — plan written, P0 refactor next | `windows-port` | `VDcxdDk3roEq2CxAHGQlRExFgpe` (Updates) / `U2GcdhHWjoBAa7xpQhclOOL3gwf` (Plan) |
+| Bug: Status Bar + Hang Fixes | Done — committed, merged | `main` | `Z54Id6iGCoCJpwxT4Zcldez9gTg` |
+
+### Branching model (canonical: [Branching & Release Strategy](https://www.larksuite.com/wiki/H2ZdwEPVBirH0xkPbYul9xybgsc))
+
+**Trunk-based on `main`** — must always build green on Mac + Windows in CI. All work merges here.
+
+| Branch | Lifetime | Purpose |
 |---|---|---|
-| Bug: Status Bar + Hang Fixes | In progress — committed, needs push + test | `Z54Id6iGCoCJpwxT4Zcldez9gTg` |
+| `main` | forever | Trunk. Squash-merge only. Auto-publishes `nightly` channel. |
+| `feat/*`, `fix/*`, `chore/*` | ≤7 days | Short-lived work branches. Squash-merge into `main`. |
+| `release/vX.Y` | ~6 weeks past next minor | Release stabilization. Only cherry-picks from `main`. Tags off this branch. |
+| `windows-port` | TEMPORARY (~7 wks; P0–P4) | Integration branch for the Windows port. Merges to `main` then deleted. |
+
+No long-lived per-OS branches. Cross-platform differences live in `#[cfg(target_os)]` modules. Release cadence differences live in update channels (`stable` / `beta` / `nightly`), not branches.
