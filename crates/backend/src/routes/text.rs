@@ -29,8 +29,8 @@ use crate::{
         prompt::{
             VocabEntry, build_refine_last_transform_prompt,
             build_refine_last_transform_user_message, build_system_prompt_with_vocab_entries,
-            build_tray_system_prompt, build_user_message, resolved_vocab_terms_to_entries,
-            vocab_terms_to_entries,
+            build_tray_format_user_message, build_tray_system_prompt, build_user_message,
+            resolved_vocab_terms_to_entries, vocab_terms_to_entries,
         },
         script,
         stream_safety::{
@@ -191,6 +191,7 @@ pub async fn polish(
         } else {
             (transcript.clone(), vec![])
         };
+        let is_formatter = tone_override.as_deref() == Some("format");
         let system_prompt = if let Some(ref tone) = tone_override {
             build_tray_system_prompt(tone)
         } else {
@@ -198,7 +199,11 @@ pub async fn polish(
                 &prefs, &rag_examples, &word_corrections, &vocab_entries,
             )
         };
-        let user_message  = build_user_message(&resolved_transcript, &prefs.output_language);
+        let user_message = if is_formatter {
+            build_tray_format_user_message(&resolved_transcript)
+        } else {
+            build_user_message(&resolved_transcript, &prefs.output_language)
+        };
 
         let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
         let gateway_key = prefs.gateway_api_key.clone()
@@ -374,7 +379,13 @@ pub async fn polish(
                 "audio_id":     null,
                 "source":       "text",
                 "target_app":   target_app,
-                "output_language": if tone_override.is_some() { "english" } else { &prefs.output_language },
+                "output_language": if is_formatter {
+                    &prefs.output_language
+                } else if tone_override.is_some() {
+                    "english"
+                } else {
+                    &prefs.output_language
+                },
                 "latency_ms": {
                     "transcribe": 0,
                     "embed":      embed_ms,

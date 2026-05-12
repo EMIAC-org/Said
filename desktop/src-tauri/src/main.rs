@@ -842,10 +842,17 @@ fn build_tray_menu(
 
     // ── 4. "Polish my message" submenu ─────────────────────────────────
     // Shortcut hints: Option+1..5 (global hotkeys registered in setup).
+    let p_format = MenuItem::with_id(
+        app,
+        "tray_polish_format",
+        "Format Selected Text  ⌥1",
+        true,
+        None::<&str>,
+    )?;
     let p_repair = MenuItem::with_id(
         app,
         "tray_smart_repair",
-        "Smart Repair Last  ⌥1",
+        "Smart Repair Last",
         true,
         None::<&str>,
     )?;
@@ -882,11 +889,12 @@ fn build_tray_menu(
 
     let polish_refs: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = {
         let mut v: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = vec![
-            Box::new(p_repair),
+            Box::new(p_format),
             Box::new(p_prof),
             Box::new(p_casual),
             Box::new(p_concise),
             Box::new(p_hinglish),
+            Box::new(p_repair),
             Box::new(p_assertive),
             Box::new(p_neutral),
         ];
@@ -4243,7 +4251,7 @@ fn main() {
                             // CFRunLoop process queued events before we try Cmd+C.
                             std::thread::sleep(std::time::Duration::from_millis(50));
                             match n {
-                                1 => smart_repair_last(&app_clone),
+                                1 => tray_polish_message(&app_clone, "format"),
                                 2 => tray_polish_message(&app_clone, "professional"),
                                 3 => tray_polish_message(&app_clone, "casual"),
                                 4 => tray_polish_message(&app_clone, "concise"),
