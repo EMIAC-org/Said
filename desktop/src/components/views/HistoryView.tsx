@@ -29,13 +29,14 @@ interface MenuProps {
   playingId:   string | null;
   onPlay:      () => void;
   onCopy:      () => void;
+  onCopyTranscript: () => void;
   onDownload:  () => void;
   onDelete:    () => void;
   onClose:     () => void;
   anchorRef:   React.RefObject<HTMLButtonElement | null>;
 }
 
-function RowMenu({ recording, playingId, onPlay, onCopy, onDownload, onDelete, onClose, anchorRef }: MenuProps) {
+function RowMenu({ recording, playingId, onPlay, onCopy, onCopyTranscript, onDownload, onDelete, onClose, anchorRef }: MenuProps) {
   const menuRef  = useRef<HTMLDivElement>(null);
   const isPlaying = playingId === recording.id;
   const hasAudio  = !!recording.audio_id;
@@ -95,7 +96,8 @@ function RowMenu({ recording, playingId, onPlay, onCopy, onDownload, onDelete, o
         false,
         !hasAudio,
       )}
-      {item(<Copy size={13} />, "Copy text", onCopy)}
+      {item(<Copy size={13} />, "Copy polished text", onCopy)}
+      {item(<Copy size={13} />, "Copy STT transcript", onCopyTranscript)}
       {item(<Download size={13} />, "Download audio", onDownload, false, !hasAudio)}
       <div className="my-1 mx-1 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
       {item(<Trash2 size={13} />, "Delete", onDelete, true)}
@@ -118,7 +120,7 @@ const TRUNCATE_WORD_LIMIT = 30;
 
 function HistoryRow({ recording, playingId, onPlay, onDelete, onDownloadSuccess }: RowProps) {
   const [menuOpen,    setMenuOpen]    = useState(false);
-  const [copied,      setCopied]      = useState(false);
+  const [copied,      setCopied]      = useState<"polished" | "transcript" | false>(false);
   const [expanded,    setExpanded]    = useState(false);
   const [downloading, setDownloading] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -162,7 +164,13 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onDownloadSuccess 
 
   function handleCopy() {
     navigator.clipboard.writeText(recording.polished ?? recording.transcript ?? "");
-    setCopied(true);
+    setCopied("polished");
+    setTimeout(() => setCopied(false), 1800);
+  }
+
+  function handleCopyTranscript() {
+    navigator.clipboard.writeText(recording.enriched_transcript ?? recording.transcript ?? "");
+    setCopied("transcript");
     setTimeout(() => setCopied(false), 1800);
   }
 
@@ -215,6 +223,28 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onDownloadSuccess 
             <span className="italic text-muted-foreground">—</span>
           )}
         </p>
+        {/* STT Transcript — shown when expanded (long texts) or always for short texts with different transcript */}
+        {(expanded || !isLong) && recording.transcript && recording.transcript !== recording.polished && (
+          <div className="mt-2.5 px-3 py-2 rounded-lg" style={{ background: "hsl(var(--surface-4))" }}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                STT Transcript {recording.enriched_transcript ? "(with confidence)" : ""}
+              </span>
+              <button
+                onClick={handleCopyTranscript}
+                className="text-[10px] flex items-center gap-1 transition-colors"
+                style={{ color: copied === "transcript" ? "hsl(var(--chip-lime-fg))" : "hsl(var(--muted-foreground))" }}
+              >
+                {copied === "transcript" ? <Check size={10} /> : <Copy size={10} />}
+                {copied === "transcript" ? "Copied" : "Copy"}
+              </button>
+            </div>
+            <p className="text-[12.5px] text-muted-foreground leading-relaxed font-mono">
+              {recording.enriched_transcript ?? recording.transcript}
+            </p>
+          </div>
+        )}
+
         <div className="flex items-center gap-3 mt-2 flex-wrap">
           {recording.word_count != null && (
             <span className="text-[11px] text-muted-foreground tabular-nums">
@@ -235,13 +265,13 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onDownloadSuccess 
         {/* Quick copy */}
         <button
           onClick={handleCopy}
-          title="Copy text"
+          title="Copy polished text"
           className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors"
-          style={{ color: copied ? "hsl(var(--chip-lime-fg))" : "hsl(var(--muted-foreground))" }}
+          style={{ color: copied === "polished" ? "hsl(var(--chip-lime-fg))" : "hsl(var(--muted-foreground))" }}
           onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-4))"; }}
           onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
         >
-          {copied ? <Check size={13} /> : <Copy size={13} />}
+          {copied === "polished" ? <Check size={13} /> : <Copy size={13} />}
         </button>
 
         {/* Quick play — only when audio exists */}
@@ -283,6 +313,7 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onDownloadSuccess 
               playingId={playingId}
               onPlay={() => onPlay(recording)}
               onCopy={handleCopy}
+              onCopyTranscript={handleCopyTranscript}
               onDownload={handleDownload}
               onDelete={() => onDelete(recording)}
               onClose={() => setMenuOpen(false)}

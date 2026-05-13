@@ -112,6 +112,7 @@ export interface Recording {
   edit_count:        number;
   source:            string;
   audio_id:          string | null;
+  enriched_transcript: string | null;
 }
 
 /** Backend endpoint info (url + shared secret) */

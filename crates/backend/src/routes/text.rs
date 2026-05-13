@@ -376,6 +376,7 @@ pub async fn polish(
                     target_app:    ta2.as_deref(),
                     source:        "text",
                     audio_id:      None,
+                    enriched_transcript: None,
                 });
             });
         }
@@ -559,6 +560,7 @@ pub async fn refine_last(
                     target_app:    None,
                     source:        "text_refine",
                     audio_id:      None,
+                    enriched_transcript: None,
                 });
             });
         }

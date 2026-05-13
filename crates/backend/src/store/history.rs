@@ -23,6 +23,7 @@ pub struct Recording {
     pub edit_count: i64,
     pub source: String,
     pub audio_id: Option<String>,
+    pub enriched_transcript: Option<String>,
 }
 
 pub struct InsertRecording<'a> {
@@ -40,6 +41,7 @@ pub struct InsertRecording<'a> {
     pub target_app: Option<&'a str>,
     pub source: &'a str,
     pub audio_id: Option<&'a str>,
+    pub enriched_transcript: Option<&'a str>,
 }
 
 pub fn insert_recording(pool: &DbPool, rec: InsertRecording<'_>) -> Option<()> {
@@ -47,8 +49,9 @@ pub fn insert_recording(pool: &DbPool, rec: InsertRecording<'_>) -> Option<()> {
     conn.execute(
         "INSERT INTO recordings
          (id, user_id, timestamp_ms, transcript, polished, word_count, recording_seconds,
-          model_used, confidence, transcribe_ms, embed_ms, polish_ms, target_app, source, audio_id)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+          model_used, confidence, transcribe_ms, embed_ms, polish_ms, target_app, source, audio_id,
+          enriched_transcript)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         params![
             rec.id,
             rec.user_id,
@@ -65,6 +68,7 @@ pub fn insert_recording(pool: &DbPool, rec: InsertRecording<'_>) -> Option<()> {
             rec.target_app,
             rec.source,
             rec.audio_id,
+            rec.enriched_transcript,
         ],
     )
     .ok()?;
@@ -90,12 +94,14 @@ fn row_to_recording(row: &rusqlite::Row<'_>) -> rusqlite::Result<Recording> {
         edit_count: row.get(14)?,
         source: row.get(15)?,
         audio_id: row.get(16)?,
+        enriched_transcript: row.get(17)?,
     })
 }
 
 const SELECT_COLS: &str = "id, user_id, timestamp_ms, transcript, polished, final_text,
      word_count, recording_seconds, model_used, confidence,
-     transcribe_ms, embed_ms, polish_ms, target_app, edit_count, source, audio_id";
+     transcribe_ms, embed_ms, polish_ms, target_app, edit_count, source, audio_id,
+     enriched_transcript";
 
 pub fn list_recordings(
     pool: &DbPool,
