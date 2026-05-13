@@ -228,12 +228,12 @@ export default function StatusBar() {
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] voice-level subscribe failed", err));
 
-    // ── Success: flash "Done" for 1.8 s then hide ──────────────────────────
+    // ── Success: brief flash then hide ──────────────────────────────────────
     listen("voice-done", () => {
       console.info("[status-bar] voice-done event");
       if (doneTimer.current) clearTimeout(doneTimer.current);
       setBar({ kind: "done" });
-      doneTimer.current = setTimeout(() => setBar({ kind: "idle" }), 2400);
+      doneTimer.current = setTimeout(() => setBar({ kind: "idle" }), 100);
     }).then((fn) => {
       console.info("[status-bar] subscribed voice-done");
       subs.push(fn);
@@ -245,7 +245,7 @@ export default function StatusBar() {
       setBar({ kind: e.payload.status });
       doneTimer.current = setTimeout(
         () => setBar({ kind: "idle" }),
-        e.payload.status === "pasted" ? 1800 : 5200,
+        e.payload.status === "pasted" ? 100 : 5200,
       );
     }).then((fn) => {
       console.info("[status-bar] subscribed voice-output");
