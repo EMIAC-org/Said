@@ -922,13 +922,13 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let llm_ms   = llm_start.elapsed().as_millis() as i64;
         let total_ms = total_start.elapsed().as_millis() as i64;
 
-        // Content guard: if the LLM dropped more than half the transcript
+        // Content guard: if the LLM dropped more than 30% of transcript
         // words, fall back to the cleaned transcript (markers stripped).
         // Runs BEFORE format_recover so that email folding (which
         // intentionally collapses many words into one) doesn't trip it.
         let transcript_wc = resolved_transcript.split_whitespace().count();
         let polished_wc   = llm_result.polished.split_whitespace().count();
-        if transcript_wc > 4 && polished_wc < transcript_wc / 2 {
+        if transcript_wc > 4 && polished_wc * 10 < transcript_wc * 7 {
             let mut cleaned = strip_confidence_markers(&resolved_transcript);
             if enforce_roman_hinglish && script::contains_devanagari(&cleaned) {
                 cleaned = script::enforce_roman_hinglish(&cleaned);
