@@ -372,12 +372,25 @@ pub async fn repair_transcript(
         let repair_transcript_wc = transcript.split_whitespace().count();
         let repair_polished_wc   = llm_result.polished.split_whitespace().count();
         if repair_transcript_wc > 4 && repair_polished_wc < repair_transcript_wc / 2 {
-            let cleaned = strip_confidence_markers(&transcript);
+            let mut cleaned = strip_confidence_markers(&transcript);
+            if enforce_roman_hinglish && script::contains_devanagari(&cleaned) {
+                cleaned = script::enforce_roman_hinglish(&cleaned);
+            }
             warn!(
                 "[voice-repair] polish dropped too much content: transcript={} words → polished={} words — falling back to cleaned transcript",
                 repair_transcript_wc, repair_polished_wc,
             );
             llm_result.polished = cleaned;
+        }
+
+        let recovered = crate::llm::format_recover::recover(&llm_result.polished);
+        if recovered != llm_result.polished {
+            info!(
+                "[voice-repair] format_recover folded spoken-form tokens ({} → {} chars)",
+                llm_result.polished.len(),
+                recovered.len(),
+            );
+            llm_result.polished = recovered;
         }
 
         let total_ms = total_start.elapsed().as_millis() as i64;
@@ -904,11 +917,31 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             }
         };
 
+        let llm_ms   = llm_start.elapsed().as_millis() as i64;
+        let total_ms = total_start.elapsed().as_millis() as i64;
+
+        // Content guard: if the LLM dropped more than half the transcript
+        // words, fall back to the cleaned transcript (markers stripped).
+        // Runs BEFORE format_recover so that email folding (which
+        // intentionally collapses many words into one) doesn't trip it.
+        let transcript_wc = resolved_transcript.split_whitespace().count();
+        let polished_wc   = llm_result.polished.split_whitespace().count();
+        if transcript_wc > 4 && polished_wc < transcript_wc / 2 {
+            let mut cleaned = strip_confidence_markers(&resolved_transcript);
+            if enforce_roman_hinglish && script::contains_devanagari(&cleaned) {
+                cleaned = script::enforce_roman_hinglish(&cleaned);
+            }
+            warn!(
+                "[voice] polish dropped too much content: transcript={} words → polished={} words — falling back to cleaned transcript",
+                transcript_wc, polished_wc,
+            );
+            llm_result.polished = cleaned;
+        }
+
         // Final safety-net: fold spoken-form emails and recover misheard URL
-        // protocols the LLM left un-formatted. Runs AFTER scrub and Hinglish
-        // romanization so the email shapes are in their cleanest form by the
-        // time the regex sees them. Deterministic + idempotent + prose-safe
-        // — see crates/backend/src/llm/format_recover.rs.
+        // protocols the LLM left un-formatted. Runs AFTER the content guard
+        // and AFTER Hinglish romanization so email shapes are in their
+        // cleanest form. Deterministic + idempotent + prose-safe.
         let recovered = crate::llm::format_recover::recover(&llm_result.polished);
         if recovered != llm_result.polished {
             info!(
@@ -917,22 +950,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 recovered.len(),
             );
             llm_result.polished = recovered;
-        }
-
-        let llm_ms   = llm_start.elapsed().as_millis() as i64;
-        let total_ms = total_start.elapsed().as_millis() as i64;
-
-        // Content guard: if the LLM dropped more than half the transcript
-        // words, fall back to the cleaned transcript (markers stripped).
-        let transcript_wc = resolved_transcript.split_whitespace().count();
-        let polished_wc   = llm_result.polished.split_whitespace().count();
-        if transcript_wc > 4 && polished_wc < transcript_wc / 2 {
-            let cleaned = strip_confidence_markers(&resolved_transcript);
-            warn!(
-                "[voice] polish dropped too much content: transcript={} words → polished={} words — falling back to cleaned transcript",
-                transcript_wc, polished_wc,
-            );
-            llm_result.polished = cleaned;
         }
 
         let word_count = llm_result.polished.split_whitespace().count() as i64;

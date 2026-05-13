@@ -25,10 +25,11 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-/// Apply both recovery passes. Idempotent. Safe to call on any string.
+/// Apply all recovery passes. Idempotent. Safe to call on any string.
 pub fn recover(text: &str) -> String {
     let s = recover_protocol_mishears(text);
-    recover_spoken_emails(&s)
+    let s = recover_spoken_emails(&s);
+    compact_local_before_at(&s)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -195,6 +196,171 @@ fn compact_domain(raw: &str) -> String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pass 3 — Compact fragmented local parts before an existing @
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Matches `@domain.tld` so we can anchor backward-scans on it.
+static AT_DOMAIN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"@[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)+").unwrap());
+
+/// Known email domains — when we see `<fragments> at <domain>`, if the domain
+/// is one of these we can be confident this is an email even without "the rate".
+static KNOWN_EMAIL_DOMAINS: &[&str] = &[
+    "gmail",
+    "outlook",
+    "yahoo",
+    "hotmail",
+    "protonmail",
+    "icloud",
+    "aol",
+    "zoho",
+    "yandex",
+    "mail",
+    "live",
+    "msn",
+    "rediffmail",
+    "proton",
+];
+
+/// Catches "<fragments> at <known-domain> dot <tld>" where the LLM wrote
+/// "at" instead of "@" but the domain is recognizable.
+static AT_KNOWN_DOMAIN: Lazy<Regex> = Lazy::new(|| {
+    let domains = KNOWN_EMAIL_DOMAINS.join("|");
+    Regex::new(&format!(
+        r"(?ix)
+        (?P<frags>
+            [A-Za-z0-9]+
+            (?:[ \t,.\x{{00A0}}]+[A-Za-z0-9]+)*
+        )
+        \s+ at \s+
+        (?P<domain>
+            (?:{domains})
+            \s* (?:\. | \bdot\b) \s*
+            [A-Za-z]{{2,6}}
+            (?: \s* (?:\. | \bdot\b) \s* [A-Za-z]{{2,6}} )?
+        )
+        \b
+        ",
+    ))
+    .unwrap()
+});
+
+/// Words that commonly precede an email address but are NOT part of the
+/// local part. When the backward scan hits one of these it stops.
+fn is_email_verb(word: &str) -> bool {
+    matches!(
+        word.to_ascii_lowercase().as_str(),
+        "mail"
+            | "email"
+            | "e-mail"
+            | "send"
+            | "to"
+            | "ping"
+            | "drop"
+            | "shoot"
+            | "forward"
+            | "fwd"
+            | "cc"
+            | "bcc"
+            | "write"
+            | "message"
+            | "from"
+            | "reply"
+            | "at"
+            | "the"
+            | "is"
+            | "my"
+            | "his"
+            | "her"
+    )
+}
+
+fn compact_local_before_at(text: &str) -> String {
+    // Collect match positions first to avoid borrow conflicts.
+    let positions: Vec<(usize, usize)> = AT_DOMAIN
+        .find_iter(text)
+        .map(|m| (m.start(), m.end()))
+        .collect();
+
+    let mut result = text.to_string();
+
+    // Process from right to left so replacements don't shift earlier indices.
+    for &(at_pos, domain_end) in positions.iter().rev() {
+        let domain = result[at_pos + 1..domain_end].to_string();
+        let before = &result[..at_pos];
+
+        let mut fragments: Vec<String> = Vec::new();
+        let mut scan_end = before.len();
+
+        for token in before.split(|c: char| !c.is_alphanumeric()).rev() {
+            if token.is_empty() {
+                continue;
+            }
+            if is_email_verb(token) {
+                break;
+            }
+            fragments.push(token.to_string());
+            let token_start = before[..scan_end].rfind(token).unwrap_or(0);
+            scan_end = token_start;
+        }
+
+        fragments.reverse();
+
+        if fragments.len() < 2 {
+            continue;
+        }
+
+        let local = join_fragments_vec_owned(&fragments);
+        if local.is_empty() {
+            continue;
+        }
+
+        let prefix = &result[..scan_end];
+        let suffix = &result[domain_end..];
+        result = format!("{prefix}{local}@{domain}{suffix}");
+    }
+
+    // Second sub-pass: "<fragments> at <known-domain> dot <tld>"
+    AT_KNOWN_DOMAIN
+        .replace_all(&result, |caps: &regex::Captures| {
+            let frags = caps.name("frags").unwrap().as_str();
+            let domain_raw = caps.name("domain").unwrap().as_str();
+            let local = join_fragments(frags);
+            if local.is_empty() {
+                return caps.get(0).unwrap().as_str().to_string();
+            }
+            let domain = compact_domain(domain_raw);
+            if !domain.contains('.') {
+                return caps.get(0).unwrap().as_str().to_string();
+            }
+            format!("{local}@{domain}")
+        })
+        .into_owned()
+}
+
+fn join_fragments(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_alphanumeric() {
+            out.extend(ch.to_lowercase());
+        }
+    }
+    out
+}
+
+fn join_fragments_vec_owned(fragments: &[String]) -> String {
+    let mut out = String::new();
+    for frag in fragments {
+        for ch in frag.chars() {
+            if ch.is_alphanumeric() {
+                out.extend(ch.to_lowercase());
+            }
+        }
+    }
+    out
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -346,6 +512,85 @@ mod tests {
         assert_eq!(recover(unchanged), unchanged);
     }
 
+    // ── Half-folded emails (Pass 3) ─────────────────────────────────────
+
+    #[test]
+    fn half_folded_name_comma_digits_at_gmail() {
+        assert_eq!(
+            recover("Anish Suman, 2305@gmail.com"),
+            "anishsuman2305@gmail.com"
+        );
+    }
+
+    #[test]
+    fn half_folded_name_space_digits_at_gmail() {
+        assert_eq!(
+            recover("Manish Suman 2 0305@gmail.com"),
+            "manishsuman20305@gmail.com"
+        );
+    }
+
+    #[test]
+    fn half_folded_v_abhi_dot_verma() {
+        assert_eq!(
+            recover("V abhi. verma 2678@gmail.com"),
+            "vabhiverma2678@gmail.com"
+        );
+    }
+
+    #[test]
+    fn half_folded_preserves_surrounding_text() {
+        assert_eq!(
+            recover("Send to Anish Suman 2305@gmail.com tomorrow."),
+            "Send to anishsuman2305@gmail.com tomorrow."
+        );
+    }
+
+    #[test]
+    fn half_folded_single_token_before_at_untouched() {
+        assert_eq!(recover("user@gmail.com"), "user@gmail.com");
+    }
+
+    #[test]
+    fn half_folded_no_domain_dot_untouched() {
+        assert_eq!(recover("hello there@home"), "hello there@home");
+    }
+
+    #[test]
+    fn half_folded_mention_untouched() {
+        let unchanged = "hello @mention in chat";
+        assert_eq!(recover(unchanged), unchanged);
+    }
+
+    #[test]
+    fn at_known_domain_without_symbol() {
+        assert_eq!(
+            recover("Anish Suman 2305 at gmail dot com"),
+            "anishsuman2305@gmail.com"
+        );
+    }
+
+    #[test]
+    fn at_known_domain_outlook() {
+        assert_eq!(recover("rahul 99 at outlook dot in"), "rahul99@outlook.in");
+    }
+
+    #[test]
+    fn at_unknown_domain_not_folded() {
+        let unchanged = "data at myserver dot internal";
+        assert_eq!(recover(unchanged), unchanged);
+    }
+
+    #[test]
+    fn half_folded_time_fragment_colon_stripped() {
+        // Deepgram sometimes outputs "03:05" when user says "0305"
+        // The colon is not alphanumeric so join_fragments drops it
+        assert_eq!(
+            recover("Anish Suman 2 03:05@gmail.com"),
+            "anishsuman20305@gmail.com"
+        );
+    }
+
     // ── Idempotency ───────────────────────────────────────────────────────
 
     #[test]
@@ -355,5 +600,8 @@ mod tests {
 
         let t = recover("HATPS://religwav.com");
         assert_eq!(recover(&t), t);
+
+        let u = recover("Anish Suman, 2305@gmail.com");
+        assert_eq!(recover(&u), u);
     }
 }
