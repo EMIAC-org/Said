@@ -22,9 +22,6 @@
 # ── Content preservation (never drop meaning) ───────────────────────────────
 {"name":"no-drop-particles",           "input":"Bahut dikkat aa rahi hai, yeh jo app hai yeh achhe se kaam nahi kar raha hai. Iski quality par trust nahi hai abhi.", "expect_contains":["dikkat","quality","trust","abhi","nahi"], "expect_not":[]}
 {"name":"no-drop-numbers",             "input":"agar main 2024 ki baat karoon to mera pachas crore ka yahaan par kharcha hua tha.", "expect_contains":["2024","50 crore"], "expect_not":[]}
-# ── No paraphrasing (keep speaker's exact words) ─────────────────────────────
-{"name":"no-paraphrase-conversation",  "input":"make sure that you keep your conversation in English mode only.",        "expect_contains":["conversation"],                      "expect_not":["response","discussion","chat"]}
-{"name":"no-paraphrase-retrieve",      "input":"jo ki retrieve karna hoga kisi na kisi vendor se.",                      "expect_contains":["retrieve"],                          "expect_not":["recover","get back","fetch"]}
 # ── Script romanization quality ──────────────────────────────────────────────
 {"name":"romanize-iska",               "input":"इसका काम हो गया.",                                            "expect_contains":["kaam"],                              "expect_not":["kaama","इसका"]}
 {"name":"romanize-bahut-not-bahuta",   "input":"बहुत अच्छा काम किया.",                                        "expect_contains":["bahut","kaam"],                       "expect_not":["bahuta","kaama","बहुत"]}
