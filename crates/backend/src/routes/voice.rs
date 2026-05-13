@@ -406,6 +406,7 @@ pub async fn repair_transcript(
             let aid2 = req.audio_id.clone();
             let model2 = model.clone();
             let p_ms = llm_result.polish_ms as i64;
+            let enr2 = req.enriched_transcript.clone();
             tokio::spawn(async move {
                 insert_recording(&pool2, InsertRecording {
                     id: &id2, user_id: &uid2,
@@ -419,6 +420,7 @@ pub async fn repair_transcript(
                     target_app: ta2.as_deref(),
                     source: "voice_repair",
                     audio_id: aid2.as_deref(),
+                    enriched_transcript: enr2.as_deref(),
                 });
             });
         }
@@ -973,6 +975,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let e_ms    = embed_ms;
             let p_ms    = llm_result.polish_ms as i64;
             let aid2    = saved_audio_id.clone();
+            let enr2    = enriched_raw.clone();
             let inserted = tokio::task::spawn_blocking(move || {
                 insert_recording(&pool2, InsertRecording {
                     id: &id2, user_id: &uid2,
@@ -986,6 +989,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     target_app:    ta2.as_deref(),
                     source:        "voice",
                     audio_id:      aid2.as_deref(),
+                    enriched_transcript: Some(&enr2),
                 }).is_some()
             }).await.unwrap_or(false);
             if !inserted {

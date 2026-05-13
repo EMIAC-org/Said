@@ -33,7 +33,7 @@ fn consonant(ch: char) -> Option<&'static str> {
         'घ' => "gh",
         'ङ' => "ng",
         'च' => "ch",
-        'छ' => "chh",
+        'छ' => "ch",
         'ज' => "j",
         'झ' => "jh",
         'ञ' => "ny",
@@ -102,43 +102,137 @@ fn diacritic(ch: char) -> Option<&'static str> {
 /// linguistic transliterator; the LLM prompt still carries the primary style
 /// instruction.
 pub fn romanize_devanagari(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
     let mut out = String::with_capacity(text.len());
-    let mut it = text.chars().peekable();
+    let mut i = 0;
+    // Track whether we've seen a vowel-sound-producing character in the
+    // current Devanagari word. This helps apply the rule: "schwa is only
+    // deleted from non-initial syllables."
+    let mut seen_vowel_in_word = false;
 
-    while let Some(ch) = it.next() {
+    while i < len {
+        let ch = chars[i];
+
+        // Reset word tracking at word boundaries (non-Devanagari chars)
+        if !is_devanagari(ch) && ch != '्' {
+            if ch.is_whitespace() || ch.is_ascii_punctuation() {
+                seen_vowel_in_word = false;
+            }
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+
         if let Some(v) = independent_vowel(ch) {
             out.push_str(v);
+            seen_vowel_in_word = true;
+            i += 1;
             continue;
         }
 
         if let Some(base) = consonant(ch) {
             out.push_str(base);
-            match it.peek().copied() {
-                Some(next) if matra(next).is_some() => {
-                    out.push_str(matra(next).unwrap_or_default());
-                    it.next();
+            let next = if i + 1 < len {
+                Some(chars[i + 1])
+            } else {
+                None
+            };
+            match next {
+                Some(n) if matra(n).is_some() => {
+                    out.push_str(matra(n).unwrap_or_default());
+                    seen_vowel_in_word = true;
+                    i += 2;
                 }
                 Some('्') => {
-                    it.next();
+                    // Halant: suppress inherent vowel, skip the halant
+                    i += 2;
                 }
-                _ => out.push('a'),
+                _ => {
+                    // Decide whether to emit the inherent "a" (schwa).
+                    //
+                    // Hindi schwa deletion heuristic:
+                    //  1. Word-final: always drop.
+                    //  2. Medial: drop only if this is NOT the first
+                    //     vowel-sound in the word AND the next char is a
+                    //     consonant that itself carries a vowel (matra or
+                    //     inherent). This prevents clusters like "bhut"
+                    //     for "बहुत" while still producing "isk" in "इसका".
+                    let drop = match next {
+                        None => true,                         // end of string
+                        Some(n) if !is_devanagari(n) => true, // word boundary
+                        Some(n) if consonant(n).is_some() => {
+                            // Only apply medial deletion if we've already
+                            // seen a vowel in this word (not first syllable).
+                            if !seen_vowel_in_word {
+                                false
+                            } else {
+                                next_consonant_has_vowel(&chars, i + 1)
+                            }
+                        }
+                        _ => false,
+                    };
+                    if !drop {
+                        out.push('a');
+                        seen_vowel_in_word = true;
+                    }
+                    i += 1;
+                }
             }
             continue;
         }
 
         if let Some(v) = matra(ch).or_else(|| diacritic(ch)) {
             out.push_str(v);
+            if matra(ch).is_some() {
+                seen_vowel_in_word = true;
+            }
+            i += 1;
             continue;
         }
 
         if ch == '्' {
+            i += 1;
             continue;
         }
 
         out.push(ch);
+        i += 1;
     }
 
     out
+}
+
+/// Returns true when the character at `pos` is the last Devanagari character
+/// in the current word (i.e., the next char is non-Devanagari or end-of-string).
+fn is_word_final(chars: &[char], pos: usize) -> bool {
+    let next = if pos + 1 < chars.len() {
+        Some(chars[pos + 1])
+    } else {
+        None
+    };
+    match next {
+        None => true,
+        Some(n) => !is_devanagari(n),
+    }
+}
+
+/// Check whether the consonant at `pos` in `chars` will end up carrying a
+/// vowel sound (explicit matra, or inherent "a" that won't be deleted).
+fn next_consonant_has_vowel(chars: &[char], pos: usize) -> bool {
+    let next_after = if pos + 1 < chars.len() {
+        Some(chars[pos + 1])
+    } else {
+        None
+    };
+    match next_after {
+        Some(n) if matra(n).is_some() => true,
+        Some('्') => true,
+        None => false,
+        Some(n) if !is_devanagari(n) => false,
+        Some(n) if consonant(n).is_some() => true,
+        _ => true,
+    }
 }
 
 pub fn enforce_roman_hinglish(text: &str) -> String {
@@ -165,5 +259,49 @@ mod tests {
     fn leaves_roman_text_unchanged() {
         let text = "Aaj bahut kaam tha, but deployment went fine.";
         assert_eq!(enforce_roman_hinglish(text), text);
+    }
+
+    #[test]
+    fn schwa_deletion_word_final() {
+        // Word-final consonants should NOT get inherent "a"
+        assert_eq!(romanize_devanagari("काम"), "kaam");
+        assert_eq!(romanize_devanagari("कम"), "kam");
+    }
+
+    #[test]
+    fn schwa_deletion_medial() {
+        // Medial schwa before another consonant is dropped
+        assert_eq!(romanize_devanagari("इसका"), "iskaa");
+        assert_eq!(romanize_devanagari("बहुत"), "bahut");
+    }
+
+    #[test]
+    fn schwa_deletion_yah() {
+        // यह = य(y) + ह(h, word-final → no schwa) = "yah"
+        assert_eq!(romanize_devanagari("यह"), "yah");
+    }
+
+    #[test]
+    fn schwa_deletion_chaahie() {
+        // चाहिए = च(ch) + ा(aa) + ह(h) + ि(i) + ए(e)
+        assert_eq!(romanize_devanagari("चाहिए"), "chaahie");
+    }
+
+    #[test]
+    fn schwa_deletion_mixed_text() {
+        let out = romanize_devanagari("यह बहुत अच्छा है yaar");
+        // अच्छा = अ(a) + च(ch) + ्(halant) + छ(ch) + ा(a, word-final)
+        assert_eq!(out, "yah bahut achchaa hai yaar");
+    }
+
+    #[test]
+    fn independent_vowels_still_work() {
+        assert_eq!(romanize_devanagari("आज"), "aaj");
+    }
+
+    #[test]
+    fn bhi_unchanged() {
+        // भी = भ(bh) + ी(ee)
+        assert_eq!(romanize_devanagari("भी"), "bhee");
     }
 }

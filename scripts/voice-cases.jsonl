@@ -1,0 +1,27 @@
+# voice-bench test cases — tests the full /v1/voice pipeline (Hinglish mode).
+#
+# Schema:
+#   name             — short label
+#   input            — raw Deepgram STT transcript (plain text, no confidence markers)
+#   expect_contains  — substrings that MUST appear in output (case-insensitive)
+#   expect_not       — substrings that must NOT appear
+#   expected_output  — (optional) ideal output for reference, not tested
+#
+# ── Hindi particle preservation ──────────────────────────────────────────────
+{"name":"hindi-particle-bhi",          "input":"इसका भी detail चाहिए.",                                     "expect_contains":["bhi","detail"],                      "expect_not":["इसका","भी"]}
+{"name":"hindi-particle-toh",          "input":"तो directly screen से test करेंगे.",                           "expect_contains":["to","directly","test"],               "expect_not":["तो","से"]}
+{"name":"hindi-particle-lekin",        "input":"lekin yeh kaam nahi ho raha hai.",                            "expect_contains":["lekin","kaam","nahi"],                "expect_not":[]}
+{"name":"hindi-repetition-baar-baar",  "input":"बार बार देकर pipeline की quality test कर पाए.",               "expect_contains":["baar baar","pipeline","quality"],     "expect_not":["बार"]}
+# ── Hinglish code-switch (preserve mix) ──────────────────────────────────────
+{"name":"hinglish-codesw-1",           "input":"From now on, I will speak in english mode only, but you have to make sure that you keep your conversation in English mode only. Because I want the AI to be in English mode and I'm doing this test.", "expect_contains":["English mode","AI"],       "expect_not":[]}
+{"name":"hinglish-codesw-2",           "input":"अब बस इतना बता दो कि कि क्या यह काम कर रहा है अब? क्या यह जो last commit में इन्होंने changes किए थे agent ने क्या वह उसी के वजह से यह fixes हैं? क्या fixes हुए तो इसका भी detail चाहिए.", "expect_contains":["bhi","detail","last commit","changes","fixes"], "expect_not":["अब","क्या","इसका"]}
+{"name":"hinglish-codesw-3",           "input":"Yes and then क्या करना कि दुबारा से एक script बना लेना जिससे कि हम यही transcript उसको बार बार देकर pipeline की quality test कर पाए कि at the end हम लोग जो output चाहते हैं वह LLM output कर पा रहा है कि नहीं?", "expect_contains":["script","baar baar","pipeline","quality","LLM","at the end"], "expect_not":["क्या","कि","जिससे"]}
+# ── Duplicate word removal ───────────────────────────────────────────────────
+{"name":"dedup-stutter",               "input":"I'm doing the doing this test that.",                         "expect_contains":["doing this test"],                   "expect_not":[]}
+{"name":"dedup-hindi-ki-ki",           "input":"बता दो कि कि क्या यह काम कर रहा है.",                        "expect_contains":["ki kya","kaam"],                     "expect_not":["कि","क्या"]}
+# ── Content preservation (never drop meaning) ───────────────────────────────
+{"name":"no-drop-particles",           "input":"Bahut dikkat aa rahi hai, yeh jo app hai yeh achhe se kaam nahi kar raha hai. Iski quality par trust nahi hai abhi.", "expect_contains":["dikkat","quality","trust","abhi","nahi"], "expect_not":[]}
+{"name":"no-drop-numbers",             "input":"agar main 2024 ki baat karoon to mera pachas crore ka yahaan par kharcha hua tha.", "expect_contains":["2024","50 crore"], "expect_not":[]}
+# ── Script romanization quality ──────────────────────────────────────────────
+{"name":"romanize-iska",               "input":"इसका काम हो गया.",                                            "expect_contains":["kaam"],                              "expect_not":["kaama","इसका"]}
+{"name":"romanize-bahut-not-bahuta",   "input":"बहुत अच्छा काम किया.",                                        "expect_contains":["bahut","kaam"],                       "expect_not":["bahuta","kaama","बहुत"]}

@@ -41,6 +41,7 @@ const MIGRATION_019: &str = include_str!("migrations/019_background_learning_tru
 const MIGRATION_020: &str = include_str!("migrations/020_record_hotkey.sql");
 const MIGRATION_021: &str = include_str!("migrations/021_learning_enabled.sql");
 const MIGRATION_022: &str = include_str!("migrations/022_fix_recording_seconds.sql");
+const MIGRATION_023: &str = include_str!("migrations/023_enriched_transcript.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -262,6 +263,14 @@ fn run_migrations(pool: &DbPool) {
             .expect("migration 022 failed");
         conn.execute_batch("PRAGMA user_version = 22")
             .expect("failed to set user_version to 22");
+    }
+
+    if version < 23 {
+        info!("running migration 023_enriched_transcript");
+        conn.execute_batch(MIGRATION_023)
+            .expect("migration 023 failed");
+        conn.execute_batch("PRAGMA user_version = 23")
+            .expect("failed to set user_version to 23");
     }
 }
 

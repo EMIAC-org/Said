@@ -105,6 +105,7 @@ pub struct Recording {
     pub edit_count: i64,
     pub source: String,
     pub audio_id: Option<String>,
+    pub enriched_transcript: Option<String>,
 }
 
 /// Result of a completed polish operation (from the `done` SSE event).

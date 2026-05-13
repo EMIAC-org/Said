@@ -280,10 +280,12 @@ pub fn build_system_prompt_with_vocab_entries(
          {lang_rule}\n\n\
          CLEANING RULES:\n\
          - Fix punctuation, casing, grammar, and sentence boundaries.\n\
-         - Remove fillers (um, uh, aaa), stutters, and accidental word repetitions.\n\
+         - Remove English fillers (um, uh, aaa, like, basically) and stutters.\n\
+         - Accidental word repetitions (same word twice in a row) should be collapsed to one, but intentional Hindi repetitions like \"kab kab\", \"baar baar\" must stay.\n\
+         - Hindi/Hinglish particles (bhi, toh, na, hi, toh bhi, lekin, par, aur, agar, jab, tab, kyunki, isliye, warna) are CONTENT WORDS — never remove them.\n\
          - Keep real names, brands, and technical terms exactly. EXCEPTION: when the surrounding context clearly points to a structured token (URL, email, file path, env var, handle, code identifier), structured-token correctness wins — fold spoken/misheard fragments into the correct form (see FORMATTING below).\n\
          - Do NOT summarize, answer, add, or remove content words.\n\
-         - Confidence markers like [word?70%] mean STT was unsure: clean the word and remove the marker.\n\n\
+         \n\
          FORMATTING (this is a RULE, not a hint — apply it whenever the context clearly points to a structured token; the only escape is plain prose, shown by the last example):\n\
          - Spoken-form patterns become structured tokens. \"name at the rate domain dot com\" → email. \"localhost colon port slash path\" → URL. \"WORD underscore WORD\" with code context → identifier.\n\
          - Misheard protocol acronyms like HATPS, HTPS, HTTP S, HTTPS, ACHTPS, AICHTPS that precede `://` MUST be rewritten to https when the URL shape is clear.\n\
