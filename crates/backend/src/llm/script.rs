@@ -133,7 +133,11 @@ pub fn romanize_devanagari(text: &str) -> String {
 
         if let Some(base) = consonant(ch) {
             out.push_str(base);
-            let next = if i + 1 < len { Some(chars[i + 1]) } else { None };
+            let next = if i + 1 < len {
+                Some(chars[i + 1])
+            } else {
+                None
+            };
             match next {
                 Some(n) if matra(n).is_some() => {
                     out.push_str(matra(n).unwrap_or_default());
@@ -155,7 +159,7 @@ pub fn romanize_devanagari(text: &str) -> String {
                     //     inherent). This prevents clusters like "bhut"
                     //     for "बहुत" while still producing "isk" in "इसका".
                     let drop = match next {
-                        None => true, // end of string
+                        None => true,                         // end of string
                         Some(n) if !is_devanagari(n) => true, // word boundary
                         Some(n) if consonant(n).is_some() => {
                             // Only apply medial deletion if we've already
