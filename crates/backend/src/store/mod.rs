@@ -51,10 +51,14 @@ pub fn open(path: &PathBuf) -> DbPool {
     }
 
     let manager = SqliteConnectionManager::file(path).with_init(|conn| {
-        // 5-second busy timeout so a stale WAL lock from a previous session
-        // doesn't block migration indefinitely.
         conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+            "PRAGMA journal_mode = WAL;\
+             PRAGMA foreign_keys = ON;\
+             PRAGMA busy_timeout = 5000;\
+             PRAGMA cache_size   = -8000;\
+             PRAGMA mmap_size    = 268435456;\
+             PRAGMA wal_autocheckpoint = 1000;\
+             PRAGMA synchronous  = NORMAL;",
         )?;
         Ok(())
     });

@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System, UpdateKind};
 use tracing::{info, warn};
 
 const BACKEND_NAME: &str = "said-backend";
@@ -21,7 +21,10 @@ pub fn pid_file() -> PathBuf {
 
 pub fn reap_previous() {
     let pid_path = pid_file();
-    let sys = System::new_all();
+    let sys = System::new_with_specifics(
+        RefreshKind::new()
+            .with_processes(ProcessRefreshKind::new().with_exe(UpdateKind::OnlyIfNotSet)),
+    );
 
     if let Some(pid) = read_pid_file(&pid_path) {
         if process_matches_pid(&sys, pid) {
@@ -74,7 +77,10 @@ pub fn kill_from_pid_file() {
     let Some(pid) = read_pid_file(&path) else {
         return;
     };
-    let sys = System::new_all();
+    let sys = System::new_with_specifics(
+        RefreshKind::new()
+            .with_processes(ProcessRefreshKind::new().with_exe(UpdateKind::OnlyIfNotSet)),
+    );
     if process_matches_pid(&sys, pid) {
         warn!("[backend-guard] panic/signal cleanup killing backend pid={pid}");
         terminate_pid(pid, Duration::from_secs(1));

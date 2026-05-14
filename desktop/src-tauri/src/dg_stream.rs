@@ -206,7 +206,7 @@ pub async fn stream_to_deepgram(
     // Keep ws_tx alive so Deepgram doesn't see a TCP close before it's done.
     let _keep_tx_alive = ws_tx;
     let drain_start = tokio::time::Instant::now();
-    let drain_deadline = drain_start + Duration::from_millis(3000);
+    let drain_deadline = drain_start + Duration::from_millis(1500);
 
     loop {
         let remaining = drain_deadline.saturating_duration_since(tokio::time::Instant::now());
