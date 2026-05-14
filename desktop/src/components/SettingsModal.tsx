@@ -3,6 +3,7 @@ import {
   X, RefreshCw, CloudCheck,
   Wand2, ShieldCheck, Key, Info, Bug,
 } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   SettingsView,
   SETTINGS_SECTIONS,
@@ -59,7 +60,12 @@ export function SettingsModal({
   const [activeSection, setActiveSection] = useState<SettingsSection>(
     initialSection ?? "writing"
   );
+  const [appVersion, setAppVersion] = useState("…");
   const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => setAppVersion("?"));
+  }, []);
 
   // ESC closes
   useEffect(() => {
@@ -170,7 +176,7 @@ export function SettingsModal({
           >
             <p className="text-[11px] tabular-nums"
                style={{ color: "hsl(var(--muted-foreground))" }}>
-              Said v0.1.0
+              Said v{appVersion}
             </p>
             <span
               className="flex items-center justify-center w-5 h-5 rounded-full"
