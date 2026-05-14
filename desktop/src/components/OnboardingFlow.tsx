@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
 import type { AppSnapshot, Preferences } from "@/types";
-import { getPreferences, patchPreferences } from "@/lib/invoke";
+import { getPreferences, patchPreferences, openExternal } from "@/lib/invoke";
 
 type Step = "welcome" | "microphone" | "accessibility" | "api-keys" | "hotkey" | "input-monitoring" | "test";
 
@@ -59,7 +59,7 @@ function StepShell({
 }) {
   return (
     <div
-      className="flex h-screen w-screen items-center justify-center overflow-hidden relative"
+      className="flex h-screen w-screen items-center justify-center overflow-y-auto relative"
       style={{ background: "hsl(var(--background))" }}
     >
       <div aria-hidden data-tauri-drag-region className="absolute inset-x-0 top-0 h-12 drag-region" />
@@ -77,7 +77,7 @@ function StepShell({
         }}
       />
       <div
-        className="relative w-full max-w-[480px] rounded-[20px] p-7"
+        className="relative w-full max-w-[480px] rounded-[20px] p-7 my-8"
         style={{
           background: "hsl(var(--surface-2))",
           boxShadow: "inset 0 1px 0 hsl(0 0% 100% / 0.06), 0 24px 70px hsl(220 60% 2% / 0.50)",
@@ -345,15 +345,13 @@ export function OnboardingFlow({ snapshot, onMicrophone, onAccessibility, onInpu
               Polishes your speech into clean text using fast LLM inference.
             </p>
             <div className="flex items-center gap-2 mb-2.5">
-              <a
-                href="https://console.groq.com/keys"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
+              <button
+                onClick={() => void openExternal("https://console.groq.com/keys")}
+                className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
                 style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
               >
                 Get free key <ExternalLink size={11} />
-              </a>
+              </button>
               <span className="text-[10px] text-muted-foreground">console.groq.com</span>
             </div>
             <ul className="text-[11px] text-muted-foreground space-y-1 mb-3 ml-3">
@@ -385,15 +383,13 @@ export function OnboardingFlow({ snapshot, onMicrophone, onAccessibility, onInpu
               Converts your voice to text with real-time speech recognition.
             </p>
             <div className="flex items-center gap-2 mb-2.5">
-              <a
-                href="https://console.deepgram.com/signup"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
+              <button
+                onClick={() => void openExternal("https://console.deepgram.com/signup")}
+                className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
                 style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
               >
                 Get free key <ExternalLink size={11} />
-              </a>
+              </button>
               <span className="text-[10px] text-muted-foreground">console.deepgram.com</span>
             </div>
             <ul className="text-[11px] text-muted-foreground space-y-1 mb-3 ml-3">

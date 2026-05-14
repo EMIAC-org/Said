@@ -127,6 +127,9 @@ export default function App() {
   // ── Pending edits ─────────────────────────────────────────────────────────
   const [pendingEdits, setPendingEdits] = useState<PendingEdit[]>([]);
 
+  // ── History refresh key — incremented after each dictation to trigger reload
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+
   // ── Cloud auth gate ────────────────────────────────────────────────────────
   // null = still checking, false = signed in, true = needs sign-in
   const [needsAuth,   setNeedsAuth]   = useState<boolean | null>(null);
@@ -255,6 +258,7 @@ export default function App() {
     // Final done event — refresh history with the new recording
     const unsubDone   = onVoiceDone((_done) => {
       refreshHistory();
+      setHistoryRefreshKey((k) => k + 1);
       setTokenBuf("");
       setStatusPhase("");
     });
@@ -716,7 +720,7 @@ export default function App() {
                 }}
               />
             )}
-            {activeView === "history"    && <HistoryView onDownloadSuccess={handleDownloadSuccess} />}
+            {activeView === "history"    && <HistoryView onDownloadSuccess={handleDownloadSuccess} refreshKey={historyRefreshKey} />}
             {activeView === "vocabulary" && <VocabularyView />}
             {activeView === "insights"   && <InsightsView snapshot={snapshotWithHistory} />}
             {/* Settings is now a modal — opened via setSettingsOpen */}

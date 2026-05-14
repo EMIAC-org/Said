@@ -202,7 +202,12 @@ APPLESCRIPT
 
 # Flush Finder's DS_Store writes to disk before we detach.
 sync
-hdiutil detach "$RW_VOL" -force >/dev/null
+# Retry detach — CI runners sometimes hold the volume briefly (Spotlight, fseventsd).
+for attempt in 1 2 3 4 5; do
+  hdiutil detach "$RW_VOL" -force >/dev/null 2>&1 && break
+  warn "detach attempt $attempt failed — retrying in 3s"
+  sleep 3
+done
 
 # Convert the laid-out rw image → final compressed read-only DMG.
 hdiutil convert "$RW_DMG" -format UDZO -o "$DMG_OUT" >/dev/null
