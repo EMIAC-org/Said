@@ -21,6 +21,15 @@ use tracing::{debug, info, warn};
 
 /// Confidence threshold — words below this get [word?XX%] markers for the LLM.
 const LOW_CONFIDENCE_THRESHOLD: f64 = 0.85;
+/// Buffered PCM chunks while the Deepgram WebSocket is still connecting.
+///
+/// The recorder's CoreAudio callback uses a small non-blocking channel so it
+/// never stalls the audio thread. If WS connect takes 2-5s and nothing drains
+/// that channel, early speech can be dropped before streaming even starts,
+/// which then makes the finish path reject the WS transcript and fall back to
+/// slow batch STT. This async buffer lets a bridge thread drain CoreAudio
+/// immediately while the network handshake is still in progress.
+const AUDIO_BRIDGE_BUFFER_CHUNKS: usize = 4096;
 
 #[derive(Debug, Clone)]
 pub struct StreamingTranscript {
@@ -80,9 +89,8 @@ async fn connect_ws(deepgram_key: &str, bias: &BiasPackage) -> Option<DgWs> {
 
 /// Stream audio to Deepgram and return the final transcript.
 ///
-/// `prewarmed`: if Some and params match, uses the pre-established connection
-/// (eliminates TLS handshake from hot path). Falls back to fresh connect if None
-/// or if language/keyterms changed.
+/// Connects fresh per recording. Audio is bridged into an async buffer before
+/// the network handshake completes so slow connects do not drop early speech.
 pub async fn stream_to_deepgram(
     chunk_recv: ChunkReceiver,
     deepgram_key: &str,
@@ -94,16 +102,14 @@ pub async fn stream_to_deepgram(
         return None;
     }
 
-    let ws = connect_ws(deepgram_key, bias).await?;
-
-    let (mut ws_tx, mut ws_rx) = ws.split();
-
     // ── Bridge: std::sync::mpsc (cpal audio thread) → tokio channel ──────────
-    let (async_tx, mut async_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+    let (async_tx, mut async_rx) =
+        tokio::sync::mpsc::channel::<Vec<u8>>(AUDIO_BRIDGE_BUFFER_CHUNKS);
     let native_rate = chunk_recv.native_rate;
     let sync_rx: mpsc::Receiver<Vec<f32>> = chunk_recv.rx;
 
     std::thread::spawn(move || {
+        let mut bridged_chunks = 0usize;
         while let Ok(chunk_f32) = sync_rx.recv() {
             let resampled = resample_to_16k(&chunk_f32, native_rate);
             let pcm_bytes: Vec<u8> = resampled
@@ -116,9 +122,15 @@ pub async fn stream_to_deepgram(
             if async_tx.blocking_send(pcm_bytes).is_err() {
                 break;
             }
+            bridged_chunks += 1;
         }
+        debug!("[dg_stream] audio bridge closed after {bridged_chunks} chunk(s)");
         // sync_rx closed = recording stopped; async_tx drops here
     });
+
+    let ws = connect_ws(deepgram_key, bias).await?;
+
+    let (mut ws_tx, mut ws_rx) = ws.split();
 
     // ── Main loop: stream while key is held, collect results ──────────────────
     let mut transcript_parts: Vec<String> = Vec::new();
@@ -408,7 +420,7 @@ fn plain_for_embed(parts: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_result_chunk;
+    use super::{AUDIO_BRIDGE_BUFFER_CHUNKS, extract_result_chunk};
     use said_core::deepgram::{BiasPackage, ReplacementRule, build_ws_url};
     use said_recorder::SAMPLE_RATE;
     use serde_json::json;
@@ -428,6 +440,14 @@ mod tests {
         assert!(url.contains("endpointing=1000"));
         assert!(url.contains("utterance_end_ms=2000"));
         assert!(url.contains("replace=n10n:n8n"));
+    }
+
+    #[test]
+    fn audio_bridge_buffer_covers_slow_ws_connects() {
+        assert!(
+            AUDIO_BRIDGE_BUFFER_CHUNKS >= 4096,
+            "audio bridge must absorb several seconds of mic chunks while WS connects"
+        );
     }
 
     #[test]

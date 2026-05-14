@@ -1,5 +1,6 @@
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     http::{Method, header},
     middleware,
     routing::{get, patch, post},
@@ -258,7 +259,11 @@ pub fn router_with_state(state: AppState) -> Router {
         ])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT]);
 
-    public.merge(authenticated).layer(cors).with_state(state)
+    public
+        .merge(authenticated)
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB — covers long recordings
+        .layer(cors)
+        .with_state(state)
 }
 
 /// Convenience builder used by main.rs — reads shared secret from env,
