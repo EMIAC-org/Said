@@ -32,7 +32,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI5M0NFRjM1MURGNkVENDYKUldSRzdmWWROZTg4S1NCWE13VkVHTzlEY0d1NUZ0UWVOS0JrQkowdUNVN3VrMGlZWmlUQ3kweUcK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkyNDgwODVCODgzRjQ2RjcKUldUM1JqK0lXd2hJa3J0NDhrMlVRWnlnRFJDNlRUckhpNWVWQ1JCei9oKy95QjRHdjdGUXBaOVkK",
       "endpoints": [
         "https://github.com/EMIAC-org/Said/releases/latest/download/latest.json"
       ]
