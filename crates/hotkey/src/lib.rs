@@ -218,9 +218,8 @@ mod imp {
         let kc =
             unsafe { ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE) };
 
-        // Log every Option keypress at INFO so it always appears in said.log
         if alt {
-            tracing::info!(
+            tracing::trace!(
                 "[hotkey] option keydown kc={kc} flags={flags:#010x} alt={alt} cmd={cmd} shift={shift} ctrl={ctrl}"
             );
         }
@@ -262,7 +261,7 @@ mod imp {
             }
             true
         } else {
-            tracing::info!("[hotkey] option+{kc} — not a tone shortcut key (bare Option)");
+            tracing::debug!("[hotkey] option+{kc} — not a tone shortcut key (bare Option)");
             false
         }
     }
@@ -289,9 +288,8 @@ mod imp {
         let kc =
             unsafe { ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE) };
 
-        // Log every Ctrl or Cmd keypress so we can see flags in the log file
         if ctrl || cmd {
-            tracing::debug!(
+            tracing::trace!(
                 "[hotkey] keydown flags={flags:#010x} ctrl={ctrl} cmd={cmd} alt={alt} shift={shift} kc={kc}"
             );
         }
@@ -558,7 +556,7 @@ mod imp {
                 // Log keycode + flags for every keydown so we can confirm events arrive
                 let _kc = ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE);
                 let _fl = ffi::CGEventGetFlags(event);
-                tracing::debug!("[hotkey] HOLD tap keydown kc={_kc} flags={_fl:#010x}");
+                tracing::trace!("[hotkey] HOLD tap keydown kc={_kc} flags={_fl:#010x}");
 
                 if check_and_fire_paste(event) {
                     return std::ptr::null_mut(); // suppress Ctrl+Cmd+V system action

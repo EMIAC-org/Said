@@ -567,6 +567,21 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         .await
         .unwrap_or_else(|_| BiasPackage::default());
 
+        // ── Pipeline-start summary ───────────────────────────────────────────────
+        let bg_active = crate::BG_TASK_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+        info!(
+            "[pipeline] start — learning={} vocab={} stt_rules={} keyterms={} replacements={} bg_tasks={}",
+            if prefs.learning_enabled { "ON" } else { "OFF" },
+            vocab_full.len(),
+            stt_replacement_rules.len(),
+            stt_bias_package.keyterms.len(),
+            stt_bias_package.replacements.len(),
+            bg_active,
+        );
+        if !stt_bias_package.keyterms.is_empty() {
+            info!("[pipeline] keyterms={:?}", stt_bias_package.keyterms);
+        }
+
         // ── STEP 1: STT ───────────────────────────────────────────────────────────
         let audio_seconds = wav_duration_seconds(&wav_data);
         let (stt_transcript_raw, enriched_raw, stt_confidence, transcribe_ms) = if let Some(t) = pre_transcript {
@@ -674,6 +689,35 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let enriched_rewritten = stt_replacements::apply(&enriched_raw, &stt_replacement_rules);
             if plain_rewritten != stt_transcript_raw {
                 info!("[voice] lexicon replacement: {:?} → {:?}", stt_transcript_raw, plain_rewritten);
+            } else {
+                // No rule matched — log near-misses so we can diagnose why
+                // learned replacements fail on variable STT garbage.
+                let transcript_tokens: Vec<&str> = stt_transcript_raw
+                    .split_whitespace()
+                    .collect();
+                for rule in &stt_replacement_rules {
+                    let rule_key = &rule.phonetic_key;
+                    let mut best_sim = 0.0_f64;
+                    let mut best_token = "";
+                    for tok in &transcript_tokens {
+                        let tok_core = tok.trim_matches(|c: char| !c.is_alphanumeric())
+                            .to_ascii_lowercase();
+                        if tok_core.is_empty() { continue; }
+                        let tok_key = crate::llm::phonetics::phonetic_key(&tok_core);
+                        let sim = crate::llm::phonetics::similarity(&tok_core, &rule.transcript_form);
+                        if sim > best_sim {
+                            best_sim = sim;
+                            best_token = tok;
+                        }
+                        let _ = tok_key;
+                    }
+                    if best_sim > 0.3 {
+                        info!(
+                            "[stt-repl] no match for {:?}→{:?} — best candidate {:?} sim={:.2} (threshold=0.85, key={:?})",
+                            rule.transcript_form, rule.correct_form, best_token, best_sim, rule_key,
+                        );
+                    }
+                }
             }
             (plain_rewritten, enriched_rewritten, alias_result)
         };
@@ -724,14 +768,39 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 )
             }).await.unwrap_or_default();
             if chosen.is_empty() {
-                // Empty is a meaningful result when a transcript was passed:
-                // there was no lexical evidence that any vocab term applied.
-                // Do not fall back to the full slate; that reintroduces
-                // over-replacement from unrelated learned terms.
                 info!(
                     "[voice] vocab selector picked 0/{} entries — no transcript evidence",
                     vocab_full.len(),
                 );
+                // Log why each vocab term was rejected so we can diagnose
+                // learning failures like "emiac" never matching.
+                let transcript_lower = alias_result.text.to_ascii_lowercase();
+                let transcript_tokens: Vec<String> = transcript_lower
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
+                for vt in &vocab_full {
+                    let has_meaning = vt.meaning.as_deref().map(|m| !m.trim().is_empty()).unwrap_or(false);
+                    let term_lower = vt.term.to_ascii_lowercase();
+                    let is_substring = transcript_lower.contains(&term_lower);
+                    let best_phon = transcript_tokens.iter().map(|tok| {
+                        crate::llm::phonetics::similarity(tok, &vt.term)
+                    }).fold(0.0_f64, f64::max);
+                    let reason = if !has_meaning {
+                        "no_meaning"
+                    } else if is_substring {
+                        "substring_ok(BM25_miss?)"
+                    } else if best_phon >= 0.70 {
+                        "phonetic_ok(BM25_miss?)"
+                    } else {
+                        "phonetic_too_low"
+                    };
+                    info!(
+                        "[vocab] rejected {:?} — {} (best_phon={:.2}, meaning={}, weight={:.1}, use={})",
+                        vt.term, reason, best_phon, has_meaning, vt.weight, vt.use_count,
+                    );
+                }
                 (alias_result.text.clone(), vec![])
             } else {
                 let resolve_t0 = Instant::now();

@@ -28,14 +28,12 @@ import {
   cloudLogin,
   cloudSignup,
   getOpenAIStatus,
-  initiateOpenAIOAuth,
   requestInputMonitoring,
   requestMicrophone,
   submitEditFeedback,
   onVocabToast,
   deleteVocabularyTerm,
   checkNotificationPermission,
-  requestNotifications,
   revealDownloadedFile,
   type NotifPermission,
   type VocabToastPayload,
@@ -46,7 +44,7 @@ import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } f
 
 export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "settings";
 const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "settings"];
-type SettingsSectionId = "writing" | "permissions" | "api-keys" | "account" | "debug" | "about";
+type SettingsSectionId = "writing" | "permissions" | "api-keys" | "debug" | "about";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -140,11 +138,10 @@ export default function App() {
 
   // ── OpenAI connection gate ─────────────────────────────────────────────────
   // null = still checking, true = connected, false = must connect
-  const [openAIConnected, setOpenAIConnected] = useState<boolean | null>(null);
-  const [connectBusy,     setConnectBusy]     = useState(false);
-  const [connectError,    setConnectError]    = useState("");
-  const [notifPerm,       setNotifPerm]       = useState<NotifPermission>("unknown");
-  const [notifBusy,       setNotifBusy]       = useState(false);
+  const [_openAIConnected, setOpenAIConnected] = useState<boolean | null>(null); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const [_connectBusy,     setConnectBusy]     = useState(false); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const [_connectError,    setConnectError]    = useState(""); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const [_notifPerm,      setNotifPerm]       = useState<NotifPermission>("unknown"); // eslint-disable-line @typescript-eslint/no-unused-vars
 
   const syncOpenAIConnection = useCallback(async () => {
     try {
@@ -208,35 +205,6 @@ export default function App() {
     };
   }, []);
 
-  // ── OpenAI OAuth connect ───────────────────────────────────────────────────
-  const handleOpenAIConnect = useCallback(async () => {
-    setConnectBusy(true);
-    setConnectError("");
-    try {
-      await initiateOpenAIOAuth(); // opens system browser
-      // Poll every 2 s until the callback server saves the token (max 5 min)
-      const deadline = Date.now() + 5 * 60 * 1000;
-      const poll = setInterval(async () => {
-        if (Date.now() > deadline) {
-          clearInterval(poll);
-          setConnectBusy(false);
-          setConnectError("Timed out waiting for sign-in. Please try again.");
-          return;
-        }
-        try {
-          const status = await getOpenAIStatus();
-          if (status?.connected) {
-            clearInterval(poll);
-            setOpenAIConnected(true);
-            setConnectBusy(false);
-          }
-        } catch { /* ignore poll errors */ }
-      }, 2000);
-    } catch (err: unknown) {
-      setConnectError(err instanceof Error ? err.message : String(err));
-      setConnectBusy(false);
-    }
-  }, []);
 
   const handleDownloadSuccess = useCallback((path: string) => {
     setDownloadToast({ path });
@@ -474,17 +442,6 @@ export default function App() {
     }
   }, [refreshPermissionsSoon]);
 
-  const handleNotifications = useCallback(async () => {
-    setNotifBusy(true);
-    try {
-      const result = await requestNotifications();
-      setNotifPerm(result);
-      refreshPermissionsSoon();
-    } finally {
-      setNotifBusy(false);
-    }
-  }, [refreshPermissionsSoon]);
-
   const handleOnboardingFinish = useCallback(() => {
     setOnboardingComplete(true);
     try {
@@ -534,7 +491,7 @@ export default function App() {
     !!snapshot?.input_monitoring_granted;
 
   /* ── Auth gate ──────────────────────────────────────────────────────────── */
-  if (needsAuth === null || openAIConnected === null) {
+  if (needsAuth === null) {
     // Still checking — bare loading splash with the same brand as the auth screens
     return (
       <div
@@ -550,21 +507,13 @@ export default function App() {
     );
   }
 
-  if (!openAIConnected || !corePermissionsReady || !onboardingComplete) {
+  if (!corePermissionsReady || !onboardingComplete) {
     return (
       <OnboardingFlow
         snapshot={snapshotWithHistory}
-        openAIConnected={!!openAIConnected}
-        connectBusy={connectBusy}
-        connectError={connectError}
-        notifPerm={notifPerm}
-        notifBusy={notifBusy}
-        onConnectOpenAI={handleOpenAIConnect}
         onMicrophone={handleMicrophone}
         onAccessibility={handleAccessibility}
         onInputMonitoring={handleInputMonitoring}
-        onNotifications={handleNotifications}
-
         onFinish={handleOnboardingFinish}
       />
     );
@@ -704,95 +653,6 @@ export default function App() {
           >
             Continue without an account
           </button>
-        </div>
-      </div>
-    );
-  }
-
-  /* ── OpenAI connection gate (required — no skip) ───────────────────────── */
-  if (!openAIConnected) {
-    return (
-      <div
-        className="flex h-screen w-screen items-center justify-center relative overflow-hidden"
-        style={{ background: "hsl(var(--background))" }}
-      >
-        <div aria-hidden data-tauri-drag-region className="absolute inset-x-0 top-0 h-12 drag-region" />
-
-        {/* Same hero glow so the two auth steps feel like one flow */}
-        <div
-          aria-hidden
-          className="absolute pointer-events-none"
-          style={{
-            top: "-15%", left: "50%", transform: "translateX(-50%)",
-            width: 640, height: 640, borderRadius: "50%",
-            background: "radial-gradient(circle, hsl(var(--primary) / 0.10) 0%, transparent 65%)",
-          }}
-        />
-
-        <div
-          className="relative w-full max-w-[340px] flex flex-col p-7 rounded-[18px]"
-          style={{
-            background: "hsl(var(--surface-2))",
-            boxShadow:
-              "inset 0 1px 0 hsl(0 0% 100% / 0.06), 0 18px 50px hsl(220 60% 2% / 0.45)",
-          }}
-        >
-
-          {/* Brand — identical scale to sign-in so the two steps feel equal */}
-          <div className="flex flex-col items-center gap-2.5 mb-5">
-            <BrandMark size={40} idSuffix="auth-openai" />
-            <div className="text-center">
-              <h1
-                className="text-[18px] font-extrabold tracking-tight"
-                style={{ color: "hsl(var(--foreground))", letterSpacing: "-0.02em" }}
-              >
-                One last step
-              </h1>
-              <p className="text-[11.5px] text-muted-foreground mt-1 leading-relaxed">
-                Connect ChatGPT to polish your voice. Once and done.
-              </p>
-            </div>
-          </div>
-
-          {connectError && (
-            <div
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md mb-2.5"
-              style={{
-                background: "hsl(354 78% 60% / 0.10)",
-                color:      "hsl(354 78% 75%)",
-                boxShadow:  "inset 0 0 0 1px hsl(354 78% 60% / 0.25)",
-              }}
-            >
-              <AlertCircle size={12} className="flex-shrink-0" />
-              <span className="text-[11.5px] font-medium">{connectError}</span>
-            </div>
-          )}
-
-          {/* CTA — same .btn-primary token */}
-          <button
-            onClick={handleOpenAIConnect}
-            disabled={connectBusy}
-            className="btn-primary w-full justify-center py-2 rounded-lg"
-            style={{ fontSize: 12.5 }}
-          >
-            {connectBusy ? (
-              <>
-                <Loader2 size={13} className="animate-spin" />
-                Waiting for browser…
-              </>
-            ) : (
-              <>
-                Connect ChatGPT
-                <ArrowRight size={12} />
-              </>
-            )}
-          </button>
-
-          {connectBusy && (
-            <p className="text-[11px] text-muted-foreground text-center leading-relaxed mt-3">
-              Finish in your browser — this window updates automatically.
-            </p>
-          )}
         </div>
       </div>
     );

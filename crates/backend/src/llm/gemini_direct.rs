@@ -11,7 +11,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{info, trace, warn};
 
 pub const GEMINI_DIRECT_MODEL: &str = "gemini-3.1-flash-lite-preview";
 
@@ -123,7 +123,7 @@ pub async fn stream_polish(
                     {
                         if !token.is_empty() {
                             polished.push_str(&token);
-                            debug!("[gemini_direct] token: {:?}", token);
+                            trace!("[gemini_direct] token: {:?}", token);
                             let _ = token_tx.send(token).await;
                         }
                     }

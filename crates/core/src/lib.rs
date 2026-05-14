@@ -18,9 +18,9 @@ pub struct Mode {
 }
 
 pub const MODES: &[Mode] = &[Mode {
-    key: "mini",
-    label: "Fast (gpt-5.4-mini)",
-    model: "gpt-5.4-mini",
+    key: "smart",
+    label: "Llama 4 Scout (Groq)",
+    model: "meta-llama/llama-4-scout-17b-16e-instruct",
     icon: "fast",
 }];
 
@@ -40,9 +40,9 @@ pub fn mode_label() -> &'static str {
     MODES[0].label
 }
 
-/// Always returns gpt-5.4-mini — the only supported model.
+/// Returns the Groq Llama 4 Scout model — the default and only supported model.
 pub fn resolve_model(_key_or_model: &str) -> &'static str {
-    "gpt-5.4-mini"
+    "meta-llama/llama-4-scout-17b-16e-instruct"
 }
 
 pub fn api_key() -> String {

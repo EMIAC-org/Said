@@ -8,7 +8,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 const CHAT_URL: &str = "https://gateway.outreachdeal.com/v1/chat/completions";
 
@@ -127,7 +127,7 @@ pub async fn stream_polish(
                     {
                         if !token.is_empty() {
                             polished.push_str(&token);
-                            debug!("[llm] token: {:?}", token);
+                            trace!("[llm] token: {:?}", token);
                             // Send token; ignore error (receiver may have dropped)
                             let _ = token_tx.send(token).await;
                         }

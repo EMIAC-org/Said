@@ -30,6 +30,14 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI5M0NFRjM1MURGNkVENDYKUldSRzdmWWROZTg4S1NCWE13VkVHTzlEY0d1NUZ0UWVOS0JrQkowdUNVN3VrMGlZWmlUQ3kweUcK",
+      "endpoints": [
+        "https://github.com/EMIAC-org/Said/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["app"],

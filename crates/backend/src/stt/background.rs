@@ -15,7 +15,23 @@ pub fn spawn_alias_review(
     output_language: String,
 ) {
     tokio::spawn(async move {
-        review_one_alias(state, transcript_form, correct_form, output_language).await;
+        let _guard = crate::bg_task_guard();
+        info!(
+            "[bg] alias-review {transcript_form:?}→{correct_form:?} started (active={})",
+            crate::BG_TASK_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+        );
+        let t0 = std::time::Instant::now();
+        review_one_alias(
+            state,
+            transcript_form.clone(),
+            correct_form,
+            output_language,
+        )
+        .await;
+        info!(
+            "[bg] alias-review {transcript_form:?} done in {}ms",
+            t0.elapsed().as_millis()
+        );
     });
 }
 

@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{info, trace, warn};
 
 pub use super::PolishResult;
 
@@ -156,7 +156,7 @@ pub async fn stream_polish(
                                 info!("[groq] first token in {ms}ms");
                             }
                             polished.push_str(&token);
-                            debug!("[groq] token: {token:?}");
+                            trace!("[groq] token: {token:?}");
                             let _ = token_tx.send(token).await;
                         }
                     }

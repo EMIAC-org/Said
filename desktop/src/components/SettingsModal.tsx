@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   X, RefreshCw, CloudCheck,
-  Wand2, ShieldCheck, Key, User, Info, Bug,
+  Wand2, ShieldCheck, Key, Info, Bug,
 } from "lucide-react";
 import {
   SettingsView,
@@ -21,7 +21,6 @@ const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
   "writing":     <Wand2        size={14} />,
   "permissions": <ShieldCheck  size={14} />,
   "api-keys":    <Key          size={14} />,
-  "account":     <User         size={14} />,
   "debug":       <Bug          size={14} />,
   "about":       <Info         size={14} />,
 };
@@ -30,7 +29,6 @@ const SECTION_TITLES: Record<SettingsSection, string> = {
   "writing":     "Writing style",
   "permissions": "Permissions",
   "api-keys":    "API keys",
-  "account":     "Account",
   "debug":       "Debug",
   "about":       "About",
 };
@@ -39,7 +37,6 @@ const SECTION_SUBTITLES: Record<SettingsSection, string> = {
   "writing":     "Tone, persona and language preferences.",
   "permissions": "Accessibility, input monitoring, notifications.",
   "api-keys":    "Gateway, Deepgram and Gemini keys (stored locally).",
-  "account":     "OpenAI and Cloud sign-in.",
   "debug":       "Recent app and backend logs.",
   "about":       "Version and credits.",
 };
