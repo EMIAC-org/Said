@@ -6,11 +6,13 @@ import type {
   CloudAuthResponse,
   CloudStatus,
   HistoryItem,
-  OpenAIStatus,
   PendingEditsResponse,
+  PerformanceSnapshot,
   PolishDone,
   Preferences,
   PrefsUpdate,
+  PromptTemplateResponse,
+  PromptTestResponse,
   Recording,
 } from "../types";
 
@@ -276,6 +278,90 @@ export async function patchPreferences(
   }
 }
 
+export async function getVoicePrompt(): Promise<PromptTemplateResponse | null> {
+  if (!isTauriRuntime()) {
+    const defaultBody = [
+      "CLEANING RULES:",
+      "- Remove English fillers and stutters.",
+      "- Politeness words are spoken content: keep please, kindly, thanks, can you, could you.",
+      "- Do NOT summarize, answer, add, or remove content words.",
+      "",
+      "STYLE PREFERENCE:",
+      "{{persona}}",
+      "{{tone}}",
+    ].join("\n");
+    return {
+      kind: "voice_system",
+      title: "Voice cleaning system prompt",
+      base_version: "mock",
+      active_body: defaultBody,
+      draft_body: null,
+      default_body: defaultBody,
+      updated_at: Date.now(),
+      applied_at: Date.now(),
+      has_draft: false,
+      active_is_default: true,
+    };
+  }
+  try {
+    return await tauriInvoke<PromptTemplateResponse>("get_voice_prompt");
+  } catch {
+    return null;
+  }
+}
+
+export async function saveVoicePromptDraft(
+  draftBody: string
+): Promise<PromptTemplateResponse | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<PromptTemplateResponse>("save_voice_prompt_draft", {
+      draftBody,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function applyVoicePromptDraft(): Promise<PromptTemplateResponse | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<PromptTemplateResponse>("apply_voice_prompt_draft");
+  } catch {
+    return null;
+  }
+}
+
+export async function resetVoicePrompt(): Promise<PromptTemplateResponse | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<PromptTemplateResponse>("reset_voice_prompt");
+  } catch {
+    return null;
+  }
+}
+
+export async function testVoicePrompt(
+  transcript: string,
+  draftBody: string
+): Promise<PromptTestResponse | null> {
+  if (!isTauriRuntime()) {
+    return {
+      output: transcript.replace(/\s+please[.!?]?$/i, ", please."),
+      model_used: "mock",
+      latency_ms: 240,
+    };
+  }
+  try {
+    return await tauriInvoke<PromptTestResponse>("test_voice_prompt", {
+      transcript,
+      draftBody,
+    });
+  } catch {
+    return null;
+  }
+}
+
 /** Fetch recording history from the backend (newest first). */
 export async function listHistory(limit = 50): Promise<Recording[]> {
   if (!isTauriRuntime()) return [];
@@ -328,6 +414,49 @@ export async function getDebugLogs(): Promise<DebugLogs | null> {
     return await tauriInvoke<DebugLogs>("get_debug_logs");
   } catch (e) {
     console.error("get_debug_logs failed", e);
+    return null;
+  }
+}
+
+export async function getPerformanceSnapshot(): Promise<PerformanceSnapshot | null> {
+  if (!isTauriRuntime()) {
+    const total = 16 * 1024 ** 3;
+    const used = 7.5 * 1024 ** 3;
+    return {
+      timestamp_ms: Date.now(),
+      cpu_percent: 18,
+      physical_core_count: 8,
+      total_memory_bytes: total,
+      used_memory_bytes: used,
+      available_memory_bytes: total - used,
+      total_swap_bytes: 0,
+      used_swap_bytes: 0,
+      desktop: {
+        pid: 101,
+        name: "Said",
+        cpu_percent: 3.4,
+        memory_bytes: 240 * 1024 ** 2,
+        virtual_memory_bytes: 0,
+      },
+      backend: {
+        pid: 102,
+        name: "said-backend",
+        cpu_percent: 6.8,
+        memory_bytes: 180 * 1024 ** 2,
+        virtual_memory_bytes: 0,
+      },
+      gpu: {
+        available: false,
+        label: "GPU metrics unavailable from macOS user-space sampler",
+        utilization_percent: null,
+        memory_bytes: null,
+      },
+    };
+  }
+  try {
+    return await tauriInvoke<PerformanceSnapshot>("get_performance_snapshot");
+  } catch (e) {
+    console.error("get_performance_snapshot failed", e);
     return null;
   }
 }
@@ -516,13 +645,6 @@ export function onNavSettings(handler: () => void): Unsubscribe {
   return () => unsub();
 }
 
-export function onOpenAIReconnectInitiated(handler: () => void): Unsubscribe {
-  if (!isTauriRuntime()) return () => {};
-  let unsub: Unsubscribe = () => {};
-  listen("openai-reconnect-initiated", () => handler()).then((fn) => { unsub = fn; });
-  return () => unsub();
-}
-
 // ── Cloud auth commands ───────────────────────────────────────────────────────
 
 /** Sign up for a new cloud account. Returns token + account info. */
@@ -557,32 +679,6 @@ export async function getCloudStatus(): Promise<CloudStatus | null> {
   } catch {
     return null;
   }
-}
-
-// ── OpenAI OAuth commands ─────────────────────────────────────────────────────
-
-/** Get current OpenAI OAuth connection status. */
-export async function getOpenAIStatus(): Promise<OpenAIStatus | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<OpenAIStatus>("get_openai_status");
-  } catch {
-    return null;
-  }
-}
-
-/** Initiate OpenAI OAuth flow — returns the URL to open in the browser.
- *  The backend spawns a one-shot callback server on localhost:1455. */
-export async function initiateOpenAIOAuth(): Promise<string> {
-  if (!isTauriRuntime()) throw new Error("Tauri not available");
-  const res = await tauriInvoke<{ auth_url: string }>("initiate_openai_oauth");
-  return res.auth_url;
-}
-
-/** Disconnect the linked OpenAI account (deletes local token, reverts to gateway). */
-export async function disconnectOpenAI(): Promise<void> {
-  if (!isTauriRuntime()) return;
-  await tauriInvoke("disconnect_openai");
 }
 
 // ── Notification permission ───────────────────────────────────────────────────
@@ -788,7 +884,6 @@ export type {
   CloudAuthResponse,
   CloudStatus,
   HistoryItem,
-  OpenAIStatus,
   PendingEditsResponse,
   PolishDone,
   Preferences,

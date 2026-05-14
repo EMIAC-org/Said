@@ -36,7 +36,7 @@ impl BackendEndpoint {
 pub struct BackendHandle {
     pub endpoint: BackendEndpoint,
     #[allow(dead_code)]
-    child: Child,
+    child: Option<Child>,
 }
 
 impl BackendHandle {
@@ -44,14 +44,18 @@ impl BackendHandle {
         self.endpoint.clone()
     }
 
-    pub fn pid(&self) -> u32 {
-        self.child.id()
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
     }
 }
 
 impl Drop for BackendHandle {
     fn drop(&mut self) {
-        let pid = self.child.id();
+        let Some(child) = self.child.as_mut() else {
+            info!("[backend] external backend mode — no child process to stop");
+            return;
+        };
+        let pid = child.id();
         info!("[backend] shutting down daemon pid={pid}");
         // SIGTERM → wait 3 s → SIGKILL. The child runs in its own session, so
         // negative PID targets the whole backend process group when available.
@@ -61,11 +65,11 @@ impl Drop for BackendHandle {
             libc::kill(pid as libc::pid_t, libc::SIGTERM);
         }
         #[cfg(not(unix))]
-        let _ = self.child.kill();
+        let _ = child.kill();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         loop {
-            if let Ok(Some(_)) = self.child.try_wait() {
+            if let Ok(Some(_)) = child.try_wait() {
                 info!("[backend] daemon exited cleanly");
                 return;
             }
@@ -75,8 +79,8 @@ impl Drop for BackendHandle {
                 unsafe {
                     libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
                 }
-                let _ = self.child.kill();
-                let _ = self.child.wait();
+                let _ = child.kill();
+                let _ = child.wait();
                 return;
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -93,6 +97,10 @@ impl Drop for BackendHandle {
 ///   2. `target/release/said-backend`      — cargo release build
 ///   3. Sibling of current executable      — bundled in .app
 pub fn spawn() -> Result<BackendHandle, String> {
+    if let Some(url) = external_backend_url() {
+        return connect_external(url);
+    }
+
     let secret = uuid::Uuid::new_v4().to_string();
     let port = free_port()?;
     let bin = find_binary()?;
@@ -142,7 +150,30 @@ pub fn spawn() -> Result<BackendHandle, String> {
     poll_health(&url, 5_000)?;
 
     info!("[backend] daemon ready at {url}");
-    Ok(BackendHandle { endpoint, child })
+    Ok(BackendHandle {
+        endpoint,
+        child: Some(child),
+    })
+}
+
+pub fn external_backend_url() -> Option<String> {
+    std::env::var("SAID_EXTERNAL_BACKEND_URL")
+        .ok()
+        .map(|url| url.trim().trim_end_matches('/').to_string())
+        .filter(|url| !url.is_empty())
+}
+
+fn connect_external(url: String) -> Result<BackendHandle, String> {
+    let secret = std::env::var("POLISH_SHARED_SECRET").unwrap_or_else(|_| "dev-secret".into());
+
+    info!("[backend] using external backend at {url}");
+    poll_health(&url, 5_000)?;
+    info!("[backend] external backend ready at {url}");
+
+    Ok(BackendHandle {
+        endpoint: BackendEndpoint { url, secret },
+        child: None,
+    })
 }
 
 /// Block until `GET {base_url}/v1/health` returns 2xx or timeout_ms elapses.

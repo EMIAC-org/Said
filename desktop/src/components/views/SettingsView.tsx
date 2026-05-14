@@ -1,17 +1,20 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap,
   Languages, MessageSquareText, Loader2, RefreshCw,
-  Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, Download,
+  Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, Download, Activity,
+  RotateCcw, Save, GitCompareArrows, Play,
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import type { AppSnapshot, Preferences } from "@/types";
+import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
 import {
   getPreferences, patchPreferences,
+  getVoicePrompt, saveVoicePromptDraft, applyVoicePromptDraft,
+  resetVoicePrompt, testVoicePrompt,
   getDebugLogs,
   requestNotifications, checkNotificationPermission,
   type DebugLogs,
@@ -112,6 +115,151 @@ function Show({ when, children }: { when: boolean; children: React.ReactNode }) 
   return when ? <>{children}</> : null;
 }
 
+type DiffLine = {
+  type: "same" | "add" | "remove";
+  text: string;
+};
+
+type PromptPreviewMode = "rendered" | "diff";
+
+function splitPromptLines(value: string): string[] {
+  return value.replace(/\r\n/g, "\n").split("\n");
+}
+
+function diffPromptLines(before: string, after: string): DiffLine[] {
+  const a = splitPromptLines(before);
+  const b = splitPromptLines(after);
+  const dp = Array.from({ length: a.length + 1 }, () =>
+    Array<number>(b.length + 1).fill(0)
+  );
+
+  for (let i = a.length - 1; i >= 0; i -= 1) {
+    for (let j = b.length - 1; j >= 0; j -= 1) {
+      dp[i][j] = a[i] === b[j]
+        ? dp[i + 1][j + 1] + 1
+        : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  const out: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      out.push({ type: "same", text: a[i] });
+      i += 1;
+      j += 1;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      out.push({ type: "remove", text: a[i] });
+      i += 1;
+    } else {
+      out.push({ type: "add", text: b[j] });
+      j += 1;
+    }
+  }
+  while (i < a.length) {
+    out.push({ type: "remove", text: a[i] });
+    i += 1;
+  }
+  while (j < b.length) {
+    out.push({ type: "add", text: b[j] });
+    j += 1;
+  }
+
+  return out;
+}
+
+function formatPromptTime(ms: number | null): string {
+  if (!ms) return "Never";
+  return new Date(ms).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function languageRulePreview(outputLanguage: string): string {
+  if (outputLanguage === "english") {
+    return [
+      "- Output language: English.",
+      "- Write natural English only. Translate non-English words when needed.",
+    ].join("\n");
+  }
+  if (outputLanguage === "hindi") {
+    return [
+      "- Output language: Hindi.",
+      "- Write natural Hindi in Devanagari script.",
+    ].join("\n");
+  }
+  return [
+    "- Output language: Roman Hinglish.",
+    "- Detect the language of each span in the transcript independently.",
+    "- English spans stay English.",
+    '- Hindi spans, including Devanagari input, become Roman Hinglish; transliterate to Roman script, e.g. "यह" -> "Yeh". NEVER output Devanagari. NEVER translate Hindi to English.',
+    "- Hinglish spans stay Hinglish Roman.",
+    "- Do NOT make the whole output uniform. Preserve the speaker's mix.",
+    "",
+    "Examples:",
+    'Input: "Bahut sahi baat hai yaar. How much time will it take to go ahead?"',
+    'Output: "Bahut sahi baat hai yaar. How much time will it take to go ahead?"',
+    'Input: "यह बहुत सही बात है yaar. Please check this tomorrow."',
+    'Output: "Yeh bahut sahi baat hai yaar. Please check this tomorrow."',
+  ].join("\n");
+}
+
+function personaPreview(tonePreset: ToneKey, customPrompt: string): string {
+  const trimmed = customPrompt.trim();
+  if (tonePreset === "custom" && trimmed) {
+    return [
+      "STYLE NOTE (advisory tone hint only — does not override the cleaning rules above):",
+      trimmed.slice(0, 500),
+    ].join("\n");
+  }
+  return "Be faithful to the spoken words first, then make them clear.";
+}
+
+function toneDescriptionPreview(tonePreset: ToneKey): string {
+  switch (tonePreset) {
+    case "professional":
+      return "Tone: formal and professional. Polish wording for work communication while preserving the speaker's request intent, politeness markers, and content words. Do not delete words like please, kindly, thanks, can you, could you, would you, just, once, or zara.";
+    case "casual":
+      return "Tone: friendly and conversational. Light and easy to read. Preserve the speaker's human tone and request-softening words.";
+    case "assertive":
+      return "Tone: direct and confident. Clear calls-to-action, but do not turn polite requests into blunt commands or delete request-softening words.";
+    case "concise":
+      return "Tone: minimal words. Remove filler noise and redundant phrasing only; preserve all meaningful words, politeness markers, and request softeners.";
+    case "custom":
+      return "Tone: neutral and clear.";
+    case "neutral":
+    default:
+      return "Tone: neutral and clear. No strong stylistic lean.";
+  }
+}
+
+function replaceTemplateToken(template: string, token: string, value: string): string {
+  return template.split(token).join(value);
+}
+
+function renderPromptTemplatePreview(
+  template: string,
+  tonePreset: ToneKey,
+  customPrompt: string,
+  outputLanguage: string
+): string {
+  return [
+    ["{{language_rule}}", languageRulePreview(outputLanguage)],
+    ["{{persona}}", personaPreview(tonePreset, customPrompt)],
+    ["{{tone}}", toneDescriptionPreview(tonePreset)],
+    ["{{vocab_block}}", ""],
+    ["{{corrections_block}}", ""],
+    ["{{prefs_block}}", ""],
+  ].reduce(
+    (next, [token, value]) => replaceTemplateToken(next, token, value),
+    template
+  );
+}
+
 // ── Props ──────────────────────────────────────────────────────────────────────
 
 interface SettingsViewProps {
@@ -125,6 +273,8 @@ interface SettingsViewProps {
   hideHeader?:       boolean;
   /** Skip the page paddings + ScrollArea wrapper (modal already provides them). */
   embedded?:         boolean;
+  performanceMonitorEnabled?: boolean;
+  onPerformanceMonitorChange?: (enabled: boolean) => void;
 }
 
 // ── View ───────────────────────────────────────────────────────────────────────
@@ -137,6 +287,8 @@ export function SettingsView({
   activeSection,
   hideHeader,
   embedded,
+  performanceMonitorEnabled = false,
+  onPerformanceMonitorChange,
 }: SettingsViewProps) {
   // Helper — true when the section should render (no filter = render all)
   const showAll = !activeSection;
@@ -155,6 +307,16 @@ export function SettingsView({
   const [saveError,    setSaveError]    = useState("");
   const [customPrompt, setCustomPrompt] = useState("");
   const [promptDirty,  setPromptDirty]  = useState(false);
+  const [voicePrompt,      setVoicePrompt]      = useState<PromptTemplateResponse | null>(null);
+  const [promptDraftBody,  setPromptDraftBody]  = useState("");
+  const [promptBodyDirty,  setPromptBodyDirty]  = useState(false);
+  const [promptBusy,       setPromptBusy]       = useState(false);
+  const [promptError,      setPromptError]      = useState("");
+  const [promptTestInput,  setPromptTestInput]  = useState("Get my task, please.");
+  const [promptTestResult, setPromptTestResult] = useState<PromptTestResponse | null>(null);
+  const [promptTesting,    setPromptTesting]    = useState(false);
+  const [promptPreviewMode, setPromptPreviewMode] = useState<PromptPreviewMode>("rendered");
+  const promptLoadStartedRef = useRef(false);
 
   // ── API key state ────────────────────────────────────────────────────────────
   const [gatewayKey,    setGatewayKey]    = useState("");
@@ -198,12 +360,27 @@ export function SettingsView({
     }
   }, []);
 
+  const [downloadProgress, setDownloadProgress] = useState(0);
+
   const downloadAndInstall = useCallback(async () => {
     setUpdateStatus("downloading");
+    setDownloadProgress(0);
     try {
       const update = await check();
       if (!update) return;
-      await update.downloadAndInstall();
+      let downloaded = 0;
+      let total = 0;
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = (event.data as { contentLength?: number }).contentLength ?? 0;
+          downloaded = 0;
+        } else if (event.event === "Progress") {
+          downloaded += (event.data as { chunkLength: number }).chunkLength;
+          if (total > 0) setDownloadProgress(Math.round((downloaded / total) * 100));
+        } else if (event.event === "Finished") {
+          setDownloadProgress(100);
+        }
+      });
       setUpdateStatus("ready");
     } catch (err) {
       setUpdateError(err instanceof Error ? err.message : String(err));
@@ -367,15 +544,133 @@ export function SettingsView({
     setPromptDirty(false);
   }
 
+  function syncVoicePrompt(template: PromptTemplateResponse) {
+    setVoicePrompt(template);
+    setPromptDraftBody(template.draft_body ?? template.active_body);
+    setPromptBodyDirty(false);
+  }
+
+  async function loadVoicePrompt() {
+    promptLoadStartedRef.current = true;
+    setPromptBusy(true);
+    setPromptError("");
+    try {
+      const template = await getVoicePrompt();
+      if (!template) throw new Error("Prompt template is unavailable");
+      syncVoicePrompt(template);
+    } catch (err) {
+      setPromptError(err instanceof Error ? err.message : "Failed to load prompt");
+    } finally {
+      setPromptBusy(false);
+    }
+  }
+
+  async function savePromptDraft() {
+    if (!promptDraftBody.trim()) {
+      setPromptError("Prompt draft cannot be empty");
+      return;
+    }
+    setPromptBusy(true);
+    setPromptError("");
+    try {
+      const template = await saveVoicePromptDraft(promptDraftBody);
+      if (!template) throw new Error("Backend did not return the saved prompt");
+      syncVoicePrompt(template);
+    } catch (err) {
+      setPromptError(err instanceof Error ? err.message : "Failed to save draft");
+    } finally {
+      setPromptBusy(false);
+    }
+  }
+
+  async function applyPromptDraft() {
+    if (!promptDraftBody.trim()) {
+      setPromptError("Prompt draft cannot be empty");
+      return;
+    }
+    setPromptBusy(true);
+    setPromptError("");
+    try {
+      if (promptBodyDirty) {
+        const saved = await saveVoicePromptDraft(promptDraftBody);
+        if (!saved) throw new Error("Backend did not save the draft");
+      }
+      const template = await applyVoicePromptDraft();
+      if (!template) throw new Error("Backend did not apply the prompt");
+      syncVoicePrompt(template);
+    } catch (err) {
+      setPromptError(err instanceof Error ? err.message : "Failed to apply prompt");
+    } finally {
+      setPromptBusy(false);
+    }
+  }
+
+  async function resetPromptToDefault() {
+    if (!window.confirm("Reset the active voice prompt to the app default?")) return;
+    setPromptBusy(true);
+    setPromptError("");
+    try {
+      const template = await resetVoicePrompt();
+      if (!template) throw new Error("Backend did not reset the prompt");
+      syncVoicePrompt(template);
+      setPromptTestResult(null);
+    } catch (err) {
+      setPromptError(err instanceof Error ? err.message : "Failed to reset prompt");
+    } finally {
+      setPromptBusy(false);
+    }
+  }
+
+  async function runPromptTest() {
+    if (!promptTestInput.trim()) {
+      setPromptError("Add a sample transcript first");
+      return;
+    }
+    setPromptTesting(true);
+    setPromptError("");
+    setPromptTestResult(null);
+    try {
+      const result = await testVoicePrompt(promptTestInput, promptDraftBody);
+      if (!result) throw new Error("Backend did not return a prompt test result");
+      setPromptTestResult(result);
+    } catch (err) {
+      setPromptError(err instanceof Error ? err.message : "Prompt test failed");
+    } finally {
+      setPromptTesting(false);
+    }
+  }
+
   useEffect(() => {
     if (isOn("debug") && !debugLogs && !debugBusy) {
       refreshDebugLogs();
     }
   }, [activeSection]);
 
+  useEffect(() => {
+    if (isOn("writing") && !voicePrompt && !promptBusy && !promptLoadStartedRef.current) {
+      loadVoicePrompt();
+    }
+  }, [activeSection, voicePrompt, promptBusy]);
+
   const tone = (prefs?.tone_preset ?? "neutral") as ToneKey;
+  const activeToneLabel = TONE_PRESETS.find((preset) => preset.key === tone)?.label ?? "Neutral";
   const hasStoredGeminiKey = Boolean(prefs?.gemini_api_key);
   const learningEnabled = prefs?.learning_enabled ?? true;
+  const promptDiff = useMemo(
+    () => diffPromptLines(voicePrompt?.active_body ?? "", promptDraftBody),
+    [voicePrompt?.active_body, promptDraftBody]
+  );
+  const renderedPromptPreview = useMemo(
+    () => renderPromptTemplatePreview(
+      promptDraftBody,
+      tone,
+      customPrompt,
+      prefs?.output_language ?? "hinglish"
+    ),
+    [promptDraftBody, tone, customPrompt, prefs?.output_language]
+  );
+  const promptChangedFromActive = Boolean(voicePrompt && promptDraftBody !== voicePrompt.active_body);
+  const promptCanApply = promptBodyDirty || promptChangedFromActive || Boolean(voicePrompt?.has_draft);
 
   // Inner content that gets either wrapped in ScrollArea (full view) or rendered
   // bare (modal embeds it inside its own scroll container).
@@ -428,18 +723,25 @@ export function SettingsView({
                 return (
                   <button
                     key={t.key}
+                    aria-pressed={isActive}
                     onClick={() => patch({ tone_preset: t.key })}
                     className="text-left px-3 py-2.5 rounded-xl transition-all"
                     style={{
                       background: isActive
-                        ? "hsl(var(--surface-4))"
+                        ? "hsl(var(--primary) / 0.14)"
                         : "hsl(var(--surface-4))",
                       color: isActive
-                        ? "hsl(var(--muted-foreground))"
+                        ? "hsl(var(--foreground))"
                         : "hsl(var(--muted-foreground))",
+                      boxShadow: isActive
+                        ? "inset 0 0 0 1px hsl(var(--primary) / 0.65)"
+                        : "inset 0 0 0 1px transparent",
                     }}
                   >
-                    <p className="text-[12px] font-semibold leading-tight">{t.label}</p>
+                    <p className="text-[12px] font-semibold leading-tight flex items-center justify-between gap-2">
+                      {t.label}
+                      {isActive && <Check size={12} />}
+                    </p>
                     <p className="text-[10px] leading-snug mt-0.5 opacity-70">{t.desc}</p>
                   </button>
                 );
@@ -483,6 +785,276 @@ export function SettingsView({
                 <button onClick={saveCustomPrompt} className="btn-primary !py-1.5 !px-3 !text-[12px]">
                   Save
                 </button>
+              </div>
+            )}
+          </div>
+
+          {/* Voice prompt editor */}
+          <div className="panel p-4 mt-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <GitCompareArrows size={14} className="text-muted-foreground" />
+                  <p className="text-[12px] font-semibold text-foreground">Prompt Lab</p>
+                  {voicePrompt?.has_draft && (
+                    <span
+                      className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                      style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
+                    >
+                      Draft saved
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Active prompt updates the next recording after Apply.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {voicePrompt && (
+                  <span className="text-[10px] text-muted-foreground hidden sm:inline">
+                    Applied {formatPromptTime(voicePrompt.applied_at)}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={loadVoicePrompt}
+                  disabled={promptBusy}
+                  className="btn-ghost !py-1.5 !px-3"
+                >
+                  {promptBusy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                  Reload
+                </button>
+              </div>
+            </div>
+
+            {promptError && (
+              <div
+                className="mb-3 rounded-lg px-3 py-2 text-[12px]"
+                style={{ background: "hsl(0 70% 14%)", color: "hsl(0 85% 76%)" }}
+              >
+                {promptError}
+              </div>
+            )}
+
+            {voicePrompt ? (
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <p className="text-[11px] font-semibold text-muted-foreground">Active</p>
+                      <span className="text-[10px] text-muted-foreground">
+                        {voicePrompt.active_is_default ? "Default" : voicePrompt.base_version}
+                      </span>
+                    </div>
+                    <textarea
+                      readOnly
+                      value={voicePrompt.active_body}
+                      rows={13}
+                      className="input resize-none font-mono text-[11px] leading-relaxed opacity-80"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <p className="text-[11px] font-semibold text-muted-foreground">Draft</p>
+                      <span className="text-[10px] text-muted-foreground">
+                        {promptChangedFromActive ? "Changed" : "Same as active"}
+                      </span>
+                    </div>
+                    <textarea
+                      value={promptDraftBody}
+                      onChange={(e) => {
+                        setPromptDraftBody(e.target.value);
+                        setPromptBodyDirty(true);
+                        setPromptTestResult(null);
+                      }}
+                      rows={13}
+                      className="input resize-none font-mono text-[11px] leading-relaxed"
+                      spellCheck={false}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPromptDraftBody(voicePrompt.active_body);
+                        setPromptBodyDirty(false);
+                        setPromptTestResult(null);
+                      }}
+                      className="btn-ghost !py-1.5 !px-3"
+                    >
+                      Use active
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPromptDraftBody(voicePrompt.default_body);
+                        setPromptBodyDirty(true);
+                        setPromptTestResult(null);
+                      }}
+                      className="btn-ghost !py-1.5 !px-3"
+                    >
+                      Use default
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetPromptToDefault}
+                      disabled={promptBusy}
+                      className="btn-ghost !py-1.5 !px-3"
+                    >
+                      <RotateCcw size={12} />
+                      Reset active
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={savePromptDraft}
+                      disabled={promptBusy || !promptBodyDirty}
+                      className="btn-ghost !py-1.5 !px-3"
+                    >
+                      {promptBusy ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                      Save draft
+                    </button>
+                    <button
+                      type="button"
+                      onClick={applyPromptDraft}
+                      disabled={promptBusy || !promptCanApply}
+                      className="btn-primary !py-1.5 !px-3 !text-[12px]"
+                    >
+                      Apply prompt
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  className="rounded-xl p-3"
+                  style={{ background: "hsl(var(--surface-4))" }}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                    <div>
+                      <p className="text-[11px] font-semibold text-muted-foreground">
+                        {promptPreviewMode === "rendered" ? "Rendered Prompt" : "Template Diff"}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        {promptPreviewMode === "rendered"
+                          ? `${activeToneLabel} · ${prefs?.output_language ?? "hinglish"}`
+                          : "Active → draft"}
+                      </p>
+                    </div>
+                    <div
+                      className="flex rounded-xl p-0.5 gap-0.5"
+                      style={{ background: "hsl(var(--surface-2))" }}
+                    >
+                      {([
+                        { key: "rendered", label: "Rendered" },
+                        { key: "diff", label: "Diff" },
+                      ] as const).map((mode) => {
+                        const isModeActive = promptPreviewMode === mode.key;
+                        return (
+                          <button
+                            key={mode.key}
+                            type="button"
+                            onClick={() => setPromptPreviewMode(mode.key)}
+                            className="text-[11px] font-medium rounded-[10px] px-3 py-1.5 transition-all"
+                            style={{
+                              background: isModeActive ? "hsl(var(--surface-1))" : "transparent",
+                              color: isModeActive ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
+                            }}
+                          >
+                            {mode.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {promptPreviewMode === "rendered" ? (
+                    <textarea
+                      readOnly
+                      value={renderedPromptPreview}
+                      rows={13}
+                      className="input resize-none font-mono text-[11px] leading-relaxed"
+                    />
+                  ) : (
+                    <div
+                      className="max-h-64 overflow-auto rounded-lg font-mono text-[11px] leading-relaxed"
+                      style={{ background: "hsl(var(--surface-2))" }}
+                    >
+                      {promptDiff.map((line, index) => (
+                        <div
+                          key={`${line.type}-${index}`}
+                          className="grid grid-cols-[24px_1fr] gap-2 px-2 py-0.5 whitespace-pre-wrap break-words"
+                          style={{
+                            color:
+                              line.type === "add"
+                                ? "hsl(145 70% 70%)"
+                                : line.type === "remove"
+                                ? "hsl(0 80% 76%)"
+                                : "hsl(var(--muted-foreground))",
+                            background:
+                              line.type === "add"
+                                ? "hsl(145 70% 24% / 0.25)"
+                                : line.type === "remove"
+                                ? "hsl(0 70% 24% / 0.25)"
+                                : "transparent",
+                          }}
+                        >
+                          <span>{line.type === "add" ? "+" : line.type === "remove" ? "-" : " "}</span>
+                          <span>{line.text || " "}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div
+                  className="rounded-xl p-3"
+                  style={{ background: "hsl(var(--surface-4))" }}
+                >
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <p className="text-[11px] font-semibold text-muted-foreground">Test Sample</p>
+                    <button
+                      type="button"
+                      onClick={runPromptTest}
+                      disabled={promptTesting || promptBusy || !promptTestInput.trim()}
+                      className="btn-primary !py-1.5 !px-3 !text-[12px]"
+                    >
+                      {promptTesting ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                      Run test
+                    </button>
+                  </div>
+                  <textarea
+                    value={promptTestInput}
+                    onChange={(e) => setPromptTestInput(e.target.value)}
+                    rows={2}
+                    className="input resize-none text-[12px] leading-relaxed"
+                  />
+                  {promptTestResult && (
+                    <div className="mt-3 rounded-lg p-3" style={{ background: "hsl(var(--surface-2))" }}>
+                      <div className="flex items-center justify-between gap-3 mb-1.5">
+                        <p className="text-[11px] font-semibold text-muted-foreground">Output</p>
+                        <span className="text-[10px] text-muted-foreground">
+                          {promptTestResult.model_used} · {promptTestResult.latency_ms}ms
+                        </span>
+                      </div>
+                      <p className="text-[13px] text-foreground leading-relaxed whitespace-pre-wrap">
+                        {promptTestResult.output}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div
+                className="rounded-xl px-4 py-6 flex items-center justify-center gap-2 text-[12px] text-muted-foreground"
+                style={{ background: "hsl(var(--surface-4))" }}
+              >
+                <Loader2 size={14} className={cn(promptBusy && "animate-spin")} />
+                {promptBusy ? "Loading prompt…" : "Prompt not loaded"}
               </div>
             )}
           </div>
@@ -1075,6 +1647,39 @@ export function SettingsView({
 
         {/* ── Debug ───────────────────────────────────── */}
         <Show when={isOn("debug")}>
+        <Section title="Performance">
+          <Row
+            icon={<Activity size={16} />}
+            label="Sidebar monitor"
+            description="Show live CPU, memory, process usage, and GPU availability while testing lag."
+            action={
+              <button
+                type="button"
+                role="switch"
+                aria-checked={performanceMonitorEnabled}
+                onClick={() => onPerformanceMonitorChange?.(!performanceMonitorEnabled)}
+                className="relative h-6 w-11 rounded-full transition-colors"
+                style={{
+                  background: performanceMonitorEnabled
+                    ? "hsl(var(--primary))"
+                    : "hsl(var(--surface-4))",
+                }}
+              >
+                <span
+                  className="absolute top-1 h-4 w-4 rounded-full transition-transform"
+                  style={{
+                    left: 4,
+                    transform: performanceMonitorEnabled
+                      ? "translateX(20px)"
+                      : "translateX(0)",
+                    background: "hsl(var(--foreground))",
+                  }}
+                />
+              </button>
+            }
+          />
+        </Section>
+
         <div className="mb-7">
           <div className="flex items-center justify-between px-1 mb-2.5">
             <p className="section-label flex items-center gap-2">
@@ -1210,7 +1815,7 @@ export function SettingsView({
             description={
               updateStatus === "checking" ? "Checking for updates…" :
               updateStatus === "available" ? `Version ${updateVersion} is available` :
-              updateStatus === "downloading" ? "Downloading update…" :
+              updateStatus === "downloading" ? `Downloading update… ${downloadProgress}%` :
               updateStatus === "ready" ? "Update installed — relaunch to finish" :
               updateStatus === "up-to-date" ? "You're on the latest version" :
               updateStatus === "error" ? (updateError || "Update check failed") :

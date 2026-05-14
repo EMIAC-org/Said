@@ -11,10 +11,16 @@ import {
   Mail,
   Copy,
   Check,
+  Activity,
+  Cpu,
+  HardDrive,
+  Server,
+  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BrandMark } from "@/components/BrandMark";
-import type { AppSnapshot } from "@/types";
+import { getPerformanceSnapshot } from "@/lib/invoke";
+import type { AppSnapshot, PerformanceSnapshot, ProcessPerf } from "@/types";
 
 // ── Nav item type ──────────────────────────────────────────────────────────────
 
@@ -74,12 +80,20 @@ interface SidebarProps {
   activeView:   string;
   onViewChange: (view: string) => void;
   busy:         boolean;
+  performanceMonitorEnabled?: boolean;
   onOpenInvite?: () => void;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function Sidebar({ snapshot, activeView, onViewChange, busy, onOpenInvite }: SidebarProps) {
+export function Sidebar({
+  snapshot,
+  activeView,
+  onViewChange,
+  busy,
+  performanceMonitorEnabled = false,
+  onOpenInvite,
+}: SidebarProps) {
   const isRecording  = snapshot?.state === "recording";
   const isProcessing = snapshot?.state === "processing" || busy;
 
@@ -122,6 +136,8 @@ export function Sidebar({ snapshot, activeView, onViewChange, busy, onOpenInvite
 
         {/* Spacer */}
         <div className="flex-1" />
+
+        {performanceMonitorEnabled && <PerformanceMonitor />}
 
         {/* Status card — glass */}
         <div className="rounded-xl glass p-3.5">
@@ -184,6 +200,155 @@ export function Sidebar({ snapshot, activeView, onViewChange, busy, onOpenInvite
         <HelpButton />
       </div>
     </aside>
+  );
+}
+
+function formatBytes(bytes: number | null | undefined): string {
+  if (!bytes || bytes <= 0) return "0 MB";
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(gb >= 10 ? 0 : 1)} GB`;
+  return `${Math.round(bytes / 1024 ** 2)} MB`;
+}
+
+function pct(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "0%";
+  return `${Math.max(0, value).toFixed(value >= 10 ? 0 : 1)}%`;
+}
+
+function MetricBar({ value, tone = "primary" }: { value: number; tone?: "primary" | "warn" }) {
+  const width = Math.max(2, Math.min(100, value));
+  return (
+    <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "hsl(var(--surface-4))" }}>
+      <div
+        className="h-full rounded-full"
+        style={{
+          width: `${width}%`,
+          background: tone === "warn" ? "hsl(38 90% 55%)" : "hsl(var(--primary))",
+        }}
+      />
+    </div>
+  );
+}
+
+function ProcessLine({ icon, label, process }: {
+  icon: React.ReactNode;
+  label: string;
+  process: ProcessPerf | null;
+}) {
+  return (
+    <div className="rounded-lg px-2.5 py-2" style={{ background: "hsl(var(--surface-3))" }}>
+      <div className="flex items-center gap-1.5 mb-1">
+        <span className="opacity-70">{icon}</span>
+        <span className="text-[10px] font-semibold text-foreground truncate">{label}</span>
+        {process && (
+          <span className="ml-auto text-[9px] tabular-nums text-muted-foreground">
+            {process.pid}
+          </span>
+        )}
+      </div>
+      {process ? (
+        <div className="grid grid-cols-2 gap-1.5 text-[10px] tabular-nums text-muted-foreground">
+          <span>CPU {pct(process.cpu_percent)}</span>
+          <span className="text-right">{formatBytes(process.memory_bytes)}</span>
+        </div>
+      ) : (
+        <p className="text-[10px] text-muted-foreground">Not running</p>
+      )}
+    </div>
+  );
+}
+
+function PerformanceMonitor() {
+  const [sample, setSample] = useState<PerformanceSnapshot | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    async function refresh() {
+      const next = await getPerformanceSnapshot();
+      if (!alive) return;
+      if (next) {
+        setSample(next);
+        setError(false);
+      } else {
+        setError(true);
+      }
+    }
+    void refresh();
+    const timer = window.setInterval(refresh, 1500);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const memoryPct = sample && sample.total_memory_bytes > 0
+    ? (sample.used_memory_bytes / sample.total_memory_bytes) * 100
+    : 0;
+
+  return (
+    <div className="rounded-xl glass p-3.5 space-y-3">
+      <div className="flex items-center gap-2">
+        <Activity size={13} className="text-muted-foreground" />
+        <span className="text-[11px] font-semibold text-foreground tracking-wide">
+          PERFORMANCE
+        </span>
+        <span
+          className={cn("ml-auto w-1.5 h-1.5 rounded-full", sample && !error && "animate-pulse")}
+          style={{ background: error ? "hsl(0 75% 62%)" : "hsl(var(--primary))" }}
+        />
+      </div>
+
+      {sample ? (
+        <>
+          <div className="space-y-2">
+            <div>
+              <div className="flex items-center justify-between text-[10px] tabular-nums mb-1">
+                <span className="text-muted-foreground flex items-center gap-1">
+                  <Cpu size={10} /> System CPU
+                </span>
+                <span className="text-foreground font-semibold">{pct(sample.cpu_percent)}</span>
+              </div>
+              <MetricBar value={sample.cpu_percent} tone={sample.cpu_percent > 75 ? "warn" : "primary"} />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between text-[10px] tabular-nums mb-1">
+                <span className="text-muted-foreground flex items-center gap-1">
+                  <HardDrive size={10} /> Memory
+                </span>
+                <span className="text-foreground font-semibold">
+                  {formatBytes(sample.used_memory_bytes)} / {formatBytes(sample.total_memory_bytes)}
+                </span>
+              </div>
+              <MetricBar value={memoryPct} tone={memoryPct > 80 ? "warn" : "primary"} />
+            </div>
+          </div>
+
+          <div className="grid gap-1.5">
+            <ProcessLine icon={<Server size={10} />} label="Said" process={sample.desktop} />
+            <ProcessLine icon={<Cpu size={10} />} label="Backend" process={sample.backend} />
+          </div>
+
+          <div className="rounded-lg px-2.5 py-2" style={{ background: "hsl(var(--surface-3))" }}>
+            <div className="flex items-center gap-1.5 text-[10px]">
+              <Zap size={10} className="text-muted-foreground" />
+              <span className="font-semibold text-foreground">GPU</span>
+              <span className="ml-auto text-muted-foreground">
+                {sample.gpu.available ? pct(sample.gpu.utilization_percent) : "N/A"}
+              </span>
+            </div>
+            <p className="text-[9.5px] text-muted-foreground mt-1 leading-snug">
+              {sample.gpu.available ? formatBytes(sample.gpu.memory_bytes) : "macOS sampler unavailable"}
+            </p>
+          </div>
+        </>
+      ) : (
+        <p className="text-[10px] text-muted-foreground leading-relaxed">
+          {error ? "Monitor unavailable" : "Collecting first sample…"}
+        </p>
+      )}
+    </div>
   );
 }
 

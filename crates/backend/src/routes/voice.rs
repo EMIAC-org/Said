@@ -100,8 +100,9 @@ use crate::{
     llm::{
         gateway, gemini_direct, groq, openai_codex,
         prompt::{
-            VocabEntry, build_system_prompt_with_vocab_entries, build_user_message,
-            build_voice_repair_system_prompt, build_voice_repair_user_message,
+            VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE, VocabEntry,
+            build_user_message, build_voice_repair_system_prompt, build_voice_repair_user_message,
+            default_voice_prompt_template, render_voice_system_prompt_template,
             resolved_vocab_terms_to_entries, vocab_terms_to_entries,
         },
         script,
@@ -112,7 +113,7 @@ use crate::{
     },
     store::{
         history::{InsertRecording, insert_recording},
-        openai_oauth, stt_replacements,
+        openai_oauth, prompt_templates, stt_replacements,
         vectors::retrieve_similar,
         vocab_embeddings, vocabulary,
     },
@@ -836,17 +837,41 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         };
         let user_message = build_user_message(&resolved_transcript, &prefs.output_language);
 
+        let default_prompt_body = default_voice_prompt_template();
+        let prompt_body = {
+            let pool_p = pool.clone();
+            let uid_p = user_id.clone();
+            let body_p = default_prompt_body.clone();
+            tokio::task::spawn_blocking(move || {
+                prompt_templates::active_body_or_default(
+                    &pool_p,
+                    &uid_p,
+                    prompt_templates::DefaultPrompt {
+                        kind: VOICE_PROMPT_KIND,
+                        title: VOICE_PROMPT_TITLE,
+                        base_version: VOICE_PROMPT_BASE_VERSION,
+                        body: &body_p,
+                    },
+                )
+            })
+            .await
+            .unwrap_or(default_prompt_body)
+        };
+        let base_system_prompt = render_voice_system_prompt_template(
+            &prompt_body,
+            &prefs,
+            &rag_examples,
+            &word_corrections,
+            &vocab_entries,
+        );
+
         let system_prompt = if repair_mode.as_deref() == Some("preserve_recall") {
             format!(
                 "{}\n\nREPAIR OVERRIDE:\n- The user explicitly asked to reprocess this recording because the previous output likely missed words or drifted in language.\n- Be extra conservative about deleting words.\n- Prefer keeping uncertain transcript content over compressing it.\n- Preserve numbers, names, acronyms, dates, and mixed Hindi-English spans.",
-                build_system_prompt_with_vocab_entries(
-                    &prefs, &rag_examples, &word_corrections, &vocab_entries,
-                )
+                base_system_prompt
             )
         } else {
-            build_system_prompt_with_vocab_entries(
-                &prefs, &rag_examples, &word_corrections, &vocab_entries,
-            )
+            base_system_prompt
         };
 
         // ── STEP 5: LLM stream ────────────────────────────────────────────────────
