@@ -18,7 +18,7 @@ use reqwest::Client;
 use serde_json::json;
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 pub use super::PolishResult;
 
@@ -157,7 +157,7 @@ pub async fn stream_polish(
                             );
                         }
                         polished.push_str(delta);
-                        debug!("[codex] token: {delta:?}");
+                        trace!("[codex] token: {delta:?}");
                         let _ = token_tx.send(delta.to_string()).await;
                     }
                 }

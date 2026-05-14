@@ -1,131 +1,62 @@
-import React from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ArrowRight,
-  Bell,
   Check,
+  ExternalLink,
+  Eye,
+  EyeOff,
   Key,
-  Loader2,
+  Keyboard,
   Mic,
   Shield,
   Sparkles,
 } from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
-import type { AppSnapshot } from "@/types";
-import type { NotifPermission } from "@/lib/invoke";
+import type { AppSnapshot, Preferences } from "@/types";
+import { getPreferences, patchPreferences } from "@/lib/invoke";
 
-interface PermissionStep {
-  id: string;
-  label: string;
-  description: string;
-  granted: boolean;
-  required?: boolean;
-  icon: React.ReactNode;
-  actionLabel: string;
-  onAction: () => void;
-}
+type Step = "welcome" | "microphone" | "accessibility" | "api-keys" | "hotkey" | "input-monitoring" | "test";
 
 interface Props {
   snapshot: AppSnapshot | null;
-  openAIConnected: boolean;
-  connectBusy: boolean;
-  connectError: string;
-  notifPerm: NotifPermission;
-  notifBusy: boolean;
-  onConnectOpenAI: () => void;
   onMicrophone: () => void;
   onAccessibility: () => void;
   onInputMonitoring: () => void;
-  onNotifications: () => void;
   onFinish: () => void;
 }
 
-function StatusPill({ granted, required }: { granted: boolean; required?: boolean }) {
-  if (granted) {
-    return (
-      <span
-        className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold"
-        style={{ background: "hsl(var(--primary) / 0.13)", color: "hsl(var(--primary))" }}
-      >
-        <Check size={11} /> Granted
-      </span>
-    );
-  }
+const STEPS: Step[] = ["welcome", "microphone", "accessibility", "api-keys", "hotkey", "input-monitoring", "test"];
 
+function ProgressDots({ current }: { current: number }) {
   return (
-    <span
-      className="inline-flex items-center rounded-lg px-2.5 py-1 text-[11px] font-semibold"
-      style={{
-        background: required ? "hsl(38 80% 45% / 0.14)" : "hsl(var(--surface-4))",
-        color: required ? "hsl(38 90% 68%)" : "hsl(var(--muted-foreground))",
-      }}
-    >
-      {required ? "Required" : "Optional"}
-    </span>
+    <div className="flex gap-1.5 justify-center">
+      {STEPS.map((_, i) => (
+        <div
+          key={i}
+          className="h-1.5 rounded-full transition-all duration-300"
+          style={{
+            width: i === current ? 24 : 8,
+            background: i <= current ? "hsl(var(--primary))" : "hsl(var(--surface-4))",
+          }}
+        />
+      ))}
+    </div>
   );
 }
 
-export function OnboardingFlow({
-  snapshot,
-  openAIConnected,
-  connectBusy,
-  connectError,
-  notifPerm,
-  notifBusy,
-  onConnectOpenAI,
-  onMicrophone,
-  onAccessibility,
-  onInputMonitoring,
-  onNotifications,
-  onFinish,
-}: Props) {
-  const microphoneGranted = snapshot?.microphone_granted ?? false;
-  const accessibilityGranted = snapshot?.accessibility_granted ?? false;
-  const inputMonitoringGranted = snapshot?.input_monitoring_granted ?? false;
-  const notificationsGranted = notifPerm === "granted";
-
-  const coreReady = microphoneGranted && accessibilityGranted && inputMonitoringGranted;
-  const steps: PermissionStep[] = [
-    {
-      id: "mic",
-      label: "Microphone",
-      description: "Record your voice for dictation.",
-      granted: microphoneGranted,
-      required: true,
-      icon: <Mic size={16} />,
-      actionLabel: "Allow",
-      onAction: onMicrophone,
-    },
-    {
-      id: "input",
-      label: "Input Monitoring",
-      description: "Listen for the recording hotkey and global shortcuts.",
-      granted: inputMonitoringGranted,
-      required: true,
-      icon: <Key size={16} />,
-      actionLabel: "Open Settings",
-      onAction: onInputMonitoring,
-    },
-    {
-      id: "accessibility",
-      label: "Accessibility",
-      description: "Paste polished text into the app you are typing in.",
-      granted: accessibilityGranted,
-      required: true,
-      icon: <Shield size={16} />,
-      actionLabel: "Open Settings",
-      onAction: onAccessibility,
-    },
-    {
-      id: "notifications",
-      label: "Notifications",
-      description: "Get learning and edit-review alerts.",
-      granted: notificationsGranted,
-      icon: <Bell size={16} />,
-      actionLabel: notifPerm === "denied" ? "Open Settings" : "Allow",
-      onAction: onNotifications,
-    },
-  ];
-
+function StepShell({
+  icon,
+  title,
+  subtitle,
+  children,
+  step,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+  step: number;
+}) {
   return (
     <div
       className="flex h-screen w-screen items-center justify-center overflow-hidden relative"
@@ -142,152 +73,466 @@ export function OnboardingFlow({
           width: 720,
           height: 720,
           borderRadius: "50%",
-          background: "radial-gradient(circle, hsl(var(--primary) / 0.12) 0%, transparent 66%)",
+          background: "radial-gradient(circle, hsl(var(--primary) / 0.10) 0%, transparent 66%)",
         }}
       />
-
       <div
-        className="relative w-full max-w-[520px] rounded-[20px] p-7"
+        className="relative w-full max-w-[480px] rounded-[20px] p-7"
         style={{
           background: "hsl(var(--surface-2))",
-          boxShadow:
-            "inset 0 1px 0 hsl(0 0% 100% / 0.06), 0 24px 70px hsl(220 60% 2% / 0.50)",
+          boxShadow: "inset 0 1px 0 hsl(0 0% 100% / 0.06), 0 24px 70px hsl(220 60% 2% / 0.50)",
         }}
       >
-        <div className="flex items-start justify-between gap-4 mb-6">
-          <div className="flex items-center gap-3">
-            <BrandMark size={42} idSuffix="onboarding" />
-            <div>
-              <h1 className="text-[22px] font-extrabold leading-tight text-foreground">
-                Set up Said
-              </h1>
-              <p className="text-[12.5px] text-muted-foreground mt-1">
-                Connect OpenAI first, then grant the Mac permissions Said needs.
-              </p>
-            </div>
-          </div>
-          <span
-            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold"
-            style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
+        <div className="flex flex-col items-center text-center mb-6">
+          <div
+            className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4"
+            style={{ background: "hsl(var(--primary) / 0.12)", color: "hsl(var(--primary))" }}
           >
-            <Sparkles size={11} /> Onboarding
-          </span>
+            {icon}
+          </div>
+          <h1 className="text-[20px] font-bold text-foreground leading-tight">{title}</h1>
+          <p className="text-[13px] text-muted-foreground mt-1.5 max-w-[360px] leading-relaxed">{subtitle}</p>
         </div>
+        {children}
+        <div className="mt-6">
+          <ProgressDots current={step} />
+        </div>
+      </div>
+    </div>
+  );
+}
 
-        {!openAIConnected ? (
-          <div className="space-y-4">
-            <div
-              className="rounded-xl px-4 py-4"
+function PasswordInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <input
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-xl px-4 py-3 text-[13px] text-foreground outline-none pr-10"
+        style={{
+          background: "hsl(var(--surface-1))",
+          boxShadow: "inset 0 0 0 1px hsl(var(--surface-4))",
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => setShow((s) => !s)}
+        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+      >
+        {show ? <EyeOff size={14} /> : <Eye size={14} />}
+      </button>
+    </div>
+  );
+}
+
+function computeStartStep(
+  mic: boolean, acc: boolean, im: boolean, hasKeys: boolean,
+): Step {
+  if (!mic) return "microphone";
+  if (!acc) return "accessibility";
+  if (!hasKeys) return "api-keys";
+  if (!im) return "input-monitoring";
+  return "test";
+}
+
+export function OnboardingFlow({ snapshot, onMicrophone, onAccessibility, onInputMonitoring, onFinish }: Props) {
+  const [prefs, setPrefs] = useState<Preferences | null>(null);
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
+  const [groqKey, setGroqKey] = useState("");
+  const [deepgramKey, setDeepgramKey] = useState("");
+  const [keySaving, setKeySaving] = useState(false);
+  const [keyError, setKeyError] = useState("");
+
+  const micGranted = snapshot?.microphone_granted ?? false;
+  const accGranted = snapshot?.accessibility_granted ?? false;
+  const imGranted = snapshot?.input_monitoring_granted ?? false;
+
+  useEffect(() => {
+    getPreferences().then((p) => {
+      if (p) {
+        setPrefs(p);
+        if (p.groq_api_key) setGroqKey(p.groq_api_key);
+        if (p.deepgram_api_key) setDeepgramKey(p.deepgram_api_key);
+      }
+      setPrefsLoaded(true);
+    });
+  }, []);
+
+  const hasKeys = !!(prefs?.groq_api_key && prefs?.deepgram_api_key);
+  const startStep = prefsLoaded
+    ? computeStartStep(micGranted, accGranted, imGranted, hasKeys)
+    : "welcome";
+
+  const [step, setStep] = useState<Step>("welcome");
+  const [initialized, setInitialized] = useState(false);
+
+  useEffect(() => {
+    if (prefsLoaded && !initialized) {
+      setStep(startStep === "test" ? "test" : startStep);
+      setInitialized(true);
+    }
+  }, [prefsLoaded, initialized, startStep]);
+
+  const stepIndex = STEPS.indexOf(step);
+
+  const goNext = useCallback(() => {
+    const idx = STEPS.indexOf(step);
+    if (idx < STEPS.length - 1) setStep(STEPS[idx + 1]);
+  }, [step]);
+
+  // Auto-advance when permission is granted or keys are already saved
+  useEffect(() => {
+    if (step === "microphone" && micGranted) {
+      const t = setTimeout(goNext, 600);
+      return () => clearTimeout(t);
+    }
+    if (step === "accessibility" && accGranted) {
+      const t = setTimeout(goNext, 600);
+      return () => clearTimeout(t);
+    }
+    if (step === "api-keys" && hasKeys) {
+      const t = setTimeout(goNext, 300);
+      return () => clearTimeout(t);
+    }
+    if (step === "input-monitoring" && imGranted) {
+      const t = setTimeout(goNext, 600);
+      return () => clearTimeout(t);
+    }
+  }, [step, micGranted, accGranted, imGranted, hasKeys, goNext]);
+
+  const handleSaveKeys = useCallback(async () => {
+    if (!groqKey.trim() || !deepgramKey.trim()) {
+      setKeyError("Both keys are required.");
+      return;
+    }
+    setKeySaving(true);
+    setKeyError("");
+    try {
+      const updated = await patchPreferences({
+        groq_api_key: groqKey.trim(),
+        deepgram_api_key: deepgramKey.trim(),
+        llm_provider: "groq",
+      });
+      if (updated) setPrefs(updated);
+      goNext();
+    } catch {
+      setKeyError("Failed to save keys. Try again.");
+    } finally {
+      setKeySaving(false);
+    }
+  }, [groqKey, deepgramKey, goNext]);
+
+  const handleHotkeySelect = useCallback(async (key: string) => {
+    await patchPreferences({ record_hotkey: key });
+    goNext();
+  }, [goNext]);
+
+  // ── Step 1: Welcome ──────────────────────────────────────────────────────
+  if (step === "welcome") {
+    return (
+      <StepShell
+        icon={<BrandMark size={28} idSuffix="onboarding" />}
+        title="Welcome to Said"
+        subtitle="Hold a key, speak, release — Said types polished text into any app."
+        step={stepIndex}
+      >
+        <button
+          onClick={goNext}
+          className="btn-primary w-full justify-center py-3 rounded-xl text-[14px] font-semibold"
+        >
+          Get Started
+          <ArrowRight size={15} />
+        </button>
+      </StepShell>
+    );
+  }
+
+  // ── Step 2: Microphone ───────────────────────────────────────────────────
+  if (step === "microphone") {
+    return (
+      <StepShell
+        icon={<Mic size={24} />}
+        title="Microphone Access"
+        subtitle="Said needs your microphone to hear what you say."
+        step={stepIndex}
+      >
+        {micGranted ? (
+          <div className="flex items-center justify-center gap-2 py-3 text-[14px] font-semibold" style={{ color: "hsl(var(--primary))" }}>
+            <Check size={18} /> Microphone allowed
+          </div>
+        ) : (
+          <button
+            onClick={onMicrophone}
+            className="btn-primary w-full justify-center py-3 rounded-xl text-[14px] font-semibold"
+          >
+            Allow Microphone
+          </button>
+        )}
+      </StepShell>
+    );
+  }
+
+  // ── Step 3: Accessibility ────────────────────────────────────────────────
+  if (step === "accessibility") {
+    return (
+      <StepShell
+        icon={<Shield size={24} />}
+        title="Accessibility"
+        subtitle="Said types polished text directly into the app you're using."
+        step={stepIndex}
+      >
+        {accGranted ? (
+          <div className="flex items-center justify-center gap-2 py-3 text-[14px] font-semibold" style={{ color: "hsl(var(--primary))" }}>
+            <Check size={18} /> Accessibility granted
+          </div>
+        ) : (
+          <>
+            <button
+              onClick={onAccessibility}
+              className="btn-primary w-full justify-center py-3 rounded-xl text-[14px] font-semibold"
+            >
+              Open Settings
+              <ArrowRight size={15} />
+            </button>
+            <p className="text-[11.5px] text-muted-foreground text-center mt-2">
+              Add Said in System Settings → Privacy → Accessibility, then come back.
+            </p>
+          </>
+        )}
+      </StepShell>
+    );
+  }
+
+  // ── Step 4: API Keys ─────────────────────────────────────────────────────
+  if (step === "api-keys") {
+    return (
+      <StepShell
+        icon={<Key size={24} />}
+        title="Connect Your API Keys"
+        subtitle="Said needs two free API keys to work. Both take under a minute to get."
+        step={stepIndex}
+      >
+        <div className="space-y-4">
+          {/* Groq Section */}
+          <div
+            className="rounded-xl px-4 py-4"
+            style={{ background: "hsl(var(--surface-1))", boxShadow: "inset 0 0 0 1px hsl(var(--surface-4))" }}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[13px] font-semibold text-foreground">Groq</span>
+              {prefs?.groq_api_key ? (
+                <span className="text-[10px] font-semibold flex items-center gap-1 px-2 py-0.5 rounded-md" style={{ background: "hsl(var(--primary) / 0.12)", color: "hsl(var(--primary))" }}>
+                  <Check size={10} /> Connected
+                </span>
+              ) : (
+                <span className="text-[10px] font-medium px-2 py-0.5 rounded-md" style={{ background: "hsl(38 80% 45% / 0.14)", color: "hsl(38 90% 68%)" }}>
+                  Required
+                </span>
+              )}
+            </div>
+            <p className="text-[11.5px] text-muted-foreground mb-2.5 leading-relaxed">
+              Polishes your speech into clean text using fast LLM inference.
+            </p>
+            <div className="flex items-center gap-2 mb-2.5">
+              <a
+                href="https://console.groq.com/keys"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
+                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+              >
+                Get free key <ExternalLink size={11} />
+              </a>
+              <span className="text-[10px] text-muted-foreground">console.groq.com</span>
+            </div>
+            <ul className="text-[11px] text-muted-foreground space-y-1 mb-3 ml-3">
+              <li className="flex items-start gap-1.5"><span style={{ color: "hsl(var(--primary))" }}>1.</span> Sign up or log in with Google</li>
+              <li className="flex items-start gap-1.5"><span style={{ color: "hsl(var(--primary))" }}>2.</span> Click "Create API Key"</li>
+              <li className="flex items-start gap-1.5"><span style={{ color: "hsl(var(--primary))" }}>3.</span> Copy the key (starts with <span className="font-mono">gsk_</span>)</li>
+            </ul>
+            <PasswordInput value={groqKey} onChange={setGroqKey} placeholder="gsk_..." />
+          </div>
+
+          {/* Deepgram Section */}
+          <div
+            className="rounded-xl px-4 py-4"
+            style={{ background: "hsl(var(--surface-1))", boxShadow: "inset 0 0 0 1px hsl(var(--surface-4))" }}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[13px] font-semibold text-foreground">Deepgram</span>
+              {prefs?.deepgram_api_key ? (
+                <span className="text-[10px] font-semibold flex items-center gap-1 px-2 py-0.5 rounded-md" style={{ background: "hsl(var(--primary) / 0.12)", color: "hsl(var(--primary))" }}>
+                  <Check size={10} /> Connected
+                </span>
+              ) : (
+                <span className="text-[10px] font-medium px-2 py-0.5 rounded-md" style={{ background: "hsl(38 80% 45% / 0.14)", color: "hsl(38 90% 68%)" }}>
+                  Required
+                </span>
+              )}
+            </div>
+            <p className="text-[11.5px] text-muted-foreground mb-2.5 leading-relaxed">
+              Converts your voice to text with real-time speech recognition.
+            </p>
+            <div className="flex items-center gap-2 mb-2.5">
+              <a
+                href="https://console.deepgram.com/signup"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
+                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+              >
+                Get free key <ExternalLink size={11} />
+              </a>
+              <span className="text-[10px] text-muted-foreground">console.deepgram.com</span>
+            </div>
+            <ul className="text-[11px] text-muted-foreground space-y-1 mb-3 ml-3">
+              <li className="flex items-start gap-1.5"><span style={{ color: "hsl(var(--primary))" }}>1.</span> Sign up with Google or GitHub</li>
+              <li className="flex items-start gap-1.5"><span style={{ color: "hsl(var(--primary))" }}>2.</span> Go to Settings → API Keys</li>
+              <li className="flex items-start gap-1.5"><span style={{ color: "hsl(var(--primary))" }}>3.</span> Create a key and copy it</li>
+            </ul>
+            <PasswordInput value={deepgramKey} onChange={setDeepgramKey} placeholder="Your Deepgram key" />
+          </div>
+
+          {keyError && (
+            <p className="text-[12px] font-medium text-center" style={{ color: "hsl(354 78% 65%)" }}>
+              {keyError}
+            </p>
+          )}
+
+          <button
+            onClick={handleSaveKeys}
+            disabled={keySaving || !groqKey.trim() || !deepgramKey.trim()}
+            className="btn-primary w-full justify-center py-3 rounded-xl text-[14px] font-semibold disabled:opacity-50"
+          >
+            {keySaving ? "Saving…" : "Save & Continue"}
+            {!keySaving && <ArrowRight size={15} />}
+          </button>
+
+          <p className="text-[10.5px] text-muted-foreground text-center leading-relaxed">
+            Keys are stored locally on your device. Never sent anywhere except directly to Groq and Deepgram.
+          </p>
+        </div>
+      </StepShell>
+    );
+  }
+
+  // ── Step 5: Choose Hotkey ────────────────────────────────────────────────
+  if (step === "hotkey") {
+    const options = [
+      { key: "caps_lock", label: "Caps Lock", desc: "Quick single key" },
+      { key: "right_option", label: "Right Option", desc: "Hold to record" },
+      { key: "fn", label: "Fn", desc: "Hold to record" },
+    ];
+
+    return (
+      <StepShell
+        icon={<Keyboard size={24} />}
+        title="Choose Your Hotkey"
+        subtitle="Pick which key you'll hold to start recording."
+        step={stepIndex}
+      >
+        <div className="space-y-2">
+          {options.map((opt) => (
+            <button
+              key={opt.key}
+              onClick={() => handleHotkeySelect(opt.key)}
+              className="w-full flex items-center gap-4 px-4 py-3.5 rounded-xl transition-colors text-left"
               style={{
                 background: "hsl(var(--surface-1))",
                 boxShadow: "inset 0 0 0 1px hsl(var(--surface-4))",
               }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-4))"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "hsl(var(--surface-1))"; }}
             >
-              <p className="text-[13px] font-semibold text-foreground">1. Connect OpenAI</p>
-              <p className="text-[12px] text-muted-foreground mt-1 leading-relaxed">
-                Said uses your OpenAI account to polish dictation with the models already selected for the app.
-              </p>
-            </div>
-
-            {connectError && (
               <div
-                className="rounded-lg px-3 py-2 text-[12px] font-medium"
-                style={{
-                  background: "hsl(354 78% 60% / 0.10)",
-                  color: "hsl(354 78% 75%)",
-                  boxShadow: "inset 0 0 0 1px hsl(354 78% 60% / 0.25)",
-                }}
+                className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-[13px] font-bold"
+                style={{ background: "hsl(var(--primary) / 0.12)", color: "hsl(var(--primary))" }}
               >
-                {connectError}
+                {opt.key === "caps_lock" ? "⇪" : opt.key === "fn" ? "fn" : "⌥"}
               </div>
-            )}
-
-            <button
-              onClick={onConnectOpenAI}
-              disabled={connectBusy}
-              className="btn-primary w-full justify-center py-2.5 rounded-lg"
-              style={{ fontSize: 13 }}
-            >
-              {connectBusy ? (
-                <>
-                  <Loader2 size={14} className="animate-spin" />
-                  Waiting for browser…
-                </>
-              ) : (
-                <>
-                  Connect OpenAI
-                  <ArrowRight size={13} />
-                </>
-              )}
+              <div>
+                <p className="text-[14px] font-semibold text-foreground">{opt.label}</p>
+                <p className="text-[12px] text-muted-foreground">{opt.desc}</p>
+              </div>
+              <ArrowRight size={14} className="ml-auto text-muted-foreground" />
             </button>
-            {connectBusy && (
-              <p className="text-[11.5px] text-muted-foreground text-center">
-                Finish in your browser. This screen updates automatically.
-              </p>
-            )}
+          ))}
+        </div>
+      </StepShell>
+    );
+  }
+
+  // ── Step 6: Input Monitoring ─────────────────────────────────────────────
+  if (step === "input-monitoring") {
+    return (
+      <StepShell
+        icon={<Sparkles size={24} />}
+        title="Input Monitoring"
+        subtitle="Last permission — lets Said listen for your hotkey from any app."
+        step={stepIndex}
+      >
+        {imGranted ? (
+          <div className="flex items-center justify-center gap-2 py-3 text-[14px] font-semibold" style={{ color: "hsl(var(--primary))" }}>
+            <Check size={18} /> Input Monitoring granted
           </div>
         ) : (
-          <div className="space-y-4">
-            <div
-              className="rounded-xl overflow-hidden"
-              style={{ boxShadow: "inset 0 0 0 1px hsl(var(--surface-4))" }}
-            >
-              {steps.map((step, index) => (
-                <div key={step.id}>
-                  <div className="flex items-center gap-4 px-4 py-3.5">
-                    <div
-                      className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-                      style={{
-                        background: "hsl(var(--surface-4))",
-                        color: step.granted ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
-                      }}
-                    >
-                      {step.icon}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="text-[13px] font-semibold text-foreground">{step.label}</p>
-                        <StatusPill granted={step.granted} required={step.required} />
-                      </div>
-                      <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
-                        {step.description}
-                      </p>
-                    </div>
-                    {!step.granted && (
-                      <button
-                        onClick={step.onAction}
-                        disabled={step.id === "notifications" && notifBusy}
-                        className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
-                        style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-                      >
-                        {step.id === "notifications" && notifBusy ? "Opening…" : step.actionLabel}
-                      </button>
-                    )}
-                  </div>
-                  {index < steps.length - 1 && (
-                    <div className="mx-4 border-t" style={{ borderColor: "hsl(var(--surface-4))" }} />
-                  )}
-                </div>
-              ))}
-            </div>
-
+          <>
             <button
-              onClick={onFinish}
-              disabled={!coreReady}
-              className="btn-primary w-full justify-center py-2.5 rounded-lg disabled:opacity-50"
-              style={{ fontSize: 13 }}
+              onClick={onInputMonitoring}
+              className="btn-primary w-full justify-center py-3 rounded-xl text-[14px] font-semibold"
             >
-              Continue to Said
-              <ArrowRight size={13} />
+              Open Settings
+              <ArrowRight size={15} />
             </button>
-            {!coreReady && (
-              <p className="text-[11.5px] text-muted-foreground text-center leading-relaxed">
-                Microphone, Input Monitoring, and Accessibility are required for the full dictation flow.
-              </p>
-            )}
-          </div>
+            <p className="text-[11.5px] text-muted-foreground text-center mt-2">
+              Add Said in System Settings → Privacy → Input Monitoring, then come back.
+            </p>
+          </>
         )}
+      </StepShell>
+    );
+  }
+
+  // ── Step 7: Test It ──────────────────────────────────────────────────────
+  const hotkeyLabel = prefs?.record_hotkey === "fn" ? "Fn" : prefs?.record_hotkey === "right_option" ? "Right Option" : "Caps Lock";
+
+  return (
+    <StepShell
+      icon={<Mic size={24} />}
+      title="You're All Set!"
+      subtitle={`Press and hold ${hotkeyLabel}, say something, then release. Try it now!`}
+      step={stepIndex}
+    >
+      <div
+        className="rounded-xl px-5 py-4 mb-4 text-center"
+        style={{
+          background: "hsl(var(--surface-1))",
+          boxShadow: "inset 0 0 0 1px hsl(var(--surface-4))",
+        }}
+      >
+        <p className="text-[13px] text-muted-foreground leading-relaxed">
+          Hold <span className="font-bold text-foreground">{hotkeyLabel}</span> → speak → release.
+          Said will type polished text into whatever app is focused.
+        </p>
       </div>
-    </div>
+      <button
+        onClick={onFinish}
+        className="btn-primary w-full justify-center py-3 rounded-xl text-[14px] font-semibold"
+      >
+        Start Using Said
+        <ArrowRight size={15} />
+      </button>
+    </StepShell>
   );
 }

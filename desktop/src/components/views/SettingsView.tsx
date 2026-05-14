@@ -1,15 +1,16 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
-  Shield, Cpu, Key, Info, Wifi, Check, Bot, Sparkles, Zap,
-  Languages, MessageSquareText, Loader2, LogIn, LogOut, RefreshCw,
-  Eye, EyeOff, Bell, Bug, Copy, FileText, Mic,
+  Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap,
+  Languages, MessageSquareText, Loader2, RefreshCw,
+  Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, Download,
 } from "lucide-react";
-import type { AppSnapshot, OpenAIStatus, Preferences } from "@/types";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import type { AppSnapshot, Preferences } from "@/types";
 import {
   getPreferences, patchPreferences,
-  getOpenAIStatus, initiateOpenAIOAuth, disconnectOpenAI,
   getDebugLogs,
   requestNotifications, checkNotificationPermission,
   type DebugLogs,
@@ -95,7 +96,6 @@ export type SettingsSection =
   | "writing"
   | "permissions"
   | "api-keys"
-  | "account"
   | "debug"
   | "about";
 
@@ -103,7 +103,6 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "writing",     label: "Writing style" },
   { id: "permissions", label: "Permissions"   },
   { id: "api-keys",    label: "API keys"      },
-  { id: "account",     label: "Account"       },
   { id: "debug",       label: "Debug"         },
   { id: "about",       label: "About"         },
 ];
@@ -169,16 +168,46 @@ export function SettingsView({
   const [keySaved,      setKeySaved]      = useState(false);
   const keySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── OpenAI OAuth state ──────────────────────────────────────────────────────
-  const [openAIStatus,  setOpenAIStatus]  = useState<OpenAIStatus | null>(null);
-  const [openAIBusy,    setOpenAIBusy]    = useState(false);
-  const [openAIError,   setOpenAIError]   = useState("");
-
   // ── Debug logs state ───────────────────────────────────────────────────────
   const [debugLogs,    setDebugLogs]    = useState<DebugLogs | null>(null);
   const [debugBusy,    setDebugBusy]    = useState(false);
   const [debugCopied,  setDebugCopied]  = useState<"combined" | "desktop" | "backend" | null>(null);
   const [debugTab,     setDebugTab]     = useState<"combined" | "desktop" | "backend">("combined");
+
+  // ── Auto-update state ─────────────────────────────────────────────────────
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "ready" | "up-to-date" | "error">("idle");
+  const [updateVersion, setUpdateVersion] = useState("");
+  const [updateError, setUpdateError] = useState("");
+
+  const checkForUpdates = useCallback(async () => {
+    setUpdateStatus("checking");
+    setUpdateError("");
+    try {
+      const update = await check();
+      if (update) {
+        setUpdateVersion(update.version);
+        setUpdateStatus("available");
+      } else {
+        setUpdateStatus("up-to-date");
+      }
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+      setUpdateStatus("error");
+    }
+  }, []);
+
+  const downloadAndInstall = useCallback(async () => {
+    setUpdateStatus("downloading");
+    try {
+      const update = await check();
+      if (!update) return;
+      await update.downloadAndInstall();
+      setUpdateStatus("ready");
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+      setUpdateStatus("error");
+    }
+  }, []);
   const recordHotkey = prefs?.record_hotkey ?? "caps_lock";
   const recordHotkeyLabel =
     recordHotkey === "right_option" ? "Right Option" :
@@ -241,7 +270,6 @@ export function SettingsView({
         syncApiKeyInputs(p);
       }
     });
-    getOpenAIStatus().then((s) => { if (s) setOpenAIStatus(s); });
   }, []);
 
   useEffect(() => {
@@ -265,46 +293,6 @@ export function SettingsView({
     await navigator.clipboard.writeText(text);
     setDebugCopied(kind);
     setTimeout(() => setDebugCopied((prev) => prev === kind ? null : prev), 1800);
-  }
-
-  async function handleOpenAIConnect() {
-    setOpenAIBusy(true);
-    setOpenAIError("");
-    try {
-      await initiateOpenAIOAuth();
-      // Poll every 2s for up to 5 min until the backend confirms connection
-      let attempts = 0;
-      const poll = setInterval(async () => {
-        attempts++;
-        const s = await getOpenAIStatus();
-        if (s?.connected) {
-          setOpenAIStatus(s);
-          setPrefs((prev) => prev ? { ...prev, llm_provider: "openai_codex" } : prev);
-          setOpenAIBusy(false);
-          clearInterval(poll);
-        } else if (attempts > 150) {
-          setOpenAIError("Timed out. Please try again.");
-          setOpenAIBusy(false);
-          clearInterval(poll);
-        }
-      }, 2000);
-    } catch (err) {
-      setOpenAIError(err instanceof Error ? err.message : String(err));
-      setOpenAIBusy(false);
-    }
-  }
-
-  async function handleOpenAIDisconnect() {
-    setOpenAIBusy(true);
-    try {
-      await disconnectOpenAI();
-      setOpenAIStatus((prev) => prev ? { ...prev, connected: false } : null);
-      setPrefs((prev) => prev ? { ...prev, llm_provider: "gateway" } : prev);
-    } catch (err) {
-      setOpenAIError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setOpenAIBusy(false);
-    }
   }
 
   async function saveApiKeys() {
@@ -1025,20 +1013,11 @@ export function SettingsView({
           {/* Provider option list */}
           {([
             {
-              id:       "gateway",
-              icon:     <Wifi size={15} />,
-              label:    "Gateway",
-              desc:     "gpt-5.4-mini via gateway.voicepolish.app — no key needed",
-              badge:    "Default",
-              needsKey: false,
-            },
-            {
               id:    "groq",
               icon:  <Zap size={15} />,
               label: "Groq LPU",
-              desc:  "llama-3.3-70b-versatile — fastest (~200ms TTFT), free tier",
-              badge: "Fast",
-              // Key is present if: already saved in prefs OR user has typed one in the input
+              desc:  "Llama 4 Scout — fastest (~200ms TTFT), free tier",
+              badge: "Default",
               needsKey: !prefs?.groq_api_key && !groqKey,
             },
             {
@@ -1049,18 +1028,8 @@ export function SettingsView({
               badge: null,
               needsKey: !prefs?.gemini_api_key && !geminiKey,
             },
-            {
-              id:    "openai_codex",
-              icon:  <Bot size={15} />,
-              label: "OpenAI Codex",
-              desc:  "gpt-5.4-mini via ChatGPT OAuth — connect account below",
-              badge: null,
-              needsKey: !openAIStatus?.connected,
-            },
           ] as const).map((opt, idx, arr) => {
-            const isOpenAIDisconnected = opt.id === "openai_codex" && !openAIStatus?.connected;
-            const isActive = prefs?.llm_provider === opt.id && !isOpenAIDisconnected;
-            const showReconnect = opt.id === "openai_codex" && isOpenAIDisconnected;
+            const isActive = prefs?.llm_provider === opt.id;
             return (
               <Row
                 key={opt.id}
@@ -1080,13 +1049,7 @@ export function SettingsView({
                       <span className="badge-model">{opt.badge}</span>
                     )}
                     <button
-                      onClick={() => {
-                        if (showReconnect) {
-                          void handleOpenAIConnect();
-                          return;
-                        }
-                        void patch({ llm_provider: opt.id });
-                      }}
+                      onClick={() => void patch({ llm_provider: opt.id })}
                       className={`px-3 py-1 rounded-md text-[11px] font-medium transition-all border ${
                         isActive
                           ? "border-transparent text-background"
@@ -1094,7 +1057,7 @@ export function SettingsView({
                       }`}
                       style={isActive ? { background: "hsl(var(--muted-foreground))" } : {}}
                     >
-                      {showReconnect ? "Reconnect" : isActive ? "✓ Active" : "Use"}
+                      {isActive ? "✓ Active" : "Use"}
                     </button>
                   </div>
                 }
@@ -1102,108 +1065,6 @@ export function SettingsView({
             );
           })}
         </Section>
-        </Show>
-
-        {/* ── OpenAI Account ────────────────────────────── */}
-        <Show when={isOn("account")}>
-        <div className="mb-7">
-          <p className="section-label px-1 mb-2.5">OpenAI Account</p>
-
-          {openAIStatus?.connected ? (
-            /* ── Connected state ──────────────────────── */
-            <div className="panel p-5 space-y-4">
-              {/* Status row */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div
-                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-                    style={{ background: "hsl(var(--surface-4))" }}
-                  >
-                    <Check size={16} style={{ color: "hsl(var(--muted-foreground))" }} />
-                  </div>
-                  <div>
-                    <p className="text-[13px] font-semibold text-foreground leading-tight">ChatGPT Connected</p>
-                    <p className="text-[11px] text-muted-foreground">OAuth token stored locally · models ready</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={handleOpenAIConnect}
-                    disabled={openAIBusy}
-                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    <RefreshCw size={12} />
-                    {openAIBusy ? "…" : "Reconnect"}
-                  </button>
-                  <button
-                    onClick={handleOpenAIDisconnect}
-                    disabled={openAIBusy}
-                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-red-500 transition-colors"
-                  >
-                    <LogOut size={12} />
-                    Disconnect
-                  </button>
-                </div>
-              </div>
-
-              {openAIBusy && (
-                <p className="text-[11px] text-muted-foreground">Waiting for browser sign-in… this window updates automatically.</p>
-              )}
-              {openAIError && (
-                <p className="text-[11px]" style={{ color: "hsl(0 75% 75%)" }}>{openAIError}</p>
-              )}
-            </div>
-          ) : (
-            /* ── Not connected state ──────────────────── */
-            <div className="panel p-5 space-y-4">
-              <div className="flex items-start gap-3">
-                <div
-                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5"
-                  style={{ background: "hsl(var(--surface-4))" }}
-                >
-                  <Sparkles size={16} className="text-muted-foreground" />
-                </div>
-                <div>
-                  <p className="text-[13px] font-semibold text-foreground leading-tight">Connect your ChatGPT account</p>
-                  <p className="text-[12px] text-muted-foreground mt-1 leading-relaxed">
-                    Use your ChatGPT Pro subscription to access <strong className="text-foreground">gpt-5.4</strong> and{" "}
-                    <strong className="text-foreground">gpt-5.4-mini</strong> directly — no API key needed.
-                    Your voice data never leaves your Mac.
-                  </p>
-                </div>
-              </div>
-
-              <button
-                onClick={handleOpenAIConnect}
-                disabled={openAIBusy}
-                className="w-full btn-primary flex items-center justify-center gap-2 !py-2.5"
-              >
-                {openAIBusy ? (
-                  <>
-                    <Loader2 size={13} className="animate-spin" />
-                    Waiting for browser…
-                  </>
-                ) : (
-                  <>
-                    <LogIn size={13} />
-                    Connect OpenAI account
-                  </>
-                )}
-              </button>
-
-              {openAIBusy && (
-                <p className="text-[11px] text-muted-foreground text-center leading-relaxed">
-                  A browser window will open. Sign in with your ChatGPT account, then return here.
-                </p>
-              )}
-
-              {openAIError && (
-                <p className="text-[11px]" style={{ color: "hsl(0 75% 75%)" }}>{openAIError}</p>
-              )}
-            </div>
-          )}
-        </div>
-
         </Show>
 
         {/* ── Debug ───────────────────────────────────── */}
@@ -1335,8 +1196,51 @@ export function SettingsView({
           <Row
             icon={<Info size={16} />}
             label="Said — Voice Polish Studio"
-            description="Version 0.1.0 · Local-first · Built with Tauri + Rust + React"
+            description="Local-first · Built with Tauri + Rust + React"
+          />
+          <Row
+            icon={<Download size={16} />}
+            label="Software Update"
+            description={
+              updateStatus === "checking" ? "Checking for updates…" :
+              updateStatus === "available" ? `Version ${updateVersion} is available` :
+              updateStatus === "downloading" ? "Downloading update…" :
+              updateStatus === "ready" ? "Update installed — relaunch to finish" :
+              updateStatus === "up-to-date" ? "You're on the latest version" :
+              updateStatus === "error" ? (updateError || "Update check failed") :
+              "Check for available updates"
+            }
             last
+            action={
+              <div className="flex items-center gap-2">
+                {updateStatus === "checking" || updateStatus === "downloading" ? (
+                  <Loader2 size={14} className="animate-spin text-muted-foreground" />
+                ) : updateStatus === "available" ? (
+                  <button
+                    onClick={() => void downloadAndInstall()}
+                    className="px-3 py-1 rounded-md text-[11px] font-medium border border-transparent text-background"
+                    style={{ background: "hsl(var(--primary))" }}
+                  >
+                    Install Update
+                  </button>
+                ) : updateStatus === "ready" ? (
+                  <button
+                    onClick={() => void relaunch()}
+                    className="px-3 py-1 rounded-md text-[11px] font-medium border border-transparent text-background"
+                    style={{ background: "hsl(var(--primary))" }}
+                  >
+                    Relaunch
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => void checkForUpdates()}
+                    className="px-3 py-1 rounded-md text-[11px] font-medium border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-all"
+                  >
+                    Check
+                  </button>
+                )}
+              </div>
+            }
           />
         </Section>
         </Show>

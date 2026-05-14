@@ -19,7 +19,7 @@ use rusqlite::params;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
+use tracing::{info, trace, warn};
 
 use crate::store::DbPool;
 
@@ -162,7 +162,7 @@ pub async fn cached(pool: &DbPool, text: &str) -> Option<Vec<f32>> {
             text.len()
         );
     } else {
-        debug!(
+        trace!(
             "[embedder] GAP-4: hot cache MISS in {}ms ({} chars)",
             t0.elapsed().as_millis(),
             text.len()

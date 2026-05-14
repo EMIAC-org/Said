@@ -6,6 +6,7 @@ use axum::{
 };
 use reqwest::Client;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
@@ -60,7 +61,7 @@ pub async fn get_prefs_cached(
         prefs: prefs.clone(),
         cached_at: Instant::now(),
     });
-    tracing::debug!("[prefs-cache] miss → refreshed from SQLite");
+    tracing::trace!("[prefs-cache] miss → refreshed from SQLite");
     Some(prefs)
 }
 
@@ -68,7 +69,7 @@ pub async fn get_prefs_cached(
 pub async fn invalidate_prefs_cache(cache: &PrefsCache) {
     let mut guard = cache.write().await;
     *guard = None;
-    tracing::debug!("[prefs-cache] invalidated");
+    tracing::trace!("[prefs-cache] invalidated");
 }
 
 // ── Lexicon hot-cache ──────────────────────────────────────────────────────────
@@ -125,7 +126,7 @@ pub async fn get_lexicon_cached(
         stt_replacements: stt_replacements.clone(),
         cached_at: Instant::now(),
     });
-    tracing::debug!("[lexicon-cache] miss → refreshed from SQLite");
+    tracing::trace!("[lexicon-cache] miss → refreshed from SQLite");
     (corrections, stt_replacements)
 }
 
@@ -133,10 +134,28 @@ pub async fn get_lexicon_cached(
 pub async fn invalidate_lexicon_cache(cache: &LexiconCache) {
     let mut guard = cache.write().await;
     *guard = None;
-    tracing::debug!("[lexicon-cache] invalidated");
+    tracing::info!("[lexicon-cache] invalidated");
 }
 
 // ── Application state ─────────────────────────────────────────────────────────
+
+/// Tracks how many fire-and-forget background tasks (embedding, meaning,
+/// alias review) are currently running. Logged at pipeline-start so you
+/// can correlate latency spikes with background contention.
+pub static BG_TASK_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+pub fn bg_task_guard() -> BgTaskGuard {
+    BG_TASK_COUNT.fetch_add(1, Ordering::Relaxed);
+    BgTaskGuard
+}
+
+pub struct BgTaskGuard;
+
+impl Drop for BgTaskGuard {
+    fn drop(&mut self) {
+        BG_TASK_COUNT.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {

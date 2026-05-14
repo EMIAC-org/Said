@@ -80,7 +80,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                 gemini_api_key: row.get(14)?,
                 llm_provider: row
                     .get::<_, Option<String>>(15)?
-                    .unwrap_or_else(|| "openai_codex".into()),
+                    .unwrap_or_else(|| "groq".into()),
                 groq_api_key: row.get(16)?,
             })
         },

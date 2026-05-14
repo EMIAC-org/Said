@@ -43,6 +43,8 @@ sysinfo = "0.32"
 # Native OS notifications via the official Tauri plugin
 tauri-plugin-notification = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 # Workspace crates
 said-core     = { path = "../../crates/core" }

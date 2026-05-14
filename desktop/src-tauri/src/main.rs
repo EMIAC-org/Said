@@ -4287,6 +4287,8 @@ fn main() {
             }
         })
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(SharedApp(shared_app))
         .manage(BackendState(backend_arc))
         .manage(BackendHandleState(Mutex::new(None)))

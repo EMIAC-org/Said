@@ -15,7 +15,7 @@ export function useTheme(): {
   setTheme: (t: Theme) => void;
 } {
   const [theme, setThemeState] = useState<Theme>(() => {
-    if (typeof document === "undefined") return "light";
+    if (typeof document === "undefined") return "dark";
     return (document.documentElement.dataset.theme as Theme) ?? "light";
   });
 

@@ -806,6 +806,12 @@ fn merge_triage_with_llm(
 /// relevance boost until a future re-embed.
 fn spawn_vocab_embedding(state: AppState, term: String, example_context: Option<String>) {
     tokio::spawn(async move {
+        let _guard = crate::bg_task_guard();
+        info!(
+            "[bg] embed for {term:?} started (active={})",
+            crate::BG_TASK_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+        );
+        let bg_start = std::time::Instant::now();
         // Resolve Gemini key from prefs, fall back to env var.
         let Some(prefs) = get_prefs(&state.pool, &state.default_user_id) else {
             return;
@@ -866,11 +872,10 @@ fn spawn_vocab_embedding(state: AppState, term: String, example_context: Option<
         // depend on the embedder running successfully — see
         // spawn_meaning_refresh call site in the STT_ERROR handler.
         let _ = blocking.await;
-        // For long-tail use bumps (term retrieved + used in polish) we still
-        // want meaning to refresh as the counter crosses the threshold.
-        // meaning_needs_refresh is cheap (one row read) so calling it here
-        // when the counter just bumped is the right place — the call exits
-        // immediately if the threshold isn't crossed.
+        info!(
+            "[bg] embed for {term:?} done in {}ms",
+            bg_start.elapsed().as_millis()
+        );
         spawn_meaning_refresh(state, term, example_context.unwrap_or_default());
     });
 }
@@ -888,13 +893,18 @@ fn spawn_vocab_embedding(state: AppState, term: String, example_context: Option<
 /// refresh tick will retry.
 fn spawn_meaning_refresh(state: AppState, term: String, latest_example: String) {
     tokio::spawn(async move {
+        let _guard = crate::bg_task_guard();
         let uid = state.default_user_id.clone();
         let pool = state.pool.clone();
 
-        // Cheap synchronous gate — most calls exit here without touching the LLM.
         if !vocabulary::meaning_needs_refresh(&pool, &uid, &term) {
             return;
         }
+        info!(
+            "[bg] meaning for {term:?} started (active={})",
+            crate::BG_TASK_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+        );
+        let bg_start = std::time::Instant::now();
 
         // Resolve BOTH keys up-front. meaning::generate_initial / refine do a
         // Groq → OpenAI fallback internally; we just plumb the keys through
@@ -960,6 +970,10 @@ fn spawn_meaning_refresh(state: AppState, term: String, latest_example: String) 
             })
             .await;
         }
+        info!(
+            "[bg] meaning for {term:?} done in {}ms",
+            bg_start.elapsed().as_millis()
+        );
     });
 }
 
