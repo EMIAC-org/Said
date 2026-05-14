@@ -31,6 +31,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
 
       - name: cargo fmt --check
         run: cargo fmt --all --check
