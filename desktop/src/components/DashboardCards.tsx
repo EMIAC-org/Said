@@ -682,6 +682,8 @@ export function TimelineCard({ recordings }: { recordings: Recording[] }) {
     }
   });
 
+  const CELL = 11;
+  const GAP = 3;
   const DOW_LABELS = ["", "Mon", "", "Wed", "", "Fri", ""];
 
   return (
@@ -698,22 +700,24 @@ export function TimelineCard({ recordings }: { recordings: Recording[] }) {
             className="text-[11.5px] mt-0.5"
             style={{ color: "hsl(var(--muted-foreground))" }}
           >
-            {totalWords.toLocaleString()} words &middot; {totalRecordings} recordings &middot;{" "}
-            {activeDays} active days
+            {totalWords.toLocaleString()} words &middot; {totalRecordings} recording{totalRecordings !== 1 ? "s" : ""} &middot;{" "}
+            {activeDays} active day{activeDays !== 1 ? "s" : ""}
           </p>
         </div>
       </div>
 
-      <div className="flex gap-[3px]">
-        <div className="flex flex-col gap-[3px] pr-1.5 pt-[18px]">
+      <div className="flex overflow-x-auto">
+        {/* Day-of-week labels */}
+        <div className="flex flex-col flex-shrink-0 pr-2" style={{ gap: GAP, paddingTop: 14 + GAP }}>
           {DOW_LABELS.map((l, i) => (
             <div
               key={i}
               style={{
-                height: 11,
+                height: CELL,
                 fontSize: 9,
-                lineHeight: "11px",
+                lineHeight: `${CELL}px`,
                 color: "hsl(var(--muted-foreground))",
+                textAlign: "right",
               }}
             >
               {l}
@@ -721,66 +725,61 @@ export function TimelineCard({ recordings }: { recordings: Recording[] }) {
           ))}
         </div>
 
-        <div className="flex-1 overflow-hidden">
-          <div className="flex gap-[3px]" style={{ minWidth: 0 }}>
-            {weeks.map((week, wi) => (
-              <div key={wi} className="flex flex-col gap-[3px]" style={{ flex: "1 1 0" }}>
-                {wi === 0 || monthLabels.some((m) => m.col === wi) ? (
+        {/* Week columns */}
+        <div className="flex" style={{ gap: GAP }}>
+          {weeks.map((week, wi) => (
+            <div key={wi} className="flex flex-col" style={{ gap: GAP, width: CELL }}>
+              {/* Month label row */}
+              <div
+                style={{
+                  height: 14,
+                  fontSize: 9,
+                  lineHeight: "14px",
+                  color: "hsl(var(--muted-foreground))",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {monthLabels.find((m) => m.col === wi)?.label ?? ""}
+              </div>
+
+              {/* Day cells */}
+              {week.map((day) => {
+                const isFuture = new Date(day.key).getTime() > now.getTime();
+                return (
                   <div
+                    key={day.key}
+                    className="relative group"
                     style={{
-                      height: 14,
-                      fontSize: 9,
-                      lineHeight: "14px",
-                      color: "hsl(var(--muted-foreground))",
+                      width: CELL,
+                      height: CELL,
+                      borderRadius: 2,
+                      background: isFuture ? "transparent" : cellColor(day.words),
+                      opacity: isFuture ? 0 : 1,
                     }}
                   >
-                    {monthLabels.find((m) => m.col === wi)?.label ?? ""}
+                    {day.words > 0 && (
+                      <div
+                        className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 px-2 py-1 rounded text-[10px] whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-20"
+                        style={{
+                          background: "hsl(var(--foreground))",
+                          color: "hsl(var(--background))",
+                          fontWeight: 600,
+                          boxShadow: "0 4px 12px hsl(0 0% 0% / 0.18)",
+                        }}
+                      >
+                        {day.words.toLocaleString()} words &middot;{" "}
+                        {day.count} recording{day.count !== 1 ? "s" : ""} &middot;{" "}
+                        {new Date(day.key).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </div>
+                    )}
                   </div>
-                ) : (
-                  <div style={{ height: 14 }} />
-                )}
-
-                {week.map((day) => {
-                  const isFuture =
-                    new Date(day.key).getTime() > now.getTime();
-                  return (
-                    <div
-                      key={day.key}
-                      className="relative group"
-                      style={{
-                        aspectRatio: "1",
-                        width: "100%",
-                        borderRadius: 2,
-                        background: isFuture
-                          ? "transparent"
-                          : cellColor(day.words),
-                        opacity: isFuture ? 0 : 1,
-                      }}
-                    >
-                      {day.words > 0 && (
-                        <div
-                          className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 px-2 py-1 rounded text-[10px] whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-20"
-                          style={{
-                            background: "hsl(var(--foreground))",
-                            color: "hsl(var(--background))",
-                            fontWeight: 600,
-                            boxShadow: "0 4px 12px hsl(0 0% 0% / 0.18)",
-                          }}
-                        >
-                          {day.words.toLocaleString()} words &middot;{" "}
-                          {day.count} recording{day.count !== 1 ? "s" : ""} &middot;{" "}
-                          {new Date(day.key).toLocaleDateString("en-US", {
-                            month: "short",
-                            day: "numeric",
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
+                );
+              })}
+            </div>
+          ))}
         </div>
       </div>
 
@@ -790,8 +789,8 @@ export function TimelineCard({ recordings }: { recordings: Recording[] }) {
           <div
             key={i}
             style={{
-              width: 10,
-              height: 10,
+              width: CELL,
+              height: CELL,
               borderRadius: 2,
               background: ratio === 0 ? "hsl(var(--surface-4))" : cellColor(ratio * maxWords),
             }}

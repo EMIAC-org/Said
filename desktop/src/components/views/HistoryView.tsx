@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Clock, Copy, Play, Pause, Trash2, MoreHorizontal, Check, Search, X, Download } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Clock, Copy, Play, Pause, Trash2, MoreHorizontal, Check, Search, X, Download, RefreshCw } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { groupHistory } from "@/types";
 import type { Recording } from "@/types";
@@ -328,14 +328,23 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onDownloadSuccess 
 
 // ── Main view ─────────────────────────────────────────────────────────────────
 
-export function HistoryView({ onDownloadSuccess }: { onDownloadSuccess?: (path: string) => void }) {
+export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSuccess?: (path: string) => void; refreshKey?: number }) {
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [query,      setQuery]      = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   const { playingId, play, stop }   = useAudioPlayer();
 
-  useEffect(() => {
-    listHistory(200).then(setRecordings);
+  const loadHistory = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const recs = await listHistory(200);
+      setRecordings(recs);
+    } finally {
+      setRefreshing(false);
+    }
   }, []);
+
+  useEffect(() => { void loadHistory(); }, [loadHistory, refreshKey]);
 
   // Filter by query (matches polished, transcript, or final_text — case-insensitive).
   const filteredRecordings = useMemo(() => {
@@ -396,11 +405,22 @@ export function HistoryView({ onDownloadSuccess }: { onDownloadSuccess?: (path: 
   return (
     <ScrollArea className="h-full">
       <div className="p-7 pb-12 max-w-3xl mx-auto">
-        <div className="mb-5">
-          <h1 className="text-[28px] font-bold tracking-tight text-foreground leading-tight">History</h1>
-          <p className="text-[13px] text-muted-foreground mt-1 tabular-nums">
-            {recordings.length} recording{recordings.length !== 1 ? "s" : ""} · kept for 1 day
-          </p>
+        <div className="flex items-start justify-between mb-5">
+          <div>
+            <h1 className="text-[28px] font-bold tracking-tight text-foreground leading-tight">History</h1>
+            <p className="text-[13px] text-muted-foreground mt-1 tabular-nums">
+              {recordings.length} recording{recordings.length !== 1 ? "s" : ""} · kept for 1 day
+            </p>
+          </div>
+          <button
+            onClick={() => void loadHistory()}
+            disabled={refreshing}
+            title="Refresh history"
+            className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors mt-1"
+            style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
+          >
+            <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
+          </button>
         </div>
 
         {/* ── Search bar ───────────────────────────────────────── */}
