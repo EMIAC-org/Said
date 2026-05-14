@@ -3,8 +3,8 @@
 //! A single actor owns the Deepgram WebSocket. Recordings send audio chunks to
 //! the actor by recording id, release sends `Finalize`, and the actor returns a
 //! transcript over a per-recording oneshot. Between recordings it keeps the same
-//! socket alive with Deepgram `KeepAlive` messages after the first audio frame
-//! has been sent on that socket.
+//! socket warm with a tiny silent audio prime followed by Deepgram `KeepAlive`
+//! messages.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -44,6 +44,8 @@ const RESPONSE_DRAIN_POLL_TIMEOUT: Duration = Duration::from_millis(1);
 const FIRST_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1200);
 const PCM_SIGNAL_THRESHOLD: i16 = 500;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(4);
+const WARM_PRIME_SILENCE_MS: usize = 200;
+const MAX_IDLE_WARM_DURATION: Duration = Duration::from_secs(15 * 60);
 const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(8);
 const MAX_STREAMING_DURATION: Duration = Duration::from_secs(45);
 
@@ -280,9 +282,9 @@ impl DeepgramSession {
         let mut active: Option<ActiveRecording> = None;
         let mut keepalive_interval = tokio::time::interval(KEEPALIVE_INTERVAL);
         keepalive_interval.reset();
-        let mut sent_audio_on_this_ws = false;
         let mut reconnect_after_idle = false;
         let mut recording_deadline: Option<tokio::time::Instant> = None;
+        let mut idle_warm_deadline = tokio::time::Instant::now() + MAX_IDLE_WARM_DURATION;
 
         loop {
             tokio::select! {
@@ -314,7 +316,6 @@ impl DeepgramSession {
                                 continue;
                             }
                             current.note_audio_sent(&pcm);
-                            sent_audio_on_this_ws = true;
                             if let Err(e) = send_audio_with_timeout(&mut ws, pcm, &current.id).await {
                                 warn!("[dg_session] {e} — falling back to batch");
                                 current.send_result(None);
@@ -365,6 +366,7 @@ impl DeepgramSession {
                             );
                             self.set_state(SessionState::Idle);
                             keepalive_interval.reset();
+                            idle_warm_deadline = tokio::time::Instant::now() + MAX_IDLE_WARM_DURATION;
                             if reconnect_after_idle {
                                 info!("[dg_session] reconnecting after idle to apply latest bias");
                                 return true;
@@ -400,7 +402,7 @@ impl DeepgramSession {
                     }
                 }
                 _ = keepalive_interval.tick() => {
-                    if self.state == SessionState::Idle && sent_audio_on_this_ws {
+                    if self.state == SessionState::Idle {
                         if let Err(e) = send_keepalive_with_timeout(&mut ws, "idle").await {
                             warn!("[dg_session] {e}");
                             fail_active(&mut active);
@@ -411,6 +413,15 @@ impl DeepgramSession {
                         }
                         debug!("[dg_session] KeepAlive sent");
                     }
+                }
+                _ = tokio::time::sleep_until(idle_warm_deadline), if self.state == SessionState::Idle => {
+                    info!(
+                        "[dg_session] closing warm idle WS after {}s without recording",
+                        MAX_IDLE_WARM_DURATION.as_secs()
+                    );
+                    let _ = send_close_with_timeout(&mut ws, "warm-idle-expired").await;
+                    self.set_state(SessionState::Disconnected);
+                    return true;
                 }
                 _ = async {
                     if let Some(deadline) = recording_deadline {
@@ -684,6 +695,11 @@ async fn send_close_with_timeout(
     sdk_send_with_timeout(|| ws.close_stream(), "CloseStream", recording_id).await
 }
 
+fn warm_prime_silence_pcm() -> Vec<u8> {
+    let sample_count = SAMPLE_RATE as usize * WARM_PRIME_SILENCE_MS / 1000;
+    vec![0_u8; sample_count * 2]
+}
+
 async fn connect_ws(deepgram_key: &str, bias: &BiasPackage) -> Option<WebsocketHandle> {
     if deepgram_key.is_empty() {
         return None;
@@ -722,13 +738,23 @@ async fn connect_ws(deepgram_key: &str, bias: &BiasPackage) -> Option<WebsocketH
             warn!("[dg_session] WS connect failed after {ms}ms: {e}");
             None
         }
-        Ok(Ok(ws)) => {
+        Ok(Ok(mut ws)) => {
             info!(
                 "[dg_session] ✓ SDK WS connected in {ms}ms request_id={} (lang={} keyterms={} replacements={})",
                 ws.request_id(),
                 bias.stt_mode,
                 bias.keyterms.len(),
                 bias.replacements.len(),
+            );
+            let prime = warm_prime_silence_pcm();
+            let prime_bytes = prime.len();
+            if let Err(e) = send_audio_with_timeout(&mut ws, prime, "warm-prime").await {
+                warn!("[dg_session] warm prime failed after WS connect: {e}");
+                return None;
+            }
+            info!(
+                "[dg_session] warm prime sent: {}ms silence ({} bytes)",
+                WARM_PRIME_SILENCE_MS, prime_bytes
             );
             Some(ws)
         }
@@ -985,7 +1011,8 @@ fn plain_for_embed(parts: &[String]) -> String {
 mod tests {
     use super::{
         AUDIO_BRIDGE_BUFFER_CHUNKS, ActiveRecording, DeepgramSession, FIRST_RESPONSE_TIMEOUT,
-        SessionState, extract_result_chunk, pcm_has_signal,
+        SessionState, WARM_PRIME_SILENCE_MS, extract_result_chunk, pcm_has_signal,
+        warm_prime_silence_pcm,
     };
     use said_core::deepgram::{BiasPackage, ReplacementRule, build_ws_url};
     use said_recorder::SAMPLE_RATE;
@@ -1044,6 +1071,15 @@ mod tests {
         pcm.extend_from_slice(&0_i16.to_le_bytes());
         pcm.extend_from_slice(&600_i16.to_le_bytes());
         assert!(pcm_has_signal(&pcm));
+    }
+
+    #[test]
+    fn warm_prime_is_short_valid_silence() {
+        let pcm = warm_prime_silence_pcm();
+        let expected_samples = SAMPLE_RATE as usize * WARM_PRIME_SILENCE_MS / 1000;
+        assert_eq!(pcm.len(), expected_samples * 2);
+        assert!(!pcm.is_empty());
+        assert!(!pcm_has_signal(&pcm));
     }
 
     #[test]
