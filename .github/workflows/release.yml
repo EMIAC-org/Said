@@ -50,6 +50,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
+          cache-targets: false
 
       - uses: actions/setup-node@v4
         with:
@@ -162,23 +163,12 @@ jobs:
             X86_64_SIG=$(cat "Said_${VERSION}_x86_64.app.tar.gz.sig")
           fi
 
-          cat > latest.json <<ENDJSON
-{
-  "version": "${VERSION}",
-  "notes": "${NOTES}",
-  "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "platforms": {
-    "darwin-aarch64": {
-      "signature": "${AARCH64_SIG}",
-      "url": "${BASE_URL}/Said_${VERSION}_aarch64.app.tar.gz"
-    },
-    "darwin-x86_64": {
-      "signature": "${X86_64_SIG}",
-      "url": "${BASE_URL}/Said_${VERSION}_x86_64.app.tar.gz"
-    }
-  }
-}
-ENDJSON
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          printf '{\n  "version": "%s",\n  "notes": "%s",\n  "pub_date": "%s",\n  "platforms": {\n    "darwin-aarch64": {\n      "signature": "%s",\n      "url": "%s/Said_%s_aarch64.app.tar.gz"\n    },\n    "darwin-x86_64": {\n      "signature": "%s",\n      "url": "%s/Said_%s_x86_64.app.tar.gz"\n    }\n  }\n}\n' \
+            "$VERSION" "$NOTES" "$PUB_DATE" \
+            "$AARCH64_SIG" "$BASE_URL" "$VERSION" \
+            "$X86_64_SIG" "$BASE_URL" "$VERSION" \
+            > latest.json
 
           echo "── latest.json ──"
           cat latest.json
