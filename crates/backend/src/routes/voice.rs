@@ -173,9 +173,19 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name() {
-            Some("audio") => {
-                wav_data = field.bytes().await.unwrap_or_default().to_vec();
-            }
+            Some("audio") => match field.bytes().await {
+                Ok(b) => wav_data = b.to_vec(),
+                Err(e) => {
+                    warn!(
+                        "[voice] failed to read audio field: {e} — payload may exceed body limit"
+                    );
+                    return (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        json!({"error": "audio too large"}).to_string(),
+                    )
+                        .into_response();
+                }
+            },
             Some("target_app") => {
                 target_app = field.text().await.ok();
             }

@@ -941,12 +941,30 @@ fn build_tray_menu(
 }
 
 fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
-    let Some(win) = handle.get_webview_window("status-bar") else {
-        tracing::warn!("[status-bar] sync requested for state={state}, but window was not found");
-        return;
+    let win = match handle.get_webview_window("status-bar") {
+        Some(win) => win,
+        None if state != "idle" => {
+            tracing::warn!(
+                "[status-bar] sync requested for active state={state}, but window was not found — recreating"
+            );
+            create_status_bar(handle);
+            let Some(win) = handle.get_webview_window("status-bar") else {
+                tracing::warn!(
+                    "[status-bar] recreate failed; still no status-bar window for state={state}"
+                );
+                return;
+            };
+            win
+        }
+        None => {
+            tracing::warn!(
+                "[status-bar] sync requested for state={state}, but window was not found"
+            );
+            return;
+        }
     };
 
-    tracing::debug!("[status-bar] sync state={state}");
+    tracing::info!("[status-bar] sync state={state}");
     if state == "idle" {
         tracing::debug!("[status-bar] idle state — scheduling native hide");
         let my_gen = handle
@@ -981,12 +999,22 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
             }
             if let Some(win) = app.get_webview_window("status-bar") {
                 match win.hide() {
-                    Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
+                    Ok(_) => tracing::info!("[status-bar] hidden after idle"),
                     Err(e) => tracing::warn!("[status-bar] hide after idle failed: {e}"),
                 }
             }
         });
         return;
+    }
+
+    // Invalidate any pending idle-hide timer immediately. The timer also checks
+    // state before hiding, but bumping the generation avoids relying on a mutex
+    // read from an old async task when recordings happen in quick succession.
+    if let Some(counter) = handle
+        .try_state::<StatusBarHideGen>()
+        .map(|s| Arc::clone(&s.0))
+    {
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     match win.set_always_on_top(true) {
@@ -998,7 +1026,7 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
         Err(e) => tracing::warn!("[status-bar] set_visible_on_all_workspaces failed: {e}"),
     }
     match win.show() {
-        Ok(_) => tracing::debug!("[status-bar] show ok for state={state}"),
+        Ok(_) => tracing::info!("[status-bar] show ok for state={state}"),
         Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
     }
     #[cfg(target_os = "macos")]
@@ -1529,128 +1557,12 @@ fn toggle_recording(
 
     match current_state {
         desktop::AppState::Idle => {
-            // Lock and pre-unlock the frontmost app before recording begins.
-            #[cfg(target_os = "macos")]
-            {
-                let pid = paster::lock_frontmost_app_now();
-                tracing::debug!("[record] locked frontmost app for edit-watch pid={pid:?}");
-                if let Ok(mut target) = app.state::<EditTargetState>().0.lock() {
-                    *target = pid;
-                }
-            }
-            // Start recording and return immediately
-            let snap = state
-                .0
-                .lock()
-                .map_err(|_| "lock failed")?
-                .start_recording()?;
-            sync_tray(&app, &snap);
-            Ok(snap)
+            do_start_recording(&state.0, &app);
+            Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
         }
         desktop::AppState::Recording => {
-            let edit_target_pid = app
-                .state::<EditTargetState>()
-                .0
-                .lock()
-                .ok()
-                .and_then(|mut target| target.take());
-
-            // Tell CoreAudio to stop while holding the app mutex, then collect
-            // and encode the WAV after releasing it.
-            let (stop_rx, was_too_short, snap) = {
-                let mut d = state.0.lock().map_err(|_| "lock failed")?;
-                match d.begin_stop() {
-                    Ok((stop_rx, was_too_short)) => {
-                        let snap = d.snapshot();
-                        (stop_rx, was_too_short, snap)
-                    }
-                    Err(e) if is_short_recording_cancel(&e) => {
-                        tracing::info!("[record] short recording cancelled from UI toggle");
-                        let snap = d.finish_cancelled();
-                        sync_tray(&app, &snap);
-                        emit_short_recording_error(&app);
-                        let _ = app.emit("app-state", &snap);
-                        return Ok(snap);
-                    }
-                    Err(e) => return Err(e),
-                }
-            };
-            sync_tray(&app, &snap);
-            let wav = match desktop::DesktopApp::finish_stop(stop_rx, was_too_short) {
-                Ok(wav) => wav,
-                Err(e) if is_short_recording_cancel(&e) => {
-                    tracing::info!("[record] short recording cancelled from UI toggle");
-                    let mut d = state.0.lock().map_err(|_| "lock failed")?;
-                    let snap = d.finish_cancelled();
-                    drop(d);
-                    sync_tray(&app, &snap);
-                    emit_short_recording_error(&app);
-                    let _ = app.emit("app-state", &snap);
-                    return Ok(snap);
-                }
-                Err(e) => {
-                    let mut d = state.0.lock().map_err(|_| "lock failed")?;
-                    let snap = d.finish_err(e.clone());
-                    drop(d);
-                    sync_tray(&app, &snap);
-                    let _ = app.emit(
-                        "voice-error",
-                        serde_json::json!({
-                            "message": snap.last_error.clone().unwrap_or_else(|| "Recording failed".to_string()),
-                            "audio_id": null,
-                        }),
-                    );
-                    let _ = app.emit("app-state", &snap);
-                    return Err(e);
-                }
-            };
-
-            // Kick off the SSE pipeline in the background (same as hotkey release)
-            let shared2 = Arc::clone(&state.0);
-            let app2 = app.clone();
-            let back_arc2 = Arc::clone(&backend.0);
-            // UI button path: no WS streaming pre-transcript (hotkey path handles it)
-            let pre_tx_ui: Option<dg_stream::StreamingTranscript> = None;
-            tauri::async_runtime::spawn(async move {
-                let result =
-                    run_voice_polish_sse(&back_arc2, wav, None, pre_tx_ui, None, &app2).await;
-
-                // Spawn edit-watcher immediately after paste (non-blocking).
-                // Capture watch_start NOW — before the spawn — so the ring
-                // buffer timestamp filter doesn't miss early mouse clicks.
-                let watch_start = std::time::Instant::now();
-                if let Ok(ref done) = result {
-                    let back3 = Arc::clone(&back_arc2);
-                    start_edit_watcher(
-                        back3,
-                        app2.clone(),
-                        done.recording_id.clone(),
-                        done.polished.clone(),
-                        watch_start,
-                        edit_target_pid,
-                    );
-                }
-
-                let mut d = match shared2.lock() {
-                    Ok(g) => g,
-                    Err(_) => return,
-                };
-                let finished_snap = match result {
-                    Ok(done) => d.finish_ok(said_core::ProcessSummary {
-                        transcript: done.transcript.clone(),
-                        polished: done.polished,
-                        model: done.model_used,
-                        confidence: done.confidence.unwrap_or(0.0),
-                        transcribe_ms: done.latency_ms.transcribe as u64,
-                        polish_ms: done.latency_ms.polish as u64,
-                    }),
-                    Err(e) => d.finish_err(e),
-                };
-                sync_tray(&app2, &finished_snap);
-                let _ = app2.emit("app-state", &finished_snap);
-            });
-
-            Ok(snap) // Return "processing" snapshot to the UI immediately
+            do_finish_recording(Arc::clone(&state.0), app.clone(), Arc::clone(&backend.0));
+            Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
         }
         desktop::AppState::Processing => {
             // Already in flight — return current snapshot, don't do anything
@@ -1685,6 +1597,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     };
     match started {
         Ok(snap) => {
+            tracing::info!("[record] started — state={}", snap.state);
             sync_tray(app, &snap);
             let _ = app.emit("app-state", &snap);
         }
@@ -1822,6 +1735,7 @@ fn do_finish_recording(
         match d.begin_stop() {
             Ok((stop_rx, was_too_short)) => {
                 let snap = d.snapshot();
+                tracing::info!("[record] stop initiated — state={}", snap.state);
                 sync_tray(&app, &snap);
                 let _ = app.emit("app-state", &snap);
                 (stop_rx, was_too_short)
@@ -1891,21 +1805,22 @@ fn do_finish_recording(
     let back_arc2 = Arc::clone(&back_arc);
 
     tauri::async_runtime::spawn(async move {
-        // ── P5: Wait up to 2 s for the Deepgram WS transcript ─────────────────
+        // ── P5: Wait up to 6 s for the Deepgram WS transcript ─────────────────
         // begin_stop() dropped chunk_tx, which closes the audio channel and
         // triggers CloseStream inside the WS task.  Deepgram usually finalises in
         // 100–200 ms, so the transcript should arrive quickly.
-        // Wait up to 4 s for the Deepgram WS transcript.
-        // In practice the WS path takes ~1.5-2 s from Caps Lock release to final
-        // transcript (CloseStream + Deepgram finalize + the configured endpointing window).
-        // If it still doesn't arrive, we fall through to the normal HTTP STT path.
+        // In practice the WS path takes ~1.5-3 s from key release to final
+        // transcript (WS connect, CloseStream, Deepgram finalize, endpointing).
+        // Slow network handshakes can cross 4 s; timing out there causes an
+        // avoidable batch-STT fallback after already waiting. Six seconds gives
+        // the streaming path room to win without waiting indefinitely.
         // Estimate recording duration from WAV size:
         // 16kHz × 16-bit × mono = 32,000 bytes/sec, plus 44 byte WAV header
         let wav_duration_s = (wav.len().saturating_sub(44)) as f64 / 32_000.0;
 
         let pre_transcript: Option<dg_stream::StreamingTranscript> = if let Some(rx) = transcript_rx
         {
-            match tokio::time::timeout(std::time::Duration::from_secs(4), rx).await {
+            match tokio::time::timeout(std::time::Duration::from_secs(6), rx).await {
                 Ok(Ok(t)) if !t.transcript.is_empty() => {
                     // Quality gate: reject suspiciously short transcripts.
                     // Normal speech is 2–3 words/sec (120–180 WPM).
@@ -1943,7 +1858,7 @@ fn do_finish_recording(
                 }
                 Err(_) => {
                     tracing::warn!(
-                        "[finish] WS transcript timed out after 4 s — falling back to HTTP STT"
+                        "[finish] WS transcript timed out after 6 s — falling back to HTTP STT"
                     );
                     None
                 }
