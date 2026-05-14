@@ -218,6 +218,23 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/preferences", get(routes::prefs::get_prefs))
         .route("/v1/preferences", patch(routes::prefs::patch_prefs))
+        .route("/v1/prompts/voice", get(routes::prompts::get_voice_prompt))
+        .route(
+            "/v1/prompts/voice/draft",
+            patch(routes::prompts::save_voice_prompt_draft),
+        )
+        .route(
+            "/v1/prompts/voice/apply",
+            post(routes::prompts::apply_voice_prompt_draft),
+        )
+        .route(
+            "/v1/prompts/voice/reset",
+            post(routes::prompts::reset_voice_prompt),
+        )
+        .route(
+            "/v1/prompts/voice/test",
+            post(routes::prompts::test_voice_prompt),
+        )
         .route("/v1/corrections", get(routes::prefs::get_corrections))
         .route("/v1/stt/bias", get(routes::stt::get_bias))
         // Cloud auth bridge — store/clear cloud token, query cloud status

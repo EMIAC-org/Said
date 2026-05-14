@@ -94,6 +94,54 @@ export interface PrefsUpdate {
   llm_provider?:       string;
 }
 
+export interface PromptTemplateResponse {
+  kind: string;
+  title: string;
+  base_version: string;
+  active_body: string;
+  draft_body: string | null;
+  default_body: string;
+  updated_at: number;
+  applied_at: number | null;
+  has_draft: boolean;
+  active_is_default: boolean;
+}
+
+export interface PromptTestResponse {
+  output: string;
+  model_used: string;
+  latency_ms: number;
+}
+
+export interface ProcessPerf {
+  pid: number;
+  name: string;
+  cpu_percent: number;
+  memory_bytes: number;
+  virtual_memory_bytes: number;
+}
+
+export interface GpuPerf {
+  available: boolean;
+  label: string;
+  utilization_percent: number | null;
+  memory_bytes: number | null;
+}
+
+export interface PerformanceSnapshot {
+  timestamp_ms: number;
+  cpu_percent: number;
+  physical_core_count: number | null;
+  total_memory_bytes: number;
+  used_memory_bytes: number;
+  available_memory_bytes: number;
+  total_swap_bytes: number;
+  used_swap_bytes: number;
+  desktop: ProcessPerf | null;
+  backend: ProcessPerf | null;
+  gpu: GpuPerf;
+}
+
 /** Full recording row from backend SQLite */
 export interface Recording {
   id:                string;
@@ -160,16 +208,6 @@ export interface CloudStatus {
   connected:    boolean;
   license_tier: string;
   email:        string | null;
-}
-
-// ── OpenAI OAuth status ──────────────────────────────────────────────────────
-
-export interface OpenAIStatus {
-  connected:    boolean;
-  expires_at?:  number;      // unix ms
-  connected_at?: number;     // unix ms
-  model_smart:  string;      // "gpt-5.4"
-  model_mini:   string;      // "gpt-5.4-mini"
 }
 
 // ── Pending edits ────────────────────────────────────────────────────────────

@@ -15,7 +15,6 @@ import {
   listHistory,
   onAppState,
   onNavSettings,
-  onOpenAIReconnectInitiated,
   onVoiceDone,
   onVoiceStatus,
   onVoiceToken,
@@ -27,7 +26,6 @@ import {
   sendNotification,
   cloudLogin,
   cloudSignup,
-  getOpenAIStatus,
   requestInputMonitoring,
   requestMicrophone,
   submitEditFeedback,
@@ -102,6 +100,13 @@ export default function App() {
   const [inviteOpen,  setInviteOpen]  = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("writing");
+  const [performanceMonitorEnabled, setPerformanceMonitorEnabled] = useState(() => {
+    try {
+      return localStorage.getItem("said:performance-monitor-enabled") === "true";
+    } catch {
+      return false;
+    }
+  });
   const [onboardingComplete, setOnboardingComplete] = useState(() => {
     try {
       return localStorage.getItem("said:onboarding-complete") === "true";
@@ -139,24 +144,19 @@ export default function App() {
   const [authBusy,    setAuthBusy]    = useState(false);
   const [authError,   setAuthError]   = useState("");
 
-  // ── OpenAI connection gate ─────────────────────────────────────────────────
-  // null = still checking, true = connected, false = must connect
-  const [_openAIConnected, setOpenAIConnected] = useState<boolean | null>(null); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [_connectBusy,     setConnectBusy]     = useState(false); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [_connectError,    setConnectError]    = useState(""); // eslint-disable-line @typescript-eslint/no-unused-vars
   const [_notifPerm,      setNotifPerm]       = useState<NotifPermission>("unknown"); // eslint-disable-line @typescript-eslint/no-unused-vars
-
-  const syncOpenAIConnection = useCallback(async () => {
-    try {
-      const status = await getOpenAIStatus();
-      setOpenAIConnected(status?.connected ?? false);
-    } catch {
-      setOpenAIConnected(false);
-    }
-  }, []);
 
   // Theme (light/dark) — persisted in localStorage, applied to <html>
   const { theme, toggle: toggleTheme } = useTheme();
+
+  const setPerformanceMonitor = useCallback((enabled: boolean) => {
+    setPerformanceMonitorEnabled(enabled);
+    try {
+      localStorage.setItem("said:performance-monitor-enabled", String(enabled));
+    } catch {
+      // Ignore storage failures; the current session state still updates.
+    }
+  }, []);
 
   // ── Fetch history from backend ─────────────────────────────────────────────
   const refreshHistory = useCallback(async () => {
@@ -183,20 +183,16 @@ export default function App() {
   // ── Bootstrap + auth check ─────────────────────────────────────────────────
   useEffect(() => {
     invoke("bootstrap")
-      .then(async (snap) => {
+      .then((snap) => {
         setSnapshot(snap as AppSnapshot);
-        // Cloud auth is skippable; onboarding now starts with OpenAI instead.
         setNeedsAuth(false);
-        // OpenAI connection — REQUIRED
-        await syncOpenAIConnection();
       })
       .catch((err: unknown) => {
         setErrorBanner(err instanceof Error ? err.message : String(err));
         setNeedsAuth(false);
-        setOpenAIConnected(false); // still show connect gate on error
       });
     refreshHistory();
-  }, [refreshHistory, syncOpenAIConnection]);
+  }, [refreshHistory]);
 
   useEffect(() => {
     let alive = true;
@@ -276,10 +272,6 @@ export default function App() {
         setSettingsSection("api-keys");
         setSettingsOpen(true);
       }
-      if (msg.toLowerCase().includes("openai isn't connected")) {
-        setConnectBusy(false);
-        void syncOpenAIConnection();
-      }
     });
 
     // Edit detected (legacy in-app toast — still fires as fallback)
@@ -318,32 +310,8 @@ export default function App() {
       setSettingsOpen(true);
     });
 
-    // Tray "Reconnect OpenAI…" — browser already opened by Rust; start polling
-    const unsubReconnect = onOpenAIReconnectInitiated(() => {
-      setConnectBusy(true);
-      setConnectError("");
-      const deadline = Date.now() + 5 * 60 * 1000;
-      const poll = setInterval(async () => {
-        if (Date.now() > deadline) {
-          clearInterval(poll);
-          setConnectBusy(false);
-          setConnectError("Timed out waiting for sign-in. Please try again.");
-          return;
-        }
-        try {
-          const status = await getOpenAIStatus();
-          if (status?.connected) {
-            clearInterval(poll);
-            setOpenAIConnected(true);
-            setConnectBusy(false);
-          }
-        } catch { /* ignore */ }
-      }, 2000);
-    });
-
     return () => {
       unsubNav();
-      unsubReconnect();
       unsubState();
       unsubStatus();
       unsubToken();
@@ -353,7 +321,7 @@ export default function App() {
       unsubPending();
       unsubVocabToast();
     };
-  }, [refreshHistory, syncOpenAIConnection]);
+  }, [refreshHistory]);
 
   // ── Periodic snapshot poll — picks up Accessibility/Input Monitoring grants ──
   // 5 s is fast enough — permission changes require a user trip to System Settings.
@@ -672,6 +640,7 @@ export default function App() {
         activeView={activeView}
         onViewChange={handleViewChange}
         busy={busy}
+        performanceMonitorEnabled={performanceMonitorEnabled}
         onOpenInvite={() => setInviteOpen(true)}
       />
 
@@ -686,6 +655,8 @@ export default function App() {
         onAccessibility={handleAccessibility}
         onInputMonitoring={handleInputMonitoring}
         onMicrophone={handleMicrophone}
+        performanceMonitorEnabled={performanceMonitorEnabled}
+        onPerformanceMonitorChange={setPerformanceMonitor}
 
         initialSection={settingsSection}
       />

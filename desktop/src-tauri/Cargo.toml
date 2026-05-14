@@ -29,8 +29,9 @@ bytes    = "1"
 tracing  = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 
-# WebSocket client for Deepgram live streaming (P5)
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+# Deepgram live streaming SDK (wrapped by dg_stream's session actor)
+deepgram = "0.10"
+rustls   = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 
 # Open URLs in the system default browser (for OpenAI OAuth)
 open = "5"

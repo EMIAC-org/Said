@@ -455,7 +455,6 @@ fn replay_events(
                 if depth >= 3 {
                     return None;
                 } // too many nested clicks — give up
-                all_selected = false;
 
                 let remaining = &events[i + 1..];
                 let mut best: Option<String> = None;
@@ -616,8 +615,10 @@ struct EditTargetState(Mutex<Option<i32>>);
 /// P5: Holds the oneshot receiver that delivers the pre-transcript from the
 /// Deepgram WebSocket streaming task.  Replaced on every new recording.
 struct StreamingState(
-    Mutex<Option<tokio::sync::oneshot::Receiver<dg_stream::StreamingTranscript>>>,
+    Mutex<Option<tokio::sync::oneshot::Receiver<Option<dg_stream::StreamingTranscript>>>>,
 );
+
+struct DeepgramSessionState(dg_stream::SessionSender);
 
 /// Stores the most-recently polished text. Populated after every voice/text polish;
 /// cleared after it's pasted via Ctrl+Cmd+V or the `paste_latest` Tauri command.
@@ -659,6 +660,8 @@ enum LastAction {
 
 struct LastActionState(Mutex<Option<LastAction>>);
 
+struct PerformanceState(Mutex<sysinfo::System>);
+
 /// Hot-path cache: language setting + personal vocabulary keyterms.
 ///
 /// Populated once when the backend becomes ready; refreshed in the background
@@ -692,6 +695,38 @@ struct DebugLogs {
     backend: String,
     combined: String,
     truncated: bool,
+}
+
+#[derive(serde::Serialize)]
+struct ProcessPerf {
+    pid: u32,
+    name: String,
+    cpu_percent: f32,
+    memory_bytes: u64,
+    virtual_memory_bytes: u64,
+}
+
+#[derive(serde::Serialize)]
+struct GpuPerf {
+    available: bool,
+    label: String,
+    utilization_percent: Option<f32>,
+    memory_bytes: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+struct PerformanceSnapshot {
+    timestamp_ms: i64,
+    cpu_percent: f32,
+    physical_core_count: Option<usize>,
+    total_memory_bytes: u64,
+    used_memory_bytes: u64,
+    available_memory_bytes: u64,
+    total_swap_bytes: u64,
+    used_swap_bytes: u64,
+    desktop: Option<ProcessPerf>,
+    backend: Option<ProcessPerf>,
+    gpu: GpuPerf,
 }
 
 fn now_ms() -> i64 {
@@ -913,8 +948,6 @@ fn build_tray_menu(
     // ── 4. Window actions + quit ────────────────────────────────────────
     let show_item = MenuItem::with_id(app, "show", "Open Said", true, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let reconnect_item =
-        MenuItem::with_id(app, "reconnect", "Reconnect OpenAI…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit Said", true, None::<&str>)?;
 
     let sep1 = PredefinedMenuItem::separator(app)?;
@@ -933,7 +966,6 @@ fn build_tray_menu(
             &sep3,
             &show_item,
             &settings_item,
-            &reconnect_item,
             &sep4,
             &quit_item,
         ],
@@ -1121,6 +1153,24 @@ fn create_status_bar(app: &tauri::AppHandle) {
 
 // ── Tray action helpers ───────────────────────────────────────────────────────
 
+fn emit_tray_error(app: &tauri::AppHandle, message: impl Into<String>) {
+    let _ = app.emit(
+        "voice-error",
+        serde_json::json!({
+            "message": message.into(),
+            "audio_id": null,
+        }),
+    );
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
 /// Trigger recording from a tray menu click.
 /// Mirrors the `toggle_recording` Tauri command's logic.
 fn tray_toggle_recording(app: &tauri::AppHandle) {
@@ -1157,6 +1207,10 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
         Some(e) => e,
         None => {
             tracing::warn!("[tray_polish] backend not ready");
+            emit_tray_error(
+                app,
+                "Said backend is still starting. Try again in a moment.",
+            );
             return;
         }
     };
@@ -1173,6 +1227,10 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
         _ => {
             tracing::warn!(
                 "[tray_polish] no text selected — make sure text is highlighted before pressing Option+N"
+            );
+            emit_tray_error(
+                app,
+                "Select text first, then choose a Polish my message action.",
             );
             return;
         }
@@ -1220,17 +1278,14 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
                     tone_owned.clone(),
                 );
             }
-            Ok(_) => tracing::warn!("[tray_polish] empty result from backend"),
+            Ok(_) => {
+                tracing::warn!("[tray_polish] empty result from backend");
+                emit_tray_error(&app_clone, "Polish returned no text. Try again.");
+            }
             Err(e) => {
                 let human = humanize_error(&e);
                 tracing::warn!("[tray_polish] backend error: {e}");
-                let _ = app_clone.emit(
-                    "voice-error",
-                    serde_json::json!({
-                        "message": human,
-                        "audio_id": null,
-                    }),
-                );
+                emit_tray_error(&app_clone, human);
             }
         }
     });
@@ -1238,10 +1293,7 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
 
 /// Show the main window and emit a hint to switch to the settings view.
 fn tray_open_settings(app: &tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.show();
-        let _ = w.set_focus();
-    }
+    show_main_window(app);
     let _ = app.emit("nav-settings", ());
 }
 
@@ -1296,6 +1348,11 @@ fn smart_repair_last(app: &tauri::AppHandle) {
 
 /// Switch output language from the tray menu and persist to SQLite.
 fn tray_set_output_language(app: &tauri::AppHandle, lang: &str) {
+    if !matches!(lang, "hinglish" | "english" | "hindi") {
+        tracing::warn!("[tray_lang] ignored unknown output language: {lang}");
+        return;
+    }
+
     // Update cache immediately so sync_tray shows the new checkmark
     if let Ok(mut cache) = app.state::<TrayCache>().0.lock() {
         cache.output_language = lang.to_string();
@@ -1313,45 +1370,31 @@ fn tray_set_output_language(app: &tauri::AppHandle, lang: &str) {
     let lang_own = lang.to_string();
     let app_h = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Some(ep) = ep_opt {
-            let _ = api::patch_preferences(
-                &ep,
-                api::PrefsUpdate {
-                    output_language: Some(lang_own),
-                    ..Default::default()
-                },
-            )
-            .await;
-            // Tell the frontend to refresh its prefs so the settings page stays in sync
-            let _ = app_h.emit("prefs-changed", ());
-        }
-    });
-}
-
-/// Initiate OpenAI OAuth from the tray menu — opens the system browser and
-/// emits an event so the frontend can start polling for the connected state.
-fn tray_reconnect_openai(app: &tauri::AppHandle) {
-    let backend = app.state::<BackendState>();
-    let ep_opt = backend.0.lock().ok().and_then(|g| g.clone());
-    let ep = match ep_opt {
-        Some(e) => e,
-        None => {
-            tracing::warn!("[tray_reconnect] backend not ready");
+        let Some(ep) = ep_opt else {
+            emit_tray_error(
+                &app_h,
+                "Said backend is still starting. Language will update once Settings are available.",
+            );
             return;
-        }
-    };
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
-        match api::initiate_openai_oauth(&ep).await {
-            Ok(result) => {
-                if let Some(url) = result.get("auth_url").and_then(|v| v.as_str()) {
-                    let _ = open::that(url);
-                }
-                // Tell the frontend to start polling — it will show the reconnect
-                // state in the Settings view and update openAIConnected once done.
-                let _ = app_clone.emit("openai-reconnect-initiated", ());
+        };
+
+        match api::patch_preferences(
+            &ep,
+            api::PrefsUpdate {
+                output_language: Some(lang_own),
+                ..Default::default()
+            },
+        )
+        .await
+        {
+            Ok(_) => {
+                // Tell the frontend to refresh its prefs so the settings page stays in sync
+                let _ = app_h.emit("prefs-changed", ());
             }
-            Err(e) => tracing::warn!("[tray_reconnect] failed to initiate OAuth: {e}"),
+            Err(e) => {
+                tracing::warn!("[tray_lang] failed to persist output language: {e}");
+                emit_tray_error(&app_h, "Could not save output language. Try Settings.");
+            }
         }
     });
 }
@@ -1394,10 +1437,54 @@ async fn get_preferences(backend: State<'_, BackendState>) -> Result<api::Prefer
 }
 
 #[tauri::command]
+async fn get_voice_prompt(
+    backend: State<'_, BackendState>,
+) -> Result<api::PromptTemplateResponse, String> {
+    let ep = get_endpoint(&backend)?;
+    api::get_voice_prompt(&ep).await
+}
+
+#[tauri::command]
+async fn save_voice_prompt_draft(
+    backend: State<'_, BackendState>,
+    draft_body: String,
+) -> Result<api::PromptTemplateResponse, String> {
+    let ep = get_endpoint(&backend)?;
+    api::save_voice_prompt_draft(&ep, draft_body).await
+}
+
+#[tauri::command]
+async fn apply_voice_prompt_draft(
+    backend: State<'_, BackendState>,
+) -> Result<api::PromptTemplateResponse, String> {
+    let ep = get_endpoint(&backend)?;
+    api::apply_voice_prompt_draft(&ep).await
+}
+
+#[tauri::command]
+async fn reset_voice_prompt(
+    backend: State<'_, BackendState>,
+) -> Result<api::PromptTemplateResponse, String> {
+    let ep = get_endpoint(&backend)?;
+    api::reset_voice_prompt(&ep).await
+}
+
+#[tauri::command]
+async fn test_voice_prompt(
+    backend: State<'_, BackendState>,
+    transcript: String,
+    draft_body: Option<String>,
+) -> Result<api::PromptTestResponse, String> {
+    let ep = get_endpoint(&backend)?;
+    api::test_voice_prompt(&ep, transcript, draft_body).await
+}
+
+#[tauri::command]
 async fn patch_preferences(
     backend: State<'_, BackendState>,
     tray_cache: State<'_, TrayCache>,
     hot_cache: State<'_, HotPathCache>,
+    dg_session: State<'_, DeepgramSessionState>,
     app: tauri::AppHandle,
     update: api::PrefsUpdate,
 ) -> Result<api::Preferences, String> {
@@ -1439,6 +1526,7 @@ async fn patch_preferences(
     }
     if result.is_ok() {
         let arc = Arc::clone(&hot_cache.0);
+        let session_tx = dg_session.0.clone();
         let ep2 = ep.clone();
         tauri::async_runtime::spawn(async move {
             if let Ok(bias) = api::get_stt_bias(&ep2).await {
@@ -1446,6 +1534,19 @@ async fn patch_preferences(
                 hot.stt_mode = bias.stt_mode;
                 hot.keyterms = bias.keyterms;
                 hot.replacements = bias.replacements;
+                let deepgram_key = hot.deepgram_key.clone();
+                let session_bias = said_core::deepgram::BiasPackage {
+                    stt_mode: hot.stt_mode.clone(),
+                    keyterms: hot.keyterms.clone(),
+                    replacements: hot.replacements.clone(),
+                };
+                drop(hot);
+                let _ = session_tx
+                    .send(dg_stream::SessionCommand::Reconfigure {
+                        deepgram_key,
+                        bias: session_bias,
+                    })
+                    .await;
             }
         });
     }
@@ -1465,6 +1566,7 @@ async fn get_history(
 async fn submit_edit_feedback(
     backend: State<'_, BackendState>,
     hot_cache: State<'_, HotPathCache>,
+    dg_session: State<'_, DeepgramSessionState>,
     recording_id: String,
     user_kept: String,
     target_app: Option<String>,
@@ -1475,6 +1577,7 @@ async fn submit_edit_feedback(
     // keyterms in the background so the next recording already has them.
     if result.is_ok() {
         let arc = Arc::clone(&hot_cache.0);
+        let session_tx = dg_session.0.clone();
         let ep2 = ep.clone();
         tauri::async_runtime::spawn(async move {
             if let Ok(bias) = api::get_stt_bias(&ep2).await {
@@ -1488,6 +1591,19 @@ async fn submit_edit_feedback(
                 hot.stt_mode = bias.stt_mode;
                 hot.keyterms = bias.keyterms;
                 hot.replacements = bias.replacements;
+                let deepgram_key = hot.deepgram_key.clone();
+                let session_bias = said_core::deepgram::BiasPackage {
+                    stt_mode: hot.stt_mode.clone(),
+                    keyterms: hot.keyterms.clone(),
+                    replacements: hot.replacements.clone(),
+                };
+                drop(hot);
+                let _ = session_tx
+                    .send(dg_stream::SessionCommand::Reconfigure {
+                        deepgram_key,
+                        bias: session_bias,
+                    })
+                    .await;
             }
         });
     }
@@ -1643,66 +1759,35 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     // ── P5: Start Deepgram WS streaming immediately ────────────────────────────
     let chunk_recv = shared.lock().ok().and_then(|mut d| d.take_chunk_receiver());
     if let Some(chunk_recv) = chunk_recv {
+        let recording_id = uuid::Uuid::new_v4().to_string();
         let streaming_state = app.state::<StreamingState>();
         let (transcript_tx, transcript_rx) =
-            tokio::sync::oneshot::channel::<dg_stream::StreamingTranscript>();
+            tokio::sync::oneshot::channel::<Option<dg_stream::StreamingTranscript>>();
         if let Some(mut g) = streaming_state.0.lock().ok() {
             *g = Some(transcript_rx);
         }
 
-        let hot_cache_arc = Arc::clone(&app.state::<HotPathCache>().0);
         let backend_for_pe = Arc::clone(&app.state::<BackendState>().0);
+        let session_tx = app.state::<DeepgramSessionState>().0.clone();
 
         tauri::async_runtime::spawn(async move {
-            let (deepgram_key, language, stt_mode, keyterms, replacements) = {
-                let c = hot_cache_arc.read().await;
-                (
-                    c.deepgram_key.clone(),
-                    c.language.clone(),
-                    c.stt_mode.clone(),
-                    c.keyterms.clone(),
-                    c.replacements.clone(),
-                )
-            };
-            if deepgram_key.is_empty() {
-                tracing::warn!(
-                    "[dg_stream] Deepgram API key not configured in preferences — WS streaming disabled"
-                );
-                return;
-            }
-            let bias = said_core::deepgram::BiasPackage {
-                stt_mode: if stt_mode.is_empty() {
-                    said_core::deepgram::resolve_stt_mode(&language)
-                } else {
-                    stt_mode
-                },
-                keyterms,
-                replacements,
-            };
-
             let pre_embed_info: Option<(String, String)> =
                 backend_for_pe.lock().ok().and_then(|g| {
                     g.as_ref()
                         .map(|ep| (format!("{}/v1/pre-embed", ep.url), ep.secret.clone()))
                 });
-            let pre_embed_ref = pre_embed_info
-                .as_ref()
-                .map(|(url, secret)| (url.as_str(), secret.as_str()));
-
-            let transcript =
-                dg_stream::stream_to_deepgram(chunk_recv, &deepgram_key, &bias, pre_embed_ref)
-                    .await;
-
-            tracing::info!(
-                "[dg_stream] pre-transcript: {}",
-                transcript
-                    .as_ref()
-                    .map(|t| t.transcript.as_str())
-                    .unwrap_or("<none — WS produced no output>")
-            );
-            if let Some(transcript) = transcript {
-                let _ = transcript_tx.send(transcript);
+            let start_cmd = dg_stream::SessionCommand::StartRecording {
+                id: recording_id.clone(),
+                result_tx: transcript_tx,
+                pre_embed: pre_embed_info,
+            };
+            if let Err(err) = session_tx.send(start_cmd).await {
+                if let dg_stream::SessionCommand::StartRecording { result_tx, .. } = err.0 {
+                    let _ = result_tx.send(None);
+                }
+                return;
             }
+            dg_stream::spawn_audio_bridge(recording_id, chunk_recv, session_tx);
         });
     } else {
         tracing::debug!("[dg_stream] no chunk receiver — WS streaming not started");
@@ -1806,22 +1891,20 @@ fn do_finish_recording(
 
     tauri::async_runtime::spawn(async move {
         // ── P5: Wait up to 6 s for the Deepgram WS transcript ─────────────────
-        // begin_stop() dropped chunk_tx, which closes the audio channel and
-        // triggers CloseStream inside the WS task.  Deepgram usually finalises in
-        // 100–200 ms, so the transcript should arrive quickly.
-        // In practice the WS path takes ~1.5-3 s from key release to final
-        // transcript (WS connect, CloseStream, Deepgram finalize, endpointing).
-        // Slow network handshakes can cross 4 s; timing out there causes an
-        // avoidable batch-STT fallback after already waiting. Six seconds gives
-        // the streaming path room to win without waiting indefinitely.
+        // begin_stop() dropped chunk_tx, which makes the audio bridge send a
+        // Deepgram Finalize command. The persistent WS actor usually returns
+        // quickly; if it is disconnected or reconnecting it sends None so the
+        // backend batch-STT fallback can take over without a long local wait.
         // Estimate recording duration from WAV size:
         // 16kHz × 16-bit × mono = 32,000 bytes/sec, plus 44 byte WAV header
         let wav_duration_s = (wav.len().saturating_sub(44)) as f64 / 32_000.0;
 
         let pre_transcript: Option<dg_stream::StreamingTranscript> = if let Some(rx) = transcript_rx
         {
+            let wait_start = tokio::time::Instant::now();
             match tokio::time::timeout(std::time::Duration::from_secs(6), rx).await {
-                Ok(Ok(t)) if !t.transcript.is_empty() => {
+                Ok(Ok(Some(t))) if !t.transcript.is_empty() => {
+                    let wait_ms = wait_start.elapsed().as_millis();
                     // Quality gate: reject suspiciously short transcripts.
                     // Normal speech is 2–3 words/sec (120–180 WPM).
                     // Require at least 1 word/sec (60 WPM) — anything below
@@ -1834,7 +1917,7 @@ fn do_finish_recording(
                     let expected_min_words = wav_duration_s.max(1.0) as usize;
                     if word_count < expected_min_words && wav_duration_s > 3.0 {
                         tracing::warn!(
-                            "[finish] WS transcript too short: {} words for {:.1}s recording (expected ≥{}) — falling back to HTTP STT. transcript={:?}",
+                            "[finish] WS transcript too short after {wait_ms}ms: {} words for {:.1}s recording (expected ≥{}) — falling back to HTTP STT. transcript={:?}",
                             word_count,
                             wav_duration_s,
                             expected_min_words,
@@ -1843,7 +1926,7 @@ fn do_finish_recording(
                         None
                     } else {
                         tracing::info!(
-                            "[finish] ✓ WS pre-transcript ready ({} chars, {} words, {:.1}s audio): {:?}",
+                            "[finish] ✓ WS pre-transcript ready after {wait_ms}ms ({} chars, {} words, {:.1}s audio): {:?}",
                             t.transcript.len(),
                             word_count,
                             wav_duration_s,
@@ -1852,13 +1935,31 @@ fn do_finish_recording(
                         Some(t)
                     }
                 }
-                Ok(_) => {
-                    tracing::info!("[finish] WS transcript empty — falling back to HTTP STT");
+                Ok(Ok(Some(_))) => {
+                    tracing::info!(
+                        "[finish] WS transcript empty after {}ms — falling back to HTTP STT",
+                        wait_start.elapsed().as_millis()
+                    );
+                    None
+                }
+                Ok(Ok(None)) => {
+                    tracing::info!(
+                        "[finish] WS unavailable after {}ms — falling back to HTTP STT",
+                        wait_start.elapsed().as_millis()
+                    );
+                    None
+                }
+                Ok(Err(_)) => {
+                    tracing::info!(
+                        "[finish] WS transcript sender dropped after {}ms — falling back to HTTP STT",
+                        wait_start.elapsed().as_millis()
+                    );
                     None
                 }
                 Err(_) => {
                     tracing::warn!(
-                        "[finish] WS transcript timed out after 6 s — falling back to HTTP STT"
+                        "[finish] WS transcript timed out after {}ms — falling back to HTTP STT",
+                        wait_start.elapsed().as_millis()
                     );
                     None
                 }
@@ -2793,6 +2894,7 @@ async fn get_pending_edits(
 async fn resolve_pending_edit(
     backend: State<'_, BackendState>,
     hot_cache: State<'_, HotPathCache>,
+    dg_session: State<'_, DeepgramSessionState>,
     id: String,
     action: String,
 ) -> Result<(), String> {
@@ -2801,6 +2903,7 @@ async fn resolve_pending_edit(
     // "approve" promotes a term into vocabulary — refresh cache immediately.
     if result.is_ok() && action == "approve" {
         let arc = Arc::clone(&hot_cache.0);
+        let session_tx = dg_session.0.clone();
         let ep2 = ep.clone();
         tauri::async_runtime::spawn(async move {
             if let Ok(bias) = api::get_stt_bias(&ep2).await {
@@ -2814,6 +2917,19 @@ async fn resolve_pending_edit(
                 hot.stt_mode = bias.stt_mode;
                 hot.keyterms = bias.keyterms;
                 hot.replacements = bias.replacements;
+                let deepgram_key = hot.deepgram_key.clone();
+                let session_bias = said_core::deepgram::BiasPackage {
+                    stt_mode: hot.stt_mode.clone(),
+                    keyterms: hot.keyterms.clone(),
+                    replacements: hot.replacements.clone(),
+                };
+                drop(hot);
+                let _ = session_tx
+                    .send(dg_stream::SessionCommand::Reconfigure {
+                        deepgram_key,
+                        bias: session_bias,
+                    })
+                    .await;
             }
         });
     }
@@ -3013,33 +3129,6 @@ async fn get_cloud_status(backend: State<'_, BackendState>) -> Result<api::Cloud
     api::get_cloud_status(&ep).await
 }
 
-// ── OpenAI OAuth commands ─────────────────────────────────────────────────────
-
-#[tauri::command]
-async fn get_openai_status(backend: State<'_, BackendState>) -> Result<serde_json::Value, String> {
-    let ep = get_endpoint(&backend)?;
-    api::get_openai_status(&ep).await
-}
-
-#[tauri::command]
-async fn initiate_openai_oauth(
-    backend: State<'_, BackendState>,
-) -> Result<serde_json::Value, String> {
-    let ep = get_endpoint(&backend)?;
-    let result = api::initiate_openai_oauth(&ep).await?;
-    // Open the auth URL in the user's default browser
-    if let Some(url) = result.get("auth_url").and_then(|v| v.as_str()) {
-        let _ = open::that(url);
-    }
-    Ok(result)
-}
-
-#[tauri::command]
-async fn disconnect_openai(backend: State<'_, BackendState>) -> Result<(), String> {
-    let ep = get_endpoint(&backend)?;
-    api::disconnect_openai(&ep).await
-}
-
 /// On launch, refresh license from cloud if a token is stored.
 /// Returns the cached tier on network failure (graceful degradation).
 #[tauri::command]
@@ -3130,6 +3219,67 @@ fn get_debug_logs() -> DebugLogs {
         combined,
         truncated: desktop_truncated || backend_truncated,
     }
+}
+
+fn process_perf(pid: sysinfo::Pid, process: &sysinfo::Process) -> ProcessPerf {
+    ProcessPerf {
+        pid: pid.as_u32(),
+        name: process.name().to_string_lossy().to_string(),
+        cpu_percent: process.cpu_usage(),
+        memory_bytes: process.memory(),
+        virtual_memory_bytes: process.virtual_memory(),
+    }
+}
+
+#[tauri::command]
+fn get_performance_snapshot(
+    perf: State<'_, PerformanceState>,
+    backend_handle: State<'_, BackendHandleState>,
+) -> Result<PerformanceSnapshot, String> {
+    let mut sys = perf.0.lock().map_err(|_| "performance lock failed")?;
+    sys.refresh_memory();
+    sys.refresh_cpu_all();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+
+    let desktop_pid = sysinfo::Pid::from_u32(std::process::id());
+    let desktop = sys
+        .process(desktop_pid)
+        .map(|process| process_perf(desktop_pid, process));
+
+    let owned_backend_pid = backend_handle
+        .0
+        .lock()
+        .ok()
+        .and_then(|handle| handle.as_ref().and_then(|h| h.pid()))
+        .map(sysinfo::Pid::from_u32);
+
+    let backend_pid = owned_backend_pid.or_else(|| {
+        sys.processes()
+            .iter()
+            .filter(|(_, process)| process.name().to_string_lossy() == "said-backend")
+            .max_by_key(|(_, process)| process.memory())
+            .map(|(pid, _)| *pid)
+    });
+    let backend = backend_pid.and_then(|pid| sys.process(pid).map(|p| process_perf(pid, p)));
+
+    Ok(PerformanceSnapshot {
+        timestamp_ms: now_ms(),
+        cpu_percent: sys.global_cpu_usage(),
+        physical_core_count: sys.physical_core_count(),
+        total_memory_bytes: sys.total_memory(),
+        used_memory_bytes: sys.used_memory(),
+        available_memory_bytes: sys.available_memory(),
+        total_swap_bytes: sys.total_swap(),
+        used_swap_bytes: sys.used_swap(),
+        desktop,
+        backend,
+        gpu: GpuPerf {
+            available: false,
+            label: "GPU metrics unavailable from macOS user-space sampler".to_string(),
+            utilization_percent: None,
+            memory_bytes: None,
+        },
+    })
 }
 
 // ── Edit watcher ──────────────────────────────────────────────────────────────
@@ -3606,6 +3756,7 @@ async fn watch_for_edit(
                 // the very next recording already uses the newly learned terms.
                 if resp.learned && resp.promoted_count > 0 {
                     let hot_arc = Arc::clone(&app.state::<HotPathCache>().0);
+                    let session_tx = app.state::<DeepgramSessionState>().0.clone();
                     let ep2 = ep.clone();
                     tokio::spawn(async move {
                         if let Ok(bias) = api::get_stt_bias(&ep2).await {
@@ -3619,6 +3770,19 @@ async fn watch_for_edit(
                             hot.stt_mode = bias.stt_mode;
                             hot.keyterms = bias.keyterms;
                             hot.replacements = bias.replacements;
+                            let deepgram_key = hot.deepgram_key.clone();
+                            let session_bias = said_core::deepgram::BiasPackage {
+                                stt_mode: hot.stt_mode.clone(),
+                                keyterms: hot.keyterms.clone(),
+                                replacements: hot.replacements.clone(),
+                            };
+                            drop(hot);
+                            let _ = session_tx
+                                .send(dg_stream::SessionCommand::Reconfigure {
+                                    deepgram_key,
+                                    bias: session_bias,
+                                })
+                                .await;
                         }
                     });
                 }
@@ -3847,7 +4011,13 @@ fn simple_char_distance(a: &str, b: &str) -> usize {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+fn install_rustls_crypto_provider() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
 fn main() {
+    install_rustls_crypto_provider();
+
     // 1. Load env vars from .env files
     said_core::load_env();
 
@@ -3927,13 +4097,20 @@ fn main() {
                     tracing::warn!("[perm] Input Monitoring NOT granted — hotkeys (Caps Lock, Option+1-5, Ctrl+Cmd+V) will not work. Grant in System Settings → Privacy → Input Monitoring");
                 }
 
-                backend_guard::reap_previous();
+                let using_external_backend = backend::external_backend_url().is_some();
+                if using_external_backend {
+                    tracing::info!("[main] SAID_EXTERNAL_BACKEND_URL set — skipping backend reap");
+                } else {
+                    backend_guard::reap_previous();
+                }
                 match backend::spawn() {
                     Ok(handle) => {
                         // Extract all endpoint clones BEFORE storing (move) the handle.
                         let ep  = handle.endpoint();
                         let ep2 = handle.endpoint();
-                        backend_guard::write_pid_file(handle.pid());
+                        if let Some(pid) = handle.pid() {
+                            backend_guard::write_pid_file(pid);
+                        }
                         *back_arc.lock().unwrap() = Some(ep.clone());
                         // Store the full handle so Drop kills the child on app exit.
                         // Without this the child outlives the app (zombie leak).
@@ -3987,10 +4164,26 @@ fn main() {
                             let hot = app_h.state::<HotPathCache>();
                             let mut c = hot.0.write().await;
                             c.language = language;
-                            c.deepgram_key = deepgram_key;
-                            c.stt_mode = stt_bias.stt_mode;
-                            c.keyterms = stt_bias.keyterms;
-                            c.replacements = stt_bias.replacements;
+                            c.deepgram_key = deepgram_key.clone();
+                            c.stt_mode = stt_bias.stt_mode.clone();
+                            c.keyterms = stt_bias.keyterms.clone();
+                            c.replacements = stt_bias.replacements.clone();
+
+                            // Configure the persistent Deepgram session actor.
+                            let bias = said_core::deepgram::BiasPackage {
+                                stt_mode: c.stt_mode.clone(),
+                                keyterms: c.keyterms.clone(),
+                                replacements: c.replacements.clone(),
+                            };
+                            drop(c);
+                            let dg_session = app_h.state::<DeepgramSessionState>();
+                            let _ = dg_session
+                                .0
+                                .send(dg_stream::SessionCommand::Reconfigure {
+                                    deepgram_key,
+                                    bias,
+                                })
+                                .await;
                         });
 
                         // ── Periodic cache refresh every 5 minutes ────────────
@@ -4018,6 +4211,22 @@ fn main() {
                                         hot.stt_mode = bias.stt_mode;
                                         hot.keyterms = bias.keyterms;
                                         hot.replacements = bias.replacements;
+                                        let deepgram_key = hot.deepgram_key.clone();
+                                        let session_bias = said_core::deepgram::BiasPackage {
+                                            stt_mode: hot.stt_mode.clone(),
+                                            keyterms: hot.keyterms.clone(),
+                                            replacements: hot.replacements.clone(),
+                                        };
+                                        drop(hot);
+                                        let dg_session =
+                                            app_h.state::<DeepgramSessionState>();
+                                        let _ = dg_session
+                                            .0
+                                            .send(dg_stream::SessionCommand::Reconfigure {
+                                                deepgram_key,
+                                                bias: session_bias,
+                                            })
+                                            .await;
                                     }
                                     Err(e) => {
                                         tracing::warn!("[hot_cache] periodic refresh failed: {e}");
@@ -4034,6 +4243,7 @@ fn main() {
 
                 {
                     let app_handle = app.handle().clone();
+                    let cleanup_owned_backend = !using_external_backend;
                     std::thread::spawn(move || {
                         let signals = signal_hook::iterator::Signals::new([
                             signal_hook::consts::SIGINT,
@@ -4044,7 +4254,9 @@ fn main() {
                             return;
                         };
                         if signals.forever().next().is_some() {
-                            backend_guard::kill_from_pid_file();
+                            if cleanup_owned_backend {
+                                backend_guard::kill_from_pid_file();
+                            }
                             app_handle.exit(0);
                         }
                     });
@@ -4085,14 +4297,8 @@ fn main() {
                         let id = event.id.as_ref();
                         match id {
                             "tray_toggle" => tray_toggle_recording(app),
-                            "show" => {
-                                if let Some(w) = app.get_webview_window("main") {
-                                    let _ = w.show();
-                                    let _ = w.set_focus();
-                                }
-                            }
+                            "show" => show_main_window(app),
                             "settings"  => tray_open_settings(app),
-                            "reconnect" => tray_reconnect_openai(app),
                             "quit"      => app.exit(0),
                             // Output language switch
                             _ if id.starts_with("tray_lang_") => {
@@ -4105,7 +4311,7 @@ fn main() {
                                 let tone = &id["tray_polish_".len()..];
                                 tray_polish_message(app, tone);
                             }
-                            _ => {}
+                            _ => tracing::warn!("[tray] unhandled menu id={id}"),
                         }
                     })
                     .build(app)?;
@@ -4210,6 +4416,8 @@ fn main() {
         .manage(EditWatcherState(Mutex::new(None)))
         .manage(EditTargetState(Mutex::new(None)))
         .manage(StreamingState(Mutex::new(None)))
+        .manage(DeepgramSessionState(dg_stream::DeepgramSession::spawn()))
+        .manage(PerformanceState(Mutex::new(sysinfo::System::new_all())))
         .manage(TrayCache(Mutex::new(TrayCacheInner::default())))
         .manage(LatestResult(std::sync::Arc::new(Mutex::new(None))))
         .manage(LastActionState(Mutex::new(None)))
@@ -4221,6 +4429,11 @@ fn main() {
             dismiss_status_bar,
             get_backend_endpoint,
             get_preferences,
+            get_voice_prompt,
+            save_voice_prompt_draft,
+            apply_voice_prompt_draft,
+            reset_voice_prompt,
+            test_voice_prompt,
             patch_preferences,
             get_history,
             submit_edit_feedback,
@@ -4236,11 +4449,8 @@ fn main() {
             cloud_logout,
             get_cloud_status,
             refresh_license,
-            // OpenAI OAuth
-            get_openai_status,
-            initiate_openai_oauth,
-            disconnect_openai,
             get_debug_logs,
+            get_performance_snapshot,
             // Paste latest
             paste_latest,
             // Retry

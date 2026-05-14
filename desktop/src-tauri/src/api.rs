@@ -88,6 +88,27 @@ pub struct PrefsUpdate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptTemplateResponse {
+    pub kind: String,
+    pub title: String,
+    pub base_version: String,
+    pub active_body: String,
+    pub draft_body: Option<String>,
+    pub default_body: String,
+    pub updated_at: i64,
+    pub applied_at: Option<i64>,
+    pub has_draft: bool,
+    pub active_is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptTestResponse {
+    pub output: String,
+    pub model_used: String,
+    pub latency_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recording {
     pub id: String,
     pub timestamp_ms: i64,
@@ -725,6 +746,93 @@ pub async fn patch_preferences(
     })
 }
 
+pub async fn get_voice_prompt(ep: &BackendEndpoint) -> Result<PromptTemplateResponse, String> {
+    let url = format!("{}/v1/prompts/voice", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("get voice prompt failed: {e}"))?
+        .json::<PromptTemplateResponse>()
+        .await
+        .map_err(|e| format!("parse voice prompt failed: {e}"))
+}
+
+pub async fn save_voice_prompt_draft(
+    ep: &BackendEndpoint,
+    draft_body: String,
+) -> Result<PromptTemplateResponse, String> {
+    let url = format!("{}/v1/prompts/voice/draft", ep.url);
+    Client::new()
+        .patch(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::json!({ "draft_body": draft_body }))
+        .send()
+        .await
+        .map_err(|e| format!("save voice prompt draft failed: {e}"))?
+        .json::<PromptTemplateResponse>()
+        .await
+        .map_err(|e| format!("parse voice prompt failed: {e}"))
+}
+
+pub async fn apply_voice_prompt_draft(
+    ep: &BackendEndpoint,
+) -> Result<PromptTemplateResponse, String> {
+    let url = format!("{}/v1/prompts/voice/apply", ep.url);
+    Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("apply voice prompt failed: {e}"))?
+        .json::<PromptTemplateResponse>()
+        .await
+        .map_err(|e| format!("parse voice prompt failed: {e}"))
+}
+
+pub async fn reset_voice_prompt(ep: &BackendEndpoint) -> Result<PromptTemplateResponse, String> {
+    let url = format!("{}/v1/prompts/voice/reset", ep.url);
+    Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("reset voice prompt failed: {e}"))?
+        .json::<PromptTemplateResponse>()
+        .await
+        .map_err(|e| format!("parse voice prompt failed: {e}"))
+}
+
+pub async fn test_voice_prompt(
+    ep: &BackendEndpoint,
+    transcript: String,
+    draft_body: Option<String>,
+) -> Result<PromptTestResponse, String> {
+    let url = format!("{}/v1/prompts/voice/test", ep.url);
+    let resp = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::json!({
+            "transcript": transcript,
+            "draft_body": draft_body,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("test voice prompt failed: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(extract_error(&text));
+    }
+    serde_json::from_str::<PromptTestResponse>(&text).map_err(|e| {
+        format!(
+            "parse voice prompt test failed: {e} — raw: {}",
+            &text[..text.len().min(200)]
+        )
+    })
+}
+
 /// Fetch the user's correction keyterms (right-hand words from word_corrections table).
 /// Used to boost Deepgram STT recognition for words the user frequently corrects.
 pub async fn get_correction_keyterms(ep: &BackendEndpoint) -> Vec<String> {
@@ -907,51 +1015,6 @@ pub async fn get_cloud_status(ep: &BackendEndpoint) -> Result<CloudStatus, Strin
         .json::<CloudStatus>()
         .await
         .map_err(|e| format!("parse cloud status: {e}"))
-}
-
-// ── OpenAI OAuth ──────────────────────────────────────────────────────────────
-
-pub async fn get_openai_status(ep: &BackendEndpoint) -> Result<serde_json::Value, String> {
-    let url = format!("{}/v1/openai-oauth/status", ep.url);
-    Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("openai status failed: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("parse openai status: {e}"))
-}
-
-pub async fn initiate_openai_oauth(ep: &BackendEndpoint) -> Result<serde_json::Value, String> {
-    let url = format!("{}/v1/openai-oauth/initiate", ep.url);
-    Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .header("Content-Length", "0")
-        .send()
-        .await
-        .map_err(|e| format!("openai initiate failed: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("parse openai initiate: {e}"))
-}
-
-pub async fn disconnect_openai(ep: &BackendEndpoint) -> Result<(), String> {
-    let url = format!("{}/v1/openai-oauth/disconnect", ep.url);
-    let status = Client::new()
-        .delete(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("openai disconnect failed: {e}"))?
-        .status();
-    if status.is_success() || status.as_u16() == 204 {
-        Ok(())
-    } else {
-        Err(format!("openai disconnect error: {status}"))
-    }
 }
 
 fn extract_error(body: &str) -> String {

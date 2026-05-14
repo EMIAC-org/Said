@@ -10,6 +10,7 @@ pub mod openai_oauth;
 pub mod pending_edits;
 pub mod pending_promotions;
 pub mod prefs;
+pub mod prompt_templates;
 pub mod stt_replacements;
 pub mod users;
 pub mod vectors;
@@ -42,6 +43,7 @@ const MIGRATION_020: &str = include_str!("migrations/020_record_hotkey.sql");
 const MIGRATION_021: &str = include_str!("migrations/021_learning_enabled.sql");
 const MIGRATION_022: &str = include_str!("migrations/022_fix_recording_seconds.sql");
 const MIGRATION_023: &str = include_str!("migrations/023_enriched_transcript.sql");
+const MIGRATION_024: &str = include_str!("migrations/024_prompt_templates.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -275,6 +277,14 @@ fn run_migrations(pool: &DbPool) {
             .expect("migration 023 failed");
         conn.execute_batch("PRAGMA user_version = 23")
             .expect("failed to set user_version to 23");
+    }
+
+    if version < 24 {
+        info!("running migration 024_prompt_templates");
+        conn.execute_batch(MIGRATION_024)
+            .expect("migration 024 failed");
+        conn.execute_batch("PRAGMA user_version = 24")
+            .expect("failed to set user_version to 24");
     }
 }
 
