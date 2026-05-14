@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap,
   Languages, MessageSquareText, Loader2, RefreshCw,
@@ -175,6 +176,7 @@ export function SettingsView({
   const [debugTab,     setDebugTab]     = useState<"combined" | "desktop" | "backend">("combined");
 
   // ── Auto-update state ─────────────────────────────────────────────────────
+  const [appVersion, setAppVersion] = useState("…");
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "ready" | "up-to-date" | "error">("idle");
   const [updateVersion, setUpdateVersion] = useState("");
   const [updateError, setUpdateError] = useState("");
@@ -224,6 +226,10 @@ export function SettingsView({
     setShowGemini(false);
     setShowGroq(false);
   }
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => setAppVersion("?"));
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -1195,8 +1201,8 @@ export function SettingsView({
         <Section title="About">
           <Row
             icon={<Info size={16} />}
-            label="Said — Voice Polish Studio"
-            description="Local-first · Built with Tauri + Rust + React"
+            label={`Said v${appVersion}`}
+            description="Voice Polish Studio · Local-first · Tauri + Rust + React"
           />
           <Row
             icon={<Download size={16} />}
