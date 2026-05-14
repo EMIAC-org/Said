@@ -431,6 +431,22 @@
   [data-theme="light"] .heat-3 { background: hsl(140 65% 52%); }
   [data-theme="light"] .heat-4 { background: hsl(135 65% 42%); }
 
+  /* ── Activity heatmap (TimelineCard) — responsive cells + hover tooltip ── */
+  .heat-cell {
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
+  .heat-cell:hover {
+    transform: scale(1.35);
+    box-shadow: 0 0 0 1px hsl(var(--foreground) / 0.28),
+                0 6px 18px hsl(0 0% 0% / 0.45);
+    z-index: 10;
+  }
+  .heat-cell:hover .heat-tip { opacity: 1 !important; }
+  [data-theme="light"] .heat-cell:hover {
+    box-shadow: 0 0 0 1px hsl(var(--foreground) / 0.18),
+                0 6px 18px hsl(0 0% 0% / 0.12);
+  }
+
   /* ── Input fields ────────────────────────────────────────────────── */
   .input {
     @apply w-full text-sm rounded-xl px-3 py-2.5 transition-colors;
