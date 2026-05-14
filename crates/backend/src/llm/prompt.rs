@@ -282,10 +282,19 @@ pub fn build_system_prompt_with_vocab_entries(
          - Fix punctuation, casing, grammar, and sentence boundaries.\n\
          - Remove English fillers (um, uh, aaa, like, basically) and stutters.\n\
          - Accidental word repetitions (same word twice in a row) should be collapsed to one, but intentional Hindi repetitions like \"kab kab\", \"baar baar\" must stay.\n\
+         - Adjacent retry cleanup: when the speaker immediately repeats the same short phrase or clause and the later version is a clearer retry/correction, keep only one clean version. Prefer the later/clearer version.\n\
+         - Do NOT apply retry cleanup to non-adjacent repetition, lists, rhetorical emphasis, or intentional Hindi/Hinglish patterns like \"baar baar\", \"kab kab\", \"thoda thoda\", \"alag alag\", \"jaldi jaldi\".\n\
          - Hindi/Hinglish particles (bhi, toh, na, hi, toh bhi, lekin, par, aur, agar, jab, tab, kyunki, isliye, warna) are CONTENT WORDS — never remove them.\n\
          - Keep real names, brands, and technical terms exactly. EXCEPTION: when the surrounding context clearly points to a structured token (URL, email, file path, env var, handle, code identifier), structured-token correctness wins — fold spoken/misheard fragments into the correct form (see FORMATTING below).\n\
-         - Do NOT summarize, answer, add, or remove content words.\n\
+         - Do NOT summarize, answer, add, or remove content words except for the narrow adjacent retry cleanup rule above.\n\
          \n\
+         ADJACENT RETRY EXAMPLES:\n\
+         Input:  maine kayi barr bola h tumhr, maine kayi baar bola h tumhe.\n\
+         Output: Maine kayi baar bola hai tumhe.\n\
+         Input:  I told him yesterday, I told him yesterday that we should wait.\n\
+         Output: I told him yesterday that we should wait.\n\
+         Input:  Maine tumhe baar baar bola hai.\n\
+         Output: Maine tumhe baar baar bola hai.\n\n\
          FORMATTING (this is a RULE, not a hint — apply it whenever the context clearly points to a structured token; the only escape is plain prose, shown by the last example):\n\
          - Spoken-form patterns become structured tokens. \"name at the rate domain dot com\" → email. \"localhost colon port slash path\" → URL. \"WORD underscore WORD\" with code context → identifier.\n\
          - Misheard protocol acronyms like HATPS, HTPS, HTTP S, HTTPS, ACHTPS, AICHTPS that precede `://` MUST be rewritten to https when the URL shape is clear.\n\
@@ -864,7 +873,9 @@ mod tests {
             "single-output rule must explicitly forbid repeated output"
         );
         let pos_preserve = prompt
-            .find("Do NOT summarize, answer, add, or remove content words")
+            .find(
+                "Do NOT summarize, answer, add, or remove content words except for the narrow adjacent retry cleanup rule above",
+            )
             .unwrap();
         let pos_output_only = prompt.find("Write only the final cleaned text").unwrap();
         assert!(
@@ -878,6 +889,44 @@ mod tests {
         assert!(
             !prompt.contains("<task>") && !prompt.contains("</task>"),
             "normal polish prompt must avoid XML-like task tags"
+        );
+    }
+
+    #[test]
+    fn polish_prompt_handles_only_adjacent_retry_cleanup() {
+        // This is the Hinglish/WisprFlow-style correction case: the speaker
+        // says a rough version, immediately retries the same clause, and the
+        // final output should keep one cleaned version. The guardrails matter
+        // as much as the positive case because otherwise the model starts
+        // deleting rhetorical Hindi/Hinglish repetition such as "baar baar".
+        let p = prefs();
+        let prompt = build_system_prompt_with_vocab(&p, &[], &[], &[]);
+
+        assert!(
+            prompt.contains("Adjacent retry cleanup"),
+            "voice polish prompt should name the narrow adjacent retry rule"
+        );
+        assert!(
+            prompt.contains("same short phrase or clause")
+                && prompt.contains("Prefer the later/clearer version"),
+            "retry rule should prefer the later clearer adjacent clause"
+        );
+        assert!(
+            prompt.contains("maine kayi barr bola h tumhr")
+                && prompt.contains("Maine kayi baar bola hai tumhe."),
+            "Hinglish retry example should be pinned in the prompt"
+        );
+        assert!(
+            prompt.contains("I told him yesterday, I told him yesterday that we should wait.")
+                && prompt.contains("I told him yesterday that we should wait."),
+            "English adjacent retry example should be pinned in the prompt"
+        );
+        assert!(
+            prompt.contains("non-adjacent repetition")
+                && prompt.contains("rhetorical emphasis")
+                && prompt.contains("baar baar")
+                && prompt.contains("thoda thoda"),
+            "negative guardrails should block broad dedupe and intentional Hindi/Hinglish repetition"
         );
     }
 

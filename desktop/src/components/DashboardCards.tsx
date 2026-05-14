@@ -620,18 +620,21 @@ function Row({
    ════════════════════════════════════════════════════════════════════════════ */
 
 export function TimelineCard({ recordings }: { recordings: Recording[] }) {
-  const WEEKS = 16;
-  const TOTAL_DAYS = WEEKS * 7;
+  const WEEKS = 52;
   const now = new Date();
   now.setHours(0, 0, 0, 0);
 
-  const todayDow = now.getDay();
-  const startDate = new Date(now.getTime() - (TOTAL_DAYS - 1 + todayDow) * 86_400_000);
-  startDate.setHours(0, 0, 0, 0);
-  const totalDays = TOTAL_DAYS + todayDow;
+  // Anchor on most-recent Saturday so the rightmost column is the current week,
+  // top row = Sun, bottom row = Sat. todayDow: 0=Sun .. 6=Sat.
+  const todayDow  = now.getDay();
+  const lastSat   = new Date(now);
+  lastSat.setDate(lastSat.getDate() + (6 - todayDow));
+  const TOTAL_DAYS = WEEKS * 7;
+  const startDate = new Date(lastSat);
+  startDate.setDate(startDate.getDate() - (TOTAL_DAYS - 1));
 
   const dayMap = new Map<string, { words: number; count: number }>();
-  for (let i = 0; i < totalDays; i++) {
+  for (let i = 0; i < TOTAL_DAYS; i++) {
     const d = new Date(startDate.getTime() + i * 86_400_000);
     dayMap.set(d.toISOString().slice(0, 10), { words: 0, count: 0 });
   }
@@ -647,12 +650,13 @@ export function TimelineCard({ recordings }: { recordings: Recording[] }) {
     }
   }
 
-  const allDays = Array.from(dayMap.entries()).map(([key, val]) => ({ key, ...val }));
-  const maxWords = Math.max(...allDays.map((d) => d.words), 1);
-  const totalWords = allDays.reduce((s, d) => s + d.words, 0);
-  const activeDays = allDays.filter((d) => d.words > 0).length;
+  const allDays         = Array.from(dayMap.entries()).map(([key, val]) => ({ key, ...val }));
+  const maxWords        = Math.max(...allDays.map((d) => d.words), 1);
+  const totalWords      = allDays.reduce((s, d) => s + d.words, 0);
+  const activeDays      = allDays.filter((d) => d.words > 0).length;
   const totalRecordings = allDays.reduce((s, d) => s + d.count, 0);
 
+  // Build week columns (oldest → newest, each column = 7 days Sun..Sat).
   const weeks: typeof allDays[] = [];
   for (let i = 0; i < allDays.length; i += 7) {
     weeks.push(allDays.slice(i, i + 7));
@@ -667,136 +671,200 @@ export function TimelineCard({ recordings }: { recordings: Recording[] }) {
     return "hsl(140 65% 52%)";
   };
 
-  const monthLabels: { label: string; col: number }[] = [];
-  let lastMonth = -1;
-  weeks.forEach((week, wi) => {
-    const firstDay = week[0];
-    if (!firstDay) return;
-    const m = new Date(firstDay.key).getMonth();
-    if (m !== lastMonth) {
-      monthLabels.push({
-        label: new Date(firstDay.key).toLocaleDateString("en-US", { month: "short" }),
-        col: wi,
-      });
-      lastMonth = m;
-    }
+  // Month label per week column — label only on the week that starts a new month
+  const monthByCol: (string | null)[] = weeks.map((week, wi) => {
+    const first = week[0];
+    if (!first) return null;
+    const prev  = wi > 0 ? weeks[wi - 1][0] : null;
+    const m     = new Date(first.key).getMonth();
+    const prevM = prev ? new Date(prev.key).getMonth() : -1;
+    return m !== prevM
+      ? new Date(first.key).toLocaleDateString("en-US", { month: "short" })
+      : null;
   });
 
-  const CELL = 11;
-  const GAP = 3;
-  const DOW_LABELS = ["", "Mon", "", "Wed", "", "Fri", ""];
+  const todayKey  = now.toISOString().slice(0, 10);
+  const DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
   return (
     <div className="panel p-5">
-      <div className="flex items-start justify-between gap-4 mb-4">
+      {/* ── header ── */}
+      <div className="flex items-start justify-between gap-4 mb-5">
         <div>
-          <h3
-            className="text-[13px] font-bold tracking-tight"
-            style={{ color: "hsl(var(--foreground))" }}
-          >
+          <h3 className="text-[13px] font-bold tracking-tight" style={{ color: "hsl(var(--foreground))" }}>
             Activity
           </h3>
-          <p
-            className="text-[11.5px] mt-0.5"
-            style={{ color: "hsl(var(--muted-foreground))" }}
-          >
+          <p className="text-[11.5px] mt-0.5" style={{ color: "hsl(var(--muted-foreground))" }}>
             {totalWords.toLocaleString()} words &middot; {totalRecordings} recording{totalRecordings !== 1 ? "s" : ""} &middot;{" "}
-            {activeDays} active day{activeDays !== 1 ? "s" : ""}
+            {activeDays} active day{activeDays !== 1 ? "s" : ""} &middot; last 12 months
           </p>
         </div>
+        <div
+          className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-[11px]"
+          style={{
+            background: "hsl(var(--surface-4))",
+            border:     "1px solid hsl(var(--border))",
+            color:      "hsl(var(--muted-foreground))",
+          }}
+        >
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full"
+            style={{
+              background: "hsl(140 65% 60%)",
+              boxShadow:  "0 0 6px hsl(140 65% 60% / 0.6)",
+            }}
+          />
+          Today
+        </div>
       </div>
 
-      <div className="flex overflow-x-auto">
-        {/* Day-of-week labels */}
-        <div className="flex flex-col flex-shrink-0 pr-2" style={{ gap: GAP, paddingTop: 14 + GAP }}>
-          {DOW_LABELS.map((l, i) => (
-            <div
-              key={i}
-              style={{
-                height: CELL,
-                fontSize: 9,
-                lineHeight: `${CELL}px`,
-                color: "hsl(var(--muted-foreground))",
-                textAlign: "right",
-              }}
-            >
-              {l}
-            </div>
+      {/* ── heatmap grid ──
+          Two rows: [month labels] / [cells]
+          Two cols: [dow labels]   / [grid that spans full available width] */}
+      <div
+        className="grid"
+        style={{
+          gridTemplateColumns: "32px 1fr",
+          columnGap: 8,
+          rowGap: 4,
+        }}
+      >
+        {/* corner */}
+        <div />
+
+        {/* month label row — 52-col grid mirrors the cell grid below */}
+        <div
+          className="grid"
+          style={{
+            gridTemplateColumns: `repeat(${WEEKS}, 1fr)`,
+            fontSize: 10,
+            lineHeight: "14px",
+            color: "hsl(var(--muted-foreground))",
+          }}
+        >
+          {monthByCol.map((label, i) => (
+            <span key={i} style={{ gridColumn: `${i + 1} / span 1`, whiteSpace: "nowrap" }}>
+              {label ?? ""}
+            </span>
           ))}
         </div>
 
-        {/* Week columns */}
-        <div className="flex" style={{ gap: GAP }}>
-          {weeks.map((week, wi) => (
-            <div key={wi} className="flex flex-col" style={{ gap: GAP, width: CELL }}>
-              {/* Month label row */}
-              <div
-                style={{
-                  height: 14,
-                  fontSize: 9,
-                  lineHeight: "14px",
-                  color: "hsl(var(--muted-foreground))",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {monthLabels.find((m) => m.col === wi)?.label ?? ""}
-              </div>
+        {/* day-of-week labels — 7 rows, stretched to match cell rows */}
+        <div
+          className="grid"
+          style={{
+            gridTemplateRows: "repeat(7, 1fr)",
+            rowGap: 3,
+            fontSize: 9.5,
+            color: "hsl(var(--muted-foreground))",
+            textAlign: "right",
+            alignItems: "center",
+          }}
+        >
+          {DOW_LABELS.map((l) => (
+            <div key={l} style={{ lineHeight: 1 }}>{l}</div>
+          ))}
+        </div>
 
-              {/* Day cells */}
-              {week.map((day) => {
-                const isFuture = new Date(day.key).getTime() > now.getTime();
-                return (
-                  <div
-                    key={day.key}
-                    className="relative group"
-                    style={{
-                      width: CELL,
-                      height: CELL,
-                      borderRadius: 2,
-                      background: isFuture ? "transparent" : cellColor(day.words),
-                      opacity: isFuture ? 0 : 1,
-                    }}
-                  >
-                    {day.words > 0 && (
+        {/* cells — WEEKS × 7, col-major, aspect-ratio keeps cells square */}
+        <div
+          className="grid"
+          style={{
+            gridTemplateColumns: `repeat(${WEEKS}, 1fr)`,
+            gridTemplateRows:    "repeat(7, 1fr)",
+            gridAutoFlow:        "column",
+            gap: 3,
+            aspectRatio: `${WEEKS} / 7`,
+          }}
+        >
+          {weeks.flatMap((week) =>
+            week.map((day) => {
+              const t        = new Date(day.key).getTime();
+              const isFuture = t > now.getTime();
+              const isToday  = day.key === todayKey;
+              const dateLbl  = new Date(day.key).toLocaleDateString("en-US", {
+                weekday: "short", month: "short", day: "numeric",
+              });
+              return (
+                <div
+                  key={day.key}
+                  className="heat-cell relative"
+                  style={{
+                    borderRadius: 3,
+                    background:   isFuture ? "transparent" : cellColor(day.words),
+                    opacity:      isFuture ? 0 : 1,
+                    boxShadow:    isToday
+                      ? "0 0 0 1px hsl(140 65% 60% / 0.85) inset"
+                      : undefined,
+                  }}
+                >
+                  {!isFuture && (
+                    <div
+                      className="heat-tip absolute pointer-events-none"
+                      style={{
+                        bottom: "calc(100% + 8px)",
+                        left:   "50%",
+                        transform: "translateX(-50%)",
+                        minWidth: 168,
+                        padding: "8px 10px",
+                        borderRadius: 8,
+                        background: "hsl(var(--surface-3))",
+                        border:     "1px solid hsl(var(--border))",
+                        boxShadow:  "0 8px 24px hsl(0 0% 0% / 0.45)",
+                        opacity: 0,
+                        transition: "opacity 0.12s ease",
+                        zIndex: 30,
+                        textAlign: "left",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
                       <div
-                        className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 px-2 py-1 rounded text-[10px] whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-20"
                         style={{
-                          background: "hsl(var(--foreground))",
-                          color: "hsl(var(--background))",
-                          fontWeight: 600,
-                          boxShadow: "0 4px 12px hsl(0 0% 0% / 0.18)",
+                          fontSize: 9.5,
+                          letterSpacing: "0.04em",
+                          textTransform: "uppercase",
+                          color: "hsl(var(--muted-foreground))",
+                          marginBottom: 4,
                         }}
                       >
-                        {day.words.toLocaleString()} words &middot;{" "}
-                        {day.count} recording{day.count !== 1 ? "s" : ""} &middot;{" "}
-                        {new Date(day.key).toLocaleDateString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                        })}
+                        {dateLbl}{isToday ? " · today" : ""}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          ))}
+                      {day.words > 0 ? (
+                        <>
+                          <div style={{ fontSize: 12.5, fontWeight: 600, color: "hsl(var(--foreground))" }}>
+                            {day.words.toLocaleString()} word{day.words === 1 ? "" : "s"}
+                          </div>
+                          <div style={{ fontSize: 11, color: "hsl(var(--muted-foreground))", marginTop: 2 }}>
+                            {day.count} recording{day.count === 1 ? "" : "s"}
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ fontSize: 11.5, color: "hsl(var(--muted-foreground))" }}>
+                          No recordings
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 
-      <div className="flex items-center justify-end gap-1.5 mt-3">
-        <span style={{ fontSize: 9, color: "hsl(var(--muted-foreground))" }}>Less</span>
+      {/* ── legend ── */}
+      <div className="flex items-center justify-end gap-1.5 mt-4">
+        <span style={{ fontSize: 9.5, color: "hsl(var(--muted-foreground))" }}>Less</span>
         {[0, 0.15, 0.35, 0.65, 1].map((ratio, i) => (
           <div
             key={i}
             style={{
-              width: CELL,
-              height: CELL,
-              borderRadius: 2,
+              width: 12, height: 12, borderRadius: 3,
               background: ratio === 0 ? "hsl(var(--surface-4))" : cellColor(ratio * maxWords),
             }}
           />
         ))}
-        <span style={{ fontSize: 9, color: "hsl(var(--muted-foreground))" }}>More</span>
+        <span style={{ fontSize: 9.5, color: "hsl(var(--muted-foreground))" }}>More</span>
       </div>
     </div>
   );
