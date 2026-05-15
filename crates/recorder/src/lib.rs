@@ -119,33 +119,142 @@ impl AudioRecorder {
                 }
             };
 
+            // Use the device's actual config exactly — Windows WASAPI in shared
+            // mode rejects any mismatch (sample format, channel count, rate).
+            // We downmix multi-channel input to mono and convert non-F32 sample
+            // formats to F32 inside the callback so the rest of the pipeline
+            // keeps operating on mono F32.
             let native_rate = default_config.sample_rate().0;
-            let config = cpal::StreamConfig {
-                channels: CHANNELS,
-                sample_rate: cpal::SampleRate(native_rate),
-                buffer_size: cpal::BufferSize::Default,
+            let native_channels = default_config.channels();
+            let sample_format = default_config.sample_format();
+            let config = default_config.config();
+
+            // Closure: take raw interleaved samples in their native format and
+            // produce a Vec<f32> of mono F32 samples for the rest of the pipeline.
+            let to_mono_f32_from_f32 = move |data: &[f32], channels: u16| -> Vec<f32> {
+                if channels <= 1 {
+                    return data.to_vec();
+                }
+                let ch = channels as usize;
+                let mut out = Vec::with_capacity(data.len() / ch);
+                for frame in data.chunks_exact(ch) {
+                    let sum: f32 = frame.iter().sum();
+                    out.push(sum / ch as f32);
+                }
+                out
+            };
+            let to_mono_f32_from_i16 = move |data: &[i16], channels: u16| -> Vec<f32> {
+                let ch = channels.max(1) as usize;
+                if ch == 1 {
+                    return data.iter().map(|&s| s as f32 / 32768.0).collect();
+                }
+                let mut out = Vec::with_capacity(data.len() / ch);
+                for frame in data.chunks_exact(ch) {
+                    let sum: i32 = frame.iter().map(|&s| s as i32).sum();
+                    let avg = (sum as f32) / (ch as f32);
+                    out.push(avg / 32768.0);
+                }
+                out
+            };
+            let to_mono_f32_from_u16 = move |data: &[u16], channels: u16| -> Vec<f32> {
+                let ch = channels.max(1) as usize;
+                let normalize = |s: u16| -> f32 { (s as f32 - 32768.0) / 32768.0 };
+                if ch == 1 {
+                    return data.iter().map(|&s| normalize(s)).collect();
+                }
+                let mut out = Vec::with_capacity(data.len() / ch);
+                for frame in data.chunks_exact(ch) {
+                    let avg = frame.iter().map(|&s| normalize(s)).sum::<f32>() / ch as f32;
+                    out.push(avg);
+                }
+                out
             };
 
+            // Macro-free dispatch: one match-arm per sample format builds a
+            // typed `build_input_stream` call. Each closure normalises into the
+            // mono-F32 form expected downstream.
             let frames_cb = Arc::clone(&frames_for_reply);
-            let stream = match device.build_input_stream(
-                &config,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    frames_cb.lock().unwrap().extend_from_slice(data);
-                    // Non-blocking send to WS pipeline; drop chunk on back-pressure
-                    let _ = chunk_tx_cb.try_send(data.to_vec());
-                    if !data.is_empty() {
-                        let sum_sq = data.iter().map(|s| s * s).sum::<f32>();
-                        let rms = (sum_sq / data.len() as f32).sqrt();
-                        let boosted = (rms * 9.0).clamp(0.0, 1.0);
-                        let _ = level_tx_cb.try_send(boosted);
-                    }
-                },
-                |err| eprintln!("[rec] stream error: {err}"),
-                None,
+            let chunk_tx_cb_arc = std::sync::Arc::new(chunk_tx_cb);
+            let level_tx_cb_arc = std::sync::Arc::new(level_tx_cb);
+
+            // Push the post-conversion samples through the same fan-out that the
+            // F32-only path used to do inline. Kept as a closure so the match
+            // arms below stay short.
+            fn fan_out(
+                mono: Vec<f32>,
+                frames_cb: &Arc<Mutex<Vec<f32>>>,
+                chunk_tx_cb: &mpsc::SyncSender<Vec<f32>>,
+                level_tx_cb: &mpsc::SyncSender<f32>,
             ) {
+                if mono.is_empty() {
+                    return;
+                }
+                frames_cb.lock().unwrap().extend_from_slice(&mono);
+                let _ = chunk_tx_cb.try_send(mono.clone());
+                let sum_sq = mono.iter().map(|s| s * s).sum::<f32>();
+                let rms = (sum_sq / mono.len() as f32).sqrt();
+                let boosted = (rms * 9.0).clamp(0.0, 1.0);
+                let _ = level_tx_cb.try_send(boosted);
+            }
+
+            let err_cb = |err: cpal::StreamError| eprintln!("[rec] stream error: {err}");
+            let build_result = match sample_format {
+                cpal::SampleFormat::F32 => {
+                    let frames_cb = Arc::clone(&frames_cb);
+                    let chunk_tx_cb = Arc::clone(&chunk_tx_cb_arc);
+                    let level_tx_cb = Arc::clone(&level_tx_cb_arc);
+                    device.build_input_stream(
+                        &config,
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            let mono = to_mono_f32_from_f32(data, native_channels);
+                            fan_out(mono, &frames_cb, &chunk_tx_cb, &level_tx_cb);
+                        },
+                        err_cb,
+                        None,
+                    )
+                }
+                cpal::SampleFormat::I16 => {
+                    let frames_cb = Arc::clone(&frames_cb);
+                    let chunk_tx_cb = Arc::clone(&chunk_tx_cb_arc);
+                    let level_tx_cb = Arc::clone(&level_tx_cb_arc);
+                    device.build_input_stream(
+                        &config,
+                        move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                            let mono = to_mono_f32_from_i16(data, native_channels);
+                            fan_out(mono, &frames_cb, &chunk_tx_cb, &level_tx_cb);
+                        },
+                        err_cb,
+                        None,
+                    )
+                }
+                cpal::SampleFormat::U16 => {
+                    let frames_cb = Arc::clone(&frames_cb);
+                    let chunk_tx_cb = Arc::clone(&chunk_tx_cb_arc);
+                    let level_tx_cb = Arc::clone(&level_tx_cb_arc);
+                    device.build_input_stream(
+                        &config,
+                        move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                            let mono = to_mono_f32_from_u16(data, native_channels);
+                            fan_out(mono, &frames_cb, &chunk_tx_cb, &level_tx_cb);
+                        },
+                        err_cb,
+                        None,
+                    )
+                }
+                other => {
+                    let _ = ready_tx.send(Err(format!(
+                        "unsupported sample format {other:?} — expected f32/i16/u16"
+                    )));
+                    return;
+                }
+            };
+
+            let stream = match build_result {
                 Ok(s) => s,
                 Err(e) => {
-                    let _ = ready_tx.send(Err(format!("failed to open audio stream: {e}")));
+                    let _ = ready_tx.send(Err(format!(
+                        "failed to open audio stream: {e} (config: {native_channels}ch @ {native_rate} Hz, {sample_format:?})"
+                    )));
                     return;
                 }
             };
