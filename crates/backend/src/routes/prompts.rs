@@ -311,8 +311,12 @@ async fn run_prompt_test(
         .map_err(|e| format!("prompt test task failed: {e}"))??;
     if prefs.output_language == "hinglish" && script::contains_devanagari(&result.polished) {
         result.polished = match crate::llm::devanagari_recovery::recover(
-            client, &groq_key_for_recovery, &result.polished,
-        ).await {
+            client,
+            &groq_key_for_recovery,
+            &result.polished,
+        )
+        .await
+        {
             Ok(recovered) => recovered,
             Err(_) => script::enforce_roman_hinglish(&result.polished),
         };

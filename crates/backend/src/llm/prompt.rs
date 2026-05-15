@@ -1314,7 +1314,9 @@ mod tests {
             "Hinglish language_rule must preserve English spans"
         );
         assert!(
-            sys.contains("Hindi spans") && (sys.contains("transliterate to Roman script") || sys.contains("Transliterate to Roman script")),
+            sys.contains("Hindi spans")
+                && (sys.contains("transliterate to Roman script")
+                    || sys.contains("Transliterate to Roman script")),
             "Hinglish language_rule must preserve Hindi spans as Roman Hinglish"
         );
         assert!(

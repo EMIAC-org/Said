@@ -48,11 +48,7 @@ struct ChatMessage {
     content: Option<String>,
 }
 
-pub async fn recover(
-    client: &Client,
-    groq_api_key: &str,
-    text: &str,
-) -> Result<String, String> {
+pub async fn recover(client: &Client, groq_api_key: &str, text: &str) -> Result<String, String> {
     if groq_api_key.is_empty() {
         return Err("no Groq key".into());
     }
@@ -68,7 +64,10 @@ pub async fn recover(
     });
 
     let start = std::time::Instant::now();
-    info!("[devanagari-recovery] POST {GROQ_ENDPOINT} model={RECOVERY_MODEL} input_chars={}", text.len());
+    info!(
+        "[devanagari-recovery] POST {GROQ_ENDPOINT} model={RECOVERY_MODEL} input_chars={}",
+        text.len()
+    );
 
     let resp = client
         .post(GROQ_ENDPOINT)
@@ -83,13 +82,13 @@ pub async fn recover(
     let status = resp.status();
     if !status.is_success() {
         let body_text = resp.text().await.unwrap_or_default();
-        return Err(format!("HTTP {status}: {}", &body_text[..body_text.len().min(300)]));
+        return Err(format!(
+            "HTTP {status}: {}",
+            &body_text[..body_text.len().min(300)]
+        ));
     }
 
-    let resp_json: ChatResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse error: {e}"))?;
+    let resp_json: ChatResponse = resp.json().await.map_err(|e| format!("parse error: {e}"))?;
 
     let content = resp_json
         .choices
@@ -100,14 +99,20 @@ pub async fn recover(
         .to_string();
 
     let ms = start.elapsed().as_millis();
-    info!("[devanagari-recovery] done in {ms}ms — {} → {} chars", text.len(), content.len());
+    info!(
+        "[devanagari-recovery] done in {ms}ms — {} → {} chars",
+        text.len(),
+        content.len()
+    );
 
     if content.is_empty() {
         return Err("empty response".into());
     }
 
     if super::script::contains_devanagari(&content) {
-        warn!("[devanagari-recovery] LLM recovery still contains Devanagari — will fall back to mechanical romanization");
+        warn!(
+            "[devanagari-recovery] LLM recovery still contains Devanagari — will fall back to mechanical romanization"
+        );
         return Err("recovery output still contains Devanagari".into());
     }
 
