@@ -27,11 +27,31 @@ use crate::win_paster::{
 
 // ── Permissions ───────────────────────────────────────────────────────────────
 //
-// Windows has no TCC-equivalent for keyboard injection — non-elevated apps
-// can `SendInput` freely into other non-elevated apps. Always granted.
+// Windows has no TCC-equivalent for keyboard injection or accessibility —
+// non-elevated apps can `SendInput` freely and install `WH_KEYBOARD_LL`
+// hooks without any grant. So the snapshot reports these as "granted" and
+// the onboarding flow auto-advances past them.
+//
+// Defensive fallback: if anything *does* end up calling these (an older
+// build of the React UI cached in a webview, or a debug button), open the
+// Windows Privacy Settings page so the click produces visible feedback
+// rather than silent failure.
 
-pub fn request_permission() {}
-pub fn request_input_monitoring() {}
+fn open_windows_privacy_settings() {
+    // ms-settings: URIs are Windows' deep-link scheme for the Settings app.
+    // `start` resolves them via the shell — argv-based, no shell-injection risk.
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "", "ms-settings:privacy"])
+        .spawn();
+}
+
+pub fn request_permission() {
+    open_windows_privacy_settings();
+}
+
+pub fn request_input_monitoring() {
+    open_windows_privacy_settings();
+}
 
 pub fn is_accessibility_granted() -> bool {
     true

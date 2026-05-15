@@ -7,11 +7,9 @@
 use std::time::Instant;
 
 use said_core::{AppSnapshot, ProcessSummary, all_modes};
+use said_hotkey::is_input_monitoring_granted;
 use said_paster::is_accessibility_granted;
 use said_recorder::{AudioRecorder, ChunkReceiver, LevelReceiver, MIN_DURATION_S, StopReceiver};
-
-#[cfg(target_os = "macos")]
-use said_hotkey::is_input_monitoring_granted;
 
 use crate::permissions;
 
@@ -67,13 +65,16 @@ impl DesktopApp {
             current_mode: "mini",
             current_mode_label: "Fast (gpt-5.4-mini)",
             current_model: "gpt-5.4-mini",
-            auto_paste_supported: cfg!(target_os = "macos"),
+            // Windows supports the same paste path (clipboard + Ctrl+V via SendInput).
+            // Linux remains unsupported until a paster impl lands.
+            auto_paste_supported: cfg!(any(target_os = "macos", target_os = "windows")),
             accessibility_granted: is_accessibility_granted(),
             microphone_granted: permissions::microphone_granted(),
-            #[cfg(target_os = "macos")]
+            // Each platform's hotkey crate reports the right value:
+            // macOS → real Input Monitoring TCC check via CGPreflightListenEventAccess.
+            // Windows → always true (low-level keyboard hooks need no special grant).
+            // Other → false (stub).
             input_monitoring_granted: is_input_monitoring_granted(),
-            #[cfg(not(target_os = "macos"))]
-            input_monitoring_granted: false,
             modes: all_modes().to_vec(),
             last_result: self.last_result.clone(),
             last_error: self.last_error.clone(),
