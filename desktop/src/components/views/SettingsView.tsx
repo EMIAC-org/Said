@@ -407,8 +407,12 @@ export function SettingsView({
     }
   }, []);
   const recordHotkey = prefs?.record_hotkey ?? "caps_lock";
+  // Hotkey labels are platform-aware: the same `right_option` pref maps to
+  // VK_RMENU (Right Alt) on Windows. The Fn / Globe key has no PC analog,
+  // so it's hidden from the picker on Windows entirely.
+  const isWindows = snapshot?.platform === "windows";
   const recordHotkeyLabel =
-    recordHotkey === "right_option" ? "Right Option" :
+    recordHotkey === "right_option" ? (isWindows ? "Right Alt" : "Right Option") :
     recordHotkey === "fn" ? "Fn" :
     "Caps Lock";
 
@@ -1180,9 +1184,10 @@ export function SettingsView({
             >
               {([
                 { key: "caps_lock", label: "Caps Lock" },
-                { key: "right_option", label: "Right Option" },
-                { key: "fn", label: "Fn" },
-              ] as const).map((opt) => {
+                { key: "right_option", label: isWindows ? "Right Alt" : "Right Option" },
+                // Fn / Globe key has no Windows analog — hide the option there.
+                ...(!isWindows ? [{ key: "fn", label: "Fn" }] : []),
+              ] as { key: "caps_lock" | "right_option" | "fn"; label: string }[]).map((opt) => {
                 const isActive = recordHotkey === opt.key;
                 return (
                   <button
@@ -1245,6 +1250,8 @@ export function SettingsView({
                 <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
                   {micGranted
                     ? "Granted — Said can record your voice."
+                    : isWindows
+                    ? "Required for dictation. Windows asks the first time you start recording."
                     : "Required for dictation. macOS will ask once, then use System Settings if denied."}
                 </p>
               </div>
@@ -1288,7 +1295,9 @@ export function SettingsView({
               <div className="flex-1 min-w-0">
                 <p className="text-[13px] font-medium text-foreground">Accessibility</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
-                  {axGranted
+                  {isWindows
+                    ? "Not required on Windows — Said pastes via SendInput without any system permission."
+                    : axGranted
                     ? "Granted — Said can paste text into any app."
                     : "Required for auto-paste. Opens System Settings → Privacy & Security → Accessibility."}
                 </p>
@@ -1341,7 +1350,9 @@ export function SettingsView({
                   {notifPerm === "granted"
                     ? "Granted — Said will notify you when a learning edit is ready to review."
                     : notifPerm === "denied"
-                    ? "Denied — open System Settings → Notifications → Said to enable."
+                    ? isWindows
+                      ? "Denied — open Windows Settings → System → Notifications & actions → Said to enable."
+                      : "Denied — open System Settings → Notifications → Said to enable."
                     : "Said asks once to send learning-edit notifications."}
                 </p>
               </div>
@@ -1392,7 +1403,9 @@ export function SettingsView({
               <div className="flex-1 min-w-0">
                 <p className="text-[13px] font-medium text-foreground">Input Monitoring</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
-                  {imGranted
+                  {isWindows
+                    ? `Not required on Windows — the keyboard hook intercepts ${recordHotkeyLabel} without any system permission.`
+                    : imGranted
                     ? `Granted — ${recordHotkeyLabel} recording hotkey is active.`
                     : `Required for the ${recordHotkeyLabel} recording hotkey to work. Opens System Settings → Privacy & Security → Input Monitoring.`}
                 </p>
