@@ -70,7 +70,10 @@ jobs:
         run: cargo check --workspace --exclude said-desktop --exclude said
 
       - name: cargo test pure-logic crates (runs on every host)
-        run: cargo test -p said-hotkey --lib -p said-paster --lib
+        # `--lib` is a global cargo-test flag — appears once even when
+        # multiple `-p` packages are listed. Earlier `--lib -p X --lib`
+        # form is rejected by cargo 1.78+ with "cannot be used multiple times".
+        run: cargo test -p said-hotkey -p said-paster --lib
 
   control-plane:
     name: control-plane (excluded crate)
