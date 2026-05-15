@@ -6,6 +6,8 @@ Thanks for your interest. Said is a small project; the contribution flow is info
 
 ## TL;DR for first-time contributors
 
+### macOS
+
 ```bash
 git clone https://github.com/EMIAC-org/Said
 cd Said
@@ -14,7 +16,34 @@ brew install just          # if you don't have it
 just dev                   # builds + launches Tauri desktop app
 ```
 
-When you're ready to send a PR:
+### Windows
+
+`dev.sh` is bash-only; on Windows skip it and build the pieces directly:
+
+```powershell
+git clone https://github.com/EMIAC-org/Said
+cd Said
+Copy-Item .env.example .env   # fill in DEEPGRAM_API_KEY + GATEWAY_API_KEY
+
+# Install just via scoop / winget (one-time):
+#   scoop install just
+#   # or
+#   winget install Casey.Just
+
+# Build the said-backend sidecar and sync it into the Tauri externalBin slot:
+cargo build -p said-backend
+New-Item -ItemType Directory -Force -Path desktop\src-tauri\binaries | Out-Null
+Copy-Item target\debug\said-backend.exe desktop\src-tauri\binaries\said-backend-x86_64-pc-windows-msvc.exe
+
+# Then run the desktop dev loop:
+cd desktop
+npm ci
+npm run tauri:dev
+```
+
+`just check` works on both platforms once `just` is installed.
+
+### Sending a PR
 
 ```bash
 just check                 # fmt-check + clippy + tests + typecheck — must pass

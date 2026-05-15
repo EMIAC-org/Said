@@ -107,8 +107,14 @@ export function Sidebar({
     >
       {/* ── Brand header — drag region + traffic light space ── */}
       <div className="flex items-center h-[var(--topbar-height)] px-4 flex-shrink-0">
-        {/* 70px left pad for macOS native traffic lights */}
-        <div data-tauri-drag-region className="w-[70px] flex-shrink-0 drag-region" />
+        {/* macOS native traffic lights live in the top-left; reserve 70px so
+            the brand mark doesn't sit under them. Windows puts its close/min/max
+            buttons on the right, so we only need a 12px breathing gap there. */}
+        <div
+          data-tauri-drag-region
+          className="flex-shrink-0 drag-region"
+          style={{ width: snapshot?.platform === "windows" ? 12 : 70 }}
+        />
 
         {/* Brand mark — single source of truth in BrandMark.tsx */}
         <div className="no-drag" title="Said — Voice Polish Studio">
@@ -339,7 +345,7 @@ function PerformanceMonitor() {
               </span>
             </div>
             <p className="text-[9.5px] text-muted-foreground mt-1 leading-snug">
-              {sample.gpu.available ? formatBytes(sample.gpu.memory_bytes) : "macOS sampler unavailable"}
+              {sample.gpu.available ? formatBytes(sample.gpu.memory_bytes) : "GPU metrics not available"}
             </p>
           </div>
         </>

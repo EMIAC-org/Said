@@ -1275,58 +1275,56 @@ export function SettingsView({
               </div>
             </div>
 
-            <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+            {/* On Windows we hide the Accessibility row entirely: SendInput
+                + global keyboard hooks need no system permission, so the
+                concept doesn't apply. Macs keep the row + divider. */}
+            {!isWindows && (
+              <>
+                <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+                <div className="flex items-center gap-4 px-5 py-4">
+                  <div
+                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{
+                      background: "hsl(var(--surface-4))",
+                      color: "hsl(var(--muted-foreground))",
+                    }}
+                  >
+                    <Shield size={16} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium text-foreground">Accessibility</p>
+                    <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
+                      {axGranted
+                        ? "Granted — Said can paste text into any app."
+                        : "Required for auto-paste. Opens System Settings → Privacy & Security → Accessibility."}
+                    </p>
+                  </div>
+                  <div className="flex-shrink-0 ml-4">
+                    {axSupported ? (
+                      axGranted ? (
+                        <span
+                          className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
+                          style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
+                        >
+                          <Check size={11} /> Granted
+                        </span>
+                      ) : (
+                        <button
+                          onClick={onAccessibility}
+                          className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
+                          style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+                        >
+                          Open Settings
+                        </button>
+                      )
+                    ) : (
+                      <span className="text-[12px] text-muted-foreground">macOS only</span>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
 
-            {/* Row 2: Accessibility */}
-            <div className="flex items-center gap-4 px-5 py-4">
-              <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-                style={{
-                  background: axGranted
-                    ? "hsl(var(--surface-4))"
-                    : "hsl(var(--surface-4))",
-                  color: axGranted
-                    ? "hsl(var(--muted-foreground))"
-                    : "hsl(var(--muted-foreground))",
-                }}
-              >
-                <Shield size={16} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[13px] font-medium text-foreground">Accessibility</p>
-                <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
-                  {isWindows
-                    ? "Not required on Windows — Said pastes via SendInput without any system permission."
-                    : axGranted
-                    ? "Granted — Said can paste text into any app."
-                    : "Required for auto-paste. Opens System Settings → Privacy & Security → Accessibility."}
-                </p>
-              </div>
-              <div className="flex-shrink-0 ml-4">
-                {axSupported ? (
-                  axGranted ? (
-                    <span
-                      className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
-                      style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
-                    >
-                      <Check size={11} /> Granted
-                    </span>
-                  ) : (
-                    <button
-                      onClick={onAccessibility}
-                      className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
-                      style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-                    >
-                      Open Settings
-                    </button>
-                  )
-                ) : (
-                  <span className="text-[12px] text-muted-foreground">macOS only</span>
-                )}
-              </div>
-            </div>
-
-            {/* Divider */}
             <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
 
             {/* Row 3: Notifications */}
@@ -1382,57 +1380,54 @@ export function SettingsView({
               </div>
             </div>
 
-            {/* Divider */}
-            <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
-
-            {/* Row 4: Input Monitoring */}
-            <div className="flex items-center gap-4 px-5 py-4">
-              <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-                style={{
-                  background: imGranted
-                    ? "hsl(var(--surface-4))"
-                    : "hsl(var(--surface-4))",
-                  color: imGranted
-                    ? "hsl(var(--muted-foreground))"
-                    : "hsl(var(--muted-foreground))",
-                }}
-              >
-                <Key size={16} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[13px] font-medium text-foreground">Input Monitoring</p>
-                <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
-                  {isWindows
-                    ? `Not required on Windows — the keyboard hook intercepts ${recordHotkeyLabel} without any system permission.`
-                    : imGranted
-                    ? `Granted — ${recordHotkeyLabel} recording hotkey is active.`
-                    : `Required for the ${recordHotkeyLabel} recording hotkey to work. Opens System Settings → Privacy & Security → Input Monitoring.`}
-                </p>
-              </div>
-              <div className="flex-shrink-0 ml-4">
-                {axSupported ? (
-                  imGranted ? (
-                    <span
-                      className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
-                      style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
-                    >
-                      <Check size={11} /> Granted
-                    </span>
-                  ) : (
-                    <button
-                      onClick={onInputMonitoring}
-                      className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
-                      style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-                    >
-                      Open Settings
-                    </button>
-                  )
-                ) : (
-                  <span className="text-[12px] text-muted-foreground">macOS only</span>
-                )}
-              </div>
-            </div>
+            {/* Input Monitoring row — Mac-only concept. WH_KEYBOARD_LL needs no
+                grant on Windows, so the row is hidden there entirely. */}
+            {!isWindows && (
+              <>
+                <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+                <div className="flex items-center gap-4 px-5 py-4">
+                  <div
+                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{
+                      background: "hsl(var(--surface-4))",
+                      color: "hsl(var(--muted-foreground))",
+                    }}
+                  >
+                    <Key size={16} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium text-foreground">Input Monitoring</p>
+                    <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
+                      {imGranted
+                        ? `Granted — ${recordHotkeyLabel} recording hotkey is active.`
+                        : `Required for the ${recordHotkeyLabel} recording hotkey to work. Opens System Settings → Privacy & Security → Input Monitoring.`}
+                    </p>
+                  </div>
+                  <div className="flex-shrink-0 ml-4">
+                    {axSupported ? (
+                      imGranted ? (
+                        <span
+                          className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
+                          style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
+                        >
+                          <Check size={11} /> Granted
+                        </span>
+                      ) : (
+                        <button
+                          onClick={onInputMonitoring}
+                          className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
+                          style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+                        >
+                          Open Settings
+                        </button>
+                      )
+                    ) : (
+                      <span className="text-[12px] text-muted-foreground">macOS only</span>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
 
           </div>
         </div>
