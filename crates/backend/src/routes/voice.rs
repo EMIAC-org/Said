@@ -58,7 +58,7 @@ fn estimated_secs(word_count: i64) -> f64 {
 fn audio_dir() -> std::path::PathBuf {
     let base = dirs::data_local_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        .unwrap_or_else(std::env::temp_dir);
     base.join("VoicePolish").join("audio")
 }
 

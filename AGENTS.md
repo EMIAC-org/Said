@@ -6,18 +6,23 @@
 
 ## What This Project Is
 
-**Said** is a macOS voice dictation app that polishes speech in real-time using an LLM.
+**Said** is a macOS + Windows voice dictation app that polishes speech in real-time using an LLM.
 Hold Caps Lock, speak, release — Said types polished text into any focused app in English,
 Hindi, Hinglish, or whatever mix comes out of your mouth.
 
-Core runtime:
-1. Caps Lock triggers `hotkey` crate (CGEventTap)
-2. `recorder` captures CoreAudio PCM at 16 kHz
+Core runtime (platform-specific code paths shown):
+1. Caps Lock triggers `hotkey` crate
+   - macOS: `CGEventTap` (Input Monitoring permission)
+   - Windows: `WH_KEYBOARD_LL` low-level keyboard hook (no permission required)
+2. `recorder` captures audio via `cpal` (CoreAudio on macOS, WASAPI on Windows, 16 kHz PCM)
 3. `core/dg_stream` streams audio to Deepgram nova-3 (pre-warmed WebSocket)
 4. `backend /v1/voice` (Axum SSE) polishes the transcript via Groq streaming LLM
 5. `script.rs` Devanagari→Roman guard runs after every token (Hinglish guarantee)
-6. `paster` types token-by-token into the focused app via Accessibility API
+6. `paster` types token-by-token into the focused app
+   - macOS: `CGEventKeyboardSetUnicodeString` (Accessibility permission)
+   - Windows: `SendInput(KEYEVENTF_UNICODE)` (no permission required)
 7. A 30s edit watch classifies corrections (4-way) → validates (3 gates) → persists to SQLite
+   - macOS only in v3.0; Windows falls back to clipboard-only paste (UIAutomation port pending)
 
 ---
 
@@ -34,9 +39,10 @@ Core runtime:
 | LLM polish | Groq llama-3.3-70b (primary), OpenAI Codex (fallback) |
 | Embeddings | Gemini text-embedding-004 (256-d, stored in SQLite) |
 | Edit classifier | Groq llama-3.1-8b-instant (4-way, ~150ms) |
-| Audio capture | CoreAudio (macOS native, 16 kHz PCM) |
-| Global hotkey | CGEventTap (macOS Accessibility framework) |
-| HID typing | CGEventKeyboardSetUnicodeString (Accessibility API) |
+| Audio capture | cpal — CoreAudio (macOS) / WASAPI (Windows), 16 kHz PCM |
+| Global hotkey | CGEventTap (macOS, requires Input Monitoring) / `WH_KEYBOARD_LL` (Windows, no permission) |
+| HID typing | CGEventKeyboardSetUnicodeString (macOS, requires Accessibility) / `SendInput(KEYEVENTF_UNICODE)` (Windows, no permission) |
+| Telemetry | Sentry (opt-out, env-gated, `rustls` transport) |
 | Task runner | just (justfile in repo root) |
 
 ---
@@ -149,7 +155,9 @@ See `.env.example` for the full list of optional configuration.
 | v1.0 | Voice Polish — basic dictation + polish | Done |
 | v2.0 | Said rebrand, Hinglish-native, streaming word fix, learning pipeline | Done |
 | v2.x | Performance fixes (faster STT fallback, embed circuit breaker, pool tuning) | Planned |
-| v3.0 | Local-only mode (on-device STT + LLM) | Roadmap |
+| v3.0 | Windows port (unsigned beta), Sentry telemetry, stable/beta channels, PRIVACY/EULA | In progress |
+| v3.x | Windows Authenticode signing, macOS notarization, in-app Settings toggles, manifests-branch beta discovery, UIAutomation tree-reads | Planned |
+| v4.0 | Local-only mode (on-device STT + LLM) | Roadmap |
 
 ---
 

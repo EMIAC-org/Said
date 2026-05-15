@@ -47,6 +47,31 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --all-targets
 
+  rust-windows:
+    name: Rust workspace (Windows tripwire — cargo check)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-windows
+          cache-bin: false
+
+      # Type-check the whole cross-platform surface. said-hotkey and said-paster
+      # both landed their Windows impls in M3a / M3b. said-desktop and said
+      # (CLI) still have macOS-specific glue we'll port in M3c — excluded
+      # until that lands.
+      - name: cargo check (excl. desktop, CLI)
+        run: cargo check --workspace --exclude said-desktop --exclude said
+
+      - name: cargo test pure-logic crates (runs on every host)
+        run: cargo test -p said-hotkey --lib -p said-paster --lib
+
   control-plane:
     name: control-plane (excluded crate)
     runs-on: ubuntu-latest

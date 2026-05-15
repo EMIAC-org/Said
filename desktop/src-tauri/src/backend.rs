@@ -206,6 +206,15 @@ fn free_port() -> Result<u16, String> {
     Ok(listener.local_addr().unwrap().port())
 }
 
+/// Backend binary filename. `.exe` on Windows; bare name everywhere else.
+/// Tauri's externalBin bundling strips the target-triple suffix at bundle
+/// time on every OS, so this single name is correct for both dev and
+/// bundled lookups.
+#[cfg(windows)]
+const BACKEND_BIN: &str = "said-backend.exe";
+#[cfg(not(windows))]
+const BACKEND_BIN: &str = "said-backend";
+
 /// Locate the `said-backend` binary.
 ///
 /// Resolution order (first existing path wins):
@@ -220,24 +229,24 @@ fn find_binary() -> Result<PathBuf, String> {
     // ── 1. Bundled app: exe is Contents/MacOS/<exe>, backend is Contents/MacOS/said-backend
     //       (Tauri externalBin strips the target triple suffix in the bundle)
     if let Some(exe_dir) = exe.parent() {
-        candidates.push(exe_dir.join("said-backend"));
+        candidates.push(exe_dir.join(BACKEND_BIN));
     }
 
     // ── 2. Walk up from exe directory — covers target/debug and target/release layouts
     let mut dir = exe.parent().map(|p| p.to_path_buf());
     for _ in 0..8 {
         if let Some(ref d) = dir {
-            candidates.push(d.join("debug").join("said-backend"));
-            candidates.push(d.join("release").join("said-backend"));
-            candidates.push(d.join("said-backend"));
+            candidates.push(d.join("debug").join(BACKEND_BIN));
+            candidates.push(d.join("release").join(BACKEND_BIN));
+            candidates.push(d.join(BACKEND_BIN));
             dir = d.parent().map(|p| p.to_path_buf());
         }
     }
 
     // ── 3. Explicit workspace-relative paths for `cargo tauri dev`
     if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("target").join("debug").join("said-backend"));
-        candidates.push(cwd.join("target").join("release").join("said-backend"));
+        candidates.push(cwd.join("target").join("debug").join(BACKEND_BIN));
+        candidates.push(cwd.join("target").join("release").join(BACKEND_BIN));
     }
 
     candidates.into_iter().find(|p| p.exists()).ok_or_else(|| {

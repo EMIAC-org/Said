@@ -17,8 +17,10 @@ import {
   resetVoicePrompt, testVoicePrompt,
   getDebugLogs,
   requestNotifications, checkNotificationPermission,
+  getDesktopPrefs, setDesktopPrefs,
   type DebugLogs,
   type NotifPermission,
+  type DesktopPrefs,
 } from "@/lib/invoke";
 
 // ── Tone presets ──────────────────────────────────────────────────────────────
@@ -335,6 +337,23 @@ export function SettingsView({
   const [debugLogs,    setDebugLogs]    = useState<DebugLogs | null>(null);
   const [debugBusy,    setDebugBusy]    = useState(false);
   const [debugCopied,  setDebugCopied]  = useState<"combined" | "desktop" | "backend" | null>(null);
+
+  // ── Desktop-only prefs (Sentry + channel — read at process startup) ─────────
+  // These live in <data_dir>/desktop_prefs.json and require an app restart
+  // to take effect. UI shows that explicitly.
+  const [desktopPrefs, setDesktopPrefsState] = useState<DesktopPrefs>({
+    sentry_disabled: false,
+    update_channel: "stable",
+  });
+  useEffect(() => {
+    void getDesktopPrefs().then(setDesktopPrefsState).catch(() => {});
+  }, []);
+  const writeDesktopPrefs = useCallback((next: DesktopPrefs) => {
+    setDesktopPrefsState(next);
+    void setDesktopPrefs(next).catch((e) => {
+      console.warn("[settings] failed to write desktop prefs:", e);
+    });
+  }, []);
   const [debugTab,     setDebugTab]     = useState<"combined" | "desktop" | "backend">("combined");
 
   // ── Auto-update state ─────────────────────────────────────────────────────
@@ -388,8 +407,12 @@ export function SettingsView({
     }
   }, []);
   const recordHotkey = prefs?.record_hotkey ?? "caps_lock";
+  // Hotkey labels are platform-aware: the same `right_option` pref maps to
+  // VK_RMENU (Right Alt) on Windows. The Fn / Globe key has no PC analog,
+  // so it's hidden from the picker on Windows entirely.
+  const isWindows = snapshot?.platform === "windows";
   const recordHotkeyLabel =
-    recordHotkey === "right_option" ? "Right Option" :
+    recordHotkey === "right_option" ? (isWindows ? "Right Alt" : "Right Option") :
     recordHotkey === "fn" ? "Fn" :
     "Caps Lock";
 
@@ -1161,9 +1184,10 @@ export function SettingsView({
             >
               {([
                 { key: "caps_lock", label: "Caps Lock" },
-                { key: "right_option", label: "Right Option" },
-                { key: "fn", label: "Fn" },
-              ] as const).map((opt) => {
+                { key: "right_option", label: isWindows ? "Right Alt" : "Right Option" },
+                // Fn / Globe key has no Windows analog — hide the option there.
+                ...(!isWindows ? [{ key: "fn", label: "Fn" }] : []),
+              ] as { key: "caps_lock" | "right_option" | "fn"; label: string }[]).map((opt) => {
                 const isActive = recordHotkey === opt.key;
                 return (
                   <button
@@ -1226,6 +1250,8 @@ export function SettingsView({
                 <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
                   {micGranted
                     ? "Granted — Said can record your voice."
+                    : isWindows
+                    ? "Required for dictation. Windows asks the first time you start recording."
                     : "Required for dictation. macOS will ask once, then use System Settings if denied."}
                 </p>
               </div>
@@ -1249,56 +1275,56 @@ export function SettingsView({
               </div>
             </div>
 
-            <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+            {/* On Windows we hide the Accessibility row entirely: SendInput
+                + global keyboard hooks need no system permission, so the
+                concept doesn't apply. Macs keep the row + divider. */}
+            {!isWindows && (
+              <>
+                <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+                <div className="flex items-center gap-4 px-5 py-4">
+                  <div
+                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{
+                      background: "hsl(var(--surface-4))",
+                      color: "hsl(var(--muted-foreground))",
+                    }}
+                  >
+                    <Shield size={16} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium text-foreground">Accessibility</p>
+                    <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
+                      {axGranted
+                        ? "Granted — Said can paste text into any app."
+                        : "Required for auto-paste. Opens System Settings → Privacy & Security → Accessibility."}
+                    </p>
+                  </div>
+                  <div className="flex-shrink-0 ml-4">
+                    {axSupported ? (
+                      axGranted ? (
+                        <span
+                          className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
+                          style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
+                        >
+                          <Check size={11} /> Granted
+                        </span>
+                      ) : (
+                        <button
+                          onClick={onAccessibility}
+                          className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
+                          style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+                        >
+                          Open Settings
+                        </button>
+                      )
+                    ) : (
+                      <span className="text-[12px] text-muted-foreground">macOS only</span>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
 
-            {/* Row 2: Accessibility */}
-            <div className="flex items-center gap-4 px-5 py-4">
-              <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-                style={{
-                  background: axGranted
-                    ? "hsl(var(--surface-4))"
-                    : "hsl(var(--surface-4))",
-                  color: axGranted
-                    ? "hsl(var(--muted-foreground))"
-                    : "hsl(var(--muted-foreground))",
-                }}
-              >
-                <Shield size={16} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[13px] font-medium text-foreground">Accessibility</p>
-                <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
-                  {axGranted
-                    ? "Granted — Said can paste text into any app."
-                    : "Required for auto-paste. Opens System Settings → Privacy & Security → Accessibility."}
-                </p>
-              </div>
-              <div className="flex-shrink-0 ml-4">
-                {axSupported ? (
-                  axGranted ? (
-                    <span
-                      className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
-                      style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
-                    >
-                      <Check size={11} /> Granted
-                    </span>
-                  ) : (
-                    <button
-                      onClick={onAccessibility}
-                      className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
-                      style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-                    >
-                      Open Settings
-                    </button>
-                  )
-                ) : (
-                  <span className="text-[12px] text-muted-foreground">macOS only</span>
-                )}
-              </div>
-            </div>
-
-            {/* Divider */}
             <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
 
             {/* Row 3: Notifications */}
@@ -1322,7 +1348,9 @@ export function SettingsView({
                   {notifPerm === "granted"
                     ? "Granted — Said will notify you when a learning edit is ready to review."
                     : notifPerm === "denied"
-                    ? "Denied — open System Settings → Notifications → Said to enable."
+                    ? isWindows
+                      ? "Denied — open Windows Settings → System → Notifications & actions → Said to enable."
+                      : "Denied — open System Settings → Notifications → Said to enable."
                     : "Said asks once to send learning-edit notifications."}
                 </p>
               </div>
@@ -1352,55 +1380,54 @@ export function SettingsView({
               </div>
             </div>
 
-            {/* Divider */}
-            <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
-
-            {/* Row 4: Input Monitoring */}
-            <div className="flex items-center gap-4 px-5 py-4">
-              <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-                style={{
-                  background: imGranted
-                    ? "hsl(var(--surface-4))"
-                    : "hsl(var(--surface-4))",
-                  color: imGranted
-                    ? "hsl(var(--muted-foreground))"
-                    : "hsl(var(--muted-foreground))",
-                }}
-              >
-                <Key size={16} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[13px] font-medium text-foreground">Input Monitoring</p>
-                <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
-                  {imGranted
-                    ? `Granted — ${recordHotkeyLabel} recording hotkey is active.`
-                    : `Required for the ${recordHotkeyLabel} recording hotkey to work. Opens System Settings → Privacy & Security → Input Monitoring.`}
-                </p>
-              </div>
-              <div className="flex-shrink-0 ml-4">
-                {axSupported ? (
-                  imGranted ? (
-                    <span
-                      className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
-                      style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
-                    >
-                      <Check size={11} /> Granted
-                    </span>
-                  ) : (
-                    <button
-                      onClick={onInputMonitoring}
-                      className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
-                      style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-                    >
-                      Open Settings
-                    </button>
-                  )
-                ) : (
-                  <span className="text-[12px] text-muted-foreground">macOS only</span>
-                )}
-              </div>
-            </div>
+            {/* Input Monitoring row — Mac-only concept. WH_KEYBOARD_LL needs no
+                grant on Windows, so the row is hidden there entirely. */}
+            {!isWindows && (
+              <>
+                <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+                <div className="flex items-center gap-4 px-5 py-4">
+                  <div
+                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{
+                      background: "hsl(var(--surface-4))",
+                      color: "hsl(var(--muted-foreground))",
+                    }}
+                  >
+                    <Key size={16} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium text-foreground">Input Monitoring</p>
+                    <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
+                      {imGranted
+                        ? `Granted — ${recordHotkeyLabel} recording hotkey is active.`
+                        : `Required for the ${recordHotkeyLabel} recording hotkey to work. Opens System Settings → Privacy & Security → Input Monitoring.`}
+                    </p>
+                  </div>
+                  <div className="flex-shrink-0 ml-4">
+                    {axSupported ? (
+                      imGranted ? (
+                        <span
+                          className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
+                          style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
+                        >
+                          <Check size={11} /> Granted
+                        </span>
+                      ) : (
+                        <button
+                          onClick={onInputMonitoring}
+                          className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
+                          style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+                        >
+                          Open Settings
+                        </button>
+                      )
+                    ) : (
+                      <span className="text-[12px] text-muted-foreground">macOS only</span>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
 
           </div>
         </div>
@@ -1809,6 +1836,81 @@ export function SettingsView({
             label={`Said v${appVersion}`}
             description="Voice Polish Studio · Local-first · Tauri + Rust + React"
           />
+
+          {/* Diagnostics toggle — Sentry, opt-out. Requires restart. */}
+          <Row
+            icon={<Bug size={16} />}
+            label="Send anonymous diagnostics"
+            description={
+              desktopPrefs.sentry_disabled
+                ? "Off — zero telemetry leaves your machine. See PRIVACY.md."
+                : "On — anonymous crash reports + error logs. No content, no audio, no API keys. Restart to apply changes."
+            }
+            action={
+              <button
+                type="button"
+                role="switch"
+                aria-checked={!desktopPrefs.sentry_disabled}
+                onClick={() => writeDesktopPrefs({
+                  ...desktopPrefs,
+                  sentry_disabled: !desktopPrefs.sentry_disabled,
+                })}
+                className="relative h-6 w-11 rounded-full transition-colors"
+                style={{
+                  background: !desktopPrefs.sentry_disabled
+                    ? "hsl(var(--primary))"
+                    : "hsl(var(--surface-4))",
+                }}
+              >
+                <span
+                  className="absolute top-1 h-4 w-4 rounded-full transition-transform"
+                  style={{
+                    left: 4,
+                    transform: !desktopPrefs.sentry_disabled
+                      ? "translateX(20px)"
+                      : "translateX(0)",
+                    background: "hsl(var(--foreground))",
+                  }}
+                />
+              </button>
+            }
+          />
+
+          {/* Update channel toggle — stable / beta. Beta is a no-op in v3.0
+              until manifests-branch publishing lands; the pref still persists. */}
+          <Row
+            icon={<GitCompareArrows size={16} />}
+            label="Update channel"
+            description={
+              desktopPrefs.update_channel === "beta"
+                ? "Beta — preview builds when available. Pref stored; runtime endpoint switch ships in v3.x."
+                : "Stable — recommended for most users."
+            }
+            action={
+              <div className="flex items-center gap-1 rounded-md p-0.5"
+                   style={{ background: "hsl(var(--surface-4))" }}>
+                {(["stable", "beta"] as const).map((ch) => (
+                  <button
+                    key={ch}
+                    type="button"
+                    onClick={() => writeDesktopPrefs({ ...desktopPrefs, update_channel: ch })}
+                    className="px-2.5 py-1 rounded text-[11px] font-medium transition-colors"
+                    style={{
+                      background: desktopPrefs.update_channel === ch
+                        ? "hsl(var(--primary))"
+                        : "transparent",
+                      color: desktopPrefs.update_channel === ch
+                        ? "hsl(var(--background))"
+                        : "hsl(var(--muted-foreground))",
+                    }}
+                  >
+                    {ch === "stable" ? "Stable" : "Beta"}
+                  </button>
+                ))}
+              </div>
+            }
+          />
+
           <Row
             icon={<Download size={16} />}
             label="Software Update"

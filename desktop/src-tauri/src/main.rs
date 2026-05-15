@@ -62,7 +62,9 @@ fn emit_short_recording_error(app: &tauri::AppHandle) {
     );
 }
 
-#[cfg(target_os = "macos")]
+// said-hotkey ships a Windows impl (WH_KEYBOARD_LL) alongside the macOS
+// CGEventTap, and Linux falls back to no-op stubs. Either way it's safe to
+// import unconditionally.
 use said_hotkey as hotkey;
 
 #[cfg(target_os = "macos")]
@@ -457,7 +459,6 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-#[cfg(target_os = "macos")]
 fn parse_record_hotkey(raw: &str) -> hotkey::RecordHotkey {
     match raw {
         "right_option" => hotkey::RecordHotkey::RightOption,
@@ -597,14 +598,30 @@ fn build_tray_menu(
     )?;
 
     // ── 4. "Polish my message" submenu ─────────────────────────────────
-    // Shortcut hints: Option+1..5 (global hotkeys registered in setup).
-    let p_format = MenuItem::with_id(
-        app,
-        "tray_polish_format",
+    // Shortcut hints: macOS shows ⌥1..5 because the Option+digit hotkeys are
+    // wired by said-hotkey on macOS. Windows currently doesn't have these
+    // hotkeys wired (impl_windows.rs's register_shortcut_callback is a
+    // no-op), so we drop the hint to avoid promising a shortcut that does
+    // nothing. The menu items themselves work on every platform — they just
+    // need a click rather than a key chord.
+    #[cfg(target_os = "macos")]
+    let (h_format, h_prof, h_casual, h_concise, h_hinglish) = (
         "Format Selected Text  ⌥1",
-        true,
-        None::<&str>,
-    )?;
+        "Professional English  ⌥2",
+        "Casual  ⌥3",
+        "Concise  ⌥4",
+        "Hinglish  ⌥5",
+    );
+    #[cfg(not(target_os = "macos"))]
+    let (h_format, h_prof, h_casual, h_concise, h_hinglish) = (
+        "Format Selected Text",
+        "Professional English",
+        "Casual",
+        "Concise",
+        "Hinglish",
+    );
+
+    let p_format = MenuItem::with_id(app, "tray_polish_format", h_format, true, None::<&str>)?;
     let p_repair = MenuItem::with_id(
         app,
         "tray_smart_repair",
@@ -612,28 +629,11 @@ fn build_tray_menu(
         true,
         None::<&str>,
     )?;
-    let p_prof = MenuItem::with_id(
-        app,
-        "tray_polish_professional",
-        "Professional English  ⌥2",
-        true,
-        None::<&str>,
-    )?;
-    let p_casual = MenuItem::with_id(app, "tray_polish_casual", "Casual  ⌥3", true, None::<&str>)?;
-    let p_concise = MenuItem::with_id(
-        app,
-        "tray_polish_concise",
-        "Concise  ⌥4",
-        true,
-        None::<&str>,
-    )?;
-    let p_hinglish = MenuItem::with_id(
-        app,
-        "tray_polish_hinglish",
-        "Hinglish  ⌥5",
-        true,
-        None::<&str>,
-    )?;
+    let p_prof = MenuItem::with_id(app, "tray_polish_professional", h_prof, true, None::<&str>)?;
+    let p_casual = MenuItem::with_id(app, "tray_polish_casual", h_casual, true, None::<&str>)?;
+    let p_concise = MenuItem::with_id(app, "tray_polish_concise", h_concise, true, None::<&str>)?;
+    let p_hinglish =
+        MenuItem::with_id(app, "tray_polish_hinglish", h_hinglish, true, None::<&str>)?;
     let p_assertive = MenuItem::with_id(
         app,
         "tray_polish_assertive",
@@ -1223,7 +1223,7 @@ async fn patch_preferences(
                 "[patch_prefs] backend returned: llm_provider={:?}",
                 p.llm_provider
             );
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             hotkey::set_record_hotkey(parse_record_hotkey(&p.record_hotkey));
             // Keep tray cache in sync so sync_tray never needs async
             if let Ok(mut cache) = tray_cache.0.lock() {
@@ -1981,7 +1981,16 @@ async fn run_voice_polish_sse(
     let output_message = if output_pasted {
         "Pasted"
     } else {
-        "Press Ctrl+Cmd+V to paste anywhere"
+        // The Ctrl+Cmd+V "re-paste" hotkey is only wired on macOS today;
+        // Windows users use the tray menu's "Paste latest" item instead.
+        #[cfg(target_os = "macos")]
+        {
+            "Press Ctrl+Cmd+V to paste anywhere"
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            "Use the tray menu → Paste latest"
+        }
     };
     tracing::info!("[main] voice-output status={output_status}");
     let _ = app.emit(
@@ -2223,7 +2232,16 @@ fn finalize_typed_or_pasted_output(
     let output_message = if output_pasted {
         "Pasted"
     } else {
-        "Press Ctrl+Cmd+V to paste anywhere"
+        // The Ctrl+Cmd+V "re-paste" hotkey is only wired on macOS today;
+        // Windows users use the tray menu's "Paste latest" item instead.
+        #[cfg(target_os = "macos")]
+        {
+            "Press Ctrl+Cmd+V to paste anywhere"
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            "Use the tray menu → Paste latest"
+        }
     };
     let _ = app.emit(
         "voice-output",
@@ -2804,6 +2822,27 @@ fn open_external(url: String) -> Result<(), String> {
         .map_err(|e| format!("failed to open: {e}"))
 }
 
+// ── Desktop-only prefs (Sentry on/off + update channel) ──────────────────────
+//
+// These live in `<data_dir>/desktop_prefs.json` rather than the backend's
+// SQLite preferences DB because they must be readable synchronously at
+// process startup — before the backend daemon is reachable. See
+// `said_core::prefs` for details.
+//
+// Changes take effect on next launch (Sentry init and the updater plugin
+// each read once during Tauri setup). The Settings UI shows a "restart to
+// apply" hint next to both toggles.
+
+#[tauri::command]
+fn get_desktop_prefs() -> said_core::prefs::DesktopPrefs {
+    said_core::prefs::load()
+}
+
+#[tauri::command]
+fn set_desktop_prefs(prefs: said_core::prefs::DesktopPrefs) -> Result<(), String> {
+    said_core::prefs::save(&prefs)
+}
+
 // ── Cloud auth commands ───────────────────────────────────────────────────────
 
 /// Cloud URL — read from env, default to the hosted service.
@@ -2879,10 +2918,7 @@ fn get_endpoint(backend: &State<'_, BackendState>) -> Result<BackendEndpoint, St
 }
 
 fn said_log_dir() -> std::path::PathBuf {
-    std::path::PathBuf::from(format!(
-        "{}/Library/Logs/Said",
-        std::env::var("HOME").unwrap_or_else(|_| ".".into())
-    ))
+    said_core::paths::log_dir()
 }
 
 fn read_recent_log(path: &std::path::Path, marker: &str) -> (String, bool) {
@@ -3742,25 +3778,27 @@ fn main() {
     // 1. Load env vars from .env files
     said_core::load_env();
 
+    // 1a. Sentry telemetry — must init before tracing so its panic hook
+    //     stacks correctly. Held until main returns.
+    let _sentry_guard = said_core::telemetry::init("said-desktop");
+
     let default_panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         backend_guard::kill_from_pid_file();
         default_panic_hook(info);
     }));
 
-    // 2. Tracing — write to ~/Library/Logs/Said/said.log so logs survive in bundled app
-    let log_dir = format!(
-        "{}/Library/Logs/Said",
-        std::env::var("HOME").unwrap_or_else(|_| ".".into())
-    );
+    // 2. Tracing — platform-appropriate log dir; survives in bundled app
+    let log_dir = said_core::paths::log_dir();
     std::fs::create_dir_all(&log_dir).ok();
-    let log_path = format!("{log_dir}/said.log");
+    let log_path = log_dir.join("said.log");
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
         .expect("cannot open said.log");
-    // Two tracing layers: log file (always) + stderr (for `cargo run` visibility).
+    // Three tracing layers: log file (always) + stderr (for `cargo run`
+    // visibility) + Sentry (forwards ERROR events only).
     {
         use tracing_subscriber::fmt;
         use tracing_subscriber::prelude::*;
@@ -3778,9 +3816,13 @@ fn main() {
             .with(filter)
             .with(file_layer)
             .with(stderr_layer)
+            .with(said_core::telemetry::tracing_layer())
             .init();
     }
-    tracing::info!("[main] said desktop starting — log file: {log_path}");
+    tracing::info!(
+        "[main] said desktop starting — log file: {}",
+        log_path.display()
+    );
 
     // 3. Shared state
     let shared_app = Arc::new(Mutex::new(DesktopApp::new()));
@@ -3807,7 +3849,7 @@ fn main() {
                 }
 
                 // ── Spawn backend daemon ──────────────────────────────────────
-                // ── Permission status at launch (visible in ~/Library/Logs/Said/said.log) ──
+                // ── Permission status at launch (visible in the said.log file under the platform log dir) ──
                 let ax_ok = paster::is_accessibility_granted();
                 let im_ok = hotkey::is_input_monitoring_granted();
                 tracing::info!("[perm] Accessibility={ax_ok} InputMonitoring={im_ok}");
@@ -3815,7 +3857,14 @@ fn main() {
                     tracing::warn!("[perm] Accessibility NOT granted — paste will fail. Grant in System Settings → Privacy → Accessibility");
                 }
                 if !im_ok {
-                    tracing::warn!("[perm] Input Monitoring NOT granted — hotkeys (Caps Lock, Option+1-5, Ctrl+Cmd+V) will not work. Grant in System Settings → Privacy → Input Monitoring");
+                    #[cfg(target_os = "macos")]
+                    tracing::warn!(
+                        "[perm] Input Monitoring NOT granted — hotkeys (Caps Lock, Option+1-5, Ctrl+Cmd+V) will not work. Grant in System Settings → Privacy → Input Monitoring"
+                    );
+                    #[cfg(not(target_os = "macos"))]
+                    tracing::warn!(
+                        "[perm] is_input_monitoring_granted() returned false on non-macOS — this should not happen (Windows always returns true). Hotkey may not work."
+                    );
                 }
 
                 let using_external_backend = backend::external_backend_url().is_some();
@@ -3849,7 +3898,7 @@ fn main() {
                                 api::get_stt_bias(&ep),
                             );
                             if let Ok(prefs) = &prefs_res {
-                                #[cfg(target_os = "macos")]
+                                #[cfg(any(target_os = "macos", target_os = "windows"))]
                                 hotkey::set_record_hotkey(parse_record_hotkey(&prefs.record_hotkey));
                                 if let Ok(mut cache) = app_h.state::<TrayCache>().0.lock() {
                                     cache.custom_prompt   = prefs.custom_prompt.clone();
@@ -3962,6 +4011,12 @@ fn main() {
                     }
                 }
 
+                // signal_hook's iterator module is `cfg(not(windows))` upstream —
+                // POSIX signals don't exist on Windows the same way (Ctrl+C is
+                // handled via SetConsoleCtrlHandler / WM_CLOSE). For v3.0 we
+                // skip the SIGTERM/SIGINT thread on Windows; the Tauri
+                // RunEvent::ExitRequested handler still cleans up the backend.
+                #[cfg(not(windows))]
                 {
                     let app_handle = app.handle().clone();
                     let cleanup_owned_backend = !using_external_backend;
@@ -4051,8 +4106,10 @@ fn main() {
                 // ── Floating status bar ────────────────────────────────────────
                 create_status_bar(app.handle());
 
-                // ── Hold-to-record hotkey (macOS only) ────────────────────────
-                #[cfg(target_os = "macos")]
+                // ── Hold-to-record hotkey ─────────────────────────────────────
+                // macOS: CGEventTap (see said_hotkey::imp). Windows: WH_KEYBOARD_LL
+                // (see said_hotkey::imp_windows). Linux: no-op stub.
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 {
                     let shared_hold_press = Arc::clone(&app.state::<SharedApp>().0);
                     let shared_hold_release = Arc::clone(&app.state::<SharedApp>().0);
@@ -4194,6 +4251,10 @@ fn main() {
             send_invite_email,
             // External URL opener (mailto:, https://) — Tauri webview blocks window.open
             open_external,
+            // Desktop-only prefs read at process startup (Sentry on/off + update channel).
+            // Backed by `<data_dir>/desktop_prefs.json`, not the SQLite preferences DB.
+            get_desktop_prefs,
+            set_desktop_prefs,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Voice Polish desktop")

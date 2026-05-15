@@ -1,6 +1,13 @@
 //! Clipboard-and-paste helper.
-//! On macOS uses CGEvent to synthesise Cmd+V (requires Accessibility).
-//! On other platforms copies to the system clipboard.
+//! - macOS: CGEvent to synthesise Cmd+V (requires Accessibility).
+//! - Windows: `SendInput(KEYEVENTF_UNICODE)` for streaming typing + `OpenClipboard`/
+//!   `SetClipboardData`/Ctrl+V for paste. AX-tree reads return `None` for v1
+//!   (UIAutomation port is a follow-up).
+//! - Other: clipboard-only stubs.
+
+// Pure logic (UTF-16 encoding, surrogate pairs, CRLF translation) — compiled
+// on every host so its tests run on macOS dev boxes and every CI runner.
+pub mod win_paster;
 
 #[cfg(target_os = "macos")]
 mod imp {
@@ -1399,116 +1406,17 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-mod imp {
-    use std::io::Write;
-    use std::process::Command;
+#[cfg(target_os = "windows")]
+mod imp_windows;
 
-    fn copy_to_clipboard(text: &str) -> Result<(), String> {
-        #[cfg(target_os = "windows")]
-        {
-            let mut child = Command::new("cmd")
-                .args(["/C", "clip"])
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("failed to launch clipboard helper: {e}"))?;
-            if let Some(ref mut stdin) = child.stdin {
-                stdin
-                    .write_all(text.as_bytes())
-                    .map_err(|e| format!("failed to write clipboard contents: {e}"))?;
-            }
-            child
-                .wait()
-                .map_err(|e| format!("clipboard helper failed: {e}"))?;
-            return Ok(());
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = text;
-            Err("clipboard copy not implemented on this platform".into())
-        }
-    }
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+mod imp_other;
 
-    pub fn request_permission() {}
-    pub fn request_input_monitoring() {}
-
-    pub fn is_accessibility_granted() -> bool {
-        false
-    }
-
-    pub fn read_focused_value_fast() -> Option<String> {
-        None
-    }
-    pub fn read_focused_value_first() -> Option<String> {
-        None
-    }
-    pub fn read_focused_value() -> Option<String> {
-        read_focused_value_first()
-    }
-    pub fn read_focused_value_fast_for_pid(_pid: i32) -> Option<String> {
-        None
-    }
-    pub fn read_focused_value_first_for_pid(_pid: i32) -> Option<String> {
-        None
-    }
-    pub fn capture_focused_text_via_selection() -> Option<String> {
-        None
-    }
-    pub fn read_selected_text() -> Option<String> {
-        None
-    }
-
-    #[derive(Debug, Clone, serde::Serialize)]
-    pub struct AxMethodResult {
-        pub method: String,
-        pub label: String,
-        pub ok: bool,
-        pub text: Option<String>,
-        pub err: Option<String>,
-    }
-    #[derive(Debug, Clone, serde::Serialize)]
-    pub struct AxDiagnostics {
-        pub ax_trusted: bool,
-        pub app_name: Option<String>,
-        pub app_pid: Option<i32>,
-        pub element_role: Option<String>,
-        pub attributes: Vec<String>,
-        pub methods: Vec<AxMethodResult>,
-        pub clipboard: String,
-    }
-    pub fn diagnose_focused_field() -> AxDiagnostics {
-        AxDiagnostics {
-            ax_trusted: false,
-            app_name: None,
-            app_pid: None,
-            element_role: None,
-            attributes: vec![],
-            methods: vec![],
-            clipboard: String::new(),
-        }
-    }
-
-    pub fn focused_pid() -> Option<i32> {
-        None
-    }
-    pub fn unlock_focused_app_now() -> Option<i32> {
-        None
-    }
-    pub fn lock_frontmost_app_now() -> Option<i32> {
-        None
-    }
-
-    pub fn type_text(_text: &str) -> Result<bool, String> {
-        Ok(false)
-    }
-
-    pub fn paste(text: &str) -> Result<(), String> {
-        copy_to_clipboard(text)
-    }
-
-    pub fn paste_replacing(text: &str) -> Result<(), String> {
-        copy_to_clipboard(text)
-    }
-}
-
+#[cfg(target_os = "macos")]
 pub use imp::*;
+
+#[cfg(target_os = "windows")]
+pub use imp_windows::*;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub use imp_other::*;

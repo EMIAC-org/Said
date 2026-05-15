@@ -157,6 +157,7 @@ export function OnboardingFlow({ snapshot, onMicrophone, onAccessibility, onInpu
   const micGranted = snapshot?.microphone_granted ?? false;
   const accGranted = snapshot?.accessibility_granted ?? false;
   const imGranted = snapshot?.input_monitoring_granted ?? false;
+  const isWindows = snapshot?.platform === "windows";
 
   useEffect(() => {
     getPreferences().then((p) => {
@@ -425,10 +426,14 @@ export function OnboardingFlow({ snapshot, onMicrophone, onAccessibility, onInpu
 
   // ── Step 5: Choose Hotkey ────────────────────────────────────────────────
   if (step === "hotkey") {
+    // Windows has no Fn/Globe VK; the `right_option` pref maps to VK_RMENU
+    // (Right Alt) on Windows.
     const options = [
       { key: "caps_lock", label: "Caps Lock", desc: "Quick single key" },
-      { key: "right_option", label: "Right Option", desc: "Hold to record" },
-      { key: "fn", label: "Fn", desc: "Hold to record" },
+      { key: "right_option", label: isWindows ? "Right Alt" : "Right Option", desc: "Hold to record" },
+      ...(!isWindows
+        ? [{ key: "fn", label: "Fn", desc: "Hold to record" }]
+        : []),
     ];
 
     return (
@@ -455,7 +460,7 @@ export function OnboardingFlow({ snapshot, onMicrophone, onAccessibility, onInpu
                 className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-[13px] font-bold"
                 style={{ background: "hsl(var(--primary) / 0.12)", color: "hsl(var(--primary))" }}
               >
-                {opt.key === "caps_lock" ? "⇪" : opt.key === "fn" ? "fn" : "⌥"}
+                {opt.key === "caps_lock" ? "⇪" : opt.key === "fn" ? "fn" : isWindows ? "Alt" : "⌥"}
               </div>
               <div>
                 <p className="text-[14px] font-semibold text-foreground">{opt.label}</p>
@@ -501,7 +506,10 @@ export function OnboardingFlow({ snapshot, onMicrophone, onAccessibility, onInpu
   }
 
   // ── Step 7: Test It ──────────────────────────────────────────────────────
-  const hotkeyLabel = prefs?.record_hotkey === "fn" ? "Fn" : prefs?.record_hotkey === "right_option" ? "Right Option" : "Caps Lock";
+  const hotkeyLabel =
+    prefs?.record_hotkey === "fn" ? "Fn" :
+    prefs?.record_hotkey === "right_option" ? (isWindows ? "Right Alt" : "Right Option") :
+    "Caps Lock";
 
   return (
     <StepShell

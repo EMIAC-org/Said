@@ -7,7 +7,7 @@
 
 [package]
 name    = "said-control-plane"
-version = "2.1.6"
+version = "2.2.0-beta6"
 edition = "2024"
 
 [[bin]]

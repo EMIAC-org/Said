@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 pub mod deepgram;
+pub mod paths;
+pub mod prefs;
+pub mod telemetry;
 
 // ── Gateway constants ─────────────────────────────────────────────────────────
 

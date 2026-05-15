@@ -224,7 +224,9 @@ export function InsightsView({ snapshot }: InsightsViewProps) {
             </div>
             <div className="section-label mt-2 mb-4 relative">Total words dictated</div>
             <div className="mt-2" />
-            <div className="text-[13px] text-foreground relative">Desktop · macOS</div>
+            <div className="text-[13px] text-foreground relative">
+              Desktop · {snapshot?.platform === "windows" ? "Windows" : snapshot?.platform === "macos" ? "macOS" : "Desktop"}
+            </div>
             <div className="text-[11px] text-muted-foreground mt-0.5 tabular-nums relative">
               {words.toLocaleString()} polished words across {history.length} session{history.length === 1 ? "" : "s"}
             </div>

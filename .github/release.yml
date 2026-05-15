@@ -1,0 +1,30 @@
+changelog:
+  exclude:
+    labels:
+      - internal
+      - chore
+      - dependencies
+      - duplicate
+      - invalid
+      - wontfix
+    authors:
+      - dependabot
+  categories:
+    - title: Features
+      labels:
+        - feature
+        - enhancement
+    - title: Fixes
+      labels:
+        - fix
+        - bug
+    - title: Performance
+      labels:
+        - performance
+    - title: Documentation
+      labels:
+        - docs
+        - documentation
+    - title: Other
+      labels:
+        - "*"

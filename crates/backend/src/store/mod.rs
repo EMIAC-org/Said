@@ -288,14 +288,11 @@ fn run_migrations(pool: &DbPool) {
     }
 }
 
-/// Return the default database path: ~/Library/Application Support/VoicePolish/db.sqlite
+/// Return the default database path. Delegates to `paths::default_db_path()`
+/// for cross-platform resolution. Kept here for backwards compatibility with
+/// existing callers that import `store::default_db_path`.
 pub fn default_db_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home)
-        .join("Library")
-        .join("Application Support")
-        .join("VoicePolish")
-        .join("db.sqlite")
+    crate::paths::default_db_path()
 }
 
 /// Ensure the single default local user exists.

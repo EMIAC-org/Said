@@ -30,6 +30,8 @@ in English, Hindi, Hinglish, or whatever mix comes out of your mouth.
 
 ## Install
 
+### macOS
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/EMIAC-org/Said/main/install.sh | bash
 ```
@@ -44,14 +46,37 @@ said status       # is it alive?
 said logs         # tail logs
 ```
 
+Apple Silicon and Intel both work; minimum macOS 13.
+
 > [!NOTE]
-> macOS-only today. Apple Silicon and Intel both work. Linux is on the [roadmap](#roadmap) once the Accessibility paste path has a clean equivalent.
+> Said is **ad-hoc signed** (no paid Apple Developer ID). The first time you open the DMG, macOS shows "Said cannot be opened because the developer cannot be verified." Right-click the app → **Open** → confirm. After that it launches normally.
+
+### Windows (beta)
+
+1. Download `Said_<version>_x64-setup.exe` from the [latest release](https://github.com/EMIAC-org/Said/releases/latest).
+2. Run the installer.
+
+> [!IMPORTANT]
+> Said is **not Authenticode-signed** for the v3.0 beta. Windows SmartScreen will block the installer with **"Windows protected your PC"**. Click **More info** → **Run anyway** to proceed. Code signing is on the roadmap; the binary contents are the same builds the macOS users run.
+
+After install:
+
+- **Hold Caps Lock** to dictate. Release to type polished text into the focused window. The Caps Lock toggle never fires — Said suppresses the OS-level toggle while the app is running (so you don't accidentally end up in ALL CAPS).
+- Caps Lock not your preference? **Settings → Hold key → Right Alt**.
+- No permission prompts on Windows — `WH_KEYBOARD_LL` and `SendInput` work for non-elevated apps without setup.
+
+Windows known limitations in v3.0:
+
+- No Authenticode signing — SmartScreen warning on first run (see above).
+- The **30-second edit-watch** that learns from your corrections falls back to clipboard-only on Windows (the UIAutomation tree-read port is a follow-up). Hinglish polish, polish prompts, and the tone shortcuts work fully.
+- Windows ARM (Surface) is not in v3.0; x64 only.
 
 <details>
 <summary>Other ways to install</summary>
 
-- **From source:** `git clone` this repo, then `just dev` for the desktop app or `cargo build --release -p said` for the standalone CLI. See [Build from source](#build-from-source).
-- **DMG:** grab `Said_<version>_aarch64.dmg` (Apple Silicon) or `Said_<version>_x86_64.dmg` (Intel) from the [latest release](https://github.com/EMIAC-org/Said/releases/latest).
+- **From source:** `git clone` this repo, then `just dev` for the desktop app or `cargo build --release -p said` for the standalone CLI (macOS only for now). See [Build from source](#build-from-source).
+- **macOS DMG:** grab `Said_<version>_aarch64.dmg` (Apple Silicon) or `Said_<version>_x86_64.dmg` (Intel) from the [latest release](https://github.com/EMIAC-org/Said/releases/latest).
+- **Windows installer:** `Said_<version>_x64-setup.exe` on the same release page.
 
 </details>
 

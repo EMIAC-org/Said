@@ -1,5 +1,16 @@
-//! macOS CGEventTap hotkey listener.
-//! `start_hold_listener` — fires `on_press` when the record key is held down, `on_release` when lifted.
+//! Cross-platform hold-to-record hotkey listener.
+//!
+//! - macOS: `imp` (CGEventTap) — re-exported on `cfg(target_os = "macos")`.
+//! - Windows: `imp_windows` (WH_KEYBOARD_LL) — re-exported on `cfg(target_os = "windows")`.
+//! - Other: stubs returning `false` / no-op.
+//!
+//! `start_hold_listener` fires `on_press` when the record key goes down and
+//! `on_release` when it lifts. Pure decision logic is in [`win_hotkey`] (tested
+//! on every host so the swallow / fire-once invariants stay covered).
+
+// Pure logic for the Windows hook, compiled on every platform so unit tests run on
+// macOS dev machines too. The Win32 plumbing in `imp_windows` consumes this.
+pub mod win_hotkey;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordHotkey {
@@ -654,10 +665,32 @@ mod imp {
 #[cfg(target_os = "macos")]
 pub use imp::*;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+mod imp_windows;
+
+#[cfg(target_os = "windows")]
+pub use imp_windows::*;
+
+// Fallback stubs for any platform that's neither macOS nor Windows (Linux dev
+// machines, CI tripwire runs against future targets). Lets the workspace
+// compile cleanly; runtime behaviour is no-op.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn set_record_hotkey(_hotkey: RecordHotkey) {}
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn is_input_monitoring_granted() -> bool {
     false
 }
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn start_hold_listener(
+    _on_press: std::sync::Arc<dyn Fn() + Send + Sync>,
+    _on_release: std::sync::Arc<dyn Fn() + Send + Sync>,
+) {
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn register_shortcut_callback(_cb: std::sync::Arc<dyn Fn(u8) + Send + Sync>) {}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn register_paste_callback(_cb: std::sync::Arc<dyn Fn() + Send + Sync>) {}

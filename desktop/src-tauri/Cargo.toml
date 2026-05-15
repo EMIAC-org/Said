@@ -49,6 +49,7 @@ tauri-plugin-process = "2"
 
 # Workspace crates
 said-core     = { path = "../../crates/core" }
+said-hotkey   = { path = "../../crates/hotkey" }
 said-paster   = { path = "../../crates/paster" }
 said-recorder = { path = "../../crates/recorder" }
 
@@ -57,7 +58,6 @@ cpal  = "0.15"
 hound = "3.5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-said-hotkey = { path = "../../crates/hotkey" }
 cocoa           = "0.26"
 objc            = "0.2"
 core-graphics   = "0.24"
