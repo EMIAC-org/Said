@@ -1,0 +1,77 @@
+//! Per-platform filesystem locations for Said. Wraps the `dirs` crate with
+//! Said-specific subfolder names and the platform-conventional log dir.
+//!
+//! macOS keeps logs at `~/Library/Logs/Said` (Apple's HIG convention).
+//! Other platforms use `dirs::cache_dir()` + `Said/logs`.
+//!
+//! Data lives under `VoicePolish/` for backwards compatibility with v2.x
+//! installs; renaming to `Said/` is deferred to a future major version that
+//! owns the migration of existing user databases.
+
+use std::path::PathBuf;
+
+const APP_NAME: &str = "Said";
+const LEGACY_DATA_SUBDIR: &str = "VoicePolish";
+
+/// Directory where Said writes log files. Created on first write by callers.
+///
+/// - macOS: `~/Library/Logs/Said`
+/// - Windows: `%LOCALAPPDATA%\Said\logs`
+/// - Linux: `$XDG_CACHE_HOME/Said/logs` (or `~/.cache/Said/logs`)
+/// - Fallback: `<tempdir>/Said/logs`
+pub fn log_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = dirs::home_dir() {
+            return home.join("Library").join("Logs").join(APP_NAME);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(cache) = dirs::cache_dir() {
+            return cache.join(APP_NAME).join("logs");
+        }
+    }
+    std::env::temp_dir().join(APP_NAME).join("logs")
+}
+
+/// Per-user data directory for persistent Said state (SQLite DB, device id,
+/// retention-managed audio snippets). Created on first write by callers.
+///
+/// - macOS: `~/Library/Application Support/VoicePolish`
+/// - Windows: `%APPDATA%\VoicePolish`
+/// - Linux: `$XDG_DATA_HOME/VoicePolish` (or `~/.local/share/VoicePolish`)
+pub fn data_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
+        .unwrap_or_else(std::env::temp_dir)
+        .join(LEGACY_DATA_SUBDIR)
+}
+
+/// Default SQLite database path. Backwards-compatible with the v2.x macOS layout.
+pub fn default_db_path() -> PathBuf {
+    data_dir().join("db.sqlite")
+}
+
+/// Stable anonymous device ID. Generated once on first call and persisted to
+/// `<data_dir>/device_id`. Used to deduplicate Sentry crash reports without
+/// tying them to any user-controlled identifier. Deleting the file or the
+/// containing data dir resets the ID.
+///
+/// Best-effort: if the data dir is not writable, returns a fresh UUID per
+/// call and telemetry dedup degrades.
+pub fn device_id() -> String {
+    let path = data_dir().join("device_id");
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, &id);
+    id
+}

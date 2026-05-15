@@ -18,7 +18,7 @@ resolver = "2"
 # Bump `version` here (or via scripts/bump-version.sh) and every workspace crate
 # moves with it. control-plane is excluded — keep its version in sync manually.
 [workspace.package]
-version      = "2.1.6"
+version      = "2.2.0-beta1"
 edition      = "2024"
 rust-version = "1.85"
 authors      = ["EMIAC <https://github.com/EMIAC-org>"]
@@ -33,9 +33,19 @@ serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
 uuid        = { version = "1", features = ["v4"] }
 tokio       = { version = "1", features = ["full"] }
-reqwest     = { version = "0.12", features = ["json", "multipart", "stream"] }
+# rustls-tls instead of the default native-tls so we get a pure-Rust TLS stack
+# on every platform. Matches the Tauri shell (aws_lc_rs/rustls) and removes a
+# system dep on Schannel/Security framework, which was the only Windows
+# blocker in the dependency tree.
+reqwest     = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "rustls-tls", "gzip"] }
 tracing     = "0.1"
 dotenvy     = "0.15"
+
+# Sentry crash + error telemetry. rustls transport matches reqwest. Default
+# features dropped so we control the transport stack explicitly and avoid
+# pulling in native-tls / openssl-sys.
+sentry         = { version = "0.34", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
+sentry-tracing = "0.34"
 
 [profile.release]
 opt-level = "z"

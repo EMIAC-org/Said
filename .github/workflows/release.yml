@@ -2,6 +2,12 @@ name: Release
 
 # Triggered by pushing a v* tag. Use scripts/bump-version.sh to bump first,
 # then `git tag vX.Y.Z && git push --tags` to fire this workflow.
+#
+# Channels (see CONTRIBUTING.md for the full rationale):
+#   * `vX.Y.Z`               → stable; writes `latest.json` (the legacy
+#                              endpoint baked into every shipped client).
+#   * `vX.Y.Z-{beta,rc,alpha}N` → prerelease; writes `beta.json` and marks
+#                              the GitHub release as prerelease.
 on:
   push:
     tags: ['v*']
@@ -15,21 +21,31 @@ env:
 jobs:
   build:
     name: Build (${{ matrix.target }})
-    runs-on: macos-latest
+    runs-on: ${{ matrix.runs_on }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
             arch_short: aarch64
+            runs_on: macos-latest
+            platform: darwin
           - target: x86_64-apple-darwin
             arch_short: x86_64
+            runs_on: macos-latest
+            platform: darwin
+          - target: x86_64-pc-windows-msvc
+            arch_short: x86_64
+            runs_on: windows-latest
+            platform: windows
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read workspace version
-        id: ver
+      - name: Read workspace version (bash)
+        if: matrix.platform == 'darwin'
+        id: ver_mac
+        shell: bash
         run: |
           VERSION=$(awk '
             /^\[workspace\.package\]/ { in_section = 1; next }
@@ -40,6 +56,17 @@ jobs:
           ' Cargo.toml)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "workspace version: $VERSION"
+
+      - name: Read workspace version (pwsh)
+        if: matrix.platform == 'windows'
+        id: ver_win
+        shell: pwsh
+        run: |
+          $content = Get-Content Cargo.toml -Raw
+          $match = [regex]::Match($content, '(?ms)^\[workspace\.package\].*?^version\s*=\s*"([^"]+)"')
+          $version = $match.Groups[1].Value
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "workspace version: $version"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -62,19 +89,50 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      - name: Build CLI binary (said)
+      # ── macOS: CLI binary + Said.app + DMG via build-dmg.sh ────────────────
+      - name: Build CLI binary (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
         run: |
           cargo build -p said --release --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/release/said said-${{ matrix.target }}
           chmod +x said-${{ matrix.target }}
 
-      - name: Build Said.app + DMG
+      - name: Build Said.app + DMG (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: ./scripts/build-dmg.sh ${{ matrix.target }}
 
-      - name: Stage release artifacts
+      # ── Windows: said-backend sidecar + Tauri NSIS installer ───────────────
+      #    The CLI binary (`said`) is skipped on Windows for v3.0 — only the
+      #    desktop app ships. Bring the CLI up in a follow-up if power users
+      #    request it.
+      - name: Build said-backend sidecar (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          cargo build -p said-backend --release --target ${{ matrix.target }}
+          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
+          Copy-Item `
+            "target/${{ matrix.target }}/release/said-backend.exe" `
+            "desktop/src-tauri/binaries/said-backend-${{ matrix.target }}.exe"
+
+      - name: Build Said.exe + NSIS installer (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        working-directory: desktop
+        run: npm run tauri:build -- --target ${{ matrix.target }}
+
+      # ── Stage artifacts ────────────────────────────────────────────────────
+      - name: Stage release artifacts (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -83,10 +141,10 @@ jobs:
           cp said-${{ matrix.target }} release-artifacts/
 
           # DMG for manual download
-          cp "target/${{ matrix.target }}/release/bundle/dmg/Said_${{ steps.ver.outputs.version }}_${{ matrix.arch_short }}.dmg" release-artifacts/
+          cp "target/${{ matrix.target }}/release/bundle/dmg/Said_${{ steps.ver_mac.outputs.version }}_${{ matrix.arch_short }}.dmg" release-artifacts/
 
           # Signed .tar.gz for Tauri auto-updater
-          UPDATE_TAR="Said_${{ steps.ver.outputs.version }}_${{ matrix.arch_short }}.app.tar.gz"
+          UPDATE_TAR="Said_${{ steps.ver_mac.outputs.version }}_${{ matrix.arch_short }}.app.tar.gz"
           cd "target/${{ matrix.target }}/release/bundle/macos"
           tar czf "$UPDATE_TAR" Said.app
           mv "$UPDATE_TAR" "$GITHUB_WORKSPACE/release-artifacts/"
@@ -99,9 +157,27 @@ jobs:
             --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
             --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
           cd "$GITHUB_WORKSPACE"
-          # tauri signer creates a .sig file next to the target
           echo "Signature file:"
           ls -la "$GITHUB_WORKSPACE/release-artifacts/"*.sig || true
+
+      - name: Stage release artifacts (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.ver_win.outputs.version }}"
+          New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
+
+          # Tauri NSIS produces:
+          #   - Said_<ver>_x64-setup.exe         (installer for manual download)
+          #   - Said_<ver>_x64-setup.nsis.zip    (auto-updater bundle)
+          #   - Said_<ver>_x64-setup.nsis.zip.sig (updater signature, only if signing key was set)
+          $nsis = "target/${{ matrix.target }}/release/bundle/nsis"
+          Get-ChildItem $nsis -Filter "Said_*-setup.exe"             | ForEach-Object { Copy-Item $_.FullName release-artifacts/ }
+          Get-ChildItem $nsis -Filter "Said_*-setup.nsis.zip"        | ForEach-Object { Copy-Item $_.FullName release-artifacts/ }
+          Get-ChildItem $nsis -Filter "Said_*-setup.nsis.zip.sig"    | ForEach-Object { Copy-Item $_.FullName release-artifacts/ }
+
+          Write-Host "── staged windows artifacts ──"
+          Get-ChildItem release-artifacts | Format-List Name, Length
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -145,33 +221,79 @@ jobs:
           echo "── checksums ──"
           cat SHA256SUMS
 
-      - name: Generate latest.json for Tauri updater
+      - name: Detect release channel
+        id: chan
+        run: |
+          TAG="${{ github.ref_name }}"
+          case "$TAG" in
+            *-beta*|*-rc*|*-alpha*) CHANNEL="beta" ;;
+            *)                       CHANNEL="stable" ;;
+          esac
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "release channel: $CHANNEL"
+
+      - name: Generate updater manifests (latest.json + channel manifests)
         working-directory: artifacts
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
           TAG="${{ github.ref_name }}"
+          CHANNEL="${{ steps.chan.outputs.channel }}"
           NOTES="See https://github.com/EMIAC-org/Said/releases/tag/${TAG}"
           BASE_URL="https://github.com/EMIAC-org/Said/releases/download/${TAG}"
 
-          # Read signatures
-          AARCH64_SIG=""
-          X86_64_SIG=""
-          if [ -f "Said_${VERSION}_aarch64.app.tar.gz.sig" ]; then
-            AARCH64_SIG=$(cat "Said_${VERSION}_aarch64.app.tar.gz.sig")
-          fi
-          if [ -f "Said_${VERSION}_x86_64.app.tar.gz.sig" ]; then
-            X86_64_SIG=$(cat "Said_${VERSION}_x86_64.app.tar.gz.sig")
-          fi
+          read_sig() {
+            local file="$1"
+            [ -f "$file" ] && cat "$file" || echo ""
+          }
+
+          AARCH64_SIG=$(read_sig "Said_${VERSION}_aarch64.app.tar.gz.sig")
+          X86_64_SIG=$(read_sig "Said_${VERSION}_x86_64.app.tar.gz.sig")
+          WINDOWS_SIG=$(read_sig "Said_${VERSION}_x64-setup.nsis.zip.sig")
+          WINDOWS_FILE="Said_${VERSION}_x64-setup.nsis.zip"
 
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          printf '{\n  "version": "%s",\n  "notes": "%s",\n  "pub_date": "%s",\n  "platforms": {\n    "darwin-aarch64": {\n      "signature": "%s",\n      "url": "%s/Said_%s_aarch64.app.tar.gz"\n    },\n    "darwin-x86_64": {\n      "signature": "%s",\n      "url": "%s/Said_%s_x86_64.app.tar.gz"\n    }\n  }\n}\n' \
-            "$VERSION" "$NOTES" "$PUB_DATE" \
-            "$AARCH64_SIG" "$BASE_URL" "$VERSION" \
-            "$X86_64_SIG" "$BASE_URL" "$VERSION" \
-            > latest.json
 
-          echo "── latest.json ──"
-          cat latest.json
+          # Single body shape across both channels; only the filename differs.
+          # Stable tags own `latest.json` (legacy endpoint baked into every
+          # shipped client). Beta tags emit `beta.json` attached to that
+          # prerelease; beta auto-discovery via a manifests branch is a follow-up.
+          write_manifest() {
+            local FILE="$1"
+            cat > "$FILE" <<EOF
+          {
+            "version": "${VERSION}",
+            "notes": "${NOTES}",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${AARCH64_SIG}",
+                "url": "${BASE_URL}/Said_${VERSION}_aarch64.app.tar.gz"
+              },
+              "darwin-x86_64": {
+                "signature": "${X86_64_SIG}",
+                "url": "${BASE_URL}/Said_${VERSION}_x86_64.app.tar.gz"
+              },
+              "windows-x86_64": {
+                "signature": "${WINDOWS_SIG}",
+                "url": "${BASE_URL}/${WINDOWS_FILE}"
+              }
+            }
+          }
+          EOF
+          }
+
+          if [ "$CHANNEL" = "stable" ]; then
+            write_manifest latest.json
+          else
+            write_manifest beta.json
+          fi
+
+          echo "── manifests written ──"
+          ls -la *.json
+          for f in *.json; do
+            echo "── $f ──"
+            cat "$f"
+          done
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -179,3 +301,4 @@ jobs:
           files: artifacts/*
           generate_release_notes: true
           fail_on_unmatched_files: false
+          prerelease: ${{ steps.chan.outputs.channel == 'beta' }}

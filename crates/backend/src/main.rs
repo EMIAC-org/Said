@@ -2,6 +2,7 @@ use clap::Parser;
 use reqwest;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(name = "polish-backend", about = "Voice Polish local daemon")]
@@ -10,31 +11,35 @@ struct Cli {
     #[arg(long, default_value = "48484")]
     port: u16,
 
-    /// Path to the SQLite database file (default: ~/Library/Application Support/VoicePolish/db.sqlite)
+    /// Path to the SQLite database file (default: platform data-local dir + `VoicePolish/db.sqlite`)
     #[arg(long)]
     db: Option<String>,
 }
 
 #[tokio::main]
 async fn main() {
-    // ── Structured logging — write to ~/Library/Logs/Said/backend.log ────────
-    let log_dir = format!(
-        "{}/Library/Logs/Said",
-        std::env::var("HOME").unwrap_or_else(|_| ".".into())
-    );
+    // ── Sentry — must init before the tracing subscriber so the panic hook
+    //   it installs runs before any other panic handler. Held until main returns.
+    let _sentry_guard = said_core::telemetry::init("said-backend");
+
+    // ── Structured logging — platform-appropriate log dir ──────────────────────
+    let log_dir = said_backend::paths::log_dir();
     std::fs::create_dir_all(&log_dir).ok();
-    let log_path = format!("{log_dir}/backend.log");
+    let log_path = log_dir.join("backend.log");
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
         .expect("cannot open backend.log");
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive("said_backend=debug".parse().unwrap()),
-        )
+
+    let filter = EnvFilter::from_default_env().add_directive("said_backend=debug".parse().unwrap());
+    let file_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
-        .with_writer(std::sync::Mutex::new(log_file))
+        .with_writer(std::sync::Mutex::new(log_file));
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(file_layer)
+        .with(said_core::telemetry::tracing_layer())
         .init();
 
     start_parent_death_watch();

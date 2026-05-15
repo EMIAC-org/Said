@@ -17,8 +17,10 @@ import {
   resetVoicePrompt, testVoicePrompt,
   getDebugLogs,
   requestNotifications, checkNotificationPermission,
+  getDesktopPrefs, setDesktopPrefs,
   type DebugLogs,
   type NotifPermission,
+  type DesktopPrefs,
 } from "@/lib/invoke";
 
 // ── Tone presets ──────────────────────────────────────────────────────────────
@@ -335,6 +337,23 @@ export function SettingsView({
   const [debugLogs,    setDebugLogs]    = useState<DebugLogs | null>(null);
   const [debugBusy,    setDebugBusy]    = useState(false);
   const [debugCopied,  setDebugCopied]  = useState<"combined" | "desktop" | "backend" | null>(null);
+
+  // ── Desktop-only prefs (Sentry + channel — read at process startup) ─────────
+  // These live in <data_dir>/desktop_prefs.json and require an app restart
+  // to take effect. UI shows that explicitly.
+  const [desktopPrefs, setDesktopPrefsState] = useState<DesktopPrefs>({
+    sentry_disabled: false,
+    update_channel: "stable",
+  });
+  useEffect(() => {
+    void getDesktopPrefs().then(setDesktopPrefsState).catch(() => {});
+  }, []);
+  const writeDesktopPrefs = useCallback((next: DesktopPrefs) => {
+    setDesktopPrefsState(next);
+    void setDesktopPrefs(next).catch((e) => {
+      console.warn("[settings] failed to write desktop prefs:", e);
+    });
+  }, []);
   const [debugTab,     setDebugTab]     = useState<"combined" | "desktop" | "backend">("combined");
 
   // ── Auto-update state ─────────────────────────────────────────────────────
@@ -1809,6 +1828,81 @@ export function SettingsView({
             label={`Said v${appVersion}`}
             description="Voice Polish Studio · Local-first · Tauri + Rust + React"
           />
+
+          {/* Diagnostics toggle — Sentry, opt-out. Requires restart. */}
+          <Row
+            icon={<Bug size={16} />}
+            label="Send anonymous diagnostics"
+            description={
+              desktopPrefs.sentry_disabled
+                ? "Off — zero telemetry leaves your machine. See PRIVACY.md."
+                : "On — anonymous crash reports + error logs. No content, no audio, no API keys. Restart to apply changes."
+            }
+            action={
+              <button
+                type="button"
+                role="switch"
+                aria-checked={!desktopPrefs.sentry_disabled}
+                onClick={() => writeDesktopPrefs({
+                  ...desktopPrefs,
+                  sentry_disabled: !desktopPrefs.sentry_disabled,
+                })}
+                className="relative h-6 w-11 rounded-full transition-colors"
+                style={{
+                  background: !desktopPrefs.sentry_disabled
+                    ? "hsl(var(--primary))"
+                    : "hsl(var(--surface-4))",
+                }}
+              >
+                <span
+                  className="absolute top-1 h-4 w-4 rounded-full transition-transform"
+                  style={{
+                    left: 4,
+                    transform: !desktopPrefs.sentry_disabled
+                      ? "translateX(20px)"
+                      : "translateX(0)",
+                    background: "hsl(var(--foreground))",
+                  }}
+                />
+              </button>
+            }
+          />
+
+          {/* Update channel toggle — stable / beta. Beta is a no-op in v3.0
+              until manifests-branch publishing lands; the pref still persists. */}
+          <Row
+            icon={<GitCompareArrows size={16} />}
+            label="Update channel"
+            description={
+              desktopPrefs.update_channel === "beta"
+                ? "Beta — preview builds when available. Pref stored; runtime endpoint switch ships in v3.x."
+                : "Stable — recommended for most users."
+            }
+            action={
+              <div className="flex items-center gap-1 rounded-md p-0.5"
+                   style={{ background: "hsl(var(--surface-4))" }}>
+                {(["stable", "beta"] as const).map((ch) => (
+                  <button
+                    key={ch}
+                    type="button"
+                    onClick={() => writeDesktopPrefs({ ...desktopPrefs, update_channel: ch })}
+                    className="px-2.5 py-1 rounded text-[11px] font-medium transition-colors"
+                    style={{
+                      background: desktopPrefs.update_channel === ch
+                        ? "hsl(var(--primary))"
+                        : "transparent",
+                      color: desktopPrefs.update_channel === ch
+                        ? "hsl(var(--background))"
+                        : "hsl(var(--muted-foreground))",
+                    }}
+                  >
+                    {ch === "stable" ? "Stable" : "Beta"}
+                  </button>
+                ))}
+              </div>
+            }
+          />
+
           <Row
             icon={<Download size={16} />}
             label="Software Update"

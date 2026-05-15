@@ -19,6 +19,10 @@ pub mod routes;
 pub mod store;
 pub mod stt;
 
+// Re-export the cross-platform path helpers from said-core so that code
+// reading `said_backend::paths::*` keeps working without an extra import.
+pub use said_core::paths;
+
 #[cfg(test)]
 mod learning_flow_tests;
 

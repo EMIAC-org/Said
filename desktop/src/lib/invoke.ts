@@ -879,6 +879,29 @@ export function onVocabToast(handler: (p: VocabToastPayload) => void): () => voi
   return () => unsub();
 }
 
+// ── Desktop-only prefs (Sentry on/off + update channel) ───────────────────────
+//
+// These live in `<data_dir>/desktop_prefs.json` (NOT the backend's SQLite
+// preferences DB) because they're read by the desktop process synchronously
+// at startup, before the backend daemon is reachable. Changing them takes
+// effect on next launch.
+export interface DesktopPrefs {
+  sentry_disabled: boolean;
+  update_channel: "stable" | "beta";
+}
+
+export async function getDesktopPrefs(): Promise<DesktopPrefs> {
+  if (!isTauriRuntime()) {
+    return { sentry_disabled: false, update_channel: "stable" };
+  }
+  return tauriInvoke<DesktopPrefs>("get_desktop_prefs");
+}
+
+export async function setDesktopPrefs(prefs: DesktopPrefs): Promise<void> {
+  if (!isTauriRuntime()) return;
+  return tauriInvoke<void>("set_desktop_prefs", { prefs });
+}
+
 // Suppress unused-import warnings for types only used in exported signatures
 export type {
   CloudAuthResponse,
