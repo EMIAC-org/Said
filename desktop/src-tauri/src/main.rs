@@ -1890,7 +1890,7 @@ fn do_finish_recording(
     let back_arc2 = Arc::clone(&back_arc);
 
     tauri::async_runtime::spawn(async move {
-        // ── P5: Wait up to 6 s for the Deepgram WS transcript ─────────────────
+        // ── P5: Wait briefly for the Deepgram WS transcript ───────────────────
         // begin_stop() dropped chunk_tx, which makes the audio bridge send a
         // Deepgram Finalize command. The persistent WS actor usually returns
         // quickly; if it is disconnected or reconnecting it sends None so the
@@ -1902,7 +1902,7 @@ fn do_finish_recording(
         let pre_transcript: Option<dg_stream::StreamingTranscript> = if let Some(rx) = transcript_rx
         {
             let wait_start = tokio::time::Instant::now();
-            match tokio::time::timeout(std::time::Duration::from_secs(6), rx).await {
+            match tokio::time::timeout(std::time::Duration::from_millis(2500), rx).await {
                 Ok(Ok(Some(t))) if !t.transcript.is_empty() => {
                     let wait_ms = wait_start.elapsed().as_millis();
                     // Quality gate: reject suspiciously short transcripts.
