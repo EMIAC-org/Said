@@ -3987,6 +3987,12 @@ fn main() {
                     }
                 }
 
+                // signal_hook's iterator module is `cfg(not(windows))` upstream —
+                // POSIX signals don't exist on Windows the same way (Ctrl+C is
+                // handled via SetConsoleCtrlHandler / WM_CLOSE). For v3.0 we
+                // skip the SIGTERM/SIGINT thread on Windows; the Tauri
+                // RunEvent::ExitRequested handler still cleans up the backend.
+                #[cfg(not(windows))]
                 {
                     let app_handle = app.handle().clone();
                     let cleanup_owned_backend = !using_external_backend;
