@@ -241,6 +241,8 @@ pub async fn polish(
             (model.clone(), None)
         };
 
+        let groq_key_for_recovery = groq_key_text.clone();
+
         info!("[text] LLM provider={llm_provider:?} model={model_for_llm:?}");
 
         let llm_task = tokio::spawn(async move {
@@ -312,9 +314,20 @@ pub async fn polish(
         };
 
         if enforce_roman_hinglish && script::contains_devanagari(&llm_result.polished) {
-            let romanized = script::enforce_roman_hinglish(&llm_result.polished);
+            let romanized = match crate::llm::devanagari_recovery::recover(
+                &http_client, &groq_key_for_recovery, &llm_result.polished,
+            ).await {
+                Ok(recovered) => {
+                    info!("[text] Devanagari LLM recovery succeeded — {} → {} chars", llm_result.polished.len(), recovered.len());
+                    recovered
+                }
+                Err(e) => {
+                    warn!("[text] Devanagari LLM recovery failed ({e}) — mechanical fallback");
+                    script::enforce_roman_hinglish(&llm_result.polished)
+                }
+            };
             warn!(
-                "[text] LLM emitted Devanagari in Hinglish mode — romanized {} → {} chars",
+                "[text] LLM emitted Devanagari in Hinglish mode — recovered {} → {} chars",
                 llm_result.polished.len(),
                 romanized.len(),
             );

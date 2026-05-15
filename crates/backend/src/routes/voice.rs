@@ -298,6 +298,7 @@ pub async fn repair_transcript(
         let sys_p = system_prompt.clone();
         let usr_m = user_message.clone();
         let client_c = http_client.clone();
+        let groq_key_for_recovery = groq_key.clone();
         let model = said_core::resolve_model(&prefs.selected_model).to_string();
         let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
             let pool_tok = pool.clone();
@@ -375,7 +376,18 @@ pub async fn repair_transcript(
             llm_result.polished = scrubbed;
         }
         if enforce_roman_hinglish && script::contains_devanagari(&llm_result.polished) {
-            llm_result.polished = script::enforce_roman_hinglish(&llm_result.polished);
+            llm_result.polished = match crate::llm::devanagari_recovery::recover(
+                &http_client, &groq_key_for_recovery, &llm_result.polished,
+            ).await {
+                Ok(recovered) => {
+                    info!("[voice-repair] Devanagari LLM recovery succeeded");
+                    recovered
+                }
+                Err(e) => {
+                    warn!("[voice-repair] Devanagari LLM recovery failed ({e}) — mechanical fallback");
+                    script::enforce_roman_hinglish(&llm_result.polished)
+                }
+            };
         }
 
         // Content guard: if the LLM dropped more than half the words,
@@ -901,6 +913,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let gk          = gateway_key.clone();
         let gk_gemini   = gemini_key.clone();
         let gk_groq     = groq_key.clone();
+        let groq_key_for_recovery = groq_key.clone();
 
         let llm_start = Instant::now();
         info!("[timing] LLM start — provider={llm_provider:?} model={model_for_llm:?}");
@@ -1008,9 +1021,25 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         }
 
         if enforce_roman_hinglish && script::contains_devanagari(&llm_result.polished) {
-            let romanized = script::enforce_roman_hinglish(&llm_result.polished);
+            let romanized = match crate::llm::devanagari_recovery::recover(
+                &http_client, &groq_key_for_recovery, &llm_result.polished,
+            ).await {
+                Ok(recovered) => {
+                    info!(
+                        "[voice] Devanagari LLM recovery succeeded — {} → {} chars",
+                        llm_result.polished.len(), recovered.len(),
+                    );
+                    recovered
+                }
+                Err(e) => {
+                    warn!(
+                        "[voice] Devanagari LLM recovery failed ({e}) — falling back to mechanical romanization",
+                    );
+                    script::enforce_roman_hinglish(&llm_result.polished)
+                }
+            };
             warn!(
-                "[voice] LLM emitted Devanagari in Hinglish mode — romanized {} → {} chars",
+                "[voice] Devanagari detected in output — recovered {} → {} chars",
                 llm_result.polished.len(),
                 romanized.len(),
             );

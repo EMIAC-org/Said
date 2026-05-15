@@ -3,8 +3,8 @@
 //! A single actor owns the Deepgram WebSocket. Recordings send audio chunks to
 //! the actor by recording id, release sends `Finalize`, and the actor returns a
 //! transcript over a per-recording oneshot. Between recordings it keeps the same
-//! socket alive with Deepgram `KeepAlive` messages after the first audio frame
-//! has been sent on that socket.
+//! socket warm with a tiny silent audio prime followed by Deepgram `KeepAlive`
+//! messages.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -37,13 +37,15 @@ const AUDIO_BRIDGE_BUFFER_CHUNKS: usize = 4096;
 const COMMAND_BUFFER_CHUNKS: usize = AUDIO_BRIDGE_BUFFER_CHUNKS + 128;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
-const FINALIZE_TIMEOUT: Duration = Duration::from_secs(4);
-const FINALIZE_SILENT_WS_TIMEOUT: Duration = Duration::from_millis(1200);
+const FINALIZE_WITH_TEXT_RESULT_TIMEOUT: Duration = Duration::from_millis(1500);
+const FINALIZE_NO_RESULT_TIMEOUT: Duration = Duration::from_millis(900);
 const FINALIZE_QUIET_TIMEOUT: Duration = Duration::from_millis(250);
 const RESPONSE_DRAIN_POLL_TIMEOUT: Duration = Duration::from_millis(1);
-const FIRST_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1200);
+const LIVE_STT_HEALTH_TIMEOUT: Duration = Duration::from_millis(700);
 const PCM_SIGNAL_THRESHOLD: i16 = 500;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(4);
+const WARM_PRIME_SILENCE_MS: usize = 200;
+const MAX_IDLE_WARM_DURATION: Duration = Duration::from_secs(15 * 60);
 const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(8);
 const MAX_STREAMING_DURATION: Duration = Duration::from_secs(45);
 
@@ -112,6 +114,9 @@ struct ActiveRecording {
     first_signal_at: Option<tokio::time::Instant>,
     last_response_at: Option<tokio::time::Instant>,
     responses_seen: usize,
+    result_messages_seen: usize,
+    text_result_messages_seen: usize,
+    live_stt_health_miss_logged: bool,
 }
 
 impl ActiveRecording {
@@ -135,6 +140,9 @@ impl ActiveRecording {
             first_signal_at: None,
             last_response_at: None,
             responses_seen: 0,
+            result_messages_seen: 0,
+            text_result_messages_seen: 0,
+            live_stt_health_miss_logged: false,
         }
     }
 
@@ -153,11 +161,38 @@ impl ActiveRecording {
         self.last_response_at = Some(tokio::time::Instant::now());
     }
 
-    fn first_response_timed_out(&self) -> bool {
-        self.responses_seen == 0
+    fn note_result_message(&mut self, has_text: bool) {
+        self.result_messages_seen += 1;
+        if has_text {
+            self.text_result_messages_seen += 1;
+        }
+    }
+
+    fn should_log_live_stt_health_miss(&mut self) -> bool {
+        if self.live_stt_health_miss_logged {
+            return false;
+        }
+        let should_log = self.text_result_messages_seen == 0
             && self
                 .first_signal_at
-                .is_some_and(|at| at.elapsed() >= FIRST_RESPONSE_TIMEOUT)
+                .is_some_and(|at| at.elapsed() >= LIVE_STT_HEALTH_TIMEOUT);
+        if should_log {
+            self.live_stt_health_miss_logged = true;
+        }
+        should_log
+    }
+
+    fn should_batch_rescue_on_release(&self) -> bool {
+        self.text_result_messages_seen == 0
+            && self
+                .first_signal_at
+                .is_some_and(|at| at.elapsed() >= LIVE_STT_HEALTH_TIMEOUT)
+    }
+
+    fn speech_elapsed_ms(&self) -> u128 {
+        self.first_signal_at
+            .map(|at| at.elapsed().as_millis())
+            .unwrap_or(0)
     }
 
     fn finish(&mut self, stt_mode: String) -> Option<StreamingTranscript> {
@@ -280,9 +315,9 @@ impl DeepgramSession {
         let mut active: Option<ActiveRecording> = None;
         let mut keepalive_interval = tokio::time::interval(KEEPALIVE_INTERVAL);
         keepalive_interval.reset();
-        let mut sent_audio_on_this_ws = false;
         let mut reconnect_after_idle = false;
         let mut recording_deadline: Option<tokio::time::Instant> = None;
+        let mut idle_warm_deadline = tokio::time::Instant::now() + MAX_IDLE_WARM_DURATION;
 
         loop {
             tokio::select! {
@@ -314,7 +349,6 @@ impl DeepgramSession {
                                 continue;
                             }
                             current.note_audio_sent(&pcm);
-                            sent_audio_on_this_ws = true;
                             if let Err(e) = send_audio_with_timeout(&mut ws, pcm, &current.id).await {
                                 warn!("[dg_session] {e} — falling back to batch");
                                 current.send_result(None);
@@ -324,16 +358,15 @@ impl DeepgramSession {
                                 return true;
                             }
                             if let Some(current) = active.as_mut() {
-                                if current.first_response_timed_out() {
+                                if current.should_log_live_stt_health_miss() {
                                     warn!(
-                                        "[dg_session] no WS response after {}ms of speech id={} chunks={} signal_chunks={} — falling back to batch and reconnecting",
-                                        FIRST_RESPONSE_TIMEOUT.as_millis(),
+                                        "[dg_session] no live text result after {}ms of speech id={} chunks={} signal_chunks={} ws_messages={} — will batch-rescue on release unless WS recovers",
+                                        LIVE_STT_HEALTH_TIMEOUT.as_millis(),
                                         current.id,
                                         current.chunks_sent,
-                                        current.signal_chunks_sent
+                                        current.signal_chunks_sent,
+                                        current.responses_seen
                                     );
-                                    current.send_result(None);
-                                    return true;
                                 }
                             }
                             keepalive_interval.reset();
@@ -347,6 +380,20 @@ impl DeepgramSession {
                                 continue;
                             }
                             recording_deadline = None;
+                            if current.should_batch_rescue_on_release() {
+                                warn!(
+                                    "[dg_session] no live text result by release id={} speech_elapsed={}ms chunks={} signal_chunks={} ws_messages={} result_messages={} — starting batch STT immediately and reconnecting WS",
+                                    current.id,
+                                    current.speech_elapsed_ms(),
+                                    current.chunks_sent,
+                                    current.signal_chunks_sent,
+                                    current.responses_seen,
+                                    current.result_messages_seen
+                                );
+                                current.send_result(None);
+                                self.set_state(SessionState::Disconnected);
+                                return true;
+                            }
                             self.set_state(SessionState::Finalizing);
                             if let Err(e) = send_finalize_with_timeout(&mut ws, &id).await {
                                 warn!("[dg_session] {e}");
@@ -365,6 +412,7 @@ impl DeepgramSession {
                             );
                             self.set_state(SessionState::Idle);
                             keepalive_interval.reset();
+                            idle_warm_deadline = tokio::time::Instant::now() + MAX_IDLE_WARM_DURATION;
                             if reconnect_after_idle {
                                 info!("[dg_session] reconnecting after idle to apply latest bias");
                                 return true;
@@ -400,7 +448,7 @@ impl DeepgramSession {
                     }
                 }
                 _ = keepalive_interval.tick() => {
-                    if self.state == SessionState::Idle && sent_audio_on_this_ws {
+                    if self.state == SessionState::Idle {
                         if let Err(e) = send_keepalive_with_timeout(&mut ws, "idle").await {
                             warn!("[dg_session] {e}");
                             fail_active(&mut active);
@@ -409,8 +457,17 @@ impl DeepgramSession {
                         if !drain_available_responses(&mut ws, &mut active).await {
                             return true;
                         }
-                        debug!("[dg_session] KeepAlive sent");
+                        info!("[dg_session] KeepAlive sent");
                     }
+                }
+                _ = tokio::time::sleep_until(idle_warm_deadline), if self.state == SessionState::Idle => {
+                    info!(
+                        "[dg_session] closing warm idle WS after {}s without recording",
+                        MAX_IDLE_WARM_DURATION.as_secs()
+                    );
+                    let _ = send_close_with_timeout(&mut ws, "warm-idle-expired").await;
+                    self.set_state(SessionState::Disconnected);
+                    return true;
                 }
                 _ = async {
                     if let Some(deadline) = recording_deadline {
@@ -439,10 +496,10 @@ impl DeepgramSession {
         current: &mut ActiveRecording,
     ) -> Option<StreamingTranscript> {
         let drain_start = tokio::time::Instant::now();
-        let timeout = if current.responses_seen == 0 {
-            FINALIZE_SILENT_WS_TIMEOUT
+        let timeout = if current.text_result_messages_seen > 0 {
+            FINALIZE_WITH_TEXT_RESULT_TIMEOUT
         } else {
-            FINALIZE_TIMEOUT
+            FINALIZE_NO_RESULT_TIMEOUT
         };
         let deadline = drain_start + timeout;
         let mut saw_finalize_result = false;
@@ -464,12 +521,17 @@ impl DeepgramSession {
                     current.note_response();
                     let outcome = collect_response(
                         response,
+                        Some(&current.id),
+                        "finalize",
                         &mut current.parts,
                         &mut current.total_word_count,
                         &mut current.total_low_confidence,
                         &mut current.total_confidence,
                         &mut current.languages_seen,
                     );
+                    if outcome.is_result {
+                        current.note_result_message(outcome.has_text);
+                    }
                     if outcome.collected {
                         saw_any_after_finalize = true;
                     }
@@ -496,11 +558,13 @@ impl DeepgramSession {
 
         let drain_ms = drain_start.elapsed().as_millis();
         info!(
-            "[dg_session] finalize drain id={} drain={}ms timeout={}ms responses={} from_finalize={} parts={}",
+            "[dg_session] finalize drain id={} drain={}ms timeout={}ms ws_messages={} result_messages={} text_results={} from_finalize={} parts={}",
             current.id,
             drain_ms,
             timeout.as_millis(),
             current.responses_seen,
+            current.result_messages_seen,
+            current.text_result_messages_seen,
             saw_finalize_result,
             current.parts.len()
         );
@@ -602,19 +666,29 @@ async fn drain_available_responses(
     loop {
         match tokio::time::timeout(RESPONSE_DRAIN_POLL_TIMEOUT, ws.receive()).await {
             Ok(Some(Ok(response))) => {
+                let Ok(v) = serde_json::to_value(response) else {
+                    continue;
+                };
                 if let Some(current) = active.as_mut() {
                     current.note_response();
-                    let outcome = collect_response(
-                        response,
+                    let outcome = collect_result_value(
+                        &v,
+                        Some(&current.id),
+                        "stream",
                         &mut current.parts,
                         &mut current.total_word_count,
                         &mut current.total_low_confidence,
                         &mut current.total_confidence,
                         &mut current.languages_seen,
                     );
+                    if outcome.is_result {
+                        current.note_result_message(outcome.has_text);
+                    }
                     if outcome.collected {
                         debug!("[dg_session] collected segment id={}", current.id);
                     }
+                } else {
+                    log_stream_response(&v, None, "idle");
                 }
             }
             Ok(Some(Err(e))) => {
@@ -684,6 +758,11 @@ async fn send_close_with_timeout(
     sdk_send_with_timeout(|| ws.close_stream(), "CloseStream", recording_id).await
 }
 
+fn warm_prime_silence_pcm() -> Vec<u8> {
+    let sample_count = SAMPLE_RATE as usize * WARM_PRIME_SILENCE_MS / 1000;
+    vec![0_u8; sample_count * 2]
+}
+
 async fn connect_ws(deepgram_key: &str, bias: &BiasPackage) -> Option<WebsocketHandle> {
     if deepgram_key.is_empty() {
         return None;
@@ -707,7 +786,9 @@ async fn connect_ws(deepgram_key: &str, bias: &BiasPackage) -> Option<WebsocketH
         .endpointing(Endpointing::CustomDurationMs(endpointing_for_mode(
             &bias.stt_mode,
         )))
-        .utterance_end_ms(2000);
+        .vad_events(true)
+        .utterance_end_ms(2000)
+        .keep_alive();
 
     let start = tokio::time::Instant::now();
     let result = tokio::time::timeout(CONNECT_TIMEOUT, builder.handle()).await;
@@ -722,13 +803,23 @@ async fn connect_ws(deepgram_key: &str, bias: &BiasPackage) -> Option<WebsocketH
             warn!("[dg_session] WS connect failed after {ms}ms: {e}");
             None
         }
-        Ok(Ok(ws)) => {
+        Ok(Ok(mut ws)) => {
             info!(
                 "[dg_session] ✓ SDK WS connected in {ms}ms request_id={} (lang={} keyterms={} replacements={})",
                 ws.request_id(),
                 bias.stt_mode,
                 bias.keyterms.len(),
                 bias.replacements.len(),
+            );
+            let prime = warm_prime_silence_pcm();
+            let prime_bytes = prime.len();
+            if let Err(e) = send_audio_with_timeout(&mut ws, prime, "warm-prime").await {
+                warn!("[dg_session] warm prime failed after WS connect: {e}");
+                return None;
+            }
+            info!(
+                "[dg_session] warm prime sent: {}ms silence ({} bytes)",
+                WARM_PRIME_SILENCE_MS, prime_bytes
             );
             Some(ws)
         }
@@ -811,10 +902,14 @@ pub fn spawn_audio_bridge(
 struct CollectOutcome {
     collected: bool,
     from_finalize: bool,
+    is_result: bool,
+    has_text: bool,
 }
 
 fn collect_response(
     response: StreamResponse,
+    recording_id: Option<&str>,
+    phase: &str,
     parts: &mut Vec<String>,
     word_count: &mut usize,
     low_conf: &mut usize,
@@ -824,25 +919,40 @@ fn collect_response(
     let Ok(v) = serde_json::to_value(response) else {
         return CollectOutcome::default();
     };
-    collect_result_value(&v, parts, word_count, low_conf, conf_sum, langs)
+    collect_result_value(
+        &v,
+        recording_id,
+        phase,
+        parts,
+        word_count,
+        low_conf,
+        conf_sum,
+        langs,
+    )
 }
 
 fn collect_result_value(
     v: &Value,
+    recording_id: Option<&str>,
+    phase: &str,
     parts: &mut Vec<String>,
     word_count: &mut usize,
     low_conf: &mut usize,
     conf_sum: &mut f64,
     langs: &mut Vec<String>,
 ) -> CollectOutcome {
+    log_stream_response(v, recording_id, phase);
     if v["type"].as_str().unwrap_or("") != "Results" {
         return CollectOutcome::default();
     }
     let from_finalize = v["from_finalize"].as_bool().unwrap_or(false);
+    let has_text = result_has_text(v);
     if !v["is_final"].as_bool().unwrap_or(false) {
         return CollectOutcome {
             collected: false,
             from_finalize,
+            is_result: true,
+            has_text,
         };
     }
     if let Some(chunk) = extract_result_chunk(&v) {
@@ -859,12 +969,93 @@ fn collect_result_value(
         return CollectOutcome {
             collected: true,
             from_finalize,
+            is_result: true,
+            has_text: true,
         };
     }
     CollectOutcome {
         collected: false,
         from_finalize,
+        is_result: true,
+        has_text,
     }
+}
+
+fn log_stream_response(v: &Value, recording_id: Option<&str>, phase: &str) {
+    let recording_id = recording_id.unwrap_or("-");
+    let message_type = stream_response_type(v);
+    if message_type == "Results" {
+        let is_final = v["is_final"].as_bool().unwrap_or(false);
+        let speech_final = v["speech_final"].as_bool().unwrap_or(false);
+        let from_finalize = v["from_finalize"].as_bool().unwrap_or(false);
+        let transcript_chars = result_transcript(v).chars().count();
+        let words = result_word_count(v);
+        if is_final || from_finalize || transcript_chars > 0 {
+            info!(
+                "[dg_session] WS Results phase={phase} id={recording_id} final={is_final} speech_final={speech_final} from_finalize={from_finalize} transcript_chars={transcript_chars} words={words}"
+            );
+        } else {
+            debug!(
+                "[dg_session] WS Results phase={phase} id={recording_id} final={is_final} speech_final={speech_final} from_finalize={from_finalize} transcript_chars=0 words={words}"
+            );
+        }
+        return;
+    }
+
+    if message_type == "SpeechStarted" {
+        let ts = v["timestamp"].as_f64().unwrap_or_default();
+        info!("[dg_session] WS SpeechStarted phase={phase} id={recording_id} timestamp={ts:.3}");
+        return;
+    }
+
+    if message_type == "UtteranceEnd" {
+        let last_word_end = v["last_word_end"].as_f64().unwrap_or_default();
+        info!(
+            "[dg_session] WS UtteranceEnd phase={phase} id={recording_id} last_word_end={last_word_end:.3}"
+        );
+        return;
+    }
+
+    if message_type == "Terminal" {
+        let request_id = v["request_id"].as_str().unwrap_or("-");
+        let duration = v["duration"].as_f64().unwrap_or_default();
+        info!(
+            "[dg_session] WS Terminal phase={phase} id={recording_id} request_id={request_id} duration={duration:.3}"
+        );
+        return;
+    }
+
+    info!("[dg_session] WS {message_type} phase={phase} id={recording_id}");
+}
+
+fn stream_response_type(v: &Value) -> &str {
+    if let Some(message_type) = v["type"].as_str() {
+        return message_type;
+    }
+    if v.get("request_id").is_some() && v.get("created").is_some() {
+        return "Terminal";
+    }
+    "Unknown"
+}
+
+fn result_has_text(v: &Value) -> bool {
+    !result_transcript(v).trim().is_empty() || result_word_count(v) > 0
+}
+
+fn result_transcript(v: &Value) -> &str {
+    v["channel"]["alternatives"]
+        .as_array()
+        .and_then(|alternatives| alternatives.first())
+        .and_then(|alt| alt["transcript"].as_str())
+        .unwrap_or("")
+}
+
+fn result_word_count(v: &Value) -> usize {
+    v["channel"]["alternatives"]
+        .as_array()
+        .and_then(|alternatives| alternatives.first())
+        .and_then(|alt| alt["words"].as_array())
+        .map_or(0, Vec::len)
 }
 
 /// Build enriched text from Deepgram's `words` array inside a Results message.
@@ -984,8 +1175,9 @@ fn plain_for_embed(parts: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AUDIO_BRIDGE_BUFFER_CHUNKS, ActiveRecording, DeepgramSession, FIRST_RESPONSE_TIMEOUT,
-        SessionState, extract_result_chunk, pcm_has_signal,
+        AUDIO_BRIDGE_BUFFER_CHUNKS, ActiveRecording, DeepgramSession, FINALIZE_NO_RESULT_TIMEOUT,
+        FINALIZE_WITH_TEXT_RESULT_TIMEOUT, LIVE_STT_HEALTH_TIMEOUT, SessionState,
+        WARM_PRIME_SILENCE_MS, extract_result_chunk, pcm_has_signal, warm_prime_silence_pcm,
     };
     use said_core::deepgram::{BiasPackage, ReplacementRule, build_ws_url};
     use said_recorder::SAMPLE_RATE;
@@ -1047,15 +1239,48 @@ mod tests {
     }
 
     #[test]
-    fn first_response_timeout_only_fires_before_any_response() {
+    fn warm_prime_is_short_valid_silence() {
+        let pcm = warm_prime_silence_pcm();
+        let expected_samples = SAMPLE_RATE as usize * WARM_PRIME_SILENCE_MS / 1000;
+        assert_eq!(pcm.len(), expected_samples * 2);
+        assert!(!pcm.is_empty());
+        assert!(!pcm_has_signal(&pcm));
+    }
+
+    #[test]
+    fn live_stt_health_miss_is_diagnostic_until_release() {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let mut recording = ActiveRecording::new("test".into(), tx, None);
         recording.first_signal_at =
-            Some(tokio::time::Instant::now() - FIRST_RESPONSE_TIMEOUT - Duration::from_millis(1));
+            Some(tokio::time::Instant::now() - LIVE_STT_HEALTH_TIMEOUT - Duration::from_millis(1));
 
-        assert!(recording.first_response_timed_out());
-        recording.note_response();
-        assert!(!recording.first_response_timed_out());
+        assert!(recording.should_log_live_stt_health_miss());
+        assert!(!recording.should_log_live_stt_health_miss());
+        assert!(recording.result_tx.is_some());
+    }
+
+    #[test]
+    fn batch_rescue_requires_speech_health_miss_without_text() {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let mut recording = ActiveRecording::new("test".into(), tx, None);
+        assert!(!recording.should_batch_rescue_on_release());
+
+        recording.first_signal_at =
+            Some(tokio::time::Instant::now() - LIVE_STT_HEALTH_TIMEOUT - Duration::from_millis(1));
+        assert!(recording.should_batch_rescue_on_release());
+
+        recording.note_result_message(true);
+        assert!(!recording.should_batch_rescue_on_release());
+    }
+
+    #[test]
+    fn finalize_timeouts_stay_inside_fast_path_budget() {
+        assert_eq!(LIVE_STT_HEALTH_TIMEOUT, Duration::from_millis(700));
+        assert_eq!(FINALIZE_NO_RESULT_TIMEOUT, Duration::from_millis(900));
+        assert_eq!(
+            FINALIZE_WITH_TEXT_RESULT_TIMEOUT,
+            Duration::from_millis(1500)
+        );
     }
 
     #[test]

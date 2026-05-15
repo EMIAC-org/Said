@@ -250,6 +250,7 @@ async fn run_prompt_test(
 
     let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
     let client_c = client.clone();
+    let groq_key_for_recovery = groq_key.clone();
     let provider = llm_provider.clone();
     let model_c = model.clone();
     let started = Instant::now();
@@ -309,7 +310,16 @@ async fn run_prompt_test(
         .await
         .map_err(|e| format!("prompt test task failed: {e}"))??;
     if prefs.output_language == "hinglish" && script::contains_devanagari(&result.polished) {
-        result.polished = script::enforce_roman_hinglish(&result.polished);
+        result.polished = match crate::llm::devanagari_recovery::recover(
+            client,
+            &groq_key_for_recovery,
+            &result.polished,
+        )
+        .await
+        {
+            Ok(recovered) => recovered,
+            Err(_) => script::enforce_roman_hinglish(&result.polished),
+        };
     }
     result.polished = crate::llm::format_recover::recover(&result.polished);
 

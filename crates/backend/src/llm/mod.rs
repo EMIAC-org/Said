@@ -1,5 +1,6 @@
 pub mod alias_review;
 pub mod classifier;
+pub mod devanagari_recovery;
 pub mod edit_diff;
 pub mod format_recover;
 pub mod gateway;

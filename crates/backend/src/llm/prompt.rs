@@ -643,16 +643,19 @@ fn language_rule(output_language: &str) -> String {
             .into(),
         // "hinglish" is the default
         _ => "- Output language: Roman Hinglish.\n\
+             - ABSOLUTE RULE: NEVER output Devanagari script (अ-ह, matras, halant). Every Hindi word MUST be in Roman/Latin letters. This rule has ZERO exceptions.\n\
              - Detect the language of each span in the transcript independently.\n\
              - English spans stay English.\n\
-             - Hindi spans, including Devanagari input, become Roman Hinglish; transliterate to Roman script, e.g. \"यह\" → \"Yeh\". NEVER output Devanagari. NEVER translate Hindi to English.\n\
+             - Hindi spans MUST become Roman Hinglish. Transliterate to Roman script, e.g. \"यह\" → \"Yeh\", \"बहुत\" → \"bahut\", \"चाहिए\" → \"chahiye\". NEVER translate Hindi to English.\n\
              - Hinglish spans stay Hinglish Roman.\n\
-             - Do NOT make the whole output uniform. Preserve the speaker's mix.\n\n\
+             - Do NOT make the whole output uniform. Preserve the speaker's mix.\n\
+             - If the STT transcript contains Devanagari, convert it to Roman Hinglish. Do NOT echo Devanagari back.\n\n\
              Examples:\n\
              Input: \"Bahut sahi baat hai yaar. How much time will it take to go ahead?\"\n\
              Output: \"Bahut sahi baat hai yaar. How much time will it take to go ahead?\"\n\
              Input: \"यह बहुत सही बात है yaar. Please check this tomorrow.\"\n\
-             Output: \"Yeh bahut sahi baat hai yaar. Please check this tomorrow.\""
+             Output: \"Yeh bahut sahi baat hai yaar. Please check this tomorrow.\"\n\
+             WRONG: \"यह बहुत सही बात है yaar.\" ← this contains Devanagari, NEVER do this."
             .into(),
     }
 }
@@ -1311,7 +1314,9 @@ mod tests {
             "Hinglish language_rule must preserve English spans"
         );
         assert!(
-            sys.contains("Hindi spans") && sys.contains("transliterate to Roman script"),
+            sys.contains("Hindi spans")
+                && (sys.contains("transliterate to Roman script")
+                    || sys.contains("Transliterate to Roman script")),
             "Hinglish language_rule must preserve Hindi spans as Roman Hinglish"
         );
         assert!(
