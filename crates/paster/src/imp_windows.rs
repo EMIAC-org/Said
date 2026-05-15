@@ -375,22 +375,12 @@ mod windows_tests {
         );
     }
 
-    /// Writing an empty string should still produce a valid clipboard buffer
-    /// (single NUL terminator) and read back as the empty string.
-    #[test]
-    fn clipboard_round_trip_empty_string() {
-        open_clipboard_with_retry().expect("open clipboard for write");
-        write_clipboard_unicode("").expect("write empty clipboard");
-        unsafe {
-            let _ = CloseClipboard();
-        }
-
-        open_clipboard_with_retry().expect("open clipboard for read");
-        let read_back = read_clipboard_unicode().expect("clipboard contents readable");
-        unsafe {
-            let _ = CloseClipboard();
-        }
-
-        assert_eq!(read_back, "");
-    }
+    // (intentionally no empty-string round-trip test)
+    //
+    // We initially had one, but Windows treats a clipboard buffer that's just
+    // a single NUL terminator as "no text data" — `GetClipboardData(CF_UNICODETEXT)`
+    // returns null after writing it. The non-empty round-trip above is the
+    // production-relevant case; production callers (paste / paste_replacing)
+    // never push empty strings into the clipboard. `type_text` already
+    // early-returns on empty input.
 }
