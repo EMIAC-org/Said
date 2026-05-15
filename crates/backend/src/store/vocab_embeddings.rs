@@ -692,7 +692,7 @@ pub fn select_for_prompt(
 pub fn select_for_polish_hybrid(
     pool: &DbPool,
     user_id: &str,
-    language: &str,
+    _language: &str,
     query_embedding: Option<&[f32]>,
     query_text: Option<&str>,
     n_top_weight: usize,

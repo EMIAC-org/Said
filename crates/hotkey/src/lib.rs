@@ -1,7 +1,5 @@
 //! macOS CGEventTap hotkey listener.
-//! Provides two modes:
-//!   - `start_listener`      — fires a callback on every Caps Lock press (toggle mode)
-//!   - `start_hold_listener` — fires `on_press` when Caps Lock is held down, `on_release` when lifted
+//! `start_hold_listener` — fires `on_press` when the record key is held down, `on_release` when lifted.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordHotkey {
@@ -462,74 +460,6 @@ mod imp {
             }
         };
         push_key(evt);
-    }
-
-    // ── Toggle listener ───────────────────────────────────────────────────────
-
-    struct ToggleState {
-        last_fire: Instant,
-        callback: Arc<dyn Fn() + Send + Sync>,
-    }
-
-    static mut TOGGLE_STATE: Option<ToggleState> = None;
-    static mut TOGGLE_TAP: ffi::CFMachPortRef = std::ptr::null_mut();
-
-    unsafe extern "C" fn toggle_tap_callback(
-        _proxy: ffi::CGEventTapProxy,
-        event_type: u32,
-        event: ffi::CGEventRef,
-        _user_info: *mut std::ffi::c_void,
-    ) -> ffi::CGEventRef {
-        unsafe {
-            rearm_if_disabled(event_type, TOGGLE_TAP);
-
-            if event_type == ffi::K_CG_EVENT_KEY_DOWN {
-                if check_and_fire_paste(event) {
-                    return std::ptr::null_mut(); // suppress Ctrl+Cmd+V system action
-                }
-                if check_and_fire_shortcut(event) {
-                    return std::ptr::null_mut(); // suppress Option+N so it doesn't type a character
-                }
-                handle_key_down(event);
-                return event;
-            }
-            if event_type == ffi::K_CG_EVENT_LEFT_MOUSE_DOWN
-                || event_type == ffi::K_CG_EVENT_RIGHT_MOUSE_DOWN
-            {
-                push_key(KeyEvt::MouseClick);
-                return event;
-            }
-
-            if event_type != ffi::K_CG_EVENT_FLAGS_CHANGED {
-                return event;
-            }
-            let keycode = ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE);
-            if keycode == CAPS_LOCK_KEYCODE {
-                if let Some(ref mut s) = TOGGLE_STATE {
-                    if s.last_fire.elapsed().as_millis() > DEBOUNCE_MS {
-                        s.last_fire = Instant::now();
-                        tracing::info!("[hotkey] Caps Lock → toggle");
-                        (s.callback)();
-                    }
-                }
-            }
-            event
-        }
-    }
-
-    /// Toggle-on-every-press.
-    pub fn start_listener(callback: Arc<dyn Fn() + Send + Sync>) {
-        std::thread::spawn(move || {
-            let past = Instant::now() - std::time::Duration::from_secs(10);
-            // SAFETY: called once from a dedicated thread; no concurrent access
-            unsafe {
-                TOGGLE_STATE = Some(ToggleState {
-                    last_fire: past,
-                    callback,
-                });
-                run_tap(toggle_tap_callback, &raw mut TOGGLE_TAP);
-            }
-        });
     }
 
     // ── Hold-to-record listener ───────────────────────────────────────────────

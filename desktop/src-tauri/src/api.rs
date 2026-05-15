@@ -297,94 +297,6 @@ where
     consume_sse(resp.bytes_stream(), on_event).await
 }
 
-/// Stream polish events when the desktop already has a final Deepgram transcript.
-/// This avoids the multipart WAV upload on the latency-critical path; callers can
-/// attach the WAV to the completed recording later with `upload_recording_audio`.
-pub async fn stream_voice_polish_transcript<F>(
-    ep: &BackendEndpoint,
-    transcript: String,
-    target_app: Option<String>,
-    pre_transcript_meta: Option<TranscriptMeta>,
-    mut on_event: F,
-) -> Result<PolishDone, String>
-where
-    F: FnMut(PolishEvent),
-{
-    let url = format!("{}/v1/voice/polish-transcript", ep.url);
-    let client = Client::new();
-    let body = serde_json::json!({
-        "transcript": transcript,
-        "target_app": target_app,
-        "pre_transcript_meta": pre_transcript_meta,
-    });
-
-    let resp = client
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .header("Accept", "text/event-stream")
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(120))
-        .send()
-        .await
-        .map_err(|e| format!("voice polish transcript request failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        let (message, error_code) = http_error_event("voice/polish-transcript", status, &body);
-        on_event(PolishEvent::Error {
-            message: message.clone(),
-            audio_id: None,
-            error_code,
-        });
-        return Err(message);
-    }
-
-    consume_sse(resp.bytes_stream(), on_event).await
-}
-
-pub async fn upload_recording_audio(
-    ep: &BackendEndpoint,
-    recording_id: &str,
-    wav_data: Vec<u8>,
-) -> Result<(), String> {
-    if wav_data.is_empty() {
-        return Ok(());
-    }
-
-    let url = format!("{}/v1/recordings/{}/audio", ep.url, recording_id);
-    let client = Client::new();
-    let form = reqwest::multipart::Form::new().part(
-        "audio",
-        reqwest::multipart::Part::bytes(wav_data)
-            .file_name("recording.wav")
-            .mime_str("audio/wav")
-            .map_err(|e| format!("mime error: {e}"))?,
-    );
-
-    let resp = client
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .multipart(form)
-        .timeout(std::time::Duration::from_secs(60))
-        .send()
-        .await
-        .map_err(|e| format!("recording audio upload failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "recording audio upload error {status}: {}",
-            &body[..body.len().min(300)]
-        ));
-    }
-
-    Ok(())
-}
-
-/// Stream polish events for plain text.
-#[allow(dead_code)]
 pub async fn stream_text_polish<F>(
     ep: &BackendEndpoint,
     text: String,
@@ -833,28 +745,6 @@ pub async fn test_voice_prompt(
     })
 }
 
-/// Fetch the user's correction keyterms (right-hand words from word_corrections table).
-/// Used to boost Deepgram STT recognition for words the user frequently corrects.
-pub async fn get_correction_keyterms(ep: &BackendEndpoint) -> Vec<String> {
-    #[derive(serde::Deserialize)]
-    struct Resp {
-        keyterms: Vec<String>,
-    }
-    let url = format!("{}/v1/corrections", ep.url);
-    let Ok(resp) = Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-    else {
-        return vec![];
-    };
-    resp.json::<Resp>()
-        .await
-        .map(|b| b.keyterms)
-        .unwrap_or_default()
-}
-
 // ── History ───────────────────────────────────────────────────────────────────
 
 pub async fn get_history(ep: &BackendEndpoint, limit: i64) -> Result<Vec<Recording>, String> {
@@ -940,25 +830,6 @@ pub async fn cloud_login(
     resp.json::<CloudAuthResponse>()
         .await
         .map_err(|e| format!("parse login response: {e}"))
-}
-
-/// GET /v1/license/check on the cloud control plane.
-#[allow(dead_code)]
-pub async fn cloud_license_check(
-    cloud_url: &str,
-    token: &str,
-) -> Result<serde_json::Value, String> {
-    let url = format!("{}/v1/license/check", cloud_url.trim_end_matches('/'));
-    Client::new()
-        .get(&url)
-        .bearer_auth(token)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("license check failed: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("parse license response: {e}"))
 }
 
 /// PUT /v1/cloud/token — persist cloud token in the local backend's SQLite.
@@ -1072,38 +943,6 @@ pub struct PendingEditsResponse {
     pub total: i64,
 }
 
-/// Store a detected edit for user review (called right after detection, before notifying).
-/// NOTE: In normal flow, `classify_edit` is used instead (which auto-stores if should_learn).
-/// This is kept for manual/direct storage if needed.
-#[allow(dead_code)]
-pub async fn store_pending_edit(
-    ep: &BackendEndpoint,
-    recording_id: Option<&str>,
-    ai_output: &str,
-    user_kept: &str,
-) -> Result<String, String> {
-    let url = format!("{}/v1/pending-edits", ep.url);
-    let body = serde_json::json!({
-        "recording_id": recording_id,
-        "ai_output":    ai_output,
-        "user_kept":    user_kept,
-    });
-    let resp = Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("store pending edit failed: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("parse pending edit response: {e}"))?;
-    resp["id"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| "no id in response".into())
-}
-
 /// Four-way edit classifier response.
 ///
 /// `class` is one of `STT_ERROR | POLISH_ERROR | USER_REPHRASE | USER_REWRITE`.
@@ -1179,46 +1018,6 @@ pub async fn classify_edit(
         .json::<ClassifyEditResponse>()
         .await
         .map_err(|e| format!("parse classify response: {e}"))
-}
-
-/// Light-weight fetch of just the personal vocabulary terms — used by the
-/// dictation hot path to bias Deepgram's WS at recording start.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct VocabTermsResponse {
-    pub terms: Vec<String>,
-}
-
-pub async fn get_vocabulary_terms(ep: &BackendEndpoint) -> Result<Vec<String>, String> {
-    get_vocabulary_terms_for_language(ep, None).await
-}
-
-/// Same as `get_vocabulary_terms` but scoped to a language bucket.  Pass the
-/// user's current `output_language` so the keyterms slate doesn't leak
-/// Devanagari into English mode (or vice versa).  `None` returns the
-/// language-agnostic top-N (legacy behaviour).
-pub async fn get_vocabulary_terms_for_language(
-    ep: &BackendEndpoint,
-    language: Option<&str>,
-) -> Result<Vec<String>, String> {
-    let url = match language {
-        Some(lang) if !lang.trim().is_empty() => format!(
-            "{}/v1/vocabulary/terms?language={}",
-            ep.url,
-            urlencoding_encode(lang),
-        ),
-        _ => format!("{}/v1/vocabulary/terms", ep.url),
-    };
-    let resp = Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .timeout(std::time::Duration::from_millis(500)) // hot path — fail fast
-        .send()
-        .await
-        .map_err(|e| format!("get vocab terms failed: {e}"))?
-        .json::<VocabTermsResponse>()
-        .await
-        .map_err(|e| format!("parse vocab terms: {e}"))?;
-    Ok(resp.terms)
 }
 
 pub async fn get_stt_bias(ep: &BackendEndpoint) -> Result<BiasPackage, String> {
