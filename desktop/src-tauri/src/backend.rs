@@ -35,7 +35,6 @@ impl BackendEndpoint {
 /// Full handle returned by `spawn()`. Owns the child process.
 pub struct BackendHandle {
     pub endpoint: BackendEndpoint,
-    #[allow(dead_code)]
     child: Option<Child>,
 }
 
