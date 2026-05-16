@@ -20,7 +20,27 @@
 //! the shortcut callback onto.
 
 use uiautomation::UIAutomation;
-use uiautomation::patterns::UITextPattern;
+use uiautomation::patterns::{UITextPattern, UIValuePattern};
+
+/// Construct a UIAutomation client, tolerating threads whose COM apartment
+/// has already been set by something else (Tauri runtime in STA, for
+/// example). Tries `new()` first — succeeds on fresh threads — and falls
+/// back to `new_direct()` which assumes COM is already initialized.
+fn make_automation() -> Option<UIAutomation> {
+    match UIAutomation::new() {
+        Ok(a) => Some(a),
+        Err(e) => {
+            tracing::debug!("[uia] UIAutomation::new failed: {e} — trying new_direct()");
+            match UIAutomation::new_direct() {
+                Ok(a) => Some(a),
+                Err(e2) => {
+                    tracing::debug!("[uia] UIAutomation::new_direct also failed: {e2}");
+                    None
+                }
+            }
+        }
+    }
+}
 
 /// Read the currently selected text from the focused control via UI Automation.
 ///
@@ -33,26 +53,7 @@ use uiautomation::patterns::UITextPattern;
 /// to fall back to the Ctrl+C/clipboard path. A `None` is silent on purpose
 /// — the caller logs the dispatch outcome.
 pub fn read_selected_text() -> Option<String> {
-    // Two-step construction: try the COM-initializing path first (the
-    // normal case for fresh worker threads spawned from the keyboard hook),
-    // then fall back to the no-init path (the Tauri runtime threads that
-    // already have COM apartment set, where `new()` would fail with
-    // "Cannot change thread mode after it is set").
-    let automation = match UIAutomation::new() {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::debug!(
-                "[selection-uia] UIAutomation::new failed: {e} — retrying with new_direct()"
-            );
-            match UIAutomation::new_direct() {
-                Ok(a) => a,
-                Err(e2) => {
-                    tracing::debug!("[selection-uia] UIAutomation::new_direct also failed: {e2}");
-                    return None;
-                }
-            }
-        }
-    };
+    let automation = make_automation()?;
 
     let focused = match automation.get_focused_element() {
         Ok(el) => el,
@@ -110,4 +111,87 @@ pub fn read_selected_text() -> Option<String> {
 
     tracing::info!("[selection-uia] read {} chars via UI Automation", buf.len());
     Some(buf)
+}
+
+/// Read the **entire text content** of the focused control via UI Automation.
+/// Unlocks the edit-watch learning pipeline on Windows (parity with the
+/// Mac `AXUIElementCopyAttributeValue(..., kAXValueAttribute, ...)` path).
+///
+/// Two-tier strategy:
+///   1. `UIValuePattern.get_value()` — fast, covers `<input>`, `<textarea>`,
+///      Win32 Edit controls, WPF TextBox, most plain-text fields.
+///   2. `UITextPattern.get_document_range().get_text(-1)` — covers rich text /
+///      `contenteditable` / document-style controls where the value pattern
+///      isn't exposed (Edge web fields, Word, Outlook compose).
+///
+/// Returns `None` when neither pattern is exposed or both return empty text.
+/// The caller (edit-watch loop) treats `None` as "field not readable, skip
+/// this poll round".
+pub fn read_focused_value() -> Option<String> {
+    let automation = make_automation()?;
+
+    let focused = match automation.get_focused_element() {
+        Ok(el) => el,
+        Err(e) => {
+            tracing::debug!("[value-uia] get_focused_element failed: {e}");
+            return None;
+        }
+    };
+
+    // Tier 1: UIValuePattern. Fast, no range walking, returns the full value
+    // directly. Most edit controls in Windows expose this.
+    if let Ok(value_pattern) = focused.get_pattern::<UIValuePattern>() {
+        match value_pattern.get_value() {
+            Ok(s) if !s.is_empty() => {
+                tracing::info!("[value-uia] read {} chars via UIValuePattern", s.len());
+                return Some(s);
+            }
+            Ok(_) => {
+                tracing::debug!("[value-uia] UIValuePattern returned empty — trying TextPattern");
+            }
+            Err(e) => {
+                tracing::debug!("[value-uia] UIValuePattern.get_value failed: {e}");
+            }
+        }
+    } else {
+        tracing::debug!("[value-uia] no UIValuePattern — trying TextPattern");
+    }
+
+    // Tier 2: UITextPattern's document range. Walks the entire text
+    // content, slower but works on rich documents and contenteditable web
+    // fields.
+    let text_pattern = match focused.get_pattern::<UITextPattern>() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!("[value-uia] no UITextPattern either: {e}");
+            return None;
+        }
+    };
+
+    let doc_range = match text_pattern.get_document_range() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("[value-uia] get_document_range failed: {e}");
+            return None;
+        }
+    };
+
+    let text = match doc_range.get_text(-1) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::debug!("[value-uia] document_range.get_text failed: {e}");
+            return None;
+        }
+    };
+
+    if text.is_empty() {
+        tracing::debug!("[value-uia] document range was empty");
+        return None;
+    }
+
+    tracing::info!(
+        "[value-uia] read {} chars via UITextPattern.DocumentRange",
+        text.len()
+    );
+    Some(text)
 }

@@ -60,20 +60,39 @@ pub fn is_accessibility_granted() -> bool {
 
 // ── AX-tree reads (v1: stubbed; UIAutomation port is a follow-up) ─────────────
 
-pub fn read_focused_value_fast() -> Option<String> {
-    None
-}
-pub fn read_focused_value_first() -> Option<String> {
-    None
-}
+/// Read the entire text content of the focused control. Used by the
+/// 30-second edit-watch loop to detect what the user changed after Said
+/// pasted polished text — that's how the learning pipeline classifies a
+/// correction and persists it to the lexicon.
+///
+/// Delegates to `uia_windows::read_focused_value` which tries UIValuePattern
+/// then falls back to UITextPattern.DocumentRange. Returns `None` when
+/// neither pattern is exposed (rare; most controls expose at least one).
 pub fn read_focused_value() -> Option<String> {
-    None
+    crate::uia_windows::read_focused_value()
 }
+
+/// "Fast" variant — same as `read_focused_value` on Windows. The Mac side
+/// has a fast/slow split because AX has cached attribute paths; UIA does
+/// not, so both variants take the same code path here.
+pub fn read_focused_value_fast() -> Option<String> {
+    read_focused_value()
+}
+
+/// "First" variant — same as `read_focused_value` on Windows.
+pub fn read_focused_value_first() -> Option<String> {
+    read_focused_value()
+}
+
+/// PID-targeted variants. v1 ignores the pid and reads from current focus.
+/// The desktop's edit-watch loop already checks `focused_pid()` against the
+/// PID it saved at paste-time; if they don't match it aborts before calling
+/// these, so the pid argument is informational.
 pub fn read_focused_value_fast_for_pid(_pid: i32) -> Option<String> {
-    None
+    read_focused_value()
 }
 pub fn read_focused_value_first_for_pid(_pid: i32) -> Option<String> {
-    None
+    read_focused_value()
 }
 /// Synthesize KEYUP for every modifier key via SendInput. Idempotent at the
 /// OS level — a keyup for a key that wasn't held is a no-op. We use this
@@ -291,14 +310,77 @@ pub fn read_selected_text() -> Option<String> {
 pub fn capture_focused_text_via_selection() -> Option<String> {
     read_selected_text()
 }
+// ── Frontmost-app tracking for the edit-watch loop ───────────────────────────
+//
+// Mac uses AXUIElementGetPid + a global cache of the active app's PID. On
+// Windows we save the foreground HWND (as `isize` so it's `Send`) plus the
+// PID of its owning process. The desktop's edit-watch flow:
+//
+//   1. lock_frontmost_app_now() — captures HWND + PID just before paste.
+//   2. paste happens.
+//   3. 5-30 seconds later edit-watch polls:
+//      - focused_pid() returns current foreground app's PID
+//      - if it matches the saved PID, read_focused_value() reads the field
+//      - if it differs (user switched apps), edit-watch aborts cleanly
+//   4. unlock_focused_app_now() clears the saved HWND when done.
+
+static LOCKED_HWND: std::sync::OnceLock<std::sync::Mutex<Option<isize>>> =
+    std::sync::OnceLock::new();
+
+fn locked_hwnd_slot() -> &'static std::sync::Mutex<Option<isize>> {
+    LOCKED_HWND.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Return the PID of the foreground app right now, or `None` if there is no
+/// foreground window or its PID is unreadable.
 pub fn focused_pid() -> Option<i32> {
-    None
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    let mut pid: u32 = 0;
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_invalid() {
+            return None;
+        }
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    }
+    if pid == 0 { None } else { Some(pid as i32) }
 }
-pub fn unlock_focused_app_now() -> Option<i32> {
-    None
-}
+
+/// Save the current foreground HWND for later reads, and return its PID.
+/// Overwrites any previous lock (the edit-watch only tracks one paste at a
+/// time, so there's no point keeping a stack).
 pub fn lock_frontmost_app_now() -> Option<i32> {
-    None
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    let (hwnd_ptr, pid) = unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_invalid() {
+            return None;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        (hwnd.0 as isize, pid)
+    };
+    if pid == 0 {
+        return None;
+    }
+    *locked_hwnd_slot().lock().ok()? = Some(hwnd_ptr);
+    tracing::debug!("[paster] locked frontmost app pid={pid} hwnd=0x{hwnd_ptr:x}");
+    Some(pid as i32)
+}
+
+/// Clear the saved HWND. Returns the PID of whatever was locked, for parity
+/// with the Mac API. Best-effort — if the locked HWND's process has since
+/// died, the PID lookup returns None.
+pub fn unlock_focused_app_now() -> Option<i32> {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let prev = locked_hwnd_slot().lock().ok()?.take()?;
+    let mut pid: u32 = 0;
+    unsafe {
+        let hwnd = windows::Win32::Foundation::HWND(prev as *mut _);
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    }
+    tracing::debug!("[paster] unlocked frontmost app pid={pid}");
+    if pid == 0 { None } else { Some(pid as i32) }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
