@@ -145,8 +145,9 @@ pub fn spawn() -> Result<BackendHandle, String> {
         secret,
     };
 
-    // Poll /v1/health until ready (5 second timeout)
-    poll_health(&url, 5_000)?;
+    // Poll /v1/health until ready — see `health_timeout_ms` for the cold-start
+    // headroom that Windows needs on first launch (Defender scan + init).
+    poll_health(&url, health_timeout_ms())?;
 
     info!("[backend] daemon ready at {url}");
     Ok(BackendHandle {
@@ -166,13 +167,29 @@ fn connect_external(url: String) -> Result<BackendHandle, String> {
     let secret = std::env::var("POLISH_SHARED_SECRET").unwrap_or_else(|_| "dev-secret".into());
 
     info!("[backend] using external backend at {url}");
-    poll_health(&url, 5_000)?;
+    poll_health(&url, health_timeout_ms())?;
     info!("[backend] external backend ready at {url}");
 
     Ok(BackendHandle {
         endpoint: BackendEndpoint { url, secret },
         child: None,
     })
+}
+
+/// How long to wait for the backend to answer /v1/health before giving up.
+///
+/// macOS cold-start is sub-second (no AV scan, mature dyld cache). Windows
+/// cold-start is dominated by Windows Defender's real-time scan on every
+/// previously-unseen .exe, plus SQLite r2d2 pool init and rustls-platform-verifier
+/// loading the system cert store — observed ~11 s on Win11 with default
+/// Defender settings. Warm starts (after the .exe is in Defender's scan
+/// cache) drop to 1-3 s. Pick a budget that accommodates the cold case.
+fn health_timeout_ms() -> u64 {
+    if cfg!(target_os = "windows") {
+        30_000
+    } else {
+        5_000
+    }
 }
 
 /// Block until `GET {base_url}/v1/health` returns 2xx or timeout_ms elapses.
