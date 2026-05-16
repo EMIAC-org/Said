@@ -598,12 +598,10 @@ fn build_tray_menu(
     )?;
 
     // ── 4. "Polish my message" submenu ─────────────────────────────────
-    // Shortcut hints: macOS shows ⌥1..5 because the Option+digit hotkeys are
-    // wired by said-hotkey on macOS. Windows currently doesn't have these
-    // hotkeys wired (impl_windows.rs's register_shortcut_callback is a
-    // no-op), so we drop the hint to avoid promising a shortcut that does
-    // nothing. The menu items themselves work on every platform — they just
-    // need a click rather than a key chord.
+    // Both platforms now wire the digit-row shortcut:
+    //   macOS  — Option+1..5 via said_hotkey::imp (CGEventTap)
+    //   Windows — Alt+1..5 via said_hotkey::imp_windows (WH_KEYBOARD_LL)
+    // Linux falls back to the plain labels (no global hotkey there).
     #[cfg(target_os = "macos")]
     let (h_format, h_prof, h_casual, h_concise, h_hinglish) = (
         "Format Selected Text  ⌥1",
@@ -612,7 +610,15 @@ fn build_tray_menu(
         "Concise  ⌥4",
         "Hinglish  ⌥5",
     );
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    let (h_format, h_prof, h_casual, h_concise, h_hinglish) = (
+        "Format Selected Text  Alt+1",
+        "Professional English  Alt+2",
+        "Casual  Alt+3",
+        "Concise  Alt+4",
+        "Hinglish  Alt+5",
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let (h_format, h_prof, h_casual, h_concise, h_hinglish) = (
         "Format Selected Text",
         "Professional English",
