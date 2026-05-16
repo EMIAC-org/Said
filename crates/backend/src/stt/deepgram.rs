@@ -181,6 +181,110 @@ pub async fn transcribe(
     })
 }
 
+/// Like `transcribe`, but auto-detects audio format from magic bytes.
+/// Supports WAV, WebM, MP3, OGG, FLAC, and falls back to octet-stream.
+pub async fn transcribe_any_format(
+    client: &Client,
+    api_key: &str,
+    audio_data: Vec<u8>,
+    bias: &BiasPackage,
+) -> Result<TranscriptResult, String> {
+    let content_type = detect_audio_content_type(&audio_data);
+    let url = build_batch_url(DEEPGRAM_URL, bias);
+
+    debug!(
+        "[stt] sending {} bytes to Deepgram as {} (lang={lang})",
+        audio_data.len(),
+        content_type,
+        lang = bias.stt_mode,
+    );
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Token {api_key}"))
+        .header("Content-Type", content_type)
+        .body(audio_data)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| format!("Deepgram request failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let preview = &body[..body.len().min(300)];
+        return Err(format!("Deepgram error {status}: {preview}"));
+    }
+
+    let dg: DGResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("failed to parse Deepgram response: {e}"))?;
+
+    let alt = dg
+        .results
+        .channels
+        .into_iter()
+        .next()
+        .and_then(|c| c.alternatives.into_iter().next())
+        .ok_or_else(|| "Deepgram returned no transcript".to_string())?;
+
+    if alt.transcript.is_empty() {
+        warn!("[stt] empty transcript from Deepgram");
+        return Err("empty transcript — nothing spoken?".into());
+    }
+
+    let (enriched, uncertain_count, mean_word_confidence, word_count, word_languages) =
+        if alt.words.is_empty() {
+            (
+                alt.transcript.clone(),
+                0,
+                alt.confidence,
+                alt.transcript.split_whitespace().count(),
+                vec![],
+            )
+        } else {
+            enrich_words(&alt.words)
+        };
+
+    Ok(TranscriptResult {
+        transcript: alt.transcript,
+        enriched_transcript: enriched,
+        confidence: alt.confidence,
+        uncertain_count,
+        mean_word_confidence,
+        word_count,
+        languages: if alt.languages.is_empty() {
+            word_languages
+        } else {
+            alt.languages
+        },
+        stt_mode: bias.stt_mode.clone(),
+    })
+}
+
+fn detect_audio_content_type(data: &[u8]) -> &'static str {
+    if data.len() >= 4 {
+        if &data[..4] == b"RIFF" {
+            return "audio/wav";
+        }
+        if &data[..4] == b"fLaC" {
+            return "audio/flac";
+        }
+        if &data[..4] == b"OggS" {
+            return "audio/ogg";
+        }
+        if data.len() >= 3 && &data[..3] == b"ID3" {
+            return "audio/mpeg";
+        }
+        // WebM/Matroska magic bytes: 0x1A 0x45 0xDF 0xA3
+        if data[0] == 0x1A && data[1] == 0x45 && data[2] == 0xDF && data[3] == 0xA3 {
+            return "audio/webm";
+        }
+    }
+    "application/octet-stream"
+}
+
 /// Build an enriched transcript from word-level data.
 /// Words with confidence < threshold are marked as `[word?XX%]`.
 fn enrich_words(words: &[DGWord]) -> (String, usize, f64, usize, Vec<String>) {

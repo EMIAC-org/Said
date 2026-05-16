@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Said Enterprise — Live Meeting</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/>
+        <rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/>
+        <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/>
+        <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/>
+      </svg>
+      <span>Said Enterprise</span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="setup.html">Setup</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="meeting-create.html">New Meeting</a>
+      <a href="meeting-live.html" class="active">Live Meeting</a>
+      <a href="desktop-mode.html">Desktop App</a>
+      <a href="post-meeting.html">Report</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="flow.html">Flow</a>
+    </div>
+  </div>
+</nav>
+
+<div class="meeting-layout">
+  <!-- Main transcript area -->
+  <div class="meeting-main">
+    <div class="meeting-header">
+      <div class="meeting-meta">
+        <h2>Sprint Planning — Week 21</h2>
+        <p>Started 14 min ago &middot; 4 participants</p>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <div class="meeting-status">
+          <span class="dot"></span>
+          Recording
+        </div>
+        <a href="post-meeting.html" class="btn-ghost btn-sm" style="color: var(--red); border-color: hsl(0 72% 50% / 0.3);">
+          End Meeting
+        </a>
+      </div>
+    </div>
+
+    <!-- Participants bar -->
+    <div style="display: flex; gap: 12px; margin-bottom: 28px; padding-bottom: 20px; border-bottom: 1px solid var(--border);">
+      <div style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--surface-2); border-radius: 8px; border: 1px solid var(--border);">
+        <div class="avatar-sm" style="background: hsl(226 60% 45%);">AV</div>
+        <span style="font-size: 12px; font-weight: 500;">Abhishek</span>
+        <div class="speaking-indicator"><span></span><span></span><span></span><span></span></div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--surface-2); border-radius: 8px; border: 1px solid var(--border);">
+        <div class="avatar-sm" style="background: hsl(340 50% 40%);">AS</div>
+        <span style="font-size: 12px; font-weight: 500;">Anish</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--surface-2); border-radius: 8px; border: 1px solid var(--border);">
+        <div class="avatar-sm" style="background: hsl(180 40% 35%);">RK</div>
+        <span style="font-size: 12px; font-weight: 500;">Rahul</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--surface-2); border-radius: 8px; border: 1px solid var(--border);">
+        <div class="avatar-sm" style="background: hsl(30 50% 40%);">PS</div>
+        <span style="font-size: 12px; font-weight: 500;">Priya</span>
+      </div>
+    </div>
+
+    <!-- Transcript -->
+    <div class="transcript">
+      <div class="t-entry">
+        <div class="t-speaker" style="color: hsl(226 80% 78%);">Abhishek</div>
+        <div class="t-text">Alright, let's kick off. Last week we closed 34 story points, which is slightly above our average. The auth migration PR is merged, and the Windows port landed on main yesterday. Anish, great work on that.</div>
+        <div class="t-time">0:12</div>
+      </div>
+      <div class="t-entry">
+        <div class="t-speaker" style="color: hsl(340 70% 70%);">Anish</div>
+        <div class="t-text">Thanks. The beta 6 build is stable. I added Sentry telemetry — crash reports will start flowing once we set the DSN. One thing I need help with is the WASAPI buffer sizing on low-end machines, it's dropping frames.</div>
+        <div class="t-time">0:38</div>
+      </div>
+      <div class="t-entry">
+        <div class="t-speaker" style="color: hsl(180 60% 65%);">Rahul</div>
+        <div class="t-text">I can take the buffer sizing issue. I've dealt with similar stuff in the audio pipeline before. Should be a day of work max. Also, I finished the learning pipeline validation gates — three-way consensus is working in staging.</div>
+        <div class="t-time">1:15</div>
+      </div>
+      <div class="t-entry">
+        <div class="t-speaker" style="color: hsl(30 70% 65%);">Priya</div>
+        <div class="t-text">On the design side, the glassmorphism revamp is looking great. I want to push the editorial dashboard layout a bit further — the activity chart needs better empty states and the bar spacing feels off on smaller windows.</div>
+        <div class="t-time">2:02</div>
+      </div>
+      <div class="t-entry">
+        <div class="t-speaker" style="color: hsl(226 80% 78%);">Abhishek</div>
+        <div class="t-text">Good call. Priya, can you file that as a design task and assign it to yourself? I want to prioritize the meeting manager architecture this week — that's the Phase 2 anchor. Rahul, I'll need you on the WebSocket server once you're done with the buffer fix.</div>
+        <div class="t-time">2:45</div>
+      </div>
+      <div class="t-entry">
+        <div class="t-speaker" style="color: hsl(180 60% 65%);">Rahul</div>
+        <div class="t-text">Sure. I'll estimate the WebSocket hub by Thursday. What's the protocol — plain WS or are we going with something like Socket.IO for reconnection handling?</div>
+        <div class="t-time">3:20</div>
+      </div>
+      <div class="t-entry">
+        <div class="t-speaker" style="color: hsl(226 80% 78%);">Abhishek</div>
+        <div class="t-text">Plain WebSocket with tokio-tungstenite on the server side. We'll handle reconnection in the client — the Tauri app already has retry logic in the Deepgram stream module, we can reuse that pattern. Keep it simple.</div>
+        <div class="t-time">3:48</div>
+      </div>
+      <div class="t-entry">
+        <div class="t-speaker" style="color: hsl(340 70% 70%);">Anish</div>
+        <div class="t-text">Makes sense. I'll handle the Windows-side WebSocket client once Rahul has the server spec. What about the Lark integration — do we need the OAuth flow done first before we can test task sync?</div>
+        <div class="t-time">4:15</div>
+      </div>
+      <div class="t-entry latest">
+        <div class="t-speaker" style="color: hsl(226 80% 78%);">Abhishek</div>
+        <div class="t-text">Yes, Lark OAuth is the first thing I'm building this week. Once that's in, we can test the full loop: meeting capture, AI extraction, task push to Lark. I'll have the OAuth scaffold done by Wednesday.</div>
+        <div class="t-time">4:42</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Sidebar -->
+  <div class="meeting-sidebar">
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
+      <h3 style="font-size: 14px; font-weight: 600;">AI Assistant</h3>
+      <span class="pill pill-green" style="font-size: 9px;">Live</span>
+    </div>
+
+    <!-- Notification toast -->
+    <div class="notif-toast">
+      <div class="notif-title">Task Detected</div>
+      <div class="notif-body">
+        <strong>Rahul</strong> — Take WASAPI buffer sizing issue, fix frame drops on low-end machines.
+      </div>
+    </div>
+    <div class="notif-toast">
+      <div class="notif-title">Task Detected</div>
+      <div class="notif-body">
+        <strong>Priya</strong> — File design task for editorial dashboard empty states and bar spacing.
+      </div>
+    </div>
+
+    <!-- Summary -->
+    <div class="ai-section">
+      <div class="ai-section-title">Rolling Summary</div>
+      <div class="ai-summary">
+        Sprint planning for Week 21. Last week closed 34 story points. Windows port (beta 6) is stable with Sentry telemetry added. Key focus this week: Phase 2 meeting manager architecture, Lark OAuth integration, and WebSocket server design. Using plain WebSocket with tokio-tungstenite. Lark OAuth scheduled for completion by Wednesday.
+      </div>
+    </div>
+
+    <!-- Action items -->
+    <div class="ai-section">
+      <div class="ai-section-title">Action Items</div>
+      <div class="ai-item">
+        <div class="ai-check"></div>
+        <div>
+          <div>Fix WASAPI buffer sizing for low-end Windows machines</div>
+          <div style="font-size: 11px; color: var(--fg-dim); margin-top: 2px;">Rahul &middot; ~1 day</div>
+        </div>
+      </div>
+      <div class="ai-item">
+        <div class="ai-check"></div>
+        <div>
+          <div>Estimate WebSocket hub implementation</div>
+          <div style="font-size: 11px; color: var(--fg-dim); margin-top: 2px;">Rahul &middot; by Thursday</div>
+        </div>
+      </div>
+      <div class="ai-item">
+        <div class="ai-check"></div>
+        <div>
+          <div>File design task for editorial dashboard refinements</div>
+          <div style="font-size: 11px; color: var(--fg-dim); margin-top: 2px;">Priya &middot; this week</div>
+        </div>
+      </div>
+      <div class="ai-item">
+        <div class="ai-check"></div>
+        <div>
+          <div>Build Lark OAuth scaffold</div>
+          <div style="font-size: 11px; color: var(--fg-dim); margin-top: 2px;">Abhishek &middot; by Wednesday</div>
+        </div>
+      </div>
+      <div class="ai-item">
+        <div class="ai-check"></div>
+        <div>
+          <div>Implement Windows WebSocket client</div>
+          <div style="font-size: 11px; color: var(--fg-dim); margin-top: 2px;">Anish &middot; after server spec</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Decisions -->
+    <div class="ai-section">
+      <div class="ai-section-title">Decisions</div>
+      <div style="font-size: 12.5px; color: var(--fg); line-height: 1.6;">
+        <div style="display: flex; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border);">
+          <span style="color: var(--amber);">&#9679;</span>
+          <span>WebSocket protocol: plain WS (tokio-tungstenite), not Socket.IO</span>
+        </div>
+        <div style="display: flex; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border);">
+          <span style="color: var(--amber);">&#9679;</span>
+          <span>Client-side reconnection reusing Deepgram stream retry pattern</span>
+        </div>
+        <div style="display: flex; gap: 8px; padding: 6px 0;">
+          <span style="color: var(--amber);">&#9679;</span>
+          <span>Lark OAuth is prerequisite for task sync testing</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -32,7 +32,7 @@ type_complexity             = "allow"
 # ── Dependencies ──────────────────────────────────────────────────────────────
 
 [dependencies]
-axum               = "0.7"
+axum               = { version = "0.7", features = ["ws"] }
 tokio              = { version = "1", features = ["full"] }
 serde              = { version = "1", features = ["derive"] }
 serde_json         = "1"
@@ -57,3 +57,19 @@ argon2 = "0.5"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+
+# Enterprise — WebSocket, JWT, HTTP client
+tokio-tungstenite = "0.24"
+futures-util      = "0.3"
+jsonwebtoken      = "9"
+reqwest           = { version = "0.12", features = ["json"] }
+urlencoding       = "2"
+
+# PKCE / Codex client
+sha2   = "0.10"
+base64 = "0.22"
+rand   = "0.8"
+
+[dev-dependencies]
+tokio-tungstenite = "0.24"
+futures-util      = "0.3"

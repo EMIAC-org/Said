@@ -59,6 +59,10 @@ pub fn spawn_prompt_artifact_repair(state: AppState) {
         let mut centroids_repaired = 0;
 
         for term in terms {
+            if state.watchdog.is_shedding() {
+                tracing::info!("[bg] artifact-repair paused — watchdog shedding load");
+                break;
+            }
             vocab_fts::upsert(
                 &state.pool,
                 &state.default_user_id,

@@ -105,3 +105,53 @@ pub fn resolve(pool: &DbPool, id: &str, action: i32) -> bool {
     .map(|n| n > 0)
     .unwrap_or(false)
 }
+
+/// Dismiss a pending edit (skip it) so it never pings again.
+pub fn dismiss(pool: &DbPool, id: &str) -> bool {
+    resolve(pool, id, 2)
+}
+
+/// Mark pending edits as notified so they don't trigger repeat notifications.
+pub fn mark_notified(pool: &DbPool, ids: &[&str]) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let now = now_ms();
+    for id in ids {
+        let _ = conn.execute(
+            "UPDATE pending_edits SET notified_at = ?1 WHERE id = ?2 AND notified_at IS NULL",
+            params![now, id],
+        );
+    }
+}
+
+/// List pending edits that have NOT yet been notified (for first-time notification).
+pub fn list_unnotified(pool: &DbPool, user_id: &str) -> Vec<PendingEdit> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT id, recording_id, ai_output, user_kept, timestamp_ms
+           FROM pending_edits
+          WHERE user_id = ?1 AND resolved = 0 AND notified_at IS NULL
+          ORDER BY timestamp_ms DESC
+          LIMIT 10",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map(params![user_id], |row| {
+        Ok(PendingEdit {
+            id: row.get(0)?,
+            recording_id: row.get(1)?,
+            ai_output: row.get(2)?,
+            user_kept: row.get(3)?,
+            timestamp_ms: row.get(4)?,
+        })
+    })
+    .ok()
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}

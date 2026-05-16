@@ -5,13 +5,15 @@ mod backend;
 mod backend_guard;
 mod desktop;
 mod dg_stream; // P5: Deepgram WebSocket live streaming
+// mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
 
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde::Serialize;
 use tauri::{
     Emitter, Manager, State,
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -26,6 +28,10 @@ use said_paster as paster;
 
 const DEBUG_LOG_MAX_BYTES: u64 = 240_000;
 const STREAM_RESET_SENTINEL: &str = "\u{1F}__RESET__\u{1F}";
+const MEETING_SPEECH_LEVEL: f32 = 0.025;
+const MEETING_SILENCE_LEVEL: f32 = 0.012;
+const MEETING_PAUSE_MS: u64 = 900;
+const MEETING_MIN_CHUNK_MS: u64 = 700;
 
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
@@ -384,6 +390,83 @@ enum LastAction {
 struct LastActionState(Mutex<Option<LastAction>>);
 
 struct PerformanceState(Mutex<sysinfo::System>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecordingRoute {
+    Normal,
+    Meeting,
+}
+
+struct RecordingRouteState(Mutex<Option<RecordingRoute>>);
+
+#[derive(Clone, Serialize)]
+struct MeetingSttStatus {
+    active: bool,
+    muted: bool,
+    capture_running: bool,
+}
+
+/// Meeting-mode flags. Active means the live meeting view owns the recorder;
+/// muted prevents pause-detection restarts while the user is holding Fn.
+struct MeetingModeState {
+    active: Arc<AtomicBool>,
+    muted: Arc<AtomicBool>,
+    generation: Arc<AtomicU64>,
+}
+
+impl MeetingModeState {
+    fn new() -> Self {
+        Self {
+            active: Arc::new(AtomicBool::new(false)),
+            muted: Arc::new(AtomicBool::new(false)),
+            generation: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn enter(&self) -> bool {
+        self.muted.store(false, Ordering::SeqCst);
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        !self.active.swap(true, Ordering::SeqCst)
+    }
+
+    fn exit(&self) -> bool {
+        self.muted.store(false, Ordering::SeqCst);
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.active.swap(false, Ordering::SeqCst)
+    }
+
+    fn is_active(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
+    }
+
+    fn is_muted(&self) -> bool {
+        self.muted.load(Ordering::SeqCst)
+    }
+
+    fn capture_enabled(&self) -> bool {
+        self.is_active() && !self.is_muted()
+    }
+
+    fn set_muted(&self, muted: bool) {
+        if self.muted.swap(muted, Ordering::SeqCst) != muted {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn status(&self) -> MeetingSttStatus {
+        MeetingSttStatus {
+            active: self.is_active(),
+            muted: self.is_muted(),
+            capture_running: self.capture_enabled(),
+        }
+    }
+}
+
+fn emit_meeting_stt_status(app: &tauri::AppHandle) {
+    if let Some(meeting) = app.try_state::<MeetingModeState>() {
+        let _ = app.emit("meeting-stt-state", meeting.status());
+    }
+}
 
 /// Hot-path cache: language setting + personal vocabulary keyterms.
 ///
@@ -1421,10 +1504,16 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     // ready, so that post-paste edit detection can read AXValue reliably.
     #[cfg(target_os = "macos")]
     {
-        let pid = paster::lock_frontmost_app_now();
-        tracing::debug!("[record] locked frontmost app for edit-watch pid={pid:?}");
-        if let Ok(mut target) = app.state::<EditTargetState>().0.lock() {
-            *target = pid;
+        let meeting_capture = app
+            .try_state::<MeetingModeState>()
+            .map(|s| s.capture_enabled())
+            .unwrap_or(false);
+        if !meeting_capture {
+            let pid = paster::lock_frontmost_app_now();
+            tracing::debug!("[record] locked frontmost app for edit-watch pid={pid:?}");
+            if let Ok(mut target) = app.state::<EditTargetState>().0.lock() {
+                *target = pid;
+            }
         }
     }
 
@@ -1434,9 +1523,23 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     };
     match started {
         Ok(snap) => {
+            let route = app
+                .try_state::<MeetingModeState>()
+                .map(|s| {
+                    if s.capture_enabled() {
+                        RecordingRoute::Meeting
+                    } else {
+                        RecordingRoute::Normal
+                    }
+                })
+                .unwrap_or(RecordingRoute::Normal);
+            if let Ok(mut route_state) = app.state::<RecordingRouteState>().0.lock() {
+                *route_state = Some(route);
+            }
             tracing::info!("[record] started — state={}", snap.state);
             sync_tray(app, &snap);
             let _ = app.emit("app-state", &snap);
+            emit_meeting_stt_status(app);
         }
         Err(e) => {
             let _ = app.emit(
@@ -1456,11 +1559,29 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     let level_recv = shared.lock().ok().and_then(|mut d| d.take_level_receiver());
     if let Some(level_recv) = level_recv {
         let app_levels = app.clone();
+        let meeting_pause = app.try_state::<MeetingModeState>().and_then(|meeting| {
+            if !meeting.capture_enabled() {
+                return None;
+            }
+            Some((
+                Arc::clone(&meeting.active),
+                Arc::clone(&meeting.muted),
+                Arc::clone(&meeting.generation),
+                meeting.generation.load(Ordering::SeqCst),
+                Arc::clone(shared),
+                app.clone(),
+                Arc::clone(&app.state::<BackendState>().0),
+            ))
+        });
         std::thread::spawn(move || {
             let mut smoothed = 0.0f32;
             let mut last_emit = std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_millis(40))
                 .unwrap_or_else(std::time::Instant::now);
+            let started_at = std::time::Instant::now();
+            let mut heard_speech = false;
+            let mut last_voice_at = started_at;
+            let mut finish_for_pause = false;
             while let Ok(level) = level_recv.rx.recv() {
                 smoothed = smoothed.mul_add(0.68, level * 0.32);
                 if last_emit.elapsed() >= std::time::Duration::from_millis(33) {
@@ -1472,8 +1593,47 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                     );
                     last_emit = std::time::Instant::now();
                 }
+
+                if let Some((active, muted, generation, expected_generation, shared, _, _)) =
+                    &meeting_pause
+                {
+                    if !active.load(Ordering::SeqCst)
+                        || muted.load(Ordering::SeqCst)
+                        || generation.load(Ordering::SeqCst) != *expected_generation
+                    {
+                        break;
+                    }
+
+                    let now = std::time::Instant::now();
+                    if level >= MEETING_SPEECH_LEVEL {
+                        heard_speech = true;
+                        last_voice_at = now;
+                    } else if heard_speech
+                        && level <= MEETING_SILENCE_LEVEL
+                        && now.duration_since(last_voice_at)
+                            >= std::time::Duration::from_millis(MEETING_PAUSE_MS)
+                        && now.duration_since(started_at)
+                            >= std::time::Duration::from_millis(MEETING_MIN_CHUNK_MS)
+                    {
+                        let still_recording = shared
+                            .lock()
+                            .ok()
+                            .map(|d| d.state == desktop::AppState::Recording)
+                            .unwrap_or(false);
+                        if still_recording {
+                            tracing::info!("[meeting_mode] pause detected — finishing chunk");
+                            finish_for_pause = true;
+                        }
+                        break;
+                    }
+                }
             }
             let _ = app_levels.emit("voice-level", serde_json::json!({ "level": 0.0 }));
+            if finish_for_pause {
+                if let Some((_, _, _, _, shared, app, backend)) = meeting_pause {
+                    do_finish_recording(shared, app, backend);
+                }
+            }
         });
     }
 
@@ -1487,6 +1647,37 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
         if let Some(mut g) = streaming_state.0.lock().ok() {
             *g = Some(transcript_rx);
         }
+        let utterance_end_tx = app.try_state::<MeetingModeState>().and_then(|meeting| {
+            if !meeting.capture_enabled() {
+                return None;
+            }
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let active = Arc::clone(&meeting.active);
+            let muted = Arc::clone(&meeting.muted);
+            let expected_generation = meeting.generation.load(Ordering::SeqCst);
+            let generation = Arc::clone(&meeting.generation);
+            let shared = Arc::clone(shared);
+            let app = app.clone();
+            let backend = Arc::clone(&app.state::<BackendState>().0);
+            tauri::async_runtime::spawn(async move {
+                if rx.recv().await.is_some()
+                    && active.load(Ordering::SeqCst)
+                    && !muted.load(Ordering::SeqCst)
+                    && generation.load(Ordering::SeqCst) == expected_generation
+                {
+                    let still_recording = shared
+                        .lock()
+                        .ok()
+                        .map(|d| d.state == desktop::AppState::Recording)
+                        .unwrap_or(false);
+                    if still_recording {
+                        tracing::info!("[meeting_mode] Deepgram utterance end — finishing chunk");
+                        do_finish_recording(shared, app, backend);
+                    }
+                }
+            });
+            Some(tx)
+        });
 
         let backend_for_pe = Arc::clone(&app.state::<BackendState>().0);
         let session_tx = app.state::<DeepgramSessionState>().0.clone();
@@ -1501,6 +1692,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 id: recording_id.clone(),
                 result_tx: transcript_tx,
                 pre_embed: pre_embed_info,
+                utterance_end_tx,
             };
             if let Err(err) = session_tx.send(start_cmd).await {
                 if let dg_stream::SessionCommand::StartRecording { result_tx, .. } = err.0 {
@@ -1515,7 +1707,60 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     }
 }
 
+/// Stop the current recorder without polishing or emitting transcript.
+/// Used for meeting-mode mute so Fn never acts like "send this chunk".
+fn do_cancel_recording(
+    shared: Arc<Mutex<DesktopApp>>,
+    app: tauri::AppHandle,
+    reason: &'static str,
+) {
+    if let Ok(mut route) = app.state::<RecordingRouteState>().0.lock() {
+        *route = None;
+    }
+
+    let _ = app
+        .state::<StreamingState>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take());
+
+    let stop_rx = {
+        let mut d = match shared.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if d.state != desktop::AppState::Recording {
+            return;
+        }
+        if let Some(t) = app.tray_by_id("said") {
+            let _ = t.set_title(Some("[     ]  Said"));
+        }
+        let stop_rx = match d.begin_stop() {
+            Ok((stop_rx, _)) => Some(stop_rx),
+            Err(e) => {
+                tracing::warn!("[meeting_mode] cancel failed ({reason}): {e}");
+                None
+            }
+        };
+        let snap = d.finish_cancelled();
+        tracing::info!("[meeting_mode] recording cancelled — reason={reason}");
+        sync_tray(&app, &snap);
+        let _ = app.emit("app-state", &snap);
+        emit_meeting_stt_status(&app);
+        stop_rx
+    };
+
+    if let Some(stop_rx) = stop_rx {
+        std::thread::spawn(move || {
+            let _ = stop_rx.recv();
+        });
+    }
+}
+
 /// Stop recording, ship WAV to backend via SSE, paste the result.
+/// In meeting mode (`is_meeting`), skips pasting and emits `meeting-transcript` events,
+/// then auto-restarts recording for the next utterance.
 fn do_finish_recording(
     shared: Arc<Mutex<DesktopApp>>,
     app: tauri::AppHandle,
@@ -1567,6 +1812,22 @@ fn do_finish_recording(
         }
     };
 
+    let recording_route = app
+        .state::<RecordingRouteState>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|mut route| route.take())
+        .unwrap_or(RecordingRoute::Normal);
+    let is_meeting = recording_route == RecordingRoute::Meeting;
+    let meeting_generation_at_stop = if is_meeting {
+        app.try_state::<MeetingModeState>()
+            .map(|s| s.generation.load(Ordering::SeqCst))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
     let wav = match desktop::DesktopApp::finish_stop(stop_rx, was_too_short) {
         Ok(wav) => wav,
         Err(e) => {
@@ -1580,6 +1841,7 @@ fn do_finish_recording(
                 sync_tray(&app, &snap);
                 emit_short_recording_error(&app);
                 let _ = app.emit("app-state", &snap);
+                emit_meeting_stt_status(&app);
                 return;
             }
             let snap = d.finish_err(e);
@@ -1592,6 +1854,7 @@ fn do_finish_recording(
                 }),
             );
             let _ = app.emit("app-state", &snap);
+            emit_meeting_stt_status(&app);
             return;
         }
     };
@@ -1689,46 +1952,128 @@ fn do_finish_recording(
             None
         };
 
-        let result = run_voice_polish_sse(&back_arc2, wav, None, pre_transcript, None, &app2).await;
+        let result = run_voice_polish_sse(
+            &back_arc2,
+            wav,
+            None,
+            pre_transcript,
+            None,
+            &app2,
+            is_meeting,
+        )
+        .await;
 
-        // Spawn edit-watcher immediately after paste (non-blocking).
-        // Capture watch_start NOW — before the spawn — so the ring
-        // buffer timestamp filter doesn't miss early mouse clicks.
-        let watch_start = std::time::Instant::now();
-        if let Ok(ref done) = result {
-            let back3 = Arc::clone(&back_arc2);
-            start_edit_watcher(
-                back3,
-                app2.clone(),
-                done.recording_id.clone(),
-                done.polished.clone(),
-                watch_start,
-                edit_target_pid,
-            );
+        if is_meeting {
+            // Meeting mode: emit polished text as meeting-transcript, skip edit-watcher
+            let meeting_still_valid = app2
+                .try_state::<MeetingModeState>()
+                .map(|s| {
+                    s.capture_enabled()
+                        && s.generation.load(Ordering::SeqCst) == meeting_generation_at_stop
+                })
+                .unwrap_or(false);
+            if let Ok(ref done) = result {
+                if meeting_still_valid && !done.polished.is_empty() {
+                    let timestamp_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    tracing::info!(
+                        "[meeting_mode] emitting polished transcript: {:?}",
+                        done.polished.chars().take(80).collect::<String>()
+                    );
+                    let _ = app2.emit(
+                        "meeting-transcript",
+                        serde_json::json!({
+                            "text": done.polished,
+                            "timestamp_ms": timestamp_ms,
+                        }),
+                    );
+                } else if !meeting_still_valid {
+                    tracing::info!("[meeting_mode] discarding stale meeting chunk after mute/exit");
+                }
+            }
+
+            {
+                let mut d = match shared2.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                let snap = match result {
+                    Ok(done) => d.finish_ok(ProcessSummary {
+                        transcript: done.transcript.clone(),
+                        polished: done.polished,
+                        model: done.model_used,
+                        confidence: done.confidence.unwrap_or(0.0),
+                        transcribe_ms: done.latency_ms.transcribe as u64,
+                        polish_ms: done.latency_ms.polish as u64,
+                    }),
+                    Err(e) => d.finish_err(e),
+                };
+                sync_tray(&app2, &snap);
+                let _ = app2.emit("app-state", &snap);
+                emit_meeting_stt_status(&app2);
+            } // drop MutexGuard before await
+
+            // Auto-restart recording for continuous meeting capture
+            let still_meeting = app2
+                .try_state::<MeetingModeState>()
+                .map(|s| {
+                    s.capture_enabled()
+                        && s.generation.load(Ordering::SeqCst) == meeting_generation_at_stop
+                })
+                .unwrap_or(false);
+            if still_meeting {
+                let shared3 = Arc::clone(&shared2);
+                let app3 = app2.clone();
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                std::thread::spawn(move || {
+                    do_start_recording(&shared3, &app3);
+                });
+            }
+        } else {
+            // Normal mode: paste and edit-watch
+            // Spawn edit-watcher immediately after paste (non-blocking).
+            // Capture watch_start NOW — before the spawn — so the ring
+            // buffer timestamp filter doesn't miss early mouse clicks.
+            let watch_start = std::time::Instant::now();
+            if let Ok(ref done) = result {
+                let back3 = Arc::clone(&back_arc2);
+                start_edit_watcher(
+                    back3,
+                    app2.clone(),
+                    done.recording_id.clone(),
+                    done.polished.clone(),
+                    watch_start,
+                    edit_target_pid,
+                );
+            }
+
+            let mut d = match shared2.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            let snap = match result {
+                Ok(done) => d.finish_ok(ProcessSummary {
+                    transcript: done.transcript.clone(),
+                    polished: done.polished,
+                    model: done.model_used,
+                    confidence: done.confidence.unwrap_or(0.0),
+                    transcribe_ms: done.latency_ms.transcribe as u64,
+                    polish_ms: done.latency_ms.polish as u64,
+                }),
+                Err(e) => d.finish_err(e),
+            };
+            sync_tray(&app2, &snap);
+            let _ = app2.emit("app-state", &snap);
+            emit_meeting_stt_status(&app2);
         }
-
-        let mut d = match shared2.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        let snap = match result {
-            Ok(done) => d.finish_ok(ProcessSummary {
-                transcript: done.transcript.clone(),
-                polished: done.polished,
-                model: done.model_used,
-                confidence: done.confidence.unwrap_or(0.0),
-                transcribe_ms: done.latency_ms.transcribe as u64,
-                polish_ms: done.latency_ms.polish as u64,
-            }),
-            Err(e) => d.finish_err(e),
-        };
-        sync_tray(&app2, &snap);
-        let _ = app2.emit("app-state", &snap);
     });
 }
 
 /// Async SSE consumer: streams tokens from backend, types them word-by-word,
 /// and stores the result for Ctrl+Cmd+V re-paste.
+/// In meeting mode (`is_meeting`), skips word-by-word typing entirely.
 async fn run_voice_polish_sse(
     back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
     wav: Vec<u8>,
@@ -1736,6 +2081,7 @@ async fn run_voice_polish_sse(
     pre_transcript: Option<dg_stream::StreamingTranscript>,
     repair_mode: Option<String>,
     app: &tauri::AppHandle,
+    #[allow(unused_variables)] is_meeting: bool,
 ) -> Result<api::PolishDone, String> {
     let ep = {
         let lock = back_arc.lock().map_err(|_| "backend lock failed")?;
@@ -1773,6 +2119,11 @@ async fn run_voice_polish_sse(
     let mut on_polish_event = move |event| {
         match &event {
             api::PolishEvent::Token { token } => {
+                // In meeting mode, skip all typing — only emit for live preview
+                if is_meeting {
+                    let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
+                    return;
+                }
                 let decision = live_guard2
                     .lock()
                     .map(|mut guard| guard.on_token(token))
@@ -1905,7 +2256,9 @@ async fn run_voice_polish_sse(
     let n_typed = token_count.load(std::sync::atomic::Ordering::Relaxed);
     let n_failed = fail_count.load(std::sync::atomic::Ordering::Relaxed);
     let mut output_pasted = false;
-    if typed_any.load(std::sync::atomic::Ordering::Relaxed) {
+    if is_meeting {
+        tracing::info!("[main] meeting mode — skipping paste for polished chunk");
+    } else if typed_any.load(std::sync::atomic::Ordering::Relaxed) {
         if n_failed > 0 {
             // Some tokens typed, some failed — AX partially worked (user switched app?).
             // Do a full clipboard paste to ensure completeness.
@@ -1973,12 +2326,16 @@ async fn run_voice_polish_sse(
         tracing::info!("[main] polished text: {:?}{}", preview, suffix);
     }
 
-    let output_status = if output_pasted {
+    let output_status = if is_meeting {
+        "meeting_chunk"
+    } else if output_pasted {
         "pasted"
     } else {
         "manual_paste"
     };
-    let output_message = if output_pasted {
+    let output_message = if is_meeting {
+        "Sent to meeting"
+    } else if output_pasted {
         "Pasted"
     } else {
         // The Ctrl+Cmd+V "re-paste" hotkey is only wired on macOS today;
@@ -2581,6 +2938,7 @@ fn retry_recording_spawn(
             None,
             Some("preserve_recall".into()),
             &app2,
+            false,
         )
         .await;
 
@@ -2673,6 +3031,12 @@ async fn resolve_pending_edit(
         });
     }
     result
+}
+
+#[tauri::command]
+async fn dismiss_pending_edit(backend: State<'_, BackendState>, id: String) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    api::dismiss_pending_edit(&ep, &id).await
 }
 
 // ── Vocabulary management commands ────────────────────────────────────────────
@@ -2843,6 +3207,102 @@ fn set_desktop_prefs(prefs: said_core::prefs::DesktopPrefs) -> Result<(), String
     said_core::prefs::save(&prefs)
 }
 
+// ── Meeting mode commands ────────────────────────────────────────────────────
+
+/// Enter meeting mode: auto-start recording, invert hotkey (hold = mute).
+/// Polished text is emitted as `meeting-transcript` events instead of typed.
+#[tauri::command]
+fn start_meeting_stt(
+    app: tauri::AppHandle,
+    meeting_mode: State<'_, MeetingModeState>,
+    state: State<'_, SharedApp>,
+) -> Result<MeetingSttStatus, String> {
+    let was_inactive = meeting_mode.enter();
+    tracing::info!("[meeting_mode] entered — auto-starting recording");
+    let current = state.0.lock().map_err(|_| "lock failed")?.state;
+    if was_inactive || current == desktop::AppState::Idle {
+        do_start_recording(&state.0, &app);
+    }
+    emit_meeting_stt_status(&app);
+    Ok(meeting_mode.status())
+}
+
+/// Leave meeting mode: stop recording if active, restore normal hotkey behavior.
+#[tauri::command]
+fn stop_meeting_stt(
+    app: tauri::AppHandle,
+    meeting_mode: State<'_, MeetingModeState>,
+    state: State<'_, SharedApp>,
+    _backend: State<'_, BackendState>,
+) -> Result<MeetingSttStatus, String> {
+    let was = meeting_mode.exit();
+    if !was {
+        emit_meeting_stt_status(&app);
+        return Ok(meeting_mode.status()); // already not in meeting mode
+    }
+    tracing::info!("[meeting_mode] exited — stopping recording");
+    let current = state.0.lock().map_err(|_| "lock failed")?.state;
+    let route = app
+        .state::<RecordingRouteState>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|route| *route);
+    if current == desktop::AppState::Recording && route == Some(RecordingRoute::Meeting) {
+        do_cancel_recording(Arc::clone(&state.0), app, "leave meeting");
+    } else {
+        emit_meeting_stt_status(&app);
+    }
+    Ok(meeting_mode.status())
+}
+
+/// Toggle meeting capture. Muted meeting mode leaves normal Said dictation available.
+#[tauri::command]
+fn toggle_meeting_mute(
+    app: tauri::AppHandle,
+    meeting_mode: State<'_, MeetingModeState>,
+    state: State<'_, SharedApp>,
+    _backend: State<'_, BackendState>,
+) -> Result<MeetingSttStatus, String> {
+    if !meeting_mode.is_active() {
+        return Err("not in meeting mode".into());
+    }
+    let current = state.0.lock().map_err(|_| "lock failed")?.state;
+    let route = app
+        .state::<RecordingRouteState>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|route| *route);
+
+    if meeting_mode.is_muted() {
+        if current != desktop::AppState::Idle {
+            return Err("finish the current Said recording before resuming meeting capture".into());
+        }
+        meeting_mode.set_muted(false);
+        emit_meeting_stt_status(&app);
+        do_start_recording(&state.0, &app);
+        return Ok(meeting_mode.status());
+    }
+
+    meeting_mode.set_muted(true);
+    emit_meeting_stt_status(&app);
+    if current == desktop::AppState::Recording && route == Some(RecordingRoute::Meeting) {
+        do_cancel_recording(Arc::clone(&state.0), app, "mute");
+    }
+    Ok(meeting_mode.status())
+}
+
+#[tauri::command]
+fn get_meeting_stt_status(
+    app: tauri::AppHandle,
+    meeting_mode: State<'_, MeetingModeState>,
+) -> MeetingSttStatus {
+    let status = meeting_mode.status();
+    let _ = app.emit("meeting-stt-state", status.clone());
+    status
+}
+
 // ── Cloud auth commands ───────────────────────────────────────────────────────
 
 /// Cloud URL — read from env, default to the hosted service.
@@ -2875,6 +3335,16 @@ async fn cloud_login(
         let _ = api::store_cloud_token(&ep, &resp.token, &resp.account.license_tier).await;
     }
     Ok(resp)
+}
+
+#[tauri::command]
+async fn store_enterprise_auth(
+    token: String,
+    email: String,
+    backend: State<'_, BackendState>,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    api::store_enterprise_token(&ep, &token, "enterprise", &email).await
 }
 
 #[tauri::command]
@@ -4109,28 +4579,60 @@ fn main() {
                 // ── Hold-to-record hotkey ─────────────────────────────────────
                 // macOS: CGEventTap (see said_hotkey::imp). Windows: WH_KEYBOARD_LL
                 // (see said_hotkey::imp_windows). Linux: no-op stub.
+                //
+                // In meeting capture, Fn/Caps acts as a quick mute. Once muted,
+                // the hotkey goes back to normal Said dictation until the user
+                // resumes meeting capture from the dock control.
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 {
                     let shared_hold_press = Arc::clone(&app.state::<SharedApp>().0);
                     let shared_hold_release = Arc::clone(&app.state::<SharedApp>().0);
                     let back_hold = Arc::clone(&app.state::<BackendState>().0);
+                    let meeting_active_press = Arc::clone(&app.state::<MeetingModeState>().active);
+                    let meeting_muted_press = Arc::clone(&app.state::<MeetingModeState>().muted);
+                    let meeting_generation_press =
+                        Arc::clone(&app.state::<MeetingModeState>().generation);
+                    let hotkey_meeting_mute = Arc::new(AtomicBool::new(false));
+                    let hotkey_meeting_mute_release = Arc::clone(&hotkey_meeting_mute);
                     let app_press = app.handle().clone();
                     let app_release = app.handle().clone();
                     hotkey::start_hold_listener(
                         Arc::new(move || {
+                            let meeting_capture = meeting_active_press.load(Ordering::SeqCst)
+                                && !meeting_muted_press.load(Ordering::SeqCst);
                             let shared = Arc::clone(&shared_hold_press);
                             let app_h = app_press.clone();
-                            std::thread::spawn(move || {
-                                do_start_recording(&shared, &app_h);
-                            });
+                            if meeting_capture {
+                                hotkey_meeting_mute.store(true, Ordering::SeqCst);
+                                meeting_muted_press.store(true, Ordering::SeqCst);
+                                meeting_generation_press.fetch_add(1, Ordering::SeqCst);
+                                emit_meeting_stt_status(&app_h);
+                                std::thread::spawn(move || {
+                                    let current = shared.lock().ok().map(|d| d.state);
+                                    if current == Some(desktop::AppState::Recording) {
+                                        do_cancel_recording(shared, app_h, "hotkey mute");
+                                    }
+                                });
+                            } else {
+                                // Normal: press = start recording
+                                std::thread::spawn(move || {
+                                    do_start_recording(&shared, &app_h);
+                                });
+                            }
                         }),
                         Arc::new(move || {
                             let shared = Arc::clone(&shared_hold_release);
-                            let back = Arc::clone(&back_hold);
                             let app_h = app_release.clone();
-                            std::thread::spawn(move || {
-                                do_finish_recording(shared, app_h, back);
-                            });
+                            if hotkey_meeting_mute_release.swap(false, Ordering::SeqCst) {
+                                emit_meeting_stt_status(&app_h);
+                            } else {
+                                // Normal Said route. This also applies while the
+                                // meeting view is open but meeting capture is muted.
+                                let back = Arc::clone(&back_hold);
+                                std::thread::spawn(move || {
+                                    do_finish_recording(shared, app_h, back);
+                                });
+                            }
                         }),
                     );
 
@@ -4194,6 +4696,7 @@ fn main() {
         .manage(EditWatcherState(Mutex::new(None)))
         .manage(EditTargetState(Mutex::new(None)))
         .manage(StreamingState(Mutex::new(None)))
+        .manage(RecordingRouteState(Mutex::new(None)))
         .manage(DeepgramSessionState(dg_stream::DeepgramSession::spawn()))
         .manage(PerformanceState(Mutex::new(sysinfo::System::new_all())))
         .manage(TrayCache(Mutex::new(TrayCacheInner::default())))
@@ -4201,6 +4704,7 @@ fn main() {
         .manage(LastActionState(Mutex::new(None)))
         .manage(HotPathCache(Arc::new(tokio::sync::RwLock::new(HotPathCacheInner::default()))))
         .manage(StatusBarHideGen(Arc::new(AtomicU64::new(0))))
+        .manage(MeetingModeState::new())
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             get_snapshot,
@@ -4223,6 +4727,7 @@ fn main() {
             diagnose_ax,
             // Cloud auth
             cloud_signup,
+            store_enterprise_auth,
             cloud_login,
             cloud_logout,
             get_cloud_status,
@@ -4242,6 +4747,7 @@ fn main() {
             // Pending-edit review
             get_pending_edits,
             resolve_pending_edit,
+            dismiss_pending_edit,
             // Vocabulary management
             list_vocabulary,
             add_vocabulary_term,
@@ -4255,6 +4761,11 @@ fn main() {
             // Backed by `<data_dir>/desktop_prefs.json`, not the SQLite preferences DB.
             get_desktop_prefs,
             set_desktop_prefs,
+            // Meeting audio pipeline
+            start_meeting_stt,
+            stop_meeting_stt,
+            toggle_meeting_mute,
+            get_meeting_stt_status,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Voice Polish desktop")

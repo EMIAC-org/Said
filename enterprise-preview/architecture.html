@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Said Enterprise — Architecture</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/>
+        <rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/>
+        <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/>
+        <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/>
+      </svg>
+      <span>Said Enterprise</span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="setup.html">Setup</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="meeting-create.html">New Meeting</a>
+      <a href="meeting-live.html">Live Meeting</a>
+      <a href="desktop-mode.html">Desktop App</a>
+      <a href="post-meeting.html">Report</a>
+      <a href="architecture.html" class="active">Architecture</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div style="text-align: center; margin-bottom: 48px;">
+    <div class="hero-badge">Technical Architecture</div>
+    <h1 style="font-size: 36px; font-weight: 600; letter-spacing: -0.03em; margin-bottom: 12px;">
+      System Architecture
+    </h1>
+    <p style="font-size: 14px; color: var(--fg-muted); max-width: 560px; margin: 0 auto;">
+      End-to-end data flow from voice capture to Lark sync, with every component and protocol labeled.
+    </p>
+  </div>
+
+  <!-- Main Architecture Diagram -->
+  <div class="arch-canvas" style="margin-bottom: 48px;">
+    <div class="arch-label">Device Layer (macOS / Windows)</div>
+    <div class="arch-row">
+      <div class="arch-box">
+        <h5>Microphone</h5>
+        <p>CoreAudio / WASAPI</p>
+        <p>16 kHz PCM mono</p>
+      </div>
+      <div class="arch-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+      </div>
+      <div class="arch-box">
+        <h5>Recorder Crate</h5>
+        <p>Audio capture</p>
+        <p>Ring buffer + VAD</p>
+      </div>
+      <div class="arch-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+      </div>
+      <div class="arch-box">
+        <h5>Deepgram STT</h5>
+        <p>nova-3 streaming</p>
+        <p>Pre-warmed WebSocket</p>
+      </div>
+      <div class="arch-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+      </div>
+      <div class="arch-box">
+        <h5>LLM Polish</h5>
+        <p>Groq llama-3.3-70b</p>
+        <p>Streaming tokens</p>
+      </div>
+    </div>
+
+    <div class="arch-arrow-down">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14m-7-7l7 7 7-7"/></svg>
+    </div>
+
+    <div class="arch-label">Network Layer</div>
+    <div class="arch-row">
+      <div class="arch-box" style="flex: 1; max-width: 600px;">
+        <h5>WebSocket Transport</h5>
+        <p>Device &rarr; Meeting Server &nbsp;|&nbsp; Polished transcript chunks &nbsp;|&nbsp; speaker_id + timestamp + text</p>
+        <p style="margin-top: 4px;">tokio-tungstenite (server) &nbsp;|&nbsp; Auto-reconnect with exponential backoff (client)</p>
+      </div>
+    </div>
+
+    <div class="arch-arrow-down">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14m-7-7l7 7 7-7"/></svg>
+    </div>
+
+    <div class="arch-label">Server Layer (Customer VPS / Said Cloud)</div>
+    <div class="arch-row">
+      <div class="arch-box highlight">
+        <h5>Meeting Hub</h5>
+        <p>Room management</p>
+        <p>Stream aggregation</p>
+        <p>Speaker interleaving</p>
+      </div>
+      <div class="arch-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+      </div>
+      <div class="arch-box highlight">
+        <h5>AI Pipeline</h5>
+        <p>Rolling summarizer</p>
+        <p>Task extractor</p>
+        <p>Assignment detector</p>
+      </div>
+      <div class="arch-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+      </div>
+      <div class="arch-box highlight">
+        <h5>Notification Push</h5>
+        <p>Real-time task alerts</p>
+        <p>WebSocket &rarr; device</p>
+      </div>
+    </div>
+
+    <div class="arch-row" style="margin-top: 16px;">
+      <div class="arch-box">
+        <h5>Postgres</h5>
+        <p>Orgs, users, meetings</p>
+        <p>Transcripts, tasks</p>
+      </div>
+      <div class="arch-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+      </div>
+      <div class="arch-box">
+        <h5>Lark OAuth</h5>
+        <p>User auth</p>
+        <p>Org directory sync</p>
+      </div>
+      <div class="arch-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+      </div>
+      <div class="arch-box">
+        <h5>Admin Dashboard</h5>
+        <p>React SPA</p>
+        <p>Served by same binary</p>
+      </div>
+    </div>
+
+    <div class="arch-arrow-down">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14m-7-7l7 7 7-7"/></svg>
+    </div>
+
+    <div class="arch-label">Integration Layer</div>
+    <div class="arch-row">
+      <div class="arch-box">
+        <h5>Lark Tasks API</h5>
+        <p>Create tasks</p>
+        <p>Assign to users</p>
+      </div>
+      <div class="arch-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+      </div>
+      <div class="arch-box">
+        <h5>Lark Docs API</h5>
+        <p>Create summary doc</p>
+        <p>Attach transcript</p>
+      </div>
+      <div class="arch-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+      </div>
+      <div class="arch-box">
+        <h5>Lark Messenger</h5>
+        <p>Meeting notifications</p>
+        <p>Task assignment alerts</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tech stack table -->
+  <div class="section">
+    <div class="section-label">Technology Stack</div>
+    <div class="grid-2" style="gap: 14px;">
+      <div class="table-wrap">
+        <div class="table-head"><h3>Server (Control Plane)</h3></div>
+        <table>
+          <tr><td>Runtime</td><td>Rust (Axum + Tokio)</td></tr>
+          <tr><td>Database</td><td>Postgres 15+</td></tr>
+          <tr><td>WebSocket</td><td>tokio-tungstenite</td></tr>
+          <tr><td>Auth</td><td>Lark OAuth 2.0</td></tr>
+          <tr><td>AI / LLM</td><td>Groq (llama-3.3-70b)</td></tr>
+          <tr><td>Dashboard</td><td>React SPA (embedded)</td></tr>
+          <tr><td>Deployment</td><td>Docker Compose</td></tr>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <div class="table-head"><h3>Client (Desktop App)</h3></div>
+        <table>
+          <tr><td>Shell</td><td>Tauri v2 (Rust + React)</td></tr>
+          <tr><td>Audio</td><td>CoreAudio (mac) / WASAPI (win)</td></tr>
+          <tr><td>STT</td><td>Deepgram nova-3 (streaming)</td></tr>
+          <tr><td>Meeting WS</td><td>tungstenite (Rust client)</td></tr>
+          <tr><td>Notifications</td><td>Native OS notifications</td></tr>
+          <tr><td>Local DB</td><td>SQLite (personal history)</td></tr>
+          <tr><td>HID Typing</td><td>Accessibility API / SendInput</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Data flow -->
+  <div class="section">
+    <div class="section-label">Meeting Data Flow</div>
+    <div class="grid-3" style="gap: 14px;">
+      <div class="card">
+        <div class="card-icon" style="background: var(--green-bg); color: var(--green);">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v4"/></svg>
+        </div>
+        <h3>Capture</h3>
+        <p>Each device captures its owner's voice. Audio stays local — only polished transcript text is sent to the meeting server. No raw audio ever leaves the device.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon" style="background: var(--amber-bg); color: var(--amber);">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <h3>Process</h3>
+        <p>The server interleaves transcripts by timestamp, tags each chunk with the speaker's identity, and feeds the running transcript to the AI pipeline every 30 seconds.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        </div>
+        <h3>Sync</h3>
+        <p>When the meeting ends, one click creates Lark Tasks (per assignee), a Lark Doc (summary + decisions), and attaches the full transcript. All via Lark Open API.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Privacy -->
+  <div class="section">
+    <div class="section-label">Privacy & Security</div>
+    <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px;">
+      <div class="grid-2" style="gap: 20px;">
+        <div>
+          <h4 style="font-size: 14px; font-weight: 600; margin-bottom: 8px;">What stays on the device</h4>
+          <ul style="font-size: 13px; color: var(--fg-muted); line-height: 2;">
+            <li style="display: flex; gap: 8px;"><span style="color: var(--green);">&#10003;</span> Raw audio — never sent to the server</li>
+            <li style="display: flex; gap: 8px;"><span style="color: var(--green);">&#10003;</span> API keys (Deepgram, Groq)</li>
+            <li style="display: flex; gap: 8px;"><span style="color: var(--green);">&#10003;</span> Personal dictation history</li>
+            <li style="display: flex; gap: 8px;"><span style="color: var(--green);">&#10003;</span> Learning pipeline corrections</li>
+          </ul>
+        </div>
+        <div>
+          <h4 style="font-size: 14px; font-weight: 600; margin-bottom: 8px;">What goes to the server</h4>
+          <ul style="font-size: 13px; color: var(--fg-muted); line-height: 2;">
+            <li style="display: flex; gap: 8px;"><span style="color: var(--amber);">&#8594;</span> Polished transcript text (per-meeting only)</li>
+            <li style="display: flex; gap: 8px;"><span style="color: var(--amber);">&#8594;</span> Speaker identity (from Lark OAuth)</li>
+            <li style="display: flex; gap: 8px;"><span style="color: var(--amber);">&#8594;</span> Timestamps for interleaving</li>
+            <li style="display: flex; gap: 8px;"><span style="color: var(--amber);">&#8594;</span> AI-generated summaries and tasks</li>
+          </ul>
+        </div>
+      </div>
+      <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border);">
+        <p style="font-size: 12.5px; color: var(--fg-muted);">
+          <strong style="color: var(--fg);">Self-hosted guarantee:</strong> In Enterprise mode, the meeting server runs on the customer's own VPS.
+          No data touches Said's infrastructure. The Docker image contains everything — no external dependencies besides the customer's own Lark app credentials and LLM API key.
+        </p>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="foot">
+  <span>Said Enterprise Preview</span>
+  <span>Phase 2 &middot; EMIAC Tech</span>
+</footer>
+</body>
+</html>

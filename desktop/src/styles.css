@@ -3,185 +3,188 @@
 @tailwind utilities;
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   GLASSMORPHISM THEME — cyan / black / white
+   GLASSMORPHISM THEME — Cursor-style near-black with periwinkle accent
    ───────────────────────────────────────────────────────────────────────────
-   Dark : deep navy floor + frosted translucent glass panels + cyan accent
-   Light: cool lavender floor + pure white panels + black active pills
+   Dark : near-black floor, hairline insets, deep macOS-style glass blur,
+          single soft periwinkle accent (no mint/violet noise)
+   Light: pure white panels on off-white floor, same periwinkle accent
    ═══════════════════════════════════════════════════════════════════════════ */
 
 @layer base {
-  /* ── DARK (default) — deep navy + mint + violet ─────────────────────── */
+  /* ── DARK (default) — Cursor-style near-black + periwinkle accent ───── */
   :root {
-    --background:           0 0% 4%;           /* near-black floor */
-    --foreground:           0 0% 96%;
-    --card:                 0 0% 9%;
-    --card-foreground:      0 0% 96%;
-    --popover:              0 0% 11%;
-    --popover-foreground:   0 0% 96%;
+    --background:           240 6% 6%;         /* near-black floor with a hint of warmth */
+    --foreground:           240 6% 92%;
+    --card:                 240 5% 10%;
+    --card-foreground:      240 6% 92%;
+    --popover:              240 6% 12%;
+    --popover-foreground:   240 6% 92%;
 
-    --primary:              105 75% 68%;       /* mint green */
-    --primary-foreground:   0 0% 4%;
+    --primary:              226 80% 78%;       /* soft periwinkle — single brand accent */
+    --primary-foreground:   240 8% 8%;
 
-    --accent-violet:        258 80% 70%;       /* secondary highlight */
-    --accent-violet-soft:   258 80% 70% / 0.18;
+    --accent-violet:        226 80% 78%;       /* alias to primary — drop violet noise */
+    --accent-violet-soft:   226 80% 78% / 0.14;
 
-    --secondary:            0 0% 16%;
-    --secondary-foreground: 0 0% 92%;
-    --muted:                0 0% 12%;
-    --muted-foreground:     0 0% 60%;
+    --secondary:            240 5% 16%;
+    --secondary-foreground: 240 6% 88%;
+    --muted:                240 5% 12%;
+    --muted-foreground:     240 5% 60%;
 
-    --accent:               105 75% 68%;
-    --accent-foreground:    0 0% 4%;
+    --accent:               226 80% 78%;
+    --accent-foreground:    240 8% 8%;
 
     --destructive:          354 80% 62%;
     --destructive-foreground: 0 0% 98%;
 
-    --border:               0 0% 16%;
-    --input:                0 0% 12%;
-    --ring:                 105 75% 68%;
-    --radius:               1rem;
+    --border:               240 5% 16%;
+    --input:                240 5% 12%;
+    --ring:                 226 80% 78%;
+    --radius:               12px;              /* slightly tighter — Cursor uses 8-12 */
 
     --recording:            354 84% 62%;
 
-    /* ── Surface hierarchy — neutral grays on a black floor ──────────── */
-    --surface-1:            0 0% 4%;           /* page floor                       */
-    --surface-2:            0 0% 7%;           /* the mat (light lift)             */
-    --surface-3:            0 0% 10%;          /* primary card surface             */
-    --surface-4:            0 0% 16%;          /* chips / icon backplates          */
-    --surface-hover:        0 0% 13%;
+    /* ── Surface hierarchy — Cursor-grade near-blacks, tuned via
+       the live glass control panel (.context/said-glass-control.html). */
+    --surface-1:            240 5% 3%;         /* page floor / sidebar rail */
+    --surface-2:            240 5% 4.5%;       /* the mat */
+    --surface-3:            240 5% 7.5%;       /* primary card surface */
+    --surface-4:            240 5% 13%;        /* chips / icon backplates */
+    --surface-hover:        240 5% 11%;
 
-    /* ── Glass tokens (kept for occasional use) ──────────────────────── */
-    --glass-bg:             0 0% 9% / 0.62;
-    --glass-bg-strong:      0 0% 11% / 0.85;
+    /* ── Glass tokens — macOS-style deep blur, hairline inset borders ─ */
+    --glass-bg:             240 5% 10% / 0.62;
+    --glass-bg-strong:      240 5% 12% / 0.78;
     --glass-stroke:         0 0% 100% / 0.06;
-    --glass-stroke-strong:  0 0% 100% / 0.10;
+    --glass-stroke-strong:  0 0% 100% / 0.09;
     --glass-highlight:      0 0% 100% / 0.04;
 
-    /* ── Pill active (inverted neutral — pure white pill on black) ───── */
+    /* ── Pill active (pure white pill on near-black — Cursor pattern) ── */
     --pill-active-bg:       0 0% 98%;
-    --pill-active-fg:       0 0% 4%;
+    --pill-active-fg:       240 8% 8%;
 
-    /* ── Chip / accent backgrounds + text (legible on dark) ─────────── */
-    --chip-mint-bg:         105 75% 68% / 0.16;
-    --chip-mint-fg:         105 80% 75%;
-    --chip-violet-bg:       258 80% 70% / 0.18;
-    --chip-violet-fg:       258 90% 82%;
-    --chip-cyan-bg:         105 75% 68% / 0.16;       /* legacy → mint */
-    --chip-cyan-fg:         105 80% 75%;
-    --chip-blue-bg:         217 80% 65% / 0.16;
-    --chip-blue-fg:         217 80% 78%;
-    --chip-amber-bg:        38 90% 60% / 0.16;
+    /* ── Chip / accent backgrounds + text (legible on dark) ──────────── */
+    --chip-mint-bg:         226 80% 78% / 0.14;   /* legacy mint → periwinkle */
+    --chip-mint-fg:         226 80% 84%;
+    --chip-violet-bg:       226 80% 78% / 0.14;
+    --chip-violet-fg:       226 80% 84%;
+    --chip-cyan-bg:         226 80% 78% / 0.14;
+    --chip-cyan-fg:         226 80% 84%;
+    --chip-blue-bg:         226 80% 78% / 0.14;
+    --chip-blue-fg:         226 80% 84%;
+    --chip-amber-bg:        38 90% 60% / 0.14;
     --chip-amber-fg:        38 90% 72%;
-    --chip-red-bg:          354 80% 62% / 0.16;
+    --chip-red-bg:          354 80% 62% / 0.14;
     --chip-red-fg:          354 85% 75%;
 
-    /* legacy lime alias → maps to mint */
-    --chip-lime-bg:         105 75% 68% / 0.16;
-    --chip-lime-fg:         105 80% 75%;
+    /* legacy lime alias → periwinkle */
+    --chip-lime-bg:         226 80% 78% / 0.14;
+    --chip-lime-fg:         226 80% 84%;
 
-    --heat-0:               0 0% 14%;          /* visible on black floor */
+    --heat-0:               240 5% 14%;        /* visible on near-black floor */
 
-    /* Shadows — minimal, just enough lift */
+    /* Shadows — macOS-style depth: tight inset highlight + soft deep drop */
     --shadow-tile:
       0 1px 0 hsl(0 0% 100% / 0.04) inset;
     --shadow-glass:
-      0 1px 0 hsl(0 0% 100% / 0.06) inset,
-      0 10px 30px hsl(0 0% 0% / 0.55);
+      0 1px 0 hsl(0 0% 100% / 0.05) inset,
+      0 0 0 1px hsl(0 0% 100% / 0.06) inset,
+      0 18px 50px hsl(0 0% 0% / 0.55),
+      0 4px 12px hsl(0 0% 0% / 0.35);
     --shadow-pop:
-      0 24px 60px hsl(0 0% 0% / 0.75);
+      0 30px 80px hsl(0 0% 0% / 0.65);
 
-    /* Pure black floor — no colored wash */
-    --mesh-bg: none;
+    /* Ambient wallpaper bleed — faint periwinkle wash visible only at the
+       edges of the window. Drives the subtle "glass over wallpaper" feel
+       even though the app fills the whole window. */
+    --mesh-bg:
+      radial-gradient(60% 50% at 10% 0%,  hsl(226 80% 60% / 0.06) 0%, transparent 55%),
+      radial-gradient(50% 50% at 100% 100%, hsl(220 60% 50% / 0.05) 0%, transparent 60%);
 
-    --sidebar-width:        232px;
-    --topbar-height:        56px;
+    --sidebar-width:        220px;
+    --topbar-height:        48px;
   }
 
-  /* ── LIGHT — Sentinel-inspired: pure whites, mint accent, subtle borders ── */
+  /* ── LIGHT — pure whites + periwinkle accent (mirror of dark) ─────── */
   [data-theme="light"] {
-    --background:           220 14% 90%;       /* off-white floor (sidebar/topbar) */
-    --foreground:           220 18% 10%;       /* near-black text */
+    --background:           220 14% 96%;       /* off-white floor */
+    --foreground:           240 8% 12%;        /* near-black text */
     --card:                 0 0% 100%;
-    --card-foreground:      220 18% 10%;
+    --card-foreground:      240 8% 12%;
     --popover:              0 0% 100%;
-    --popover-foreground:   220 18% 10%;
+    --popover-foreground:   240 8% 12%;
 
-    --primary:              150 65% 38%;       /* deep mint green (matches reference) */
+    --primary:              226 70% 56%;       /* deeper periwinkle for contrast on white */
     --primary-foreground:   0 0% 100%;
 
-    --accent-violet:        150 65% 38%;       /* alias to mint — drop violet entirely */
-    --accent-violet-soft:   150 65% 38% / 0.10;
+    --accent-violet:        226 70% 56%;
+    --accent-violet-soft:   226 70% 56% / 0.10;
 
-    --secondary:            220 14% 96%;
-    --secondary-foreground: 220 18% 18%;
-    --muted:                220 14% 96%;
-    --muted-foreground:     220 8% 45%;
+    --secondary:            220 14% 94%;
+    --secondary-foreground: 240 8% 18%;
+    --muted:                220 14% 94%;
+    --muted-foreground:     240 6% 45%;
 
-    --accent:               150 65% 38%;
+    --accent:               226 70% 56%;
     --accent-foreground:    0 0% 100%;
 
     --destructive:          354 78% 50%;
     --destructive-foreground: 0 0% 100%;
 
-    --border:               220 14% 90%;       /* subtle Sentinel-style 1px border */
+    --border:               220 14% 88%;
     --input:                220 14% 96%;
-    --ring:                 150 65% 38%;
+    --ring:                 226 70% 56%;
 
     --recording:            354 78% 52%;
 
-    /* ── Surface hierarchy (light) ────────────────────────────────────
-       Floor → mat → card, getting brighter at each lift.
-       Wider gaps so the three layers are clearly distinguishable. */
-    --surface-1:            220 14% 90%;       /* sidebar / page floor — most off-white */
-    --surface-2:            220 14% 96%;       /* mat (clear lift)    — content area     */
-    --surface-3:            0 0% 100%;         /* tile / card (pure white + 1px border)  */
-    --surface-4:            220 14% 88%;       /* chip / backplate / chart track         */
-    --surface-hover:        220 14% 93%;
+    /* ── Surface hierarchy (light) ──────────────────────────────────── */
+    --surface-1:            220 14% 94%;       /* sidebar / page floor */
+    --surface-2:            220 14% 97%;       /* mat (lift) */
+    --surface-3:            0 0% 100%;         /* tile / card (pure white) */
+    --surface-4:            220 14% 88%;       /* chip backplate */
+    --surface-hover:        220 14% 92%;
 
-    /* ── Glass tokens (light) ──────────────────────────────────────── */
-    --glass-bg:             0 0% 100% / 0.65;
-    --glass-bg-strong:      0 0% 100% / 0.85;
-    --glass-stroke:         220 28% 25% / 0.07;
-    --glass-stroke-strong:  220 28% 25% / 0.12;
+    --glass-bg:             0 0% 100% / 0.62;
+    --glass-bg-strong:      0 0% 100% / 0.82;
+    --glass-stroke:         240 8% 25% / 0.06;
+    --glass-stroke-strong:  240 8% 25% / 0.10;
     --glass-highlight:      0 0% 100% / 0.65;
 
-    /* Pill active = black (Twisty + Codename "Best deal" pattern) */
-    --pill-active-bg:       220 28% 12%;
+    --pill-active-bg:       240 8% 14%;
     --pill-active-fg:       0 0% 100%;
 
-    /* Chip colors (legible on white) */
-    --chip-mint-bg:         160 65% 42% / 0.16;
-    --chip-mint-fg:         160 70% 22%;
-    --chip-violet-bg:       258 70% 52% / 0.14;
-    --chip-violet-fg:       258 80% 38%;
-    --chip-cyan-bg:         160 65% 42% / 0.16;     /* legacy → mint */
-    --chip-cyan-fg:         160 70% 22%;
-    --chip-blue-bg:         217 80% 55% / 0.13;
-    --chip-blue-fg:         217 75% 35%;
-    --chip-amber-bg:        38 90% 50% / 0.18;
+    /* Chip colors — all periwinkle (single accent), keep amber/red */
+    --chip-mint-bg:         226 70% 56% / 0.12;
+    --chip-mint-fg:         226 70% 40%;
+    --chip-violet-bg:       226 70% 56% / 0.12;
+    --chip-violet-fg:       226 70% 40%;
+    --chip-cyan-bg:         226 70% 56% / 0.12;
+    --chip-cyan-fg:         226 70% 40%;
+    --chip-blue-bg:         226 70% 56% / 0.12;
+    --chip-blue-fg:         226 70% 40%;
+    --chip-amber-bg:        38 90% 50% / 0.16;
     --chip-amber-fg:        28 80% 30%;
     --chip-red-bg:          354 78% 50% / 0.13;
     --chip-red-fg:          354 78% 38%;
+    --chip-lime-bg:         226 70% 56% / 0.12;
+    --chip-lime-fg:         226 70% 40%;
 
-    /* legacy lime alias */
-    --chip-lime-bg:         160 65% 42% / 0.16;
-    --chip-lime-fg:         160 70% 22%;
-
-    --heat-0:               220 13% 88%;       /* visible empty cell on white */
+    --heat-0:               220 13% 88%;
 
     --shadow-tile:
-      0 1px 0 hsl(220 28% 25% / 0.04) inset,
-      0 1px 2px hsl(220 28% 20% / 0.04),
-      0 8px 24px hsl(220 28% 20% / 0.06);
+      0 1px 0 hsl(240 8% 25% / 0.04) inset,
+      0 1px 2px hsl(240 8% 20% / 0.04),
+      0 8px 24px hsl(240 8% 20% / 0.05);
     --shadow-glass:
       0 1px 0 hsl(0 0% 100% / 0.6) inset,
-      0 12px 40px hsl(220 28% 20% / 0.10);
+      0 0 0 1px hsl(240 8% 25% / 0.06) inset,
+      0 18px 50px hsl(240 8% 20% / 0.10);
     --shadow-pop:
-      0 24px 60px hsl(220 28% 20% / 0.18);
+      0 30px 80px hsl(240 8% 20% / 0.18);
 
-    /* Soft mesh on light floor — barely-there cyan + lavender wash */
-    /* Sentinel-style: NO mesh wash on light bg — keep it pure white */
-    --mesh-bg: none;
+    --mesh-bg:
+      radial-gradient(60% 50% at 10% 0%,  hsl(226 70% 56% / 0.04) 0%, transparent 55%),
+      radial-gradient(50% 50% at 100% 100%, hsl(220 60% 50% / 0.03) 0%, transparent 60%);
   }
 
   * {
@@ -190,28 +193,35 @@
 
   html, body {
     height: 100%;
-    background: hsl(var(--background));
+    background: transparent;
     color: hsl(var(--foreground));
-    transition: background-color 0.25s ease, color 0.25s ease;
+    transition: color 0.25s ease;
   }
 
-  /* Page-level decoration: very subtle radial mesh behind everything */
+  /* Deep near-black overlay + faint ambient wash on top of the native
+     macOS vibrancy. The vibrancy provides the live blur of the desktop
+     wallpaper; this overlay tints it down to a Cursor-grade near-black
+     so the wallpaper is suggested, not seen.
+     Values tuned via .context/said-glass-control.html. */
   body::before {
     content: "";
     position: fixed;
     inset: 0;
     z-index: -1;
     pointer-events: none;
-    background: var(--mesh-bg);
+    background:
+      var(--mesh-bg),
+      hsl(240 5% 2% / 0.81);
   }
 
   body {
-    font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI",
-                 "Helvetica Neue", sans-serif;
-    font-feature-settings: "ss01", "ss02", "rlig" 1, "calt" 1;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+                 "Inter", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+    font-feature-settings: "ss01", "cv11", "rlig" 1, "calt" 1;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    letter-spacing: -0.01em;
+    text-rendering: geometricPrecision;
+    letter-spacing: -0.005em;
     overflow: hidden;
     user-select: none;
   }
@@ -262,25 +272,28 @@
             app-region: no-drag;
   }
 
-  /* ── Glass surface utilities ───────────────────────────────────────
-     Use .glass on cards/panels for the smart-home aesthetic.
-     .glass-strong is more opaque (use for content-heavy panels).
-     ─────────────────────────────────────────────────────────────── */
+  /* ── Glass surface utilities — macOS-style deep blur + hairline ─────
+     .glass        : default panel — translucent, blurred
+     .glass-strong : content-heavy (modals, popovers, dropdowns)
+     Both use backdrop-filter blur 28-32px with saturate boost so the
+     ambient wallpaper bleed (--mesh-bg) shows through tastefully. */
   .glass {
     background: hsl(var(--glass-bg));
-    backdrop-filter: blur(22px) saturate(140%);
-    -webkit-backdrop-filter: blur(22px) saturate(140%);
+    backdrop-filter: blur(30px) saturate(180%);
+    -webkit-backdrop-filter: blur(30px) saturate(180%);
     box-shadow:
       inset 0 0 0 1px hsl(var(--glass-stroke)),
-      var(--shadow-glass);
+      inset 0 1px 0 hsl(0 0% 100% / 0.04),
+      0 12px 36px hsl(0 0% 0% / 0.35);
   }
   .glass-strong {
     background: hsl(var(--glass-bg-strong));
-    backdrop-filter: blur(28px) saturate(160%);
-    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    backdrop-filter: blur(36px) saturate(200%);
+    -webkit-backdrop-filter: blur(36px) saturate(200%);
     box-shadow:
       inset 0 0 0 1px hsl(var(--glass-stroke-strong)),
-      var(--shadow-glass);
+      inset 0 1px 0 hsl(0 0% 100% / 0.05),
+      0 24px 60px hsl(0 0% 0% / 0.45);
   }
 
   /* ── Tile (card surface) — solid panel with subtle inner highlight ── */
@@ -311,37 +324,54 @@
       inset 0 1px 0 hsl(0 0% 100% / 0.04);
   }
 
-  /* ── Sidebar nav item ──────────────────────────────────────────────── */
+  /* ── Sidebar nav item — Cursor-style tight rail ─────────────────────
+     Compact (28px tall), low padding, very subtle hover/active states.
+     The active state uses a hairline inset border instead of a heavy
+     filled background. */
   .nav-item {
-    @apply flex items-center gap-2.5 w-full px-3 py-2 rounded-xl text-[13px] font-medium
-           transition-all duration-150 text-left;
+    @apply flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-[12.5px] font-medium
+           transition-colors duration-100 text-left;
     color: hsl(var(--muted-foreground));
     cursor: pointer;
+    height: 30px;
   }
   .nav-item:hover {
-    background: hsl(var(--surface-hover));
+    background: hsl(0 0% 100% / 0.04);
     color: hsl(var(--foreground));
   }
   .nav-item.active {
-    background: hsl(var(--glass-bg-strong));
+    background: hsl(0 0% 100% / 0.05);
     color: hsl(var(--foreground));
-    font-weight: 600;
-    box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong));
+    font-weight: 500;
+    box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke));
   }
   .nav-item.disabled {
     @apply opacity-30 cursor-not-allowed pointer-events-none;
   }
 
-  /* ── Buttons ─────────────────────────────────────────────────────── */
+  /* ── Buttons ─────────────────────────────────────────────────────────
+     Primary  : white-ish pill, dark text — Cursor's "Get started" feel
+     Ghost    : transparent with hairline border
+     Both render at 36px tall by default; add .btn-lg for 40px hero CTAs. */
   .btn-primary {
-    background: hsl(var(--primary));
-    color: hsl(var(--primary-foreground));
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-semibold
+    background: hsl(0 0% 98%);
+    color: hsl(240 8% 8%);
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold
            transition-all duration-150;
-    box-shadow: 0 4px 14px hsl(var(--primary) / 0.30);
+    height: 36px;
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.8),
+      0 1px 2px hsl(0 0% 0% / 0.2),
+      0 6px 16px hsl(0 0% 0% / 0.18);
   }
-  .btn-primary:hover  { filter: brightness(1.08); box-shadow: 0 6px 20px hsl(var(--primary) / 0.40); }
-  .btn-primary:active { filter: brightness(0.94); }
+  .btn-primary:hover  {
+    background: hsl(0 0% 100%);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.9),
+      0 2px 4px hsl(0 0% 0% / 0.22),
+      0 8px 20px hsl(0 0% 0% / 0.24);
+  }
+  .btn-primary:active { transform: translateY(0.5px); filter: brightness(0.97); }
   .btn-primary:disabled {
     background: hsl(var(--surface-4));
     color: hsl(var(--muted-foreground));
@@ -350,15 +380,19 @@
   }
 
   .btn-ghost {
-    @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[12px] font-medium
-           transition-colors duration-100;
-    color: hsl(var(--muted-foreground));
-    background: hsl(var(--surface-4));
+    @apply inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg text-[12.5px] font-medium
+           transition-colors duration-150;
+    color: hsl(var(--foreground));
+    background: transparent;
+    box-shadow: inset 0 0 0 1px hsl(var(--border));
+    height: 36px;
   }
   .btn-ghost:hover {
-    color: hsl(var(--foreground));
-    background: hsl(var(--surface-hover));
+    background: hsl(0 0% 100% / 0.04);
+    box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong));
   }
+
+  .btn-lg { height: 42px; @apply text-[13.5px] px-5; }
 
   /* ── Filter pills ─────────────────────────────────────────────────── */
   .pill {
@@ -447,19 +481,156 @@
                 0 6px 18px hsl(0 0% 0% / 0.12);
   }
 
-  /* ── Input fields ────────────────────────────────────────────────── */
+  /* ── Input fields — quiet dark fill, hairline border, accent focus ── */
   .input {
-    @apply w-full text-sm rounded-xl px-3 py-2.5 transition-colors;
-    background: hsl(var(--surface-4));
+    @apply w-full text-[12.5px] rounded-lg px-3 py-2.5 transition-colors;
+    background: hsl(0 0% 0% / 0.25);
     color: hsl(var(--foreground));
-    border: 1px solid transparent;
+    border: 1px solid hsl(var(--border));
+    font-feature-settings: "tnum";
   }
-  .input::placeholder { color: hsl(var(--muted-foreground) / 0.7); }
+  .input::placeholder { color: hsl(var(--muted-foreground) / 0.6); }
   .input:focus {
     outline: none;
-    background: hsl(var(--surface-hover));
-    border-color: hsl(var(--primary) / 0.5);
-    box-shadow: 0 0 0 3px hsl(var(--primary) / 0.12);
+    background: hsl(0 0% 0% / 0.35);
+    border-color: hsl(var(--primary) / 0.45);
+    box-shadow: 0 0 0 3px hsl(var(--primary) / 0.10);
+  }
+  [data-theme="light"] .input { background: hsl(var(--surface-3)); }
+  [data-theme="light"] .input:focus { background: hsl(var(--surface-3)); }
+
+  /* ── Audio-bars brand mark — new Said logo, scales 14px → 64px ─────
+     A 4-bar SVG waveform that uses currentColor, so it tints correctly
+     in the menu bar, sidebar, and brand canvas without a re-render. */
+  .bars-mark { fill: currentColor; display: block; }
+
+  /* ── Onboarding split-screen layout ────────────────────────────────
+     Left panel = brand canvas with ambient periwinkle bleed.
+     Right panel = form area, max-width 440px centered. */
+  .onb-split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+  }
+  .onb-brand {
+    position: relative;
+    /* Dense near-black canvas. Faint periwinkle radial wash on top so the
+       brand half still feels alive, but the base is decisively dark. */
+    background:
+      radial-gradient(80% 60% at 30% 30%, hsl(226 80% 60% / 0.12), transparent 55%),
+      radial-gradient(60% 50% at 80% 80%, hsl(220 60% 50% / 0.08), transparent 60%),
+      linear-gradient(180deg, hsl(240 6% 4% / 0.86) 0%, hsl(240 6% 6% / 0.88) 100%);
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    border-right: 1px solid hsl(0 0% 100% / 0.04);
+    display: flex;
+    flex-direction: column;
+    padding: 28px 36px;
+    overflow: hidden;
+  }
+  .onb-brand::after {
+    /* faint horizontal scanline texture for depth */
+    content: "";
+    position: absolute; inset: 0;
+    background: repeating-linear-gradient(0deg, transparent 0, transparent 3px,
+                  hsl(0 0% 100% / 0.012) 3px, hsl(0 0% 100% / 0.012) 4px);
+    pointer-events: none;
+    mix-blend-mode: overlay;
+  }
+  .onb-brand-mark {
+    width: 108px; height: 108px;
+    border-radius: 26px;
+    position: relative;
+    display: grid; place-items: center;
+    background:
+      radial-gradient(circle at 50% 30%, hsl(226 80% 78% / 0.10), transparent 60%),
+      linear-gradient(160deg, hsl(240 6% 14%) 0%, hsl(240 6% 7%) 100%);
+    box-shadow:
+      0 24px 60px hsl(0 0% 0% / 0.55),
+      inset 0 0 0 1px hsl(0 0% 100% / 0.07),
+      inset 0 1px 0 hsl(0 0% 100% / 0.04);
+    color: hsl(0 0% 96%);
+  }
+  .onb-form {
+    position: relative;
+    /* Dense near-black form canvas — readable, sits one notch lighter than
+       the brand half so the split reads visually. */
+    background: hsl(240 5% 6% / 0.84);
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    display: flex;
+    flex-direction: column;
+    padding: 28px 56px;
+    overflow-y: auto;
+  }
+
+  /* Compact list rows used in onboarding (permissions, hotkey) */
+  .onb-row {
+    display: grid;
+    grid-template-columns: 32px 1fr auto;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    border-radius: 8px;
+    background: hsl(0 0% 100% / 0.025);
+    box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke));
+  }
+  .onb-row + .onb-row { margin-top: 8px; }
+  .onb-row.selectable { cursor: pointer; transition: background 0.12s ease, box-shadow 0.12s ease; }
+  .onb-row.selectable:hover { background: hsl(0 0% 100% / 0.05); }
+  .onb-row.selected {
+    background: hsl(var(--primary) / 0.10);
+    box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.35);
+  }
+  .onb-row .ico-wrap {
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    background: hsl(0 0% 100% / 0.04);
+    box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke));
+    display: grid; place-items: center;
+    color: hsl(var(--foreground));
+  }
+  .onb-row .row-title { font-size: 12.5px; font-weight: 500; color: hsl(var(--foreground)); }
+  .onb-row .row-desc  { font-size: 11.5px; color: hsl(var(--muted-foreground)); margin-top: 2px; line-height: 1.4; }
+
+  /* Key glyph used for hotkey choices */
+  .key-glyph {
+    width: 40px; height: 40px;
+    border-radius: 9px;
+    background: hsl(0 0% 100% / 0.05);
+    box-shadow:
+      inset 0 0 0 1px hsl(var(--glass-stroke-strong)),
+      0 1px 0 hsl(0 0% 0% / 0.4);
+    display: grid; place-items: center;
+    color: hsl(var(--foreground));
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  /* Cursor-style soft accent pill (active/now-pill) */
+  .accent-pill {
+    @apply inline-flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.06em]
+           px-2 py-0.5 rounded-full;
+    background: hsl(var(--primary) / 0.14);
+    color: hsl(var(--primary));
+  }
+  .accent-pill::before {
+    content: "";
+    width: 5px; height: 5px; border-radius: 50%;
+    background: currentColor;
+  }
+
+  /* Cursor-style sidebar rail container — slightly darker than mat */
+  .cursor-rail {
+    background: hsl(var(--surface-1));
+    border-right: 1px solid hsl(var(--border));
+  }
+  .cursor-rail .section-title {
+    @apply text-[10px] font-semibold uppercase tracking-[0.14em] px-2.5 mt-3 mb-1;
+    color: hsl(var(--muted-foreground) / 0.7);
   }
 
   /* ── Section heading label ──────────────────────────────────────── */
@@ -948,29 +1119,12 @@ body.statusbar-mode #app {
   height: 4px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.5);
-  transition: height 0.18s ease, opacity 0.18s ease, background 0.18s ease;
+  transition: background 0.12s ease;
 }
 
 .sb-visualizer--active span {
   background: rgba(255, 255, 255, 0.86);
-  animation: sb-meter 0.82s ease-in-out infinite;
 }
-
-.sb-visualizer--active span:nth-child(1) { animation-delay: -0.05s; }
-.sb-visualizer--active span:nth-child(2) { animation-delay: -0.10s; }
-.sb-visualizer--active span:nth-child(3) { animation-delay: -0.15s; }
-.sb-visualizer--active span:nth-child(4) { animation-delay: -0.20s; }
-.sb-visualizer--active span:nth-child(5) { animation-delay: -0.25s; }
-.sb-visualizer--active span:nth-child(6) { animation-delay: -0.30s; }
-.sb-visualizer--active span:nth-child(7) { animation-delay: -0.35s; }
-.sb-visualizer--active span:nth-child(8) { animation-delay: -0.40s; }
-.sb-visualizer--active span:nth-child(9) { animation-delay: -0.45s; }
-.sb-visualizer--active span:nth-child(10) { animation-delay: -0.50s; }
-.sb-visualizer--active span:nth-child(11) { animation-delay: -0.55s; }
-.sb-visualizer--active span:nth-child(12) { animation-delay: -0.60s; }
-.sb-visualizer--active span:nth-child(13) { animation-delay: -0.65s; }
-.sb-visualizer--active span:nth-child(14) { animation-delay: -0.70s; }
-.sb-visualizer--active span:nth-child(15) { animation-delay: -0.75s; }
 
 .sb-processing {
   height: 28px;
@@ -1077,16 +1231,6 @@ body.statusbar-mode #app {
   to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 
-@keyframes sb-meter {
-  0%, 100% {
-    transform: scaleY(0.48);
-    opacity: 0.5;
-  }
-  50% {
-    transform: scaleY(1);
-    opacity: 1;
-  }
-}
 
 @keyframes sb-dot-run {
   0%, 20% {

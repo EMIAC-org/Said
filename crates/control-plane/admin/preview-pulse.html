@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Said Enterprise — Preview B: Pulse</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;450;500;600;700&display=swap" rel="stylesheet" />
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #f7f7f8;
+  --surface: #ffffff;
+  --sidebar: #fafafa;
+  --fg: #111111;
+  --fg-2: #333333;
+  --fg-3: #666666;
+  --fg-4: #999999;
+  --fg-5: #cccccc;
+  --border: #ebebeb;
+  --primary: #111111;
+  --violet: #7c3aed;
+  --violet-light: #f5f3ff;
+  --violet-border: #ddd6fe;
+  --green: #059669;
+  --green-bg: #ecfdf5;
+  --amber: #d97706;
+  --amber-bg: #fffbeb;
+  --red: #dc2626;
+  --red-bg: #fef2f2;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+body { font-family: var(--font); background: var(--bg); color: var(--fg); line-height: 1.5; letter-spacing: -0.011em; }
+
+/* ── Layout ───────────────────────────────────────────────── */
+
+.layout { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: 230px; min-width: 230px;
+  background: var(--sidebar);
+  display: flex; flex-direction: column;
+  position: sticky; top: 0; height: 100vh;
+}
+
+.main-wrap {
+  flex: 1; min-width: 0;
+  display: flex;
+}
+
+.center-wrap {
+  flex: 1; min-width: 0;
+  padding: 14px 0 14px 14px;
+}
+
+.center {
+  background: var(--surface);
+  border-radius: var(--radius-xl);
+  min-height: calc(100vh - 28px);
+  padding: 36px 40px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.03), 0 1px 4px rgba(0,0,0,0.03);
+}
+
+.right-panel {
+  width: 280px; min-width: 280px;
+  padding: 14px 14px 14px 14px;
+}
+
+.right-inner {
+  background: var(--surface);
+  border-radius: var(--radius-xl);
+  min-height: calc(100vh - 28px);
+  padding: 28px 20px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.03), 0 1px 4px rgba(0,0,0,0.03);
+}
+
+/* ── Sidebar ──────────────────────────────────────────────── */
+
+.brand {
+  padding: 24px 20px 20px;
+  display: flex; align-items: center; gap: 10px;
+}
+.brand-icon {
+  width: 28px; height: 28px; border-radius: 8px;
+  background: var(--violet); color: white;
+  display: flex; align-items: center; justify-content: center;
+}
+.brand-icon svg { width: 16px; height: 16px; }
+.brand-name { font-size: 15px; font-weight: 600; letter-spacing: -0.02em; }
+
+.nav-section { font-size: 10px; font-weight: 500; color: var(--fg-4); padding: 18px 20px 6px; letter-spacing: 0.04em; text-transform: uppercase; }
+
+.nav { display: flex; flex-direction: column; gap: 1px; padding: 0 10px; }
+.nav a {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px; font-weight: 450; color: var(--fg-3);
+  padding: 9px 12px; border-radius: 8px;
+  text-decoration: none; transition: all 0.12s;
+}
+.nav a:hover { color: var(--fg); background: rgba(0,0,0,0.03); }
+.nav a.active { color: var(--violet); background: var(--violet-light); font-weight: 500; }
+.nav a svg { width: 16px; height: 16px; opacity: 0.5; flex-shrink: 0; }
+.nav a.active svg { opacity: 1; color: var(--violet); }
+.nav-badge {
+  margin-left: auto; font-size: 10px; font-weight: 600;
+  background: var(--red); color: white;
+  padding: 1px 6px; border-radius: 100px;
+}
+
+.sidebar-spacer { flex: 1; }
+
+/* Team avatars in sidebar */
+.sidebar-team { padding: 0 16px; }
+.sidebar-team-title { font-size: 10px; font-weight: 500; color: var(--fg-4); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 10px; padding: 0 4px; }
+.team-member {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 4px; font-size: 12px; color: var(--fg-2);
+}
+.team-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.team-dot.online { background: var(--green); }
+.team-dot.offline { background: var(--fg-5); }
+.team-avatar {
+  width: 24px; height: 24px; border-radius: 50%; color: white;
+  font-size: 9px; font-weight: 600; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+
+.sidebar-footer {
+  padding: 12px 10px;
+}
+.sidebar-footer a {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--fg-4); padding: 8px 12px; border-radius: 8px;
+  text-decoration: none; transition: color 0.12s;
+}
+.sidebar-footer a:hover { color: var(--fg-3); background: rgba(0,0,0,0.02); }
+.sidebar-footer a svg { width: 14px; height: 14px; opacity: 0.5; }
+
+/* ── Hero banner ──────────────────────────────────────────── */
+
+.hero {
+  background: linear-gradient(135deg, #7c3aed 0%, #a78bfa 50%, #c4b5fd 100%);
+  border-radius: var(--radius-lg);
+  padding: 28px 32px;
+  color: white;
+  margin-bottom: 28px;
+  position: relative; overflow: hidden;
+}
+.hero::after {
+  content: '';
+  position: absolute; top: -30px; right: -20px;
+  width: 180px; height: 180px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.08);
+}
+.hero-sub { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.75; margin-bottom: 8px; }
+.hero h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 14px; }
+.hero-stats {
+  display: flex; gap: 24px;
+}
+.hero-stat-val { font-size: 22px; font-weight: 600; }
+.hero-stat-label { font-size: 11px; opacity: 0.7; margin-top: 2px; }
+
+/* ── Category pills ───────────────────────────────────────── */
+
+.cat-pills { display: flex; gap: 6px; margin-bottom: 24px; flex-wrap: wrap; }
+.cat-pill {
+  font-size: 12px; font-weight: 500; padding: 6px 16px;
+  border-radius: 100px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--fg-3);
+  cursor: pointer; transition: all 0.15s;
+}
+.cat-pill:hover { border-color: var(--fg-5); color: var(--fg-2); }
+.cat-pill.active { background: var(--primary); color: white; border-color: var(--primary); }
+
+/* ── Meeting cards ────────────────────────────────────────── */
+
+.meetings-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 32px; }
+
+.meeting-card {
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: 18px; cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  position: relative;
+}
+.meeting-card:hover { border-color: var(--fg-5); box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+
+.meeting-card-status {
+  position: absolute; top: 14px; right: 14px;
+}
+.mc-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; padding-right: 60px; }
+.mc-meta { font-size: 11px; color: var(--fg-4); margin-bottom: 14px; }
+.mc-avatars { display: flex; }
+.mc-avatar {
+  width: 26px; height: 26px; border-radius: 50%; color: white;
+  font-size: 9px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+  margin-right: -6px; border: 2px solid white;
+}
+.mc-avatar-more {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--bg); color: var(--fg-3);
+  font-size: 9px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+  margin-right: -6px; border: 2px solid white;
+}
+.mc-bottom {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(0,0,0,0.04);
+}
+.mc-tasks { font-size: 11px; color: var(--fg-3); display: flex; align-items: center; gap: 4px; }
+.mc-tasks svg { width: 12px; height: 12px; }
+.mc-dur { font-size: 11px; color: var(--fg-4); }
+
+/* Pill */
+.pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 500; padding: 3px 8px; border-radius: 100px;
+}
+.pill-dot { width: 5px; height: 5px; border-radius: 50%; }
+.pill-green { color: var(--green); background: var(--green-bg); }
+.pill-green .pill-dot { background: var(--green); }
+.pill-red { color: var(--red); background: var(--red-bg); }
+.pill-red .pill-dot { background: var(--red); }
+.pill-violet { color: var(--violet); background: var(--violet-light); }
+.pill-violet .pill-dot { background: var(--violet); }
+
+/* ── Meeting timeline (table-like) ────────────────────────── */
+
+.section-title {
+  font-size: 14px; font-weight: 600; margin-bottom: 14px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.section-title a { font-size: 12px; font-weight: 450; color: var(--fg-4); text-decoration: none; }
+.section-title a:hover { color: var(--fg-3); }
+
+.mtg-list { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+.mtg-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: background 0.1s;
+}
+.mtg-row:last-child { border-bottom: none; }
+.mtg-row:hover { background: rgba(0,0,0,0.01); }
+.mtg-icon {
+  width: 32px; height: 32px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.mtg-icon svg { width: 16px; height: 16px; }
+.mtg-info { flex: 1; min-width: 0; }
+.mtg-name { font-size: 13px; font-weight: 500; }
+.mtg-detail { font-size: 11px; color: var(--fg-4); margin-top: 1px; }
+.mtg-end { text-align: right; }
+.mtg-time { font-size: 12px; color: var(--fg-2); }
+.mtg-ago { font-size: 10px; color: var(--fg-4); }
+
+/* ── Right panel ──────────────────────────────────────────── */
+
+.rp-section { margin-bottom: 28px; }
+.rp-title { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
+
+.rp-user {
+  text-align: center; padding: 16px 0 20px;
+  border-bottom: 1px solid var(--border); margin-bottom: 20px;
+}
+.rp-user-avatar {
+  width: 56px; height: 56px; border-radius: 50%; margin: 0 auto 10px;
+  background: linear-gradient(135deg, #7c3aed, #a78bfa); color: white;
+  font-size: 18px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+}
+.rp-user-name { font-size: 15px; font-weight: 600; }
+.rp-user-role { font-size: 11px; color: var(--fg-4); margin-top: 2px; }
+
+.rp-stat-row { display: flex; justify-content: space-around; margin-top: 14px; }
+.rp-stat-val { font-size: 18px; font-weight: 600; text-align: center; }
+.rp-stat-label { font-size: 10px; color: var(--fg-4); text-align: center; margin-top: 2px; }
+
+/* Bar chart (CSS only) */
+.bar-chart { display: flex; align-items: flex-end; gap: 6px; height: 100px; padding-top: 8px; }
+.bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.bar {
+  width: 100%; border-radius: 4px 4px 0 0;
+  transition: height 0.3s;
+}
+.bar-label { font-size: 9px; color: var(--fg-4); }
+
+/* Team list in right panel */
+.rp-team-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 0;
+}
+.rp-team-row + .rp-team-row { border-top: 1px solid rgba(0,0,0,0.04); }
+.rp-team-avatar {
+  width: 28px; height: 28px; border-radius: 50%; color: white;
+  font-size: 10px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.rp-team-info { flex: 1; min-width: 0; }
+.rp-team-name { font-size: 12px; font-weight: 500; }
+.rp-team-dept { font-size: 10px; color: var(--fg-4); }
+.rp-team-btn {
+  font-size: 11px; font-weight: 500; padding: 4px 12px;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: none; cursor: pointer; color: var(--fg-3);
+  font-family: var(--font); transition: all 0.15s;
+}
+.rp-team-btn:hover { border-color: var(--fg-5); color: var(--fg); }
+
+/* ── Preview badge ────────────────────────────────────────── */
+
+.preview-badge {
+  position: fixed; bottom: 16px; right: 16px; z-index: 100;
+  background: var(--violet); color: white; font-size: 11px; font-weight: 600;
+  padding: 6px 14px; border-radius: 100px; font-family: var(--font);
+}
+</style>
+</head>
+<body>
+
+<div class="preview-badge">Preview B — Pulse</div>
+
+<div class="layout">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/><rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/><rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/><rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/></svg>
+      </div>
+      <span class="brand-name">Said</span>
+    </div>
+
+    <div class="nav-section">Overview</div>
+    <nav class="nav">
+      <a href="#" class="active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Dashboard
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        Inbox
+        <span class="nav-badge">3</span>
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        Meetings
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        Tasks
+      </a>
+    </nav>
+
+    <div class="nav-section">Workspace</div>
+    <nav class="nav">
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Team
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        Insights
+      </a>
+    </nav>
+
+    <div class="sidebar-spacer"></div>
+
+    <div class="sidebar-team">
+      <div class="sidebar-team-title">Team Online</div>
+      <div class="team-member">
+        <div class="team-avatar" style="background:#6366f1">AV</div>
+        <span>Abhishek</span>
+        <div class="team-dot online" style="margin-left:auto"></div>
+      </div>
+      <div class="team-member">
+        <div class="team-avatar" style="background:#f43f5e">RK</div>
+        <span>Rahul</span>
+        <div class="team-dot online" style="margin-left:auto"></div>
+      </div>
+      <div class="team-member">
+        <div class="team-avatar" style="background:#8b5cf6">PS</div>
+        <span>Priya</span>
+        <div class="team-dot offline" style="margin-left:auto"></div>
+      </div>
+      <div class="team-member">
+        <div class="team-avatar" style="background:#f97316">AS</div>
+        <span>Anish</span>
+        <div class="team-dot online" style="margin-left:auto"></div>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.73 12.73l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        Settings
+      </a>
+      <a href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        Logout
+      </a>
+    </div>
+  </aside>
+
+  <div class="main-wrap">
+    <!-- Center content mat -->
+    <div class="center-wrap">
+      <div class="center">
+
+        <!-- Hero banner -->
+        <div class="hero">
+          <div class="hero-sub">Said Enterprise</div>
+          <h2>Good morning, Abhishek</h2>
+          <div class="hero-stats">
+            <div>
+              <div class="hero-stat-val">24</div>
+              <div class="hero-stat-label">Meetings this month</div>
+            </div>
+            <div>
+              <div class="hero-stat-val">47</div>
+              <div class="hero-stat-label">Tasks generated</div>
+            </div>
+            <div>
+              <div class="hero-stat-val">18h</div>
+              <div class="hero-stat-label">Total meeting time</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Category pills -->
+        <div class="cat-pills">
+          <div class="cat-pill active">All Meetings</div>
+          <div class="cat-pill">Live <span style="color:var(--red);margin-left:2px">2</span></div>
+          <div class="cat-pill">Scheduled</div>
+          <div class="cat-pill">Completed</div>
+          <div class="cat-pill">With AI Summary</div>
+        </div>
+
+        <!-- Meeting cards -->
+        <div class="meetings-grid">
+          <div class="meeting-card">
+            <div class="meeting-card-status"><span class="pill pill-red"><span class="pill-dot"></span>Live</span></div>
+            <div class="mc-title">Sprint Planning</div>
+            <div class="mc-meta">Started 15 min ago</div>
+            <div class="mc-avatars">
+              <div class="mc-avatar" style="background:#6366f1">AV</div>
+              <div class="mc-avatar" style="background:#f43f5e">RK</div>
+              <div class="mc-avatar" style="background:#8b5cf6">PS</div>
+              <div class="mc-avatar" style="background:#f97316">AS</div>
+            </div>
+            <div class="mc-bottom">
+              <div class="mc-tasks">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+                Recording...
+              </div>
+              <div class="mc-dur">15 min</div>
+            </div>
+          </div>
+
+          <div class="meeting-card">
+            <div class="meeting-card-status"><span class="pill pill-red"><span class="pill-dot"></span>Live</span></div>
+            <div class="mc-title">Daily Standup</div>
+            <div class="mc-meta">Started 5 min ago</div>
+            <div class="mc-avatars">
+              <div class="mc-avatar" style="background:#f43f5e">RK</div>
+              <div class="mc-avatar" style="background:#f97316">AS</div>
+            </div>
+            <div class="mc-bottom">
+              <div class="mc-tasks">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+                Recording...
+              </div>
+              <div class="mc-dur">5 min</div>
+            </div>
+          </div>
+
+          <div class="meeting-card">
+            <div class="meeting-card-status"><span class="pill pill-violet"><span class="pill-dot"></span>Scheduled</span></div>
+            <div class="mc-title">Client Demo</div>
+            <div class="mc-meta">Today, 3:00 PM</div>
+            <div class="mc-avatars">
+              <div class="mc-avatar" style="background:#6366f1">AV</div>
+              <div class="mc-avatar" style="background:#8b5cf6">PS</div>
+              <div class="mc-avatar-more">+2</div>
+            </div>
+            <div class="mc-bottom">
+              <div class="mc-tasks" style="color:var(--fg-4)">4 participants</div>
+              <div class="mc-dur">Est. 45 min</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent meetings list -->
+        <div class="section-title">
+          Recent Meetings
+          <a href="#">See all &rarr;</a>
+        </div>
+        <div class="mtg-list">
+          <div class="mtg-row">
+            <div class="mtg-icon" style="background:var(--green-bg);color:var(--green)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg>
+            </div>
+            <div class="mtg-info">
+              <div class="mtg-name">Product Review</div>
+              <div class="mtg-detail">3 tasks &middot; 2 decisions &middot; AI summary ready</div>
+            </div>
+            <div class="mtg-end">
+              <div class="mtg-time">42 min</div>
+              <div class="mtg-ago">Yesterday</div>
+            </div>
+          </div>
+          <div class="mtg-row">
+            <div class="mtg-icon" style="background:var(--green-bg);color:var(--green)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg>
+            </div>
+            <div class="mtg-info">
+              <div class="mtg-name">Design Sync</div>
+              <div class="mtg-detail">1 task &middot; 1,280 words transcribed</div>
+            </div>
+            <div class="mtg-end">
+              <div class="mtg-time">28 min</div>
+              <div class="mtg-ago">2 days ago</div>
+            </div>
+          </div>
+          <div class="mtg-row">
+            <div class="mtg-icon" style="background:var(--green-bg);color:var(--green)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg>
+            </div>
+            <div class="mtg-info">
+              <div class="mtg-name">All Hands</div>
+              <div class="mtg-detail">8 tasks &middot; 5 decisions &middot; Synced to Lark</div>
+            </div>
+            <div class="mtg-end">
+              <div class="mtg-time">1h 12m</div>
+              <div class="mtg-ago">3 days ago</div>
+            </div>
+          </div>
+          <div class="mtg-row">
+            <div class="mtg-icon" style="background:var(--amber-bg);color:var(--amber)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </div>
+            <div class="mtg-info">
+              <div class="mtg-name">Sprint Retro</div>
+              <div class="mtg-detail">AI summary pending &middot; 2 tasks</div>
+            </div>
+            <div class="mtg-end">
+              <div class="mtg-time">35 min</div>
+              <div class="mtg-ago">4 days ago</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Right panel -->
+    <div class="right-panel">
+      <div class="right-inner">
+
+        <div class="rp-user">
+          <div class="rp-user-avatar">AV</div>
+          <div class="rp-user-name">Abhishek Verma</div>
+          <div class="rp-user-role">Admin &middot; EMIAC Technologies</div>
+          <div class="rp-stat-row">
+            <div><div class="rp-stat-val">12</div><div class="rp-stat-label">Meetings</div></div>
+            <div><div class="rp-stat-val">3h</div><div class="rp-stat-label">This week</div></div>
+            <div><div class="rp-stat-val">89%</div><div class="rp-stat-label">Attendance</div></div>
+          </div>
+        </div>
+
+        <div class="rp-section">
+          <div class="rp-title">Weekly Activity</div>
+          <div class="bar-chart">
+            <div class="bar-col"><div class="bar" style="height:35%;background:var(--violet-light);border:1px solid var(--violet-border)"></div><div class="bar-label">Mon</div></div>
+            <div class="bar-col"><div class="bar" style="height:65%;background:var(--violet-light);border:1px solid var(--violet-border)"></div><div class="bar-label">Tue</div></div>
+            <div class="bar-col"><div class="bar" style="height:50%;background:var(--violet-light);border:1px solid var(--violet-border)"></div><div class="bar-label">Wed</div></div>
+            <div class="bar-col"><div class="bar" style="height:80%;background:var(--violet);"></div><div class="bar-label">Thu</div></div>
+            <div class="bar-col"><div class="bar" style="height:90%;background:var(--violet);"></div><div class="bar-label" style="font-weight:600;color:var(--fg)">Fri</div></div>
+            <div class="bar-col"><div class="bar" style="height:15%;background:var(--violet-light);border:1px solid var(--violet-border)"></div><div class="bar-label">Sat</div></div>
+            <div class="bar-col"><div class="bar" style="height:0;background:var(--violet-light)"></div><div class="bar-label">Sun</div></div>
+          </div>
+        </div>
+
+        <div class="rp-section">
+          <div class="rp-title">Your Team</div>
+          <div class="rp-team-row">
+            <div class="rp-team-avatar" style="background:#f43f5e">RK</div>
+            <div class="rp-team-info">
+              <div class="rp-team-name">Rahul Kumar</div>
+              <div class="rp-team-dept">Engineering</div>
+            </div>
+            <button class="rp-team-btn">View</button>
+          </div>
+          <div class="rp-team-row">
+            <div class="rp-team-avatar" style="background:#8b5cf6">PS</div>
+            <div class="rp-team-info">
+              <div class="rp-team-name">Priya Sharma</div>
+              <div class="rp-team-dept">Design</div>
+            </div>
+            <button class="rp-team-btn">View</button>
+          </div>
+          <div class="rp-team-row">
+            <div class="rp-team-avatar" style="background:#f97316">AS</div>
+            <div class="rp-team-info">
+              <div class="rp-team-name">Anish Suman</div>
+              <div class="rp-team-dept">Engineering</div>
+            </div>
+            <button class="rp-team-btn">View</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -12,12 +12,19 @@ pub struct LocalUser {
     pub created_at: i64,
 }
 
-pub fn update_cloud_auth(pool: &DbPool, user_id: &str, token: &str, tier: &str) {
+pub fn update_cloud_auth(pool: &DbPool, user_id: &str, token: &str, tier: &str, email: Option<&str>) {
     if let Ok(conn) = pool.get() {
-        let _ = conn.execute(
-            "UPDATE local_user SET cloud_token = ?1, license_tier = ?2 WHERE id = ?3",
-            params![token, tier, user_id],
-        );
+        if let Some(email) = email {
+            let _ = conn.execute(
+                "UPDATE local_user SET cloud_token = ?1, license_tier = ?2, email = ?3 WHERE id = ?4",
+                params![token, tier, email, user_id],
+            );
+        } else {
+            let _ = conn.execute(
+                "UPDATE local_user SET cloud_token = ?1, license_tier = ?2 WHERE id = ?3",
+                params![token, tier, user_id],
+            );
+        }
     }
 }
 

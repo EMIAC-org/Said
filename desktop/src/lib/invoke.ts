@@ -767,6 +767,15 @@ export async function resolvePendingEdit(
   }
 }
 
+export async function dismissPendingEdit(id: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await tauriInvoke("dismiss_pending_edit", { id });
+  } catch {
+    // non-critical
+  }
+}
+
 /** Listen for the backend's signal that pending edits list changed. */
 export function onPendingEditsChanged(handler: () => void): () => void {
   if (!isTauriRuntime()) return () => {};

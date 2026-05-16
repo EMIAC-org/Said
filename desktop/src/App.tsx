@@ -10,6 +10,8 @@ import { DashboardView } from "@/components/views/DashboardView";
 import { HistoryView } from "@/components/views/HistoryView";
 import { InsightsView } from "@/components/views/InsightsView";
 import { VocabularyView } from "@/components/views/VocabularyView";
+import { MeetingsView } from "@/components/views/MeetingsView";
+import { LiveMeetingView } from "@/components/views/LiveMeetingView";
 import {
   invoke,
   listHistory,
@@ -37,11 +39,13 @@ import {
   type VocabToastPayload,
 } from "@/lib/invoke";
 import { useTheme } from "@/lib/useTheme";
+import { useBackendHeartbeat } from "@/lib/useBackendHeartbeat";
+import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
-export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "settings";
-const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "settings"];
+export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "meetings" | "settings" | "live-meeting";
+const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "meetings", "settings", "live-meeting"];
 type SettingsSectionId = "writing" | "permissions" | "api-keys" | "debug" | "about";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -97,6 +101,7 @@ export default function App() {
   const [busy,        setBusy]        = useState(false);
   const [errorBanner, setErrorBanner] = useState<string>("");
   const [activeView,  setActiveView]  = useState<ActiveView>("dashboard");
+  const [liveMeetingId, setLiveMeetingId] = useState<string | null>(null);
   const [inviteOpen,  setInviteOpen]  = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("writing");
@@ -148,6 +153,9 @@ export default function App() {
 
   // Theme (light/dark) — persisted in localStorage, applied to <html>
   const { theme, toggle: toggleTheme } = useTheme();
+
+  // Backend watchdog heartbeat — detects unresponsive backend and shows recovery overlay
+  const heartbeat = useBackendHeartbeat();
 
   const setPerformanceMonitor = useCallback((enabled: boolean) => {
     setPerformanceMonitorEnabled(enabled);
@@ -283,12 +291,22 @@ export default function App() {
       });
     });
 
-    // Pending edits changed → refresh list + send native notification
+    // Pending edits changed → refresh list, only notify for genuinely new edits.
+    // Track IDs we've already shown in this session to avoid duplicate OS banners.
+    const notifiedIds = new Set<string>();
+    const sessionStartMs = Date.now();
     const refreshPending = async () => {
       const r = await getPendingEdits();
       setPendingEdits(r.edits);
-      if (r.edits.length > 0) {
-        const edit = r.edits[0];
+      // Only notify for edits created during this session that we haven't shown yet.
+      // Edits from previous sessions (older than 30s before session start) are stale.
+      const cutoff = sessionStartMs - 30_000;
+      const fresh = r.edits.filter(
+        (e) => !notifiedIds.has(e.id) && e.timestamp_ms > cutoff
+      );
+      if (fresh.length > 0) {
+        const edit = fresh[0];
+        notifiedIds.add(edit.id);
         const ai   = edit.ai_output.length > 50 ? edit.ai_output.slice(0, 50) + "…" : edit.ai_output;
         const kept = edit.user_kept.length  > 50 ? edit.user_kept.slice(0, 50)  + "…" : edit.user_kept;
         sendNotification(
@@ -514,8 +532,7 @@ export default function App() {
           className="relative w-full max-w-[340px] flex flex-col p-7 rounded-[18px]"
           style={{
             background: "hsl(var(--surface-2))",
-            boxShadow:
-              "inset 0 1px 0 hsl(0 0% 100% / 0.06), 0 18px 50px hsl(220 60% 2% / 0.45)",
+            boxShadow: "var(--shadow-glass)",
           }}
         >
 
@@ -632,7 +649,7 @@ export default function App() {
 
   /* ── Render ─────────────────────────────────────────────────────────────── */
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background">
+    <div className="flex h-screen w-screen overflow-hidden">
 
       {/* ── Sidebar — full height left column ────────── */}
       <Sidebar
@@ -671,9 +688,20 @@ export default function App() {
           onLoginClick={() => setNeedsAuth(true)}
         />
 
-        {/* ── The "mat" — elevated content surface ─────── */}
+        {/* ── The "mat" — elevated content surface ───────
+            Dense near-black, mostly opaque so the content area reads as
+            solid. Values tuned via the live glass control panel at
+            .context/said-glass-control.html. */}
         <main className="flex-1 overflow-hidden p-3 pt-2">
-          <div className="h-full rounded-2xl overflow-hidden" style={{ background: "hsl(var(--surface-2))" }}>
+          <div
+            className="h-full rounded-2xl overflow-hidden"
+            style={{
+              background: "hsl(var(--glass-bg-strong))",
+              backdropFilter: "blur(40px) saturate(190%)",
+              WebkitBackdropFilter: "blur(40px) saturate(190%)",
+              boxShadow: "var(--shadow-glass)",
+            }}
+          >
             {activeView === "dashboard" && (
               <DashboardView
                 snapshot={snapshotWithHistory}
@@ -685,6 +713,7 @@ export default function App() {
                 liveText={liveText}
                 pendingEdits={pendingEdits}
                 onDownloadSuccess={handleDownloadSuccess}
+                refreshKey={historyRefreshKey}
                 onResolvePending={async (id, action) => {
                   await resolvePendingEdit(id, action);
                   setPendingEdits((prev) => prev.filter((e) => e.id !== id));
@@ -694,6 +723,20 @@ export default function App() {
             {activeView === "history"    && <HistoryView onDownloadSuccess={handleDownloadSuccess} refreshKey={historyRefreshKey} />}
             {activeView === "vocabulary" && <VocabularyView />}
             {activeView === "insights"   && <InsightsView snapshot={snapshotWithHistory} />}
+            {activeView === "meetings"   && (
+              <MeetingsView
+                onJoinMeeting={(id) => {
+                  setLiveMeetingId(id);
+                  setActiveView("live-meeting");
+                }}
+              />
+            )}
+            {activeView === "live-meeting" && liveMeetingId && (
+              <LiveMeetingView
+                meetingId={liveMeetingId}
+                onBack={() => setActiveView("meetings")}
+              />
+            )}
             {/* Settings is now a modal — opened via setSettingsOpen */}
           </div>
         </main>
@@ -785,6 +828,13 @@ export default function App() {
           </button>
         </div>
       )}
+
+      {/* ── Watchdog reconnecting overlay ────────────── */}
+      <ReconnectingOverlay
+        level={heartbeat.level}
+        showOverlay={heartbeat.showOverlay}
+        justRecovered={heartbeat.justRecovered}
+      />
     </div>
   );
 }

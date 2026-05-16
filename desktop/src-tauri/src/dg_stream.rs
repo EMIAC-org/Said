@@ -81,6 +81,7 @@ pub enum SessionCommand {
         id: String,
         result_tx: oneshot::Sender<Option<StreamingTranscript>>,
         pre_embed: Option<(String, String)>,
+        utterance_end_tx: Option<tokio_mpsc::UnboundedSender<String>>,
     },
     Audio {
         id: String,
@@ -117,6 +118,7 @@ struct ActiveRecording {
     result_messages_seen: usize,
     text_result_messages_seen: usize,
     live_stt_health_miss_logged: bool,
+    utterance_end_tx: Option<tokio_mpsc::UnboundedSender<String>>,
 }
 
 impl ActiveRecording {
@@ -124,6 +126,7 @@ impl ActiveRecording {
         id: String,
         result_tx: oneshot::Sender<Option<StreamingTranscript>>,
         pre_embed: Option<(String, String)>,
+        utterance_end_tx: Option<tokio_mpsc::UnboundedSender<String>>,
     ) -> Self {
         Self {
             id,
@@ -143,6 +146,7 @@ impl ActiveRecording {
             result_messages_seen: 0,
             text_result_messages_seen: 0,
             live_stt_health_miss_logged: false,
+            utterance_end_tx,
         }
     }
 
@@ -323,7 +327,7 @@ impl DeepgramSession {
             tokio::select! {
                 Some(cmd) = self.cmd_rx.recv() => {
                     match cmd {
-                        SessionCommand::StartRecording { id, result_tx, pre_embed } => {
+                        SessionCommand::StartRecording { id, result_tx, pre_embed, utterance_end_tx } => {
                             if self.state == SessionState::Idle {
                                 info!(
                                     "[dg_session] start recording id={id} state={} keyterms={} replacements={}",
@@ -331,7 +335,12 @@ impl DeepgramSession {
                                     self.bias.keyterms.len(),
                                     self.bias.replacements.len()
                                 );
-                                active = Some(ActiveRecording::new(id, result_tx, pre_embed));
+                                active = Some(ActiveRecording::new(
+                                    id,
+                                    result_tx,
+                                    pre_embed,
+                                    utterance_end_tx,
+                                ));
                                 recording_deadline = Some(
                                     tokio::time::Instant::now() + MAX_STREAMING_DURATION
                                 );
@@ -618,7 +627,7 @@ impl DeepgramSession {
                             self.bias = bias;
                             return true;
                         }
-                        SessionCommand::StartRecording { result_tx, id, .. } => {
+                SessionCommand::StartRecording { result_tx, id, .. } => {
                             warn!("[dg_session] unavailable during backoff id={id} — falling back to batch");
                             let _ = result_tx.send(None);
                         }
@@ -683,6 +692,11 @@ async fn drain_available_responses(
                     );
                     if outcome.is_result {
                         current.note_result_message(outcome.has_text);
+                    }
+                    if outcome.utterance_end {
+                        if let Some(tx) = &current.utterance_end_tx {
+                            let _ = tx.send(current.id.clone());
+                        }
                     }
                     if outcome.collected {
                         debug!("[dg_session] collected segment id={}", current.id);
@@ -904,6 +918,7 @@ struct CollectOutcome {
     from_finalize: bool,
     is_result: bool,
     has_text: bool,
+    utterance_end: bool,
 }
 
 fn collect_response(
@@ -943,7 +958,10 @@ fn collect_result_value(
 ) -> CollectOutcome {
     log_stream_response(v, recording_id, phase);
     if v["type"].as_str().unwrap_or("") != "Results" {
-        return CollectOutcome::default();
+        return CollectOutcome {
+            utterance_end: stream_response_type(v) == "UtteranceEnd",
+            ..CollectOutcome::default()
+        };
     }
     let from_finalize = v["from_finalize"].as_bool().unwrap_or(false);
     let has_text = result_has_text(v);
@@ -953,6 +971,7 @@ fn collect_result_value(
             from_finalize,
             is_result: true,
             has_text,
+            utterance_end: false,
         };
     }
     if let Some(chunk) = extract_result_chunk(&v) {
@@ -971,6 +990,7 @@ fn collect_result_value(
             from_finalize,
             is_result: true,
             has_text: true,
+            utterance_end: false,
         };
     }
     CollectOutcome {
@@ -978,6 +998,7 @@ fn collect_result_value(
         from_finalize,
         is_result: true,
         has_text,
+        utterance_end: false,
     }
 }
 

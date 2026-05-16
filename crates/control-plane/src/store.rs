@@ -11,7 +11,13 @@ use tracing::info;
 pub type Db = PgPool;
 
 /// Embedded migration SQL — executed on every startup (idempotent).
-const SCHEMA: &str = include_str!("../migrations/001_initial.sql");
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/001_initial.sql"),
+    include_str!("../migrations/002_enterprise.sql"),
+    include_str!("../migrations/003_slots_roles.sql"),
+    include_str!("../migrations/004_openai_account.sql"),
+    include_str!("../migrations/005_pre_meeting.sql"),
+];
 
 /// Connect to Postgres and apply the schema.
 pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
@@ -21,11 +27,13 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
         .await?;
 
     info!("[store] applying schema");
-    // Split on statement boundaries and execute each separately
-    for stmt in SCHEMA.split(';') {
-        let trimmed = stmt.trim();
-        if !trimmed.is_empty() {
-            sqlx::query(trimmed).execute(&pool).await?;
+    // Run each migration file sequentially; split on statement boundaries
+    for migration in MIGRATIONS {
+        for stmt in migration.split(';') {
+            let trimmed = stmt.trim();
+            if !trimmed.is_empty() {
+                sqlx::query(trimmed).execute(&pool).await?;
+            }
         }
     }
     info!("[store] schema OK");

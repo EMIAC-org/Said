@@ -1,4 +1,10 @@
 pub mod auth;
 pub mod health;
+pub mod lark_auth;
+pub mod lark_sync;
 pub mod license;
+pub mod meetings;
 pub mod metering;
+pub mod openai;
+pub mod orgs;
+pub mod ws;

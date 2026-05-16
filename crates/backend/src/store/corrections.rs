@@ -69,6 +69,58 @@ pub fn upsert(pool: &DbPool, user_id: &str, diffs: &[(String, String)]) {
     }
 }
 
+/// Filter corrections to only those relevant to the current transcript.
+///
+/// A correction is relevant when its `wrong` text appears in the transcript
+/// (case-insensitive whole-word match or phonetic similarity ≥ 0.70).
+/// Also requires `count >= min_count` to filter out accidental one-off edits.
+/// Returns at most `max_results` corrections, ordered by count descending.
+pub fn filter_relevant(
+    all: &[Correction],
+    transcript: &str,
+    min_count: i64,
+    max_results: usize,
+) -> Vec<Correction> {
+    use crate::llm::phonetics;
+
+    let transcript_lower = transcript.to_ascii_lowercase();
+    let transcript_tokens: Vec<&str> = transcript_lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut relevant: Vec<Correction> = all
+        .iter()
+        .filter(|c| c.count >= min_count)
+        .filter(|c| {
+            let wrong_lower = c.wrong.to_ascii_lowercase();
+            // Exact whole-word match
+            if transcript_tokens.iter().any(|tok| *tok == wrong_lower) {
+                return true;
+            }
+            // Multi-word correction: check if all words appear in sequence
+            let wrong_words: Vec<&str> = wrong_lower.split_whitespace().collect();
+            if wrong_words.len() > 1 {
+                let found = transcript_tokens
+                    .windows(wrong_words.len())
+                    .any(|window| window == wrong_words.as_slice());
+                if found {
+                    return true;
+                }
+            }
+            // Phonetic fallback
+            transcript_tokens.iter().any(|tok| {
+                phonetics::similarity(tok, &wrong_lower) >= 0.70
+            })
+        })
+        .cloned()
+        .collect();
+
+    relevant.sort_by(|a, b| b.count.cmp(&a.count));
+    relevant.truncate(max_results);
+    relevant
+}
+
 /// Load every correction for a user (always small — tens of rows at most).
 pub fn load_all(pool: &DbPool, user_id: &str) -> Vec<Correction> {
     let conn = match pool.get() {

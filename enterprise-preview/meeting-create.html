@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Said Enterprise — New Meeting</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/>
+        <rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/>
+        <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/>
+        <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/>
+      </svg>
+      <span>Said Enterprise</span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="setup.html">Setup</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="meeting-create.html" class="active">New Meeting</a>
+      <a href="meeting-live.html">Live Meeting</a>
+      <a href="desktop-mode.html">Desktop App</a>
+      <a href="post-meeting.html">Report</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="flow.html">Flow</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page" style="max-width: 640px;">
+  <div style="margin-bottom: 32px;">
+    <a href="dashboard.html" style="font-size: 12.5px; color: var(--fg-muted); display: flex; align-items: center; gap: 6px; margin-bottom: 16px;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7l-7 7 7 7"/></svg>
+      Back to Dashboard
+    </a>
+    <h1 style="font-size: 26px; font-weight: 600; letter-spacing: -0.025em;">Create a meeting</h1>
+    <p style="font-size: 13.5px; color: var(--fg-muted); margin-top: 4px;">
+      Participants will see it in their Said app and can join when ready.
+    </p>
+  </div>
+
+  <!-- Form -->
+  <div style="display: flex; flex-direction: column; gap: 0;">
+    <div class="form-group">
+      <label class="form-label">Meeting Title</label>
+      <input class="form-input" type="text" placeholder="Sprint Planning — Week 21" value="Sprint Planning — Week 21" />
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Agenda (optional)</label>
+      <textarea class="form-input" rows="3" placeholder="What will be discussed?" style="resize: vertical;">1. Review last week's velocity
+2. Assign stories for Week 21
+3. Blockers check</textarea>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Participants</label>
+      <div style="background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 12px;">
+        <!-- Selected participants -->
+        <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px;">
+          <span style="display: inline-flex; align-items: center; gap: 6px; background: var(--surface-4); padding: 4px 10px 4px 4px; border-radius: 6px; font-size: 12px;">
+            <div class="avatar-sm" style="background: hsl(226 60% 45%); font-size: 8px;">AV</div>
+            Abhishek
+            <span style="cursor: pointer; color: var(--fg-dim);">&times;</span>
+          </span>
+          <span style="display: inline-flex; align-items: center; gap: 6px; background: var(--surface-4); padding: 4px 10px 4px 4px; border-radius: 6px; font-size: 12px;">
+            <div class="avatar-sm" style="background: hsl(340 50% 40%); font-size: 8px;">AS</div>
+            Anish
+            <span style="cursor: pointer; color: var(--fg-dim);">&times;</span>
+          </span>
+          <span style="display: inline-flex; align-items: center; gap: 6px; background: var(--surface-4); padding: 4px 10px 4px 4px; border-radius: 6px; font-size: 12px;">
+            <div class="avatar-sm" style="background: hsl(180 40% 35%); font-size: 8px;">RK</div>
+            Rahul
+            <span style="cursor: pointer; color: var(--fg-dim);">&times;</span>
+          </span>
+          <span style="display: inline-flex; align-items: center; gap: 6px; background: var(--surface-4); padding: 4px 10px 4px 4px; border-radius: 6px; font-size: 12px;">
+            <div class="avatar-sm" style="background: hsl(30 50% 40%); font-size: 8px;">PS</div>
+            Priya
+            <span style="cursor: pointer; color: var(--fg-dim);">&times;</span>
+          </span>
+        </div>
+        <input type="text" placeholder="Search Lark contacts..." style="width: 100%; background: transparent; border: none; outline: none; color: var(--fg); font-size: 13px; font-family: var(--font);" />
+      </div>
+      <p style="font-size: 11px; color: var(--fg-dim); margin-top: 6px;">
+        Showing contacts from your Lark workspace
+      </p>
+    </div>
+
+    <!-- Lark contact dropdown preview -->
+    <div style="background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 10px; margin-bottom: 24px; overflow: hidden;">
+      <div style="padding: 10px 14px; border-bottom: 1px solid var(--border);">
+        <span style="font-size: 10.5px; color: var(--fg-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em;">
+          Lark Contacts — Engineering
+        </span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); opacity: 0.4;">
+        <div class="avatar-sm" style="background: hsl(226 60% 45%);">AV</div>
+        <span style="font-size: 13px; flex: 1;">Abhishek Verma</span>
+        <span style="font-size: 11px; color: var(--green);">Added</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer;" onmouseenter="this.style.background='var(--surface-hover)'" onmouseleave="this.style.background='transparent'">
+        <div class="avatar-sm" style="background: hsl(60 40% 35%);">VG</div>
+        <span style="font-size: 13px; flex: 1;">Vivek Gupta</span>
+        <span style="font-size: 11px; color: var(--fg-dim);">+ Add</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer;" onmouseenter="this.style.background='var(--surface-hover)'" onmouseleave="this.style.background='transparent'">
+        <div class="avatar-sm" style="background: hsl(280 40% 40%);">NK</div>
+        <span style="font-size: 13px; flex: 1;">Neha Kapoor</span>
+        <span style="font-size: 11px; color: var(--fg-dim);">+ Add</span>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">When</label>
+      <div class="grid-2" style="gap: 10px;">
+        <button class="btn-primary" style="justify-content: center;" onclick="window.location='meeting-live.html'">
+          Start Now
+        </button>
+        <button class="btn-ghost" style="justify-content: center;">
+          Schedule for Later
+        </button>
+      </div>
+    </div>
+
+    <hr class="divider" />
+
+    <!-- AI settings -->
+    <div class="form-group">
+      <label class="form-label">AI Settings</label>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <label style="display: flex; align-items: center; gap: 10px; font-size: 13px; cursor: pointer;">
+          <input type="checkbox" checked style="accent-color: hsl(226 80% 78%);" />
+          Live summary (updates every 30 seconds)
+        </label>
+        <label style="display: flex; align-items: center; gap: 10px; font-size: 13px; cursor: pointer;">
+          <input type="checkbox" checked style="accent-color: hsl(226 80% 78%);" />
+          Extract action items and tasks
+        </label>
+        <label style="display: flex; align-items: center; gap: 10px; font-size: 13px; cursor: pointer;">
+          <input type="checkbox" checked style="accent-color: hsl(226 80% 78%);" />
+          Detect task assignments and notify in real-time
+        </label>
+        <label style="display: flex; align-items: center; gap: 10px; font-size: 13px; cursor: pointer;">
+          <input type="checkbox" style="accent-color: hsl(226 80% 78%);" />
+          Auto-sync to Lark when meeting ends
+        </label>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="foot">
+  <span>Said Enterprise Preview</span>
+  <span>Phase 2 &middot; EMIAC Tech</span>
+</footer>
+</body>
+</html>

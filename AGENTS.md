@@ -203,6 +203,9 @@ Said
 | Said — Weekly Updates (parent) | `I6TMdmYLForup1x6KTCl2KUngJq` | `E62IweE40i6z0WkvDBNloyVngwc` |
 | Bug: Status Bar + Hang Fixes | `Z54Id6iGCoCJpwxT4Zcldez9gTg` | `VKZcwT45yinWx9kjZmmlqsQOgUh` |
 | AGENTS.md | `FuKWd2RZDow8mcx3MvCl5wvygNc` | `RNFVwgB2biyXqbknUa2lShSDgkc` |
+| Said — References (parent) | `SvH9d91uookUiFx9NVWl9JXGgce` | `QwyRwm2L8iBfKEkpA5ulfSa6gyc` |
+| Enterprise Model | `Zl40dVev0oN1ndx1s7BlR0t8gXb` | `Z6LywFsFziSzfAk7ZPol72Xvgyc` |
+| Enterprise Plan | `MEqKdyP0IoxvSQxXX9LlaPNMgXb` | `AtfxwQWHRiq4lzk3NnjlHNxngag` |
 
 **Wiki space ID:** `7635896570625396443` (Tech Hub)
 

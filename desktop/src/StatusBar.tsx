@@ -30,9 +30,8 @@ const BOTTOM_OFFSET = 64;
 const HUD_CANVAS_WIDTH = 300;
 const HUD_CANVAS_HEIGHT = 142;
 
-const LEVEL_SHAPE = [0.32, 0.42, 0.58, 0.76, 0.92, 1.0, 0.86, 0.70, 0.86, 1.0, 0.92, 0.76, 0.58, 0.42, 0.32];
-// Per-bar decay rates — edges decay faster than center so the visualizer looks naturally staggered
-const BAR_DECAY = [0.72, 0.74, 0.76, 0.78, 0.80, 0.82, 0.80, 0.78, 0.80, 0.82, 0.80, 0.78, 0.76, 0.74, 0.72];
+const LEVEL_SHAPE = [0.28, 0.38, 0.52, 0.68, 0.82, 1.0, 0.78, 0.62, 0.78, 1.0, 0.82, 0.68, 0.52, 0.38, 0.28];
+const BAR_DECAY = [0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.87, 0.86, 0.87, 0.88, 0.87, 0.86, 0.85, 0.84, 0.82];
 const LANG_OPTIONS = [
   { value: "hinglish", label: "Hinglish" },
   { value: "english", label: "English" },
@@ -121,12 +120,12 @@ export default function StatusBar() {
     if (bar.kind !== "recording") return;
     let raf = 0;
     const tick = () => {
-      const lvl = audioLevelRef.current;
+      // sqrt compression tames peaks — voice at 0.6 raw → 0.77 compressed,
+      // but full-scale 1.0 stays 1.0. Keeps bars proportional without clipping.
+      const raw = audioLevelRef.current;
+      const lvl = Math.sqrt(raw) * 0.7;
       barTargets.current = barTargets.current.map((cur, i) => {
-        // Each bar gets a different random slice of the audio energy so bars
-        // look independent even though they share one RMS signal.
-        const target = lvl * LEVEL_SHAPE[i] * (0.80 + Math.random() * 0.40);
-        // Attack immediately, decay at each bar's own rate.
+        const target = lvl * LEVEL_SHAPE[i] * (0.90 + Math.random() * 0.20);
         return Math.max(cur * BAR_DECAY[i], target);
       });
       forceFrame((n) => (n + 1) % 1000);

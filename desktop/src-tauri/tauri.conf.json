@@ -23,7 +23,13 @@
         "fullscreen": false,
         "decorations": true,
         "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "hiddenTitle": true,
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["hudWindow"],
+          "state": "followsWindowActiveState",
+          "radius": 12.0
+        }
       }
     ],
     "security": {

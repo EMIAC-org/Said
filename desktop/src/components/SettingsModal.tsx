@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   X, RefreshCw, CloudCheck,
-  Wand2, ShieldCheck, Key, Info, Bug,
+  Wand2, ShieldCheck, Key, Info, Bug, Palette, Link,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -19,25 +19,31 @@ import type { AppSnapshot } from "@/types";
    ════════════════════════════════════════════════════════════════════════════ */
 
 const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
+  "appearance":  <Palette      size={14} />,
   "writing":     <Wand2        size={14} />,
   "permissions": <ShieldCheck  size={14} />,
   "api-keys":    <Key          size={14} />,
+  "enterprise":  <Link         size={14} />,
   "debug":       <Bug          size={14} />,
   "about":       <Info         size={14} />,
 };
 
 const SECTION_TITLES: Record<SettingsSection, string> = {
+  "appearance":  "Appearance",
   "writing":     "Writing style",
   "permissions": "Permissions",
   "api-keys":    "API keys",
+  "enterprise":  "Enterprise",
   "debug":       "Debug",
   "about":       "About",
 };
 
 const SECTION_SUBTITLES: Record<SettingsSection, string> = {
+  "appearance":  "Choose how the dashboard surfaces your activity.",
   "writing":     "Tone, persona and language preferences.",
   "permissions": "Accessibility, input monitoring, notifications.",
   "api-keys":    "Gateway, Deepgram and Gemini keys (stored locally).",
+  "enterprise":  "Connect to your organization's Said Enterprise server.",
   "debug":       "Recent app and backend logs.",
   "about":       "Version and credits.",
 };
@@ -106,8 +112,7 @@ export function SettingsModal({
           background: "hsl(var(--surface-2))",
           width:  "min(1000px, 94vw)",
           height: "min(680px, 92vh)",
-          boxShadow:
-            "0 1px 0 hsl(0 0% 100% / 0.06) inset, 0 30px 80px hsl(220 60% 2% / 0.65)",
+          boxShadow: "var(--shadow-pop)",
         }}
       >
 

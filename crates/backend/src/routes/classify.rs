@@ -584,9 +584,17 @@ pub async fn classify(
 
     let notify = match result.class {
         EditClass::SttError => promoted_count > 0,
-        EditClass::PolishError => learned && is_repeat,
+        // Only notify on first learning, not on repeats of already-known corrections.
+        EditClass::PolishError => learned && !is_repeat,
         _ => false,
     };
+
+    // Mark the pending edit as notified so it won't trigger repeat pings.
+    if notify {
+        if let Some(ref pid) = pending_id {
+            pending_edits::mark_notified(&state.pool, &[pid.as_str()]);
+        }
+    }
 
     info!(
         "[classify] {} overall={} hunks={} promoted={} repeat={} notify={} learned={} pending={:?}",
@@ -807,6 +815,10 @@ fn merge_triage_with_llm(
 fn spawn_vocab_embedding(state: AppState, term: String, example_context: Option<String>) {
     tokio::spawn(async move {
         let _guard = crate::bg_task_guard();
+        if state.watchdog.is_shedding() {
+            tracing::debug!("[bg] embed for {term:?} skipped — watchdog shedding load");
+            return;
+        }
         info!(
             "[bg] embed for {term:?} started (active={})",
             crate::BG_TASK_COUNT.load(std::sync::atomic::Ordering::Relaxed)
@@ -894,6 +906,10 @@ fn spawn_vocab_embedding(state: AppState, term: String, example_context: Option<
 fn spawn_meaning_refresh(state: AppState, term: String, latest_example: String) {
     tokio::spawn(async move {
         let _guard = crate::bg_task_guard();
+        if state.watchdog.is_shedding() {
+            tracing::debug!("[bg] meaning for {term:?} skipped — watchdog shedding load");
+            return;
+        }
         let uid = state.default_user_id.clone();
         let pool = state.pool.clone();
 

@@ -114,7 +114,12 @@ pub async fn submit(State(state): State<AppState>, Json(body): Json<FeedbackBody
             .or_else(|| std::env::var("GEMINI_API_KEY").ok())
             .unwrap_or_default();
 
+        let wd = state.watchdog.clone();
         tokio::spawn(async move {
+            if wd.is_shedding() {
+                tracing::debug!("[feedback] embed skipped — watchdog shedding load");
+                return;
+            }
             if !vectors::should_embed_event(&pool2, &event_id2) {
                 info!("[feedback] skipped low-info vector for event {event_id2}");
                 return;
