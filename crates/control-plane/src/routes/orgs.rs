@@ -114,6 +114,20 @@ pub async fn create(
         ));
     }
 
+    let already_member: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM org_members WHERE account_id = $1)")
+            .bind(user.account_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(db_err)?;
+
+    if already_member {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({"error": "account already belongs to an org"})),
+        ));
+    }
+
     // Check slug uniqueness
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM orgs WHERE slug = $1)")
         .bind(&slug)
@@ -145,13 +159,15 @@ pub async fn create(
     .await
     .map_err(db_err)?;
 
-    // Add creator as admin
-    sqlx::query("INSERT INTO org_members (org_id, account_id, role) VALUES ($1, $2, 'admin')")
-        .bind(org_id)
-        .bind(user.account_id)
-        .execute(&state.db)
-        .await
-        .map_err(db_err)?;
+    // Add creator as company admin. Meeting creation checks this role by default.
+    sqlx::query(
+        "INSERT INTO org_members (org_id, account_id, role) VALUES ($1, $2, 'COMPANY_ADMIN')",
+    )
+    .bind(org_id)
+    .bind(user.account_id)
+    .execute(&state.db)
+    .await
+    .map_err(db_err)?;
 
     Ok((
         StatusCode::CREATED,
@@ -160,7 +176,7 @@ pub async fn create(
                 "id":                    org_id,
                 "name":                  name,
                 "slug":                  slug,
-                "role":                  "admin",
+                "role":                  "COMPANY_ADMIN",
                 "meeting_creator_roles": meeting_creator_roles,
             }
         })),

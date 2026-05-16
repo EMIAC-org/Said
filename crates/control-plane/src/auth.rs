@@ -5,7 +5,7 @@
 //!   2. JWT — decoded and verified against `jwt_secret`, then account looked up
 //!
 //! Routes that require a logged-in account add `AuthUser` as a parameter:
-//!   ```rust
+//!   ```text
 //!   async fn my_handler(user: AuthUser, ...) { ... }
 //!   ```
 

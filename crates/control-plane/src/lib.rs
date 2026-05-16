@@ -18,8 +18,8 @@ use std::time::Instant;
 
 use axum::{
     Router,
-    extract::State,
-    http::{Method, StatusCode, header},
+    extract::{Path, State},
+    http::{Method, StatusCode, Uri, header},
     response::{Html, IntoResponse, Redirect},
     routing::{delete, get, post},
 };
@@ -109,9 +109,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/assets/app.css", get(admin_css))
         .route("/admin/assets/app.js", get(admin_js))
         .route("/admin/simulator", get(admin_simulator))
-        .route("/admin", get(admin_index))
+        .route("/admin", get(admin_redirect))
         .route("/admin/", get(admin_index))
-        .route("/admin/*path", get(admin_index))
+        .route("/admin/*path", get(admin_spa))
+        .fallback(not_found_or_admin_typo)
         .layer(cors)
         .with_state(state)
 }
@@ -126,6 +127,18 @@ const PREVIEW_FLOORS: &str = include_str!("../admin-ui/public/preview-floors.htm
 
 async fn admin_index() -> Html<&'static str> {
     Html(ADMIN_HTML)
+}
+
+async fn admin_redirect(uri: Uri) -> Redirect {
+    let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    Redirect::temporary(&format!("/admin/{query}"))
+}
+
+async fn admin_spa(Path(path): Path<String>) -> axum::response::Response {
+    if path.starts_with("assets/") {
+        return not_found_page().into_response();
+    }
+    Html(ADMIN_HTML).into_response()
 }
 
 async fn admin_css() -> impl IntoResponse {
@@ -160,4 +173,33 @@ async fn lark_auth_redirect(State(state): State<AppState>) -> Redirect {
         &oauth_state,
     );
     Redirect::temporary(&url)
+}
+
+async fn not_found_or_admin_typo(uri: Uri) -> axum::response::Response {
+    if uri.path().starts_with("/admin") {
+        return not_found_page().into_response();
+    }
+    (StatusCode::NOT_FOUND, "not found").into_response()
+}
+
+fn not_found_page() -> impl IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        [("content-type", "text/html; charset=utf-8")],
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Said Enterprise - Not Found</title>
+  <style>
+    body{margin:0;min-height:100vh;display:grid;place-items:center;background:#080b16;color:#e8eaf0;font-family:Inter,ui-sans-serif,system-ui,sans-serif}
+    main{width:min(420px,calc(100vw - 32px));padding:28px;border:1px solid #1a2038;border-radius:18px;background:#0e1225}
+    h1{margin:0 0 8px;font-size:20px}p{margin:0 0 20px;color:#8f96b5;font-size:13px;line-height:1.5}
+    a{display:inline-flex;padding:10px 14px;border-radius:12px;background:#7591ef;color:white;text-decoration:none;font-size:13px;font-weight:700}
+  </style>
+</head>
+<body><main><h1>Page not found</h1><p>The Said admin page you requested does not exist.</p><a href="/admin/">Open admin</a></main></body>
+</html>"#,
+    )
 }

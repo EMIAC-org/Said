@@ -5,10 +5,11 @@ import { Topbar } from './Topbar'
 import { Loading } from './States'
 
 export function Layout() {
-  const { token, loading } = useAuth()
+  const { token, loading, orgMissing } = useAuth()
 
   if (loading) return <div className="h-screen flex items-center justify-center bg-floor"><Loading /></div>
   if (!token) return <Navigate to="/login" replace />
+  if (orgMissing) return <Navigate to="/onboarding" replace />
 
   return (
     <div className="flex h-screen overflow-hidden bg-floor">

@@ -94,9 +94,12 @@ pub async fn create(
         .as_array()
         .map(|arr| {
             arr.iter().any(|v| {
-                v.as_str()
-                    .map(|s| s.eq_ignore_ascii_case(&caller_role))
-                    .unwrap_or(false)
+                let Some(role) = v.as_str() else {
+                    return false;
+                };
+                role.eq_ignore_ascii_case(&caller_role)
+                    || (caller_role.eq_ignore_ascii_case("admin")
+                        && role.eq_ignore_ascii_case("COMPANY_ADMIN"))
             })
         })
         .unwrap_or(false);

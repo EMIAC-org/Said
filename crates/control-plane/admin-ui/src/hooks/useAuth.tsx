@@ -7,11 +7,12 @@ interface OrgResponse { org: Org }
 interface AuthCtx {
   user: User | null
   org: OrgResponse | null
+  orgMissing: boolean
   token: boolean
   loading: boolean
   login: (email: string, password: string, signup?: boolean) => Promise<void>
   logout: () => void
-  refreshOrg: () => void
+  refreshOrg: () => Promise<void>
 }
 
 const Ctx = createContext<AuthCtx>(null!)
@@ -19,24 +20,56 @@ const Ctx = createContext<AuthCtx>(null!)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [org, setOrg] = useState<OrgResponse | null>(null)
+  const [orgMissing, setOrgMissing] = useState(false)
   const [token, setHasToken] = useState(isAuthenticated)
   const [loading, setLoading] = useState(true)
 
-  const fetchData = useCallback(async () => {
-    if (!isAuthenticated()) { setLoading(false); return }
+  const fetchOrg = useCallback(async () => {
     try {
-      const [u, o] = await Promise.all([
-        apiJson<User>('/v1/auth/me'),
-        apiJson<{ org: Org }>('/v1/orgs/me').catch(() => null),
-      ])
+      const res = await api('/v1/orgs/me')
+      if (res.status === 404) {
+        setOrg(null)
+        setOrgMissing(true)
+        return
+      }
+      const text = await res.text()
+      let data: { org: Org; error?: string }
+      try {
+        data = JSON.parse(text)
+      } catch {
+        throw new Error(text || `Request failed (${res.status})`)
+      }
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
+      const nextOrg = data
+      setOrg(nextOrg)
+      setOrgMissing(false)
+    } catch {
+      setOrg(null)
+      setOrgMissing(false)
+    }
+  }, [])
+
+  const fetchData = useCallback(async () => {
+    if (!isAuthenticated()) {
+      setUser(null)
+      setOrg(null)
+      setOrgMissing(false)
+      setLoading(false)
+      return
+    }
+    try {
+      const u = await apiJson<User>('/v1/auth/me')
       setUser(u)
-      setOrg(o)
+      await fetchOrg()
     } catch {
       clearToken()
       setHasToken(false)
+      setUser(null)
+      setOrg(null)
+      setOrgMissing(false)
     }
     setLoading(false)
-  }, [])
+  }, [fetchOrg])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -58,14 +91,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setHasToken(false)
     setUser(null)
     setOrg(null)
+    setOrgMissing(false)
   }, [])
 
-  const refreshOrg = useCallback(() => {
-    apiJson<{ org: Org }>('/v1/orgs/me').then(setOrg).catch(() => {})
-  }, [])
+  const refreshOrg = useCallback(fetchOrg, [fetchOrg])
 
   return (
-    <Ctx.Provider value={{ user, org, token, loading, login, logout, refreshOrg }}>
+    <Ctx.Provider value={{ user, org, orgMissing, token, loading, login, logout, refreshOrg }}>
       {children}
     </Ctx.Provider>
   )
