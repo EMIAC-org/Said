@@ -1,7 +1,7 @@
 {
   "name": "said-desktop",
   "private": true,
-  "version": "2.2.0-beta12",
+  "version": "2.2.0-beta13",
   "type": "module",
   "scripts": {
     "dev": "vite",

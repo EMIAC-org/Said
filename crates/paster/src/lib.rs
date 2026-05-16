@@ -1,13 +1,19 @@
 //! Clipboard-and-paste helper.
-//! - macOS: CGEvent to synthesise Cmd+V (requires Accessibility).
-//! - Windows: `SendInput(KEYEVENTF_UNICODE)` for streaming typing + `OpenClipboard`/
-//!   `SetClipboardData`/Ctrl+V for paste. AX-tree reads return `None` for v1
-//!   (UIAutomation port is a follow-up).
+//! - macOS: CGEvent to synthesise Cmd+V (requires Accessibility); AX-tree
+//!   reads via Accessibility API.
+//! - Windows: `SendInput(KEYEVENTF_UNICODE)` for streaming typing,
+//!   `OpenClipboard`/`SetClipboardData`/Ctrl+V for paste. Selection reads
+//!   go through UI Automation first (matches the Mac AX path), with a
+//!   Ctrl+C+clipboard fallback for browsers / Electron apps that don't
+//!   expose UIA TextPattern.
 //! - Other: clipboard-only stubs.
 
 // Pure logic (UTF-16 encoding, surrogate pairs, CRLF translation) — compiled
 // on every host so its tests run on macOS dev boxes and every CI runner.
 pub mod win_paster;
+
+#[cfg(target_os = "windows")]
+mod uia_windows;
 
 #[cfg(target_os = "macos")]
 mod imp {

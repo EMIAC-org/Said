@@ -21,13 +21,19 @@ core-graphics   = "0.24"
 core-foundation = "0.10"
 libc            = "0.2"
 
-# Windows only — SendInput (Unicode keyboard injection) + clipboard API.
+# Windows only — SendInput (Unicode keyboard injection) + clipboard API +
+# UI Automation client (for reading the focused control's selected text
+# directly, matching Mac's Accessibility-API path; Ctrl+C clipboard
+# fallback is retained for browsers/Electron which don't expose UIA
+# TextPattern by default).
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_LibraryLoader",
 ] }
+uiautomation = "0.24"

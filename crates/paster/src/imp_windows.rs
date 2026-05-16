@@ -18,8 +18,8 @@ use windows::Win32::System::Memory::{
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_C, VK_CONTROL, VK_MENU,
-    VK_SHIFT, VK_V,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_C, VK_CONTROL,
+    VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_SHIFT, VK_V,
 };
 
 use crate::win_paster::{
@@ -75,71 +75,129 @@ pub fn read_focused_value_fast_for_pid(_pid: i32) -> Option<String> {
 pub fn read_focused_value_first_for_pid(_pid: i32) -> Option<String> {
     None
 }
-/// Block until none of Alt / Ctrl / Shift report as currently held — or
-/// `max_ms` elapses, whichever comes first. Polls `GetAsyncKeyState` every
-/// 10 ms; that API's high bit is set when the key is physically down, which
-/// the i16 cast surfaces as a negative value.
+/// Synthesize KEYUP for every modifier key via SendInput. Idempotent at the
+/// OS level — a keyup for a key that wasn't held is a no-op. We use this
+/// instead of "wait for the user to release Alt" because:
 ///
-/// Needed because the tone-polish shortcut (Alt+1..5) fires our hook while
-/// Alt is still pressed. If we then synthesize Ctrl+C, the target app sees
-/// Alt+Ctrl+C — not a copy shortcut — and the clipboard never gets written.
-/// Waiting ~300 ms for the user to release Alt makes the subsequent Ctrl+C
-/// arrive at the target with no extra modifiers.
-fn wait_for_modifiers_released(max_ms: u64) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_ms);
-    while std::time::Instant::now() < deadline {
-        unsafe {
-            let alt = GetAsyncKeyState(VK_MENU.0 as i32);
-            let ctrl = GetAsyncKeyState(VK_CONTROL.0 as i32);
-            let shift = GetAsyncKeyState(VK_SHIFT.0 as i32);
-            if alt >= 0 && ctrl >= 0 && shift >= 0 {
-                return;
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+/// 1. The Alt+1..5 hook fires while Alt is physically held.
+/// 2. `GetAsyncKeyState` polling didn't reliably detect the release in beta12
+///    (in-thread reads can miss the transition; OS state-update timing is fuzzy).
+/// 3. Explicit KEYUP events tell Windows "Alt is up now" at the OS-input-state
+///    level, regardless of the physical key. The subsequent `Ctrl+C` we send
+///    arrives at the target with no modifier contamination.
+/// 4. When the user finally releases Alt physically, Windows registers another
+///    keyup — idempotent, no app gets confused.
+///
+/// Returns true if the SendInput call reported success.
+fn force_release_modifiers() -> bool {
+    let release = |vk: VIRTUAL_KEY| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: KEYEVENTF_KEYUP,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let inputs = [
+        release(VK_LMENU),
+        release(VK_RMENU),
+        release(VK_LCONTROL),
+        release(VK_RCONTROL),
+        release(VK_LSHIFT),
+        release(VK_RSHIFT),
+    ];
+    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    sent as usize == inputs.len()
+}
+
+/// Snapshot of the modifier-key state, used only for diagnostic logging at
+/// the entry of the Ctrl+C fallback so we can see what was held when the
+/// user invoked the shortcut.
+fn snapshot_modifiers() -> (bool, bool, bool) {
+    unsafe {
+        let alt = GetAsyncKeyState(VK_MENU.0 as i32) < 0;
+        let ctrl = GetAsyncKeyState(VK_CONTROL.0 as i32) < 0;
+        let shift = GetAsyncKeyState(VK_SHIFT.0 as i32) < 0;
+        (alt, ctrl, shift)
     }
 }
 
-/// Grab the user's current selection by sending Ctrl+C and reading the
-/// clipboard. Used by tone-polish shortcuts (Alt+1..5) where the user has
-/// highlighted text in any app and wants Said to polish it in place.
+/// Read the title + exe name of the foreground window for diagnostic logs.
+/// Returns `(title, exe)`. Empty strings on failure rather than panicking —
+/// this is only used to enrich log lines.
+fn foreground_window_info() -> (String, String) {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
+    let mut buf = [0u16; 256];
+    let title = unsafe {
+        let hwnd = GetForegroundWindow();
+        let n = GetWindowTextW(hwnd, &mut buf);
+        if n > 0 {
+            String::from_utf16_lossy(&buf[..n as usize])
+        } else {
+            String::new()
+        }
+    };
+    (title, String::new())
+}
+
+/// Ctrl+C fallback for the rare app that doesn't expose UI Automation
+/// TextPattern (Chromium-based browsers without `--enable-features=UiaProvider`,
+/// Electron apps, some old Win32 controls). Synthesizes the Ctrl+C copy
+/// chord and reads what the focused app writes to the clipboard.
 ///
 /// Flow:
-///   0. Wait for the user to release any held modifier (Alt+1 fired this
-///      function with Alt still pressed; sending Ctrl+C with Alt held
-///      produces Alt+Ctrl+C which is not a copy shortcut).
-///   1. Snapshot the existing clipboard (CF_UNICODETEXT) so we can restore.
-///   2. Empty the clipboard so we can detect "Ctrl+C wrote nothing"
-///      (i.e. the user has no actual selection — Ctrl+C is a no-op there).
-///   3. Synthesize Ctrl+C via SendInput.
-///   4. Poll the clipboard every 20 ms up to 200 ms for new content.
-///   5. Restore the prior clipboard.
+///   1. Force-release modifiers via SendInput (Alt is still held when this
+///      gets called from the Alt+1..5 hook path).
+///   2. Snapshot the existing clipboard so we can restore it afterward.
+///   3. Empty the clipboard so we can tell "Ctrl+C wrote something" apart
+///      from "the user's prior clipboard contents".
+///   4. Synthesize Ctrl+C via SendInput.
+///   5. Poll the clipboard every 20 ms up to 250 ms for new content.
+///   6. Restore the prior clipboard.
 ///
-/// Returns `None` when Ctrl+C produces no clipboard write within the budget,
-/// which is how callers (the desktop's tone-polish handler) detect "user
-/// didn't actually select anything" and show the proper toast.
-pub fn capture_focused_text_via_selection() -> Option<String> {
-    // 0. Don't race the user's held Alt key.
-    wait_for_modifiers_released(300);
+/// Returns `None` when the poll produces no clipboard write within budget —
+/// either the user had no actual selection, or the target app suppressed
+/// the synthesized Ctrl+C.
+fn capture_focused_text_via_selection_ctrl_c() -> Option<String> {
+    let (alt, ctrl, shift) = snapshot_modifiers();
+    tracing::info!(
+        "[selection-ctrlc] fallback start, modifiers: alt={alt} ctrl={ctrl} shift={shift}"
+    );
 
-    // 1. Snapshot existing clipboard. If we can't open the clipboard at all
-    //    (another app holding it), bail — better to surface the failure than
-    //    silently overwrite.
-    open_clipboard_with_retry().ok()?;
+    // 1. Tell Windows every modifier is up regardless of physical state.
+    //    beta12 tried to wait for the user to release Alt; that wasn't
+    //    reliable enough. Explicit KEYUP events normalize the OS-input-state
+    //    so our Ctrl+C arrives at the target as a clean Ctrl+C.
+    if !force_release_modifiers() {
+        tracing::warn!("[selection-ctrlc] SendInput modifier-release returned partial result");
+    }
+    // Small settle delay so the keyup events propagate through the input
+    // queue before our copy chord lands.
+    std::thread::sleep(std::time::Duration::from_millis(30));
+
+    // 2. Snapshot existing clipboard.
+    if open_clipboard_with_retry().is_err() {
+        tracing::warn!("[selection-ctrlc] could not open clipboard for snapshot");
+        return None;
+    }
     let saved = read_clipboard_unicode();
     unsafe {
         let _ = EmptyClipboard();
         let _ = CloseClipboard();
     }
 
-    // 2. Send Ctrl+C. The focused app will write its selection to the
-    //    clipboard if there is one; if there's no selection, nothing happens.
+    // 3. Send Ctrl+C.
     send_chord(VK_CONTROL, VK_C);
 
-    // 3. Poll for new content. Most apps respond within 30-60 ms; we give
-    //    up to 200 ms before declaring "no selection".
+    // 4. Poll for new content. Most apps respond within 30-60 ms; we give
+    //    up to 250 ms before declaring "no selection".
+    let start = std::time::Instant::now();
     let mut result: Option<String> = None;
-    for _ in 0..10 {
+    for attempt in 0..12 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         if open_clipboard_with_retry().is_ok() {
             let cur = read_clipboard_unicode();
@@ -148,14 +206,26 @@ pub fn capture_focused_text_via_selection() -> Option<String> {
             }
             if let Some(text) = cur {
                 if !text.is_empty() {
+                    tracing::info!(
+                        "[selection-ctrlc] clipboard had {} chars after {}ms (attempt {})",
+                        text.len(),
+                        start.elapsed().as_millis(),
+                        attempt + 1
+                    );
                     result = Some(text);
                     break;
                 }
             }
         }
     }
+    if result.is_none() {
+        tracing::info!(
+            "[selection-ctrlc] no clipboard write after {}ms — likely no selection in focused app",
+            start.elapsed().as_millis()
+        );
+    }
 
-    // 4. Restore the prior clipboard so the user's manual copy/paste flow
+    // 5. Restore the prior clipboard so the user's manual copy/paste flow
     //    isn't disturbed by our peek.
     if let Some(prev) = saved {
         if !prev.is_empty() {
@@ -171,11 +241,40 @@ pub fn capture_focused_text_via_selection() -> Option<String> {
     result
 }
 
-/// Public alias used by the desktop's tone-polish handler. Mac splits this
-/// into an AX-first path and a Ctrl+C fallback; Windows just uses the
-/// fallback directly since there's no UIAutomation port yet.
+/// Read the currently selected text from whatever has keyboard focus.
+///
+/// Two-tier dispatcher matching the Mac AX-then-Cmd+C pattern:
+///   1. UI Automation (`uia_windows::read_selected_text`) — works in Notepad,
+///      Microsoft Office, WPF, .NET, most native Win32. Read-only OS call,
+///      no keystrokes, no clipboard, no modifier races.
+///   2. Ctrl+C + clipboard fallback — covers Chromium browsers (Chrome/Edge),
+///      Electron apps (Slack, VS Code, Discord), and old controls that
+///      don't expose TextPattern.
+///
+/// Returns `None` only when BOTH paths fail to produce text — at that point
+/// the user genuinely has no selection (or the app is so locked down that
+/// neither path works), and the caller's "select text first" toast is the
+/// correct UX.
 pub fn read_selected_text() -> Option<String> {
-    capture_focused_text_via_selection()
+    let (foreground_title, _) = foreground_window_info();
+    tracing::info!("[selection] start, foreground=\"{}\"", foreground_title);
+
+    // Tier 1: UIA. The Mac equivalent.
+    if let Some(text) = crate::uia_windows::read_selected_text() {
+        return Some(text);
+    }
+    tracing::debug!("[selection] UIA path returned nothing — trying Ctrl+C fallback");
+
+    // Tier 2: Ctrl+C + clipboard.
+    capture_focused_text_via_selection_ctrl_c()
+}
+
+/// Mac-style public name retained for parity with the macOS imp's API.
+/// The semantics are the same as `read_selected_text` on Windows — there's
+/// no separate "via selection" vs "via AX value" path here; both tiers live
+/// inside `read_selected_text` itself.
+pub fn capture_focused_text_via_selection() -> Option<String> {
+    read_selected_text()
 }
 pub fn focused_pid() -> Option<i32> {
     None
