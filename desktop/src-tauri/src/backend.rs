@@ -36,6 +36,13 @@ impl BackendEndpoint {
 pub struct BackendHandle {
     pub endpoint: BackendEndpoint,
     child: Option<Child>,
+    /// Windows Job Object handle assigned to the child. Kept alive for the
+    /// lifetime of this handle; closing it (Drop or process termination)
+    /// triggers `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, which kills the child
+    /// even when our own `Drop` doesn't run (Task Manager kill, panic in
+    /// the parent, force-uninstall).
+    #[cfg(windows)]
+    _job: Option<std::os::windows::io::OwnedHandle>,
 }
 
 impl BackendHandle {
@@ -156,6 +163,25 @@ pub fn spawn() -> Result<BackendHandle, String> {
         .spawn()
         .map_err(|e| format!("failed to spawn said-backend ({bin:?}): {e}"))?;
 
+    // Windows: assign the child to a Job Object with KILL_ON_JOB_CLOSE so
+    // it's terminated automatically when the desktop process exits — even
+    // under Task Manager force-kill or panic-without-unwind. Best-effort:
+    // if the assign fails we log and continue; the worst case is one
+    // orphan backend, same as today.
+    #[cfg(windows)]
+    let job_handle = match assign_child_to_kill_on_close_job(&child) {
+        Ok(h) => {
+            info!("[backend] child assigned to KILL_ON_JOB_CLOSE job");
+            Some(h)
+        }
+        Err(e) => {
+            warn!(
+                "[backend] failed to assign child to job object: {e} — orphan possible on parent crash"
+            );
+            None
+        }
+    };
+
     let url = format!("http://127.0.0.1:{port}");
     let endpoint = BackendEndpoint {
         url: url.clone(),
@@ -170,6 +196,8 @@ pub fn spawn() -> Result<BackendHandle, String> {
     Ok(BackendHandle {
         endpoint,
         child: Some(child),
+        #[cfg(windows)]
+        _job: job_handle,
     })
 }
 
@@ -190,7 +218,70 @@ fn connect_external(url: String) -> Result<BackendHandle, String> {
     Ok(BackendHandle {
         endpoint: BackendEndpoint { url, secret },
         child: None,
+        #[cfg(windows)]
+        _job: None,
     })
+}
+
+// ── Windows: KILL_ON_JOB_CLOSE Job Object for the backend child ──────────────
+//
+// Without this, force-killing the desktop process (Task Manager, panic,
+// uninstaller, parent crash before Drop runs) leaves said-backend.exe alive
+// as an orphan — and Windows won't let the next installer overwrite the file
+// because it's still locked by that orphan. On Mac the equivalent protection
+// is the kqueue-based parent-death watch in crates/backend/src/main.rs:164.
+//
+// Job Objects do this at the OS level: the parent holds the job handle, and
+// when the OS reaps the parent (cleanly OR forcibly) the handle closes, the
+// job's refcount hits zero, and the kernel terminates every process inside.
+
+#[cfg(windows)]
+fn assign_child_to_kill_on_close_job(
+    child: &Child,
+) -> Result<std::os::windows::io::OwnedHandle, String> {
+    use std::mem;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_BASIC_LIMIT_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
+    };
+
+    let child_handle = HANDLE(child.as_raw_handle());
+
+    unsafe {
+        let job: HANDLE =
+            CreateJobObjectW(None, None).map_err(|e| format!("CreateJobObjectW failed: {e}"))?;
+
+        // Configure the job to kill every assigned process when the job's
+        // last open handle is closed.
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+            BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
+                LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                ..mem::zeroed()
+            },
+            ..mem::zeroed()
+        };
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            mem::size_of_val(&info) as u32,
+        )
+        .map_err(|e| format!("SetInformationJobObject failed: {e}"))?;
+
+        // Assign the already-spawned child to the job. Tiny race window where
+        // the child could have spawned its own child before this call, but
+        // said-backend never spawns subprocesses, so we're safe in practice.
+        AssignProcessToJobObject(job, child_handle)
+            .map_err(|e| format!("AssignProcessToJobObject failed: {e}"))?;
+
+        // Wrap the raw HANDLE in OwnedHandle so CloseHandle is called when
+        // BackendHandle is dropped. (And so the kernel kills the child if we
+        // never drop because we were terminated forcibly.)
+        Ok(OwnedHandle::from_raw_handle(job.0 as RawHandle))
+    }
 }
 
 /// How long to wait for the backend to answer /v1/health before giving up.

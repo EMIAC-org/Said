@@ -65,3 +65,13 @@ core-foundation = "0.10"
 dispatch        = "0.2"
 libc            = "0.2"
 block           = "0.1"
+
+# Windows — Job Objects so the said-backend child dies when the desktop
+# parent process is terminated (Task Manager kill, crash, force-uninstall).
+# Without this, the backend orphans and holds a file lock on said-backend.exe.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
