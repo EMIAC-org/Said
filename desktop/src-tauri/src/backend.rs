@@ -135,6 +135,23 @@ pub fn spawn() -> Result<BackendHandle, String> {
         });
     }
 
+    // Windows: hide the console window that would otherwise pop up for a
+    // Rust-built console-subsystem binary, and redirect the child's stdio
+    // to null. Without CREATE_NO_WINDOW a black terminal flashes on every
+    // launch (the user-visible bug); without the null redirects, stderr
+    // from the backend gets eaten by that invisible-or-popped terminal
+    // and panics/messages never reach the log file.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+    }
+
     let child = command
         .spawn()
         .map_err(|e| format!("failed to spawn said-backend ({bin:?}): {e}"))?;

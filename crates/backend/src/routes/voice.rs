@@ -165,6 +165,12 @@ pub struct VoiceRepairRequest {
 }
 
 pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> impl IntoResponse {
+    // Top-of-handler INFO log: lets us confirm from backend.log alone that
+    // the request reached the backend at all. Silent failures upstream of
+    // this point (auth middleware, port mismatch, body parse) leave no
+    // trace otherwise, which is what bit the v2.2.0-beta7 Windows debug.
+    tracing::info!("[voice] /v1/voice request received");
+
     // ── Extract multipart fields ───────────────────────────────────────────────
     let mut wav_data: Vec<u8> = Vec::new();
     let mut target_app: Option<String> = None;
