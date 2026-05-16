@@ -952,8 +952,13 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
             t
         }
         _ => {
+            #[cfg(target_os = "macos")]
             tracing::warn!(
                 "[tray_polish] no text selected — make sure text is highlighted before pressing Option+N"
+            );
+            #[cfg(not(target_os = "macos"))]
+            tracing::warn!(
+                "[tray_polish] no text selected — make sure text is highlighted before pressing Alt+N"
             );
             emit_tray_error(
                 app,

@@ -17,8 +17,9 @@ use windows::Win32::System::Memory::{
 };
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_C, VK_CONTROL, VK_V,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_C, VK_CONTROL, VK_MENU,
+    VK_SHIFT, VK_V,
 };
 
 use crate::win_paster::{
@@ -74,11 +75,39 @@ pub fn read_focused_value_fast_for_pid(_pid: i32) -> Option<String> {
 pub fn read_focused_value_first_for_pid(_pid: i32) -> Option<String> {
     None
 }
+/// Block until none of Alt / Ctrl / Shift report as currently held — or
+/// `max_ms` elapses, whichever comes first. Polls `GetAsyncKeyState` every
+/// 10 ms; that API's high bit is set when the key is physically down, which
+/// the i16 cast surfaces as a negative value.
+///
+/// Needed because the tone-polish shortcut (Alt+1..5) fires our hook while
+/// Alt is still pressed. If we then synthesize Ctrl+C, the target app sees
+/// Alt+Ctrl+C — not a copy shortcut — and the clipboard never gets written.
+/// Waiting ~300 ms for the user to release Alt makes the subsequent Ctrl+C
+/// arrive at the target with no extra modifiers.
+fn wait_for_modifiers_released(max_ms: u64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_ms);
+    while std::time::Instant::now() < deadline {
+        unsafe {
+            let alt = GetAsyncKeyState(VK_MENU.0 as i32);
+            let ctrl = GetAsyncKeyState(VK_CONTROL.0 as i32);
+            let shift = GetAsyncKeyState(VK_SHIFT.0 as i32);
+            if alt >= 0 && ctrl >= 0 && shift >= 0 {
+                return;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Grab the user's current selection by sending Ctrl+C and reading the
 /// clipboard. Used by tone-polish shortcuts (Alt+1..5) where the user has
 /// highlighted text in any app and wants Said to polish it in place.
 ///
 /// Flow:
+///   0. Wait for the user to release any held modifier (Alt+1 fired this
+///      function with Alt still pressed; sending Ctrl+C with Alt held
+///      produces Alt+Ctrl+C which is not a copy shortcut).
 ///   1. Snapshot the existing clipboard (CF_UNICODETEXT) so we can restore.
 ///   2. Empty the clipboard so we can detect "Ctrl+C wrote nothing"
 ///      (i.e. the user has no actual selection — Ctrl+C is a no-op there).
@@ -90,6 +119,9 @@ pub fn read_focused_value_first_for_pid(_pid: i32) -> Option<String> {
 /// which is how callers (the desktop's tone-polish handler) detect "user
 /// didn't actually select anything" and show the proper toast.
 pub fn capture_focused_text_via_selection() -> Option<String> {
+    // 0. Don't race the user's held Alt key.
+    wait_for_modifiers_released(300);
+
     // 1. Snapshot existing clipboard. If we can't open the clipboard at all
     //    (another app holding it), bail — better to surface the failure than
     //    silently overwrite.
