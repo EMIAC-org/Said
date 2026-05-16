@@ -18,6 +18,7 @@ pub mod llm;
 pub mod routes;
 pub mod store;
 pub mod stt;
+pub mod watchdog;
 
 // Re-export the cross-platform path helpers from said-core so that code
 // reading `said_backend::paths::*` keeps working without an extra import.
@@ -173,13 +174,30 @@ pub struct AppState {
     pub lexicon_cache: LexiconCache,
     /// Shared HTTP client — keeps TCP/TLS connections alive across all requests.
     pub http_client: Client,
+    /// Watchdog health state — shared with the bare-thread watchdog.
+    pub watchdog: Arc<watchdog::WatchdogState>,
 }
 
 // ── Router factory ────────────────────────────────────────────────────────────
 
 pub fn router_with_state(state: AppState) -> Router {
     // Public routes (no auth)
-    let public = Router::new().route("/v1/health", get(routes::health::handler));
+    let public = Router::new()
+        .route("/v1/health", get(routes::health::handler))
+        .route("/v1/health/ping", get(routes::health::ping))
+        .route("/v1/lab/trace", post(routes::lab::trace))
+        .route(
+            "/v1/lab/chaos/tokio-starve",
+            post(routes::lab::chaos_tokio_starve),
+        )
+        .route(
+            "/v1/lab/chaos/pool-exhaust",
+            post(routes::lab::chaos_pool_exhaust),
+        )
+        .route(
+            "/v1/lab/chaos/sse-stall",
+            post(routes::lab::chaos_sse_stall),
+        );
 
     // Authenticated routes (require shared-secret bearer)
     let authenticated = Router::new()
@@ -197,8 +215,20 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/v1/pending-edits", post(routes::pending_edits::create))
         .route("/v1/pending-edits", get(routes::pending_edits::list))
         .route(
+            "/v1/pending-edits/unnotified",
+            get(routes::pending_edits::list_unnotified),
+        )
+        .route(
+            "/v1/pending-edits/mark-notified",
+            post(routes::pending_edits::mark_notified),
+        )
+        .route(
             "/v1/pending-edits/:id/resolve",
             post(routes::pending_edits::resolve),
+        )
+        .route(
+            "/v1/pending-edits/:id/dismiss",
+            post(routes::pending_edits::dismiss),
         )
         .route("/v1/vocabulary/terms", get(routes::vocabulary::list_terms))
         .route("/v1/vocabulary", get(routes::vocabulary::list))
@@ -301,15 +331,20 @@ pub fn router() -> Router {
         .build()
         .expect("failed to build shared HTTP client");
 
+    let wd = Arc::new(watchdog::WatchdogState::new());
+
     let state = AppState {
-        pool,
+        pool: pool.clone(),
         shared_secret: Arc::new(secret),
         default_user_id: Arc::new(user_id),
         prefs_cache: Arc::new(RwLock::new(None)),
         lexicon_cache: Arc::new(RwLock::new(None)),
         http_client,
+        watchdog: wd.clone(),
     };
     routes::vocabulary::spawn_prompt_artifact_repair(state.clone());
+
+    watchdog::spawn_watchdog(pool, wd, tokio::runtime::Handle::current());
 
     router_with_state(state)
 }

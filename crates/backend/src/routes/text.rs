@@ -30,7 +30,7 @@ use crate::{
             VocabEntry, build_refine_last_transform_prompt,
             build_refine_last_transform_user_message, build_system_prompt_with_vocab_entries,
             build_tray_format_user_message, build_tray_system_prompt, build_user_message,
-            resolved_vocab_terms_to_entries, vocab_terms_to_entries,
+            resolved_vocab_terms_to_entries,
         },
         script,
         stream_safety::{
@@ -185,18 +185,20 @@ pub async fn polish(
                 resolved.resolved_terms.len(),
                 resolved.candidate_terms.len(),
             );
-            let mut entries = resolved_vocab_terms_to_entries(resolved.resolved_terms);
-            entries.extend(vocab_terms_to_entries(resolved.candidate_terms));
+            let entries = resolved_vocab_terms_to_entries(resolved.resolved_terms);
             (resolved.transcript, entries)
         } else {
             (transcript.clone(), vec![])
         };
         let is_formatter = tone_override.as_deref() == Some("format");
+        let relevant_corrections = crate::store::corrections::filter_relevant(
+            &word_corrections, &resolved_transcript, 2, 10,
+        );
         let system_prompt = if let Some(ref tone) = tone_override {
             build_tray_system_prompt(tone)
         } else {
             build_system_prompt_with_vocab_entries(
-                &prefs, &rag_examples, &word_corrections, &vocab_entries,
+                &prefs, &rag_examples, &relevant_corrections, &vocab_entries,
             )
         };
         let user_message = if is_formatter {
@@ -348,18 +350,11 @@ pub async fn polish(
             llm_result.polished = scrubbed;
         }
 
-        // Final safety-net: fold spoken-form emails and recover misheard URL
-        // protocols that the LLM sometimes leaves un-formatted. Deterministic,
-        // idempotent, prose-safe — see crates/backend/src/llm/format_recover.rs.
-        let recovered = crate::llm::format_recover::recover(&llm_result.polished);
-        if recovered != llm_result.polished {
-            info!(
-                "[text] format_recover folded spoken-form tokens ({} → {} chars)",
-                llm_result.polished.len(),
-                recovered.len(),
-            );
-            llm_result.polished = recovered;
-        }
+        // format_recover disabled — will re-enable with targeted replacement
+        // let recovered = crate::llm::format_recover::recover(&llm_result.polished);
+        // if recovered != llm_result.polished {
+        //     llm_result.polished = recovered;
+        // }
 
         let total_ms     = total_start.elapsed().as_millis() as i64;
         let recording_id = Uuid::new_v4().to_string();

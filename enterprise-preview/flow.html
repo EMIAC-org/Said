@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Said Enterprise — Meeting Flow & Edge Cases</title>
+<link rel="stylesheet" href="shared.css" />
+<style>
+  .flow-card {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: 24px; margin-bottom: 16px;
+  }
+  .flow-card h4 { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+  .flow-card p { font-size: 13px; color: var(--fg-muted); line-height: 1.6; }
+  .flow-num {
+    width: 28px; height: 28px; border-radius: 8px;
+    background: var(--primary-bg); color: var(--primary);
+    font-size: 12px; font-weight: 700;
+    display: inline-grid; place-items: center; margin-right: 10px; flex-shrink: 0;
+  }
+  .flow-header { display: flex; align-items: center; margin-bottom: 8px; }
+  .scenario-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .scenario-table th {
+    font-size: 10.5px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.1em; color: var(--fg-dim); text-align: left;
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+  }
+  .scenario-table td {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    color: var(--fg-muted); vertical-align: top;
+  }
+  .scenario-table td:first-child { color: var(--fg); font-weight: 500; min-width: 200px; }
+  .scenario-table tr:last-child td { border-bottom: none; }
+  .slot-visual {
+    display: flex; gap: 2px; align-items: flex-end; height: 80px; margin: 20px 0;
+  }
+  .slot-bar {
+    flex: 1; border-radius: 3px 3px 0 0; position: relative; min-width: 40px;
+    display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+  }
+  .slot-bar .slot-label {
+    font-size: 9px; font-weight: 600; color: var(--fg-dim);
+    text-transform: uppercase; letter-spacing: 0.08em;
+    position: absolute; bottom: -18px; white-space: nowrap;
+  }
+  .slot-bar .slot-ai {
+    font-size: 8px; color: var(--primary); font-weight: 600;
+    position: absolute; top: -16px; white-space: nowrap;
+  }
+  .slot-divider {
+    width: 2px; background: var(--primary); height: 100%; border-radius: 1px;
+    position: relative; flex-shrink: 0;
+  }
+  .slot-divider .slot-label {
+    font-size: 8px; color: var(--primary); font-weight: 700;
+    position: absolute; top: -16px; left: -10px; white-space: nowrap;
+  }
+  .role-map { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: center; }
+  .role-arrow { color: var(--fg-dim); font-size: 20px; }
+  .role-box {
+    background: var(--surface-3); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 16px;
+  }
+  .role-box h5 { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  .role-box p { font-size: 12px; color: var(--fg-muted); }
+  .timeline-row {
+    display: grid; grid-template-columns: 100px 1fr; gap: 16px;
+    padding: 16px 0; border-bottom: 1px solid var(--border);
+  }
+  .timeline-time { font-size: 11px; color: var(--fg-dim); font-family: var(--mono); padding-top: 2px; }
+  .timeline-event h5 { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .timeline-event p { font-size: 12.5px; color: var(--fg-muted); }
+</style>
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/>
+        <rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/>
+        <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/>
+        <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/>
+      </svg>
+      <span>Said Enterprise</span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="setup.html">Setup</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="meeting-create.html">New Meeting</a>
+      <a href="meeting-live.html">Live Meeting</a>
+      <a href="desktop-mode.html">Desktop App</a>
+      <a href="post-meeting.html">Report</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="flow.html" class="active">Flow</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div style="text-align: center; margin-bottom: 48px;">
+    <div class="hero-badge">Complete Flow</div>
+    <h1 style="font-size: 36px; font-weight: 600; letter-spacing: -0.03em; margin-bottom: 12px;">
+      Meeting Lifecycle & Edge Cases
+    </h1>
+    <p style="font-size: 14px; color: var(--fg-muted); max-width: 600px; margin: 0 auto;">
+      Every step from meeting creation to Lark sync, including disconnects, late joiners, role enforcement, and the slot-based AI pipeline.
+    </p>
+  </div>
+
+  <!-- ── Section 1: Role System ──────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-label">1 &middot; Role System (Soft RBAC from Lark)</div>
+    <p style="font-size: 13.5px; color: var(--fg-muted); margin-bottom: 20px; line-height: 1.6;">
+      Roles are imported from Lark during directory sync. No hard-coded RBAC — everything is configurable per org. When Slack or another connector is added later, the same string-based role field is reused.
+    </p>
+    <div class="role-map">
+      <div class="role-box">
+        <h5 style="color: var(--amber);">Lark Roles</h5>
+        <p><code>tenant_manager</code> &rarr; synced from Lark admin API</p>
+        <p><code>department_manager</code> &rarr; per-department lead</p>
+        <p><code>member</code> &rarr; default for all synced users</p>
+      </div>
+      <div class="role-arrow">&rarr;</div>
+      <div class="role-box">
+        <h5 style="color: var(--primary);">Said Roles</h5>
+        <p><code>COMPANY_ADMIN</code> &rarr; full org control, all permissions</p>
+        <p><code>MANAGER</code> &rarr; create meetings, manage participants</p>
+        <p><code>MEMBER</code> &rarr; join meetings, view history</p>
+      </div>
+    </div>
+    <div style="margin-top: 16px;">
+      <div class="flow-card">
+        <h4>Per-Org Configuration</h4>
+        <p>Each org has a <code>meeting_creator_roles</code> setting (default: <code>["COMPANY_ADMIN", "MANAGER"]</code>). The org admin can widen this to include <code>MEMBER</code> if they want everyone to create meetings. Stored as a JSON array on the <code>orgs</code> table — no code change needed to update.</p>
+      </div>
+    </div>
+    <div class="table-wrap" style="margin-top: 16px;">
+      <div class="table-head"><h3>Live Data — 122 Lark Users Synced</h3></div>
+      <table>
+        <tr><td>MEMBER</td><td>121 users</td><td>Default for all synced employees</td></tr>
+        <tr><td>COMPANY_ADMIN</td><td>1 user</td><td>Shivam Bhateja — synced from Lark <code>tenant_manager</code></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── Section 2: Meeting Discovery ─────────────────────────────────── -->
+  <div class="section">
+    <div class="section-label">2 &middot; Meeting Discovery — How the Desktop App Knows</div>
+
+    <div class="flow-card">
+      <div class="flow-header"><span class="flow-num">1</span><h4>User opens "Meetings" section</h4></div>
+      <p>The Sidebar has a "Meetings" nav item (clock icon). When clicked, the app checks if it's connected to an enterprise server (checks <code>localStorage</code> for <code>said:enterprise</code> JWT). If not connected, shows "Connect to Enterprise" prompt.</p>
+    </div>
+
+    <div class="flow-card">
+      <div class="flow-header"><span class="flow-num">2</span><h4>App polls the server</h4></div>
+      <p>Once connected, the Meetings page calls <code>GET /v1/meetings?status=scheduled,live</code> every 10 seconds. Returns all meetings where the user is a participant. No persistent WebSocket needed for discovery — simple polling, battery-friendly.</p>
+    </div>
+
+    <div class="flow-card">
+      <div class="flow-header"><span class="flow-num">3</span><h4>Meeting appears as invitation card</h4></div>
+      <p>Each meeting shows: title, participant avatars, status (scheduled / live / how long it's been running). Live meetings have a pulsing red dot. The "Join" button only appears for <code>live</code> meetings. Scheduled meetings show "Waiting for host to start."</p>
+    </div>
+
+    <div class="flow-card">
+      <div class="flow-header"><span class="flow-num">4</span><h4>User clicks "Join"</h4></div>
+      <p>App connects to <code>wss://server/v1/meetings/:id/ws?token=...</code>. Receives a <code>connected</code> message. Enters meeting mode: continuous audio capture starts (no hotkey needed), transcript chunks stream to server. The title bar shows a red recording indicator.</p>
+    </div>
+
+    <div class="flow-card">
+      <div class="flow-header"><span class="flow-num">5</span><h4>Meeting ends</h4></div>
+      <p>Host (or admin) clicks "End Meeting" on dashboard or app. Server sets status to <code>ended</code>, disconnects all WebSocket participants, broadcasts <code>meeting_ended</code>. Desktop apps exit meeting mode automatically. Final AI processing runs on the last slot.</p>
+    </div>
+  </div>
+
+  <!-- ── Section 3: Slot-Based AI Pipeline ────────────────────────────── -->
+  <div class="section">
+    <div class="section-label">3 &middot; Slot-Based AI Pipeline</div>
+
+    <p style="font-size: 13.5px; color: var(--fg-muted); margin-bottom: 16px; line-height: 1.6;">
+      The meeting transcript is divided into <strong>slots</strong> — natural intervals of 1-5 minutes. Each slot is an atomic AI processing unit. The AI receives the previous summary + the new slot's chunks, and produces an updated summary, new tasks, and decisions.
+    </p>
+
+    <!-- Slot visualization -->
+    <div class="flow-card" style="padding: 32px 24px 40px;">
+      <div style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--fg-dim); margin-bottom: 20px;">Live Meeting Timeline</div>
+      <div class="slot-visual">
+        <div class="slot-bar" style="height: 55px; background: hsl(0 0% 100% / 0.06);">
+          <div class="slot-ai">AI: summary_v0</div>
+          <div class="slot-label">Slot 0<br/>0:00 – 1:47</div>
+        </div>
+        <div class="slot-divider"><div class="slot-label">pause</div></div>
+        <div class="slot-bar" style="height: 75px; background: hsl(0 0% 100% / 0.08);">
+          <div class="slot-ai">AI: summary_v1 + 2 tasks</div>
+          <div class="slot-label">Slot 1<br/>1:47 – 3:52</div>
+        </div>
+        <div class="slot-divider"><div class="slot-label">pause</div></div>
+        <div class="slot-bar" style="height: 40px; background: hsl(0 0% 100% / 0.06);">
+          <div class="slot-ai">AI: summary_v2 + 1 decision</div>
+          <div class="slot-label">Slot 2<br/>3:52 – 5:00</div>
+        </div>
+        <div class="slot-divider" style="background: var(--amber);"><div class="slot-label" style="color: var(--amber);">max cap</div></div>
+        <div class="slot-bar" style="height: 65px; background: hsl(226 80% 78% / 0.12);">
+          <div class="slot-ai" style="color: var(--green);">processing...</div>
+          <div class="slot-label">Slot 3<br/>5:00 – now</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top: 16px;">
+      <div class="flow-card">
+        <h4>Slot Boundary Rules</h4>
+        <p><strong>Natural pause:</strong> All speakers silent &gt;3 seconds AND at least 60s since last slot boundary.<br/><br/>
+        <strong>Max cap:</strong> 5 minutes elapsed since last slot — force-close at the next sentence end, even if someone is still talking.<br/><br/>
+        <strong>Whichever triggers first</strong> closes the slot.</p>
+      </div>
+      <div class="flow-card">
+        <h4>AI Processing Per Slot</h4>
+        <p><strong>Input:</strong> previous summary + all chunks in this slot (speaker-tagged, ordered by timestamp).<br/><br/>
+        <strong>Output:</strong> updated summary, new action items (with assignee detection), new decisions.<br/><br/>
+        <strong>Async:</strong> processing happens in background — doesn't block the live transcript stream. Results pushed via WebSocket when ready.</p>
+      </div>
+    </div>
+
+    <!-- Slot DB schema -->
+    <div class="flow-card" style="margin-top: 16px;">
+      <h4>Slot Data Model</h4>
+      <div style="background: var(--surface-3); border-radius: 8px; padding: 14px 18px; margin-top: 10px; font-family: var(--mono); font-size: 12px; color: var(--green); line-height: 1.8; overflow-x: auto;">
+        <pre style="margin: 0;">meeting_slots
+├── id              UUID
+├── meeting_id      UUID (FK → meetings)
+├── slot_index      INT  (0, 1, 2, ...)
+├── start_ms        BIGINT
+├── end_ms          BIGINT (NULL while open)
+├── chunk_count     INT
+├── word_count      INT
+├── speaker_ids     UUID[] (who spoke in this slot)
+├── ai_status       TEXT (pending | processing | done | failed)
+├── summary_delta   TEXT (what AI produced for this slot)
+├── tasks_detected  INT
+├── decisions_detected INT
+└── created_at      TIMESTAMPTZ</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Section 4: Late Joiner Sync ──────────────────────────────────── -->
+  <div class="section">
+    <div class="section-label">4 &middot; Late Joiner Catchup</div>
+
+    <p style="font-size: 13.5px; color: var(--fg-muted); margin-bottom: 16px; line-height: 1.6;">
+      When someone joins a meeting that's already in progress, they need full context without downloading the entire transcript history. The server sends a <strong>catchup packet</strong> immediately after the WebSocket <code>connected</code> message.
+    </p>
+
+    <div class="flow-card">
+      <h4>Catchup Packet Contents</h4>
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px;">
+        <div style="background: var(--surface-3); border-radius: 8px; padding: 14px 16px;">
+          <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--primary); margin-bottom: 6px;">1. Latest AI Summary</div>
+          <p style="font-size: 12px; color: var(--fg-muted);">Covers all processed slots. If 10 minutes have passed, this is a concise summary of everything discussed so far.</p>
+        </div>
+        <div style="background: var(--surface-3); border-radius: 8px; padding: 14px 16px;">
+          <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--amber); margin-bottom: 6px;">2. Current Slot Chunks</div>
+          <p style="font-size: 12px; color: var(--fg-muted);">Raw transcript from the current (unprocessed) slot only. This is what's happened since the last AI run — usually &lt;2 minutes of text.</p>
+        </div>
+        <div style="background: var(--surface-3); border-radius: 8px; padding: 14px 16px;">
+          <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--green); margin-bottom: 6px;">3. Participant State</div>
+          <p style="font-size: 12px; color: var(--fg-muted);">Who's in the meeting, when they joined, who's currently speaking. Plus all detected tasks and decisions so far.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="flow-card" style="margin-top: 16px;">
+      <h4>Example: Priya joins 8 minutes late</h4>
+      <div style="margin-top: 12px;">
+        <div class="timeline-row">
+          <div class="timeline-time">0:00</div>
+          <div class="timeline-event">
+            <h5>Meeting starts</h5>
+            <p>Abhishek, Anish, Rahul join. Slot 0 begins.</p>
+          </div>
+        </div>
+        <div class="timeline-row">
+          <div class="timeline-time">2:15</div>
+          <div class="timeline-event">
+            <h5>Slot 0 closes (natural pause)</h5>
+            <p>AI processes: generates summary_v0, detects 1 task.</p>
+          </div>
+        </div>
+        <div class="timeline-row">
+          <div class="timeline-time">4:30</div>
+          <div class="timeline-event">
+            <h5>Slot 1 closes (natural pause)</h5>
+            <p>AI processes: summary_v1 (builds on v0), detects 2 more tasks, 1 decision.</p>
+          </div>
+        </div>
+        <div class="timeline-row">
+          <div class="timeline-time">5:00</div>
+          <div class="timeline-event">
+            <h5>Slot 2 opens</h5>
+            <p>Abhishek starts discussing WebSocket architecture. Chunks streaming.</p>
+          </div>
+        </div>
+        <div class="timeline-row" style="background: hsl(226 80% 78% / 0.04); border-radius: 8px; margin: 0 -12px; padding: 16px 12px; border: 1px solid hsl(226 80% 78% / 0.12);">
+          <div class="timeline-time" style="color: var(--primary); font-weight: 600;">8:00</div>
+          <div class="timeline-event">
+            <h5 style="color: var(--primary);">Priya joins &rarr; Catchup sent</h5>
+            <p><strong>Summary:</strong> summary_v1 (covers 0:00–4:30)<br/>
+            <strong>Current slot chunks:</strong> 12 chunks from Slot 2 (5:00–8:00)<br/>
+            <strong>Tasks so far:</strong> 3 tasks with assignees<br/>
+            <strong>Decision:</strong> "Plain WebSocket, not Socket.IO"<br/>
+            <strong>Participants:</strong> Abhishek (0:00), Anish (0:00), Rahul (0:00)<br/><br/>
+            Priya has full context in ~2KB of data instead of the full 8-minute transcript.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Section 5: Disconnect & Recovery ─────────────────────────────── -->
+  <div class="section">
+    <div class="section-label">5 &middot; Disconnect Recovery</div>
+
+    <div class="grid-2">
+      <div class="flow-card">
+        <h4>Client-Side (Desktop App)</h4>
+        <p>1. WebSocket drops (network issue, sleep, etc.)<br/><br/>
+        2. App continues recording audio locally — buffers transcript chunks in memory with sequential <code>chunk_index</code><br/><br/>
+        3. Auto-reconnect with exponential backoff (1s → 2s → 4s → 8s → max 30s)<br/><br/>
+        4. On reconnect, sends <code>{"type": "resume", "last_chunk_index": N}</code><br/><br/>
+        5. Flushes all buffered chunks to server in order</p>
+      </div>
+      <div class="flow-card">
+        <h4>Server-Side</h4>
+        <p>1. Detects client disconnect (WebSocket close/timeout)<br/><br/>
+        2. Marks participant status as <code>disconnected</code> (not <code>left</code> — they didn't choose to leave)<br/><br/>
+        3. On reconnect with <code>resume</code>, checks last stored chunk_index for this speaker<br/><br/>
+        4. If gap detected (e.g., chunks 48-52 missing), marks a gap in the slot metadata<br/><br/>
+        5. AI prompt includes: <em>"Note: ~30s gap in Speaker X's transcript due to connection loss"</em></p>
+      </div>
+    </div>
+
+    <div class="flow-card" style="margin-top: 16px;">
+      <h4>Participant Status Machine</h4>
+      <div style="display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+        <span class="pill pill-blue">invited</span>
+        <span style="color: var(--fg-dim);">&rarr;</span>
+        <span class="pill pill-green">joined</span>
+        <span style="color: var(--fg-dim);">&rarr;</span>
+        <span class="pill pill-amber">disconnected</span>
+        <span style="color: var(--fg-dim);">&rarr;</span>
+        <span class="pill pill-green">joined</span>
+        <span style="color: var(--fg-dim);">(reconnect)</span>
+        <span style="color: var(--fg-dim);">&rarr;</span>
+        <span class="pill pill-red">left</span>
+        <span style="color: var(--fg-dim);">(voluntary or meeting ended)</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Section 6: Complete Scenario Test Matrix ─────────────────────── -->
+  <div class="section">
+    <div class="section-label">6 &middot; Scenario Test Matrix</div>
+
+    <div class="table-wrap">
+      <div class="table-head"><h3>Every scenario we must test</h3></div>
+      <table class="scenario-table">
+        <thead>
+          <tr><th>Scenario</th><th>Expected Behavior</th><th>Verify</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Admin creates meeting</td>
+            <td>Meeting created, participants get <code>invited</code> status</td>
+            <td>DB rows, polling returns the meeting</td>
+          </tr>
+          <tr>
+            <td>Non-admin creates meeting (not permitted)</td>
+            <td>403 Forbidden — role check against <code>meeting_creator_roles</code></td>
+            <td>Response code, no DB rows created</td>
+          </tr>
+          <tr>
+            <td>Non-admin creates meeting (org allows it)</td>
+            <td>200 OK — org has <code>MEMBER</code> in <code>meeting_creator_roles</code></td>
+            <td>Meeting created successfully</td>
+          </tr>
+          <tr>
+            <td>User polls meetings</td>
+            <td>Returns only meetings where user is a participant</td>
+            <td>No cross-org or cross-meeting leakage</td>
+          </tr>
+          <tr>
+            <td>User joins live meeting</td>
+            <td>WebSocket connects, <code>connected</code> message, participant status → <code>joined</code></td>
+            <td>Hub participant count, DB status update</td>
+          </tr>
+          <tr>
+            <td>User joins scheduled (not live) meeting</td>
+            <td>WebSocket rejected or queued — can't stream to a meeting that hasn't started</td>
+            <td>Error response or hold state</td>
+          </tr>
+          <tr>
+            <td>Non-participant tries to join</td>
+            <td>403 — not in the meeting_participants list</td>
+            <td>WebSocket upgrade rejected</td>
+          </tr>
+          <tr>
+            <td>Late joiner (8 min in)</td>
+            <td>Receives catchup: latest AI summary + current slot chunks + tasks + participants</td>
+            <td>Catchup message content matches expected state</td>
+          </tr>
+          <tr>
+            <td>4 participants stream simultaneously</td>
+            <td>All chunks stored, interleaved by timestamp, each participant sees others' chunks</td>
+            <td>DB chunk count, broadcast verification, no drops</td>
+          </tr>
+          <tr>
+            <td>WebSocket disconnects mid-meeting</td>
+            <td>Status → <code>disconnected</code>, client buffers locally, reconnects, sends buffered chunks</td>
+            <td>No chunk gap after reconnect, or gap is marked</td>
+          </tr>
+          <tr>
+            <td>Client reconnects with gap</td>
+            <td>Server detects missing chunk_indexes, marks gap in slot metadata, AI notes the gap</td>
+            <td>Gap marker in DB, AI prompt includes gap note</td>
+          </tr>
+          <tr>
+            <td>Natural pause triggers slot boundary</td>
+            <td>All speakers silent &gt;3s + &gt;60s since last slot → slot closes, AI processes</td>
+            <td>meeting_slots row created, ai_status transitions</td>
+          </tr>
+          <tr>
+            <td>Max duration triggers slot boundary</td>
+            <td>5 min cap hit → slot force-closed at next sentence end</td>
+            <td>Slot duration &le; 5 min</td>
+          </tr>
+          <tr>
+            <td>AI processing fails on a slot</td>
+            <td>ai_status → <code>failed</code>, next slot still processes (uses last successful summary), retry queued</td>
+            <td>No cascade failure, meeting continues</td>
+          </tr>
+          <tr>
+            <td>AI detects task assignment</td>
+            <td>Task stored in <code>meeting_tasks</code>, assignee matched by name, <code>task_detected</code> pushed to assignee's WebSocket</td>
+            <td>DB row, WebSocket message to correct participant within 5s</td>
+          </tr>
+          <tr>
+            <td>Meeting ends normally</td>
+            <td>Status → <code>ended</code>, all WS connections closed, final slot processed, all participants → <code>left</code></td>
+            <td>DB state, no zombie WebSocket connections</td>
+          </tr>
+          <tr>
+            <td>Host disconnects (no one ends meeting)</td>
+            <td>Meeting stays <code>live</code> — other participants continue. Auto-end after 2 hours of silence (configurable).</td>
+            <td>Meeting doesn't die when creator disconnects</td>
+          </tr>
+          <tr>
+            <td>Lark sync after meeting</td>
+            <td>Tasks → Lark Tasks (per assignee), summary → Lark Doc, transcript as attachment</td>
+            <td>Lark API payloads match expected structure</td>
+          </tr>
+          <tr>
+            <td>Idempotent Lark sync (re-sync)</td>
+            <td>Updates existing Lark tasks/docs, doesn't create duplicates</td>
+            <td>Lark task count unchanged after second sync</td>
+          </tr>
+          <tr>
+            <td>3 concurrent meetings</td>
+            <td>No cross-contamination — chunks, summaries, tasks stay scoped to their meeting</td>
+            <td>DB queries with meeting_id filter, no leakage</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── Section 7: Data Flow Summary ─────────────────────────────────── -->
+  <div class="section">
+    <div class="section-label">7 &middot; End-to-End Data Flow</div>
+    <div class="flow-card">
+      <div style="font-family: var(--mono); font-size: 12px; color: var(--fg-muted); line-height: 2.2; overflow-x: auto;">
+        <pre style="margin: 0;">
+Desktop App                         Server                              Lark
+    │                                  │                                  │
+    │  1. GET /v1/meetings             │                                  │
+    │ ─────────────────────────────>   │                                  │
+    │  ← meeting list                  │                                  │
+    │                                  │                                  │
+    │  2. WS /v1/meetings/:id/ws      │                                  │
+    │ ═══════════════════════════════> │                                  │
+    │  ← {"type":"connected"}          │                                  │
+    │  ← {"type":"catchup", ...}       │  (if late joiner)               │
+    │                                  │                                  │
+    │  3. Audio → Deepgram STT         │                                  │
+    │     → LLM polish (local)         │                                  │
+    │     → transcript_chunk           │                                  │
+    │ ═══════════════════════════════> │                                  │
+    │                                  │  4. Store chunk in DB            │
+    │                                  │     Broadcast to other           │
+    │                                  │     participants                 │
+    │                                  │                                  │
+    │  ← chunks from other speakers    │                                  │
+    │                                  │                                  │
+    │                                  │  5. Slot boundary detected       │
+    │                                  │     AI processes slot:           │
+    │                                  │     summary + tasks + decisions  │
+    │                                  │                                  │
+    │  ← {"type":"summary_updated"}    │                                  │
+    │  ← {"type":"task_detected"}      │                                  │
+    │                                  │                                  │
+    │  6. Meeting ends                 │                                  │
+    │  ← {"type":"meeting_ended"}      │                                  │
+    │                                  │                                  │
+    │                                  │  7. POST /v1/meetings/:id/sync   │
+    │                                  │ ─────────────────────────────>   │
+    │                                  │     Tasks → Lark Tasks API       │
+    │                                  │     Summary → Lark Docs API      │
+    │                                  │     Notify → Lark Messenger      │
+        </pre>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="foot">
+  <span>Said Enterprise Preview</span>
+  <span>Phase 2 &middot; EMIAC Tech</span>
+</footer>
+</body>
+</html>

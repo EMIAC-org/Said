@@ -16,6 +16,10 @@ pub fn spawn_alias_review(
 ) {
     tokio::spawn(async move {
         let _guard = crate::bg_task_guard();
+        if state.watchdog.is_shedding() {
+            debug!("[bg] alias-review {transcript_form:?} skipped — watchdog shedding load");
+            return;
+        }
         info!(
             "[bg] alias-review {transcript_form:?}→{correct_form:?} started (active={})",
             crate::BG_TASK_COUNT.load(std::sync::atomic::Ordering::Relaxed)
@@ -46,6 +50,10 @@ pub async fn run_pending_alias_reviews(state: AppState, limit: usize) {
         candidates.len()
     );
     for rule in candidates {
+        if state.watchdog.is_shedding() {
+            info!("[alias-review] batch paused — watchdog shedding load");
+            break;
+        }
         let language = rule.language.clone().unwrap_or_default();
         review_one_alias(
             state.clone(),

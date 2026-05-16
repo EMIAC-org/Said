@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Said Enterprise — Desktop App Meeting Mode</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/>
+        <rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/>
+        <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/>
+        <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/>
+      </svg>
+      <span>Said Enterprise</span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="setup.html">Setup</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="meeting-create.html">New Meeting</a>
+      <a href="meeting-live.html">Live Meeting</a>
+      <a href="desktop-mode.html" class="active">Desktop App</a>
+      <a href="post-meeting.html">Report</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="flow.html">Flow</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div style="text-align: center; margin-bottom: 48px;">
+    <div class="hero-badge">Desktop Experience</div>
+    <h1 style="font-size: 36px; font-weight: 600; letter-spacing: -0.03em; margin-bottom: 12px;">
+      Meeting mode in the Said app
+    </h1>
+    <p style="font-size: 14px; color: var(--fg-muted); max-width: 520px; margin: 0 auto;">
+      When a meeting is active, the Said desktop app shows a meeting banner. Your mic streams to the meeting server while you work normally.
+    </p>
+  </div>
+
+  <!-- Desktop mockup: before joining -->
+  <div style="margin-bottom: 48px;">
+    <p style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-dim); margin-bottom: 12px; text-align: center;">
+      Meeting Invitation
+    </p>
+    <div class="desktop-frame">
+      <div class="desktop-titlebar">
+        <div class="traffic-dot r"></div>
+        <div class="traffic-dot y"></div>
+        <div class="traffic-dot g"></div>
+        <span style="font-size: 12px; color: var(--fg-dim); margin-left: 12px;">Said</span>
+      </div>
+      <div class="desktop-body">
+        <div class="desktop-rail">
+          <div class="rail-icon active">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/><rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/><rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/><rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/></svg>
+          </div>
+          <div class="rail-icon" style="position: relative;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            <span style="position: absolute; top: 2px; right: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--primary); border: 2px solid var(--surface-2);"></span>
+          </div>
+          <div class="rail-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.73 12.73l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          </div>
+        </div>
+        <div class="desktop-main">
+          <!-- Meeting invite card -->
+          <div style="background: hsl(226 80% 78% / 0.06); border: 1px solid hsl(226 80% 78% / 0.18); border-radius: 12px; padding: 24px; max-width: 440px; margin: 20px auto;">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+              <span style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--primary);">Meeting Invitation</span>
+            </div>
+            <h3 style="font-size: 18px; font-weight: 600; margin-bottom: 6px;">Sprint Planning — Week 21</h3>
+            <p style="font-size: 12.5px; color: var(--fg-muted); margin-bottom: 16px;">Starting now &middot; 4 participants invited</p>
+            <div style="display: flex; gap: 6px; margin-bottom: 20px;">
+              <div class="avatar-sm" style="background: hsl(226 60% 45%);">AV</div>
+              <div class="avatar-sm" style="background: hsl(340 50% 40%);">AS</div>
+              <div class="avatar-sm" style="background: hsl(180 40% 35%);">RK</div>
+              <div class="avatar-sm" style="background: hsl(30 50% 40%);">PS</div>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn-primary" style="flex: 1; justify-content: center;">
+                Join Meeting
+              </button>
+              <button class="btn-ghost btn-sm">
+                Dismiss
+              </button>
+            </div>
+          </div>
+
+          <!-- Normal dashboard behind -->
+          <div style="opacity: 0.3; margin-top: 20px;">
+            <p style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-dim); margin-bottom: 8px;">Today</p>
+            <h2 style="font-size: 22px; font-weight: 600; letter-spacing: -0.02em;">Ready when you are.</h2>
+            <p style="font-size: 13px; color: var(--fg-muted); margin-top: 6px;">Hold your hotkey and speak.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Desktop mockup: in meeting -->
+  <div style="margin-bottom: 48px;">
+    <p style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-dim); margin-bottom: 12px; text-align: center;">
+      Active Meeting
+    </p>
+    <div class="desktop-frame">
+      <div class="desktop-titlebar">
+        <div class="traffic-dot r"></div>
+        <div class="traffic-dot y"></div>
+        <div class="traffic-dot g"></div>
+        <span style="font-size: 12px; color: var(--fg-dim); margin-left: 12px;">Said</span>
+        <span style="font-size: 11px; color: var(--red); margin-left: auto; display: flex; align-items: center; gap: 6px;">
+          <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--red); animation: pulse-dot 1.5s infinite;"></span>
+          In Meeting &middot; 14:23
+        </span>
+      </div>
+      <div class="desktop-body">
+        <div class="desktop-rail">
+          <div class="rail-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/><rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/><rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/><rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/></svg>
+          </div>
+          <div class="rail-icon active" style="position: relative;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            <span style="position: absolute; top: 2px; right: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--red); border: 2px solid var(--surface-2); animation: pulse-dot 1.5s infinite;"></span>
+          </div>
+          <div class="rail-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.73 12.73l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          </div>
+        </div>
+        <div class="desktop-main">
+          <!-- Meeting banner -->
+          <div class="meeting-banner">
+            <div class="banner-left">
+              <span class="banner-dot"></span>
+              <div class="banner-info">
+                <h4>Sprint Planning — Week 21</h4>
+                <p>4 participants &middot; Your mic is streaming</p>
+              </div>
+            </div>
+            <button class="btn-ghost btn-sm" style="color: var(--red); border-color: hsl(0 72% 50% / 0.3);">Leave</button>
+          </div>
+
+          <!-- Participants -->
+          <div style="margin-bottom: 20px;">
+            <p style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--fg-dim); margin-bottom: 10px;">Participants</p>
+            <div class="participants">
+              <div class="participant">
+                <div class="avatar-sm" style="background: hsl(226 60% 45%);">AV</div>
+                <div class="participant-name">Abhishek Verma <span style="color: var(--fg-dim); font-size: 11px;">(You)</span></div>
+                <div class="speaking-indicator"><span></span><span></span><span></span><span></span></div>
+                <span class="pill pill-green" style="font-size: 9px;">Speaking</span>
+              </div>
+              <div class="participant">
+                <div class="avatar-sm" style="background: hsl(340 50% 40%);">AS</div>
+                <div class="participant-name">Anish Suman</div>
+                <span class="participant-status">Listening</span>
+              </div>
+              <div class="participant">
+                <div class="avatar-sm" style="background: hsl(180 40% 35%);">RK</div>
+                <div class="participant-name">Rahul Kumar</div>
+                <span class="participant-status">Listening</span>
+              </div>
+              <div class="participant">
+                <div class="avatar-sm" style="background: hsl(30 50% 40%);">PS</div>
+                <div class="participant-name">Priya Sharma</div>
+                <span class="participant-status">Listening</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Notification -->
+          <div class="notif-toast" style="max-width: 380px;">
+            <div class="notif-title">Task Assigned to You</div>
+            <div class="notif-body">
+              Build Lark OAuth scaffold — by Wednesday
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="foot">
+  <span>Said Enterprise Preview</span>
+  <span>Phase 2 &middot; EMIAC Tech</span>
+</footer>
+</body>
+</html>

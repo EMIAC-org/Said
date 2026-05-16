@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Said Enterprise — Post-Meeting Report</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/>
+        <rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/>
+        <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/>
+        <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/>
+      </svg>
+      <span>Said Enterprise</span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="setup.html">Setup</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="meeting-create.html">New Meeting</a>
+      <a href="meeting-live.html">Live Meeting</a>
+      <a href="desktop-mode.html">Desktop App</a>
+      <a href="post-meeting.html" class="active">Report</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="flow.html">Flow</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page" style="max-width: 840px;">
+  <a href="dashboard.html" style="font-size: 12.5px; color: var(--fg-muted); display: flex; align-items: center; gap: 6px; margin-bottom: 16px;">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7l-7 7 7 7"/></svg>
+    Back to Dashboard
+  </a>
+
+  <div class="report-header">
+    <h1>Sprint Planning — Week 21</h1>
+    <div class="report-meta">
+      <span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+        May 16, 2026
+      </span>
+      <span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        32 minutes
+      </span>
+      <span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+        4 participants
+      </span>
+      <span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+        2,847 words
+      </span>
+    </div>
+  </div>
+
+  <!-- AI Summary -->
+  <div class="report-section">
+    <h3>AI Summary</h3>
+    <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px;">
+      <p style="font-size: 14px; color: var(--fg); line-height: 1.7;">
+        The team reviewed Week 20 performance (34 story points closed) and planned Week 21 priorities. The Windows port (v2.2.0-beta6) is stable with Sentry telemetry added. Key priorities for the week: <strong>Phase 2 meeting manager architecture</strong> (Abhishek leading), <strong>Lark OAuth integration</strong> (Abhishek, target Wednesday), <strong>WebSocket server design</strong> (Rahul, estimate by Thursday), and <strong>WASAPI buffer sizing fix</strong> (Rahul, ~1 day). Priya will refine the editorial dashboard UI. The team decided on plain WebSocket (tokio-tungstenite) over Socket.IO, with client-side reconnection reusing the existing Deepgram stream retry pattern.
+      </p>
+    </div>
+  </div>
+
+  <!-- Tasks -->
+  <div class="report-section">
+    <h3>Action Items</h3>
+    <div class="task-row">
+      <div class="task-check"></div>
+      <div class="task-text">Fix WASAPI buffer sizing — frame drops on low-end Windows machines</div>
+      <div class="task-assignee">
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div class="avatar-sm" style="background: hsl(180 40% 35%);">RK</div>
+          Rahul &middot; ~1 day
+        </div>
+      </div>
+    </div>
+    <div class="task-row">
+      <div class="task-check"></div>
+      <div class="task-text">Estimate WebSocket hub implementation for meeting server</div>
+      <div class="task-assignee">
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div class="avatar-sm" style="background: hsl(180 40% 35%);">RK</div>
+          Rahul &middot; by Thursday
+        </div>
+      </div>
+    </div>
+    <div class="task-row">
+      <div class="task-check"></div>
+      <div class="task-text">Build Lark OAuth scaffold for enterprise auth</div>
+      <div class="task-assignee">
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div class="avatar-sm" style="background: hsl(226 60% 45%);">AV</div>
+          Abhishek &middot; by Wed
+        </div>
+      </div>
+    </div>
+    <div class="task-row">
+      <div class="task-check"></div>
+      <div class="task-text">File design task for editorial dashboard empty states + bar spacing</div>
+      <div class="task-assignee">
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div class="avatar-sm" style="background: hsl(30 50% 40%);">PS</div>
+          Priya &middot; this week
+        </div>
+      </div>
+    </div>
+    <div class="task-row">
+      <div class="task-check"></div>
+      <div class="task-text">Implement Windows-side WebSocket client for meeting streaming</div>
+      <div class="task-assignee">
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div class="avatar-sm" style="background: hsl(340 50% 40%);">AS</div>
+          Anish &middot; after spec
+        </div>
+      </div>
+    </div>
+    <div class="task-row">
+      <div class="task-check"></div>
+      <div class="task-text">Set Sentry DSN for production crash reporting</div>
+      <div class="task-assignee">
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div class="avatar-sm" style="background: hsl(340 50% 40%);">AS</div>
+          Anish &middot; this week
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Decisions -->
+  <div class="report-section">
+    <h3>Decisions Made</h3>
+    <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 4px 20px;">
+      <div class="decision-row">
+        <div class="decision-marker"></div>
+        <div class="decision-text">
+          <strong>WebSocket protocol:</strong> Plain WebSocket with tokio-tungstenite on the server. No Socket.IO — keep it simple.
+        </div>
+      </div>
+      <div class="decision-row">
+        <div class="decision-marker"></div>
+        <div class="decision-text">
+          <strong>Reconnection strategy:</strong> Client-side, reusing the existing Deepgram stream retry pattern from the desktop app.
+        </div>
+      </div>
+      <div class="decision-row">
+        <div class="decision-marker"></div>
+        <div class="decision-text">
+          <strong>Phase 2 dependency chain:</strong> Lark OAuth first (Wed) &rarr; WebSocket hub (Thu estimate) &rarr; Windows client &rarr; full meeting loop testing.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Transcript excerpt -->
+  <div class="report-section">
+    <h3>Full Transcript</h3>
+    <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px;">
+      <div class="transcript" style="max-height: 280px; overflow-y: auto;">
+        <div class="t-entry">
+          <div class="t-speaker" style="color: hsl(226 80% 78%);">Abhishek</div>
+          <div class="t-text">Alright, let's kick off. Last week we closed 34 story points, which is slightly above our average. The auth migration PR is merged, and the Windows port landed on main yesterday.</div>
+          <div class="t-time">0:12</div>
+        </div>
+        <div class="t-entry">
+          <div class="t-speaker" style="color: hsl(340 70% 70%);">Anish</div>
+          <div class="t-text">Thanks. The beta 6 build is stable. I added Sentry telemetry — crash reports will start flowing once we set the DSN.</div>
+          <div class="t-time">0:38</div>
+        </div>
+        <div class="t-entry">
+          <div class="t-speaker" style="color: hsl(180 60% 65%);">Rahul</div>
+          <div class="t-text">I can take the buffer sizing issue. I've dealt with similar stuff in the audio pipeline before. Should be a day of work max.</div>
+          <div class="t-time">1:15</div>
+        </div>
+        <div class="t-entry">
+          <div class="t-speaker" style="color: hsl(30 70% 65%);">Priya</div>
+          <div class="t-text">On the design side, the glassmorphism revamp is looking great. I want to push the editorial dashboard layout a bit further.</div>
+          <div class="t-time">2:02</div>
+        </div>
+      </div>
+      <div style="text-align: center; padding-top: 12px; border-top: 1px solid var(--border); margin-top: 12px;">
+        <button class="btn-ghost btn-sm">View Full Transcript (2,847 words)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lark Sync -->
+  <div class="lark-sync-bar">
+    <div style="display: flex; align-items: center; gap: 16px;">
+      <div class="lark-logo">L</div>
+      <div>
+        <h4>Sync to Lark</h4>
+        <p>Push 6 tasks to Lark Tasks and summary to a Lark Doc.</p>
+      </div>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button class="btn-primary">
+        Sync All
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+      </button>
+      <button class="btn-ghost btn-sm">Configure</button>
+    </div>
+  </div>
+
+  <!-- What gets synced -->
+  <div style="margin-top: 20px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;">
+    <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px;">
+      <div style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-dim); margin-bottom: 8px;">Lark Tasks</div>
+      <div style="font-size: 22px; font-weight: 600;">6</div>
+      <p style="font-size: 11.5px; color: var(--fg-muted); margin-top: 4px;">tasks with assignees</p>
+    </div>
+    <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px;">
+      <div style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-dim); margin-bottom: 8px;">Lark Doc</div>
+      <div style="font-size: 22px; font-weight: 600;">1</div>
+      <p style="font-size: 11.5px; color: var(--fg-muted); margin-top: 4px;">summary + decisions</p>
+    </div>
+    <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px;">
+      <div style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-dim); margin-bottom: 8px;">Attachment</div>
+      <div style="font-size: 22px; font-weight: 600;">1</div>
+      <p style="font-size: 11.5px; color: var(--fg-muted); margin-top: 4px;">full transcript</p>
+    </div>
+  </div>
+</main>
+
+<footer class="foot">
+  <span>Said Enterprise Preview</span>
+  <span>Phase 2 &middot; EMIAC Tech</span>
+</footer>
+</body>
+</html>

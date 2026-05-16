@@ -1,0 +1,9 @@
+target/
+admin-ui/node_modules/
+admin-ui/dist/
+admin-ui/dist-preview/
+.env
+.env.*
+!.env.example
+*.log
+Dockerfile

@@ -7,20 +7,15 @@
 //!   DATABASE_URL  — Neon Postgres connection string
 //!   PORT          — listen port (default 3100)
 
-mod auth;
-mod routes;
-mod store;
+use std::sync::Arc;
+use std::time::Instant;
 
-use std::{sync::Arc, time::Instant};
-
-use axum::{
-    Router,
-    http::{Method, header},
-    routing::{get, post},
-};
 use clap::Parser;
-use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
+
+use said_control_plane::{
+    AppState, LarkConfig, ai_worker, build_router, meeting_hub, notification_worker, store,
+};
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -38,65 +33,67 @@ struct Cli {
     /// Postgres database URL
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
-}
 
-// ── App state ─────────────────────────────────────────────────────────────────
+    /// Lark Open API app ID
+    #[arg(long, env = "LARK_APP_ID", default_value = "")]
+    lark_app_id: String,
 
-#[derive(Clone)]
-pub struct AppState {
-    pub db: store::Db,
-    pub started_at: Arc<Instant>,
+    /// Lark Open API app secret
+    #[arg(long, env = "LARK_APP_SECRET", default_value = "")]
+    lark_app_secret: String,
+
+    /// Lark OAuth redirect URI
+    #[arg(long, env = "LARK_REDIRECT_URI", default_value = "")]
+    lark_redirect_uri: String,
+
+    /// JWT signing secret for session tokens
+    #[arg(long, env = "JWT_SECRET", default_value = "said-enterprise-dev-secret")]
+    jwt_secret: String,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() {
-    // 1. Load .env (optional — Fly.io / Railway inject vars directly)
     let _ = dotenvy::dotenv();
 
-    // 2. Tracing
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
-    // 3. Parse CLI / env
     let cli = Cli::parse();
     info!("[cp] starting on port {}", cli.port);
 
-    // 4. Connect to Postgres + apply schema
     let db = store::connect(&cli.database_url)
         .await
         .expect("failed to connect to Postgres");
 
+    let lark = LarkConfig {
+        app_id: cli.lark_app_id,
+        app_secret: cli.lark_app_secret,
+        redirect_uri: cli.lark_redirect_uri,
+        jwt_secret: cli.jwt_secret,
+    };
+
+    let hub = meeting_hub::MeetingHub::new(db.clone());
+
+    // Start the AI background worker (processes closed meeting slots).
+    ai_worker::start_ai_worker(db.clone(), hub.clone());
+
+    // Start the notification worker (15-min reminders + urgent join alerts).
+    notification_worker::start_notification_worker(db.clone(), lark.clone(), hub.clone());
+
     let state = AppState {
         db,
         started_at: Arc::new(Instant::now()),
+        lark,
+        hub,
     };
 
-    // 5. CORS
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT]);
+    let app = build_router(state);
 
-    // 6. Router
-    let app = Router::new()
-        // Public
-        .route("/v1/health", get(routes::health::handler))
-        .route("/v1/auth/signup", post(routes::auth::signup))
-        .route("/v1/auth/login", post(routes::auth::login))
-        // Authenticated
-        .route("/v1/auth/logout", post(routes::auth::logout))
-        .route("/v1/auth/me", get(routes::auth::me))
-        .route("/v1/license/check", get(routes::license::check))
-        .route("/v1/metering/report", post(routes::metering::report))
-        .layer(cors)
-        .with_state(state);
-
-    // 7. Graceful shutdown on Ctrl-C / SIGTERM
     let shutdown = async {
         let ctrl_c = async {
             tokio::signal::ctrl_c().await.expect("ctrl-c handler");
@@ -118,7 +115,6 @@ async fn main() {
         info!("[cp] shutting down");
     };
 
-    // 8. Serve
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", cli.port))
         .await
         .expect("failed to bind");

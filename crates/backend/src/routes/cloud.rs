@@ -16,6 +16,7 @@ use crate::{AppState, store::users};
 pub struct StoreTokenBody {
     pub token: String,
     pub license_tier: String,
+    pub email: Option<String>,
 }
 
 pub async fn store_token(
@@ -27,6 +28,7 @@ pub async fn store_token(
         &state.default_user_id,
         &body.token,
         &body.license_tier,
+        body.email.as_deref(),
     );
     StatusCode::NO_CONTENT
 }

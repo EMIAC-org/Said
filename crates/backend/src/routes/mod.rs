@@ -5,6 +5,7 @@ pub mod health;
 pub mod history;
 pub mod invite;
 pub mod key_guard;
+pub mod lab;
 pub mod openai_oauth;
 pub mod pending_edits;
 pub mod pre_embed;

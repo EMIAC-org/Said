@@ -6,11 +6,21 @@ import {
   Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap,
   Languages, MessageSquareText, Loader2, RefreshCw,
   Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, Download, Activity,
-  RotateCcw, Save, GitCompareArrows, Play,
+  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ExternalLink,
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
+import { AppearanceSection } from "@/components/views/AppearanceSection";
+
+import {
+  getConnection as enterpriseGetConnection,
+  disconnect as enterpriseDisconnect,
+  validateServer as enterpriseValidateServer,
+  completeAuth as enterpriseCompleteAuth,
+  type EnterpriseConnection,
+} from "@/lib/enterprise";
+import { openExternal } from "@/lib/invoke";
 import {
   getPreferences, patchPreferences,
   getVoicePrompt, saveVoicePromptDraft, applyVoicePromptDraft,
@@ -99,16 +109,20 @@ function Row({
 // ── Section routing (used by SettingsModal) ───────────────────────────────────
 
 export type SettingsSection =
+  | "appearance"
   | "writing"
   | "permissions"
   | "api-keys"
+  | "enterprise"
   | "debug"
   | "about";
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
+  { id: "appearance",  label: "Appearance"    },
   { id: "writing",     label: "Writing style" },
   { id: "permissions", label: "Permissions"   },
   { id: "api-keys",    label: "API keys"      },
+  { id: "enterprise",  label: "Enterprise"    },
   { id: "debug",       label: "Debug"         },
   { id: "about",       label: "About"         },
 ];
@@ -259,6 +273,296 @@ function renderPromptTemplatePreview(
   ].reduce(
     (next, [token, value]) => replaceTemplateToken(next, token, value),
     template
+  );
+}
+
+// ── Enterprise section ────────────────────────────────────────────────────────
+
+function EnterpriseSection() {
+  const [serverUrl, setServerUrl] = useState("");
+  const [validating, setValidating] = useState(false);
+  const [validated, setValidated] = useState(false);
+  const [validationError, setValidationError] = useState("");
+  const [connected, setConnected] = useState(false);
+  const [connection, setConnection] = useState<EnterpriseConnection | null>(null);
+  const [showTokenInput, setShowTokenInput] = useState(false);
+  const [authUrl, setAuthUrl] = useState("");
+  const [token, setToken] = useState("");
+  const [tokenError, setTokenError] = useState("");
+  const [tokenLoading, setTokenLoading] = useState(false);
+
+  useEffect(() => {
+    const conn = enterpriseGetConnection();
+    if (conn) {
+      setConnected(true);
+      setConnection(conn);
+      setServerUrl(conn.serverUrl);
+      setValidated(true);
+    }
+  }, []);
+
+  async function handleValidate() {
+    const trimmed = serverUrl.trim();
+    if (!trimmed) return;
+    setValidating(true);
+    setValidationError("");
+    setValidated(false);
+    try {
+      const ok = await enterpriseValidateServer(trimmed);
+      if (ok) {
+        setValidated(true);
+        const url = `${trimmed.replace(/\/+$/, "")}/auth/lark`;
+        setAuthUrl(url);
+        setShowTokenInput(true);
+        openExternal(url);
+      } else {
+        setValidationError("Server did not respond with a valid health check.");
+      }
+    } catch {
+      setValidationError("Could not reach the server.");
+    } finally {
+      setValidating(false);
+    }
+  }
+
+  function handleDisconnect() {
+    enterpriseDisconnect();
+    setConnected(false);
+    setConnection(null);
+    setValidated(false);
+    setServerUrl("");
+    setShowTokenInput(false);
+    setToken("");
+  }
+
+
+  async function handleTokenSubmit() {
+    const trimmed = token.trim();
+    if (!trimmed) { setTokenError("Paste the token from the browser."); return; }
+    setTokenLoading(true);
+    setTokenError("");
+    try {
+      const conn = await enterpriseCompleteAuth(serverUrl.trim(), trimmed);
+      setConnection(conn);
+      setConnected(true);
+      setShowTokenInput(false);
+    } catch (e) {
+      setTokenError((e as Error).message || "Invalid token");
+    } finally {
+      setTokenLoading(false);
+    }
+  }
+
+  if (connected && connection) {
+    return (
+      <div className="mb-7">
+        <p className="section-label px-1 mb-2.5 flex items-center gap-2">
+          <span
+            className="inline-block w-1 h-1 rounded-full"
+            style={{ background: "hsl(var(--accent-violet))" }}
+          />
+          Enterprise
+        </p>
+        <div className="panel overflow-hidden">
+          <div className="flex items-center gap-4 px-5 py-4">
+            {/* Avatar or fallback icon */}
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 overflow-hidden"
+              style={{
+                background: "hsl(var(--surface-4))",
+                color: "hsl(var(--accent-violet))",
+              }}
+            >
+              {connection.larkAvatarUrl ? (
+                <img
+                  src={connection.larkAvatarUrl}
+                  alt=""
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <Link size={16} />
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="text-[13px] font-medium text-foreground">
+                  {connection.orgName ?? "Enterprise"}
+                </p>
+                <span
+                  className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                  style={{
+                    background: "hsl(145 60% 16%)",
+                    color: "hsl(145 70% 65%)",
+                  }}
+                >
+                  Connected
+                </span>
+              </div>
+              <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed truncate">
+                {connection.larkName
+                  ? `${connection.larkName} · ${connection.email}`
+                  : connection.email}
+              </p>
+            </div>
+          </div>
+
+          <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+
+          <div className="flex items-center gap-4 px-5 py-4">
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+              style={{
+                background: "hsl(var(--surface-4))",
+                color: "hsl(var(--muted-foreground))",
+              }}
+            >
+              <Wifi size={16} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[13px] font-medium text-foreground">Server</p>
+              <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed truncate">
+                {connection.serverUrl}
+              </p>
+            </div>
+            <div className="flex-shrink-0 ml-4">
+              <button
+                onClick={handleDisconnect}
+                className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors"
+                style={{
+                  background: "hsl(0 60% 16%)",
+                  color: "hsl(0 75% 72%)",
+                }}
+              >
+                <LogOut size={11} />
+                Disconnect
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-7">
+      <p className="section-label px-1 mb-2.5 flex items-center gap-2">
+        <span
+          className="inline-block w-1 h-1 rounded-full"
+          style={{ background: "hsl(var(--accent-violet))" }}
+        />
+        Enterprise
+      </p>
+      <div className="panel p-5 space-y-4">
+        <p className="text-[12px] text-muted-foreground leading-relaxed">
+          Connect to your organization's Said Enterprise server for team management, shared vocabulary, and centralized billing.
+        </p>
+
+        {/* Server URL input */}
+        <div>
+          <p className="text-[12px] font-semibold text-foreground mb-1.5 flex items-center gap-1.5">
+            <Link size={12} className="text-muted-foreground" />
+            Server URL
+          </p>
+          <div className="flex items-center gap-2">
+            <input
+              type="url"
+              placeholder="https://said.yourcompany.com"
+              value={serverUrl}
+              onChange={(e) => {
+                setServerUrl(e.target.value);
+                setValidated(false);
+                setValidationError("");
+              }}
+              className="input flex-1 text-[12px]"
+            />
+            <button
+              onClick={handleValidate}
+              disabled={validating || !serverUrl.trim()}
+              className="btn-primary !py-1.5 !px-4 !text-[12px] flex items-center gap-1.5 flex-shrink-0"
+            >
+              {validating ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : validated ? (
+                <Check size={12} />
+              ) : null}
+              {validated ? "Verified" : "Connect"}
+            </button>
+          </div>
+        </div>
+
+        {/* Validation status */}
+        {validationError && (
+          <div
+            className="rounded-lg px-3 py-2 text-[12px]"
+            style={{ background: "hsl(0 70% 14%)", color: "hsl(0 85% 76%)" }}
+          >
+            {validationError}
+          </div>
+        )}
+
+        {validated && (
+          <div
+            className="rounded-lg px-3 py-2 text-[12px] flex items-center gap-2"
+            style={{ background: "hsl(145 60% 12%)", color: "hsl(145 70% 70%)" }}
+          >
+            <Check size={12} />
+            Server is reachable. Sign in to complete the connection.
+          </div>
+        )}
+
+        {/* Token paste — shown after Connect validates + opens Lark OAuth */}
+        {showTokenInput && !connected && (
+          <div className="space-y-3 pt-1">
+            <div
+              className="rounded-lg px-3 py-2.5 text-[12px] space-y-1.5"
+              style={{ background: "hsl(210 60% 12%)", color: "hsl(210 70% 70%)" }}
+            >
+              <div className="flex items-center gap-2">
+                <ExternalLink size={12} className="shrink-0" />
+                <span>Complete sign-in in your browser, then paste the token here.</span>
+              </div>
+              {authUrl && (
+                <div
+                  className="text-[11px] opacity-80 cursor-pointer hover:opacity-100 truncate"
+                  onClick={() => openExternal(authUrl)}
+                  title={authUrl}
+                >
+                  Didn't open? Click here: <span className="underline">{authUrl}</span>
+                </div>
+              )}
+            </div>
+            <div>
+              <p className="text-[12px] font-semibold text-foreground mb-1.5">Session Token</p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  placeholder="Paste token from browser..."
+                  value={token}
+                  onChange={(e) => { setToken(e.target.value); setTokenError(""); }}
+                  className="input flex-1 text-[12px] font-mono"
+                />
+                <button
+                  onClick={handleTokenSubmit}
+                  disabled={tokenLoading || !token.trim()}
+                  className="btn-primary !py-1.5 !px-4 !text-[12px] flex items-center gap-1.5 flex-shrink-0"
+                >
+                  {tokenLoading ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                  Connect
+                </button>
+              </div>
+            </div>
+            {tokenError && (
+              <div
+                className="rounded-lg px-3 py-2 text-[12px]"
+                style={{ background: "hsl(0 70% 14%)", color: "hsl(0 85% 76%)" }}
+              >
+                {tokenError}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -730,6 +1034,13 @@ export function SettingsView({
             <p className="text-xs mb-1" style={{ color: "hsl(354 78% 60%)" }}>{saveError}</p>
           )}
         </div>
+        </Show>
+
+        {/* ── Appearance ────────────────────────────────── */}
+        <Show when={isOn("appearance")}>
+          <div className="mb-7">
+            <AppearanceSection />
+          </div>
         </Show>
 
         {/* ── Tone & Persona ───────────────────────────── */}
@@ -1670,6 +1981,11 @@ export function SettingsView({
             );
           })}
         </Section>
+        </Show>
+
+        {/* ── Enterprise ──────────────────────────────── */}
+        <Show when={isOn("enterprise")}>
+          <EnterpriseSection />
         </Show>
 
         {/* ── Debug ───────────────────────────────────── */}

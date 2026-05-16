@@ -73,6 +73,8 @@ async fn main() {
         .build()
         .expect("failed to build shared HTTP client");
 
+    let wd = std::sync::Arc::new(said_backend::watchdog::WatchdogState::new());
+
     let state = said_backend::AppState {
         pool: pool.clone(),
         shared_secret: std::sync::Arc::new(secret),
@@ -80,8 +82,11 @@ async fn main() {
         prefs_cache: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         lexicon_cache: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         http_client,
+        watchdog: wd.clone(),
     };
     said_backend::routes::vocabulary::spawn_prompt_artifact_repair(state.clone());
+
+    said_backend::watchdog::spawn_watchdog(pool.clone(), wd, tokio::runtime::Handle::current());
 
     // ── Build router ──────────────────────────────────────────────────────────
     let router = said_backend::router_with_state(state.clone());

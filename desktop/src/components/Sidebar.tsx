@@ -16,10 +16,12 @@ import {
   HardDrive,
   Server,
   Zap,
+  Video,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BrandMark } from "@/components/BrandMark";
 import { getPerformanceSnapshot } from "@/lib/invoke";
+import { isConnected as isEnterpriseConnected } from "@/lib/enterprise";
 import type { AppSnapshot, PerformanceSnapshot, ProcessPerf } from "@/types";
 
 // ── Nav item type ──────────────────────────────────────────────────────────────
@@ -102,7 +104,13 @@ export function Sidebar({
       className="flex flex-col h-full overflow-hidden flex-shrink-0 relative"
       style={{
         width:      "var(--sidebar-width)",
-        background: "hsl(var(--surface-1))",
+        // Glass sidebar — wallpaper bleeds through softly, deep black tint
+        // keeps text readable. Values tuned via the live glass control
+        // panel at .context/said-glass-control.html.
+        background: "hsl(var(--glass-bg))",
+        backdropFilter: "blur(40px) saturate(180%)",
+        WebkitBackdropFilter: "blur(40px) saturate(180%)",
+        borderRight: "1px solid hsl(var(--glass-stroke))",
       }}
     >
       {/* ── Brand header — drag region + traffic light space ── */}
@@ -139,6 +147,20 @@ export function Sidebar({
             ))}
           </div>
         </section>
+
+        {/* Enterprise — Meetings (only when connected) */}
+        {isEnterpriseConnected() && (
+          <section>
+            <p className="section-label px-3 mb-2">Enterprise</p>
+            <div className="space-y-0.5">
+              <NavButton
+                item={{ id: "meetings", label: "Meetings", icon: <Video size={15} /> }}
+                isActive={activeView === "meetings"}
+                onClick={() => !busy && onViewChange("meetings")}
+              />
+            </div>
+          </section>
+        )}
 
         {/* Spacer */}
         <div className="flex-1" />

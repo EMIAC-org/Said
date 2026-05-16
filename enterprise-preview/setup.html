@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Said Enterprise — Setup Flow</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/>
+        <rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/>
+        <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/>
+        <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/>
+      </svg>
+      <span>Said Enterprise</span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="setup.html" class="active">Setup</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="meeting-create.html">New Meeting</a>
+      <a href="meeting-live.html">Live Meeting</a>
+      <a href="desktop-mode.html">Desktop App</a>
+      <a href="post-meeting.html">Report</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="flow.html">Flow</a>
+    </div>
+  </div>
+</nav>
+
+<!-- Step 1: Deploy -->
+<div class="setup-split" id="step-deploy">
+  <div class="setup-brand">
+    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" style="color: var(--primary); margin-bottom: 24px;">
+      <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/>
+      <rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/>
+      <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/>
+      <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/>
+    </svg>
+    <h2 style="font-size: 32px; font-weight: 500; letter-spacing: -0.03em; margin-bottom: 12px;">Said Enterprise</h2>
+    <p style="font-size: 13.5px; color: var(--fg-muted); max-width: 280px; line-height: 1.6;">
+      Deploy on your infrastructure. Your meetings, your data, your control.
+    </p>
+    <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--border); width: 100%; max-width: 280px;">
+      <p style="font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-dim); font-weight: 700; margin-bottom: 6px;">
+        Requirements
+      </p>
+      <p style="font-size: 12.5px; color: var(--fg-muted); line-height: 1.6;">
+        Docker + Docker Compose on any Linux VPS. 2 vCPU, 4 GB RAM minimum. Postgres 15+ included in the compose stack.
+      </p>
+    </div>
+  </div>
+  <div class="setup-form">
+    <div class="step-tabs">
+      <div class="step-tab active"></div>
+      <div class="step-tab"></div>
+      <div class="step-tab"></div>
+      <div class="step-tab"></div>
+    </div>
+    <p style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.16em; color: var(--primary); margin-bottom: 12px;">Step 1 &middot; Deploy</p>
+    <h2>Deploy the control plane.</h2>
+    <p class="sub">One command on your VPS. The Docker image includes the meeting server, Postgres, and the admin dashboard.</p>
+
+    <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin-bottom: 24px;">
+      <p style="font-size: 10.5px; color: var(--fg-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 10px;">Terminal</p>
+      <pre style="font-family: var(--mono); font-size: 13px; color: var(--green); line-height: 1.7; overflow-x: auto; white-space: pre-wrap;">
+<span style="color: var(--fg-dim);">$</span> curl -fsSL https://get.said.dev | bash
+<span style="color: var(--fg-dim);">$</span> cd said-enterprise
+<span style="color: var(--fg-dim);">$</span> cp .env.example .env
+<span style="color: var(--fg-dim);">$</span> vim .env  <span style="color: var(--fg-dim);"># set LARK_APP_ID, LARK_APP_SECRET, DOMAIN</span>
+<span style="color: var(--fg-dim);">$</span> docker compose up -d</pre>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Server URL</label>
+      <input class="form-input" type="text" placeholder="https://said.yourcompany.com" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">License Key</label>
+      <input class="form-input" type="text" placeholder="sk_live_..." />
+    </div>
+
+    <button class="btn-primary" style="width: 100%; justify-content: center; margin-top: 8px;" onclick="showStep('lark')">
+      Continue
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- Step 2: Lark OAuth -->
+<div class="setup-split" id="step-lark" style="display: none;">
+  <div class="setup-brand">
+    <div style="width: 64px; height: 64px; border-radius: 16px; background: hsl(210 90% 55%); display: grid; place-items: center; margin-bottom: 24px;">
+      <span style="font-size: 28px; font-weight: 700; color: white;">L</span>
+    </div>
+    <h2 style="font-size: 32px; font-weight: 500; letter-spacing: -0.03em; margin-bottom: 12px;">Connect to Lark</h2>
+    <p style="font-size: 13.5px; color: var(--fg-muted); max-width: 280px; line-height: 1.6;">
+      Lark OAuth gives Said your org directory, task sync, and doc export — all with one login.
+    </p>
+    <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--border); width: 100%; max-width: 280px;">
+      <p style="font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-dim); font-weight: 700; margin-bottom: 6px;">
+        What we get access to
+      </p>
+      <ul style="font-size: 12.5px; color: var(--fg-muted); line-height: 2;">
+        <li>User identity (name, avatar, email)</li>
+        <li>Org directory (departments, members)</li>
+        <li>Lark Tasks (create, assign)</li>
+        <li>Lark Docs (create, write)</li>
+      </ul>
+    </div>
+  </div>
+  <div class="setup-form">
+    <div class="step-tabs">
+      <div class="step-tab done"></div>
+      <div class="step-tab active"></div>
+      <div class="step-tab"></div>
+      <div class="step-tab"></div>
+    </div>
+    <p style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.16em; color: var(--primary); margin-bottom: 12px;">Step 2 &middot; Authenticate</p>
+    <h2>Sign in with Lark.</h2>
+    <p class="sub">The admin who connects first becomes the org owner. All other employees connect through the same flow later.</p>
+
+    <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px; text-align: center; margin-bottom: 24px;">
+      <div style="width: 48px; height: 48px; border-radius: 12px; background: hsl(210 90% 55%); display: grid; place-items: center; margin: 0 auto 16px;">
+        <span style="font-size: 22px; font-weight: 700; color: white;">L</span>
+      </div>
+      <p style="font-size: 14px; font-weight: 600; margin-bottom: 4px;">Lark Workspace</p>
+      <p style="font-size: 12px; color: var(--fg-dim); margin-bottom: 20px;">EMIAC Technologies Pvt. Ltd.</p>
+      <button class="btn-primary" style="width: 100%; justify-content: center;" onclick="showStep('users')">
+        Authorize Said
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+      </button>
+      <p style="font-size: 11px; color: var(--fg-dim); margin-top: 12px;">
+        You'll be redirected to Lark, then back here.
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- Step 3: Users synced -->
+<div class="setup-split" id="step-users" style="display: none;">
+  <div class="setup-brand">
+    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="1.5" style="margin-bottom: 24px;">
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+      <circle cx="9" cy="7" r="4"/>
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+    </svg>
+    <h2 style="font-size: 32px; font-weight: 500; letter-spacing: -0.03em; margin-bottom: 12px;">Team Synced</h2>
+    <p style="font-size: 13.5px; color: var(--fg-muted); max-width: 280px; line-height: 1.6;">
+      Said pulled your org directory from Lark. Every member is ready to connect their desktop app.
+    </p>
+  </div>
+  <div class="setup-form">
+    <div class="step-tabs">
+      <div class="step-tab done"></div>
+      <div class="step-tab done"></div>
+      <div class="step-tab active"></div>
+      <div class="step-tab"></div>
+    </div>
+    <p style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.16em; color: var(--primary); margin-bottom: 12px;">Step 3 &middot; Team</p>
+    <h2>Your team is ready.</h2>
+    <p class="sub">12 members imported from Lark. They'll each connect when they open Said for the first time.</p>
+
+    <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 28px;">
+      <div class="participant">
+        <div class="avatar" style="background: hsl(226 60% 45%);">AV</div>
+        <div class="participant-name">Abhishek Verma</div>
+        <span class="pill pill-green">Admin</span>
+      </div>
+      <div class="participant">
+        <div class="avatar" style="background: hsl(340 50% 40%);">AS</div>
+        <div class="participant-name">Anish Suman</div>
+        <span class="pill pill-blue">Member</span>
+      </div>
+      <div class="participant">
+        <div class="avatar" style="background: hsl(180 40% 35%);">RK</div>
+        <div class="participant-name">Rahul Kumar</div>
+        <span class="pill pill-blue">Member</span>
+      </div>
+      <div class="participant">
+        <div class="avatar" style="background: hsl(30 50% 40%);">PS</div>
+        <div class="participant-name">Priya Sharma</div>
+        <span class="pill pill-blue">Member</span>
+      </div>
+      <div class="participant" style="opacity: 0.5;">
+        <div class="avatar">+8</div>
+        <div class="participant-name" style="color: var(--fg-dim);">8 more members</div>
+        <span class="pill pill-blue" style="opacity: 0.5;">Pending</span>
+      </div>
+    </div>
+
+    <button class="btn-primary" style="width: 100%; justify-content: center;" onclick="showStep('done')">
+      Go to Dashboard
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- Step 4: Done -->
+<div class="setup-split" id="step-done" style="display: none;">
+  <div class="setup-brand">
+    <div style="width: 64px; height: 64px; border-radius: 50%; background: var(--green-bg); display: grid; place-items: center; margin-bottom: 24px;">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 6L9 17l-5-5"/>
+      </svg>
+    </div>
+    <h2 style="font-size: 32px; font-weight: 500; letter-spacing: -0.03em; margin-bottom: 12px;">All Set</h2>
+    <p style="font-size: 13.5px; color: var(--fg-muted); max-width: 280px; line-height: 1.6;">
+      Your Said Enterprise instance is live. Start your first meeting or share the join link with your team.
+    </p>
+  </div>
+  <div class="setup-form">
+    <div class="step-tabs">
+      <div class="step-tab done"></div>
+      <div class="step-tab done"></div>
+      <div class="step-tab done"></div>
+      <div class="step-tab done"></div>
+    </div>
+    <p style="font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.16em; color: var(--green); margin-bottom: 12px;">Complete</p>
+    <h2>You're ready to go.</h2>
+    <p class="sub">Share this link with your team so they can connect their Said desktop apps.</p>
+
+    <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between;">
+      <code style="font-family: var(--mono); font-size: 13px; color: var(--primary);">https://said.emiac.com/join</code>
+      <button class="btn-ghost btn-sm">Copy</button>
+    </div>
+
+    <div class="grid-2" style="gap: 10px;">
+      <a href="dashboard.html" class="btn-primary" style="justify-content: center;">
+        Open Dashboard
+      </a>
+      <a href="meeting-create.html" class="btn-ghost" style="justify-content: center;">
+        Create Meeting
+      </a>
+    </div>
+  </div>
+</div>
+
+<script>
+function showStep(id) {
+  document.querySelectorAll('.setup-split').forEach(el => el.style.display = 'none');
+  document.getElementById('step-' + id).style.display = 'grid';
+}
+</script>
+</body>
+</html>

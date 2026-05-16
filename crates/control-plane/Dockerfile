@@ -1,22 +1,48 @@
-# Multi-stage build for the Voice Polish control-plane service
-# Stage 1: build
-FROM rust:1.82-slim AS builder
+# syntax=docker/dockerfile:1.7
+
+FROM node:22-bookworm-slim AS admin-builder
+WORKDIR /app/admin-ui
+
+RUN corepack enable
+COPY admin-ui/package.json admin-ui/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY admin-ui/ ./
+RUN pnpm run typecheck && pnpm run build
+
+FROM rust:1-bookworm AS rust-builder
 WORKDIR /app
 
-# Cache dependencies first
-COPY Cargo.toml .
-RUN mkdir src && echo 'fn main(){}' > src/main.rs && cargo build --release 2>/dev/null || true
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates pkg-config build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-# Build the real binary
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src admin-ui/dist/assets admin-ui/public admin \
+    && printf 'fn main() {}' > src/main.rs \
+    && printf '<!doctype html><html></html>' > admin-ui/dist/index.html \
+    && printf '' > admin-ui/dist/assets/app.css \
+    && printf '' > admin-ui/dist/assets/app.js \
+    && printf '<!doctype html><html></html>' > admin/simulator.html \
+    && printf '<!doctype html><html></html>' > admin-ui/public/preview-floors.html \
+    && cargo build --release --locked \
+    && rm -rf src admin-ui admin target/release/deps/control_plane*
+
 COPY . .
-RUN touch src/main.rs && cargo build --release
+COPY --from=admin-builder /app/admin-ui/dist ./admin-ui/dist
+RUN cargo build --release --locked
 
-# Stage 2: minimal runtime
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/control-plane /usr/local/bin/control-plane
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin control-plane
 
+COPY --from=rust-builder /app/target/release/control-plane /usr/local/bin/control-plane
+
+USER control-plane
 ENV PORT=8080
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${PORT}/v1/health" >/dev/null || exit 1
 
-CMD ["control-plane", "--port", "8080"]
+CMD ["control-plane"]

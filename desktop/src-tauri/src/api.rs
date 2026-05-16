@@ -856,6 +856,31 @@ pub async fn store_cloud_token(
     }
 }
 
+/// PUT /v1/cloud/token with email — used by enterprise auth to store identity.
+pub async fn store_enterprise_token(
+    ep: &BackendEndpoint,
+    token: &str,
+    tier: &str,
+    email: &str,
+) -> Result<(), String> {
+    let url = format!("{}/v1/cloud/token", ep.url);
+    let body = serde_json::json!({ "token": token, "license_tier": tier, "email": email });
+    let status = Client::new()
+        .put(&url)
+        .header("Authorization", ep.bearer())
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("store enterprise token failed: {e}"))?
+        .status();
+    if status.is_success() || status.as_u16() == 204 {
+        Ok(())
+    } else {
+        Err(format!("store enterprise token error: {status}"))
+    }
+}
+
 /// DELETE /v1/cloud/token — clear cloud token from local backend.
 pub async fn clear_cloud_token(ep: &BackendEndpoint) -> Result<(), String> {
     let url = format!("{}/v1/cloud/token", ep.url);
@@ -1197,6 +1222,22 @@ pub async fn resolve_pending_edit(
         Ok(())
     } else {
         Err(format!("resolve error: {status}"))
+    }
+}
+
+pub async fn dismiss_pending_edit(ep: &BackendEndpoint, id: &str) -> Result<(), String> {
+    let url = format!("{}/v1/pending-edits/{id}/dismiss", ep.url);
+    let status = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("dismiss pending edit failed: {e}"))?
+        .status();
+    if status.is_success() || status.as_u16() == 204 {
+        Ok(())
+    } else {
+        Err(format!("dismiss error: {status}"))
     }
 }
 

@@ -101,9 +101,9 @@ use crate::{
         gateway, gemini_direct, groq, openai_codex,
         prompt::{
             VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE, VocabEntry,
-            build_user_message, build_voice_repair_system_prompt, build_voice_repair_user_message,
-            default_voice_prompt_template, render_voice_system_prompt_template,
-            resolved_vocab_terms_to_entries, vocab_terms_to_entries,
+            build_user_message_with_hints, build_voice_repair_system_prompt,
+            build_voice_repair_user_message, default_voice_prompt_template,
+            render_voice_system_prompt_template, resolved_vocab_terms_to_entries,
         },
         script,
         stream_safety::{
@@ -406,15 +406,11 @@ pub async fn repair_transcript(
             llm_result.polished = cleaned;
         }
 
-        let recovered = crate::llm::format_recover::recover(&llm_result.polished);
-        if recovered != llm_result.polished {
-            info!(
-                "[voice-repair] format_recover folded spoken-form tokens ({} → {} chars)",
-                llm_result.polished.len(),
-                recovered.len(),
-            );
-            llm_result.polished = recovered;
-        }
+        // format_recover disabled — will re-enable with targeted replacement
+        // let recovered = crate::llm::format_recover::recover(&llm_result.polished);
+        // if recovered != llm_result.polished {
+        //     llm_result.polished = recovered;
+        // }
 
         let total_ms = total_start.elapsed().as_millis() as i64;
         let recording_id = Uuid::new_v4().to_string();
@@ -842,12 +838,16 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     resolved.resolved_terms.len(),
                     resolved.candidate_terms.len(),
                 );
-                let mut entries = resolved_vocab_terms_to_entries(resolved.resolved_terms);
-                entries.extend(vocab_terms_to_entries(resolved.candidate_terms));
+                let entries = resolved_vocab_terms_to_entries(resolved.resolved_terms);
                 (resolved.transcript, entries)
             }
         };
-        let user_message = build_user_message(&resolved_transcript, &prefs.output_language);
+        let low_conf_transcript = keep_low_confidence_markers(&enriched_raw, 50.0);
+        let user_message = build_user_message_with_hints(
+            &resolved_transcript,
+            &prefs.output_language,
+            Some(&low_conf_transcript),
+        );
 
         let default_prompt_body = default_voice_prompt_template();
         let prompt_body = {
@@ -869,11 +869,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             .await
             .unwrap_or(default_prompt_body)
         };
+        let relevant_corrections = crate::store::corrections::filter_relevant(
+            &word_corrections, &resolved_transcript, 2, 10,
+        );
         let base_system_prompt = render_voice_system_prompt_template(
             &prompt_body,
             &prefs,
             &rag_examples,
-            &word_corrections,
+            &relevant_corrections,
             &vocab_entries,
         );
 
@@ -1073,19 +1076,16 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             llm_result.polished = cleaned;
         }
 
-        // Final safety-net: fold spoken-form emails and recover misheard URL
-        // protocols the LLM left un-formatted. Runs AFTER the content guard
-        // and AFTER Hinglish romanization so email shapes are in their
-        // cleanest form. Deterministic + idempotent + prose-safe.
-        let recovered = crate::llm::format_recover::recover(&llm_result.polished);
-        if recovered != llm_result.polished {
-            info!(
-                "[voice] format_recover folded spoken-form tokens ({} → {} chars)",
-                llm_result.polished.len(),
-                recovered.len(),
-            );
-            llm_result.polished = recovered;
-        }
+        // Final safety-net: fold spoken-form emails, URLs, identifiers, and
+        // recover misheard URL protocols the LLM left un-formatted. Runs
+        // AFTER the content guard and AFTER Hinglish romanization so shapes
+        // are in their cleanest form. Deterministic + idempotent + prose-safe.
+        //
+        // format_recover disabled — will re-enable with targeted replacement
+        // let recovered = crate::llm::format_recover::recover(&llm_result.polished);
+        // if recovered != llm_result.polished {
+        //     llm_result.polished = recovered;
+        // }
 
         let word_count = llm_result.polished.split_whitespace().count() as i64;
         info!("[timing] LLM={}ms (TTFT inside) | total={}ms ← STT={}ms embed={}ms rag={}ms llm={}ms",
@@ -1515,6 +1515,67 @@ fn wav_duration_seconds(wav_data: &[u8]) -> f64 {
     (wav_data.len().saturating_sub(44)) as f64 / 32_000.0
 }
 
+/// Strip high-confidence markers but KEEP markers below `threshold` so the
+/// LLM can see which words Deepgram was unsure about and use context to fix them.
+pub fn keep_low_confidence_markers(s: &str, threshold: f64) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '[' {
+            let mut inner = String::new();
+            let mut found_close = false;
+            for ic in chars.by_ref() {
+                if ic == ']' {
+                    found_close = true;
+                    break;
+                }
+                inner.push(ic);
+            }
+            if found_close {
+                if let Some((word, conf)) = parse_confidence_marker_with_score(&inner) {
+                    if conf < threshold {
+                        result.push_str(&format!("[{word}?{conf:.0}%]"));
+                    } else {
+                        result.push_str(&word);
+                    }
+                    continue;
+                }
+                result.push('[');
+                result.push_str(&inner);
+                result.push(']');
+            } else {
+                result.push('[');
+                result.push_str(&inner);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+fn parse_confidence_marker_with_score(inner: &str) -> Option<(String, f64)> {
+    let trimmed = inner.trim_end();
+    let without_pct = trimmed.strip_suffix('%')?.trim_end();
+    let mut split_at = without_pct.len();
+    for (i, ch) in without_pct.char_indices().rev() {
+        if ch.is_ascii_digit() || ch == '.' {
+            split_at = i;
+        } else {
+            break;
+        }
+    }
+    let pct_str = &without_pct[split_at..];
+    let score = pct_str.parse::<f64>().ok()?;
+    let word_part =
+        without_pct[..split_at].trim_end_matches(|c: char| c == '?' || c.is_whitespace());
+    if word_part.is_empty() {
+        return None;
+    }
+    Some((word_part.to_string(), score))
+}
+
 /// Strip `[word?XX%]`-style confidence markers from a string.
 ///
 /// Used for two purposes:
@@ -1527,7 +1588,7 @@ fn wav_duration_seconds(wav_data: &[u8]) -> f64 {
 ///      of these by detecting the trailing `NN%` or `NN.NN%` shape inside
 ///      brackets and treating everything before it (after stripping any
 ///      `?` and whitespace) as the word.
-fn strip_confidence_markers(s: &str) -> String {
+pub fn strip_confidence_markers(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
 

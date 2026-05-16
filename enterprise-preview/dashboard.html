@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Said Enterprise — Admin Dashboard</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/>
+        <rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/>
+        <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/>
+        <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/>
+      </svg>
+      <span>Said Enterprise</span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="setup.html">Setup</a>
+      <a href="dashboard.html" class="active">Dashboard</a>
+      <a href="meeting-create.html">New Meeting</a>
+      <a href="meeting-live.html">Live Meeting</a>
+      <a href="desktop-mode.html">Desktop App</a>
+      <a href="post-meeting.html">Report</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="flow.html">Flow</a>
+    </div>
+  </div>
+</nav>
+
+<div class="dash-layout">
+  <!-- Sidebar -->
+  <aside class="dash-sidebar">
+    <div style="padding: 0 20px 20px; display: flex; align-items: center; gap: 10px;">
+      <div class="avatar" style="background: hsl(226 60% 45%);">AV</div>
+      <div>
+        <div style="font-size: 13px; font-weight: 600;">Abhishek</div>
+        <div style="font-size: 10.5px; color: var(--fg-dim);">Admin</div>
+      </div>
+    </div>
+    <div class="side-section">General</div>
+    <a href="#" class="active">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Overview
+    </a>
+    <a href="#">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Team
+    </a>
+    <a href="meeting-create.html">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+      Meetings
+    </a>
+    <div class="side-section">Integrations</div>
+    <a href="#">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+      Lark
+    </a>
+    <div class="side-section">Admin</div>
+    <a href="#">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.73 12.73l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      Settings
+    </a>
+    <a href="#">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      Security
+    </a>
+  </aside>
+
+  <!-- Main -->
+  <main class="dash-content">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px;">
+      <div>
+        <h1 style="font-size: 22px; font-weight: 600; letter-spacing: -0.02em;">Dashboard</h1>
+        <p style="font-size: 13px; color: var(--fg-muted); margin-top: 2px;">EMIAC Technologies &middot; 12 members</p>
+      </div>
+      <a href="meeting-create.html" class="btn-primary">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14m-7-7h14"/></svg>
+        New Meeting
+      </a>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">Active Users</div>
+        <div class="stat-value">9<span class="stat-unit">/ 12</span></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Meetings This Week</div>
+        <div class="stat-value">14</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Hours Transcribed</div>
+        <div class="stat-value">23.4<span class="stat-unit">hrs</span></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Tasks Generated</div>
+        <div class="stat-value">47</div>
+      </div>
+    </div>
+
+    <!-- Recent meetings -->
+    <div class="table-wrap" style="margin-bottom: 28px;">
+      <div class="table-head">
+        <h3>Recent Meetings</h3>
+        <a href="meeting-create.html" class="btn-ghost btn-sm">View All</a>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Meeting</th>
+            <th>Date</th>
+            <th>Participants</th>
+            <th>Duration</th>
+            <th>Tasks</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><a href="meeting-live.html" style="color: var(--fg);">Sprint Planning — Week 21</a></td>
+            <td>May 16, 2026</td>
+            <td>
+              <div style="display: flex; gap: -4px;">
+                <div class="avatar-sm" style="background: hsl(226 60% 45%);">A</div>
+                <div class="avatar-sm" style="background: hsl(340 50% 40%); margin-left: -4px;">S</div>
+                <div class="avatar-sm" style="background: hsl(180 40% 35%); margin-left: -4px;">R</div>
+                <div class="avatar-sm" style="background: hsl(30 50% 40%); margin-left: -4px;">P</div>
+              </div>
+            </td>
+            <td>— </td>
+            <td>—</td>
+            <td><span class="pill pill-red">Live</span></td>
+          </tr>
+          <tr>
+            <td><a href="post-meeting.html" style="color: var(--fg);">Product Roadmap Q3</a></td>
+            <td>May 15, 2026</td>
+            <td>
+              <div style="display: flex;">
+                <div class="avatar-sm" style="background: hsl(226 60% 45%);">A</div>
+                <div class="avatar-sm" style="background: hsl(340 50% 40%); margin-left: -4px;">S</div>
+                <div class="avatar-sm" style="background: hsl(60 40% 35%); margin-left: -4px;">V</div>
+              </div>
+            </td>
+            <td>48 min</td>
+            <td>6</td>
+            <td><span class="pill pill-green">Synced</span></td>
+          </tr>
+          <tr>
+            <td>Design Review — Said v3</td>
+            <td>May 14, 2026</td>
+            <td>
+              <div style="display: flex;">
+                <div class="avatar-sm" style="background: hsl(226 60% 45%);">A</div>
+                <div class="avatar-sm" style="background: hsl(30 50% 40%); margin-left: -4px;">P</div>
+              </div>
+            </td>
+            <td>32 min</td>
+            <td>3</td>
+            <td><span class="pill pill-green">Synced</span></td>
+          </tr>
+          <tr>
+            <td>Backend Architecture — Meeting Server</td>
+            <td>May 13, 2026</td>
+            <td>
+              <div style="display: flex;">
+                <div class="avatar-sm" style="background: hsl(226 60% 45%);">A</div>
+                <div class="avatar-sm" style="background: hsl(340 50% 40%); margin-left: -4px;">S</div>
+                <div class="avatar-sm" style="background: hsl(180 40% 35%); margin-left: -4px;">R</div>
+              </div>
+            </td>
+            <td>55 min</td>
+            <td>8</td>
+            <td><span class="pill pill-amber">Pending Sync</span></td>
+          </tr>
+          <tr>
+            <td>Standup — May 12</td>
+            <td>May 12, 2026</td>
+            <td>
+              <div style="display: flex;">
+                <div class="avatar-sm" style="background: hsl(226 60% 45%);">A</div>
+                <div class="avatar-sm" style="background: hsl(340 50% 40%); margin-left: -4px;">S</div>
+                <div class="avatar-sm" style="background: hsl(180 40% 35%); margin-left: -4px;">R</div>
+                <div class="avatar-sm" style="background: hsl(30 50% 40%); margin-left: -4px;">P</div>
+                <div class="avatar-sm" style="background: hsl(60 40% 35%); margin-left: -4px;">V</div>
+              </div>
+            </td>
+            <td>15 min</td>
+            <td>2</td>
+            <td><span class="pill pill-green">Synced</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Team -->
+    <div class="table-wrap">
+      <div class="table-head">
+        <h3>Team Members</h3>
+        <span class="pill pill-blue">Lark Synced</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Department</th>
+            <th>Device</th>
+            <th>Last Active</th>
+            <th>Role</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><div style="display: flex; align-items: center; gap: 10px;"><div class="avatar-sm" style="background: hsl(226 60% 45%);">AV</div> Abhishek Verma</div></td>
+            <td>Engineering</td>
+            <td>macOS</td>
+            <td>Now</td>
+            <td><span class="pill pill-green">Admin</span></td>
+          </tr>
+          <tr>
+            <td><div style="display: flex; align-items: center; gap: 10px;"><div class="avatar-sm" style="background: hsl(340 50% 40%);">AS</div> Anish Suman</div></td>
+            <td>Engineering</td>
+            <td>Windows</td>
+            <td>2h ago</td>
+            <td><span class="pill pill-blue">Member</span></td>
+          </tr>
+          <tr>
+            <td><div style="display: flex; align-items: center; gap: 10px;"><div class="avatar-sm" style="background: hsl(180 40% 35%);">RK</div> Rahul Kumar</div></td>
+            <td>Engineering</td>
+            <td>macOS</td>
+            <td>5h ago</td>
+            <td><span class="pill pill-blue">Member</span></td>
+          </tr>
+          <tr>
+            <td><div style="display: flex; align-items: center; gap: 10px;"><div class="avatar-sm" style="background: hsl(30 50% 40%);">PS</div> Priya Sharma</div></td>
+            <td>Design</td>
+            <td>macOS</td>
+            <td>1d ago</td>
+            <td><span class="pill pill-blue">Member</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</div>
+</body>
+</html>

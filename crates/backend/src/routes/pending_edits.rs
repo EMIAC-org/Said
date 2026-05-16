@@ -2,7 +2,9 @@
 //!
 //! POST /v1/pending-edits             — store a detected edit for later approval
 //! GET  /v1/pending-edits             — list unresolved pending edits + count
+//! GET  /v1/pending-edits/unnotified  — list edits not yet shown to the user
 //! POST /v1/pending-edits/:id/resolve — approve (→ learning corpus) or skip
+//! POST /v1/pending-edits/:id/dismiss — skip + mark as notified (notification dismissed)
 
 use axum::{
     Json,
@@ -170,4 +172,43 @@ pub async fn resolve(
     } else {
         StatusCode::NOT_FOUND
     }
+}
+
+// ── Dismiss ──────────────────────────────────────────────────────────────────
+
+pub async fn dismiss(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
+    if pending_edits::dismiss(&state.pool, &id) {
+        info!("[pending-edits] dismissed {id}");
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+// ── Unnotified (for first-time notifications only) ───────────────────────────
+
+#[derive(Serialize)]
+pub struct UnnotifiedResponse {
+    pub edits: Vec<pending_edits::PendingEdit>,
+}
+
+pub async fn list_unnotified(State(state): State<AppState>) -> Json<UnnotifiedResponse> {
+    let edits = pending_edits::list_unnotified(&state.pool, &state.default_user_id);
+    Json(UnnotifiedResponse { edits })
+}
+
+// ── Mark notified ────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct MarkNotifiedBody {
+    pub ids: Vec<String>,
+}
+
+pub async fn mark_notified(
+    State(state): State<AppState>,
+    Json(body): Json<MarkNotifiedBody>,
+) -> StatusCode {
+    let id_refs: Vec<&str> = body.ids.iter().map(|s| s.as_str()).collect();
+    pending_edits::mark_notified(&state.pool, &id_refs);
+    StatusCode::NO_CONTENT
 }

@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Said — Meeting Simulator</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0a0a0b; --surface-1: hsl(240 5% 5%); --surface-2: hsl(240 5% 7.5%);
+  --surface-3: hsl(240 5% 10%); --border: hsl(0 0% 100% / 0.06);
+  --border-strong: hsl(0 0% 100% / 0.10); --fg: hsl(0 0% 93%);
+  --fg-muted: hsl(0 0% 55%); --fg-dim: hsl(0 0% 38%);
+  --primary: hsl(226 80% 78%); --primary-bg: hsl(226 80% 78% / 0.10);
+  --green: hsl(140 65% 55%); --green-bg: hsl(140 65% 50% / 0.12);
+  --amber: hsl(38 92% 60%); --amber-bg: hsl(38 92% 50% / 0.12);
+  --red: hsl(0 72% 60%); --red-bg: hsl(0 72% 50% / 0.12);
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', sans-serif;
+  --mono: 'SF Mono', ui-monospace, monospace;
+}
+html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+body { font-family: var(--font); background: var(--bg); color: var(--fg); min-height: 100vh; }
+
+.sim-layout { display: flex; height: 100vh; }
+
+/* Left: Transcript feed */
+.sim-transcript {
+  flex: 1; display: flex; flex-direction: column;
+  border-right: 1px solid var(--border);
+}
+.sim-transcript-header {
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 12px;
+}
+.sim-transcript-header h2 { font-size: 15px; font-weight: 600; }
+.live-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--red);
+  animation: pulse 1.5s infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+.sim-transcript-feed {
+  flex: 1; overflow-y: auto; padding: 16px 20px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.chunk-msg {
+  padding: 8px 12px; border-radius: 8px; background: var(--surface-2);
+  border: 1px solid var(--border); font-size: 13px; line-height: 1.5;
+  animation: slideIn 0.2s ease;
+}
+@keyframes slideIn { from { opacity: 0; transform: translateY(4px); } }
+.chunk-speaker { font-size: 11px; font-weight: 700; margin-bottom: 2px; }
+.chunk-text { color: var(--fg); }
+.chunk-time { font-size: 10px; color: var(--fg-dim); font-family: var(--mono); margin-top: 2px; }
+.system-msg {
+  padding: 6px 12px; font-size: 11px; color: var(--fg-dim);
+  background: var(--surface-3); border-radius: 6px; text-align: center;
+}
+.ai-msg {
+  padding: 10px 14px; border-radius: 8px; font-size: 12px;
+  border: 1px solid hsl(226 80% 78% / 0.15); background: var(--primary-bg);
+}
+.ai-msg .ai-label { font-size: 10px; font-weight: 700; color: var(--primary); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px; }
+.task-msg {
+  padding: 10px 14px; border-radius: 8px; font-size: 12px;
+  border: 1px solid hsl(140 65% 50% / 0.15); background: var(--green-bg);
+}
+.task-msg .task-label { font-size: 10px; font-weight: 700; color: var(--green); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px; }
+
+/* Right: Controls */
+.sim-controls {
+  width: 360px; display: flex; flex-direction: column;
+  background: var(--surface-1);
+}
+.sim-controls-header {
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+}
+.sim-controls-header h3 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.sim-controls-header p { font-size: 11px; color: var(--fg-dim); }
+
+/* Participants */
+.sim-participants { padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.sim-participants h4 {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--fg-dim); margin-bottom: 10px;
+}
+.participant-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 8px; margin-bottom: 4px;
+  cursor: pointer; transition: all 0.12s;
+}
+.participant-row:hover { background: hsl(0 0% 100% / 0.03); }
+.participant-row.active { background: var(--primary-bg); border: 1px solid hsl(226 80% 78% / 0.2); }
+.participant-row.active .p-name { color: var(--primary); }
+.p-avatar {
+  width: 28px; height: 28px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 11px; font-weight: 600; flex-shrink: 0;
+}
+.p-name { font-size: 13px; font-weight: 500; flex: 1; }
+.p-status { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+.p-status.connected { color: var(--green); background: var(--green-bg); }
+.p-status.disconnected { color: var(--red); background: var(--red-bg); }
+
+/* Input area */
+.sim-input-area {
+  padding: 16px 20px; flex: 1; display: flex; flex-direction: column;
+}
+.sim-input-area h4 {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--fg-dim); margin-bottom: 10px;
+}
+.speaking-as {
+  font-size: 12px; color: var(--primary); font-weight: 600; margin-bottom: 8px;
+}
+.sim-textarea {
+  flex: 1; min-height: 80px; resize: none;
+  background: var(--surface-2); color: var(--fg); border: 1px solid var(--border-strong);
+  border-radius: 8px; padding: 10px 14px; font-size: 13px;
+  font-family: var(--font); outline: none; transition: border-color 0.15s;
+}
+.sim-textarea:focus { border-color: var(--primary); }
+.sim-textarea::placeholder { color: var(--fg-dim); }
+.sim-send-row { display: flex; gap: 8px; margin-top: 10px; }
+.sim-send-btn {
+  flex: 1; padding: 10px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  background: var(--primary); color: #000; cursor: pointer; border: none;
+  font-family: var(--font); transition: filter 0.15s;
+}
+.sim-send-btn:hover { filter: brightness(1.1); }
+.sim-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Mic button */
+.mic-btn {
+  width: 100%; padding: 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  cursor: pointer; border: 2px solid var(--border-strong); font-family: var(--font);
+  transition: all 0.15s; display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: var(--surface-2); color: var(--fg-muted); margin-bottom: 10px;
+  user-select: none; -webkit-user-select: none;
+}
+.mic-btn:hover { border-color: var(--red); color: var(--fg); }
+.mic-btn.recording {
+  background: var(--red-bg); border-color: var(--red); color: var(--red);
+  animation: mic-pulse 1s infinite;
+}
+@keyframes mic-pulse { 0%,100% { box-shadow: 0 0 0 0 hsl(0 72% 60% / 0.3); } 50% { box-shadow: 0 0 0 8px hsl(0 72% 60% / 0); } }
+.mic-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.mic-interim {
+  font-size: 12px; color: var(--fg-dim); font-style: italic; min-height: 18px;
+  margin-bottom: 6px; padding: 0 2px;
+}
+.dg-key-row {
+  display: flex; gap: 6px; margin-bottom: 12px;
+}
+.dg-key-input {
+  flex: 1; padding: 6px 10px; font-size: 11px; background: var(--surface-2);
+  color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
+  font-family: var(--mono); outline: none;
+}
+.dg-key-input:focus { border-color: var(--primary); }
+.dg-key-label { font-size: 10px; color: var(--fg-dim); margin-bottom: 4px; }
+
+/* Script buttons */
+.sim-scripts { padding: 16px 20px; border-top: 1px solid var(--border); }
+.sim-scripts h4 {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--fg-dim); margin-bottom: 10px;
+}
+.script-btn {
+  display: block; width: 100%; padding: 8px 12px; margin-bottom: 6px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--fg-muted); font-size: 12px; text-align: left; cursor: pointer;
+  font-family: var(--font); transition: all 0.12s;
+}
+.script-btn:hover { color: var(--fg); border-color: var(--border-strong); background: var(--surface-3); }
+.script-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.end-btn {
+  background: var(--red-bg); border-color: hsl(0 72% 50% / 0.2); color: var(--red);
+}
+.end-btn:hover { background: hsl(0 72% 50% / 0.18); }
+
+/* Stats bar */
+.sim-stats {
+  padding: 12px 20px; border-top: 1px solid var(--border);
+  display: flex; gap: 16px; font-size: 11px; color: var(--fg-dim);
+}
+.sim-stats span { display: flex; align-items: center; gap: 4px; }
+</style>
+</head>
+<body>
+<div class="sim-layout">
+  <!-- Left: Live transcript -->
+  <div class="sim-transcript">
+    <div class="sim-transcript-header">
+      <div class="live-dot"></div>
+      <h2 id="meeting-title">Connecting...</h2>
+      <span style="margin-left: auto; font-size: 11px; color: var(--fg-dim);" id="elapsed">00:00</span>
+    </div>
+    <div class="sim-transcript-feed" id="feed"></div>
+    <div class="sim-stats">
+      <span>Chunks: <strong id="stat-chunks">0</strong></span>
+      <span>Slots: <strong id="stat-slots">0</strong></span>
+      <span>Words: <strong id="stat-words">0</strong></span>
+    </div>
+  </div>
+
+  <!-- Right: Controls -->
+  <div class="sim-controls">
+    <div class="sim-controls-header">
+      <h3>Meeting Simulator</h3>
+      <p>Click a participant to speak as them</p>
+    </div>
+
+    <div class="sim-participants" id="participants"></div>
+
+    <div class="sim-input-area">
+      <h4>Voice</h4>
+      <div class="speaking-as">Speaking as: <span id="speaking-as-name">—</span></div>
+      <div class="dg-key-label">Said Backend URL</div>
+      <div class="dg-key-row">
+        <input type="text" class="dg-key-input" id="backend-url" value="http://127.0.0.1:50818" style="font-family: var(--mono);" />
+      </div>
+      <div class="dg-key-label">Backend Secret (from Tauri logs)</div>
+      <div class="dg-key-row">
+        <input type="text" class="dg-key-input" id="backend-secret" placeholder="POLISH_SHARED_SECRET UUID" style="font-family: var(--mono);" />
+      </div>
+      <button class="mic-btn" id="mic-btn" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v4"/></svg>
+        Hold to Speak
+      </button>
+      <div class="mic-interim" id="mic-interim"></div>
+
+      <h4 style="margin-top: 8px;">Or type</h4>
+      <textarea class="sim-textarea" id="msg-input" placeholder="Type what this person says..." disabled style="min-height: 50px;"></textarea>
+      <div class="sim-send-row">
+        <button class="sim-send-btn" id="send-btn" disabled>Send Chunk</button>
+      </div>
+    </div>
+
+    <div class="sim-scripts">
+      <h4>Auto Scripts</h4>
+      <button class="script-btn" id="script-natural" disabled>Run Sprint Planning Script (realistic)</button>
+      <button class="script-btn" id="script-stress" disabled>Run Stress Test (rapid fire)</button>
+      <button class="script-btn end-btn" id="end-meeting-btn" disabled>End Meeting</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+const SPEAKERS = [
+  { name: 'Abhishek Verma', short: 'Abhishek', color: 'hsl(226 60% 45%)', initials: 'AV' },
+  { name: 'Rahul Kumar',    short: 'Rahul',    color: 'hsl(180 40% 35%)', initials: 'RK' },
+  { name: 'Priya Sharma',   short: 'Priya',    color: 'hsl(30 50% 40%)',  initials: 'PS' },
+  { name: 'Anish Suman',    short: 'Anish',    color: 'hsl(340 50% 40%)', initials: 'AS' },
+];
+
+// Parse URL params
+const params = new URLSearchParams(window.location.search);
+const meetingId = params.get('meeting');
+const tokens = [params.get('t0'), params.get('t1'), params.get('t2'), params.get('t3')];
+
+if (!meetingId || tokens.some(t => !t)) {
+  document.body.innerHTML = '<div style="padding: 40px; color: var(--red); font-size: 16px;">Missing URL params. Run: <code>bash scripts/setup-simulation.sh</code></div>';
+  throw new Error('missing params');
+}
+
+// State
+let activeSpeaker = 0;
+let sockets = [null, null, null, null];
+let connected = [false, false, false, false];
+let chunkCount = 0;
+let wordCount = 0;
+let startTime = Date.now();
+
+// DOM
+const feed = document.getElementById('feed');
+const msgInput = document.getElementById('msg-input');
+const sendBtn = document.getElementById('send-btn');
+const speakingAsName = document.getElementById('speaking-as-name');
+const meetingTitle = document.getElementById('meeting-title');
+const elapsed = document.getElementById('elapsed');
+
+// ── Feed helpers ─────────────────────────────────────────────────────
+
+function addToFeed(html) {
+  feed.insertAdjacentHTML('beforeend', html);
+  feed.scrollTop = feed.scrollHeight;
+}
+
+function addSystem(text) {
+  addToFeed(`<div class="system-msg">${esc(text)}</div>`);
+}
+
+function addChunk(speaker, text, idx) {
+  const s = SPEAKERS.find(sp => sp.short === speaker || sp.name === speaker) || SPEAKERS[0];
+  addToFeed(`
+    <div class="chunk-msg">
+      <div class="chunk-speaker" style="color: ${s.color};">${esc(s.short)} #${idx}</div>
+      <div class="chunk-text">${esc(text)}</div>
+      <div class="chunk-time">${new Date().toLocaleTimeString()}</div>
+    </div>`);
+}
+
+function addAI(label, text) {
+  addToFeed(`
+    <div class="ai-msg">
+      <div class="ai-label">${esc(label)}</div>
+      <div style="color: var(--fg);">${esc(text)}</div>
+    </div>`);
+}
+
+function addTask(title, assignee) {
+  addToFeed(`
+    <div class="task-msg">
+      <div class="task-label">Task Detected</div>
+      <div style="color: var(--fg);">${esc(title)}${assignee ? ' — ' + esc(assignee) : ''}</div>
+    </div>`);
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+// ── Participant UI ───────────────────────────────────────────────────
+
+function renderParticipants() {
+  const el = document.getElementById('participants');
+  el.innerHTML = '<h4>Participants</h4>' + SPEAKERS.map((s, i) => `
+    <div class="participant-row ${i === activeSpeaker ? 'active' : ''}" onclick="selectSpeaker(${i})">
+      <div class="p-avatar" style="background: ${s.color};">${s.initials}</div>
+      <div class="p-name">${s.name}</div>
+      <div class="p-status ${connected[i] ? 'connected' : 'disconnected'}">${connected[i] ? 'Live' : '...'}</div>
+    </div>`).join('');
+}
+
+function selectSpeaker(idx) {
+  activeSpeaker = idx;
+  speakingAsName.textContent = SPEAKERS[idx].short;
+  speakingAsName.style.color = SPEAKERS[idx].color;
+  msgInput.disabled = false;
+  msgInput.placeholder = `Type what ${SPEAKERS[idx].short} says...`;
+  msgInput.focus();
+  renderParticipants();
+}
+
+// ── WebSocket connections ────────────────────────────────────────────
+
+function connectAll() {
+  meetingTitle.textContent = 'Sprint Planning — Simulation';
+  tokens.forEach((token, i) => {
+    const wsUrl = `ws://localhost:3100/v1/meetings/${meetingId}/ws?token=${token}`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      connected[i] = true;
+      addSystem(`${SPEAKERS[i].short} connected`);
+      renderParticipants();
+      checkAllConnected();
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        handleMessage(i, msg);
+      } catch {}
+    };
+
+    ws.onclose = () => {
+      connected[i] = false;
+      addSystem(`${SPEAKERS[i].short} disconnected`);
+      renderParticipants();
+    };
+
+    ws.onerror = () => {};
+    sockets[i] = ws;
+  });
+}
+
+function checkAllConnected() {
+  if (connected.every(c => c)) {
+    sendBtn.disabled = false;
+    micBtn.disabled = false;
+    document.getElementById('script-natural').disabled = false;
+    document.getElementById('script-stress').disabled = false;
+    document.getElementById('end-meeting-btn').disabled = false;
+    selectSpeaker(0);
+    addSystem('All 4 participants connected — hold mic button to speak, or type below');
+  }
+}
+
+const seenChunks = new Set();
+
+function handleMessage(fromIdx, msg) {
+  switch (msg.type) {
+    case 'connected':
+      break;
+    case 'catchup':
+      if (fromIdx === 0 && msg.summary) addAI('Catchup Summary', msg.summary);
+      break;
+    case 'transcript_chunk': {
+      const key = msg.chunk_index;
+      if (seenChunks.has(key)) break;
+      seenChunks.add(key);
+      chunkCount++;
+      wordCount += (msg.text || '').split(/\s+/).length;
+      document.getElementById('stat-chunks').textContent = chunkCount;
+      document.getElementById('stat-words').textContent = wordCount;
+      addChunk(msg.speaker_name, msg.text, msg.chunk_index);
+      break;
+    }
+    case 'summary_updated':
+      if (fromIdx === 0) addAI('AI Summary Updated', msg.summary);
+      break;
+    case 'task_detected':
+      if (fromIdx === 0) addTask(msg.title, msg.assignee_name);
+      break;
+    case 'participant_joined':
+      break;
+    case 'participant_left':
+      break;
+    case 'meeting_ended':
+      if (fromIdx === 0) {
+        addSystem('Meeting ended by host');
+        sockets.forEach(ws => ws && ws.close());
+        sendBtn.disabled = true;
+        msgInput.disabled = true;
+      }
+      break;
+    case 'pong':
+      break;
+  }
+}
+
+// ── Send chunk ───────────────────────────────────────────────────────
+
+function sendChunk(speakerIdx, text) {
+  const ws = sockets[speakerIdx];
+  if (!ws || ws.readyState !== WebSocket.OPEN || !text.trim()) return;
+  ws.send(JSON.stringify({
+    type: 'transcript_chunk',
+    text: text.trim(),
+    timestamp_ms: Date.now(),
+  }));
+  // The chunk will appear via another connection's broadcast (deduped by seenChunks)
+}
+
+sendBtn.addEventListener('click', () => {
+  const text = msgInput.value.trim();
+  if (!text) return;
+  sendChunk(activeSpeaker, text);
+  msgInput.value = '';
+  msgInput.focus();
+});
+
+msgInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendBtn.click();
+  }
+});
+
+// ── End meeting ──────────────────────────────────────────────────────
+
+document.getElementById('end-meeting-btn').addEventListener('click', async () => {
+  if (!confirm('End the meeting?')) return;
+  try {
+    await fetch(`/v1/meetings/${meetingId}/end`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + tokens[0] },
+    });
+  } catch (e) {
+    addSystem('Failed to end meeting: ' + e.message);
+  }
+});
+
+// ── Auto scripts ─────────────────────────────────────────────────────
+
+const SPRINT_SCRIPT = [
+  [0, "Alright everyone, let's kick off the sprint planning. Last week we closed 28 story points which is slightly below our target of 30."],
+  [2, "I think part of the shortfall was the design review for the settings page taking longer than expected. We underestimated the edge cases."],
+  [1, "Yeah and the WebSocket reconnection bug took me two days instead of one. The root cause was in the heartbeat timer, not the connection logic like we assumed."],
+  [0, "Good learnings. Let's plan this week. I've got three priorities: the meeting summary export, the Lark task sync, and the admin dashboard polish."],
+  [3, "Before we plan new work, the Windows installer is still broken on machines with non-ASCII usernames. I've got a fix ready but it needs review."],
+  [0, "That's a P0 blocker for the release. Anish, get that PR up today, Rahul can you review it by end of day?"],
+  [1, "Yeah I'll prioritize the review. Should be straightforward if it's just the path encoding fix."],
+  [3, "It's exactly that — I'm URL-encoding the install path instead of using raw UTF-16. Three files changed."],
+  [0, "Perfect. Now for the meeting export — Priya, can you design the export format? I'm thinking a clean PDF with the summary, action items, and decisions."],
+  [2, "I can have mockups ready by Wednesday. Should I include the full transcript or just the AI summary?"],
+  [0, "Both — summary on page one, full transcript as an appendix. We decided to give users the complete record for compliance."],
+  [1, "For the Lark sync, I'll need the task API credentials. Abhishek, can you share the Lark app tokens?"],
+  [0, "Already in the .env file. The Task v2 API uses tenant access tokens. I tested it last night — creating tasks works, we just need the assignee mapping from our org_members table."],
+  [1, "Got it. I estimate two days for the full Lark integration — tasks plus the doc export."],
+  [2, "One more thing — the dashboard has a contrast issue on the stats cards. The text is too dim on some monitors. I want to bump the opacity."],
+  [0, "Go ahead, that's a quick CSS fix. Anything else blocking anyone?"],
+  [3, "Nothing from my side. After the Windows fix I'll start on the notification system — desktop toast when a task is assigned to you during a meeting."],
+  [0, "Great. Let me summarize: Anish ships the Windows fix today, Rahul reviews then starts Lark sync, Priya does export mockups by Wednesday and fixes the contrast, and I'll focus on the admin dashboard. Let's aim for 32 points this week."],
+  [1, "Sounds good. Quick question though — should the Lark doc include participant names or just the speaker labels?"],
+  [0, "Full names from the Lark directory. We already have lark_name in org_members. Use that."],
+  [2, "Makes sense. Are we done? I want to get started on those mockups."],
+  [0, "We're done. Good meeting everyone. Ship it."],
+];
+
+const STRESS_SCRIPT = [
+  [0, "First chunk from Abhishek"],
+  [1, "Rahul speaking immediately after"],
+  [2, "Priya jumping in right away"],
+  [3, "Anish too — all four talking at once"],
+  [0, "Overlapping speech test — can the system handle rapid interleaving?"],
+  [1, "Yes it should — the hub assigns monotonic chunk indices regardless of arrival order"],
+  [2, "What about a really long message that spans multiple sentences and contains lots of words to test the word counter? This is that message and it keeps going and going to really stress the token counting and the slot boundary detection and the AI summarization pipeline."],
+  [3, "Short."],
+  [0, "Action item: Rahul needs to fix the authentication bypass vulnerability by Friday."],
+  [1, "Decision: We're going with WebSocket over HTTP polling for all real-time features."],
+  [2, "Another task: Priya will redesign the onboarding flow — target next Tuesday."],
+  [3, "And Anish will benchmark the Windows audio pipeline — by Thursday."],
+  [0, "Lots of tasks and decisions in this meeting. The AI should pick them all up."],
+];
+
+async function runScript(script) {
+  const btns = document.querySelectorAll('.script-btn');
+  btns.forEach(b => b.disabled = true);
+  sendBtn.disabled = true;
+  msgInput.disabled = true;
+
+  for (const [speakerIdx, text] of script) {
+    sendChunk(speakerIdx, text);
+    // Random delay: 1.5-4 seconds between lines
+    const delay = 1500 + Math.random() * 2500;
+    await new Promise(r => setTimeout(r, delay));
+  }
+
+  btns.forEach(b => b.disabled = false);
+  sendBtn.disabled = false;
+  msgInput.disabled = false;
+  addSystem('Script finished');
+}
+
+document.getElementById('script-natural').addEventListener('click', () => runScript(SPRINT_SCRIPT));
+document.getElementById('script-stress').addEventListener('click', () => runScript(STRESS_SCRIPT));
+
+// ── Elapsed timer ────────────────────────────────────────────────────
+
+setInterval(() => {
+  const s = Math.floor((Date.now() - startTime) / 1000);
+  const m = Math.floor(s / 60);
+  const ss = s % 60;
+  elapsed.textContent = `${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+}, 1000);
+
+// ── Keyboard shortcuts ──────────────────────────────────────────────
+
+document.addEventListener('keydown', (e) => {
+  // 1-4 to switch speakers
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && ['1','2','3','4'].includes(e.key)) {
+    if (document.activeElement !== msgInput) {
+      e.preventDefault();
+      selectSpeaker(parseInt(e.key) - 1);
+    }
+  }
+});
+
+// ── Mic capture + Said backend voice pipeline ───────────────────────
+
+const micBtn = document.getElementById('mic-btn');
+const micInterim = document.getElementById('mic-interim');
+let mediaRecorder = null;
+let audioChunks = [];
+let isRecording = false;
+
+async function startRecording() {
+  if (isRecording) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true }
+    });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      if (audioChunks.length === 0) return;
+
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      micInterim.textContent = 'Processing...';
+      await sendToSaidBackend(blob);
+    };
+
+    mediaRecorder.start(250);
+    isRecording = true;
+    micBtn.classList.add('recording');
+    micBtn.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      Recording... Release to send`;
+    micInterim.textContent = 'Listening...';
+  } catch (err) {
+    addSystem('Mic access denied: ' + err.message);
+  }
+}
+
+function stopRecording() {
+  if (!isRecording || !mediaRecorder) return;
+  isRecording = false;
+  mediaRecorder.stop();
+  micBtn.classList.remove('recording');
+  micBtn.innerHTML = `
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v4"/></svg>
+    Hold to Speak`;
+}
+
+async function sendToSaidBackend(audioBlob) {
+  const backendUrl = document.getElementById('backend-url').value.replace(/\/+$/, '');
+  const secret = document.getElementById('backend-secret').value.trim();
+  const formData = new FormData();
+  formData.append('audio', audioBlob, 'recording.webm');
+
+  const headers = {};
+  if (secret) headers['Authorization'] = 'Bearer ' + secret;
+
+  try {
+    const res = await fetch(`${backendUrl}/v1/voice/polish`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      addSystem(`Backend error (${res.status}): ${errText.slice(0, 100)}`);
+      micInterim.textContent = '';
+      return;
+    }
+
+    // Read SSE stream — collect polished tokens
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let polished = '';
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') continue;
+        try {
+          const evt = JSON.parse(data);
+          if (evt.token) {
+            polished += evt.token;
+            micInterim.textContent = polished;
+          }
+          if (evt.polished) {
+            polished = evt.polished;
+            micInterim.textContent = polished;
+          }
+        } catch {}
+      }
+    }
+
+    polished = polished.trim();
+    if (polished) {
+      sendChunk(activeSpeaker, polished);
+      micInterim.textContent = '';
+    } else {
+      micInterim.textContent = 'No speech detected';
+      setTimeout(() => { micInterim.textContent = ''; }, 2000);
+    }
+  } catch (err) {
+    addSystem('Backend connection failed: ' + err.message);
+    micInterim.textContent = '';
+  }
+}
+
+// Mouse/touch events for hold-to-speak
+micBtn.addEventListener('mousedown', (e) => { e.preventDefault(); startRecording(); });
+micBtn.addEventListener('mouseup', stopRecording);
+micBtn.addEventListener('mouseleave', () => { if (isRecording) stopRecording(); });
+micBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); }, { passive: false });
+micBtn.addEventListener('touchend', stopRecording);
+
+// ── Init ─────────────────────────────────────────────────────────────
+
+renderParticipants();
+connectAll();
+addSystem('Connecting 4 participants to meeting...');
+</script>
+</body>
+</html>
