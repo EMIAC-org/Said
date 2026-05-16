@@ -1271,7 +1271,7 @@ mod tests {
     #[test]
     fn live_stt_health_miss_is_diagnostic_until_release() {
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        let mut recording = ActiveRecording::new("test".into(), tx, None);
+        let mut recording = ActiveRecording::new("test".into(), tx, None, None);
         recording.first_signal_at =
             Some(tokio::time::Instant::now() - LIVE_STT_HEALTH_TIMEOUT - Duration::from_millis(1));
 
@@ -1283,7 +1283,7 @@ mod tests {
     #[test]
     fn batch_rescue_requires_speech_health_miss_without_text() {
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        let mut recording = ActiveRecording::new("test".into(), tx, None);
+        let mut recording = ActiveRecording::new("test".into(), tx, None, None);
         assert!(!recording.should_batch_rescue_on_release());
 
         recording.first_signal_at =

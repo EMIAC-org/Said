@@ -1,8 +1,10 @@
 //! Live integration test for the Tier 1 + Tier 2 polish hardening changes.
 //!
-//! Hits the real Groq API. Skipped if `GROQ_API_KEY` (or `GROQ`) isn't set.
+//! Hits the real Groq API. Skipped unless `RUN_GROQ_HARDENING_TESTS=1` and
+//! `GROQ_API_KEY` (or `GROQ`) are set.
 //!
-//! Run with: `cargo test -p said-backend --test polish_hardening_groq -- --nocapture --test-threads=1`
+//! Run with:
+//! `RUN_GROQ_HARDENING_TESTS=1 cargo test -p said-backend --test polish_hardening_groq -- --nocapture --test-threads=1`
 
 use reqwest::Client;
 use said_backend::llm::{
@@ -17,6 +19,13 @@ use said_backend::store::{corrections::Correction, prefs::Preferences};
 use tokio::sync::mpsc;
 
 fn groq_key() -> Option<String> {
+    let enabled = std::env::var("RUN_GROQ_HARDENING_TESTS")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
+    if !enabled {
+        return None;
+    }
+
     // Read from .env if present (test runner does NOT auto-load .env).
     let env_path = std::path::Path::new("../../.env");
     if env_path.exists() {

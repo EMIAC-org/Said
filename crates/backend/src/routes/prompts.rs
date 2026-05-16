@@ -150,9 +150,8 @@ pub async fn test_voice_prompt(
 
     let (word_corrections, _) =
         crate::get_lexicon_cached(&state.lexicon_cache, &pool, &user_id).await;
-    let relevant_corrections = crate::store::corrections::filter_relevant(
-        &word_corrections, &transcript, 2, 10,
-    );
+    let relevant_corrections =
+        crate::store::corrections::filter_relevant(&word_corrections, &transcript, 2, 10);
     let system_prompt =
         render_voice_system_prompt_template(prompt_body, &prefs, &[], &relevant_corrections, &[]);
     let user_message = build_user_message(&transcript, &prefs.output_language);

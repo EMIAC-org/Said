@@ -12,7 +12,13 @@ pub struct LocalUser {
     pub created_at: i64,
 }
 
-pub fn update_cloud_auth(pool: &DbPool, user_id: &str, token: &str, tier: &str, email: Option<&str>) {
+pub fn update_cloud_auth(
+    pool: &DbPool,
+    user_id: &str,
+    token: &str,
+    tier: &str,
+    email: Option<&str>,
+) {
     if let Ok(conn) = pool.get() {
         if let Some(email) = email {
             let _ = conn.execute(

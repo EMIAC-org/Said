@@ -109,9 +109,9 @@ pub fn filter_relevant(
                 }
             }
             // Phonetic fallback
-            transcript_tokens.iter().any(|tok| {
-                phonetics::similarity(tok, &wrong_lower) >= 0.70
-            })
+            transcript_tokens
+                .iter()
+                .any(|tok| phonetics::similarity(tok, &wrong_lower) >= 0.70)
         })
         .cloned()
         .collect();
