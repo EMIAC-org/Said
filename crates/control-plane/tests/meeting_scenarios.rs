@@ -272,6 +272,119 @@ async fn s02_signup_login_auth() {
     );
 }
 
+#[tokio::test]
+async fn s02b_first_user_org_onboarding_crud() {
+    let srv = TestServer::start().await;
+    let tag = Uuid::new_v4();
+    let slug = format!("onboard-{tag}");
+
+    let (_account_id, token) = srv.create_account(&format!("onboard-{tag}")).await;
+
+    let missing = srv
+        .client
+        .get(srv.url("/v1/orgs/me"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+
+    let created = srv
+        .client
+        .post(srv.url("/v1/orgs"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "name": "Onboarding Test",
+            "slug": slug,
+            "meeting_creator_roles": ["COMPANY_ADMIN", "MANAGER"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+    let created_body: Value = created.json().await.unwrap();
+    assert_eq!(created_body["org"]["role"], "COMPANY_ADMIN");
+
+    let me = srv
+        .client
+        .get(srv.url("/v1/orgs/me"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), 200);
+    let me_body: Value = me.json().await.unwrap();
+    assert_eq!(me_body["org"]["slug"], created_body["org"]["slug"]);
+
+    let meeting_id = srv
+        .create_meeting(token, "Onboarding CRUD Meeting", &[])
+        .await;
+
+    let list = srv
+        .client
+        .get(srv.url("/v1/meetings"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list.status(), 200);
+    let list_body: Value = list.json().await.unwrap();
+    assert!(
+        list_body["meetings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == meeting_id.to_string())
+    );
+
+    srv.start_meeting(token, meeting_id).await;
+
+    let ended = srv
+        .client
+        .post(srv.url(&format!("/v1/meetings/{meeting_id}/end")))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ended.status(), 200);
+
+    let detail = srv
+        .client
+        .get(srv.url(&format!("/v1/meetings/{meeting_id}")))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(detail.status(), 200);
+    let detail_body: Value = detail.json().await.unwrap();
+    assert_eq!(detail_body["meeting"]["status"], "ended");
+}
+
+#[tokio::test]
+async fn s02c_admin_routes_are_normalized_and_safe() {
+    let srv = TestServer::start().await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let admin = client.get(srv.url("/admin")).send().await.unwrap();
+    assert_eq!(admin.status(), 307);
+    assert_eq!(admin.headers().get("location").unwrap(), "/admin/");
+
+    let res = client.get(srv.url("/adminfirst")).send().await.unwrap();
+    assert_eq!(res.status(), 404);
+    let body = res.text().await.unwrap();
+    assert!(body.contains("Page not found"));
+
+    let asset = client
+        .get(srv.url("/admin/assets/missing.js"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(asset.status(), 404);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Scenario 3: MEMBER role blocked from creating meeting
 // ═══════════════════════════════════════════════════════════════════════════════
