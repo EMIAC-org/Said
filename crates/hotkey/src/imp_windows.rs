@@ -95,7 +95,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     let vk = kb.vkCode;
     let kind = wparam_to_kind(wparam.0 as u32);
 
-    // ── Tone-polish shortcut: Alt+1..5 (matches Mac's ⌥1..⌥5) ────────────────
+    // ── Tone-polish shortcut: Ctrl+Shift+1..5 (Mac uses ⌥1..⌥5) ──────────────
     // Checked BEFORE the record-key classification so it has priority even if
     // the target VK is also a digit (it never is — Caps Lock and Right Alt
     // don't overlap with 1..5). Spawn the callback off-thread so the hook
@@ -105,8 +105,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             let cb = Arc::clone(cb);
             std::thread::spawn(move || cb(digit));
         }
-        // Swallow so the focused app doesn't also receive Alt+digit (which
-        // typically activates a File/Edit/etc. menu).
+        // Swallow so the focused app doesn't see a stray Ctrl+Shift+digit.
         return LRESULT(1);
     }
 
@@ -186,14 +185,15 @@ pub fn start_hold_listener(
     });
 }
 
-/// Alt+1 through Alt+5 polish-tone shortcuts. The callback receives the
-/// digit (1-5) and runs on a fresh thread — Windows silently removes a hook
-/// whose proc takes too long, so the hook itself only stores the registration.
+/// Ctrl+Shift+1 through Ctrl+Shift+5 polish-tone shortcuts. The callback
+/// receives the digit (1-5) and runs on a fresh thread — Windows silently
+/// removes a hook whose proc takes too long, so the hook itself only stores
+/// the registration.
 pub fn register_shortcut_callback(cb: Arc<dyn Fn(u8) + Send + Sync>) {
     if SHORTCUT_CB.set(cb).is_err() {
         tracing::warn!("[hotkey] register_shortcut_callback called twice — ignoring");
     } else {
-        tracing::info!("[hotkey] Alt+1..5 shortcuts registered");
+        tracing::info!("[hotkey] Ctrl+Shift+1..5 shortcuts registered");
     }
 }
 

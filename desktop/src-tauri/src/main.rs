@@ -598,9 +598,12 @@ fn build_tray_menu(
     )?;
 
     // ── 4. "Polish my message" submenu ─────────────────────────────────
-    // Both platforms now wire the digit-row shortcut:
+    // Both platforms wire the digit-row shortcut, but to different chords:
     //   macOS  — Option+1..5 via said_hotkey::imp (CGEventTap)
-    //   Windows — Alt+1..5 via said_hotkey::imp_windows (WH_KEYBOARD_LL)
+    //   Windows — Ctrl+Shift+1..5 via said_hotkey::imp_windows (WH_KEYBOARD_LL).
+    //     Alt+digit would activate the menu bar in Chromium browsers and any
+    //     classic Win32 app with a menu accelerator. Ctrl+Shift+digit doesn't
+    //     collide with any common Windows shortcut.
     // Linux falls back to the plain labels (no global hotkey there).
     #[cfg(target_os = "macos")]
     let (h_format, h_prof, h_casual, h_concise, h_hinglish) = (
@@ -612,11 +615,11 @@ fn build_tray_menu(
     );
     #[cfg(target_os = "windows")]
     let (h_format, h_prof, h_casual, h_concise, h_hinglish) = (
-        "Format Selected Text  Alt+1",
-        "Professional English  Alt+2",
-        "Casual  Alt+3",
-        "Concise  Alt+4",
-        "Hinglish  Alt+5",
+        "Format Selected Text  Ctrl+Shift+1",
+        "Professional English  Ctrl+Shift+2",
+        "Casual  Ctrl+Shift+3",
+        "Concise  Ctrl+Shift+4",
+        "Hinglish  Ctrl+Shift+5",
     );
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let (h_format, h_prof, h_casual, h_concise, h_hinglish) = (
@@ -958,7 +961,7 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
             );
             #[cfg(not(target_os = "macos"))]
             tracing::warn!(
-                "[tray_polish] no text selected — make sure text is highlighted before pressing Alt+N"
+                "[tray_polish] no text selected — make sure text is highlighted before pressing Ctrl+Shift+N"
             );
             emit_tray_error(
                 app,

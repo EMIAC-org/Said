@@ -33,11 +33,24 @@ use uiautomation::patterns::UITextPattern;
 /// to fall back to the Ctrl+C/clipboard path. A `None` is silent on purpose
 /// — the caller logs the dispatch outcome.
 pub fn read_selected_text() -> Option<String> {
+    // Two-step construction: try the COM-initializing path first (the
+    // normal case for fresh worker threads spawned from the keyboard hook),
+    // then fall back to the no-init path (the Tauri runtime threads that
+    // already have COM apartment set, where `new()` would fail with
+    // "Cannot change thread mode after it is set").
     let automation = match UIAutomation::new() {
         Ok(a) => a,
         Err(e) => {
-            tracing::debug!("[selection-uia] UIAutomation::new failed: {e}");
-            return None;
+            tracing::debug!(
+                "[selection-uia] UIAutomation::new failed: {e} — retrying with new_direct()"
+            );
+            match UIAutomation::new_direct() {
+                Ok(a) => a,
+                Err(e2) => {
+                    tracing::debug!("[selection-uia] UIAutomation::new_direct also failed: {e2}");
+                    return None;
+                }
+            }
         }
     };
 

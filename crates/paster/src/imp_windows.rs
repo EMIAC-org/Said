@@ -18,7 +18,7 @@ use windows::Win32::System::Memory::{
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_C, VK_CONTROL,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_C, VK_CONTROL, VK_ESCAPE,
     VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_SHIFT, VK_V,
 };
 
@@ -175,8 +175,23 @@ fn capture_focused_text_via_selection_ctrl_c() -> Option<String> {
     if !force_release_modifiers() {
         tracing::warn!("[selection-ctrlc] SendInput modifier-release returned partial result");
     }
-    // Small settle delay so the keyup events propagate through the input
-    // queue before our copy chord lands.
+
+    // 1a. Defensive Esc tap.
+    //
+    // Background: in betas 11-13 the Alt+digit shortcut activated Chromium's
+    // menu bar (Edge / Chrome / Slack) before our hook's worker thread could
+    // run — moving focus off the user's text selection and onto the menu
+    // bar. Even with the new Ctrl+Shift+digit chord (which doesn't trigger
+    // menu activation at all) we keep a single VK_ESCAPE tap here as
+    // belt-and-braces: if anything has stolen focus (a dropdown, a hover
+    // tooltip, an inline autocomplete), Esc dismisses it before Ctrl+C and
+    // brings focus back to the previous text field. Esc is a no-op for most
+    // apps if nothing is open to dismiss.
+    send_vk(VK_ESCAPE, true);
+    send_vk(VK_ESCAPE, false);
+
+    // Small settle delay so the keyup events + Esc propagate through the
+    // input queue before our copy chord lands.
     std::thread::sleep(std::time::Duration::from_millis(30));
 
     // 2. Snapshot existing clipboard.

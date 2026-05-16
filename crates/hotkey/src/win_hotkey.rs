@@ -16,8 +16,9 @@ use crate::RecordHotkey;
 /// are from the public Microsoft VK enumeration and are stable.
 pub const VK_CAPITAL: u32 = 0x14;
 pub const VK_RMENU: u32 = 0xA5;
-/// Number-row digit virtual-key codes — `Alt+1` through `Alt+5` fire the
-/// tone-polish shortcuts (matches Mac's ⌥1..⌥5).
+/// Number-row digit virtual-key codes. Combined with held Ctrl+Shift these
+/// fire the tone-polish shortcuts (Windows analog of Mac's ⌥1..⌥5; Alt
+/// would activate the menu bar in Chromium browsers + classic Win32 apps).
 pub const VK_1: u32 = 0x31;
 pub const VK_2: u32 = 0x32;
 pub const VK_3: u32 = 0x33;
@@ -290,14 +291,22 @@ mod tests {
     }
 }
 
-// ── Tone-polish shortcut detection (Alt+1 .. Alt+5) ──────────────────────────
+// ── Tone-polish shortcut detection (Ctrl+Shift+1 .. Ctrl+Shift+5) ────────────
 //
-// Matches the macOS Option+digit chord (CGEventTap path in `imp::*`). On
-// Windows the same WH_KEYBOARD_LL hook that watches the record key also
-// classifies digit-row presses with modifier state and dispatches to the
-// shortcut callback. Only **bare Left Alt** fires — Right Alt is reserved
-// for the optional record-hotkey fallback, and we explicitly reject Ctrl /
-// Shift / Win combos so app-level Alt+digit menus stay untouched.
+// The Mac path uses Option+digit (CGEventTap). On Windows we deliberately
+// avoid Alt+digit because:
+//   - Pressing Alt alone activates the menu bar in Chromium browsers (Chrome,
+//     Edge, Brave, Slack, VS Code) — bumping focus off the user's text
+//     selection before our hook's worker can run.
+//   - Alt+digit triggers menu-bar accelerators in every classic Win32 app
+//     with a menu (Office, Notepad++, etc.).
+//
+// Ctrl+Shift+digit has none of those collisions. It's the idiomatic Windows
+// pattern for app-specific global chords. The hook intercepts on digit
+// keydown, checks Ctrl + Shift are held (Win/Alt MUST NOT be) and fires the
+// shortcut callback with the digit. We swallow the digit event so the focused
+// app doesn't also receive a Ctrl+Shift+digit (most apps have nothing on
+// that chord; swallow is defense-in-depth).
 
 /// Modifier state captured at the moment a digit key was pressed.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
@@ -310,15 +319,12 @@ pub struct ModifierState {
 }
 
 /// Pure: return `Some(digit)` if this event should fire the `1..=5`
-/// tone-polish shortcut. The caller is responsible for **swallowing** the
-/// event when this returns `Some` so the underlying app doesn't also see
-/// `Alt+digit` (which would otherwise trigger File/Edit/etc. menu items).
+/// tone-polish shortcut. The caller swallows the event when this returns
+/// `Some` so the focused app doesn't double-receive the chord.
 ///
-/// - Only the keydown is meaningful — autorepeat is irrelevant for a
-///   tone-shortcut fire (we don't want to re-polish on every repeat).
+/// - Only the keydown is meaningful — autorepeat / keyup must not re-fire.
 /// - The vk must be in `VK_1..=VK_5`.
-/// - Modifiers must be exactly Left Alt and nothing else (no Right Alt,
-///   no Ctrl, no Shift, no Win).
+/// - Modifiers must be exactly Ctrl + Shift (no Alt, no Win).
 pub fn classify_shortcut(vk: u32, kind: EvtKind, mods: ModifierState) -> Option<u8> {
     if kind != EvtKind::KeyDown {
         return None;
@@ -326,10 +332,10 @@ pub fn classify_shortcut(vk: u32, kind: EvtKind, mods: ModifierState) -> Option<
     if !(VK_1..=VK_5).contains(&vk) {
         return None;
     }
-    if !mods.left_alt {
+    if !mods.ctrl || !mods.shift {
         return None;
     }
-    if mods.right_alt || mods.ctrl || mods.shift || mods.win {
+    if mods.left_alt || mods.right_alt || mods.win {
         return None;
     }
     let digit = (vk - 0x30) as u8;
@@ -340,86 +346,99 @@ pub fn classify_shortcut(vk: u32, kind: EvtKind, mods: ModifierState) -> Option<
 mod shortcut_tests {
     use super::*;
 
-    fn lalt() -> ModifierState {
+    fn ctrl_shift() -> ModifierState {
         ModifierState {
-            left_alt: true,
+            ctrl: true,
+            shift: true,
             ..Default::default()
         }
     }
 
     #[test]
-    fn alt_1_through_5_fire_corresponding_digit() {
+    fn ctrl_shift_1_through_5_fire_corresponding_digit() {
         for (vk, expected) in [(VK_1, 1), (VK_2, 2), (VK_3, 3), (VK_4, 4), (VK_5, 5)] {
             assert_eq!(
-                classify_shortcut(vk, EvtKind::KeyDown, lalt()),
+                classify_shortcut(vk, EvtKind::KeyDown, ctrl_shift()),
                 Some(expected as u8),
-                "Alt+{expected} should fire shortcut {expected}"
+                "Ctrl+Shift+{expected} should fire shortcut {expected}"
             );
         }
     }
 
     #[test]
-    fn alt_0_and_alt_6_do_not_fire() {
+    fn ctrl_shift_0_and_ctrl_shift_6_do_not_fire() {
         // VK_0 = 0x30, VK_6 = 0x36 — outside the supported range.
-        assert_eq!(classify_shortcut(0x30, EvtKind::KeyDown, lalt()), None);
-        assert_eq!(classify_shortcut(0x36, EvtKind::KeyDown, lalt()), None);
+        assert_eq!(
+            classify_shortcut(0x30, EvtKind::KeyDown, ctrl_shift()),
+            None
+        );
+        assert_eq!(
+            classify_shortcut(0x36, EvtKind::KeyDown, ctrl_shift()),
+            None
+        );
     }
 
     #[test]
     fn keyup_never_fires() {
         // The Mac path fires on keydown only; matching that here matters
         // because the hook receives both events for every key.
-        assert_eq!(classify_shortcut(VK_1, EvtKind::KeyUp, lalt()), None);
+        assert_eq!(classify_shortcut(VK_1, EvtKind::KeyUp, ctrl_shift()), None);
     }
 
     #[test]
     fn other_event_kinds_do_not_fire() {
-        assert_eq!(classify_shortcut(VK_1, EvtKind::Other, lalt()), None);
+        assert_eq!(classify_shortcut(VK_1, EvtKind::Other, ctrl_shift()), None);
     }
 
     #[test]
-    fn right_alt_alone_does_not_fire() {
-        // Right Alt is reserved for the optional record-hotkey fallback.
-        // Triggering shortcuts from Right Alt would steal events from the
-        // record path when the user picks Right Alt as the hold key.
-        let ralt = ModifierState {
-            right_alt: true,
+    fn ctrl_only_does_not_fire() {
+        // Ctrl+digit on its own is reserved by browsers (Ctrl+1..9 jumps to
+        // the Nth tab) and many editors. We do not poach it.
+        let ctrl_only = ModifierState {
+            ctrl: true,
             ..Default::default()
         };
-        assert_eq!(classify_shortcut(VK_1, EvtKind::KeyDown, ralt), None);
+        assert_eq!(classify_shortcut(VK_1, EvtKind::KeyDown, ctrl_only), None);
     }
 
     #[test]
-    fn alt_plus_other_modifier_does_not_fire() {
-        // Ctrl+Alt+1, Shift+Alt+1, Win+Alt+1 — all pass through to the
-        // focused app. Real apps use these chords for their own menus
-        // and global shortcuts; we don't poach them.
+    fn shift_only_does_not_fire() {
+        // Shift+digit is just the symbol on top of the digit key (!@#$%).
+        let shift_only = ModifierState {
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(classify_shortcut(VK_1, EvtKind::KeyDown, shift_only), None);
+    }
+
+    #[test]
+    fn ctrl_shift_plus_alt_or_win_does_not_fire() {
+        // Ctrl+Shift+Alt+digit and Ctrl+Shift+Win+digit are reserved for
+        // user-customised macros / IME hotkeys / window-manager bindings.
         for extra in [
             ModifierState {
-                left_alt: true,
                 ctrl: true,
-                ..Default::default()
-            },
-            ModifierState {
-                left_alt: true,
                 shift: true,
+                left_alt: true,
                 ..Default::default()
             },
             ModifierState {
-                left_alt: true,
-                win: true,
-                ..Default::default()
-            },
-            ModifierState {
-                left_alt: true,
+                ctrl: true,
+                shift: true,
                 right_alt: true,
+                ..Default::default()
+            },
+            ModifierState {
+                ctrl: true,
+                shift: true,
+                win: true,
                 ..Default::default()
             },
         ] {
             assert_eq!(
                 classify_shortcut(VK_1, EvtKind::KeyDown, extra),
                 None,
-                "Alt + other modifier must not fire: {extra:?}"
+                "Ctrl+Shift + other modifier must not fire: {extra:?}"
             );
         }
     }
