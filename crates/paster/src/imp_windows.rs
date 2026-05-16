@@ -18,7 +18,7 @@ use windows::Win32::System::Memory::{
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_CONTROL, VK_V,
+    KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_C, VK_CONTROL, VK_V,
 };
 
 use crate::win_paster::{
@@ -74,11 +74,76 @@ pub fn read_focused_value_fast_for_pid(_pid: i32) -> Option<String> {
 pub fn read_focused_value_first_for_pid(_pid: i32) -> Option<String> {
     None
 }
+/// Grab the user's current selection by sending Ctrl+C and reading the
+/// clipboard. Used by tone-polish shortcuts (Alt+1..5) where the user has
+/// highlighted text in any app and wants Said to polish it in place.
+///
+/// Flow:
+///   1. Snapshot the existing clipboard (CF_UNICODETEXT) so we can restore.
+///   2. Empty the clipboard so we can detect "Ctrl+C wrote nothing"
+///      (i.e. the user has no actual selection — Ctrl+C is a no-op there).
+///   3. Synthesize Ctrl+C via SendInput.
+///   4. Poll the clipboard every 20 ms up to 200 ms for new content.
+///   5. Restore the prior clipboard.
+///
+/// Returns `None` when Ctrl+C produces no clipboard write within the budget,
+/// which is how callers (the desktop's tone-polish handler) detect "user
+/// didn't actually select anything" and show the proper toast.
 pub fn capture_focused_text_via_selection() -> Option<String> {
-    None
+    // 1. Snapshot existing clipboard. If we can't open the clipboard at all
+    //    (another app holding it), bail — better to surface the failure than
+    //    silently overwrite.
+    open_clipboard_with_retry().ok()?;
+    let saved = read_clipboard_unicode();
+    unsafe {
+        let _ = EmptyClipboard();
+        let _ = CloseClipboard();
+    }
+
+    // 2. Send Ctrl+C. The focused app will write its selection to the
+    //    clipboard if there is one; if there's no selection, nothing happens.
+    send_chord(VK_CONTROL, VK_C);
+
+    // 3. Poll for new content. Most apps respond within 30-60 ms; we give
+    //    up to 200 ms before declaring "no selection".
+    let mut result: Option<String> = None;
+    for _ in 0..10 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        if open_clipboard_with_retry().is_ok() {
+            let cur = read_clipboard_unicode();
+            unsafe {
+                let _ = CloseClipboard();
+            }
+            if let Some(text) = cur {
+                if !text.is_empty() {
+                    result = Some(text);
+                    break;
+                }
+            }
+        }
+    }
+
+    // 4. Restore the prior clipboard so the user's manual copy/paste flow
+    //    isn't disturbed by our peek.
+    if let Some(prev) = saved {
+        if !prev.is_empty() {
+            if open_clipboard_with_retry().is_ok() {
+                let _ = write_clipboard_unicode(&prev);
+                unsafe {
+                    let _ = CloseClipboard();
+                }
+            }
+        }
+    }
+
+    result
 }
+
+/// Public alias used by the desktop's tone-polish handler. Mac splits this
+/// into an AX-first path and a Ctrl+C fallback; Windows just uses the
+/// fallback directly since there's no UIAutomation port yet.
 pub fn read_selected_text() -> Option<String> {
-    None
+    capture_focused_text_via_selection()
 }
 pub fn focused_pid() -> Option<i32> {
     None

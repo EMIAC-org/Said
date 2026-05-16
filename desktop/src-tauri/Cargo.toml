@@ -74,4 +74,8 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    # CreateJobObjectW takes a SECURITY_ATTRIBUTES* and the windows-rs crate
+    # gates that signature behind Win32_Security. Without it the symbol
+    # exists only as a `#[cfg]`-disabled stub and import resolution fails.
+    "Win32_Security",
 ] }
