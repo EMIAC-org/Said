@@ -1,7 +1,8 @@
 name: Release
 
-# Triggered by pushing a v* tag. Use scripts/bump-version.sh to bump first,
-# then `git tag vX.Y.Z && git push --tags` to fire this workflow.
+# Triggered by pushing a v* tag, or manually from the Actions tab.
+# Use scripts/bump-version.sh to bump first, merge that change to main, then
+# either push `vX.Y.Z` or run this workflow manually with `tag = vX.Y.Z`.
 #
 # Channels (see CONTRIBUTING.md for the full rationale):
 #   * `vX.Y.Z`               → stable; writes `latest.json` (the legacy
@@ -11,6 +12,12 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish, for example v2.1.8'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -205,6 +212,29 @@ jobs:
           ' Cargo.toml)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve release tag
+        id: rel
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "invalid release tag: $TAG" >&2
+            exit 1
+          fi
+
+          EXPECTED="v${{ steps.ver.outputs.version }}"
+          if [ "$TAG" != "$EXPECTED" ]; then
+            echo "tag $TAG does not match workspace version $EXPECTED" >&2
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release tag: $TAG"
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -224,7 +254,7 @@ jobs:
       - name: Detect release channel
         id: chan
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ steps.rel.outputs.tag }}"
           case "$TAG" in
             *-beta*|*-rc*|*-alpha*) CHANNEL="beta" ;;
             *)                       CHANNEL="stable" ;;
@@ -236,7 +266,7 @@ jobs:
         working-directory: artifacts
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
-          TAG="${{ github.ref_name }}"
+          TAG="${{ steps.rel.outputs.tag }}"
           CHANNEL="${{ steps.chan.outputs.channel }}"
           NOTES="See https://github.com/EMIAC-org/Said/releases/tag/${TAG}"
           BASE_URL="https://github.com/EMIAC-org/Said/releases/download/${TAG}"
@@ -298,6 +328,8 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: artifacts/*
           generate_release_notes: true
           fail_on_unmatched_files: false
