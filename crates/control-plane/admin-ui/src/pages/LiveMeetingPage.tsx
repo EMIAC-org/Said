@@ -22,6 +22,32 @@ function speakerColor(name: string): string {
   return SPEAKER_COLORS[Math.abs(h) % SPEAKER_COLORS.length]
 }
 
+// ── Streaming text animation ────────────────────────────────────────────────
+
+function StreamingText({ text, animate }: { text: string; animate: boolean }) {
+  const [visibleCount, setVisibleCount] = useState(animate ? 0 : text.length)
+  const prevTextRef = useRef(text)
+
+  useEffect(() => {
+    if (!animate) { setVisibleCount(text.length); return }
+    if (text !== prevTextRef.current) {
+      prevTextRef.current = text
+      setVisibleCount(0)
+    }
+    if (visibleCount >= text.length) return
+    const id = setTimeout(() => setVisibleCount((c) => Math.min(c + 2, text.length)), 8)
+    return () => clearTimeout(id)
+  }, [text, visibleCount, animate])
+
+  if (!animate || visibleCount >= text.length) return <>{text}</>
+  return (
+    <>
+      {text.slice(0, visibleCount)}
+      <span className="inline-block w-[2px] h-[13px] bg-fg/50 ml-px animate-pulse align-text-bottom" />
+    </>
+  )
+}
+
 interface TaskItem extends WsTask {
   selected: boolean
   pushing: boolean
@@ -47,6 +73,7 @@ export function LiveMeetingPage() {
 
   const transcriptEndRef = useRef<HTMLDivElement>(null)
   const taskFlashTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const newestChunkRef = useRef(-1)
 
   // Fetch meeting info
   useEffect(() => {
@@ -216,6 +243,8 @@ export function LiveMeetingPage() {
               chunks.map((c, i) => {
                 const prevChunk = i > 0 ? chunks[i - 1] : null
                 const sameSpeaker = prevChunk && prevChunk.speaker_name === c.speaker_name
+                const isNewest = i === chunks.length - 1 && (c.chunk_index ?? i) > newestChunkRef.current
+                if (isNewest) newestChunkRef.current = c.chunk_index ?? i
                 return (
                   <div key={i} className="mb-3">
                     {!sameSpeaker && (
@@ -223,7 +252,9 @@ export function LiveMeetingPage() {
                         <span className="text-[11px] font-bold" style={{ color: speakerColor(c.speaker_name || 'Unknown') }}>{c.speaker_name || 'Unknown'}</span>
                       </div>
                     )}
-                    <p className="text-[12.5px] text-fg leading-[1.65] ml-0">{c.text}</p>
+                    <p className="text-[12.5px] text-fg leading-[1.65] ml-0">
+                      <StreamingText text={c.text} animate={isNewest} />
+                    </p>
                   </div>
                 )
               })

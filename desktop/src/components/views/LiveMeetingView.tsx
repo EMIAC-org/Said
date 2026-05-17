@@ -102,6 +102,32 @@ function upsertTask(tasks: WsTask[], task: WsTask): WsTask[] {
   return dedupeTasks([...tasks, task]);
 }
 
+// ── Streaming text animation ────────────────────────────────────────────────
+
+function StreamingText({ text, animate }: { text: string; animate: boolean }) {
+  const [visibleCount, setVisibleCount] = useState(animate ? 0 : text.length);
+  const prevTextRef = useRef(text);
+
+  useEffect(() => {
+    if (!animate) { setVisibleCount(text.length); return; }
+    if (text !== prevTextRef.current) {
+      prevTextRef.current = text;
+      setVisibleCount(0);
+    }
+    if (visibleCount >= text.length) return;
+    const id = setTimeout(() => setVisibleCount((c) => Math.min(c + 2, text.length)), 8);
+    return () => clearTimeout(id);
+  }, [text, visibleCount, animate]);
+
+  if (!animate || visibleCount >= text.length) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, visibleCount)}
+      <span className="inline-block w-[2px] h-[13px] bg-foreground/50 ml-px animate-pulse align-text-bottom" />
+    </>
+  );
+}
+
 // ── Props ────────────────────────────────────────────────────────────────────
 
 interface LiveMeetingViewProps {
@@ -134,6 +160,7 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const speakerColorMap = useRef<Map<string, string>>(new Map());
+  const newestChunkRef = useRef(-1);
   const chunkIndexRef = useRef(0);
   const highestChunkIndexRef = useRef(-1);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -766,9 +793,10 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
               <div className="space-y-3">
                 {chunks.map((chunk, i) => {
                   const color = getSpeakerColor(chunk.speaker_id, speakerColorMap.current);
-                  // Group consecutive chunks from same speaker
                   const prevChunk = i > 0 ? chunks[i - 1] : null;
                   const sameSpeaker = prevChunk?.speaker_id === chunk.speaker_id;
+                  const isNewest = i === chunks.length - 1 && chunk.chunk_index > newestChunkRef.current;
+                  if (isNewest) newestChunkRef.current = chunk.chunk_index;
 
                   return (
                     <div key={`${chunk.chunk_index}-${i}`} className={sameSpeaker ? "mt-1" : ""}>
@@ -786,7 +814,7 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
                         </div>
                       )}
                       <p className="text-[12px] text-foreground leading-relaxed pl-0">
-                        {chunk.text}
+                        <StreamingText text={chunk.text} animate={isNewest} />
                       </p>
                     </div>
                   );
