@@ -29,6 +29,8 @@ Edit `.env` and set strong values for:
 - `LARK_APP_ID`
 - `LARK_APP_SECRET`
 - `LARK_REDIRECT_URI`
+- `OPENAI_CLIENT_ID` (default Codex public client: `app_EMoamEEZ73f0CkXaXp7hrann`)
+- `OPENAI_REDIRECT_URI` (use `http://localhost:1455/auth/callback` for the current manual paste flow)
 
 Start without public HTTPS:
 

@@ -14,7 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{Duration, Utc};
-use jsonwebtoken::{EncodingKey, Header, encode};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -30,6 +30,13 @@ pub struct CallbackQuery {
 }
 
 #[derive(Serialize, Deserialize)]
+struct LarkOAuthState {
+    mode: String,
+    sub: String,
+    exp: usize,
+}
+
+#[derive(Serialize, Deserialize)]
 struct Claims {
     sub: String, // account_id
     email: String,
@@ -40,9 +47,9 @@ struct Claims {
 
 pub async fn start(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let oauth_state = Uuid::new_v4().to_string();
+    let oauth_state = encode_admin_oauth_state(&state, user.account_id)?;
 
     let url = crate::lark_client::build_oauth_url(
         &state.lark.app_id,
@@ -62,13 +69,7 @@ pub async fn callback(
     State(state): State<AppState>,
     Query(params): Query<CallbackQuery>,
 ) -> Result<Response, (StatusCode, Json<Value>)> {
-    // Validate state is a valid UUID
-    Uuid::parse_str(&params.state).map_err(|_| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "invalid state parameter"})),
-        )
-    })?;
+    let admin_account_id = decode_admin_oauth_state(&state, &params.state)?;
 
     // Exchange auth code for tokens
     let tokens =
@@ -92,52 +93,70 @@ pub async fn callback(
         })?;
 
     // ── Find or create account ──────────────────────────────────────────────
+    // Admin OAuth starts from an authenticated Said account, so bind Lark to
+    // that account. Desktop OAuth has no existing session and still uses the
+    // Lark email to create/find an account, then shows the copy-token bridge.
     let lark_email = lark_user
         .email
         .clone()
         .unwrap_or_else(|| format!("{}@lark.user", lark_user.open_id));
-    let existing: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT id, email FROM accounts WHERE email = $1")
-            .bind(&lark_email)
+
+    let (account_id, email) = if let Some(account_id) = admin_account_id {
+        sqlx::query_as("SELECT id, email FROM accounts WHERE id = $1")
+            .bind(account_id)
             .fetch_optional(&state.db)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"error": "admin OAuth account no longer exists"})),
+                )
+            })?
+    } else {
+        let existing: Option<(Uuid, String)> =
+            sqlx::query_as("SELECT id, email FROM accounts WHERE email = $1")
+                .bind(&lark_email)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(db_err)?;
+
+        if let Some(row) = existing {
+            row
+        } else {
+            // Create account with a random password hash (user authenticates via Lark)
+            let salt = SaltString::generate(&mut OsRng);
+            let random_pw = Uuid::new_v4().to_string();
+            let hash = Argon2::default()
+                .hash_password(random_pw.as_bytes(), &salt)
+                .map_err(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "hash failed"})),
+                    )
+                })?
+                .to_string();
+
+            let id: Uuid = sqlx::query_scalar(
+                "INSERT INTO accounts (email, password_hash) VALUES ($1, $2) RETURNING id",
+            )
+            .bind(&lark_email)
+            .bind(&hash)
+            .fetch_one(&state.db)
             .await
             .map_err(db_err)?;
 
-    let (account_id, email) = if let Some(row) = existing {
-        row
-    } else {
-        // Create account with a random password hash (user authenticates via Lark)
-        let salt = SaltString::generate(&mut OsRng);
-        let random_pw = Uuid::new_v4().to_string();
-        let hash = Argon2::default()
-            .hash_password(random_pw.as_bytes(), &salt)
-            .map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "hash failed"})),
-                )
-            })?
-            .to_string();
+            // Create free license key
+            sqlx::query(
+                "INSERT INTO license_keys (account_id, tier, active) VALUES ($1, 'free', true)",
+            )
+            .bind(id)
+            .execute(&state.db)
+            .await
+            .map_err(db_err)?;
 
-        let id: Uuid = sqlx::query_scalar(
-            "INSERT INTO accounts (email, password_hash) VALUES ($1, $2) RETURNING id",
-        )
-        .bind(&lark_email)
-        .bind(&hash)
-        .fetch_one(&state.db)
-        .await
-        .map_err(db_err)?;
-
-        // Create free license key
-        sqlx::query(
-            "INSERT INTO license_keys (account_id, tier, active) VALUES ($1, 'free', true)",
-        )
-        .bind(id)
-        .execute(&state.db)
-        .await
-        .map_err(db_err)?;
-
-        (id, lark_email.clone())
+            (id, lark_email.clone())
+        }
     };
 
     // ── Find or auto-create org + membership ──────────────────────────────────
@@ -150,6 +169,12 @@ pub async fn callback(
 
     let (member_id, org_id) = if let Some(row) = org_row {
         row
+    } else if admin_account_id.is_some() {
+        return Ok(admin_oauth_bridge(
+            None,
+            "/admin/onboarding?lark=needs_org",
+            "Create your organization first",
+        ));
     } else {
         // First Lark login and no org yet — auto-create one from the email domain
         let domain = lark_email.split('@').nth(1).unwrap_or("default");
@@ -277,6 +302,14 @@ pub async fn callback(
         &lark_user.name
     };
 
+    if admin_account_id.is_some() {
+        return Ok(admin_oauth_bridge(
+            Some(session_token),
+            "/admin/settings?lark=connected",
+            "Lark connected",
+        ));
+    }
+
     Ok(axum::response::Html(format!(r#"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -329,6 +362,113 @@ function copyToken() {{
         lark_name = lark_name,
         session_token = session_token,
     )).into_response())
+}
+
+fn encode_admin_oauth_state(
+    state: &AppState,
+    account_id: Uuid,
+) -> Result<String, (StatusCode, Json<Value>)> {
+    let exp = (Utc::now() + Duration::minutes(10)).timestamp() as usize;
+    let claims = LarkOAuthState {
+        mode: "admin".to_string(),
+        sub: account_id.to_string(),
+        exp,
+    };
+
+    let jwt = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(state.lark.jwt_secret.as_bytes()),
+    )
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "failed to sign OAuth state"})),
+        )
+    })?;
+
+    Ok(format!("admin.{jwt}"))
+}
+
+fn decode_admin_oauth_state(
+    state: &AppState,
+    oauth_state: &str,
+) -> Result<Option<Uuid>, (StatusCode, Json<Value>)> {
+    let Some(jwt) = oauth_state.strip_prefix("admin.") else {
+        Uuid::parse_str(oauth_state).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid state parameter"})),
+            )
+        })?;
+        return Ok(None);
+    };
+
+    let data = decode::<LarkOAuthState>(
+        jwt,
+        &DecodingKey::from_secret(state.lark.jwt_secret.as_bytes()),
+        &Validation::default(),
+    )
+    .map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid or expired OAuth state"})),
+        )
+    })?;
+
+    if data.claims.mode != "admin" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid OAuth state mode"})),
+        ));
+    }
+
+    Uuid::parse_str(&data.claims.sub).map(Some).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid OAuth state account"})),
+        )
+    })
+}
+
+fn admin_oauth_bridge(session_token: Option<Uuid>, destination: &str, title: &str) -> Response {
+    let token_script = session_token
+        .map(|token| format!("localStorage.setItem('said:admin:token', '{token}');"))
+        .unwrap_or_default();
+
+    axum::response::Html(format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Said Enterprise — {title}</title>
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box }}
+  body {{ font-family:'Inter',system-ui,sans-serif; background:#080b16; color:#e8eaf0; min-height:100vh; display:flex; align-items:center; justify-content:center }}
+  .card {{ background:#0e1225; border:1px solid #1a2038; border-radius:20px; padding:34px; max-width:380px; width:calc(100vw - 32px); text-align:center }}
+  .spinner {{ width:28px; height:28px; border:3px solid #26304f; border-top-color:#7591ef; border-radius:999px; margin:0 auto 18px; animation:spin .8s linear infinite }}
+  h1 {{ font-size:18px; font-weight:600; margin-bottom:7px }}
+  p {{ font-size:13px; color:#8f96b5; line-height:1.45 }}
+  a {{ color:#9aaef3 }}
+  @keyframes spin {{ to {{ transform:rotate(360deg) }} }}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="spinner"></div>
+  <h1>{title}</h1>
+  <p>Returning to Said admin...</p>
+  <p style="margin-top:14px"><a href="{destination}">Continue</a></p>
+</div>
+<script>
+{token_script}
+window.location.replace('{destination}');
+</script>
+</body>
+</html>"#
+    ))
+    .into_response()
 }
 
 // ── POST /v1/auth/lark/refresh ──────────────────────────────────────────────
