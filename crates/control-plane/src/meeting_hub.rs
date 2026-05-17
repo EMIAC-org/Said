@@ -345,7 +345,7 @@ impl MeetingHub {
         }
     }
 
-    /// Broadcast a task detection to a specific participant (or all if no assignee)
+    /// Broadcast a task detection to all participants.
     pub async fn notify_task(
         &self,
         meeting_id: Uuid,
@@ -366,16 +366,7 @@ impl MeetingHub {
             assignee_name,
         };
 
-        if let Some(target) = assignee_id {
-            // Send to the specific assignee
-            if let Some(p) = room.participants.get(&target) {
-                let _ = p.sender.send(msg.clone());
-            }
-            // Also send to all others so the live view shows it
-            room.broadcast_all(&msg);
-        } else {
-            room.broadcast_all(&msg);
-        }
+        room.broadcast_all(&msg);
     }
 
     /// Broadcast an updated summary to all participants
@@ -553,5 +544,82 @@ impl MeetingHub {
         if participants_exist {
             info!("[hub] meeting {meeting_id} ended — all participants notified");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn assigned_task_is_broadcast_once_per_participant() {
+        let hub = MeetingHub {
+            rooms: RwLock::new(HashMap::new()),
+        };
+        let meeting_id = Uuid::new_v4();
+        let assignee_id = Uuid::new_v4();
+        let observer_id = Uuid::new_v4();
+        let task_id = Uuid::new_v4();
+        let (assignee_tx, mut assignee_rx) = mpsc::unbounded_channel();
+        let (observer_tx, mut observer_rx) = mpsc::unbounded_channel();
+
+        let mut room = MeetingRoom::new(meeting_id);
+        room.participants.insert(
+            assignee_id,
+            Participant {
+                account_id: assignee_id,
+                email: "assignee@example.com".to_string(),
+                display_name: "Assignee".to_string(),
+                sender: assignee_tx,
+            },
+        );
+        room.participants.insert(
+            observer_id,
+            Participant {
+                account_id: observer_id,
+                email: "observer@example.com".to_string(),
+                display_name: "Observer".to_string(),
+                sender: observer_tx,
+            },
+        );
+        hub.rooms.write().await.insert(meeting_id, room);
+
+        hub.notify_task(
+            meeting_id,
+            task_id,
+            "Follow up".to_string(),
+            Some(assignee_id),
+            Some("Assignee".to_string()),
+        )
+        .await;
+
+        let assignee_msg = assignee_rx.try_recv().expect("assignee gets task");
+        let observer_msg = observer_rx.try_recv().expect("observer gets task");
+
+        for msg in [assignee_msg, observer_msg] {
+            match msg {
+                OutboundMessage::TaskDetected {
+                    task_id: actual_task_id,
+                    title,
+                    assignee_id: actual_assignee_id,
+                    assignee_name,
+                } => {
+                    assert_eq!(actual_task_id, task_id.to_string());
+                    assert_eq!(title, "Follow up");
+                    assert_eq!(actual_assignee_id, Some(assignee_id.to_string()));
+                    assert_eq!(assignee_name, Some("Assignee".to_string()));
+                }
+                other => panic!("expected task_detected, got {other:?}"),
+            }
+        }
+
+        assert!(
+            assignee_rx.try_recv().is_err(),
+            "assignee received duplicate task"
+        );
+        assert!(
+            observer_rx.try_recv().is_err(),
+            "observer received duplicate task"
+        );
     }
 }

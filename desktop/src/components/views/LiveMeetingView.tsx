@@ -88,6 +88,20 @@ function displayNameFromEmail(email?: string | null): string {
   return email.split("@")[0] || email;
 }
 
+function dedupeTasks(tasks: WsTask[]): WsTask[] {
+  const byId = new Map<string, WsTask>();
+
+  for (const task of tasks) {
+    byId.set(task.task_id, { ...byId.get(task.task_id), ...task });
+  }
+
+  return Array.from(byId.values());
+}
+
+function upsertTask(tasks: WsTask[], task: WsTask): WsTask[] {
+  return dedupeTasks([...tasks, task]);
+}
+
 // ── Props ────────────────────────────────────────────────────────────────────
 
 interface LiveMeetingViewProps {
@@ -332,7 +346,7 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
 
           case "catchup":
             setChunks(msg.current_chunks);
-            setTasks(msg.tasks);
+            setTasks(dedupeTasks(msg.tasks));
             setParticipants(msg.participants);
             break;
 
@@ -347,11 +361,11 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
             break;
 
           case "task_detected":
-            setTasks((prev) => [...prev, {
+            setTasks((prev) => upsertTask(prev, {
               task_id: msg.task_id,
               title: msg.title,
               assignee_name: msg.assignee_name,
-            }]);
+            }));
             break;
 
           case "summary_updated":
