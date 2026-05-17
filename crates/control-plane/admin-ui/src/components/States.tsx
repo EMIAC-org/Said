@@ -17,7 +17,7 @@ export function Empty({ title, message }: { title: string; message?: string }) {
 
 export function ErrorBox({ title, message }: { title: string; message: string }) {
   return (
-    <div className="bg-live-bg border border-live/20 rounded-2xl p-5 mb-5">
+    <div className="bg-live-bg border border-live/20 rounded-xl p-5 mb-5">
       <h3 className="text-sm font-semibold text-live mb-1">{title}</h3>
       <p className="text-xs text-fg-3">{message}</p>
     </div>

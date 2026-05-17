@@ -48,6 +48,7 @@ const WARM_PRIME_SILENCE_MS: usize = 200;
 const MAX_IDLE_WARM_DURATION: Duration = Duration::from_secs(15 * 60);
 const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(8);
 const MAX_STREAMING_DURATION: Duration = Duration::from_secs(45);
+const MEETING_WORD_LIMIT: usize = 150;
 
 #[derive(Debug, Clone)]
 pub struct StreamingTranscript {
@@ -700,6 +701,15 @@ async fn drain_available_responses(
                     }
                     if outcome.collected {
                         debug!("[dg_session] collected segment id={}", current.id);
+                        if current.total_word_count >= MEETING_WORD_LIMIT {
+                            if let Some(tx) = &current.utterance_end_tx {
+                                info!(
+                                    "[dg_session] word limit ({MEETING_WORD_LIMIT}) reached ({} words) — signaling chunk finalize",
+                                    current.total_word_count
+                                );
+                                let _ = tx.send(current.id.clone());
+                            }
+                        }
                     }
                 } else {
                     log_stream_response(&v, None, "idle");

@@ -15,6 +15,10 @@ path = "src/lib.rs"
 name = "said-backend"
 path = "src/main.rs"
 
+[[bin]]
+name = "eval-pipeline"
+path = "src/bin/eval_pipeline.rs"
+
 [lints]
 workspace = true
 

@@ -771,13 +771,30 @@ pub fn select_for_polish_hybrid(
         //     the term — handles STT mishearings of jargon.
         .filter(|vt| {
             let term_lower = vt.term.to_ascii_lowercase();
-            if transcript_lower.contains(&term_lower) {
+            let term_words: Vec<&str> = term_lower
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let whole_word_match = if term_words.len() == 1 {
+                transcript_tokens.iter().any(|tok| *tok == term_words[0])
+            } else {
+                transcript_tokens
+                    .windows(term_words.len())
+                    .any(|w| w == term_words.as_slice())
+            };
+            if whole_word_match {
                 return true;
+            }
+            if term_lower.len() < 4 {
+                return false;
             }
             let term_phon = crate::llm::phonetics::phonetic_key(&vt.term);
             transcript_tokens.iter().any(|tok| {
+                if tok.len() < 3 {
+                    return false;
+                }
                 let tok_phon = crate::llm::phonetics::phonetic_key(tok);
-                crate::llm::phonetics::similarity(&tok_phon, &term_phon) >= 0.70
+                crate::llm::phonetics::similarity(&tok_phon, &term_phon) >= 0.80
             })
         })
         .collect();

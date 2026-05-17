@@ -127,12 +127,25 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
   const [controlBusy, setControlBusy] = useState(false);
   const [ending, setEnding] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [reconnected, setReconnected] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const speakerColorMap = useRef<Map<string, string>>(new Map());
   const chunkIndexRef = useRef(0);
+  const highestChunkIndexRef = useRef(-1);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const backoffRef = useRef(1000); // start at 1s, doubles up to 8s
+  const unmountedRef = useRef(false);
+  const endedRef = useRef(false); // track ended via ref to avoid stale closures
+  const isFirstConnectRef = useRef(true);
+
+  // Keep endedRef in sync with state (avoids stale closures in WS callbacks)
+  useEffect(() => {
+    endedRef.current = ended;
+  }, [ended]);
 
   // Auto-scroll to bottom when new chunks arrive
   useEffect(() => {
@@ -300,115 +313,214 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
     };
   }, [meetingId]);
 
-  // WebSocket connection
+  // WebSocket connection with auto-reconnect and resume protocol
   useEffect(() => {
-    const conn = getConnection();
-    if (!conn) return;
+    const connOrNull = getConnection();
+    if (!connOrNull) return;
+
+    // Capture non-null for use in nested closures (TS narrowing doesn't propagate)
+    const conn = connOrNull;
+
+    unmountedRef.current = false;
+    isFirstConnectRef.current = true;
 
     const wsUrl = conn.serverUrl
       .replace(/^http:\/\//, "ws://")
       .replace(/^https:\/\//, "wss://")
       .replace(/\/+$/, "");
 
-    const ws = new WebSocket(`${wsUrl}/v1/meetings/${meetingId}/ws?token=${conn.jwt}`);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      setConnected(true);
-      // Start keep-alive ping every 25s
-      pingIntervalRef.current = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "ping" }));
-        }
-      }, 25_000);
-    };
-
-    ws.onclose = () => {
-      setConnected(false);
+    function clearPing() {
       if (pingIntervalRef.current) {
         clearInterval(pingIntervalRef.current);
         pingIntervalRef.current = null;
       }
-    };
+    }
 
-    ws.onerror = () => {
-      setConnected(false);
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg: WsMessage = JSON.parse(event.data);
-
-        switch (msg.type) {
-          case "connected":
-            // Successfully authenticated
-            break;
-
-          case "catchup":
-            setChunks(msg.current_chunks);
-            setTasks(dedupeTasks(msg.tasks));
-            setParticipants(msg.participants);
-            break;
-
-          case "transcript_chunk":
-            setChunks((prev) => [...prev, {
-              speaker_id: msg.speaker_id,
-              speaker_name: msg.speaker_name,
-              text: msg.text,
-              timestamp_ms: msg.timestamp_ms,
-              chunk_index: msg.chunk_index,
-            }]);
-            break;
-
-          case "task_detected":
-            setTasks((prev) => upsertTask(prev, {
-              task_id: msg.task_id,
-              title: msg.title,
-              assignee_name: msg.assignee_name,
-            }));
-            break;
-
-          case "summary_updated":
-            // Could show summary somewhere; for now just acknowledge
-            break;
-
-          case "participant_joined":
-            setParticipants((prev) => [
-              ...prev.filter((p) => p.account_id !== msg.account_id),
-              {
-                account_id: msg.account_id,
-                email: msg.email,
-                display_name: msg.display_name,
-                status: "active",
-              },
-            ]);
-            break;
-
-          case "participant_left":
-            setParticipants((prev) =>
-              prev.map((p) =>
-                p.account_id === msg.account_id ? { ...p, status: "left" } : p
-              )
-            );
-            break;
-
-          case "meeting_ended":
-            setEnded(true);
-            invoke("stop_meeting_stt").catch(() => {});
-            break;
-        }
-      } catch {
-        // Ignore malformed messages
+    function clearReconnectTimer() {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
       }
-    };
+    }
+
+    function scheduleReconnect() {
+      // Don't reconnect if unmounted or meeting ended
+      if (unmountedRef.current || endedRef.current) return;
+
+      setReconnecting(true);
+      const delay = backoffRef.current;
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        if (!unmountedRef.current && !endedRef.current) {
+          // Double backoff for next attempt, cap at 8s
+          backoffRef.current = Math.min(backoffRef.current * 2, 8000);
+          connectWs();
+        }
+      }, delay);
+    }
+
+    function connectWs() {
+      // Don't connect if unmounted or meeting ended
+      if (unmountedRef.current || endedRef.current) return;
+
+      const ws = new WebSocket(`${wsUrl}/v1/meetings/${meetingId}/ws?token=${conn.jwt}`);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setConnected(true);
+        setReconnecting(false);
+
+        // Reset backoff on successful connection
+        backoffRef.current = 1000;
+
+        const isReconnect = !isFirstConnectRef.current;
+        isFirstConnectRef.current = false;
+
+        // On reconnect, send resume with last known chunk index
+        if (isReconnect && highestChunkIndexRef.current >= 0) {
+          ws.send(JSON.stringify({
+            type: "resume",
+            last_chunk_index: highestChunkIndexRef.current,
+          }));
+
+          // Flash "Reconnected" briefly
+          setReconnected(true);
+          setTimeout(() => setReconnected(false), 2000);
+        }
+
+        // Start keep-alive ping every 25s
+        clearPing();
+        pingIntervalRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "ping" }));
+          }
+        }, 25_000);
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        clearPing();
+        // Only close the ref if it's still pointing to this socket
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+        }
+        scheduleReconnect();
+      };
+
+      ws.onerror = () => {
+        // onerror is always followed by onclose, so reconnect happens there
+        setConnected(false);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg: WsMessage = JSON.parse(event.data);
+
+          switch (msg.type) {
+            case "connected":
+              // Successfully authenticated
+              break;
+
+            case "catchup":
+              // On catchup, merge chunks and update highest index
+              for (const c of msg.current_chunks) {
+                if (c.chunk_index > highestChunkIndexRef.current) {
+                  highestChunkIndexRef.current = c.chunk_index;
+                }
+              }
+              setChunks((prev) => {
+                // Build a set of existing chunk_index values for dedup
+                const existingIndices = new Set(prev.map((c) => c.chunk_index));
+                const newChunks = msg.current_chunks.filter(
+                  (c) => !existingIndices.has(c.chunk_index)
+                );
+                if (newChunks.length === 0) return prev;
+                // Merge and sort by chunk_index to maintain order
+                const merged = [...prev, ...newChunks];
+                merged.sort((a, b) => a.chunk_index - b.chunk_index);
+                return merged;
+              });
+              setTasks(dedupeTasks(msg.tasks));
+              setParticipants(msg.participants);
+              break;
+
+            case "transcript_chunk": {
+              const newChunk: TranscriptChunk = {
+                speaker_id: msg.speaker_id,
+                speaker_name: msg.speaker_name,
+                text: msg.text,
+                timestamp_ms: msg.timestamp_ms,
+                chunk_index: msg.chunk_index,
+              };
+              // Track highest chunk_index
+              if (msg.chunk_index > highestChunkIndexRef.current) {
+                highestChunkIndexRef.current = msg.chunk_index;
+              }
+              // Deduplicate by chunk_index
+              setChunks((prev) => {
+                if (prev.some((c) => c.chunk_index === msg.chunk_index)) {
+                  return prev; // already have this chunk
+                }
+                return [...prev, newChunk];
+              });
+              break;
+            }
+
+            case "task_detected":
+              setTasks((prev) => upsertTask(prev, {
+                task_id: msg.task_id,
+                title: msg.title,
+                assignee_name: msg.assignee_name,
+              }));
+              break;
+
+            case "summary_updated":
+              // Could show summary somewhere; for now just acknowledge
+              break;
+
+            case "participant_joined":
+              setParticipants((prev) => [
+                ...prev.filter((p) => p.account_id !== msg.account_id),
+                {
+                  account_id: msg.account_id,
+                  email: msg.email,
+                  display_name: msg.display_name,
+                  status: "active",
+                },
+              ]);
+              break;
+
+            case "participant_left":
+              setParticipants((prev) =>
+                prev.map((p) =>
+                  p.account_id === msg.account_id ? { ...p, status: "left" } : p
+                )
+              );
+              break;
+
+            case "meeting_ended":
+              setEnded(true);
+              invoke("stop_meeting_stt").catch(() => {});
+              break;
+          }
+        } catch {
+          // Ignore malformed messages
+        }
+      };
+    }
+
+    // Initial connection
+    connectWs();
 
     return () => {
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current);
-        pingIntervalRef.current = null;
+      unmountedRef.current = true;
+      clearPing();
+      clearReconnectTimer();
+      setReconnecting(false);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
       }
-      ws.close();
-      wsRef.current = null;
     };
   }, [meetingId]);
 
@@ -556,7 +668,27 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
 
           {/* Connection status */}
           <div className="flex items-center gap-1.5">
-            {connected ? (
+            {reconnecting ? (
+              <>
+                <Loader2 size={12} className="animate-spin" style={{ color: "hsl(38 90% 72%)" }} />
+                <span className="text-[10px] font-medium" style={{ color: "hsl(38 90% 72%)" }}>
+                  Reconnecting...
+                </span>
+              </>
+            ) : reconnected ? (
+              <>
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{
+                    background: "hsl(142 70% 55%)",
+                    boxShadow: "0 0 6px hsl(142 70% 55% / 0.5)",
+                  }}
+                />
+                <span className="text-[10px] font-medium" style={{ color: "hsl(142 70% 65%)" }}>
+                  Reconnected
+                </span>
+              </>
+            ) : connected ? (
               <>
                 <span
                   className="w-2 h-2 rounded-full"
@@ -863,7 +995,9 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
           <div className="flex items-center gap-2 px-2 text-[11px] text-muted-foreground">
             <Users size={13} />
             <span>{activeParticipants}</span>
-            {connected ? (
+            {reconnecting ? (
+              <Loader2 size={13} className="animate-spin" style={{ color: "hsl(38 90% 72%)" }} />
+            ) : connected ? (
               <Wifi size={13} style={{ color: "hsl(142 70% 65%)" }} />
             ) : (
               <WifiOff size={13} style={{ color: "hsl(354 85% 75%)" }} />

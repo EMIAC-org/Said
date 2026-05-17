@@ -81,8 +81,6 @@ pub fn filter_relevant(
     min_count: i64,
     max_results: usize,
 ) -> Vec<Correction> {
-    use crate::llm::phonetics;
-
     let transcript_lower = transcript.to_ascii_lowercase();
     let transcript_tokens: Vec<&str> = transcript_lower
         .split(|c: char| !c.is_alphanumeric())
@@ -94,24 +92,14 @@ pub fn filter_relevant(
         .filter(|c| c.count >= min_count)
         .filter(|c| {
             let wrong_lower = c.wrong.to_ascii_lowercase();
-            // Exact whole-word match
-            if transcript_tokens.iter().any(|tok| *tok == wrong_lower) {
-                return true;
-            }
-            // Multi-word correction: check if all words appear in sequence
             let wrong_words: Vec<&str> = wrong_lower.split_whitespace().collect();
-            if wrong_words.len() > 1 {
-                let found = transcript_tokens
+            if wrong_words.len() == 1 {
+                transcript_tokens.iter().any(|tok| *tok == wrong_lower)
+            } else {
+                transcript_tokens
                     .windows(wrong_words.len())
-                    .any(|window| window == wrong_words.as_slice());
-                if found {
-                    return true;
-                }
+                    .any(|window| window == wrong_words.as_slice())
             }
-            // Phonetic fallback
-            transcript_tokens
-                .iter()
-                .any(|tok| phonetics::similarity(tok, &wrong_lower) >= 0.70)
         })
         .cloned()
         .collect();

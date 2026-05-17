@@ -47,7 +47,7 @@ export function TeamPage() {
               {members.map(m => {
                 const name = m.lark_name || `User ${(m.account_id || '?').substring(0, 8)}`
                 return (
-                  <tr key={m.account_id} className="hover:bg-accent-light/50 transition-colors">
+                  <tr key={m.account_id} className="hover:bg-surface-4/30 transition-colors">
                     <td className="px-5 py-3.5 border-b border-border-light">
                       <div className="flex items-center gap-2.5">
                         <Avatar name={name} size="sm" />

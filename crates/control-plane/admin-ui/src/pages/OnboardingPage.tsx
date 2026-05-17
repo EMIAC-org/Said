@@ -82,11 +82,13 @@ export function OnboardingPage() {
   const hasOrg = !!org?.org
 
   return (
-    <div className="min-h-screen bg-floor text-fg flex items-center justify-center px-5 py-8">
-      <div className="w-full max-w-[920px] grid grid-cols-[1.05fr_0.95fr] gap-5">
+    <div className="min-h-screen bg-floor text-fg flex items-center justify-center px-5 py-8 relative">
+      <div className="hero-glow" />
+
+      <div className="w-full max-w-[920px] grid grid-cols-[1.05fr_0.95fr] gap-5 relative z-10">
         <section className="card !p-8 flex flex-col justify-between min-h-[520px]">
           <div>
-            <div className="w-11 h-11 rounded-2xl bg-accent text-accent-fg flex items-center justify-center mb-6">
+            <div className="w-11 h-11 rounded-xl bg-surface-4 text-accent flex items-center justify-center mb-6">
               <Building2 size={20} />
             </div>
             <h1 className="text-[26px] font-semibold tracking-tight leading-tight">Set up your workspace</h1>
@@ -102,7 +104,7 @@ export function OnboardingPage() {
               'Invite members and start meetings',
             ].map((item, idx) => (
               <div key={item} className="flex items-center gap-3">
-                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-semibold ${idx === 0 || hasOrg ? 'bg-accent text-accent-fg' : 'bg-surface border border-border text-fg-4'}`}>
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-semibold ${idx === 0 || hasOrg ? 'bg-[hsl(0_0%_98%)] text-[hsl(240_8%_8%)]' : 'bg-surface-4 border border-border text-fg-4'}`}>
                   {idx === 0 && hasOrg ? <Check size={14} /> : idx + 1}
                 </div>
                 <span className="text-[13px] text-fg-2">{item}</span>
@@ -117,12 +119,12 @@ export function OnboardingPage() {
               <h2 className="text-[17px] font-semibold tracking-tight">{hasOrg ? 'Organization ready' : 'Create organization'}</h2>
               <p className="text-[12px] text-fg-4 mt-1">{user?.account?.email}</p>
             </div>
-            <button onClick={logout} className="w-8 h-8 rounded-xl flex items-center justify-center text-fg-4 hover:text-fg-2 hover:bg-floor transition-colors" title="Sign out">
+            <button onClick={logout} className="w-8 h-8 rounded-lg flex items-center justify-center text-fg-4 hover:text-fg-2 hover:bg-surface-4/30 transition-colors" title="Sign out">
               <LogOut size={15} />
             </button>
           </div>
 
-          {error && <div className="bg-live-bg border border-live/20 rounded-xl px-3.5 py-2.5 text-xs text-live mb-5">{error}</div>}
+          {error && <div className="bg-live-bg border border-live/20 rounded-lg px-3.5 py-2.5 text-xs text-live mb-5">{error}</div>}
 
           {!hasOrg ? (
             <form onSubmit={createOrg} className="space-y-5">
@@ -134,7 +136,7 @@ export function OnboardingPage() {
                     setName(e.target.value)
                     if (!slugEdited) setSlug(slugify(e.target.value))
                   }}
-                  className="w-full px-3.5 py-2.5 text-[13px] bg-surface border border-border rounded-xl outline-none focus:border-accent focus:ring-2 focus:ring-accent-light transition placeholder:text-fg-5"
+                  className="w-full px-3.5 py-2.5 text-[13px] bg-[hsla(0,0%,0%,0.25)] border border-border rounded-lg outline-none focus:border-[hsla(226,80%,78%,0.45)] focus:shadow-[0_0_0_3px_hsla(226,80%,78%,0.10)] transition placeholder:text-fg-4 text-fg"
                   placeholder="Acme"
                   autoFocus
                 />
@@ -144,28 +146,28 @@ export function OnboardingPage() {
                 <input
                   value={slug}
                   onChange={e => { setSlugEdited(true); setSlug(slugify(e.target.value)) }}
-                  className="w-full px-3.5 py-2.5 text-[13px] font-mono bg-surface border border-border rounded-xl outline-none focus:border-accent focus:ring-2 focus:ring-accent-light transition placeholder:text-fg-5"
+                  className="w-full px-3.5 py-2.5 text-[13px] font-mono bg-[hsla(0,0%,0%,0.25)] border border-border rounded-lg outline-none focus:border-[hsla(226,80%,78%,0.45)] focus:shadow-[0_0_0_3px_hsla(226,80%,78%,0.10)] transition placeholder:text-fg-4 text-fg"
                   placeholder="acme"
                 />
               </div>
-              <button type="submit" disabled={busy === 'org'} className="w-full inline-flex items-center justify-center gap-2 text-[13px] font-semibold px-4 py-2.5 rounded-xl bg-accent text-accent-fg hover:bg-accent-hover shadow-[0_2px_8px_var(--color-accent-glow)] disabled:opacity-40 transition-all">
+              <button type="submit" disabled={busy === 'org'} className="w-full inline-flex items-center justify-center gap-2 text-[13px] font-semibold px-4 h-10 rounded-lg bg-[hsl(0_0%_98%)] text-[hsl(240_8%_8%)] hover:opacity-90 disabled:opacity-35 transition-all">
                 {busy === 'org' ? <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> : <ArrowRight size={14} />}
                 Create organization
               </button>
             </form>
           ) : (
             <div className="space-y-4">
-              <div className="rounded-2xl border border-ok/25 bg-ok-bg p-4">
+              <div className="rounded-xl border border-ok/25 bg-ok-bg p-4">
                 <div className="flex items-center gap-2 text-[13px] font-semibold text-ok mb-1">
                   <Check size={15} /> {org.org.name}
                 </div>
                 <p className="text-[11px] text-fg-3">Your organization exists. Next, authorize Lark for workspace identity and task sync.</p>
               </div>
-              <button onClick={connectLark} disabled={busy === 'lark'} className="w-full inline-flex items-center justify-center gap-2 text-[13px] font-semibold px-4 py-2.5 rounded-xl bg-accent text-accent-fg hover:bg-accent-hover shadow-[0_2px_8px_var(--color-accent-glow)] disabled:opacity-40 transition-all">
+              <button onClick={connectLark} disabled={busy === 'lark'} className="w-full inline-flex items-center justify-center gap-2 text-[13px] font-semibold px-4 h-10 rounded-lg bg-[hsl(0_0%_98%)] text-[hsl(240_8%_8%)] hover:opacity-90 disabled:opacity-35 transition-all">
                 {busy === 'lark' ? <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> : <ExternalLink size={14} />}
                 Connect Lark
               </button>
-              <button onClick={() => navigate('/')} className="w-full text-[12px] font-medium px-4 py-2.5 rounded-xl border border-border text-fg-3 hover:text-fg hover:border-fg-5 transition-colors">
+              <button onClick={() => navigate('/')} className="w-full text-[12px] font-medium px-4 h-10 rounded-lg border border-border text-fg-3 hover:text-fg hover:border-fg-5 transition-colors">
                 Continue to dashboard
               </button>
             </div>

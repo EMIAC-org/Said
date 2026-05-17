@@ -12,14 +12,14 @@ export function Layout() {
   if (orgMissing) return <Navigate to="/onboarding" replace />
 
   return (
-    <div className="flex h-screen overflow-hidden bg-floor">
+    <div className="flex h-screen overflow-hidden bg-sidebar">
       <Sidebar />
       <div className="flex-1 min-w-0 flex flex-col h-screen">
         {/* Topbar — sits on the floor */}
         <Topbar />
-        {/* Mat — raised surface, rounded top-left, flush right & bottom */}
+        {/* Mat — glass-strong panel, rounded top-left */}
         <div className="flex-1 min-h-0 pl-4">
-          <div className="bg-surface rounded-tl-[20px] h-full overflow-y-auto shadow-[0_0_0_1px_rgba(0,0,0,0.04)] dark:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04),0_0_0_1px_rgba(255,255,255,0.03)]">
+          <div className="glass-strong rounded-tl-2xl h-full overflow-y-auto">
             <div className="max-w-[1200px] mx-auto px-10 py-7">
               <Outlet />
             </div>

@@ -42,10 +42,10 @@ export function MeetingsPage() {
         <div className="flex gap-1.5">
           {filters.map(f => (
             <button key={f.value} onClick={() => setFilter(f.value)}
-              className={`text-[11px] font-medium px-3.5 py-1.5 rounded-xl transition-all ${
+              className={`text-[10px] font-semibold px-3.5 py-1.5 rounded-full transition-all uppercase tracking-wide ${
                 filter === f.value
-                  ? 'bg-accent text-accent-fg shadow-[0_2px_6px_var(--color-accent-glow)]'
-                  : 'bg-surface text-fg-3 border border-border hover:text-fg-2 hover:border-fg-5'
+                  ? 'bg-[hsl(0_0%_98%)] text-[hsl(240_8%_8%)]'
+                  : 'bg-surface-4 text-fg-3 hover:text-fg-2'
               }`}>
               {f.label}
             </button>
@@ -65,7 +65,7 @@ export function MeetingsPage() {
             </thead>
             <tbody>
               {meetings.map(m => (
-                <tr key={m.id} className="cursor-pointer hover:bg-accent-light/50 transition-colors" onClick={() => navigate(`/meetings/${m.id}`)}>
+                <tr key={m.id} className="cursor-pointer hover:bg-surface-4/30 transition-colors" onClick={() => navigate(`/meetings/${m.id}`)}>
                   <td className="px-5 py-3.5 border-b border-border-light">
                     <div className="flex items-center gap-2.5">
                       <Avatar name={m.title} size="sm" />

@@ -34,3 +34,6 @@ __pycache__/
 # Claude Code worktrees & local config
 .claude/
 .context/
+
+# Eval pipeline downloaded data (regenerate with download_transcripts.py)
+tools/eval-pipeline/transcripts.jsonl

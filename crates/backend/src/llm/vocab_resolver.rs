@@ -135,9 +135,9 @@ fn try_context_resolve(transcript: &str, term: &VocabTerm) -> Option<String> {
             let sim = phonetics::similarity(&phrase, &term.term);
             let min_sim = match term.term_type.as_deref() {
                 Some("acronym") => 0.45,
-                Some("code_identifier") => 0.55,
-                Some("brand") | Some("proper_noun") => 0.66,
-                _ => 0.72,
+                Some("code_identifier") => 0.60,
+                Some("brand") | Some("proper_noun") => 0.70,
+                _ => 0.75,
             };
             if sim < min_sim {
                 continue;
@@ -204,7 +204,7 @@ fn should_auto_resolve_exact_term(term: &VocabTerm) -> bool {
     }
     match term.term_type.as_deref() {
         Some("acronym" | "code_identifier" | "brand" | "proper_noun" | "phrase") => true,
-        Some("other") | None => phonetics::jargon_score(&term.term) >= 0.35,
+        Some("other") | None => phonetics::jargon_score(&term.term) >= 0.50,
         Some(_) => true,
     }
 }
