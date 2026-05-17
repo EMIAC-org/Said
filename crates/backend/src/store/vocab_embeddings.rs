@@ -790,7 +790,9 @@ pub fn select_for_polish_hybrid(
             }
             let term_phon = crate::llm::phonetics::phonetic_key(&vt.term);
             transcript_tokens.iter().any(|tok| {
-                if tok.len() < 3 { return false; }
+                if tok.len() < 3 {
+                    return false;
+                }
                 let tok_phon = crate::llm::phonetics::phonetic_key(tok);
                 crate::llm::phonetics::similarity(&tok_phon, &term_phon) >= 0.80
             })

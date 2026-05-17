@@ -54,7 +54,11 @@ fn main() {
     let args = Args::parse();
     let transcripts = load_transcripts(&args.transcripts);
     let seeds = load_seeds(&args.vocab);
-    eprintln!("Loaded {} transcripts, {} vocab seeds\n", transcripts.len(), seeds.len());
+    eprintln!(
+        "Loaded {} transcripts, {} vocab seeds\n",
+        transcripts.len(),
+        seeds.len()
+    );
 
     let mut total_pass = 0;
     let mut total_fail = 0;
@@ -69,20 +73,48 @@ fn main() {
     let all_terms = vocabulary::top_terms(&pool, user_id, 1000);
 
     let fi = sweep_retrieval(&pool, user_id, &all_terms, &transcripts);
-    check(&mut total_pass, &mut total_fail, &mut failures,
-        "Vocab false injections = 0", fi.false_count == 0,
-        &format!("{} false injections (first: {})", fi.false_count, fi.first_detail));
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
+        "Vocab false injections = 0",
+        fi.false_count == 0,
+        &format!(
+            "{} false injections (first: {})",
+            fi.false_count, fi.first_detail
+        ),
+    );
 
     // Test corrections retrieval
     let test_corrections = vec![
-        Correction { wrong: "badhiya".into(), right: "badiya".into(), count: 3 },
-        Correction { wrong: "there".into(), right: "their".into(), count: 5 },
-        Correction { wrong: "recieve".into(), right: "receive".into(), count: 2 },
+        Correction {
+            wrong: "badhiya".into(),
+            right: "badiya".into(),
+            count: 3,
+        },
+        Correction {
+            wrong: "there".into(),
+            right: "their".into(),
+            count: 5,
+        },
+        Correction {
+            wrong: "recieve".into(),
+            right: "receive".into(),
+            count: 2,
+        },
     ];
     let cf = sweep_corrections(&test_corrections, &transcripts);
-    check(&mut total_pass, &mut total_fail, &mut failures,
-        "Correction false injections = 0", cf.false_count == 0,
-        &format!("{} false injections (first: {})", cf.false_count, cf.first_detail));
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
+        "Correction false injections = 0",
+        cf.false_count == 0,
+        &format!(
+            "{} false injections (first: {})",
+            cf.false_count, cf.first_detail
+        ),
+    );
 
     // ═══════════════════════════════════════════════════════════
     //  LAYER 2: STORAGE — extract_diffs + promotion gates
@@ -91,70 +123,131 @@ fn main() {
 
     // 2a: extract_diffs — same word count, positional alignment
     let diffs = corrections::extract_diffs("main course ka IPO", "main MACOBS ka IPO");
-    check(&mut total_pass, &mut total_fail, &mut failures,
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
         "extract_diffs: 'course'→'macobs' (same word count)",
         diffs.len() == 1 && diffs[0].0 == "course" && diffs[0].1 == "macobs",
-        &format!("got {:?}", diffs));
+        &format!("got {:?}", diffs),
+    );
 
     // Different word count → empty (by design)
     let diffs = corrections::extract_diffs("main course ka IPO", "MACOBS ka IPO");
-    check(&mut total_pass, &mut total_fail, &mut failures,
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
         "extract_diffs: word count mismatch → empty",
-        diffs.is_empty(), &format!("got {:?}", diffs));
+        diffs.is_empty(),
+        &format!("got {:?}", diffs),
+    );
 
     // Identical → no diffs
     let diffs = corrections::extract_diffs("hello world", "hello world");
-    check(&mut total_pass, &mut total_fail, &mut failures,
-        "extract_diffs: identical → empty", diffs.is_empty(),
-        &format!("got {:?}", diffs));
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
+        "extract_diffs: identical → empty",
+        diffs.is_empty(),
+        &format!("got {:?}", diffs),
+    );
 
     // Case change — extract_diffs lowercases both sides, so same case = no diff
     let diffs = corrections::extract_diffs("macobs ka IPO", "MACOBS ka IPO");
-    check(&mut total_pass, &mut total_fail, &mut failures,
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
         "extract_diffs: case-only change → empty (case-insensitive)",
-        diffs.is_empty(), &format!("got {:?}", diffs));
+        diffs.is_empty(),
+        &format!("got {:?}", diffs),
+    );
 
     // Actual word swap
     let diffs = corrections::extract_diffs("I recieve the mail", "I receive the mail");
-    check(&mut total_pass, &mut total_fail, &mut failures,
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
         "extract_diffs: 'recieve'→'receive'",
         diffs.len() == 1 && diffs[0].0 == "recieve" && diffs[0].1 == "receive",
-        &format!("got {:?}", diffs));
+        &format!("got {:?}", diffs),
+    );
 
     // Punctuation stripped
     let diffs = corrections::extract_diffs("hello, world.", "hello world");
-    check(&mut total_pass, &mut total_fail, &mut failures,
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
         "extract_diffs: punctuation stripped → no diff",
-        diffs.is_empty(), &format!("got {:?}", diffs));
+        diffs.is_empty(),
+        &format!("got {:?}", diffs),
+    );
 
     // 2b: K-threshold = 3 (needs 3 sightings to promote)
     let promo_pool = setup_empty_db_with_user("u1");
     let d1 = pending_promotions::record_sighting(
-        &promo_pool, "u1", "MACOBS", "main course", "hinglish",
+        &promo_pool,
+        "u1",
+        "MACOBS",
+        "main course",
+        "hinglish",
         pending_promotions::DEFAULT_K,
     );
-    check(&mut total_pass, &mut total_fail, &mut failures,
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
         "k-threshold: sighting 1 → Pending",
-        matches!(d1, Some(pending_promotions::PromotionDecision::Pending { .. })),
-        &format!("got {:?}", d1));
+        matches!(
+            d1,
+            Some(pending_promotions::PromotionDecision::Pending { .. })
+        ),
+        &format!("got {:?}", d1),
+    );
 
     let d2 = pending_promotions::record_sighting(
-        &promo_pool, "u1", "MACOBS", "main course", "hinglish",
+        &promo_pool,
+        "u1",
+        "MACOBS",
+        "main course",
+        "hinglish",
         pending_promotions::DEFAULT_K,
     );
-    check(&mut total_pass, &mut total_fail, &mut failures,
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
         "k-threshold: sighting 2 → still Pending (k=3)",
-        matches!(d2, Some(pending_promotions::PromotionDecision::Pending { .. })),
-        &format!("got {:?}", d2));
+        matches!(
+            d2,
+            Some(pending_promotions::PromotionDecision::Pending { .. })
+        ),
+        &format!("got {:?}", d2),
+    );
 
     let d3 = pending_promotions::record_sighting(
-        &promo_pool, "u1", "MACOBS", "main course", "hinglish",
+        &promo_pool,
+        "u1",
+        "MACOBS",
+        "main course",
+        "hinglish",
         pending_promotions::DEFAULT_K,
     );
-    check(&mut total_pass, &mut total_fail, &mut failures,
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
         "k-threshold: sighting 3 → Promote",
-        matches!(d3, Some(pending_promotions::PromotionDecision::Promote { .. })),
-        &format!("got {:?}", d3));
+        matches!(
+            d3,
+            Some(pending_promotions::PromotionDecision::Promote { .. })
+        ),
+        &format!("got {:?}", d3),
+    );
 
     // 2c: Temporal decay — stale sighting resets count
     let decay_pool = setup_empty_db_with_user("u1");
@@ -168,16 +261,28 @@ fn main() {
                 output_language, sighting_count, first_seen, last_seen)
              VALUES ('u1','STALE','stale','STL','hinglish',2,?1,?1)",
             rusqlite::params![old_ts],
-        ).unwrap();
+        )
+        .unwrap();
     }
     let d_stale = pending_promotions::record_sighting(
-        &decay_pool, "u1", "STALE", "stale", "hinglish",
+        &decay_pool,
+        "u1",
+        "STALE",
+        "stale",
+        "hinglish",
         pending_promotions::DEFAULT_K,
     );
-    check(&mut total_pass, &mut total_fail, &mut failures,
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
         "temporal decay: stale sighting (15d) resets → Pending(1)",
-        matches!(d_stale, Some(pending_promotions::PromotionDecision::Pending { sighting_count: 1 })),
-        &format!("got {:?}", d_stale));
+        matches!(
+            d_stale,
+            Some(pending_promotions::PromotionDecision::Pending { sighting_count: 1 })
+        ),
+        &format!("got {:?}", d_stale),
+    );
 
     // 2d: Demotion — weight drops by 1.0 per removal, deleted at 0
     let demo_pool = setup_empty_db_with_user("u1");
@@ -187,13 +292,23 @@ fn main() {
         let remaining = vocabulary::top_terms(&demo_pool, "u1", 100);
         let exists = remaining.iter().any(|t| t.term == "BadTerm");
         if i < 3 {
-            check(&mut total_pass, &mut total_fail, &mut failures,
+            check(
+                &mut total_pass,
+                &mut total_fail,
+                &mut failures,
                 &format!("demotion: after {i} removals → still exists"),
-                exists, &format!("exists={exists}"));
+                exists,
+                &format!("exists={exists}"),
+            );
         } else {
-            check(&mut total_pass, &mut total_fail, &mut failures,
+            check(
+                &mut total_pass,
+                &mut total_fail,
+                &mut failures,
                 "demotion: after 3 removals (weight 0) → deleted",
-                !exists, &format!("exists={exists}"));
+                !exists,
+                &format!("exists={exists}"),
+            );
         }
     }
 
@@ -203,31 +318,59 @@ fn main() {
     println!("\n══ LAYER 3: POLLUTION (store → sweep → verify no leakage) ══\n");
 
     // 3a: Store "there→their", sweep 14K — only transcripts with literal "there" should match
-    let there_corr = vec![
-        Correction { wrong: "there".into(), right: "their".into(), count: 5 },
-    ];
+    let there_corr = vec![Correction {
+        wrong: "there".into(),
+        right: "their".into(),
+        count: 5,
+    }];
     let pollution = sweep_corrections(&there_corr, &transcripts);
-    check(&mut total_pass, &mut total_fail, &mut failures,
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
         "Pollution: 'there→their' on 14K transcripts",
         pollution.false_count == 0,
-        &format!("{} false injections", pollution.false_count));
+        &format!("{} false injections", pollution.false_count),
+    );
 
     // 3b: Store common-word vocab terms, sweep 14K
     let common_seeds = vec![
-        VocabSeed { term: "time".into(), term_type: "other".into(),
-            meaning: "Duration".into(), context: "time tracking sprint".into(), source: "auto".into() },
-        VocabSeed { term: "can".into(), term_type: "other".into(),
-            meaning: "Modal verb".into(), context: "can we fix this".into(), source: "auto".into() },
-        VocabSeed { term: "go".into(), term_type: "other".into(),
-            meaning: "Verb".into(), context: "go run tests".into(), source: "auto".into() },
+        VocabSeed {
+            term: "time".into(),
+            term_type: "other".into(),
+            meaning: "Duration".into(),
+            context: "time tracking sprint".into(),
+            source: "auto".into(),
+        },
+        VocabSeed {
+            term: "can".into(),
+            term_type: "other".into(),
+            meaning: "Modal verb".into(),
+            context: "can we fix this".into(),
+            source: "auto".into(),
+        },
+        VocabSeed {
+            term: "go".into(),
+            term_type: "other".into(),
+            meaning: "Verb".into(),
+            context: "go run tests".into(),
+            source: "auto".into(),
+        },
     ];
     let common_pool = setup_db(&common_seeds);
     let common_terms = vocabulary::top_terms(&common_pool, user_id, 1000);
     let common_fi = sweep_retrieval(&common_pool, user_id, &common_terms, &transcripts);
-    check(&mut total_pass, &mut total_fail, &mut failures,
+    check(
+        &mut total_pass,
+        &mut total_fail,
+        &mut failures,
         "Pollution: common words (time/can/go) on 14K",
         common_fi.false_count == 0,
-        &format!("{} false injections (first: {})", common_fi.false_count, common_fi.first_detail));
+        &format!(
+            "{} false injections (first: {})",
+            common_fi.false_count, common_fi.first_detail
+        ),
+    );
 
     // 3c: Adversarial — short terms that might substring-match
     let adversarial_cases = vec![
@@ -245,25 +388,49 @@ fn main() {
     for (term, transcript) in &adversarial_cases {
         let adv_seeds = vec![VocabSeed {
             term: term.to_string(),
-            term_type: if term.len() <= 3 { "acronym".into() } else { "other".into() },
+            term_type: if term.len() <= 3 {
+                "acronym".into()
+            } else {
+                "other".into()
+            },
             meaning: "Test term".into(),
             context: format!("{term} test context"),
             source: "auto".into(),
         }];
         let adv_pool = setup_db(&adv_seeds);
         let adv_terms = vocabulary::top_terms(&adv_pool, user_id, 100);
-        let alias_result = ApplyResult { text: transcript.to_string(), matches: vec![] };
+        let alias_result = ApplyResult {
+            text: transcript.to_string(),
+            matches: vec![],
+        };
         let selected = vocab_embeddings::select_for_prompt(
-            &adv_pool, user_id, "hinglish", None, Some(transcript),
+            &adv_pool,
+            user_id,
+            "hinglish",
+            None,
+            Some(transcript),
         );
-        let resolved = vocab_resolver::resolve_for_prompt(
-            transcript, &selected, &adv_terms, &alias_result,
-        );
+        let resolved =
+            vocab_resolver::resolve_for_prompt(transcript, &selected, &adv_terms, &alias_result);
         let injected = !resolved.resolved_terms.is_empty();
-        check(&mut total_pass, &mut total_fail, &mut failures,
-            &format!("Adversarial: '{term}' must NOT inject into '{}'", truncate(transcript, 40)),
+        check(
+            &mut total_pass,
+            &mut total_fail,
+            &mut failures,
+            &format!(
+                "Adversarial: '{term}' must NOT inject into '{}'",
+                truncate(transcript, 40)
+            ),
             !injected,
-            &format!("injected={injected} resolved={:?}", resolved.resolved_terms.iter().map(|t| &t.term).collect::<Vec<_>>()));
+            &format!(
+                "injected={injected} resolved={:?}",
+                resolved
+                    .resolved_terms
+                    .iter()
+                    .map(|t| &t.term)
+                    .collect::<Vec<_>>()
+            ),
+        );
     }
 
     // 3d: Positive cases — terms SHOULD inject when present
@@ -283,18 +450,38 @@ fn main() {
         }];
         let pos_pool = setup_db(&pos_seeds);
         let pos_terms = vocabulary::top_terms(&pos_pool, user_id, 100);
-        let alias_result = ApplyResult { text: transcript.to_string(), matches: vec![] };
+        let alias_result = ApplyResult {
+            text: transcript.to_string(),
+            matches: vec![],
+        };
         let selected = vocab_embeddings::select_for_prompt(
-            &pos_pool, user_id, "hinglish", None, Some(transcript),
+            &pos_pool,
+            user_id,
+            "hinglish",
+            None,
+            Some(transcript),
         );
-        let resolved = vocab_resolver::resolve_for_prompt(
-            transcript, &selected, &pos_terms, &alias_result,
-        );
+        let resolved =
+            vocab_resolver::resolve_for_prompt(transcript, &selected, &pos_terms, &alias_result);
         let injected = resolved.resolved_terms.iter().any(|t| t.term == *term);
-        check(&mut total_pass, &mut total_fail, &mut failures,
-            &format!("Positive: '{term}' SHOULD inject into '{}'", truncate(transcript, 40)),
+        check(
+            &mut total_pass,
+            &mut total_fail,
+            &mut failures,
+            &format!(
+                "Positive: '{term}' SHOULD inject into '{}'",
+                truncate(transcript, 40)
+            ),
             injected,
-            &format!("injected={injected} resolved={:?}", resolved.resolved_terms.iter().map(|t| &t.term).collect::<Vec<_>>()));
+            &format!(
+                "injected={injected} resolved={:?}",
+                resolved
+                    .resolved_terms
+                    .iter()
+                    .map(|t| &t.term)
+                    .collect::<Vec<_>>()
+            ),
+        );
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -319,8 +506,13 @@ fn main() {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn check(pass: &mut usize, fail: &mut usize, failures: &mut Vec<String>,
-    name: &str, ok: bool, detail: &str,
+fn check(
+    pass: &mut usize,
+    fail: &mut usize,
+    failures: &mut Vec<String>,
+    name: &str,
+    ok: bool,
+    detail: &str,
 ) {
     if ok {
         println!("  PASS  {name}");
@@ -339,7 +531,10 @@ struct SweepResult {
 }
 
 fn sweep_retrieval(
-    pool: &DbPool, user_id: &str, all_terms: &[VocabTerm], transcripts: &[TranscriptRow],
+    pool: &DbPool,
+    user_id: &str,
+    all_terms: &[VocabTerm],
+    transcripts: &[TranscriptRow],
 ) -> SweepResult {
     let mut false_count = 0;
     let mut first_detail = String::new();
@@ -348,15 +543,18 @@ fn sweep_retrieval(
             eprint!("  ... {i}/{} ", transcripts.len());
         }
         let transcript = row.text.trim();
-        if transcript.len() < 5 { continue; }
+        if transcript.len() < 5 {
+            continue;
+        }
 
-        let selected = vocab_embeddings::select_for_prompt(
-            pool, user_id, "hinglish", None, Some(transcript),
-        );
-        let alias_result = ApplyResult { text: transcript.to_string(), matches: vec![] };
-        let resolved = vocab_resolver::resolve_for_prompt(
-            transcript, &selected, all_terms, &alias_result,
-        );
+        let selected =
+            vocab_embeddings::select_for_prompt(pool, user_id, "hinglish", None, Some(transcript));
+        let alias_result = ApplyResult {
+            text: transcript.to_string(),
+            matches: vec![],
+        };
+        let resolved =
+            vocab_resolver::resolve_for_prompt(transcript, &selected, all_terms, &alias_result);
         for rt in &resolved.resolved_terms {
             if is_false_injection(transcript, &rt.term) {
                 false_count += 1;
@@ -366,8 +564,13 @@ fn sweep_retrieval(
             }
         }
     }
-    if transcripts.len() > 5000 { eprintln!(); }
-    SweepResult { false_count, first_detail }
+    if transcripts.len() > 5000 {
+        eprintln!();
+    }
+    SweepResult {
+        false_count,
+        first_detail,
+    }
 }
 
 fn sweep_corrections(corrections: &[Correction], transcripts: &[TranscriptRow]) -> SweepResult {
@@ -375,36 +578,53 @@ fn sweep_corrections(corrections: &[Correction], transcripts: &[TranscriptRow]) 
     let mut first_detail = String::new();
     for row in transcripts {
         let transcript = row.text.trim();
-        if transcript.len() < 5 { continue; }
+        if transcript.len() < 5 {
+            continue;
+        }
         let relevant = corrections::filter_relevant(corrections, transcript, 2, 10);
         for c in &relevant {
             let wrong_lower = c.wrong.to_ascii_lowercase();
             let tl = transcript.to_ascii_lowercase();
-            let tokens: Vec<&str> = tl.split(|c: char| !c.is_alphanumeric())
-                .filter(|s| !s.is_empty()).collect();
+            let tokens: Vec<&str> = tl
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|s| !s.is_empty())
+                .collect();
             if !tokens.iter().any(|t| *t == wrong_lower) {
                 false_count += 1;
                 if first_detail.is_empty() {
-                    first_detail = format!("'{}→{}' in '{}'", c.wrong, c.right, truncate(transcript, 60));
+                    first_detail = format!(
+                        "'{}→{}' in '{}'",
+                        c.wrong,
+                        c.right,
+                        truncate(transcript, 60)
+                    );
                 }
             }
         }
     }
-    SweepResult { false_count, first_detail }
+    SweepResult {
+        false_count,
+        first_detail,
+    }
 }
 
 fn is_false_injection(transcript: &str, term: &str) -> bool {
     let tl = transcript.to_ascii_lowercase();
     let term_l = term.to_ascii_lowercase();
-    let tokens: Vec<&str> = tl.split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty()).collect();
-    let term_tokens: Vec<&str> = term_l.split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty()).collect();
+    let tokens: Vec<&str> = tl
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let term_tokens: Vec<&str> = term_l
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
     if term_tokens.len() == 1 {
         !tokens.iter().any(|t| *t == term_tokens[0])
     } else {
-        !tokens.windows(term_tokens.len()).any(|w|
-            w.iter().zip(term_tokens.iter()).all(|(a, b)| a == b))
+        !tokens
+            .windows(term_tokens.len())
+            .any(|w| w.iter().zip(term_tokens.iter()).all(|(a, b)| a == b))
     }
 }
 
@@ -424,9 +644,14 @@ fn load_seeds(path: &PathBuf) -> Vec<VocabSeed> {
 }
 
 fn setup_db(seeds: &[VocabSeed]) -> DbPool {
-    let tmp = std::env::temp_dir().join(format!("said-eval-{}-{}.db",
-        std::process::id(), rand_suffix()));
-    if tmp.exists() { let _ = std::fs::remove_file(&tmp); }
+    let tmp = std::env::temp_dir().join(format!(
+        "said-eval-{}-{}.db",
+        std::process::id(),
+        rand_suffix()
+    ));
+    if tmp.exists() {
+        let _ = std::fs::remove_file(&tmp);
+    }
     let pool = store::open(&tmp);
     let user_id = "eval-user";
     {
@@ -434,12 +659,18 @@ fn setup_db(seeds: &[VocabSeed]) -> DbPool {
         conn.execute(
             "INSERT OR IGNORE INTO local_user (id, email, created_at) VALUES (?1, ?2, ?3)",
             rusqlite::params![user_id, "eval@test.local", said_backend::store::now_ms()],
-        ).expect("failed to create eval user in setup_db");
+        )
+        .expect("failed to create eval user in setup_db");
     }
     for seed in seeds {
         vocabulary::upsert_for_language_with_context(
-            &pool, user_id, &seed.term, 3.0, &seed.source,
-            "hinglish", Some(&seed.context),
+            &pool,
+            user_id,
+            &seed.term,
+            3.0,
+            &seed.source,
+            "hinglish",
+            Some(&seed.context),
         );
         vocabulary::update_meaning(&pool, user_id, &seed.term, &seed.meaning);
         vocab_fts::upsert(&pool, user_id, &seed.term, Some(&seed.context));
@@ -453,9 +684,14 @@ fn setup_db(seeds: &[VocabSeed]) -> DbPool {
 }
 
 fn setup_empty_db() -> DbPool {
-    let tmp = std::env::temp_dir().join(format!("said-eval-{}-{}.db",
-        std::process::id(), rand_suffix()));
-    if tmp.exists() { let _ = std::fs::remove_file(&tmp); }
+    let tmp = std::env::temp_dir().join(format!(
+        "said-eval-{}-{}.db",
+        std::process::id(),
+        rand_suffix()
+    ));
+    if tmp.exists() {
+        let _ = std::fs::remove_file(&tmp);
+    }
     store::open(&tmp)
 }
 
@@ -465,13 +701,16 @@ fn setup_empty_db_with_user(user_id: &str) -> DbPool {
     conn.execute(
         "INSERT OR IGNORE INTO local_user (id, email, created_at) VALUES (?1, ?2, ?3)",
         rusqlite::params![user_id, "eval@test.local", said_backend::store::now_ms()],
-    ).expect("failed to create eval user");
+    )
+    .expect("failed to create eval user");
     // Verify user exists
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM local_user WHERE id = ?1",
-        rusqlite::params![user_id],
-        |row| row.get(0),
-    ).unwrap_or(0);
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM local_user WHERE id = ?1",
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
     assert!(count > 0, "eval user not created");
     pool
 }
@@ -483,6 +722,9 @@ fn rand_suffix() -> u32 {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { s.to_string() }
-    else { s.chars().take(max).collect::<String>() + "..." }
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        s.chars().take(max).collect::<String>() + "..."
+    }
 }

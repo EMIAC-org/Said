@@ -99,7 +99,11 @@ pub fn record_sighting(
             (1_i64, false)
         }
         Some((count, existing_key, last_seen)) if existing_key == phon_key => {
-            let base = if (now - last_seen) > STALE_MS { 0 } else { count };
+            let base = if (now - last_seen) > STALE_MS {
+                0
+            } else {
+                count
+            };
             let next = base + 1;
             conn.execute(
                 "UPDATE pending_promotions
