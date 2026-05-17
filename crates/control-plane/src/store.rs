@@ -17,6 +17,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/003_slots_roles.sql"),
     include_str!("../migrations/004_openai_account.sql"),
     include_str!("../migrations/005_pre_meeting.sql"),
+    include_str!("../migrations/006_lark_calendar_events.sql"),
 ];
 
 /// Connect to Postgres and apply the schema.

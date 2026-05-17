@@ -7,6 +7,11 @@ export interface Meeting {
   created_by?: string
   started_at?: string | null
   ended_at?: string | null
+  scheduled_at?: string | null
+  duration_minutes?: number
+  lark_calendar_id?: string | null
+  lark_event_id?: string | null
+  lark_event_status?: 'pending' | 'created' | 'failed'
   created_at: string
 }
 

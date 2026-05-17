@@ -6,7 +6,7 @@ import { apiJson, api } from '../api'
 import { StatusPill } from '../components/StatusPill'
 import { Avatar } from '../components/Avatar'
 import { ErrorBox, Loading } from '../components/States'
-import { formatDate, formatTime, duration, avatarColor } from '../utils'
+import { formatDate, formatTime, duration, avatarColor, formatIstDateTime, formatMinutes } from '../utils'
 import type { MeetingDetail } from '../types'
 
 export function MeetingDetailPage() {
@@ -95,8 +95,10 @@ export function MeetingDetailPage() {
           <StatusPill status={m.status} />
         </div>
         <div className="flex flex-wrap items-center gap-4 text-[12px] text-fg-3">
-          <span className="flex items-center gap-1.5"><Calendar size={13} className="text-fg-4" /> {formatDate(m.created_at)}</span>
+          <span className="flex items-center gap-1.5"><Calendar size={13} className="text-fg-4" /> {m.scheduled_at ? formatIstDateTime(m.scheduled_at) : formatDate(m.created_at)}</span>
+          {m.scheduled_at && <span className="flex items-center gap-1.5"><Clock size={13} className="text-fg-4" /> {formatMinutes(m.duration_minutes)}</span>}
           {m.started_at && <span className="flex items-center gap-1.5"><Clock size={13} className="text-fg-4" /> {duration(m.started_at, m.ended_at || new Date().toISOString())}</span>}
+          {m.lark_event_status && <span className="flex items-center gap-1.5"><LarkLogo className="w-3.5 h-3.5" /> Calendar {m.lark_event_status}</span>}
           <span className="flex items-center gap-1.5"><Users size={13} className="text-fg-4" /> {participants.length} participants</span>
           {words > 0 && <span className="flex items-center gap-1.5"><FileText size={13} className="text-fg-4" /> {words.toLocaleString()} words</span>}
         </div>

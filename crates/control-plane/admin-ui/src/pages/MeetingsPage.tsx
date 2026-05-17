@@ -4,7 +4,7 @@ import { apiJson } from '../api'
 import { StatusPill } from '../components/StatusPill'
 import { Avatar } from '../components/Avatar'
 import { ErrorBox, Loading, Empty } from '../components/States'
-import { formatDate, duration, timeAgo } from '../utils'
+import { formatDate, duration, timeAgo, formatIstDateTime, formatMinutes } from '../utils'
 import type { Meeting } from '../types'
 
 const filters = [
@@ -72,8 +72,8 @@ export function MeetingsPage() {
                       <span className="text-[13px] font-medium">{m.title}</span>
                     </div>
                   </td>
-                  <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{formatDate(m.created_at)}</td>
-                  <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{duration(m.started_at, m.ended_at)}</td>
+                  <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{m.scheduled_at ? formatIstDateTime(m.scheduled_at) : formatDate(m.created_at)}</td>
+                  <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{m.scheduled_at ? formatMinutes(m.duration_minutes) : duration(m.started_at, m.ended_at)}</td>
                   <td className="px-5 py-3.5 border-b border-border-light"><StatusPill status={m.status} /></td>
                   <td className="text-[12px] text-fg-4 px-5 py-3.5 border-b border-border-light">{timeAgo(m.created_at)}</td>
                 </tr>
