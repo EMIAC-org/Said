@@ -28,6 +28,8 @@ pub struct CreateMeetingBody {
     pub participant_ids: Vec<Uuid>,
     /// Optional scheduled start time (used for calendar events + reminders).
     pub scheduled_at: Option<DateTime<Utc>>,
+    /// Scheduled meeting duration in minutes. Defaults to 30.
+    pub duration_minutes: Option<i32>,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +54,11 @@ pub struct MeetingInfo {
     pub started_at: Option<DateTime<Utc>>,
     pub ended_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub scheduled_at: Option<DateTime<Utc>>,
+    pub duration_minutes: i32,
+    pub lark_calendar_id: Option<String>,
+    pub lark_event_id: Option<String>,
+    pub lark_event_status: String,
 }
 
 #[derive(Serialize)]
@@ -76,6 +83,13 @@ pub async fn create(
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({"error": "title is required"})),
+        ));
+    }
+    let duration_minutes = body.duration_minutes.unwrap_or(30);
+    if !(1..=1440).contains(&duration_minutes) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "duration_minutes must be between 1 and 1440"})),
         ));
     }
 
@@ -113,13 +127,14 @@ pub async fn create(
 
     // Insert meeting
     let meeting_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO meetings (org_id, title, agenda, scheduled_at, created_by)
-         VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        "INSERT INTO meetings (org_id, title, agenda, scheduled_at, duration_minutes, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
     )
     .bind(org_id)
     .bind(&title)
     .bind(&body.agenda)
     .bind(body.scheduled_at)
+    .bind(duration_minutes)
     .bind(user.account_id)
     .fetch_one(&state.db)
     .await
@@ -186,6 +201,8 @@ pub async fn create(
                 "title":        title,
                 "agenda":       body.agenda,
                 "scheduled_at": body.scheduled_at,
+                "duration_minutes": duration_minutes,
+                "lark_event_status": "pending",
                 "status":       "scheduled",
                 "created_by":   user.account_id,
             }
@@ -211,9 +228,15 @@ pub async fn list(
         Option<DateTime<Utc>>,
         Option<DateTime<Utc>>,
         DateTime<Utc>,
+        Option<DateTime<Utc>>,
+        i32,
+        Option<String>,
+        Option<String>,
+        String,
     )> = if let Some(status) = &query.status {
         sqlx::query_as(
-            "SELECT id, title, agenda, status, created_by, started_at, ended_at, created_at
+            "SELECT id, title, agenda, status, created_by, started_at, ended_at, created_at,
+                    scheduled_at, duration_minutes, lark_calendar_id, lark_event_id, lark_event_status
                    FROM meetings
                   WHERE org_id = $1 AND status = $2
                   ORDER BY created_at DESC",
@@ -225,7 +248,8 @@ pub async fn list(
         .map_err(db_err)?
     } else {
         sqlx::query_as(
-            "SELECT id, title, agenda, status, created_by, started_at, ended_at, created_at
+            "SELECT id, title, agenda, status, created_by, started_at, ended_at, created_at,
+                    scheduled_at, duration_minutes, lark_calendar_id, lark_event_id, lark_event_status
                    FROM meetings
                   WHERE org_id = $1
                   ORDER BY created_at DESC",
@@ -239,16 +263,35 @@ pub async fn list(
     let meetings_json: Vec<Value> = meetings
         .into_iter()
         .map(
-            |(id, title, agenda, status, created_by, started_at, ended_at, created_at)| {
+            |(
+                id,
+                title,
+                agenda,
+                status,
+                created_by,
+                started_at,
+                ended_at,
+                created_at,
+                scheduled_at,
+                duration_minutes,
+                lark_calendar_id,
+                lark_event_id,
+                lark_event_status,
+            )| {
                 json!({
-                    "id":         id,
-                    "title":      title,
-                    "agenda":     agenda,
-                    "status":     status,
-                    "created_by": created_by,
-                    "started_at": started_at,
-                    "ended_at":   ended_at,
-                    "created_at": created_at,
+                    "id":                id,
+                    "title":             title,
+                    "agenda":            agenda,
+                    "status":            status,
+                    "created_by":        created_by,
+                    "started_at":        started_at,
+                    "ended_at":          ended_at,
+                    "created_at":        created_at,
+                    "scheduled_at":      scheduled_at,
+                    "duration_minutes":  duration_minutes,
+                    "lark_calendar_id":  lark_calendar_id,
+                    "lark_event_id":     lark_event_id,
+                    "lark_event_status": lark_event_status,
                 })
             },
         )
@@ -276,8 +319,14 @@ pub async fn detail(
         Option<DateTime<Utc>>,
         Option<DateTime<Utc>>,
         DateTime<Utc>,
+        Option<DateTime<Utc>>,
+        i32,
+        Option<String>,
+        Option<String>,
+        String,
     )> = sqlx::query_as(
-        "SELECT id, title, agenda, status, created_by, started_at, ended_at, created_at
+        "SELECT id, title, agenda, status, created_by, started_at, ended_at, created_at,
+                scheduled_at, duration_minutes, lark_calendar_id, lark_event_id, lark_event_status
                FROM meetings
               WHERE id = $1 AND org_id = $2",
     )
@@ -287,7 +336,21 @@ pub async fn detail(
     .await
     .map_err(db_err)?;
 
-    let Some((id, title, agenda, status, created_by, started_at, ended_at, created_at)) = meeting
+    let Some((
+        id,
+        title,
+        agenda,
+        status,
+        created_by,
+        started_at,
+        ended_at,
+        created_at,
+        scheduled_at,
+        duration_minutes,
+        lark_calendar_id,
+        lark_event_id,
+        lark_event_status,
+    )) = meeting
     else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -425,6 +488,11 @@ pub async fn detail(
             "started_at":   started_at,
             "ended_at":     ended_at,
             "created_at":   created_at,
+            "scheduled_at": scheduled_at,
+            "duration_minutes": duration_minutes,
+            "lark_calendar_id": lark_calendar_id,
+            "lark_event_id": lark_event_id,
+            "lark_event_status": lark_event_status,
         },
         "participants": participants_json,
         "summary":      summary,

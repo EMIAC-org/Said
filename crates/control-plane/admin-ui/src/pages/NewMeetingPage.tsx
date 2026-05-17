@@ -6,6 +6,25 @@ import { useAuth } from '../hooks/useAuth'
 import { Avatar } from '../components/Avatar'
 import type { OrgMember } from '../types'
 
+const IST_OFFSET_MINUTES = 330
+const DURATION_OPTIONS = [15, 30, 45, 60, 90]
+
+function toIstInputValue(date: Date) {
+  const istDate = new Date(date.getTime() + IST_OFFSET_MINUTES * 60_000)
+  return istDate.toISOString().slice(0, 16)
+}
+
+function istInputToUtcIso(value: string) {
+  const [datePart, timePart] = value.split('T')
+  if (!datePart || !timePart) return null
+
+  const [year, month, day] = datePart.split('-').map(Number)
+  const [hour, minute] = timePart.split(':').map(Number)
+  if (![year, month, day, hour, minute].every(Number.isFinite)) return null
+
+  return new Date(Date.UTC(year, month - 1, day, hour, minute - IST_OFFSET_MINUTES)).toISOString()
+}
+
 export function NewMeetingPage() {
   const navigate = useNavigate()
   const { org } = useAuth()
@@ -13,6 +32,8 @@ export function NewMeetingPage() {
   const [title, setTitle] = useState('')
   const [agenda, setAgenda] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [scheduledAtIst, setScheduledAtIst] = useState(() => toIstInputValue(new Date(Date.now() + 30 * 60_000)))
+  const [durationMinutes, setDurationMinutes] = useState(30)
   const [search, setSearch] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -42,11 +63,19 @@ export function NewMeetingPage() {
 
   const submit = async (startNow: boolean) => {
     if (!title.trim()) { setError('Title is required.'); return }
+    const scheduledAt = startNow ? null : istInputToUtcIso(scheduledAtIst)
+    if (!startNow && !scheduledAt) { setError('Choose a valid IST start time.'); return }
     setLoading(true); setError('')
     try {
       const d = await apiJson<{ meeting: { id: string } }>('/v1/meetings', {
         method: 'POST',
-        body: JSON.stringify({ title: title.trim(), agenda: agenda.trim() || null, participant_ids: [...selected] }),
+        body: JSON.stringify({
+          title: title.trim(),
+          agenda: agenda.trim() || null,
+          participant_ids: [...selected],
+          scheduled_at: scheduledAt,
+          duration_minutes: durationMinutes,
+        }),
       })
       if (startNow) {
         await apiJson(`/v1/meetings/${d.meeting.id}/start`, { method: 'POST' }).catch(() => {})
@@ -168,6 +197,22 @@ export function NewMeetingPage() {
           <div className="card">
             <label className="block text-[10px] font-medium text-fg-4 uppercase tracking-wider mb-3">When</label>
             <div className="space-y-2">
+              <div className="grid grid-cols-[1fr_90px] gap-2">
+                <input
+                  type="datetime-local"
+                  className="min-w-0 px-3 py-2 text-[12px] bg-floor border border-border rounded-xl outline-none focus:border-accent focus:ring-2 focus:ring-accent-light transition"
+                  value={scheduledAtIst}
+                  onChange={e => setScheduledAtIst(e.target.value)}
+                />
+                <select
+                  className="px-2 py-2 text-[12px] bg-floor border border-border rounded-xl outline-none focus:border-accent focus:ring-2 focus:ring-accent-light transition"
+                  value={durationMinutes}
+                  onChange={e => setDurationMinutes(Number(e.target.value))}
+                >
+                  {DURATION_OPTIONS.map(minutes => <option key={minutes} value={minutes}>{minutes}m</option>)}
+                </select>
+              </div>
+              <p className="text-[10px] text-fg-5">Scheduled meetings use IST and create a Lark calendar event.</p>
               <button
                 onClick={() => submit(true)}
                 disabled={loading}

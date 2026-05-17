@@ -29,6 +29,26 @@ export function formatTime(s?: string | null): string {
   return new Date(s).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
 }
 
+export function formatIstDateTime(s?: string | null): string {
+  if (!s) return '--'
+  return new Date(s).toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }) + ' IST'
+}
+
+export function formatMinutes(minutes?: number | null): string {
+  if (!minutes) return '--'
+  if (minutes < 60) return `${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest ? `${hours}h ${rest}m` : `${hours}h`
+}
+
 export function timeAgo(s?: string | null): string {
   if (!s) return '--'
   const m = Math.floor((Date.now() - new Date(s).getTime()) / 60000)

@@ -1,6 +1,7 @@
 //! Sync meeting results (tasks, doc, notifications) to Lark using
 //! the tenant-level app_access_token.
 
+use chrono::{DateTime, Duration, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -34,6 +35,43 @@ struct MessageData {
     message_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PrimaryCalendarData {
+    calendars: Vec<PrimaryCalendarEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrimaryCalendarEntry {
+    calendar: CalendarInner,
+}
+
+#[derive(Debug, Deserialize)]
+struct CalendarInner {
+    calendar_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CalendarEventData {
+    event: CalendarEventInner,
+}
+
+#[derive(Debug, Deserialize)]
+struct CalendarEventInner {
+    event_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CalendarAttendeesData {
+    attendees: Vec<CalendarAttendeeInner>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CalendarAttendeeInner {
+    attendee_id: Option<String>,
+    user_id: Option<String>,
+    rsvp_status: Option<String>,
+}
+
 // ── Sync result ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -43,7 +81,247 @@ pub struct SyncResult {
     pub messages_sent: i32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum MeetingCardKind {
+    Created,
+    StartingSoon,
+    UrgentJoin,
+}
+
 // ── Individual Lark API functions ──────────────────────────────────────────
+
+fn lark_api_base_url() -> String {
+    std::env::var("LARK_API_BASE_URL")
+        .unwrap_or_else(|_| "https://open.larksuite.com/open-apis".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn ist_offset() -> FixedOffset {
+    FixedOffset::east_opt(5 * 3600 + 30 * 60).expect("IST offset is valid")
+}
+
+pub fn format_ist_range(
+    scheduled_at: Option<DateTime<Utc>>,
+    duration_minutes: i32,
+) -> Option<String> {
+    let start = scheduled_at?;
+    let end = start + Duration::minutes(i64::from(duration_minutes.max(1)));
+    let offset = ist_offset();
+    let start_ist = start.with_timezone(&offset);
+    let end_ist = end.with_timezone(&offset);
+
+    Some(format!(
+        "{} - {} IST",
+        start_ist.format("%d %b %Y, %I:%M %p"),
+        end_ist.format("%I:%M %p")
+    ))
+}
+
+fn build_calendar_event_body(
+    title: &str,
+    agenda: &str,
+    participant_names: &[String],
+    scheduled_at: DateTime<Utc>,
+    duration_minutes: i32,
+) -> serde_json::Value {
+    let end_at = scheduled_at + Duration::minutes(i64::from(duration_minutes.max(1)));
+    let participant_line = if participant_names.is_empty() {
+        "Participants: Said meeting participants".to_string()
+    } else {
+        format!("Participants: {}", participant_names.join(", "))
+    };
+    let description = if agenda.trim().is_empty() {
+        format!("{participant_line}\n\nOpen Said to join.")
+    } else {
+        format!(
+            "Agenda:\n{}\n\n{participant_line}\n\nOpen Said to join.",
+            agenda.trim()
+        )
+    };
+
+    serde_json::json!({
+        "summary": title,
+        "description": description,
+        "start_time": {
+            "timestamp": scheduled_at.timestamp().to_string(),
+            "timezone": "Asia/Kolkata"
+        },
+        "end_time": {
+            "timestamp": end_at.timestamp().to_string(),
+            "timezone": "Asia/Kolkata"
+        },
+        "free_busy_status": "busy",
+        "visibility": "default",
+        "attendee_ability": "can_see_others",
+        "reminders": [{ "minutes": 5 }],
+        "vchat": { "vc_type": "no_meeting" }
+    })
+}
+
+/// Resolve the app's primary calendar ID.
+pub async fn get_primary_calendar(app_id: &str, app_secret: &str) -> Result<String, String> {
+    let token = get_app_access_token(app_id, app_secret).await?;
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/calendar/v4/calendars/primary?user_id_type=user_id",
+        lark_api_base_url()
+    );
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json; charset=utf-8")
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!("get_primary_calendar request failed: {e}");
+            format!("get_primary_calendar request failed: {e}")
+        })?;
+
+    let envelope: LarkEnvelope<PrimaryCalendarData> = resp.json().await.map_err(|e| {
+        tracing::error!("get_primary_calendar parse failed: {e}");
+        format!("get_primary_calendar parse failed: {e}")
+    })?;
+
+    if envelope.code != 0 {
+        let msg = envelope.msg.as_deref().unwrap_or("unknown");
+        tracing::error!("get_primary_calendar API error {}: {msg}", envelope.code);
+        return Err(format!("Lark API error {}: {msg}", envelope.code));
+    }
+
+    envelope
+        .data
+        .and_then(|data| data.calendars.into_iter().next())
+        .map(|entry| entry.calendar.calendar_id)
+        .ok_or_else(|| "get_primary_calendar: code 0 but no calendar_id".to_string())
+}
+
+/// Create a Lark calendar event and return `(calendar_id, event_id)`.
+pub async fn create_calendar_event(
+    app_id: &str,
+    app_secret: &str,
+    meeting_id: Uuid,
+    title: &str,
+    agenda: &str,
+    participant_names: &[String],
+    scheduled_at: DateTime<Utc>,
+    duration_minutes: i32,
+) -> Result<(String, String), String> {
+    let token = get_app_access_token(app_id, app_secret).await?;
+    let calendar_id = get_primary_calendar(app_id, app_secret).await?;
+    let body = build_calendar_event_body(
+        title,
+        agenda,
+        participant_names,
+        scheduled_at,
+        duration_minutes,
+    );
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/calendar/v4/calendars/{}/events?user_id_type=user_id&idempotency_key={}",
+        lark_api_base_url(),
+        urlencoding::encode(&calendar_id),
+        meeting_id
+    );
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json; charset=utf-8")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!("create_calendar_event request failed: {e}");
+            format!("create_calendar_event request failed: {e}")
+        })?;
+
+    let envelope: LarkEnvelope<CalendarEventData> = resp.json().await.map_err(|e| {
+        tracing::error!("create_calendar_event parse failed: {e}");
+        format!("create_calendar_event parse failed: {e}")
+    })?;
+
+    if envelope.code != 0 {
+        let msg = envelope.msg.as_deref().unwrap_or("unknown");
+        tracing::error!("create_calendar_event API error {}: {msg}", envelope.code);
+        return Err(format!("Lark API error {}: {msg}", envelope.code));
+    }
+
+    let event_id = envelope
+        .data
+        .map(|data| data.event.event_id)
+        .ok_or_else(|| "create_calendar_event: code 0 but no event_id".to_string())?;
+
+    Ok((calendar_id, event_id))
+}
+
+/// Add user attendees to a Lark calendar event.
+pub async fn add_calendar_attendees(
+    app_id: &str,
+    app_secret: &str,
+    calendar_id: &str,
+    event_id: &str,
+    attendee_user_ids: &[String],
+) -> Result<usize, String> {
+    if attendee_user_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let token = get_app_access_token(app_id, app_secret).await?;
+    let body = serde_json::json!({
+        "need_notification": true,
+        "attendees": attendee_user_ids.iter().map(|user_id| {
+            serde_json::json!({ "type": "user", "user_id": user_id })
+        }).collect::<Vec<_>>()
+    });
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/calendar/v4/calendars/{}/events/{}/attendees?user_id_type=user_id",
+        lark_api_base_url(),
+        urlencoding::encode(calendar_id),
+        urlencoding::encode(event_id)
+    );
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json; charset=utf-8")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!("add_calendar_attendees request failed: {e}");
+            format!("add_calendar_attendees request failed: {e}")
+        })?;
+
+    let envelope: LarkEnvelope<CalendarAttendeesData> = resp.json().await.map_err(|e| {
+        tracing::error!("add_calendar_attendees parse failed: {e}");
+        format!("add_calendar_attendees parse failed: {e}")
+    })?;
+
+    if envelope.code != 0 {
+        let msg = envelope.msg.as_deref().unwrap_or("unknown");
+        tracing::error!("add_calendar_attendees API error {}: {msg}", envelope.code);
+        return Err(format!("Lark API error {}: {msg}", envelope.code));
+    }
+
+    let attendees = envelope
+        .data
+        .map(|data| data.attendees)
+        .ok_or_else(|| "add_calendar_attendees: code 0 but no attendees".to_string())?;
+
+    for attendee in &attendees {
+        tracing::info!(
+            "[lark-calendar] attendee added user_id={:?} attendee_id={:?} rsvp={:?}",
+            attendee.user_id,
+            attendee.attendee_id,
+            attendee.rsvp_status
+        );
+    }
+
+    Ok(attendees.len())
+}
 
 /// Create a task in Lark Task v2.
 pub async fn create_lark_task(
@@ -261,7 +539,10 @@ pub async fn send_lark_message(
 
     let client = reqwest::Client::new();
     let resp = client
-        .post("https://open.larksuite.com/open-apis/im/v1/messages?receive_id_type=user_id")
+        .post(format!(
+            "{}/im/v1/messages?receive_id_type=user_id",
+            lark_api_base_url()
+        ))
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json; charset=utf-8")
         .json(&body)
@@ -470,7 +751,10 @@ pub async fn send_interactive_card(
 
     let client = reqwest::Client::new();
     let resp = client
-        .post("https://open.larksuite.com/open-apis/im/v1/messages?receive_id_type=user_id")
+        .post(format!(
+            "{}/im/v1/messages?receive_id_type=user_id",
+            lark_api_base_url()
+        ))
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json; charset=utf-8")
         .json(&body)
@@ -550,31 +834,51 @@ async fn generate_agenda_suggestion(
 }
 
 /// Build a Lark interactive card for meeting notification.
-fn build_meeting_card(
+pub fn build_meeting_card(
     title: &str,
     agenda: &str,
     participant_names: &[String],
     open_tasks: &[(String, String)],
-    header_template: &str,
-    header_title: &str,
+    scheduled_at: Option<DateTime<Utc>>,
+    duration_minutes: i32,
+    kind: MeetingCardKind,
 ) -> serde_json::Value {
     let mut elements: Vec<serde_json::Value> = Vec::new();
+    let (header_template, header_title, lead) = match kind {
+        MeetingCardKind::Created => (
+            "blue",
+            "Meeting scheduled",
+            "A Said meeting has been scheduled.",
+        ),
+        MeetingCardKind::StartingSoon => {
+            ("blue", "Starting soon", "This Said meeting starts soon.")
+        }
+        MeetingCardKind::UrgentJoin => (
+            "red",
+            "Meeting is live",
+            "This Said meeting is live and you have not joined yet.",
+        ),
+    };
 
-    // Meeting title
     elements.push(serde_json::json!({
         "tag": "div",
-        "text": { "content": format!("**Meeting:** {title}"), "tag": "lark_md" }
+        "text": { "content": format!("**{lead}**\n**Meeting:** {title}"), "tag": "lark_md" }
     }));
 
-    // Agenda
-    if !agenda.is_empty() {
+    if let Some(when) = format_ist_range(scheduled_at, duration_minutes) {
         elements.push(serde_json::json!({
             "tag": "div",
-            "text": { "content": format!("**Agenda:**\n{agenda}"), "tag": "lark_md" }
+            "text": { "content": format!("**When:** {when}"), "tag": "lark_md" }
         }));
     }
 
-    // Participants
+    if !agenda.trim().is_empty() {
+        elements.push(serde_json::json!({
+            "tag": "div",
+            "text": { "content": format!("**Agenda:**\n{}", agenda.trim()), "tag": "lark_md" }
+        }));
+    }
+
     if !participant_names.is_empty() {
         let names = participant_names.join(", ");
         elements.push(serde_json::json!({
@@ -591,7 +895,7 @@ fn build_meeting_card(
             open_tasks.len()
         );
         for (task_title, meeting_title) in open_tasks {
-            tasks_md.push_str(&format!("• {task_title} (from *{meeting_title}*)\n"));
+            tasks_md.push_str(&format!("- {task_title} (from *{meeting_title}*)\n"));
         }
         elements.push(serde_json::json!({
             "tag": "div",
@@ -599,7 +903,6 @@ fn build_meeting_card(
         }));
     }
 
-    // Footer note
     elements.push(serde_json::json!({ "tag": "hr" }));
     elements.push(serde_json::json!({
         "tag": "note",
@@ -619,6 +922,31 @@ fn build_meeting_card(
     })
 }
 
+pub async fn send_meeting_card(
+    app_id: &str,
+    app_secret: &str,
+    user_id: &str,
+    title: &str,
+    agenda: &str,
+    participant_names: &[String],
+    open_tasks: &[(String, String)],
+    scheduled_at: Option<DateTime<Utc>>,
+    duration_minutes: i32,
+    kind: MeetingCardKind,
+) -> Result<String, String> {
+    let card = build_meeting_card(
+        title,
+        agenda,
+        participant_names,
+        open_tasks,
+        scheduled_at,
+        duration_minutes,
+        kind,
+    );
+
+    send_interactive_card(app_id, app_secret, user_id, &card).await
+}
+
 /// Send pre-meeting notifications to all participants via Lark interactive cards.
 /// Includes Tier 2: carry-forward tasks + smart agenda generation.
 /// If `scheduled_at` is within 5 minutes (or null), also sends the "starting soon"
@@ -634,14 +962,21 @@ pub async fn send_meeting_notification(
         String,
         Option<String>,
         Uuid,
-        Option<chrono::DateTime<chrono::Utc>>,
-    )> = sqlx::query_as("SELECT title, agenda, org_id, scheduled_at FROM meetings WHERE id = $1")
-        .bind(meeting_id)
-        .fetch_optional(db)
-        .await
-        .map_err(|e| format!("fetch meeting: {e}"))?;
+        Option<DateTime<Utc>>,
+        i32,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT title, agenda, org_id, scheduled_at, duration_minutes, lark_event_id
+           FROM meetings
+          WHERE id = $1",
+    )
+    .bind(meeting_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("fetch meeting: {e}"))?;
 
-    let Some((title, agenda_opt, org_id, scheduled_at)) = row else {
+    let Some((title, agenda_opt, org_id, scheduled_at, duration_minutes, existing_event_id)) = row
+    else {
         return Err("meeting not found".to_string());
     };
 
@@ -709,24 +1044,97 @@ pub async fn send_meeting_notification(
         }
     }
 
+    if let (Some(start_at), None) = (scheduled_at, existing_event_id.as_ref()) {
+        let attendee_user_ids: Vec<String> = participants
+            .iter()
+            .filter_map(|(_, lark_user_id, _)| lark_user_id.clone())
+            .collect();
+
+        match create_calendar_event(
+            app_id,
+            app_secret,
+            meeting_id,
+            &title,
+            &agenda,
+            &participant_names,
+            start_at,
+            duration_minutes,
+        )
+        .await
+        {
+            Ok((calendar_id, event_id)) => {
+                if let Err(e) = add_calendar_attendees(
+                    app_id,
+                    app_secret,
+                    &calendar_id,
+                    &event_id,
+                    &attendee_user_ids,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "[lark-calendar] event {event_id} created but attendee add failed: {e}"
+                    );
+                }
+
+                let _ = sqlx::query(
+                    "UPDATE meetings
+                        SET lark_calendar_id = $1,
+                            lark_event_id = $2,
+                            lark_event_status = 'created'
+                      WHERE id = $3",
+                )
+                .bind(&calendar_id)
+                .bind(&event_id)
+                .bind(meeting_id)
+                .execute(db)
+                .await;
+            }
+            Err(e) => {
+                tracing::warn!("[lark-calendar] failed to create event for {meeting_id}: {e}");
+                let _ =
+                    sqlx::query("UPDATE meetings SET lark_event_status = 'failed' WHERE id = $1")
+                        .bind(meeting_id)
+                        .execute(db)
+                        .await;
+            }
+        }
+    }
+
     // Send card to each participant
     let mut sent = 0i32;
     for (account_id, lark_user_id, _name) in &participants {
         let Some(luid) = lark_user_id else { continue };
+        let already_sent: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM meeting_notifications
+              WHERE meeting_id = $1 AND account_id = $2 AND notification_type = 'meeting_created'",
+        )
+        .bind(meeting_id)
+        .bind(account_id)
+        .fetch_optional(db)
+        .await
+        .unwrap_or(None);
+        if already_sent.is_some() {
+            continue;
+        }
 
         // Tier 2: Carry-forward tasks for this participant
         let open_tasks = get_open_tasks_for_participant(*account_id, org_id, db).await;
 
-        let card = build_meeting_card(
+        match send_meeting_card(
+            app_id,
+            app_secret,
+            luid,
             &title,
             &agenda,
             &participant_names,
             &open_tasks,
-            "blue",
-            "\u{1F4CB} New Meeting",
-        );
-
-        match send_interactive_card(app_id, app_secret, luid, &card).await {
+            scheduled_at,
+            duration_minutes,
+            MeetingCardKind::Created,
+        )
+        .await
+        {
             Ok(msg_id) => {
                 // Track notification
                 let _ = sqlx::query(
@@ -752,24 +1160,32 @@ pub async fn send_meeting_notification(
         tracing::info!("[lark-notify] meeting {meeting_id} is imminent — sending reminder cards");
         for (account_id, lark_user_id, _name) in &participants {
             let Some(luid) = lark_user_id else { continue };
+            let already_sent: Option<Uuid> = sqlx::query_scalar(
+                "SELECT id FROM meeting_notifications
+                  WHERE meeting_id = $1 AND account_id = $2 AND notification_type = 'reminder_5m'",
+            )
+            .bind(meeting_id)
+            .bind(account_id)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+            if already_sent.is_some() {
+                continue;
+            }
 
-            let reminder_card = serde_json::json!({
-                "config": { "wide_screen_mode": true },
-                "header": {
-                    "title": { "content": "\u{23F0} Starting Soon", "tag": "plain_text" },
-                    "template": "blue"
-                },
-                "elements": [{
-                    "tag": "div",
-                    "text": {
-                        "content": format!("**{title}** is starting now.\n\nOpen Said to join."),
-                        "tag": "lark_md"
-                    }
-                }]
-            });
-
-            if let Ok(msg_id) =
-                send_interactive_card(app_id, app_secret, luid, &reminder_card).await
+            if let Ok(msg_id) = send_meeting_card(
+                app_id,
+                app_secret,
+                luid,
+                &title,
+                &agenda,
+                &participant_names,
+                &[],
+                scheduled_at,
+                duration_minutes,
+                MeetingCardKind::StartingSoon,
+            )
+            .await
             {
                 let _ = sqlx::query(
                     "INSERT INTO meeting_notifications (meeting_id, account_id, notification_type, lark_message_id)
@@ -822,4 +1238,79 @@ fn bullet_block(text: &str) -> serde_json::Value {
             "elements": [{ "text_run": { "content": format!("\u{2022} {text}") } }]
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn ist_range_formats_utc_as_india_time() {
+        let start = Utc.with_ymd_and_hms(2026, 5, 17, 4, 30, 0).unwrap();
+
+        assert_eq!(
+            format_ist_range(Some(start), 30).unwrap(),
+            "17 May 2026, 10:00 AM - 10:30 AM IST"
+        );
+    }
+
+    #[test]
+    fn calendar_event_body_matches_lark_dto() {
+        let start = Utc.with_ymd_and_hms(2026, 5, 17, 4, 30, 0).unwrap();
+        let body = build_calendar_event_body(
+            "Sprint Planning",
+            "Review goals",
+            &["Abhishek".to_string(), "Anish".to_string()],
+            start,
+            45,
+        );
+
+        assert_eq!(body["summary"], "Sprint Planning");
+        assert_eq!(
+            body["start_time"]["timestamp"],
+            start.timestamp().to_string()
+        );
+        assert_eq!(body["start_time"]["timezone"], "Asia/Kolkata");
+        assert_eq!(
+            body["end_time"]["timestamp"],
+            (start + Duration::minutes(45)).timestamp().to_string()
+        );
+        assert_eq!(body["end_time"]["timezone"], "Asia/Kolkata");
+        assert_eq!(body["free_busy_status"], "busy");
+        assert_eq!(body["visibility"], "default");
+        assert_eq!(body["attendee_ability"], "can_see_others");
+        assert_eq!(body["reminders"][0]["minutes"], 5);
+        assert_eq!(body["vchat"]["vc_type"], "no_meeting");
+        assert!(
+            body["description"]
+                .as_str()
+                .unwrap()
+                .contains("Open Said to join")
+        );
+    }
+
+    #[test]
+    fn meeting_card_is_interactive_card_shape() {
+        let start = Utc.with_ymd_and_hms(2026, 5, 17, 4, 30, 0).unwrap();
+        let card = build_meeting_card(
+            "Sprint Planning",
+            "Review goals",
+            &["Abhishek".to_string()],
+            &[],
+            Some(start),
+            30,
+            MeetingCardKind::Created,
+        );
+
+        assert_eq!(card["config"]["wide_screen_mode"], true);
+        assert_eq!(card["header"]["template"], "blue");
+        assert_eq!(card["header"]["title"]["tag"], "plain_text");
+        assert!(card["elements"].as_array().unwrap().iter().any(|element| {
+            element["text"]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("10:00 AM")
+        }));
+    }
 }
