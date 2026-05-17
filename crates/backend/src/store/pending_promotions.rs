@@ -30,10 +30,10 @@ use super::{DbPool, now_ms};
 use crate::llm::phonetics;
 
 /// Default k.  Lower = faster learning + more false positives.  Higher =
-/// slower learning + fewer false positives.  WisperFlow effectively uses
-/// k = 1 and pays the price; we start at k = 2 (one confirmation) and can
-/// raise it based on eval-set telemetry.
-pub const DEFAULT_K: i64 = 2;
+/// slower learning + fewer false positives.  Raised from 2 to 3 after user
+/// reports of repeated typos getting promoted (two identical typos shouldn't
+/// be enough to learn a term).
+pub const DEFAULT_K: i64 = 3;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PromotionDecision {
@@ -67,14 +67,15 @@ pub fn record_sighting(
     let now = now_ms();
     let phon_key = phonetics::phonetic_key(correct);
 
-    // Look up the existing pending row (if any) for this (user, correct, lang).
-    let existing: Option<(i64, String)> = conn
+    const STALE_MS: i64 = 14 * 24 * 60 * 60 * 1000;
+
+    let existing: Option<(i64, String, i64)> = conn
         .query_row(
-            "SELECT sighting_count, phonetic_key
+            "SELECT sighting_count, phonetic_key, last_seen
                FROM pending_promotions
               WHERE user_id = ?1 AND correct_form = ?2 AND output_language = ?3",
             params![user_id, correct, output_language],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .ok();
 
@@ -97,8 +98,9 @@ pub fn record_sighting(
             .ok()?;
             (1_i64, false)
         }
-        Some((count, existing_key)) if existing_key == phon_key => {
-            let next = count + 1;
+        Some((count, existing_key, last_seen)) if existing_key == phon_key => {
+            let base = if (now - last_seen) > STALE_MS { 0 } else { count };
+            let next = base + 1;
             conn.execute(
                 "UPDATE pending_promotions
                     SET sighting_count = ?4, last_seen = ?5, transcript_form = ?6
@@ -115,7 +117,7 @@ pub fn record_sighting(
             .ok()?;
             (next, false)
         }
-        Some((_count, _other_key)) => {
+        Some((_count, _other_key, _last_seen)) => {
             // Phonetic key drift — treat as a fresh term, reset the count.
             conn.execute(
                 "UPDATE pending_promotions

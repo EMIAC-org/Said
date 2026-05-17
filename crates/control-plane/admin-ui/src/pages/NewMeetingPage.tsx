@@ -98,10 +98,10 @@ export function NewMeetingPage() {
         <div className="space-y-4">
           {/* Title */}
           <div className="card">
-            <label className="block text-[10px] font-medium text-fg-4 uppercase tracking-wider mb-2">Meeting Title</label>
+            <label className="block text-[10px] font-semibold text-fg-4 uppercase tracking-[0.08em] mb-2">Meeting Title</label>
             <input
               type="text"
-              className="w-full px-4 py-2.5 text-[13px] bg-floor border border-border rounded-xl outline-none focus:border-accent focus:ring-2 focus:ring-accent-light transition placeholder:text-fg-5"
+              className="w-full px-4 py-2.5 text-[13px] bg-[hsla(0,0%,0%,0.25)] border border-border rounded-lg outline-none focus:bg-[hsla(0,0%,0%,0.35)] focus:border-[hsla(226,80%,78%,0.45)] focus:shadow-[0_0_0_3px_hsla(226,80%,78%,0.10)] transition placeholder:text-fg-4 text-fg"
               placeholder="Sprint Planning — Week 22"
               value={title}
               onChange={e => setTitle(e.target.value)}
@@ -110,9 +110,9 @@ export function NewMeetingPage() {
 
           {/* Agenda */}
           <div className="card">
-            <label className="block text-[10px] font-medium text-fg-4 uppercase tracking-wider mb-2">Agenda (Optional)</label>
+            <label className="block text-[10px] font-semibold text-fg-4 uppercase tracking-[0.08em] mb-2">Agenda (Optional)</label>
             <textarea
-              className="w-full px-4 py-2.5 text-[13px] bg-floor border border-border rounded-xl outline-none focus:border-accent focus:ring-2 focus:ring-accent-light transition resize-y placeholder:text-fg-5"
+              className="w-full px-4 py-2.5 text-[13px] bg-[hsla(0,0%,0%,0.25)] border border-border rounded-lg outline-none focus:bg-[hsla(0,0%,0%,0.35)] focus:border-[hsla(226,80%,78%,0.45)] focus:shadow-[0_0_0_3px_hsla(226,80%,78%,0.10)] transition resize-y placeholder:text-fg-4 text-fg"
               rows={3}
               placeholder={"1. Review last week's velocity\n2. Assign stories for this sprint\n3. Blockers check"}
               value={agenda}
@@ -123,14 +123,14 @@ export function NewMeetingPage() {
           {/* Participants */}
           <div className="card !p-0 overflow-hidden">
             <div className="px-5 py-3.5">
-              <label className="block text-[10px] font-medium text-fg-4 uppercase tracking-wider mb-2">Participants</label>
+              <label className="block text-[10px] font-semibold text-fg-4 uppercase tracking-[0.08em] mb-2">Participants</label>
 
               {selectedMembers.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mb-3">
                   {selectedMembers.map(m => {
                     const name = m.lark_name || m.account_id
                     return (
-                      <div key={m.account_id} className="inline-flex items-center gap-1.5 bg-accent-light rounded-lg pl-1 pr-2 py-1">
+                      <div key={m.account_id} className="inline-flex items-center gap-1.5 bg-surface-4 rounded-full pl-1 pr-2.5 py-1">
                         <Avatar name={name} size="sm" />
                         <span className="text-[11px] font-medium">{name}</span>
                         <button onClick={() => remove(m.account_id)} className="text-fg-4 hover:text-fg transition-colors ml-0.5">
@@ -142,11 +142,11 @@ export function NewMeetingPage() {
                 </div>
               )}
 
-              <div className="flex items-center gap-2 px-3 py-2 bg-floor rounded-xl border border-border">
+              <div className="flex items-center gap-2 px-3 py-2 bg-[hsla(0,0%,0%,0.25)] rounded-lg border border-border focus-within:border-[hsla(226,80%,78%,0.45)] focus-within:shadow-[0_0_0_3px_hsla(226,80%,78%,0.10)] transition-all">
                 <Search size={13} className="text-fg-4 shrink-0" />
                 <input
                   type="text"
-                  className="flex-1 text-[13px] bg-transparent outline-none placeholder:text-fg-5"
+                  className="flex-1 text-[13px] bg-transparent outline-none placeholder:text-fg-4 text-fg"
                   placeholder="Search Lark contacts..."
                   value={search}
                   onChange={e => setSearch(e.target.value)}
@@ -159,7 +159,7 @@ export function NewMeetingPage() {
               <div className="border-t border-border-light">
                 {Object.entries(departments).map(([dept, deptMembers]) => (
                   <div key={dept}>
-                    <div className="px-5 py-2 bg-floor text-[9px] font-medium text-fg-4 uppercase tracking-wider border-b border-border-light">
+                    <div className="px-5 py-2 bg-surface-2 text-[9px] font-semibold text-fg-4 uppercase tracking-[0.08em] border-b border-border-light">
                       Lark Contacts — {dept}
                     </div>
                     {deptMembers.map((m, i) => {
@@ -168,7 +168,7 @@ export function NewMeetingPage() {
                       return (
                         <div
                           key={m.account_id}
-                          className={`flex items-center gap-3 px-5 py-2.5 cursor-pointer hover:bg-accent-light/50 transition-colors ${i < deptMembers.length - 1 ? 'border-b border-border-light' : ''}`}
+                          className={`flex items-center gap-3 px-5 py-2.5 cursor-pointer hover:bg-surface-4/30 transition-colors ${i < deptMembers.length - 1 ? 'border-b border-border-light' : ''}`}
                           onClick={() => toggle(m.account_id)}
                         >
                           <Avatar name={name} size="sm" />
@@ -195,17 +195,17 @@ export function NewMeetingPage() {
         {/* Right — actions + settings */}
         <div className="space-y-4">
           <div className="card">
-            <label className="block text-[10px] font-medium text-fg-4 uppercase tracking-wider mb-3">When</label>
+            <label className="block text-[10px] font-semibold text-fg-4 uppercase tracking-[0.08em] mb-3">When</label>
             <div className="space-y-2">
               <div className="grid grid-cols-[1fr_90px] gap-2">
                 <input
                   type="datetime-local"
-                  className="min-w-0 px-3 py-2 text-[12px] bg-floor border border-border rounded-xl outline-none focus:border-accent focus:ring-2 focus:ring-accent-light transition"
+                  className="min-w-0 px-3 py-2 text-[12px] bg-[hsla(0,0%,0%,0.25)] border border-border rounded-lg outline-none focus:border-[hsla(226,80%,78%,0.45)] focus:shadow-[0_0_0_3px_hsla(226,80%,78%,0.10)] transition text-fg"
                   value={scheduledAtIst}
                   onChange={e => setScheduledAtIst(e.target.value)}
                 />
                 <select
-                  className="px-2 py-2 text-[12px] bg-floor border border-border rounded-xl outline-none focus:border-accent focus:ring-2 focus:ring-accent-light transition"
+                  className="px-2 py-2 text-[12px] bg-[hsla(0,0%,0%,0.25)] border border-border rounded-lg outline-none focus:border-[hsla(226,80%,78%,0.45)] transition text-fg"
                   value={durationMinutes}
                   onChange={e => setDurationMinutes(Number(e.target.value))}
                 >
@@ -216,7 +216,7 @@ export function NewMeetingPage() {
               <button
                 onClick={() => submit(true)}
                 disabled={loading}
-                className="w-full inline-flex items-center justify-center gap-2 text-[13px] font-semibold py-2.5 rounded-xl bg-accent text-accent-fg hover:bg-accent-hover shadow-[0_2px_8px_var(--color-accent-glow)] disabled:opacity-40 transition-all"
+                className="w-full inline-flex items-center justify-center gap-2 text-[13px] font-semibold h-10 rounded-lg bg-[hsl(0_0%_98%)] text-[hsl(240_8%_8%)] hover:opacity-90 disabled:opacity-35 transition-all"
               >
                 {loading && <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
                 Start Now
@@ -224,7 +224,7 @@ export function NewMeetingPage() {
               <button
                 onClick={() => submit(false)}
                 disabled={loading}
-                className="w-full inline-flex items-center justify-center gap-2 text-[13px] font-medium py-2.5 rounded-xl border border-border text-fg-2 hover:bg-floor hover:border-fg-5 disabled:opacity-40 transition-colors"
+                className="w-full inline-flex items-center justify-center gap-2 text-[13px] font-medium h-10 rounded-lg border border-border text-fg-2 hover:bg-surface-4/30 hover:border-fg-5 disabled:opacity-35 transition-colors"
               >
                 Schedule for Later
               </button>
@@ -232,7 +232,7 @@ export function NewMeetingPage() {
           </div>
 
           <div className="card">
-            <label className="block text-[10px] font-medium text-fg-4 uppercase tracking-wider mb-3">AI Settings</label>
+            <label className="block text-[10px] font-semibold text-fg-4 uppercase tracking-[0.08em] mb-3">AI Settings</label>
             <div className="flex flex-col gap-3">
               <label className="flex items-center gap-2.5 cursor-pointer">
                 <input type="checkbox" defaultChecked className="w-4 h-4 accent-[var(--color-accent)] rounded" />
@@ -245,7 +245,7 @@ export function NewMeetingPage() {
             </div>
           </div>
 
-          {error && <div className="bg-live-bg border border-live/20 rounded-2xl px-4 py-3 text-[12px] text-live">{error}</div>}
+          {error && <div className="bg-live-bg border border-live/20 rounded-xl px-4 py-3 text-[12px] text-live">{error}</div>}
         </div>
       </div>
     </>

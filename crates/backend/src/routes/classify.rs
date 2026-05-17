@@ -707,17 +707,14 @@ fn polish_promotion_allowed(
 fn run_demotion_pass(state: &AppState, polish: &str, user_kept: &str) -> usize {
     let polish_lower = polish.to_ascii_lowercase();
     let kept_lower = user_kept.to_ascii_lowercase();
-    let vocab = vocabulary::top_terms(&state.pool, &state.default_user_id, 200);
+    let vocab = vocabulary::top_terms(&state.pool, &state.default_user_id, 1000);
 
     let mut demoted = 0_usize;
     for v in vocab {
-        if v.source == "starred" {
-            continue;
-        }
         let term_lower = v.term.to_ascii_lowercase();
         if polish_lower.contains(&term_lower)
             && !kept_lower.contains(&term_lower)
-            && vocabulary::demote(&state.pool, &state.default_user_id, &v.term, 0.5)
+            && vocabulary::demote(&state.pool, &state.default_user_id, &v.term, 1.0)
         {
             demoted += 1;
         }

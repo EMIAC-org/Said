@@ -29,10 +29,10 @@ export function AvatarStack({ names }: { names: string[] }) {
   return (
     <div className="flex">
       {names.slice(0, 4).map((n, i) => (
-        <Avatar key={i} name={n} size="sm" className="border-2 border-surface -mr-1.5" />
+        <Avatar key={i} name={n} size="sm" className="border-2 border-surface-3 -mr-1.5" />
       ))}
       {names.length > 4 && (
-        <div className="w-[22px] h-[22px] rounded-full bg-accent-light text-fg-3 text-[8px] font-semibold inline-flex items-center justify-center border-2 border-surface -mr-1.5">
+        <div className="w-[22px] h-[22px] rounded-full bg-surface-4 text-fg-3 text-[8px] font-semibold inline-flex items-center justify-center border-2 border-surface-3 -mr-1.5">
           +{names.length - 4}
         </div>
       )}

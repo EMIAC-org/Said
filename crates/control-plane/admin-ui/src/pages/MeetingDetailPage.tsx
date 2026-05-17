@@ -106,21 +106,21 @@ export function MeetingDetailPage() {
         {/* Actions */}
         {m.status === 'scheduled' && (
           <div className="mt-4 pt-4 border-t border-border-light flex items-center gap-3">
-            <button onClick={() => doAction('start')} disabled={!!actionLoading} className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-5 py-2.5 rounded-xl bg-accent text-accent-fg hover:bg-accent-hover shadow-[0_2px_8px_var(--color-accent-glow)] disabled:opacity-40 transition-all">
+            <button onClick={() => doAction('start')} disabled={!!actionLoading} className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-5 h-10 rounded-lg bg-[hsl(0_0%_98%)] text-[hsl(240_8%_8%)] hover:opacity-90 disabled:opacity-35 transition-all">
               {actionLoading === 'start' && <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
               {actionLoading === 'start' ? 'Starting...' : 'Start Meeting'}
             </button>
-            <button onClick={() => navigate(`/meetings/${id}/live`)} className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-5 py-2.5 rounded-xl bg-accent text-accent-fg hover:bg-accent-hover shadow-[0_2px_8px_var(--color-accent-glow)] transition-all">
+            <button onClick={() => navigate(`/meetings/${id}/live`)} className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-5 h-10 rounded-lg bg-[hsl(0_0%_98%)] text-[hsl(240_8%_8%)] hover:opacity-90 transition-all">
               <Radio size={14} /> Join Live
             </button>
           </div>
         )}
         {m.status === 'live' && (
           <div className="mt-4 pt-4 border-t border-border-light flex items-center gap-3">
-            <button onClick={() => navigate(`/meetings/${id}/live`)} className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-5 py-2.5 rounded-xl bg-accent text-accent-fg hover:bg-accent-hover shadow-[0_2px_8px_var(--color-accent-glow)] transition-all">
+            <button onClick={() => navigate(`/meetings/${id}/live`)} className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-5 h-10 rounded-lg bg-[hsl(0_0%_98%)] text-[hsl(240_8%_8%)] hover:opacity-90 transition-all">
               <Radio size={14} /> Join Live
             </button>
-            <button onClick={() => doAction('end')} disabled={!!actionLoading} className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-5 py-2.5 rounded-xl text-live border border-live/30 hover:bg-live-bg disabled:opacity-40 transition-all">
+            <button onClick={() => doAction('end')} disabled={!!actionLoading} className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-5 h-10 rounded-lg text-live border border-live/30 hover:bg-live-bg disabled:opacity-35 transition-all">
               {actionLoading === 'end' && <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
               {actionLoading === 'end' ? 'Ending...' : 'End Meeting'}
             </button>
@@ -147,7 +147,7 @@ export function MeetingDetailPage() {
               <div className="text-[12px] font-semibold mb-3">Action Items</div>
               <div className="flex flex-col gap-2">
                 {tasks.map(t => (
-                  <div key={t.id} className="flex items-center gap-3 px-3.5 py-2.5 bg-floor rounded-xl">
+                  <div key={t.id} className="flex items-center gap-3 px-3.5 py-2.5 bg-surface-2 rounded-lg">
                     <div className={`w-[18px] h-[18px] rounded-md border-[1.5px] shrink-0 ${t.lark_task_id ? 'bg-ok border-ok' : 'border-fg-5'}`} />
                     <div className="flex-1 text-[13px]">{t.title}</div>
                     <div className="flex items-center gap-1.5 text-xs text-fg-3">
@@ -166,7 +166,7 @@ export function MeetingDetailPage() {
               <div className="text-[12px] font-semibold mb-3">Decisions</div>
               <div className="space-y-2">
                 {decisions.map(d => (
-                  <div key={d.id} className="flex items-start gap-3 px-3.5 py-2.5 bg-floor rounded-xl">
+                  <div key={d.id} className="flex items-start gap-3 px-3.5 py-2.5 bg-surface-2 rounded-lg">
                     <div className="w-1.5 h-1.5 rounded-full bg-warn mt-2 shrink-0" />
                     <div className="text-[13px] leading-relaxed">{d.text}</div>
                   </div>
@@ -221,7 +221,7 @@ export function MeetingDetailPage() {
                   const name = pNames[i], st = p.status || 'invited'
                   const cls = st === 'connected' || st === 'joined' ? 'text-ok' : st === 'left' || st === 'disconnected' ? 'text-warn' : 'text-fg-4'
                   return (
-                    <div key={p.id} className="flex items-center gap-2.5 px-3 py-2 bg-floor rounded-xl">
+                    <div key={p.id} className="flex items-center gap-2.5 px-3 py-2 bg-surface-2 rounded-lg">
                       <Avatar name={name} size="sm" />
                       <div className="flex-1 min-w-0">
                         <div className="text-[12px] font-medium truncate">{name}</div>
@@ -237,7 +237,7 @@ export function MeetingDetailPage() {
 
           {/* AI pending */}
           {!summary && transcript.length > 0 && m.status === 'ended' && (
-            <div className="bg-warn-bg border border-warn/20 rounded-2xl px-4 py-3.5">
+            <div className="bg-warn-bg border border-warn/20 rounded-xl px-4 py-3.5">
               <div className="text-[12px] font-semibold text-warn mb-0.5">AI Summary Pending</div>
               <div className="text-[11px] text-fg-3">Connect OpenAI in Settings to enable AI processing.</div>
             </div>
@@ -247,7 +247,7 @@ export function MeetingDetailPage() {
           {m.status === 'ended' && (
             <div className="card">
               <div className="flex items-center gap-3 mb-3">
-                <div className="w-9 h-9 rounded-xl bg-[#e8f4ff] dark:bg-[#1a2a3d] flex items-center justify-center">
+                <div className="w-9 h-9 rounded-lg bg-surface-4 flex items-center justify-center">
                   <LarkLogo size={20} />
                 </div>
                 <div className="flex-1">
@@ -255,7 +255,7 @@ export function MeetingDetailPage() {
                   <div className="text-[10px] text-fg-4">{tasks.length} task{tasks.length !== 1 ? 's' : ''} + summary</div>
                 </div>
               </div>
-              <button onClick={doSync} disabled={syncing} className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-xl bg-accent text-accent-fg hover:bg-accent-hover shadow-[0_2px_6px_var(--color-accent-glow)] disabled:opacity-40 transition-all">
+              <button onClick={doSync} disabled={syncing} className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-4 h-9 rounded-lg bg-[hsl(0_0%_98%)] text-[hsl(240_8%_8%)] hover:opacity-90 disabled:opacity-35 transition-all">
                 {syncing ? <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> : null}
                 {syncing ? 'Syncing...' : <>Sync All <ArrowRight size={12} /></>}
               </button>

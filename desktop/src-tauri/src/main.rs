@@ -32,6 +32,7 @@ const MEETING_SPEECH_LEVEL: f32 = 0.025;
 const MEETING_SILENCE_LEVEL: f32 = 0.012;
 const MEETING_PAUSE_MS: u64 = 900;
 const MEETING_MIN_CHUNK_MS: u64 = 700;
+const MEETING_MAX_CHUNK_MS: u64 = 30_000;
 
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
@@ -1635,6 +1636,41 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 }
             }
         });
+    }
+
+    // ── Meeting time ceiling: force-finalize after MEETING_MAX_CHUNK_MS ────────
+    // Prevents unbounded RAM accumulation when someone talks non-stop.
+    // Must fire before Deepgram's 45s MAX_STREAMING_DURATION to avoid data loss.
+    if let Some(meeting) = app.try_state::<MeetingModeState>() {
+        if meeting.capture_enabled() {
+            let active = Arc::clone(&meeting.active);
+            let muted = Arc::clone(&meeting.muted);
+            let generation = Arc::clone(&meeting.generation);
+            let expected_gen = meeting.generation.load(Ordering::SeqCst);
+            let shared_timer = Arc::clone(shared);
+            let app_timer = app.clone();
+            let backend_timer = Arc::clone(&app.state::<BackendState>().0);
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(MEETING_MAX_CHUNK_MS)).await;
+                if active.load(Ordering::SeqCst)
+                    && !muted.load(Ordering::SeqCst)
+                    && generation.load(Ordering::SeqCst) == expected_gen
+                {
+                    let still_recording = shared_timer
+                        .lock()
+                        .ok()
+                        .map(|d| d.state == desktop::AppState::Recording)
+                        .unwrap_or(false);
+                    if still_recording {
+                        tracing::info!(
+                            "[meeting_mode] time ceiling ({}s) — finishing chunk",
+                            MEETING_MAX_CHUNK_MS / 1000
+                        );
+                        do_finish_recording(shared_timer, app_timer, backend_timer);
+                    }
+                }
+            });
+        }
     }
 
     // ── P5: Start Deepgram WS streaming immediately ────────────────────────────

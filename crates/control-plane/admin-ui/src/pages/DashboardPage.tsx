@@ -53,7 +53,7 @@ export function DashboardPage() {
           <div className="text-[10px] font-semibold text-fg-4 uppercase tracking-wider mb-3">AI Insights</div>
           <div className="flex-1 flex flex-col justify-center">
             <div className="flex items-start gap-2.5 mb-3">
-              <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center shrink-0 mt-0.5">
+              <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center shrink-0 mt-0.5">
                 <Sparkles size={14} className="text-accent" />
               </div>
               <p className="text-[13px] text-fg-2 leading-relaxed">
@@ -75,8 +75,8 @@ export function DashboardPage() {
           <div className="flex items-center justify-between mb-1">
             <span className="text-[10px] font-semibold text-fg-4 uppercase tracking-wider">Meeting Overview</span>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-accent-light text-fg-3">All meetings</span>
-              <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-surface border border-border text-fg-4">{ended} completed</span>
+              <span className="text-[10px] font-semibold px-2.5 py-1 rounded-full bg-accent-light text-fg-3 uppercase tracking-wide">All meetings</span>
+              <span className="text-[10px] font-semibold px-2.5 py-1 rounded-full bg-surface-4 text-fg-4">{ended} completed</span>
             </div>
           </div>
           <div className="flex items-baseline gap-2 mb-1">
@@ -107,7 +107,7 @@ export function DashboardPage() {
               ))}
               <polygon points={areaStr} fill="url(#areaGrad)" />
               <polyline points={lineStr} fill="none" stroke="url(#lineGrad)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              <circle cx="500" cy="40" r="4" fill="var(--color-surface)" stroke="var(--color-accent)" strokeWidth="2" />
+              <circle cx="500" cy="40" r="4" fill="var(--color-surface-3)" stroke="var(--color-accent)" strokeWidth="2" />
               <circle cx="500" cy="40" r="8" fill="none" stroke="var(--color-accent)" strokeWidth="1" opacity="0.2" />
             </svg>
           </div>
@@ -172,7 +172,7 @@ export function DashboardPage() {
               </thead>
               <tbody>
                 {recent.map(m => (
-                  <tr key={m.id} className="border-t border-border-light cursor-pointer hover:bg-accent-light/50 transition-colors" onClick={() => navigate(`/meetings/${m.id}`)}>
+                  <tr key={m.id} className="border-t border-border-light cursor-pointer hover:bg-surface-4/30 transition-colors" onClick={() => navigate(`/meetings/${m.id}`)}>
                     <td className="px-5 py-3">
                       <div className="flex items-center gap-2.5">
                         <Avatar name={m.title} size="sm" />
