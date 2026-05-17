@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-/// Public Codex CLI client ID (same one Gateway uses).
+/// Public Codex CLI client ID (same one Gateway uses), overridable for deploys.
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_BASE: &str = "https://auth.openai.com/oauth";
 const CODEX_API: &str = "https://chatgpt.com/backend-api/codex/responses";
@@ -87,10 +87,11 @@ pub fn create_pkce_session() -> PkceSession {
     let code_challenge = base64_url_encode(&digest);
 
     let redirect_uri = redirect_uri();
+    let client_id = client_id();
 
     let auth_url = format!(
         "{AUTH_BASE}/authorize\
-         ?client_id={CLIENT_ID}\
+         ?client_id={client_id}\
          &redirect_uri={redirect}\
          &response_type=code\
          &scope=openid%20profile%20email%20offline_access\
@@ -114,6 +115,7 @@ pub fn create_pkce_session() -> PkceSession {
 /// Exchange an authorization code for tokens.
 pub async fn exchange_code(code: &str, code_verifier: &str) -> Result<TokenResponse, CodexError> {
     let redirect_uri = redirect_uri();
+    let client_id = client_id();
 
     let resp = reqwest::Client::new()
         .post(format!("{AUTH_BASE}/token"))
@@ -121,7 +123,7 @@ pub async fn exchange_code(code: &str, code_verifier: &str) -> Result<TokenRespo
             ("grant_type", "authorization_code"),
             ("code", code),
             ("code_verifier", code_verifier),
-            ("client_id", CLIENT_ID),
+            ("client_id", &client_id),
             ("redirect_uri", &redirect_uri),
         ])
         .send()
@@ -142,12 +144,14 @@ pub async fn exchange_code(code: &str, code_verifier: &str) -> Result<TokenRespo
 
 /// Refresh an access token using a refresh token.
 pub async fn refresh_token(refresh_token: &str) -> Result<TokenResponse, CodexError> {
+    let client_id = client_id();
+
     let resp = reqwest::Client::new()
         .post(format!("{AUTH_BASE}/token"))
         .form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
-            ("client_id", CLIENT_ID),
+            ("client_id", &client_id),
         ])
         .send()
         .await?;
@@ -238,6 +242,10 @@ fn base64_url_encode(input: &[u8]) -> String {
 /// Get the redirect URI from env or fallback to the default.
 fn redirect_uri() -> String {
     std::env::var("OPENAI_REDIRECT_URI").unwrap_or_else(|_| DEFAULT_REDIRECT_URI.to_string())
+}
+
+fn client_id() -> String {
+    std::env::var("OPENAI_CLIENT_ID").unwrap_or_else(|_| CLIENT_ID.to_string())
 }
 
 /// Parse SSE data from the Codex streaming response, collecting all
