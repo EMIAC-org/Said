@@ -1,4 +1,6 @@
 pub mod auth;
+pub mod guest;
+pub mod guest_ws;
 pub mod health;
 pub mod lark_auth;
 pub mod lark_sync;

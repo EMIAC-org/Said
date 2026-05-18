@@ -18,6 +18,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/004_openai_account.sql"),
     include_str!("../migrations/005_pre_meeting.sql"),
     include_str!("../migrations/006_lark_calendar_events.sql"),
+    include_str!("../migrations/007_guest_links.sql"),
 ];
 
 /// Connect to Postgres and apply the schema.
@@ -28,15 +29,28 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
         .await?;
 
     info!("[store] applying schema");
+    sqlx::query("SELECT pg_advisory_lock(hashtext('said_control_plane_migrations'))")
+        .execute(&pool)
+        .await?;
     // Run each migration file sequentially; split on statement boundaries
-    for migration in MIGRATIONS {
-        for stmt in migration.split(';') {
-            let trimmed = stmt.trim();
-            if !trimmed.is_empty() {
-                sqlx::query(trimmed).execute(&pool).await?;
+    let migration_result = async {
+        for migration in MIGRATIONS {
+            for stmt in migration.split(';') {
+                let trimmed = stmt.trim();
+                if !trimmed.is_empty() {
+                    sqlx::query(trimmed).execute(&pool).await?;
+                }
             }
         }
+        Ok::<(), sqlx::Error>(())
     }
+    .await;
+    let unlock_result =
+        sqlx::query("SELECT pg_advisory_unlock(hashtext('said_control_plane_migrations'))")
+            .execute(&pool)
+            .await;
+    migration_result?;
+    unlock_result?;
     info!("[store] schema OK");
 
     Ok(pool)
