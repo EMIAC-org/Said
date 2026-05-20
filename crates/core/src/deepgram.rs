@@ -178,7 +178,10 @@ mod tests {
         let bias = BiasPackage::default();
         let url = build_batch_url("https://api.deepgram.com/v1/listen", &bias);
         assert!(!url.contains("smart_format"), "smart_format must be OFF");
-        assert!(!url.contains("punctuate"), "punctuate must be OFF — LLM handles it");
+        assert!(
+            !url.contains("punctuate"),
+            "punctuate must be OFF — LLM handles it"
+        );
     }
 
     #[test]
@@ -186,6 +189,9 @@ mod tests {
         let bias = BiasPackage::default();
         let url = build_ws_url("wss://api.deepgram.com/v1/listen", &bias, 16000);
         assert!(!url.contains("smart_format"), "smart_format must be OFF");
-        assert!(!url.contains("punctuate"), "punctuate must be OFF — LLM handles it");
+        assert!(
+            !url.contains("punctuate"),
+            "punctuate must be OFF — LLM handles it"
+        );
     }
 }

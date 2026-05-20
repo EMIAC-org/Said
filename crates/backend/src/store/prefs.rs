@@ -83,7 +83,11 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                 gemini_api_key: row.get(14)?,
                 llm_provider: {
                     let raw = row.get::<_, Option<String>>(15)?.unwrap_or_default();
-                    if raw.is_empty() || raw == "gateway" { "groq".into() } else { raw }
+                    if raw.is_empty() || raw == "gateway" {
+                        "groq".into()
+                    } else {
+                        raw
+                    }
                 },
                 groq_api_key: row.get(16)?,
                 cerebras_api_key: row.get(17)?,

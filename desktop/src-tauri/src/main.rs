@@ -260,7 +260,9 @@ fn humanize_error(raw: &str) -> String {
     if lower.contains("recording interrupted") {
         return "Recording interrupted".into();
     }
-    if lower.contains("deepgram") && (lower.contains("401") || lower.contains("403") || lower.contains("unauthorized")) {
+    if lower.contains("deepgram")
+        && (lower.contains("401") || lower.contains("403") || lower.contains("unauthorized"))
+    {
         return "Deepgram key invalid".into();
     }
     if lower.contains("deepgram") && (lower.contains("429") || lower.contains("rate")) {
@@ -269,7 +271,9 @@ fn humanize_error(raw: &str) -> String {
     if lower.contains("deepgram") || lower.contains("stt") {
         return "STT failed — try again".into();
     }
-    if lower.contains("openai") && (lower.contains("not connected") || lower.contains("401") || lower.contains("403")) {
+    if lower.contains("openai")
+        && (lower.contains("not connected") || lower.contains("401") || lower.contains("403"))
+    {
         return "OpenAI not connected".into();
     }
     if lower.contains("groq") && (lower.contains("401") || lower.contains("403")) {
@@ -293,7 +297,8 @@ fn humanize_error(raw: &str) -> String {
     if lower.contains("timeout") || lower.contains("timed out") {
         return "Connection timed out".into();
     }
-    if lower.contains("dns") || lower.contains("unreachable") || lower.contains("failed to connect") {
+    if lower.contains("dns") || lower.contains("unreachable") || lower.contains("failed to connect")
+    {
         return "Network unreachable".into();
     }
     if lower.contains("backend") && (lower.contains("not started") || lower.contains("lock")) {
@@ -2255,7 +2260,10 @@ async fn run_voice_polish_sse(
                 }
             }
             api::PolishEvent::Status { phase, transcript } => {
-                tracing::info!("[pipeline] status: phase={phase} transcript={}", transcript.as_deref().unwrap_or("—"));
+                tracing::info!(
+                    "[pipeline] status: phase={phase} transcript={}",
+                    transcript.as_deref().unwrap_or("—")
+                );
                 let _ = app_clone.emit(
                     "voice-status",
                     serde_json::json!({ "phase": phase, "transcript": transcript }),
@@ -3331,7 +3339,10 @@ async fn openai_status(app: tauri::AppHandle) -> Result<OpenAIStatus, String> {
         .map_err(|e| format!("parse failed: {e}"))?;
 
     Ok(OpenAIStatus {
-        connected: resp.get("connected").and_then(|v| v.as_bool()).unwrap_or(false),
+        connected: resp
+            .get("connected")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         expires_at: resp.get("expires_at").and_then(|v| v.as_i64()),
         connected_at: resp.get("connected_at").and_then(|v| v.as_i64()),
     })
@@ -4132,19 +4143,26 @@ async fn watch_for_edit(
                         }
                     }
                     // Show learning result in the status bar (not OS notification)
-                    let term_display = first_term.clone().unwrap_or_else(|| "your correction".to_string());
+                    let term_display = first_term
+                        .clone()
+                        .unwrap_or_else(|| "your correction".to_string());
                     let msg = match resp.class.as_str() {
-                        "STT_ERROR" | "stt_error" => format!("Will recognise \"{}\" next time", term_display),
+                        "STT_ERROR" | "stt_error" => {
+                            format!("Will recognise \"{}\" next time", term_display)
+                        }
                         "POLISH_ERROR" | "polish_error" => "Updated writing preference".to_string(),
                         _ => "Remembered your correction".to_string(),
                     };
                     if let Some(w) = app.get_webview_window("status-bar") {
                         let _ = w.show();
                     }
-                    let _ = app.emit("vocab-learned", serde_json::json!({
-                        "term": term_display,
-                        "message": msg,
-                    }));
+                    let _ = app.emit(
+                        "vocab-learned",
+                        serde_json::json!({
+                            "term": term_display,
+                            "message": msg,
+                        }),
+                    );
                 }
 
                 // Surface queued (k-event sighting recorded but not yet promoted)

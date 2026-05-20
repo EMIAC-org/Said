@@ -169,51 +169,37 @@ pub fn is_common_word(term: &str) -> bool {
     // Hinglish sentence — learning "maine" → "Emiac" is catastrophic.
     const HINDI_COMMON: &[&str] = &[
         // Pronouns (CRITICAL — these caused "maine" → "Emiac")
-        "main", "maine", "mein", "mujhe", "mujhse", "mujhko",
-        "tu", "tum", "tumne", "tumhe", "tumse", "tumko",
-        "aap", "aapne", "aapse", "aapko",
-        "hum", "humne", "humse", "humko", "humein",
-        "yeh", "woh", "ye", "wo", "isko", "usko", "inko", "unko",
-        "koi", "kisko", "kiske", "kiski", "jisko", "jiske", "jiski",
-        "uska", "uski", "unka", "unki", "mera", "meri", "mere",
-        "tera", "teri", "tere", "tumhara", "tumhari", "apna", "apni", "apne",
-        "khud", "sab", "sabko", "sabne", "sabse",
-        // Verbs — common forms
-        "hai", "hain", "tha", "thi", "the", "hoga", "hogi", "hoge",
-        "karna", "karo", "karta", "karti", "karte", "karega", "karenge", "karegi",
-        "dena", "dedo", "dedo", "deta", "deti", "dete", "dunga", "denge",
-        "lena", "leta", "leti", "lete", "lenge", "lunga",
-        "aana", "aata", "aati", "aate", "aayega", "aayenge",
-        "jaana", "jaata", "jaati", "jaate", "jaayega", "jayenge",
-        "raha", "rahi", "rahe", "rehna", "rehta", "rehti",
-        "bola", "boli", "bole", "bolo", "bolna", "bolte",
-        "dekho", "dekh", "dekhna", "dekhta", "dekhti", "dekhte", "dekhlena",
-        "suno", "sunna", "sunlo", "sunta", "sunti",
-        "batao", "batana", "batata", "batati", "bata",
-        "hona", "hota", "hoti", "hote",
-        "wala", "wali", "wale",
+        "main", "maine", "mein", "mujhe", "mujhse", "mujhko", "tu", "tum", "tumne", "tumhe",
+        "tumse", "tumko", "aap", "aapne", "aapse", "aapko", "hum", "humne", "humse", "humko",
+        "humein", "yeh", "woh", "ye", "wo", "isko", "usko", "inko", "unko", "koi", "kisko",
+        "kiske", "kiski", "jisko", "jiske", "jiski", "uska", "uski", "unka", "unki", "mera",
+        "meri", "mere", "tera", "teri", "tere", "tumhara", "tumhari", "apna", "apni", "apne",
+        "khud", "sab", "sabko", "sabne", "sabse", // Verbs — common forms
+        "hai", "hain", "tha", "thi", "the", "hoga", "hogi", "hoge", "karna", "karo", "karta",
+        "karti", "karte", "karega", "karenge", "karegi", "dena", "dedo", "dedo", "deta", "deti",
+        "dete", "dunga", "denge", "lena", "leta", "leti", "lete", "lenge", "lunga", "aana", "aata",
+        "aati", "aate", "aayega", "aayenge", "jaana", "jaata", "jaati", "jaate", "jaayega",
+        "jayenge", "raha", "rahi", "rahe", "rehna", "rehta", "rehti", "bola", "boli", "bole",
+        "bolo", "bolna", "bolte", "dekho", "dekh", "dekhna", "dekhta", "dekhti", "dekhte",
+        "dekhlena", "suno", "sunna", "sunlo", "sunta", "sunti", "batao", "batana", "batata",
+        "batati", "bata", "hona", "hota", "hoti", "hote", "wala", "wali", "wale",
         // Question words
         "kya", "kaise", "kab", "kahan", "kyun", "kaun", "kitna", "kitne", "kitni",
         // Connectors / particles
-        "aur", "lekin", "par", "magar", "toh", "bhi", "hi", "na", "nahi", "nhi",
-        "haan", "mat", "bas", "sirf", "bilkul", "zaroor", "shayad",
-        "ko", "se", "pe", "ka", "ki", "ke", "mein",
+        "aur", "lekin", "par", "magar", "toh", "bhi", "hi", "na", "nahi", "nhi", "haan", "mat",
+        "bas", "sirf", "bilkul", "zaroor", "shayad", "ko", "se", "pe", "ka", "ki", "ke", "mein",
         "agar", "jab", "tab", "phir", "toh", "warna", "kyunki", "isliye",
         // Adjectives / adverbs
-        "abhi", "accha", "achha", "theek", "sahi", "galat",
-        "pehle", "baad", "bahut", "thoda", "zyada", "kam",
-        "bada", "badi", "chhota", "chhoti", "naya", "purana",
-        "dono", "dusra", "dusri", "teesra",
-        "yaar", "bhai", "zara", "please",
+        "abhi", "accha", "achha", "theek", "sahi", "galat", "pehle", "baad", "bahut", "thoda",
+        "zyada", "kam", "bada", "badi", "chhota", "chhoti", "naya", "purana", "dono", "dusra",
+        "dusri", "teesra", "yaar", "bhai", "zara", "please",
     ];
     // Common English words that shouldn't be vocab
     const ENGLISH_COMMON: &[&str] = &[
-        "the", "this", "that", "with", "from", "have", "been",
-        "will", "would", "could", "should", "going", "doing",
-        "said", "says", "like", "just", "also", "very", "much",
-        "good", "great", "nice", "okay", "fine", "sure", "yeah",
-        "here", "there", "where", "when", "what", "which", "who",
-        "about", "after", "before", "between", "through",
+        "the", "this", "that", "with", "from", "have", "been", "will", "would", "could", "should",
+        "going", "doing", "said", "says", "like", "just", "also", "very", "much", "good", "great",
+        "nice", "okay", "fine", "sure", "yeah", "here", "there", "where", "when", "what", "which",
+        "who", "about", "after", "before", "between", "through",
     ];
     HINDI_COMMON.contains(&t.as_str()) || ENGLISH_COMMON.contains(&t.as_str())
 }
@@ -242,7 +228,10 @@ pub fn is_numeric_junk(term: &str) -> bool {
     if total <= 4 && digits > 0 && alpha > 0 {
         let has_consonant_digit_consonant = total == 3
             && t.chars().nth(0).map(|c| c.is_alphabetic()).unwrap_or(false)
-            && t.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
+            && t.chars()
+                .nth(1)
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
             && t.chars().nth(2).map(|c| c.is_alphabetic()).unwrap_or(false);
         if !has_consonant_digit_consonant {
             return true;

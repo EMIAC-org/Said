@@ -48,8 +48,8 @@ async fn main() {
 
         // 1. Verify regex gate triggers for cases that expect changes
         let triggers = format_pass::needs_formatting(tc.input);
-        let has_expected_change = !tc.must_contain.is_empty()
-            && tc.must_contain.iter().any(|m| !tc.input.contains(m));
+        let has_expected_change =
+            !tc.must_contain.is_empty() && tc.must_contain.iter().any(|m| !tc.input.contains(m));
 
         if has_expected_change && !triggers {
             println!("  FAIL  {}: regex gate did NOT trigger", tc.id);
@@ -102,7 +102,12 @@ async fn main() {
     }
 
     println!("\n{}", "=".repeat(60));
-    println!("  RESULTS: {} passed, {} failed / {} total", pass, fail, cases.len());
+    println!(
+        "  RESULTS: {} passed, {} failed / {} total",
+        pass,
+        fail,
+        cases.len()
+    );
     println!("{}", "=".repeat(60));
 
     if !failures.is_empty() {
@@ -179,7 +184,6 @@ fn build_test_cases() -> Vec<TestCase> {
             must_contain: vec!["anish_suman@gmail.com"],
             must_not_contain: vec!["at the rate"],
         },
-
         // ═══════════════════════════════════════════════════════════
         //  URLS
         // ═══════════════════════════════════════════════════════════
@@ -213,7 +217,6 @@ fn build_test_cases() -> Vec<TestCase> {
             must_contain: vec![".com", "check karo"],
             must_not_contain: vec!["@"],
         },
-
         // ═══════════════════════════════════════════════════════════
         //  NUMBERS
         // ═══════════════════════════════════════════════════════════
@@ -265,7 +268,6 @@ fn build_test_cases() -> Vec<TestCase> {
             must_contain: vec!["one direction"],
             must_not_contain: vec!["1 direction"],
         },
-
         // ═══════════════════════════════════════════════════════════
         //  DATES
         // ═══════════════════════════════════════════════════════════
@@ -293,7 +295,6 @@ fn build_test_cases() -> Vec<TestCase> {
             must_contain: vec!["tuesday", "office"],
             must_not_contain: vec![],
         },
-
         // ═══════════════════════════════════════════════════════════
         //  TIMES
         // ═══════════════════════════════════════════════════════════
@@ -315,7 +316,6 @@ fn build_test_cases() -> Vec<TestCase> {
             must_contain: vec!["4:45", "kaam khatam"],
             must_not_contain: vec![],
         },
-
         // ═══════════════════════════════════════════════════════════
         //  PHONE NUMBERS
         // ═══════════════════════════════════════════════════════════
@@ -337,7 +337,6 @@ fn build_test_cases() -> Vec<TestCase> {
             must_contain: vec!["emergency"],
             must_not_contain: vec![],
         },
-
         // ═══════════════════════════════════════════════════════════
         //  CURRENCY
         // ═══════════════════════════════════════════════════════════
@@ -359,7 +358,6 @@ fn build_test_cases() -> Vec<TestCase> {
             must_contain: vec!["500"],
             must_not_contain: vec!["paanch sau"],
         },
-
         // ═══════════════════════════════════════════════════════════
         //  IDENTIFIERS
         // ═══════════════════════════════════════════════════════════
@@ -375,7 +373,6 @@ fn build_test_cases() -> Vec<TestCase> {
             must_contain: vec!["trending", "yaar"],
             must_not_contain: vec![],
         },
-
         // ═══════════════════════════════════════════════════════════
         //  MEGA MIX — multiple replacements per sentence
         // ═══════════════════════════════════════════════════════════
@@ -415,7 +412,6 @@ fn build_test_cases() -> Vec<TestCase> {
             must_contain: vec!["https://", "github.com", "+91", "9876543210"],
             must_not_contain: vec!["colon slash slash"],
         },
-
         // ═══════════════════════════════════════════════════════════
         //  HINDI VARIANT SPELLINGS — the whole reason regex was killed
         // ═══════════════════════════════════════════════════════════
@@ -467,7 +463,6 @@ fn build_test_cases() -> Vec<TestCase> {
             must_contain: vec!["150"],
             must_not_contain: vec!["dedh sau"],
         },
-
         // ═══════════════════════════════════════════════════════════
         //  NO-OP — LLM should return replace: false
         // ═══════════════════════════════════════════════════════════

@@ -249,27 +249,37 @@ pub async fn classify(
 
     info!(
         "[classify] learning model: {} (codex_available={})",
-        if codex_token.is_some() { "gpt-5.4-mini (Codex)" } else { "llama-3.1-8b (Groq)" },
+        if codex_token.is_some() {
+            "gpt-5.4-mini (Codex)"
+        } else {
+            "llama-3.1-8b (Groq)"
+        },
         codex_token.is_some()
     );
 
-    let analyzer_output =
-        match analyzer::analyze_edit(&state.http_client, &groq_key, codex_token.as_deref(), &analyzer_input).await {
-            Ok(output) => output,
-            Err(e) => {
-                warn!(
-                    "[classify] analyzer failed: {e} — skipping for {}",
-                    body.recording_id
-                );
-                return (
-                    StatusCode::OK,
-                    Json(empty_response(
-                        "analyzer_unavailable",
-                        &format!("analyzer error: {e}"),
-                    )),
-                );
-            }
-        };
+    let analyzer_output = match analyzer::analyze_edit(
+        &state.http_client,
+        &groq_key,
+        codex_token.as_deref(),
+        &analyzer_input,
+    )
+    .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            warn!(
+                "[classify] analyzer failed: {e} — skipping for {}",
+                body.recording_id
+            );
+            return (
+                StatusCode::OK,
+                Json(empty_response(
+                    "analyzer_unavailable",
+                    &format!("analyzer error: {e}"),
+                )),
+            );
+        }
+    };
 
     // ── Step 5: Save learnable changes ───────────────────────────────────────
     let mut promoted_count = 0_usize;
@@ -287,7 +297,11 @@ pub async fn classify(
 
         // Reject full sentences — max 4 words for a vocab term
         if corrected.split_whitespace().count() > 4 {
-            tracing::info!("[classify] skipping term too long ({} words): {:?}", corrected.split_whitespace().count(), corrected);
+            tracing::info!(
+                "[classify] skipping term too long ({} words): {:?}",
+                corrected.split_whitespace().count(),
+                corrected
+            );
             continue;
         }
 
@@ -297,9 +311,19 @@ pub async fn classify(
             if let Some(ref meaning) = change.meaning {
                 if !meaning.trim().is_empty() {
                     // Case-insensitive lookup for existing term
-                    if let Some(existing) = vocabulary::find_by_term_ci(&state.pool, &state.default_user_id, corrected) {
-                        vocabulary::update_meaning(&state.pool, &state.default_user_id, &existing.term, meaning);
-                        tracing::info!("[classify] deepened meaning for existing term {:?}", existing.term);
+                    if let Some(existing) =
+                        vocabulary::find_by_term_ci(&state.pool, &state.default_user_id, corrected)
+                    {
+                        vocabulary::update_meaning(
+                            &state.pool,
+                            &state.default_user_id,
+                            &existing.term,
+                            meaning,
+                        );
+                        tracing::info!(
+                            "[classify] deepened meaning for existing term {:?}",
+                            existing.term
+                        );
                     }
                 }
             }
@@ -319,11 +343,15 @@ pub async fn classify(
                 }
                 let term_type = vocabulary::classify_term_type(corrected);
                 if matches!(term_type, "phrase" | "other") {
-                    info!("[classify] STT_ERROR skipped — not a proper noun (type={term_type}): {corrected:?}");
+                    info!(
+                        "[classify] STT_ERROR skipped — not a proper noun (type={term_type}): {corrected:?}"
+                    );
                     continue;
                 }
 
-                let (canonical_term, weight_bump) = if let Some(existing) = vocabulary::find_by_term_ci(&state.pool, &state.default_user_id, corrected) {
+                let (canonical_term, weight_bump) = if let Some(existing) =
+                    vocabulary::find_by_term_ci(&state.pool, &state.default_user_id, corrected)
+                {
                     has_repeat = true;
                     (existing.term.clone(), 0.5)
                 } else {
@@ -357,7 +385,12 @@ pub async fn classify(
                     );
 
                     // Fire-and-forget: embed + meaning refresh
-                    spawn_vocab_embedding(state.clone(), canonical_term.clone(), ctx.clone(), codex_token.clone());
+                    spawn_vocab_embedding(
+                        state.clone(),
+                        canonical_term.clone(),
+                        ctx.clone(),
+                        codex_token.clone(),
+                    );
                 }
 
                 // ── Update meaning if provided ───────────────────────────
@@ -488,7 +521,12 @@ fn run_demotion_pass(state: &AppState, polish: &str, user_kept: &str) -> usize {
 
 /// Fire-and-forget: embed a newly learned vocab term (with its context)
 /// and persist the vector so polish-time relevance retrieval can find it.
-fn spawn_vocab_embedding(state: AppState, term: String, example_context: Option<String>, codex_token_for_meaning: Option<String>) {
+fn spawn_vocab_embedding(
+    state: AppState,
+    term: String,
+    example_context: Option<String>,
+    codex_token_for_meaning: Option<String>,
+) {
     tokio::spawn(async move {
         let _guard = crate::bg_task_guard();
         if state.watchdog.is_shedding() {
@@ -544,12 +582,22 @@ fn spawn_vocab_embedding(state: AppState, term: String, example_context: Option<
             "[bg] embed for {term:?} done in {}ms",
             bg_start.elapsed().as_millis()
         );
-        spawn_meaning_refresh(state, term, example_context.unwrap_or_default(), codex_token_for_meaning.clone());
+        spawn_meaning_refresh(
+            state,
+            term,
+            example_context.unwrap_or_default(),
+            codex_token_for_meaning.clone(),
+        );
     });
 }
 
 /// Fire-and-forget: refresh a term's distilled meaning when needed.
-fn spawn_meaning_refresh(state: AppState, term: String, latest_example: String, codex_token: Option<String>) {
+fn spawn_meaning_refresh(
+    state: AppState,
+    term: String,
+    latest_example: String,
+    codex_token: Option<String>,
+) {
     tokio::spawn(async move {
         let _guard = crate::bg_task_guard();
         if state.watchdog.is_shedding() {

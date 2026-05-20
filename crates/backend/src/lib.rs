@@ -231,13 +231,15 @@ pub fn router_with_state(state: AppState) -> Router {
             post(routes::pending_edits::dismiss),
         )
         .route("/v1/vocabulary/terms", get(routes::vocabulary::list_terms))
-        .route("/v1/vocabulary/all", axum::routing::delete(routes::vocabulary::delete_all))
+        .route(
+            "/v1/vocabulary/all",
+            axum::routing::delete(routes::vocabulary::delete_all),
+        )
         .route("/v1/vocabulary", get(routes::vocabulary::list))
         .route("/v1/vocabulary", post(routes::vocabulary::create))
         .route(
             "/v1/vocabulary/:term",
-            axum::routing::delete(routes::vocabulary::delete)
-                .patch(routes::vocabulary::patch),
+            axum::routing::delete(routes::vocabulary::delete).patch(routes::vocabulary::patch),
         )
         .route(
             "/v1/vocabulary/:term/star",

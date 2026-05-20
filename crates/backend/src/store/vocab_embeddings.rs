@@ -833,16 +833,27 @@ pub fn select_for_polish_hybrid(
             // transcript, plus an email signal word.
             if term_lower.contains('@') {
                 let has_email_signal = transcript_tokens.iter().any(|tok| {
-                    matches!(*tok, "rate" | "gmail" | "yahoo" | "outlook"
-                        | "hotmail" | "email" | "mail" | "protonmail")
+                    matches!(
+                        *tok,
+                        "rate"
+                            | "gmail"
+                            | "yahoo"
+                            | "outlook"
+                            | "hotmail"
+                            | "email"
+                            | "mail"
+                            | "protonmail"
+                    )
                 });
                 if has_email_signal {
-                    let matched_fragments = term_words.iter()
+                    let matched_fragments = term_words
+                        .iter()
                         .filter(|frag| frag.len() >= 3)
                         .filter(|frag| {
                             transcript_tokens.iter().any(|tok| {
                                 *tok == **frag
-                                    || (tok.len() >= 3 && frag.len() >= 3
+                                    || (tok.len() >= 3
+                                        && frag.len() >= 3
                                         && (tok.starts_with(*frag) || frag.starts_with(tok)))
                             })
                         })

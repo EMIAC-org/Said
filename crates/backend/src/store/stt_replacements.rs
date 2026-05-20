@@ -185,8 +185,8 @@ fn upsert_inner(
     //   • Either side contains non-ASCII (Devanagari STT output is common)
     //   • Either side contains spaces (multi-word like "Main corps" → MACOBS)
     //   • First letters match (catches "claud" → "claude", "d to c" → "D2C")
-    let both_ascii_single = from.is_ascii() && to.is_ascii()
-        && !from.contains(' ') && !to.contains(' ');
+    let both_ascii_single =
+        from.is_ascii() && to.is_ascii() && !from.contains(' ') && !to.contains(' ');
     if both_ascii_single {
         let phon_sim = phonetics::similarity(&from, &to);
         let first_match = from.chars().next().map(|f| f.to_ascii_lowercase())

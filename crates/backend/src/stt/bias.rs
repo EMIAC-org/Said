@@ -270,7 +270,10 @@ mod tests {
 
         let bias = build_bias_package(&pool, "u1", "auto", "hinglish");
         assert_eq!(bias.stt_mode, "hi");
-        assert!(bias.keyterms.is_empty(), "keyterms must be empty — biasing disabled");
+        assert!(
+            bias.keyterms.is_empty(),
+            "keyterms must be empty — biasing disabled"
+        );
         assert!(bias.replacements.is_empty());
     }
 }

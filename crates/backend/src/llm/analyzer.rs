@@ -256,7 +256,11 @@ pub async fn analyze_edit(
 
     info!(
         "[analyzer] model={} (codex={})",
-        if codex_access_token.map(|t| !t.is_empty()).unwrap_or(false) { "gpt-5.4-mini" } else { ANALYZER_MODEL },
+        if codex_access_token.map(|t| !t.is_empty()).unwrap_or(false) {
+            "gpt-5.4-mini"
+        } else {
+            ANALYZER_MODEL
+        },
         codex_access_token.is_some()
     );
 
@@ -306,7 +310,9 @@ pub async fn analyze_edit(
                                 return Ok(output);
                             }
                             Err(e) => {
-                                warn!("[analyzer] codex JSON parse failed: {e} — falling back to Groq");
+                                warn!(
+                                    "[analyzer] codex JSON parse failed: {e} — falling back to Groq"
+                                );
                             }
                         }
                     }

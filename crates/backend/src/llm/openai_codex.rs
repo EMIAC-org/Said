@@ -223,7 +223,10 @@ pub async fn call_json(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        warn!("[codex-json] HTTP {status}: {}", &body[..body.len().min(300)]);
+        warn!(
+            "[codex-json] HTTP {status}: {}",
+            &body[..body.len().min(300)]
+        );
         return Err(format!("Codex API error {status}"));
     }
 
@@ -245,7 +248,8 @@ pub async fn call_json(
         .and_then(|msg| msg.get("content"))
         .and_then(|c| c.as_array())
         .and_then(|parts| {
-            parts.iter()
+            parts
+                .iter()
                 .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("output_text"))
                 .map(|p| p.get("text").and_then(|t| t.as_str()).unwrap_or(""))
                 .reduce(|a, b| if b.len() > a.len() { b } else { a })

@@ -57,7 +57,11 @@ pub async fn call_json(
     system_prompt: &str,
     user_message: &str,
 ) -> Result<String, String> {
-    let model = if model.is_empty() { GROQ_MODEL_DEFAULT } else { model };
+    let model = if model.is_empty() {
+        GROQ_MODEL_DEFAULT
+    } else {
+        model
+    };
     let body = serde_json::json!({
         "model": model,
         "temperature": 0.0,
@@ -85,7 +89,10 @@ pub async fn call_json(
     if !resp.status().is_success() {
         let status = resp.status();
         let body_text = resp.text().await.unwrap_or_default();
-        warn!("[groq-json] HTTP {status}: {}", &body_text[..body_text.len().min(300)]);
+        warn!(
+            "[groq-json] HTTP {status}: {}",
+            &body_text[..body_text.len().min(300)]
+        );
         return Err(format!("Groq API error {status}"));
     }
 

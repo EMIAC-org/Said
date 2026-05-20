@@ -97,7 +97,7 @@ static WIDE_FORMAT_GATE: Lazy<Regex> = Lazy::new(|| {
            (zero|one|two|three|four|five|six|seven|eight|nine) \s+
            (zero|one|two|three|four|five|six|seven|eight|nine) \s+
            (zero|one|two|three|four|five|six|seven|eight|nine) \b
-        "
+        ",
     )
     .unwrap()
 });
@@ -339,7 +339,10 @@ pub async fn format(client: &Client, groq_api_key: &str, text: &str) -> String {
         }
     }
 
-    info!("[formatter] applied {} replacement(s) in {ms}ms", replacements.len());
+    info!(
+        "[formatter] applied {} replacement(s) in {ms}ms",
+        replacements.len()
+    );
     result
 }
 
@@ -400,7 +403,8 @@ mod tests {
 
     #[test]
     fn parse_new_format_replace_true() {
-        let json = r#"{"replace": true, "replacements": [{"find": "saat baje", "replace": "7 baje"}]}"#;
+        let json =
+            r#"{"replace": true, "replacements": [{"find": "saat baje", "replace": "7 baje"}]}"#;
         let resp: FormatterResponse = serde_json::from_str(json).unwrap();
         assert!(resp.replace);
         assert_eq!(resp.replacements.len(), 1);
@@ -445,7 +449,9 @@ mod tests {
 
     #[test]
     fn gate_triggers_url() {
-        assert!(needs_formatting("double u double u double u dot google dot com"));
+        assert!(needs_formatting(
+            "double u double u double u dot google dot com"
+        ));
         assert!(needs_formatting("h t t p s colon slash slash api dot com"));
     }
 
@@ -514,7 +520,9 @@ mod tests {
 
     #[test]
     fn gate_triggers_phone() {
-        assert!(needs_formatting("call nine eight seven six five four three two one zero"));
+        assert!(needs_formatting(
+            "call nine eight seven six five four three two one zero"
+        ));
     }
 
     #[test]
@@ -534,7 +542,9 @@ mod tests {
         assert!(!needs_formatting("Kitna kaam ho gaya?"));
         assert!(!needs_formatting("Maine kaam kar liya hai."));
         assert!(!needs_formatting("MACOBS ka stock price kya hai"));
-        assert!(!needs_formatting("Achha hai, wajah se hi itna sara kaam hai"));
+        assert!(!needs_formatting(
+            "Achha hai, wajah se hi itna sara kaam hai"
+        ));
     }
 
     #[test]
@@ -564,7 +574,9 @@ mod tests {
         assert!(needs_formatting("Aaj chah baje free ho?"));
         assert!(needs_formatting("Abhishek Verma at the rate gmail dot com"));
         assert!(!needs_formatting("isko mail kar do achhe se"));
-        assert!(needs_formatting("chah baje nahin, six o'clock ya five forty"));
+        assert!(needs_formatting(
+            "chah baje nahin, six o'clock ya five forty"
+        ));
         assert!(needs_formatting("n8n rupees ka hi aata hai"));
         assert!(needs_formatting("Two hundred rupees ka hi aayega"));
         assert!(needs_formatting("Do sau rupaye ka aayega"));

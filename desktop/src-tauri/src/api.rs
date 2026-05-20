@@ -1114,13 +1114,16 @@ pub async fn patch_vocabulary_term(
     term_type: Option<&str>,
     example_context: Option<&str>,
 ) -> Result<(), String> {
-    let encoded_term: String = term.chars().map(|c| {
-        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
-            c.to_string()
-        } else {
-            format!("%{:02X}", c as u32)
-        }
-    }).collect();
+    let encoded_term: String = term
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c.to_string()
+            } else {
+                format!("%{:02X}", c as u32)
+            }
+        })
+        .collect();
     let url = format!("{}/v1/vocabulary/{}", ep.url, encoded_term);
     let mut body = serde_json::Map::new();
     if let Some(m) = meaning {
@@ -1130,7 +1133,10 @@ pub async fn patch_vocabulary_term(
         body.insert("term_type".into(), serde_json::Value::String(t.to_string()));
     }
     if let Some(c) = example_context {
-        body.insert("example_context".into(), serde_json::Value::String(c.to_string()));
+        body.insert(
+            "example_context".into(),
+            serde_json::Value::String(c.to_string()),
+        );
     }
     Client::new()
         .patch(&url)

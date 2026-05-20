@@ -276,7 +276,11 @@ pub async fn classify_edit(
 
     info!(
         "[classifier] model={} (codex={})",
-        if codex_access_token.map(|t| !t.is_empty()).unwrap_or(false) { "gpt-5.4-mini" } else { CLASSIFIER_MODEL },
+        if codex_access_token.map(|t| !t.is_empty()).unwrap_or(false) {
+            "gpt-5.4-mini"
+        } else {
+            CLASSIFIER_MODEL
+        },
         codex_access_token.is_some()
     );
 
@@ -333,7 +337,11 @@ pub async fn classify_edit(
                         if let Some(r) = parse_label_response(content, hunks) {
                             info!(
                                 "[classifier] codex {ms}ms — overall={} labelled={}/{} conf={:.2} reason={:?}",
-                                r.class.as_str(), r.candidates.len(), hunks.len(), r.confidence, r.reason,
+                                r.class.as_str(),
+                                r.candidates.len(),
+                                hunks.len(),
+                                r.confidence,
+                                r.reason,
                             );
                             return Some(r);
                         }

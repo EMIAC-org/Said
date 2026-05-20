@@ -945,8 +945,7 @@ mod tests {
             "Hinglish retry example should be pinned in the prompt"
         );
         assert!(
-            prompt.contains("baar baar")
-                && prompt.contains("thoda thoda"),
+            prompt.contains("baar baar") && prompt.contains("thoda thoda"),
             "intentional Hindi repetitions must be preserved"
         );
     }
@@ -980,8 +979,7 @@ mod tests {
             "Hinglish OTP digit-sequence example should be present"
         );
         assert!(
-            prompt.contains("Port 3000/api")
-                && prompt.contains("25% discount"),
+            prompt.contains("Port 3000/api") && prompt.contains("25% discount"),
             "port and percent examples should be present"
         );
         assert!(

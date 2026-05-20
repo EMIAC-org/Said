@@ -30,8 +30,7 @@ use crate::{
             VocabEntry, build_refine_last_transform_prompt,
             build_refine_last_transform_user_message, build_system_prompt_with_vocab_entries,
             build_tray_format_system_prompt, build_tray_format_user_message,
-            build_tray_system_prompt, build_user_message,
-            resolved_vocab_terms_to_entries,
+            build_tray_system_prompt, build_user_message, resolved_vocab_terms_to_entries,
         },
         script,
         stream_safety::{

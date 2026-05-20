@@ -61,7 +61,15 @@ pub async fn generate_initial(
          Don't speculate beyond what the example demonstrates. If the example \
          doesn't make the meaning clear, say so plainly."
     );
-    call_with_fallback(client, groq_key, openai_key, codex_token, &user_message, term).await
+    call_with_fallback(
+        client,
+        groq_key,
+        openai_key,
+        codex_token,
+        &user_message,
+        term,
+    )
+    .await
 }
 
 /// Refresh an existing meaning given the current meaning + observed examples.
@@ -99,7 +107,15 @@ pub async fn refine(
          new contexts that the current description doesn't cover. Output ONLY \
          the updated 1-2 sentence description, nothing else."
     );
-    call_with_fallback(client, groq_key, openai_key, codex_token, &user_message, term).await
+    call_with_fallback(
+        client,
+        groq_key,
+        openai_key,
+        codex_token,
+        &user_message,
+        term,
+    )
+    .await
 }
 
 #[derive(Deserialize)]

@@ -249,12 +249,33 @@ pub async fn delete_all(State(state): State<AppState>) -> StatusCode {
             return StatusCode::INTERNAL_SERVER_ERROR;
         }
     };
-    let v = conn.execute("DELETE FROM vocabulary WHERE user_id = ?1", params![uid]).unwrap_or(0);
-    let s = conn.execute("DELETE FROM stt_replacements WHERE user_id = ?1", params![uid]).unwrap_or(0);
-    let c = conn.execute("DELETE FROM corrections WHERE user_id = ?1", params![uid]).unwrap_or(0);
-    let e = conn.execute("DELETE FROM vocab_embeddings WHERE user_id = ?1", params![uid]).unwrap_or(0);
-    let f = conn.execute("DELETE FROM vocab_fts WHERE user_id = ?1", params![uid]).unwrap_or(0);
-    let ex = conn.execute("DELETE FROM vocab_embedding_examples WHERE user_id = ?1", params![uid]).unwrap_or(0);
+    let v = conn
+        .execute("DELETE FROM vocabulary WHERE user_id = ?1", params![uid])
+        .unwrap_or(0);
+    let s = conn
+        .execute(
+            "DELETE FROM stt_replacements WHERE user_id = ?1",
+            params![uid],
+        )
+        .unwrap_or(0);
+    let c = conn
+        .execute("DELETE FROM corrections WHERE user_id = ?1", params![uid])
+        .unwrap_or(0);
+    let e = conn
+        .execute(
+            "DELETE FROM vocab_embeddings WHERE user_id = ?1",
+            params![uid],
+        )
+        .unwrap_or(0);
+    let f = conn
+        .execute("DELETE FROM vocab_fts WHERE user_id = ?1", params![uid])
+        .unwrap_or(0);
+    let ex = conn
+        .execute(
+            "DELETE FROM vocab_embedding_examples WHERE user_id = ?1",
+            params![uid],
+        )
+        .unwrap_or(0);
     drop(conn);
     crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
     info!(
