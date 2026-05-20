@@ -4712,7 +4712,7 @@ fn main() {
                 };
 
                 let tray_icon = tauri::image::Image::from_bytes(
-                    include_bytes!("../icons/icon_32x32.png")
+                    include_bytes!("../icons/tray@2x.png")
                 ).ok();
 
                 let mut tray_builder = TrayIconBuilder::with_id("said")
@@ -4721,7 +4721,7 @@ fn main() {
                     .show_menu_on_left_click(true);
 
                 if let Some(icon) = tray_icon {
-                    tray_builder = tray_builder.icon(icon).icon_as_template(false);
+                    tray_builder = tray_builder.icon(icon).icon_as_template(true);
                 }
 
                 tray_builder

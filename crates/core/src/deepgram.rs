@@ -23,7 +23,7 @@ pub struct BiasPackage {
 impl Default for BiasPackage {
     fn default() -> Self {
         Self {
-            stt_mode: "multi".to_string(),
+            stt_mode: "hi".to_string(),
             keyterms: vec![],
             replacements: vec![],
         }
@@ -50,7 +50,7 @@ pub struct TranscriptMeta {
 
 pub fn resolve_stt_mode(language: &str) -> String {
     match language.trim() {
-        "" | "auto" | "multi" => "multi".to_string(),
+        "" | "auto" | "multi" => "hi".to_string(),
         "hi" => "hi".to_string(),
         "en" => "en".to_string(),
         "en-IN" => "en-IN".to_string(),
@@ -135,17 +135,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auto_and_multi_resolve_to_multi() {
-        assert_eq!(resolve_stt_mode(""), "multi");
-        assert_eq!(resolve_stt_mode("auto"), "multi");
-        assert_eq!(resolve_stt_mode("multi"), "multi");
+    fn auto_and_multi_resolve_to_hi() {
+        assert_eq!(resolve_stt_mode(""), "hi");
+        assert_eq!(resolve_stt_mode("auto"), "hi");
+        assert_eq!(resolve_stt_mode("multi"), "hi");
         assert_eq!(resolve_stt_mode("hi"), "hi");
     }
 
     #[test]
     fn batch_url_includes_keyterms_and_replacements() {
         let bias = BiasPackage {
-            stt_mode: "multi".into(),
+            stt_mode: "hi".into(),
             keyterms: vec!["EMIAC".into(), "n8n".into()],
             replacements: vec![
                 ReplacementRule {
@@ -159,7 +159,7 @@ mod tests {
             ],
         };
         let url = build_batch_url("https://api.deepgram.com/v1/listen", &bias);
-        assert!(url.contains("language=multi"));
+        assert!(url.contains("language=hi"));
         assert!(url.contains("&keyterm=EMIAC"));
         assert!(url.contains("&replace=n10n:n8n"));
         assert!(url.contains("&replace=main%20corps:MACOBS"));
