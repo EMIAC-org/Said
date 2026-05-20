@@ -238,6 +238,31 @@ pub async fn create(
     }
 }
 
+// ── DELETE /v1/vocabulary/all — wipe all learning data ───────────────────────
+
+pub async fn delete_all(State(state): State<AppState>) -> StatusCode {
+    let uid = state.default_user_id.as_str();
+    let conn = match state.pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("[vocab] delete_all pool error: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    };
+    let v = conn.execute("DELETE FROM vocabulary WHERE user_id = ?1", params![uid]).unwrap_or(0);
+    let s = conn.execute("DELETE FROM stt_replacements WHERE user_id = ?1", params![uid]).unwrap_or(0);
+    let c = conn.execute("DELETE FROM corrections WHERE user_id = ?1", params![uid]).unwrap_or(0);
+    let e = conn.execute("DELETE FROM vocab_embeddings WHERE user_id = ?1", params![uid]).unwrap_or(0);
+    let f = conn.execute("DELETE FROM vocab_fts WHERE user_id = ?1", params![uid]).unwrap_or(0);
+    let ex = conn.execute("DELETE FROM vocab_embedding_examples WHERE user_id = ?1", params![uid]).unwrap_or(0);
+    drop(conn);
+    crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
+    info!(
+        "[vocab] delete_all: vocab={v} stt={s} corrections={c} embeddings={e} fts={f} examples={ex}",
+    );
+    StatusCode::NO_CONTENT
+}
+
 // ── DELETE /v1/vocabulary/:term ──────────────────────────────────────────────
 
 pub async fn delete(State(state): State<AppState>, Path(term): Path<String>) -> StatusCode {

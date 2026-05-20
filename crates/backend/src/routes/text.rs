@@ -227,18 +227,15 @@ pub async fn polish(
             .unwrap_or_default();
 
         // Resolve model + provider.
-        // Formatter (Option+1) always uses GPT-OSS 120B via Groq for
-        // reliable structured formatting — independent of the user's
-        // configured polish provider.
-        const FORMATTER_MODEL: &str = "openai/gpt-oss-120b";
-
+        // Formatter (Option+1) uses the same Groq model as voice polish
+        // for consistent rate limits and latency.
         let model = said_core::resolve_model(&prefs.selected_model).to_string();
         let sys_p       = system_prompt.clone();
         let usr_m       = user_message.clone();
         let client_c    = http_client.clone();
 
         let (llm_provider, model_for_llm, openai_token_opt) = if is_formatter {
-            ("groq".to_string(), FORMATTER_MODEL.to_string(), None)
+            ("groq".to_string(), "llama-3.3-70b-versatile".to_string(), None)
         } else {
             let provider = prefs.llm_provider.clone();
             let (m, tok) = if provider == "openai_codex" {

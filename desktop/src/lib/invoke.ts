@@ -858,6 +858,11 @@ export async function deleteVocabularyTerm(term: string): Promise<void> {
   await tauriInvoke("delete_vocabulary_term", { term });
 }
 
+export async function resetAllVocabulary(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await tauriInvoke("reset_all_vocabulary");
+}
+
 export async function patchVocabularyTerm(
   term: string,
   updates: { meaning?: string; term_type?: string; example_context?: string },

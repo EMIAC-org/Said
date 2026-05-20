@@ -14,6 +14,7 @@ import {
   listVocabulary,
   addVocabularyTerm,
   deleteVocabularyTerm,
+  resetAllVocabulary,
   starVocabularyTerm,
   patchVocabularyTerm,
   onVocabularyChanged,
@@ -429,6 +430,13 @@ export function VocabularyView() {
     setRows((prev) => prev.filter((r) => r.term !== term));
   }
 
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  async function handleResetAll() {
+    await resetAllVocabulary();
+    setRows([]);
+    setShowResetConfirm(false);
+  }
+
   // Apply filter (case-insensitive substring on term).
   const filtered = rows.filter((r) =>
     r.term.toLowerCase().includes(filter.trim().toLowerCase()),
@@ -444,14 +452,72 @@ export function VocabularyView() {
     <ScrollArea className="h-full">
       <div className="p-7 pb-12 max-w-3xl mx-auto">
         {/* ── Header ─────────────────────────────────────────── */}
-        <div className="mb-7">
-          <h1 className="text-[28px] font-bold tracking-tight text-foreground leading-tight">
-            Vocabulary
-          </h1>
-          <p className="text-[13px] text-muted-foreground mt-1 tabular-nums">
-            {rows.length} word{rows.length !== 1 ? "s" : ""} Said remembers when you dictate
-          </p>
+        <div className="mb-7 flex items-start justify-between">
+          <div>
+            <h1 className="text-[28px] font-bold tracking-tight text-foreground leading-tight">
+              Vocabulary
+            </h1>
+            <p className="text-[13px] text-muted-foreground mt-1 tabular-nums">
+              {rows.length} word{rows.length !== 1 ? "s" : ""} Said remembers when you dictate
+            </p>
+          </div>
+          {rows.length > 0 && (
+            <button
+              onClick={() => setShowResetConfirm(true)}
+              className="flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-md transition-colors"
+              style={{
+                color: "hsl(var(--destructive))",
+                background: "hsl(var(--destructive) / 0.1)",
+                border: "1px solid hsl(var(--destructive) / 0.2)",
+              }}
+            >
+              <Trash2 size={12} />
+              Reset Learning
+            </button>
+          )}
         </div>
+
+        {showResetConfirm && (
+          <div
+            className="mb-5 p-4 rounded-lg border flex items-start gap-3"
+            style={{
+              background: "hsl(var(--destructive) / 0.06)",
+              borderColor: "hsl(var(--destructive) / 0.25)",
+            }}
+          >
+            <AlertCircle size={18} style={{ color: "hsl(var(--destructive))", flexShrink: 0, marginTop: 2 }} />
+            <div className="flex-1">
+              <p className="text-[13px] font-semibold text-foreground mb-1">
+                Reset all learning data?
+              </p>
+              <p className="text-[12px] text-muted-foreground mb-3">
+                This will permanently delete all {rows.length} vocabulary terms, STT corrections, and learned preferences. Your API keys, settings, and recording history are not affected.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleResetAll}
+                  className="text-[11px] font-semibold px-3 py-1.5 rounded-md"
+                  style={{
+                    background: "hsl(var(--destructive))",
+                    color: "white",
+                  }}
+                >
+                  Yes, reset everything
+                </button>
+                <button
+                  onClick={() => setShowResetConfirm(false)}
+                  className="text-[11px] font-medium px-3 py-1.5 rounded-md"
+                  style={{
+                    background: "hsl(var(--surface-2))",
+                    color: "hsl(var(--foreground))",
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Add term ──────────────────────────────────────── */}
         <AddTermRow onAdd={handleAdd} />

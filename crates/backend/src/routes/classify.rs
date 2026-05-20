@@ -317,6 +317,11 @@ pub async fn classify(
                     info!("[classify] STT_ERROR skipped — numeric junk: {corrected:?}");
                     continue;
                 }
+                let term_type = vocabulary::classify_term_type(corrected);
+                if matches!(term_type, "phrase" | "other") {
+                    info!("[classify] STT_ERROR skipped — not a proper noun (type={term_type}): {corrected:?}");
+                    continue;
+                }
 
                 let (canonical_term, weight_bump) = if let Some(existing) = vocabulary::find_by_term_ci(&state.pool, &state.default_user_id, corrected) {
                     has_repeat = true;

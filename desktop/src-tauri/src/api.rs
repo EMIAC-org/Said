@@ -1161,6 +1161,23 @@ pub async fn add_vocabulary_term(ep: &BackendEndpoint, term: &str) -> Result<(),
     }
 }
 
+/// Wipe all learning data (vocab, corrections, STT aliases, embeddings).
+pub async fn reset_all_vocabulary(ep: &BackendEndpoint) -> Result<(), String> {
+    let url = format!("{}/v1/vocabulary/all", ep.url);
+    let status = Client::new()
+        .delete(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("reset vocab failed: {e}"))?
+        .status();
+    if status.is_success() || status.as_u16() == 204 {
+        Ok(())
+    } else {
+        Err(format!("reset vocab error {status}"))
+    }
+}
+
 /// Hard-delete a single vocab term.
 pub async fn delete_vocabulary_term(ep: &BackendEndpoint, term: &str) -> Result<(), String> {
     let encoded = urlencoding_encode(term);

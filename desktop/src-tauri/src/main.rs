@@ -238,59 +238,70 @@ fn notify_macos(_app: &tauri::AppHandle, _title: &str, _body: &str) {}
 /// to plain English and falls back to a generic apology for everything
 /// else.  Keep wording calm and blame-free; no "Error:" prefix, no codes,
 /// no emoji.
+fn emit_voice_error_quiet(app: &tauri::AppHandle, raw: &str) {
+    tracing::error!("[pipeline] error: {raw}");
+    let human = humanize_error(raw);
+    let _ = app.emit(
+        "voice-error",
+        serde_json::json!({
+            "message": human,
+            "raw_error": raw,
+            "auto_hide_ms": 4000,
+        }),
+    );
+}
+
 fn humanize_error(raw: &str) -> String {
     let lower = raw.to_lowercase();
 
-    // STT-side cases
     if lower.contains("empty transcript") || lower.contains("nothing spoken") {
-        return "We couldn't hear anything in that recording. Try again.".to_string();
+        return "Couldn't hear anything".into();
     }
-    if lower.contains("deepgram")
-        && (lower.contains("401") || lower.contains("403") || lower.contains("unauthorized"))
-    {
-        return "Speech recognition is offline because the API key isn't accepted. Check your Deepgram key in Settings.".to_string();
+    if lower.contains("recording interrupted") {
+        return "Recording interrupted".into();
+    }
+    if lower.contains("deepgram") && (lower.contains("401") || lower.contains("403") || lower.contains("unauthorized")) {
+        return "Deepgram key invalid".into();
     }
     if lower.contains("deepgram") && (lower.contains("429") || lower.contains("rate")) {
-        return "Speech recognition is rate-limited right now. Give it a few seconds and try again.".to_string();
+        return "STT rate limited".into();
     }
     if lower.contains("deepgram") || lower.contains("stt") {
-        return "Speech recognition couldn't process that recording. Try again in a moment."
-            .to_string();
+        return "STT failed — try again".into();
     }
-
-    // LLM-side cases
-    if lower.contains("openai")
-        && (lower.contains("not connected") || lower.contains("401") || lower.contains("403"))
-    {
-        return "OpenAI isn't connected. Open Settings to sign in again.".to_string();
+    if lower.contains("openai") && (lower.contains("not connected") || lower.contains("401") || lower.contains("403")) {
+        return "OpenAI not connected".into();
     }
     if lower.contains("groq") && (lower.contains("401") || lower.contains("403")) {
-        return "Groq isn't accepting the API key. Check it in Settings.".to_string();
+        return "Groq key invalid".into();
+    }
+    if lower.contains("groq") && lower.contains("not set") {
+        return "Groq key missing".into();
     }
     if lower.contains("gemini") && (lower.contains("401") || lower.contains("403")) {
-        return "Gemini isn't accepting the API key. Check it in Settings.".to_string();
+        return "Gemini key invalid".into();
     }
     if lower.contains("rate") || lower.contains("429") {
-        return "The polish service is rate-limited right now. Try again in a moment.".to_string();
+        return "Rate limited — wait a moment".into();
     }
     if lower.contains("preferences not found") {
-        return "Settings aren't loaded yet. Wait a moment and try again.".to_string();
+        return "Loading settings…".into();
     }
     if lower.contains("missing_api_keys") || lower.contains("api keys required") {
-        return "API keys required — open Settings to add them.".to_string();
+        return "API keys needed".into();
     }
-
-    // Network / transport
     if lower.contains("timeout") || lower.contains("timed out") {
-        return "The connection took too long. Check your internet and try again.".to_string();
+        return "Connection timed out".into();
     }
-    if lower.contains("dns") || lower.contains("unreachable") || lower.contains("failed to connect")
-    {
-        return "Couldn't reach the network. Check your internet and try again.".to_string();
+    if lower.contains("dns") || lower.contains("unreachable") || lower.contains("failed to connect") {
+        return "Network unreachable".into();
+    }
+    if lower.contains("backend") && (lower.contains("not started") || lower.contains("lock")) {
+        return "Backend starting…".into();
     }
 
-    // Generic fallback — never expose raw error text.
-    "Something went wrong with that recording. Please try again.".to_string()
+    let short: String = raw.chars().take(30).collect();
+    format!("Failed: {short}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2062,7 +2073,10 @@ fn do_finish_recording(
             {
                 let mut d = match shared2.lock() {
                     Ok(g) => g,
-                    Err(_) => return,
+                    Err(_) => {
+                        emit_voice_error_quiet(&app2, "Recording interrupted");
+                        return;
+                    }
                 };
                 let snap = match result {
                     Ok(done) => d.finish_ok(ProcessSummary {
@@ -2073,7 +2087,10 @@ fn do_finish_recording(
                         transcribe_ms: done.latency_ms.transcribe as u64,
                         polish_ms: done.latency_ms.polish as u64,
                     }),
-                    Err(e) => d.finish_err(e),
+                    Err(ref e) => {
+                        emit_voice_error_quiet(&app2, e);
+                        d.finish_err(e.clone())
+                    }
                 };
                 sync_tray(&app2, &snap);
                 let _ = app2.emit("app-state", &snap);
@@ -2116,7 +2133,10 @@ fn do_finish_recording(
 
             let mut d = match shared2.lock() {
                 Ok(g) => g,
-                Err(_) => return,
+                Err(_) => {
+                    emit_voice_error_quiet(&app2, "Recording interrupted");
+                    return;
+                }
             };
             let snap = match result {
                 Ok(done) => d.finish_ok(ProcessSummary {
@@ -2127,7 +2147,10 @@ fn do_finish_recording(
                     transcribe_ms: done.latency_ms.transcribe as u64,
                     polish_ms: done.latency_ms.polish as u64,
                 }),
-                Err(e) => d.finish_err(e),
+                Err(ref e) => {
+                    emit_voice_error_quiet(&app2, e);
+                    d.finish_err(e.clone())
+                }
             };
             sync_tray(&app2, &snap);
             let _ = app2.emit("app-state", &snap);
@@ -2266,29 +2289,17 @@ async fn run_voice_polish_sse(
                 audio_id,
                 error_code,
             } => {
-                let human = humanize_error(message);
+                tracing::error!("[pipeline] backend error: {message}");
+                let human = humanize_error(&message);
                 let _ = app_clone.emit(
                     "voice-error",
                     serde_json::json!({
-                        "message":  human.clone(),
+                        "message":  human,
+                        "raw_error": message,
                         "audio_id": audio_id,
                         "error_code": error_code,
+                        "auto_hide_ms": 4000,
                     }),
-                );
-                // Native macOS banner — informational only.  In dev mode the
-                // osascript path can't attach action buttons (those require a
-                // bundled .app with a registered UNNotificationCategory), so
-                // the banner simply tells the user something went wrong and
-                // they switch to Said when ready.  The in-app toast carries
-                // the actual History / Retry buttons.
-                //
-                // No auto-focus, no dock bounce — per user preference.  The
-                // banner is the only attention signal; the user controls when
-                // to bring Said forward.
-                notify_macos(
-                    &app_clone,
-                    "Said couldn't finish that recording",
-                    &format!("{human}  Open Said to retry or view history."),
                 );
             }
         }
@@ -3160,6 +3171,17 @@ async fn delete_vocabulary_term(
             "kind": "removed", "term": term,
         }),
     );
+    Ok(())
+}
+
+#[tauri::command]
+async fn reset_all_vocabulary(
+    app: tauri::AppHandle,
+    backend: State<'_, BackendState>,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    api::reset_all_vocabulary(&ep).await?;
+    let _ = app.emit("vocabulary-changed", ());
     Ok(())
 }
 
@@ -4939,6 +4961,7 @@ fn main() {
             list_vocabulary,
             add_vocabulary_term,
             delete_vocabulary_term,
+            reset_all_vocabulary,
             star_vocabulary_term,
             patch_vocabulary_term,
             // Invite a friend
