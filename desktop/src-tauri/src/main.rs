@@ -4711,19 +4711,17 @@ fn main() {
                     ])?,
                 };
 
-                // Brand mark — embedded retina PNG, marked as template so
-                // macOS auto-tints to match menu bar appearance.
                 let tray_icon = tauri::image::Image::from_bytes(
-                    include_bytes!("../icons/tray@2x.png")
+                    include_bytes!("../icons/icon_32x32.png")
                 ).ok();
 
                 let mut tray_builder = TrayIconBuilder::with_id("said")
                     .tooltip("Said — Voice Polish Studio")
                     .menu(&initial_menu)
-                    .show_menu_on_left_click(true);   // ← left-click opens menu
+                    .show_menu_on_left_click(true);
 
                 if let Some(icon) = tray_icon {
-                    tray_builder = tray_builder.icon(icon).icon_as_template(true);
+                    tray_builder = tray_builder.icon(icon).icon_as_template(false);
                 }
 
                 tray_builder

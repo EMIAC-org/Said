@@ -242,8 +242,8 @@ pub async fn analyze_edit(
     codex_access_token: Option<&str>,
     input: &AnalyzerInput,
 ) -> Result<AnalyzerOutput, String> {
-    if api_key.is_empty() {
-        return Err("no Groq API key — skipping analysis".into());
+    if api_key.is_empty() && codex_access_token.map(|t| !t.is_empty()).unwrap_or(false) == false {
+        return Err("no Groq API key and no Codex token — skipping analysis".into());
     }
 
     // Short-circuit if polished == user_kept (no edit).
@@ -319,6 +319,9 @@ pub async fn analyze_edit(
     }
 
     // Fallback: Groq llama-3.1-8b-instant
+    if api_key.is_empty() {
+        return Err("Codex failed and no Groq API key — skipping analysis".into());
+    }
     let body = json!({
         "model":           ANALYZER_MODEL,
         "temperature":     0.1,

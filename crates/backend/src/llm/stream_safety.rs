@@ -22,7 +22,7 @@ const PROMPT_LEAK_MARKERS: &[&str] = &[
     "output only the final polished text",
     "the transcript remains the source of truth",
     "possible vocabulary hints.",
-    "already matched in this transcript.",
+    "may appear in this transcript",
     "confidence markers like [word?xx%]",
     "=== begin transcript",
     "=== end transcript",

@@ -79,10 +79,13 @@ fn is_high_confidence_capture(capture_method: &str) -> bool {
 pub struct ClassifyResponse {
     pub class: String,
     pub reason: String,
+    pub pending_id: Option<String>,
     pub learned: bool,
     pub notify: bool,
     pub promoted_count: usize,
+    pub is_repeat: bool,
     pub promoted_terms: Vec<String>,
+    pub queued_terms: Vec<String>,
     /// Pass-through from the analyzer — each change the LLM identified.
     pub changes: Vec<AnalyzedChange>,
 }
@@ -271,6 +274,8 @@ pub async fn classify(
     // ── Step 5: Save learnable changes ───────────────────────────────────────
     let mut promoted_count = 0_usize;
     let mut promoted_terms: Vec<String> = Vec::new();
+    let mut queued_terms: Vec<String> = Vec::new();
+    let mut has_repeat = false;
     let mut learned = false;
 
     for change in &analyzer_output.changes {
@@ -305,6 +310,7 @@ pub async fn classify(
             ChangeReason::SttError => {
                 if promotion_gate::is_common_word(corrected) {
                     info!("[classify] STT_ERROR skipped — common word: {corrected:?}");
+                    queued_terms.push(corrected.to_string());
                     continue;
                 }
                 if promotion_gate::is_numeric_junk(corrected) {
@@ -312,11 +318,11 @@ pub async fn classify(
                     continue;
                 }
 
-                // Case-insensitive dedup: if "MACOBS" exists and we see "Macobs", use the existing canonical form
                 let (canonical_term, weight_bump) = if let Some(existing) = vocabulary::find_by_term_ci(&state.pool, &state.default_user_id, corrected) {
-                    (existing.term.clone(), 0.5) // bump existing by 0.5 (deepening)
+                    has_repeat = true;
+                    (existing.term.clone(), 0.5)
                 } else {
-                    (corrected.to_string(), 1.0) // new term starts at 1.0
+                    (corrected.to_string(), 1.0)
                 };
 
                 let ctx = change
@@ -346,7 +352,7 @@ pub async fn classify(
                     );
 
                     // Fire-and-forget: embed + meaning refresh
-                    spawn_vocab_embedding(state.clone(), canonical_term.clone(), ctx.clone());
+                    spawn_vocab_embedding(state.clone(), canonical_term.clone(), ctx.clone(), codex_token.clone());
                 }
 
                 // ── Update meaning if provided ───────────────────────────
@@ -444,10 +450,13 @@ pub async fn classify(
                 "analyzer identified {} change(s)",
                 analyzer_output.changes.len()
             ),
+            pending_id: None,
             learned,
             notify,
             promoted_count,
+            is_repeat: has_repeat,
             promoted_terms,
+            queued_terms,
             changes: analyzer_output.changes,
         }),
     )
@@ -474,7 +483,7 @@ fn run_demotion_pass(state: &AppState, polish: &str, user_kept: &str) -> usize {
 
 /// Fire-and-forget: embed a newly learned vocab term (with its context)
 /// and persist the vector so polish-time relevance retrieval can find it.
-fn spawn_vocab_embedding(state: AppState, term: String, example_context: Option<String>) {
+fn spawn_vocab_embedding(state: AppState, term: String, example_context: Option<String>, codex_token_for_meaning: Option<String>) {
     tokio::spawn(async move {
         let _guard = crate::bg_task_guard();
         if state.watchdog.is_shedding() {
@@ -530,12 +539,12 @@ fn spawn_vocab_embedding(state: AppState, term: String, example_context: Option<
             "[bg] embed for {term:?} done in {}ms",
             bg_start.elapsed().as_millis()
         );
-        spawn_meaning_refresh(state, term, example_context.unwrap_or_default());
+        spawn_meaning_refresh(state, term, example_context.unwrap_or_default(), codex_token_for_meaning.clone());
     });
 }
 
 /// Fire-and-forget: refresh a term's distilled meaning when needed.
-fn spawn_meaning_refresh(state: AppState, term: String, latest_example: String) {
+fn spawn_meaning_refresh(state: AppState, term: String, latest_example: String, codex_token: Option<String>) {
     tokio::spawn(async move {
         let _guard = crate::bg_task_guard();
         if state.watchdog.is_shedding() {
@@ -580,6 +589,7 @@ fn spawn_meaning_refresh(state: AppState, term: String, latest_example: String) 
                     &state.http_client,
                     &groq_key,
                     &openai_key,
+                    codex_token.as_deref(),
                     &term,
                     &example,
                 )
@@ -594,6 +604,7 @@ fn spawn_meaning_refresh(state: AppState, term: String, latest_example: String) 
                         &state.http_client,
                         &groq_key,
                         &openai_key,
+                        codex_token.as_deref(),
                         &term,
                         prev,
                         &examples,
@@ -649,10 +660,13 @@ fn empty_response(class: &str, reason: &str) -> ClassifyResponse {
     ClassifyResponse {
         class: class.to_string(),
         reason: reason.to_string(),
+        pending_id: None,
         learned: false,
         notify: false,
         promoted_count: 0,
+        is_repeat: false,
         promoted_terms: vec![],
+        queued_terms: vec![],
         changes: vec![],
     }
 }

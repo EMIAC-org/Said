@@ -709,7 +709,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         // the prompt. Deterministic replacement was removed because it
         // has zero context awareness — e.g. replacing "Main" (Hindi "I")
         // with "Emiac" (company name) because of a phonetic match.
-        let (stt_transcript, _enriched_transcript, alias_result) = {
+        let (stt_transcript, enriched_for_hints, alias_result) = {
             let text = stt_transcript_raw.clone();
             let enriched = enriched_raw.clone();
             (
@@ -823,10 +823,16 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 (resolved.transcript, entries)
             }
         };
+        let low_conf = keep_low_confidence_markers(&enriched_for_hints, 80.0);
+        let low_conf_ref = if low_conf != resolved_transcript {
+            Some(low_conf.as_str())
+        } else {
+            None
+        };
         let user_message = build_user_message_with_hints(
             &resolved_transcript,
             &prefs.output_language,
-            None,
+            low_conf_ref,
         );
 
         let default_prompt_body = default_voice_prompt_template();

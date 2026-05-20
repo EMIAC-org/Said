@@ -58,19 +58,6 @@ fn canonical_keyterm_score(term: &vocabulary::VocabTerm) -> f64 {
     score
 }
 
-fn alias_support_score(rule: &SttReplacement) -> f64 {
-    let mut score = 0.0;
-    match rule.export_tier {
-        ExportTier::ExportReplaceReady => score += 2.0,
-        ExportTier::ExportKeytermSupport => score += 1.0,
-        ExportTier::Blocked => score -= 2.0,
-        ExportTier::LocalOnly => {}
-    }
-    score += (rule.use_count.min(8) as f64) * 0.2;
-    score += rule.weight.min(5.0) * 0.2;
-    score - (rule.contradiction_count as f64 * 0.75)
-}
-
 fn alias_is_commonish(alias: &str) -> bool {
     let trimmed = alias.trim();
     if trimmed.is_empty() || trimmed.contains(char::is_whitespace) {
@@ -180,18 +167,6 @@ pub fn deterministic_export_tier(
     ExportTier::LocalOnly
 }
 
-fn effective_export_tier(canonical: &vocabulary::VocabTerm, rule: &SttReplacement) -> ExportTier {
-    if rule.review_status == ReviewStatus::Blocked || rule.export_tier == ExportTier::Blocked {
-        return ExportTier::Blocked;
-    }
-    let deterministic = deterministic_export_tier(canonical, rule);
-    match rule.review_status {
-        ReviewStatus::Approved | ReviewStatus::Skipped => rule.export_tier,
-        ReviewStatus::Pending => deterministic,
-        ReviewStatus::Blocked => ExportTier::Blocked,
-    }
-}
-
 pub fn build_bias_package(
     pool: &DbPool,
     user_id: &str,
@@ -205,16 +180,7 @@ pub fn build_bias_package(
     //
     // Only top terms (weight ≥ 2.0, use_count ≥ 3) get exported as keyterms.
     // This prevents low-confidence one-off corrections from biasing STT.
-    let requested_stt_mode = resolve_stt_mode(transcription_language);
-    let stt_mode = if output_language == "hinglish"
-        && (transcription_language.trim().is_empty()
-            || transcription_language == "auto"
-            || transcription_language == "multi")
-    {
-        "hi".to_string()
-    } else {
-        requested_stt_mode
-    };
+    let stt_mode = resolve_stt_mode(transcription_language);
 
     let vocab = vocabulary::top_terms(pool, user_id, 50);
     let keyterms: Vec<String> = vocab
@@ -303,7 +269,7 @@ mod tests {
         );
 
         let bias = build_bias_package(&pool, "u1", "auto", "hinglish");
-        assert_eq!(bias.stt_mode, "hi");
+        assert_eq!(bias.stt_mode, "multi");
         assert!(bias.keyterms.is_empty(), "keyterms must be empty — biasing disabled");
         assert!(bias.replacements.is_empty());
     }

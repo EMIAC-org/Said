@@ -115,6 +115,7 @@ pub fn spawn_prompt_artifact_repair(state: AppState) {
                     &state.http_client,
                     &groq_key,
                     &openai_key,
+                    None,
                     &term.term,
                     &context,
                 )
