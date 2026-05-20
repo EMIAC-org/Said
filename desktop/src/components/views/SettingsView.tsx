@@ -28,9 +28,11 @@ import {
   getDebugLogs,
   requestNotifications, checkNotificationPermission,
   getDesktopPrefs, setDesktopPrefs,
+  openaiConnect, openaiStatus, openaiDisconnect,
   type DebugLogs,
   type NotifPermission,
   type DesktopPrefs,
+  type OpenAIStatus,
 } from "@/lib/invoke";
 
 // ── Tone presets ──────────────────────────────────────────────────────────────
@@ -103,6 +105,94 @@ function Row({
       </div>
       {action && <div className="flex-shrink-0 ml-4">{action}</div>}
     </div>
+  );
+}
+
+// ── ChatGPT Connection Section ────────────────────────────────────────────────
+
+function ChatGPTSection() {
+  const [status, setStatus] = useState<OpenAIStatus | null>(null);
+  const [connecting, setConnecting] = useState(false);
+
+  const refresh = useCallback(async () => {
+    const s = await openaiStatus();
+    setStatus(s);
+  }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  // Poll for connection after initiating OAuth (browser flow)
+  useEffect(() => {
+    if (!connecting) return;
+    const interval = setInterval(async () => {
+      const s = await openaiStatus();
+      if (s?.connected) {
+        setStatus(s);
+        setConnecting(false);
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [connecting]);
+
+  const handleConnect = async () => {
+    setConnecting(true);
+    await openaiConnect();
+  };
+
+  const handleDisconnect = async () => {
+    await openaiDisconnect();
+    setStatus({ connected: false, expires_at: null, connected_at: null });
+  };
+
+  const isConnected = status?.connected === true;
+  const expiresDate = status?.expires_at
+    ? new Date(status.expires_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+    : null;
+
+  return (
+    <Section title="ChatGPT (Smart Learning)">
+      <Row
+        icon={<Sparkles size={16} />}
+        label={isConnected ? "ChatGPT Connected" : "Connect ChatGPT"}
+        description={
+          isConnected
+            ? `GPT-5.4-mini powers the learning pipeline for smarter vocabulary decisions${expiresDate ? ` · expires ${expiresDate}` : ""}`
+            : connecting
+            ? "Waiting for browser sign-in..."
+            : "Connect your ChatGPT account to use GPT-5.4-mini for smarter learning. Free — uses your existing ChatGPT subscription. Falls back to Groq if not connected."
+        }
+        action={
+          <div className="flex items-center gap-2">
+            {isConnected && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded"
+                    style={{ background: "hsl(145 60% 15%)", color: "hsl(145 70% 65%)" }}>
+                Connected
+              </span>
+            )}
+            {connecting && (
+              <Loader2 size={14} className="animate-spin" style={{ color: "hsl(var(--muted-foreground))" }} />
+            )}
+            {isConnected ? (
+              <button
+                onClick={() => void handleDisconnect()}
+                className="px-3 py-1 rounded-md text-[11px] font-medium transition-all border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+              >
+                Disconnect
+              </button>
+            ) : (
+              <button
+                onClick={() => void handleConnect()}
+                disabled={connecting}
+                className="px-3 py-1 rounded-md text-[11px] font-medium transition-all border border-transparent"
+                style={{ background: "hsl(var(--accent-violet))", color: "#fff", opacity: connecting ? 0.6 : 1 }}
+              >
+                {connecting ? "Connecting..." : "Connect"}
+              </button>
+            )}
+          </div>
+        }
+      />
+    </Section>
   );
 }
 
@@ -629,10 +719,12 @@ export function SettingsView({
   const [deepgramKey,   setDeepgramKey]   = useState("");
   const [geminiKey,     setGeminiKey]     = useState("");
   const [groqKey,       setGroqKey]       = useState("");
+  const [cerebrasKey,   setCerebrasKey]   = useState("");
   const [showGateway,   setShowGateway]   = useState(false);
   const [showDeepgram,  setShowDeepgram]  = useState(false);
   const [showGemini,    setShowGemini]    = useState(false);
   const [showGroq,      setShowGroq]      = useState(false);
+  const [, setShowCerebras]  = useState(false);
   const [keySaving,     setKeySaving]     = useState(false);
   const [keySaved,      setKeySaved]      = useState(false);
   const keySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -725,10 +817,12 @@ export function SettingsView({
     setDeepgramKey(nextPrefs.deepgram_api_key ?? "");
     setGeminiKey(nextPrefs.gemini_api_key ?? "");
     setGroqKey(nextPrefs.groq_api_key ?? "");
+    setCerebrasKey(nextPrefs.cerebras_api_key ?? "");
     setShowGateway(false);
     setShowDeepgram(false);
     setShowGemini(false);
     setShowGroq(false);
+    setShowCerebras(false);
   }
 
   useEffect(() => {
@@ -815,15 +909,18 @@ export function SettingsView({
       const currentDeepgram = prefs.deepgram_api_key ?? "";
       const currentGemini = prefs.gemini_api_key ?? "";
       const currentGroq = prefs.groq_api_key ?? "";
+      const currentCerebras = prefs.cerebras_api_key ?? "";
       const nextGateway = gatewayKey.trim();
       const nextDeepgram = deepgramKey.trim();
       const nextGemini = geminiKey.trim();
       const nextGroq = groqKey.trim();
+      const nextCerebras = cerebrasKey.trim();
 
       if (nextGateway !== currentGateway) update.gateway_api_key = nextGateway || null;
       if (nextDeepgram !== currentDeepgram) update.deepgram_api_key = nextDeepgram || null;
       if (nextGemini !== currentGemini) update.gemini_api_key = nextGemini || null;
       if (nextGroq !== currentGroq) update.groq_api_key = nextGroq || null;
+      if (nextCerebras !== currentCerebras) update.cerebras_api_key = nextCerebras || null;
       if (prefs.learning_enabled && currentGemini !== "" && nextGemini === "") {
         update.learning_enabled = false;
       }
@@ -1923,6 +2020,9 @@ export function SettingsView({
             </div>
           </div>
         </div>
+
+        {/* ── ChatGPT / OpenAI Connection ────────────────── */}
+        <ChatGPTSection />
 
         {/* ── LLM Provider picker ───────────────────────── */}
         <Section title="LLM Provider">

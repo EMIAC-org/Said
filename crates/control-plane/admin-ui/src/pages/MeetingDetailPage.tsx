@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, Link, useNavigate } from 'react-router'
-import { ArrowLeft, Calendar, Clock, Users, FileText, Sparkles, Mic, ArrowRight, Radio } from 'lucide-react'
+import { ArrowLeft, Calendar, Clock, Users, FileText, Sparkles, Mic, ArrowRight, Radio, Globe2, Copy } from 'lucide-react'
 import { LarkLogo, OpenAILogo } from '../components/BrandLogos'
 import { apiJson, api } from '../api'
 import { StatusPill } from '../components/StatusPill'
@@ -18,6 +18,9 @@ export function MeetingDetailPage() {
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState('')
   const [actionLoading, setActionLoading] = useState('')
+  const [guestLink, setGuestLink] = useState('')
+  const [guestLinkLoading, setGuestLinkLoading] = useState(false)
+  const [guestLinkCopied, setGuestLinkCopied] = useState(false)
 
   const fetchMeeting = useCallback(() =>
     apiJson<MeetingDetail>(`/v1/meetings/${id}`), [id])
@@ -80,6 +83,26 @@ export function MeetingDetailPage() {
       setSyncResult(`Synced: ${d.tasks_synced ?? 0} tasks${d.doc_id ? ' · Doc created' : ''}${d.messages_sent ? ` · ${d.messages_sent} messages` : ''}`)
     } catch (e) { setSyncResult('Failed: ' + (e as Error).message) }
     setSyncing(false)
+  }
+
+  const generateGuestLink = async () => {
+    setGuestLinkLoading(true)
+    setGuestLinkCopied(false)
+    try {
+      const result = await apiJson<{ guest_link: string }>(`/v1/meetings/${id}/guest-link`, { method: 'POST' })
+      setGuestLink(new URL(result.guest_link, window.location.origin).toString())
+    } catch (e) {
+      alert('Failed: ' + (e as Error).message)
+    } finally {
+      setGuestLinkLoading(false)
+    }
+  }
+
+  const copyGuestLink = async () => {
+    if (!guestLink) return
+    await navigator.clipboard.writeText(guestLink)
+    setGuestLinkCopied(true)
+    window.setTimeout(() => setGuestLinkCopied(false), 1600)
   }
 
   return (
@@ -200,6 +223,34 @@ export function MeetingDetailPage() {
 
         {/* Right column */}
         <div className="space-y-4">
+          {/* Guest browser link */}
+          {(m.status === 'scheduled' || m.status === 'live') && (
+            <div className="card">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-9 h-9 rounded-lg bg-surface-4 flex items-center justify-center">
+                  <Globe2 size={18} className="text-fg-3" />
+                </div>
+                <div className="flex-1">
+                  <div className="text-[12px] font-semibold">Guest Browser Link</div>
+                  <div className="text-[10px] text-fg-4">Share with guests who do not have Said installed</div>
+                </div>
+              </div>
+              {!guestLink ? (
+                <button onClick={generateGuestLink} disabled={guestLinkLoading} className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-4 h-9 rounded-lg bg-[hsl(0_0%_98%)] text-[hsl(240_8%_8%)] hover:opacity-90 disabled:opacity-35 transition-all">
+                  {guestLinkLoading ? <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> : <Globe2 size={13} />}
+                  {guestLinkLoading ? 'Generating...' : 'Generate Guest Link'}
+                </button>
+              ) : (
+                <div className="space-y-2">
+                  <div className="px-3 py-2 rounded-lg bg-surface-2 border border-border-light text-[11px] text-fg-3 break-all">{guestLink}</div>
+                  <button onClick={copyGuestLink} className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-4 h-9 rounded-lg bg-surface-3 text-fg border border-border-light hover:bg-surface-4 transition-all">
+                    <Copy size={13} /> {guestLinkCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Agenda */}
           {m.agenda && (
             <div className="card">

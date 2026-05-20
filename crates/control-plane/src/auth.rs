@@ -31,6 +31,16 @@ pub struct AuthUser {
 struct JwtClaims {
     sub: String,
     email: String,
+    is_guest: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct GuestJwtClaims {
+    sub: String,
+    email: String,
+    meeting_id: String,
+    display_name: String,
+    is_guest: bool,
 }
 
 /// Try to resolve a bearer token to an account. Checks session UUID first,
@@ -61,6 +71,9 @@ async fn resolve_token(token_str: &str, app: &AppState) -> Option<(Uuid, String)
     validation.validate_exp = true;
 
     let token_data = decode::<JwtClaims>(token_str, &key, &validation).ok()?;
+    if token_data.claims.is_guest.unwrap_or(false) {
+        return None;
+    }
     let account_id = Uuid::parse_str(&token_data.claims.sub).ok()?;
 
     // Verify account still exists
@@ -109,4 +122,45 @@ where
 /// not in an HTTP header).
 pub async fn resolve_ws_token(token_str: &str, state: &AppState) -> Option<(Uuid, String)> {
     resolve_token(token_str, state).await
+}
+
+/// Resolve a WebSocket token that may be either a normal Said session/JWT or a
+/// guest JWT issued by `/join/:token/auth`.
+///
+/// Returns `(account_id, display_name, meeting_id)`. `meeting_id` is `None`
+/// for regular users and `Some(...)` for guests, so route handlers can enforce
+/// the guest token's meeting scope.
+pub async fn resolve_guest_ws_token(
+    token_str: &str,
+    state: &AppState,
+) -> Option<(Uuid, String, Option<Uuid>)> {
+    if let Some((account_id, email)) = resolve_token(token_str, state).await {
+        return Some((account_id, email, None));
+    }
+
+    let key = DecodingKey::from_secret(state.lark.jwt_secret.as_bytes());
+    let mut validation = Validation::default();
+    validation.validate_exp = true;
+
+    let token_data = decode::<GuestJwtClaims>(token_str, &key, &validation).ok()?;
+    if !token_data.claims.is_guest {
+        return None;
+    }
+
+    let account_id = Uuid::parse_str(&token_data.claims.sub).ok()?;
+    let meeting_id = Uuid::parse_str(&token_data.claims.meeting_id).ok()?;
+
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM accounts WHERE id = $1 AND is_guest = true)",
+    )
+    .bind(account_id)
+    .fetch_one(&state.db)
+    .await
+    .ok()?;
+
+    if exists {
+        Some((account_id, token_data.claims.display_name, Some(meeting_id)))
+    } else {
+        None
+    }
 }

@@ -1,7 +1,10 @@
 pub mod alias_review;
+pub mod analyzer;
+pub mod cerebras;
 pub mod classifier;
 pub mod devanagari_recovery;
 pub mod edit_diff;
+pub mod format_pass;
 pub mod format_recover;
 pub mod gateway;
 pub mod gemini_direct;

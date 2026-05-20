@@ -155,9 +155,131 @@ pub fn looks_like_user_addition(polish: &str, user_kept: &str) -> bool {
     false
 }
 
+/// True if `term` is a common Hindi/English word that should never be
+/// learned as vocabulary. These are high-frequency words that Deepgram
+/// sometimes distorts and the user "corrects" — but the correction is
+/// just normal speech, not a proper noun or brand name.
+pub fn is_common_word(term: &str) -> bool {
+    let t = term.trim().to_ascii_lowercase();
+    if t.is_empty() {
+        return false;
+    }
+    // Common Hindi/Hinglish words that must NEVER be learned as STT
+    // replacement sources or vocab terms. These appear in nearly every
+    // Hinglish sentence — learning "maine" → "Emiac" is catastrophic.
+    const HINDI_COMMON: &[&str] = &[
+        // Pronouns (CRITICAL — these caused "maine" → "Emiac")
+        "main", "maine", "mein", "mujhe", "mujhse", "mujhko", "tu", "tum", "tumne", "tumhe",
+        "tumse", "tumko", "aap", "aapne", "aapse", "aapko", "hum", "humne", "humse", "humko",
+        "humein", "yeh", "woh", "ye", "wo", "isko", "usko", "inko", "unko", "koi", "kisko",
+        "kiske", "kiski", "jisko", "jiske", "jiski", "uska", "uski", "unka", "unki", "mera",
+        "meri", "mere", "tera", "teri", "tere", "tumhara", "tumhari", "apna", "apni", "apne",
+        "khud", "sab", "sabko", "sabne", "sabse", // Verbs — common forms
+        "hai", "hain", "tha", "thi", "the", "hoga", "hogi", "hoge", "karna", "karo", "karta",
+        "karti", "karte", "karega", "karenge", "karegi", "dena", "dedo", "dedo", "deta", "deti",
+        "dete", "dunga", "denge", "lena", "leta", "leti", "lete", "lenge", "lunga", "aana", "aata",
+        "aati", "aate", "aayega", "aayenge", "jaana", "jaata", "jaati", "jaate", "jaayega",
+        "jayenge", "raha", "rahi", "rahe", "rehna", "rehta", "rehti", "bola", "boli", "bole",
+        "bolo", "bolna", "bolte", "dekho", "dekh", "dekhna", "dekhta", "dekhti", "dekhte",
+        "dekhlena", "suno", "sunna", "sunlo", "sunta", "sunti", "batao", "batana", "batata",
+        "batati", "bata", "hona", "hota", "hoti", "hote", "wala", "wali", "wale",
+        // Question words
+        "kya", "kaise", "kab", "kahan", "kyun", "kaun", "kitna", "kitne", "kitni",
+        // Connectors / particles
+        "aur", "lekin", "par", "magar", "toh", "bhi", "hi", "na", "nahi", "nhi", "haan", "mat",
+        "bas", "sirf", "bilkul", "zaroor", "shayad", "ko", "se", "pe", "ka", "ki", "ke", "mein",
+        "agar", "jab", "tab", "phir", "toh", "warna", "kyunki", "isliye",
+        // Adjectives / adverbs
+        "abhi", "accha", "achha", "theek", "sahi", "galat", "pehle", "baad", "bahut", "thoda",
+        "zyada", "kam", "bada", "badi", "chhota", "chhoti", "naya", "purana", "dono", "dusra",
+        "dusri", "teesra", "yaar", "bhai", "zara", "please",
+    ];
+    // Common English words that shouldn't be vocab
+    const ENGLISH_COMMON: &[&str] = &[
+        "the", "this", "that", "with", "from", "have", "been", "will", "would", "could", "should",
+        "going", "doing", "said", "says", "like", "just", "also", "very", "much", "good", "great",
+        "nice", "okay", "fine", "sure", "yeah", "here", "there", "where", "when", "what", "which",
+        "who", "about", "after", "before", "between", "through",
+    ];
+    HINDI_COMMON.contains(&t.as_str()) || ENGLISH_COMMON.contains(&t.as_str())
+}
+
+/// True if `term` looks like a number, phone number, or numeric artifact
+/// that should not be learned as vocabulary.
+pub fn is_numeric_junk(term: &str) -> bool {
+    let t = term.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let digits = t.chars().filter(|c| c.is_ascii_digit()).count();
+    let alpha = t.chars().filter(|c| c.is_alphabetic()).count();
+    let total = t.chars().count();
+
+    // Pure digits or digits with punctuation (phone numbers, amounts)
+    if alpha == 0 && digits > 0 {
+        return true;
+    }
+    // Mostly digits: "32Billion", "9891111548."
+    if digits > 0 && (digits as f64 / total as f64) > 0.5 {
+        return true;
+    }
+    // Short digit+letter combos that are number formats, not terms: "30B", "8GB"
+    // Exception: known code patterns like "n8n", "k8s" (consonant-digit-consonant)
+    if total <= 4 && digits > 0 && alpha > 0 {
+        let has_consonant_digit_consonant = total == 3
+            && t.chars().nth(0).map(|c| c.is_alphabetic()).unwrap_or(false)
+            && t.chars()
+                .nth(1)
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+            && t.chars().nth(2).map(|c| c.is_alphabetic()).unwrap_or(false);
+        if !has_consonant_digit_consonant {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── is_common_word ────────────────────────────────────────────────────────
+    #[test]
+    fn common_hindi_words_blocked() {
+        assert!(is_common_word("dono"));
+        assert!(is_common_word("hoga"));
+        assert!(is_common_word("dunga"));
+        assert!(is_common_word("karega"));
+        assert!(is_common_word("Hain"));
+    }
+
+    #[test]
+    fn proper_nouns_not_blocked() {
+        assert!(!is_common_word("MACOBS"));
+        assert!(!is_common_word("Emiac"));
+        assert!(!is_common_word("ChatGPT"));
+        assert!(!is_common_word("n8n"));
+        assert!(!is_common_word("Semrush"));
+    }
+
+    // ── is_numeric_junk ──────────────────────────────────────────────────────
+    #[test]
+    fn numeric_junk_caught() {
+        assert!(is_numeric_junk("32000000000"));
+        assert!(is_numeric_junk("9891111548."));
+        assert!(is_numeric_junk("30B"));
+        assert!(is_numeric_junk("8GB"));
+        assert!(is_numeric_junk("7000000000"));
+    }
+
+    #[test]
+    fn code_identifiers_not_blocked() {
+        assert!(!is_numeric_junk("n8n"));
+        assert!(!is_numeric_junk("k8s"));
+        assert!(!is_numeric_junk("MACOBS"));
+        assert!(!is_numeric_junk("ChatGPT"));
+    }
 
     // ── appears_in_user_kept ──────────────────────────────────────────────────
     #[test]

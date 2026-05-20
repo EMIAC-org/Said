@@ -43,6 +43,7 @@ pub struct AppState {
     pub started_at: Arc<Instant>,
     pub lark: LarkConfig,
     pub hub: Arc<meeting_hub::MeetingHub>,
+    pub deepgram_api_key: String,
 }
 
 // ── Router constructor ───────────────────────────────────────────────────────
@@ -85,12 +86,20 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::meetings::create).get(routes::meetings::list),
         )
         .route("/v1/meetings/:id", get(routes::meetings::detail))
+        .route(
+            "/v1/meetings/:id/guest-link",
+            post(routes::guest::create_guest_link),
+        )
         .route("/v1/meetings/:id/start", post(routes::meetings::start))
         .route("/v1/meetings/:id/end", post(routes::meetings::end))
         .route(
             "/v1/meetings/:id/push-tasks",
             post(routes::meetings::push_tasks),
         )
+        // Enterprise — Guest browser capture
+        .route("/join/:token", get(routes::guest::guest_page))
+        .route("/join/:token/auth", post(routes::guest::guest_auth))
+        .route("/v1/meetings/:id/guest-ws", get(routes::guest_ws::handler))
         // Enterprise — Lark sync
         .route(
             "/v1/meetings/:id/sync-to-lark",

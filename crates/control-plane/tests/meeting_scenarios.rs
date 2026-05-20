@@ -45,6 +45,7 @@ impl TestServer {
                 jwt_secret: "test-secret".into(),
             },
             hub,
+            deepgram_api_key: String::new(),
         };
 
         let app = build_router(state);

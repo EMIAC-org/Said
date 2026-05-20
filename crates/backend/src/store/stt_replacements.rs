@@ -177,6 +177,27 @@ fn upsert_inner(
     if from.is_ascii() && to.is_ascii() && from == to.to_ascii_lowercase() {
         return false;
     }
+    // Quality gate: reject garbage rules where the transcript_form bears
+    // no phonetic resemblance to the correct_form AND both are pure ASCII
+    // single words. "men" → "Emiac" (sim 0.0) makes no sense.
+    //
+    // Skip this gate when:
+    //   • Either side contains non-ASCII (Devanagari STT output is common)
+    //   • Either side contains spaces (multi-word like "Main corps" → MACOBS)
+    //   • First letters match (catches "claud" → "claude", "d to c" → "D2C")
+    let both_ascii_single =
+        from.is_ascii() && to.is_ascii() && !from.contains(' ') && !to.contains(' ');
+    if both_ascii_single {
+        let phon_sim = phonetics::similarity(&from, &to);
+        let first_match = from.chars().next().map(|f| f.to_ascii_lowercase())
+            == to.chars().next().map(|t| t.to_ascii_lowercase());
+        if phon_sim < 0.30 && !first_match {
+            tracing::info!(
+                "[stt-replace] rejected garbage rule: {from:?} → {to:?} (phon={phon_sim:.2}, first_match={first_match})"
+            );
+            return false;
+        }
+    }
     let key = phonetics::phonetic_key(&from);
     let now = now_ms();
     let rows = conn
@@ -708,7 +729,7 @@ pub fn apply_with_matches(transcript: &str, rules: &[SttReplacement]) -> ApplyRe
             continue;
         }
 
-        // Fall back to single-token phonetic match.
+        // Fall back to single-token phonetic match against transcript_form.
         let chunk = chunks[i];
         let core = &cores[i];
         let key = phonetics::phonetic_key(core);
@@ -722,6 +743,41 @@ pub fn apply_with_matches(transcript: &str, rules: &[SttReplacement]) -> ApplyRe
                         break;
                     }
                 }
+            }
+        }
+        // Second phonetic fallback: match against the CORRECT_FORM.
+        // Deepgram distorts the same word differently each time
+        // (e.g. "Emiac" → "MEAH" first time, "MEX" second time).
+        // We store a rule for (MEAH→Emiac) but next time Deepgram says "MEX"
+        // which doesn't match "MEAH" phonetically. However "MEX" DOES
+        // phonetically resemble "Emiac" (the correct_form). So we try
+        // matching the transcript token against correct_form too.
+        //
+        // Guards to prevent false positives (e.g. "MACOBS" matching "Emiac"):
+        //   • High threshold (0.75) — only very close phonetic matches
+        //   • Token must be short relative to correct_form (≤ 1.5x length)
+        //     to avoid matching full words against unrelated short rules
+        //   • Token must not be longer than correct_form + 2 chars
+        if phonetic_hit.is_none() && !key.is_empty() && core.len() >= 3 {
+            let mut best_sim = 0.0_f64;
+            let mut best_rule = None;
+            for (_, rule) in &indexed {
+                let correct_lower = rule.correct_form.to_ascii_lowercase();
+                if *core == correct_lower {
+                    continue;
+                }
+                let len_ratio = core.len() as f64 / correct_lower.len().max(1) as f64;
+                if len_ratio > 1.5 || core.len() > correct_lower.len() + 2 {
+                    continue;
+                }
+                let correct_sim = phonetics::similarity(core, &rule.correct_form);
+                if correct_sim >= 0.65 && correct_sim > best_sim {
+                    best_sim = correct_sim;
+                    best_rule = Some(rule);
+                }
+            }
+            if best_rule.is_some() {
+                phonetic_hit = best_rule;
             }
         }
         if let Some(rule) = phonetic_hit {

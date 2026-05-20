@@ -325,14 +325,14 @@ mod tests {
     use said_core::deepgram::{BiasPackage, ReplacementRule, build_batch_url, resolve_stt_mode};
 
     #[test]
-    fn auto_maps_to_multi_for_batch() {
-        assert_eq!(resolve_stt_mode("auto"), "multi");
+    fn auto_maps_to_hi_for_batch() {
+        assert_eq!(resolve_stt_mode("auto"), "hi");
     }
 
     #[test]
     fn batch_url_contains_replacements() {
         let bias = BiasPackage {
-            stt_mode: "multi".into(),
+            stt_mode: "hi".into(),
             keyterms: vec!["EMIAC".into()],
             replacements: vec![ReplacementRule {
                 find: "n10n".into(),
@@ -340,7 +340,7 @@ mod tests {
             }],
         };
         let url = build_batch_url(DEEPGRAM_URL, &bias);
-        assert!(url.contains("language=multi"));
+        assert!(url.contains("language=hi"));
         assert!(url.contains("keyterm=EMIAC"));
         assert!(url.contains("replace=n10n:n8n"));
     }

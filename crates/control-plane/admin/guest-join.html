@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Said Guest Meeting</title>
+  <style>
+    :root {
+      --bg: hsl(240 6% 6%);
+      --fg: hsl(240 6% 92%);
+      --fg-2: hsl(240 5% 76%);
+      --fg-3: hsl(240 5% 58%);
+      --surface-1: hsl(240 5% 3%);
+      --surface-2: hsl(240 5% 4.5%);
+      --surface-3: hsl(240 5% 8%);
+      --surface-4: hsl(240 5% 13%);
+      --border: hsl(240 5% 16%);
+      --primary: hsl(226 80% 78%);
+      --primary-fg: hsl(240 8% 8%);
+      --green: hsl(142 70% 55%);
+      --green-soft: hsl(142 70% 65%);
+      --red: hsl(354 85% 75%);
+      --amber: hsl(38 90% 72%);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .42; }
+    .screen { display: none; min-height: 100vh; }
+    .screen.active { display: flex; }
+    .join-screen { align-items: center; justify-content: center; padding: 24px; }
+    .join-card {
+      width: min(390px, 100%);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 30px;
+      box-shadow: 0 16px 60px hsla(0, 0%, 0%, .38);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 22px;
+    }
+    .mark {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: var(--fg);
+      color: var(--primary-fg);
+      display: grid;
+      place-items: center;
+      font-weight: 900;
+      font-size: 14px;
+    }
+    h1 { margin: 0; font-size: 19px; letter-spacing: 0; }
+    .muted { color: var(--fg-3); }
+    .meeting-name { margin: 2px 0 0; font-size: 13px; color: var(--fg-2); line-height: 1.45; }
+    label {
+      display: block;
+      margin: 22px 0 7px;
+      color: var(--fg-3);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    input {
+      width: 100%;
+      height: 40px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0 12px;
+      background: var(--surface-1);
+      color: var(--fg);
+      outline: none;
+    }
+    input:focus { border-color: hsla(226, 80%, 78%, .52); box-shadow: 0 0 0 3px hsla(226, 80%, 78%, .10); }
+    .primary {
+      width: 100%;
+      height: 40px;
+      margin-top: 14px;
+      border: 0;
+      border-radius: 8px;
+      background: hsl(0 0% 98%);
+      color: var(--primary-fg);
+      font-size: 13px;
+      font-weight: 750;
+    }
+    .hint { margin: 14px 0 0; color: var(--fg-3); font-size: 11px; line-height: 1.45; text-align: center; }
+    .error { min-height: 18px; margin-top: 12px; color: var(--red); font-size: 12px; line-height: 1.4; }
+
+    .live-screen { flex-direction: column; }
+    .topbar {
+      height: 58px;
+      padding: 0 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-1);
+    }
+    .top-title { min-width: 0; }
+    .top-title strong { display: block; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .top-title span { display: block; margin-top: 2px; color: var(--fg-3); font-size: 11px; }
+    .status { display: flex; align-items: center; gap: 8px; color: var(--green-soft); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px hsla(142,70%,55%,.7); }
+    .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 310px; }
+    .transcript { min-height: 0; overflow: auto; padding: 22px; }
+    .chunk {
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr);
+      gap: 14px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .speaker { color: var(--primary); font-size: 12px; font-weight: 750; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .text { color: var(--fg-2); font-size: 14px; line-height: 1.55; }
+    .empty { height: 100%; display: grid; place-items: center; color: var(--fg-3); font-size: 13px; text-align: center; }
+    .side {
+      border-left: 1px solid var(--border);
+      background: var(--surface-2);
+      padding: 18px;
+      overflow: auto;
+    }
+    .panel-title { margin: 0 0 10px; color: var(--fg-3); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; }
+    .summary { color: var(--fg-2); font-size: 13px; line-height: 1.55; }
+    .dock {
+      min-height: 62px;
+      border-top: 1px solid var(--border);
+      background: var(--surface-1);
+      padding: 10px 18px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .timer { font-variant-numeric: tabular-nums; color: var(--fg-2); font-size: 13px; margin-right: auto; }
+    .tool {
+      height: 36px;
+      min-width: 82px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface-3);
+      color: var(--fg);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .tool.danger { color: var(--red); }
+    .post-screen { align-items: center; justify-content: center; padding: 24px; }
+    .post-card {
+      width: min(760px, 100%);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 28px;
+    }
+    .post-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
+    .post-box { border: 1px solid var(--border); border-radius: 8px; padding: 16px; background: var(--surface-3); }
+    .cta {
+      margin-top: 18px;
+      border: 1px solid hsla(226,80%,78%,.28);
+      background: hsla(226,80%,78%,.08);
+      border-radius: 8px;
+      padding: 14px 16px;
+      color: var(--fg-2);
+      font-size: 13px;
+    }
+    @media (max-width: 760px) {
+      .layout { grid-template-columns: 1fr; }
+      .side { display: none; }
+      .chunk { grid-template-columns: 1fr; gap: 4px; }
+      .topbar { padding: 0 14px; }
+      .post-grid { grid-template-columns: 1fr; }
+      .dock { flex-wrap: wrap; }
+      .timer { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <script>
+    window.__SAID_GUEST = __SAID_GUEST_DATA__;
+  </script>
+
+  <main id="joinScreen" class="screen join-screen active">
+    <section class="join-card">
+      <div class="brand">
+        <div class="mark">S</div>
+        <div>
+          <h1>Join with Said</h1>
+          <p class="meeting-name"><span id="meetingTitle"></span><br><span class="muted">Hosted by <span id="hostName"></span></span></p>
+        </div>
+      </div>
+      <label for="displayName">Your name</label>
+      <input id="displayName" autocomplete="name" placeholder="Sarah Chen">
+      <button id="joinBtn" class="primary">Start Capturing</button>
+      <p class="hint">Your microphone audio is streamed to Said for live transcription in this meeting.</p>
+      <div id="joinError" class="error"></div>
+    </section>
+  </main>
+
+  <main id="liveScreen" class="screen live-screen">
+    <header class="topbar">
+      <div class="top-title">
+        <strong id="liveTitle"></strong>
+        <span id="connectionLabel">Connecting</span>
+      </div>
+      <div class="status"><span class="status-dot"></span><span id="recordingLabel">Live</span></div>
+    </header>
+
+    <section class="layout">
+      <div id="transcript" class="transcript">
+        <div id="emptyState" class="empty">Waiting for speech.</div>
+      </div>
+      <aside class="side">
+        <h2 class="panel-title">Summary</h2>
+        <p id="summary" class="summary muted">Summary will appear after the meeting has enough transcript.</p>
+        <h2 class="panel-title" style="margin-top:22px">Action Items</h2>
+        <div id="tasks" class="summary muted">No action items yet.</div>
+      </aside>
+    </section>
+
+    <footer class="dock">
+      <span id="timer" class="timer">00:00</span>
+      <button id="muteBtn" class="tool">Mute</button>
+      <button id="leaveBtn" class="tool danger">Leave</button>
+    </footer>
+  </main>
+
+  <main id="postScreen" class="screen post-screen">
+    <section class="post-card">
+      <h1>Meeting captured</h1>
+      <p class="meeting-name">Your guest session has ended.</p>
+      <div class="post-grid">
+        <div class="post-box">
+          <h2 class="panel-title">Transcript</h2>
+          <p id="postTranscript" class="summary">No transcript captured.</p>
+        </div>
+        <div class="post-box">
+          <h2 class="panel-title">Summary</h2>
+          <p id="postSummary" class="summary">Summary was not available yet.</p>
+        </div>
+      </div>
+      <div class="cta">Get Said for your own meetings and capture polished notes from your desktop.</div>
+    </section>
+  </main>
+
+  <script>
+    const meta = window.__SAID_GUEST || {};
+    const state = {
+      ws: null,
+      wsToken: '',
+      guestId: '',
+      muted: false,
+      startedAt: 0,
+      timerId: 0,
+      chunks: [],
+      summary: '',
+      capture: null,
+    };
+
+    const $ = (id) => document.getElementById(id);
+    $('meetingTitle').textContent = meta.meetingTitle || 'Said meeting';
+    $('hostName').textContent = meta.hostName || 'your host';
+    $('liveTitle').textContent = meta.meetingTitle || 'Said meeting';
+
+    class SaidAudioCapture {
+      async start(ws) {
+        this.muted = false;
+        this.stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+        this.audioContext = new AudioContext({ sampleRate: 16000 });
+        const source = this.audioContext.createMediaStreamSource(this.stream);
+        const workletCode = `
+          class SaidProcessor extends AudioWorkletProcessor {
+            constructor() {
+              super();
+              this.buffer = [];
+              this.ratio = sampleRate / 16000;
+            }
+            process(inputs) {
+              const input = inputs[0][0];
+              if (!input) return true;
+              for (let i = 0; i < input.length; i += this.ratio) {
+                this.buffer.push(input[Math.floor(i)] || 0);
+              }
+              if (this.buffer.length >= 1600) {
+                const pcm = new Int16Array(this.buffer.length);
+                for (let i = 0; i < this.buffer.length; i++) {
+                  const s = Math.max(-1, Math.min(1, this.buffer[i]));
+                  pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+                }
+                this.port.postMessage(pcm.buffer, [pcm.buffer]);
+                this.buffer = [];
+              }
+              return true;
+            }
+          }
+          registerProcessor('said-processor', SaidProcessor);
+        `;
+        const blob = new Blob([workletCode], { type: 'application/javascript' });
+        const url = URL.createObjectURL(blob);
+        await this.audioContext.audioWorklet.addModule(url);
+        URL.revokeObjectURL(url);
+        this.worklet = new AudioWorkletNode(this.audioContext, 'said-processor');
+        this.worklet.port.onmessage = (event) => {
+          if (!this.muted && ws.readyState === WebSocket.OPEN) ws.send(event.data);
+        };
+        source.connect(this.worklet);
+      }
+      setMuted(next) { this.muted = next; }
+      async stop() {
+        this.stream?.getTracks().forEach((track) => track.stop());
+        await this.audioContext?.close();
+      }
+    }
+
+    $('joinBtn').addEventListener('click', join);
+    $('muteBtn').addEventListener('click', toggleMute);
+    $('leaveBtn').addEventListener('click', leaveMeeting);
+
+    async function join() {
+      const displayName = $('displayName').value.trim();
+      if (!displayName) {
+        $('joinError').textContent = 'Enter your name to join.';
+        return;
+      }
+      $('joinBtn').disabled = true;
+      $('joinBtn').textContent = 'Starting...';
+      $('joinError').textContent = '';
+      try {
+        const auth = await fetch(`/join/${encodeURIComponent(meta.token)}/auth`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ display_name: displayName }),
+        });
+        const authJson = await auth.json();
+        if (!auth.ok) throw new Error(authJson.error || 'Could not join this meeting.');
+        state.wsToken = authJson.ws_token;
+        state.guestId = authJson.guest_id;
+        await connectGuestWs();
+        state.capture = new SaidAudioCapture();
+        await state.capture.start(state.ws);
+        show('liveScreen');
+        startTimer();
+      } catch (error) {
+        $('joinError').textContent = error.message || 'Could not start capture.';
+        $('joinBtn').disabled = false;
+        $('joinBtn').textContent = 'Start Capturing';
+      }
+    }
+
+    function connectGuestWs() {
+      return new Promise((resolve, reject) => {
+        const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+        const ws = new WebSocket(`${protocol}://${location.host}/v1/meetings/${meta.meetingId}/guest-ws?token=${encodeURIComponent(state.wsToken)}`);
+        state.ws = ws;
+        ws.onopen = () => {
+          $('connectionLabel').textContent = 'Connected';
+          resolve();
+        };
+        ws.onerror = () => reject(new Error('Meeting connection failed.'));
+        ws.onclose = () => {
+          $('connectionLabel').textContent = 'Disconnected';
+          if ($('liveScreen').classList.contains('active')) leaveMeeting(false);
+        };
+        ws.onmessage = (event) => handleWsMessage(event.data);
+      });
+    }
+
+    function handleWsMessage(data) {
+      let msg;
+      try { msg = JSON.parse(data); } catch { return; }
+      if (msg.type === 'catchup') {
+        (msg.current_chunks || []).forEach(addChunk);
+        if (msg.summary) updateSummary(msg.summary);
+        renderTasks(msg.tasks || []);
+      } else if (msg.type === 'transcript_chunk') {
+        addChunk(msg);
+      } else if (msg.type === 'summary_updated') {
+        updateSummary(msg.summary || '');
+      } else if (msg.type === 'task_detected') {
+        renderTasks([{ title: msg.title, assignee_name: msg.assignee_name }]);
+      } else if (msg.type === 'meeting_ended') {
+        leaveMeeting(false);
+      } else if (msg.type === 'error') {
+        $('connectionLabel').textContent = msg.code || 'Error';
+      }
+    }
+
+    function addChunk(chunk) {
+      if (!chunk || !chunk.text) return;
+      const key = `${chunk.speaker_id || ''}:${chunk.chunk_index || state.chunks.length}:${chunk.text}`;
+      if (state.chunks.some((item) => item.key === key)) return;
+      state.chunks.push({ ...chunk, key });
+      $('emptyState')?.remove();
+      const row = document.createElement('div');
+      row.className = 'chunk';
+      const speaker = document.createElement('div');
+      speaker.className = 'speaker';
+      speaker.textContent = chunk.speaker_name || 'Speaker';
+      const text = document.createElement('div');
+      text.className = 'text';
+      text.textContent = chunk.text;
+      row.append(speaker, text);
+      $('transcript').append(row);
+      $('transcript').scrollTop = $('transcript').scrollHeight;
+    }
+
+    function updateSummary(summary) {
+      state.summary = summary;
+      $('summary').classList.remove('muted');
+      $('summary').textContent = summary;
+    }
+
+    function renderTasks(tasks) {
+      if (!tasks.length) return;
+      $('tasks').classList.remove('muted');
+      $('tasks').innerHTML = tasks.map((task) => `<div style="margin-bottom:8px">${escapeHtml(task.title || '')}</div>`).join('');
+    }
+
+    function toggleMute() {
+      state.muted = !state.muted;
+      state.capture?.setMuted(state.muted);
+      if (state.ws?.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({ type: state.muted ? 'mute' : 'unmute' }));
+      }
+      $('muteBtn').textContent = state.muted ? 'Unmute' : 'Mute';
+      $('recordingLabel').textContent = state.muted ? 'Muted' : 'Live';
+    }
+
+    async function leaveMeeting(closeSocket = true) {
+      clearInterval(state.timerId);
+      if (closeSocket) state.ws?.close();
+      await state.capture?.stop();
+      $('postTranscript').textContent = state.chunks.map((chunk) => `${chunk.speaker_name || 'Speaker'}: ${chunk.text}`).join('\n\n') || 'No transcript captured.';
+      $('postSummary').textContent = state.summary || 'Summary was not available yet.';
+      show('postScreen');
+    }
+
+    function startTimer() {
+      state.startedAt = Date.now();
+      state.timerId = setInterval(() => {
+        const seconds = Math.floor((Date.now() - state.startedAt) / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const rest = seconds % 60;
+        $('timer').textContent = `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
+        document.title = `Said | ${minutes} min captured`;
+      }, 1000);
+    }
+
+    function show(id) {
+      for (const screen of document.querySelectorAll('.screen')) screen.classList.remove('active');
+      $(id).classList.add('active');
+    }
+
+    function escapeHtml(value) {
+      return value.replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+      })[ch]);
+    }
+  </script>
+</body>
+</html>

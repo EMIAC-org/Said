@@ -250,7 +250,7 @@ impl MeetingHub {
         text: String,
         timestamp_ms: i64,
         db: &PgPool,
-    ) {
+    ) -> Option<OutboundMessage> {
         let word_count = text.split_whitespace().count() as i32;
 
         // --- Slot that needs closing (determined inside the lock, closed outside) ---
@@ -260,7 +260,7 @@ impl MeetingHub {
             let mut rooms = self.rooms.write().await;
             let Some(room) = rooms.get_mut(&meeting_id) else {
                 warn!("[hub] ingest_chunk for unknown room {meeting_id}");
-                return;
+                return None;
             };
 
             let idx = room.next_chunk_index();
@@ -316,6 +316,14 @@ impl MeetingHub {
             idx
         };
 
+        let chunk_msg = OutboundMessage::TranscriptChunk {
+            speaker_id: speaker_id.to_string(),
+            speaker_name,
+            text: text.clone(),
+            timestamp_ms,
+            chunk_index,
+        };
+
         // --- Persist chunk to DB (outside of lock) ---
         let _ = sqlx::query(
             "INSERT INTO transcript_chunks (meeting_id, speaker_id, text, chunk_index, timestamp_ms)
@@ -343,6 +351,8 @@ impl MeetingHub {
                 slot.slot_index, slot.chunk_count, slot.word_count
             );
         }
+
+        Some(chunk_msg)
     }
 
     /// Broadcast a task detection to all participants.

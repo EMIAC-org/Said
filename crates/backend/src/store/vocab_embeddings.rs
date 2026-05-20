@@ -762,13 +762,12 @@ pub fn select_for_polish_hybrid(
                 .map(|m| !m.trim().is_empty())
                 .unwrap_or(false)
         })
-        // Quality gate 2 — context confirmed. The BM25 search runs over
-        // (term, example_context) so an example_context-only hit can match
-        // when the term itself isn't in the transcript at all (the user
-        // happened to use a similar surrounding word). Require either:
-        //   • the term appears as a substring of the transcript, OR
-        //   • some transcript token is phonetically close (sim ≥ 0.70) to
-        //     the term — handles STT mishearings of jargon.
+        // Quality gate 2 — context confirmed. Three paths:
+        //   a) the term appears as a whole word in the transcript, OR
+        //   b) some transcript token is phonetically close to the term
+        //      (length-aware: short tokens need higher similarity), OR
+        //   c) the term's example_context has ≥3 strong anchor tokens
+        //      present in the transcript.
         .filter(|vt| {
             let term_lower = vt.term.to_ascii_lowercase();
             let term_words: Vec<&str> = term_lower
@@ -785,17 +784,86 @@ pub fn select_for_polish_hybrid(
             if whole_word_match {
                 return true;
             }
-            if term_lower.len() < 4 {
-                return false;
-            }
-            let term_phon = crate::llm::phonetics::phonetic_key(&vt.term);
-            transcript_tokens.iter().any(|tok| {
-                if tok.len() < 3 {
-                    return false;
+            if term_lower.len() >= 4 {
+                let term_phon = crate::llm::phonetics::phonetic_key(&vt.term);
+                let phon_match = transcript_tokens.iter().any(|tok| {
+                    if tok.len() < 3 {
+                        return false;
+                    }
+                    let min_sim = if tok.len() <= 4 { 0.85 } else { 0.75 };
+                    let tok_phon = crate::llm::phonetics::phonetic_key(tok);
+                    crate::llm::phonetics::similarity(&tok_phon, &term_phon) >= min_sim
+                });
+                if phon_match {
+                    return true;
                 }
-                let tok_phon = crate::llm::phonetics::phonetic_key(tok);
-                crate::llm::phonetics::similarity(&tok_phon, &term_phon) >= 0.80
-            })
+            }
+            // Path c: context anchor matching.
+            if let Some(ctx) = vt.example_context.as_deref() {
+                if !ctx.trim().is_empty()
+                    && !matches!(vt.term_type.as_deref(), Some("other") | None)
+                {
+                    let term_tokens_set: std::collections::HashSet<&str> =
+                        term_words.iter().copied().collect();
+                    let anchors: std::collections::HashSet<String> = ctx
+                        .split(|c: char| !c.is_alphanumeric())
+                        .filter(|w| !w.is_empty())
+                        .map(|w| w.to_ascii_lowercase())
+                        .filter(|w| *w != term_lower)
+                        .filter(|w| !term_tokens_set.contains(w.as_str()))
+                        .filter(|w| w.chars().any(|c| c.is_ascii_digit()) || w.len() >= 3)
+                        .collect();
+                    if anchors.len() >= 3 {
+                        let matched_anchors = anchors
+                            .iter()
+                            .filter(|a| transcript_tokens.iter().any(|tok| *tok == a.as_str()))
+                            .count();
+                        if matched_anchors >= 3 {
+                            return true;
+                        }
+                    }
+                }
+            }
+            // Path d: structured token matching (emails, URLs).
+            // Spoken emails share almost no whole words with the written
+            // form: "vabhi.verma2678@gmail.com" vs "vab dot verma two
+            // six seven eight at the rate gmail dot com". Fragment
+            // matching: split the term on punctuation and check if the
+            // domain + enough local-part fragments appear in the
+            // transcript, plus an email signal word.
+            if term_lower.contains('@') {
+                let has_email_signal = transcript_tokens.iter().any(|tok| {
+                    matches!(
+                        *tok,
+                        "rate"
+                            | "gmail"
+                            | "yahoo"
+                            | "outlook"
+                            | "hotmail"
+                            | "email"
+                            | "mail"
+                            | "protonmail"
+                    )
+                });
+                if has_email_signal {
+                    let matched_fragments = term_words
+                        .iter()
+                        .filter(|frag| frag.len() >= 3)
+                        .filter(|frag| {
+                            transcript_tokens.iter().any(|tok| {
+                                *tok == **frag
+                                    || (tok.len() >= 3
+                                        && frag.len() >= 3
+                                        && (tok.starts_with(*frag) || frag.starts_with(tok)))
+                            })
+                        })
+                        .count();
+                    if matched_fragments >= 2 {
+                        return true;
+                    }
+                }
+            }
+            false
         })
         .collect();
 

@@ -29,8 +29,8 @@ use crate::{
         prompt::{
             VocabEntry, build_refine_last_transform_prompt,
             build_refine_last_transform_user_message, build_system_prompt_with_vocab_entries,
-            build_tray_format_user_message, build_tray_system_prompt, build_user_message,
-            resolved_vocab_terms_to_entries,
+            build_tray_format_system_prompt, build_tray_format_user_message,
+            build_tray_system_prompt, build_user_message, resolved_vocab_terms_to_entries,
         },
         script,
         stream_safety::{
@@ -148,8 +148,10 @@ pub async fn polish(
         };
         let examples_used = rag_examples.len();
 
-        // 2. Word corrections from LexiconCache (loaded before stream started)
-        let word_corrections = if tone_override.is_none() {
+        // 2. Word corrections — formatter and normal polish both get them;
+        //    other tray tones (professional, casual, etc.) don't need them.
+        let is_formatter = tone_override.as_deref() == Some("format");
+        let word_corrections = if tone_override.is_none() || is_formatter {
             word_corrections_cached
         } else {
             vec![]
@@ -158,11 +160,14 @@ pub async fn polish(
             info!("[text] {} word correction(s) loaded", word_corrections.len());
         }
 
-        // tone_override → use tray-specific English-locked prompt (no RAG, no persona)
-        // Otherwise → use full RACC prompt with user prefs + RAG examples + corrections
-        let (resolved_transcript, vocab_entries): (String, Vec<VocabEntry>) = if tone_override.is_none() {
+        // Vocab resolution — formatter and normal polish get context-aware
+        // vocab; other tray tones get raw transcript with no vocab.
+        let (resolved_transcript, vocab_entries): (String, Vec<VocabEntry>) = if tone_override.is_none() || is_formatter {
             let alias_t0 = Instant::now();
-            let alias_result = stt_replacements::apply_with_matches(&transcript, &stt_replacement_rules);
+            let alias_result = stt_replacements::ApplyResult {
+                text: transcript.clone(),
+                matches: vec![],
+            };
             let selected_terms = vocab_embeddings::select_for_prompt(
                 &pool,
                 &user_id,
@@ -190,11 +195,12 @@ pub async fn polish(
         } else {
             (transcript.clone(), vec![])
         };
-        let is_formatter = tone_override.as_deref() == Some("format");
         let relevant_corrections = crate::store::corrections::filter_relevant(
             &word_corrections, &resolved_transcript, 2, 10,
         );
-        let system_prompt = if let Some(ref tone) = tone_override {
+        let system_prompt = if is_formatter {
+            build_tray_format_system_prompt(&vocab_entries, &relevant_corrections)
+        } else if let Some(ref tone) = tone_override {
             build_tray_system_prompt(tone)
         } else {
             build_system_prompt_with_vocab_entries(
@@ -219,29 +225,36 @@ pub async fn polish(
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
             .unwrap_or_default();
 
-        // Resolve model + provider
-        let llm_provider = prefs.llm_provider.clone();
-        let llm_provider_for_task = llm_provider.clone();
+        // Resolve model + provider.
+        // Formatter (Option+1) uses the same Groq model as voice polish
+        // for consistent rate limits and latency.
         let model = said_core::resolve_model(&prefs.selected_model).to_string();
         let sys_p       = system_prompt.clone();
         let usr_m       = user_message.clone();
         let client_c    = http_client.clone();
 
-        let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
-            let tok = openai_oauth::get_token(&pool, &user_id);
-            let m = if prefs.selected_model == "mini" || prefs.selected_model == "fast" {
-                openai_codex::MODEL_MINI.to_string()
-            } else {
-                openai_codex::MODEL_SMART.to_string()
-            };
-            (m, tok.map(|t| t.access_token))
-        } else if llm_provider == "gemini_direct" {
-            (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
-        } else if llm_provider == "groq" {
-            (groq::GROQ_MODEL_DEFAULT.to_string(), None)
+        let (llm_provider, model_for_llm, openai_token_opt) = if is_formatter {
+            ("groq".to_string(), "llama-3.3-70b-versatile".to_string(), None)
         } else {
-            (model.clone(), None)
+            let provider = prefs.llm_provider.clone();
+            let (m, tok) = if provider == "openai_codex" {
+                let tok = openai_oauth::get_token(&pool, &user_id);
+                let m = if prefs.selected_model == "mini" || prefs.selected_model == "fast" {
+                    openai_codex::MODEL_MINI.to_string()
+                } else {
+                    openai_codex::MODEL_SMART.to_string()
+                };
+                (m, tok.map(|t| t.access_token))
+            } else if provider == "gemini_direct" {
+                (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
+            } else if provider == "groq" {
+                (groq::GROQ_MODEL_DEFAULT.to_string(), None)
+            } else {
+                (model.clone(), None)
+            };
+            (provider, m, tok)
         };
+        let llm_provider_for_task = llm_provider.clone();
 
         let groq_key_for_recovery = groq_key_text.clone();
 

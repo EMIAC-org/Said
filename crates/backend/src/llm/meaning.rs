@@ -49,6 +49,7 @@ pub async fn generate_initial(
     client: &Client,
     groq_key: &str,
     openai_key: &str,
+    codex_token: Option<&str>,
     term: &str,
     example: &str,
 ) -> Option<String> {
@@ -60,7 +61,15 @@ pub async fn generate_initial(
          Don't speculate beyond what the example demonstrates. If the example \
          doesn't make the meaning clear, say so plainly."
     );
-    call_with_fallback(client, groq_key, openai_key, &user_message, term).await
+    call_with_fallback(
+        client,
+        groq_key,
+        openai_key,
+        codex_token,
+        &user_message,
+        term,
+    )
+    .await
 }
 
 /// Refresh an existing meaning given the current meaning + observed examples.
@@ -72,6 +81,7 @@ pub async fn refine(
     client: &Client,
     groq_key: &str,
     openai_key: &str,
+    codex_token: Option<&str>,
     term: &str,
     current_meaning: &str,
     examples: &[String],
@@ -97,7 +107,15 @@ pub async fn refine(
          new contexts that the current description doesn't cover. Output ONLY \
          the updated 1-2 sentence description, nothing else."
     );
-    call_with_fallback(client, groq_key, openai_key, &user_message, term).await
+    call_with_fallback(
+        client,
+        groq_key,
+        openai_key,
+        codex_token,
+        &user_message,
+        term,
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -119,17 +137,37 @@ means and what contexts it appears in. You are specific, you don't speculate, \
 and you output ONLY the description — no preamble, no formatting, no quotes \
 around the answer.";
 
-/// Try Groq first; on any failure fall back to OpenAI gpt-4.1-nano. Returns
-/// None only when both providers are unreachable / fail / return empty.
-/// `term` is included for diagnostic logging so we can tell which provider
-/// served which term.
+/// Try Codex (GPT-5.4-mini) first for smarter meanings, then Groq, then
+/// OpenAI gpt-4.1-nano. Returns None only when all providers fail.
 async fn call_with_fallback(
     client: &Client,
     groq_key: &str,
     openai_key: &str,
+    codex_token: Option<&str>,
     user_message: &str,
     term: &str,
 ) -> Option<String> {
+    if let Some(token) = codex_token {
+        if !token.is_empty() {
+            match super::openai_codex::call_json(
+                client,
+                token,
+                super::openai_codex::MODEL_MINI,
+                SYSTEM_PROMPT,
+                user_message,
+            )
+            .await
+            {
+                Ok(text) if !text.is_empty() => {
+                    let capped = cap_meaning(&text);
+                    info!("[meaning] {term:?} ← codex (gpt-5.4-mini)");
+                    return Some(capped);
+                }
+                Ok(_) => warn!("[meaning] codex returned empty for {term:?}"),
+                Err(e) => warn!("[meaning] codex failed for {term:?}: {e}"),
+            }
+        }
+    }
     if !groq_key.is_empty() {
         if let Some(text) = call_chat_completions(
             client,
@@ -141,7 +179,7 @@ async fn call_with_fallback(
         )
         .await
         {
-            info!("[meaning] {term:?} ← groq");
+            info!("[meaning] {term:?} ← groq (fallback)");
             return Some(text);
         }
         warn!("[meaning] groq failed for {term:?} — trying openai fallback");
@@ -161,10 +199,19 @@ async fn call_with_fallback(
             return Some(text);
         }
         warn!("[meaning] openai fallback also failed for {term:?}");
-    } else if groq_key.is_empty() {
-        warn!("[meaning] no groq key AND no openai key — meaning will stay NULL for {term:?}");
+    } else if groq_key.is_empty() && codex_token.is_none() {
+        warn!("[meaning] no codex, groq, or openai key — meaning will stay NULL for {term:?}");
     }
     None
+}
+
+fn cap_meaning(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() > MAX_MEANING_CHARS {
+        trimmed.chars().take(MAX_MEANING_CHARS).collect::<String>() + "…"
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Standard OpenAI-compatible Chat Completions call — works for both Groq

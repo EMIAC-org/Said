@@ -48,6 +48,74 @@ struct Delta {
     content: Option<String>,
 }
 
+/// Non-streaming Groq call — for Pass 1 (substitutions/formatting).
+/// Returns the full response text or an error.
+pub async fn call_json(
+    client: &Client,
+    api_key: &str,
+    model: &str,
+    system_prompt: &str,
+    user_message: &str,
+) -> Result<String, String> {
+    let model = if model.is_empty() {
+        GROQ_MODEL_DEFAULT
+    } else {
+        model
+    };
+    let body = serde_json::json!({
+        "model": model,
+        "temperature": 0.0,
+        "max_tokens": 2048,
+        "stream": false,
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_message },
+        ]
+    });
+
+    let start = Instant::now();
+    info!("[groq-json] POST {GROQ_ENDPOINT} model={model}");
+
+    let resp = client
+        .post(GROQ_ENDPOINT)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("groq request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        warn!(
+            "[groq-json] HTTP {status}: {}",
+            &body_text[..body_text.len().min(300)]
+        );
+        return Err(format!("Groq API error {status}"));
+    }
+
+    let resp_json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("groq json parse: {e}"))?;
+
+    let ms = start.elapsed().as_millis();
+    let content = resp_json
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    info!("[groq-json] done in {ms}ms, {} chars", content.len());
+    Ok(content)
+}
+
 /// Stream a polish operation through Groq's Chat Completions API.
 ///
 /// `model` defaults to `GROQ_MODEL_DEFAULT` if empty.

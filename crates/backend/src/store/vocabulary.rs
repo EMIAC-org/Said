@@ -158,6 +158,70 @@ pub fn upsert_for_language_with_context(
     upsert_inner(pool, user_id, term, bump, source, Some(language), ctx)
 }
 
+/// Find an existing vocab term that is the same word as `new_term`, using
+/// a three-tier match: (1) exact case-insensitive, (2) phonetic similarity
+/// ≥ 0.75 for terms of similar length. Returns the existing term string
+/// if a duplicate is found, or None.
+fn find_duplicate_term(
+    conn: &rusqlite::Connection,
+    user_id: &str,
+    new_term: &str,
+) -> Option<String> {
+    // Tier 1: exact case-insensitive match (chatgpt = ChatGPT)
+    let exact: Option<String> = conn
+        .query_row(
+            "SELECT term FROM vocabulary WHERE user_id = ?1 AND LOWER(term) = LOWER(?2)",
+            params![user_id, new_term],
+            |row| row.get(0),
+        )
+        .ok();
+    if exact.is_some() {
+        return exact;
+    }
+
+    // Tier 2: phonetic similarity for short terms that differ by a few chars
+    // (chatpGPT ≈ ChatGPT). Only check terms within ±3 chars of length.
+    let new_lower = new_term.to_ascii_lowercase();
+    let new_len = new_lower.len();
+    if new_len < 3 {
+        return None;
+    }
+    let new_phon = crate::llm::phonetics::phonetic_key(new_term);
+    if new_phon.is_empty() {
+        return None;
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT term FROM vocabulary WHERE user_id = ?1")
+        .ok()?;
+    let candidates: Vec<String> = stmt
+        .query_map(params![user_id], |row| row.get(0))
+        .ok()?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut best_match: Option<(String, f64)> = None;
+    for candidate in &candidates {
+        let cand_lower = candidate.to_ascii_lowercase();
+        let cand_len = cand_lower.len();
+        // Length must be similar
+        if cand_len.abs_diff(new_len) > 3 {
+            continue;
+        }
+        // First character must match (prevents "english_term" ≈ "hinglish_term")
+        if new_lower.chars().next() != cand_lower.chars().next() {
+            continue;
+        }
+        let sim = crate::llm::phonetics::similarity(new_term, candidate);
+        if sim >= 0.80 {
+            if best_match.as_ref().map(|(_, s)| sim > *s).unwrap_or(true) {
+                best_match = Some((candidate.clone(), sim));
+            }
+        }
+    }
+    best_match.map(|(t, _)| t)
+}
+
 fn upsert_inner(
     pool: &DbPool,
     user_id: &str,
@@ -174,6 +238,33 @@ fn upsert_inner(
     let trimmed = term.trim();
     if trimmed.is_empty() {
         return false;
+    }
+    // Smart dedup: find an existing term that is the same word, checking
+    // both case-insensitive exact match AND phonetic similarity. This
+    // catches "chatgpt" / "ChatGPT" / "chatpGPT" as the same term.
+    // The user's latest correction wins as the canonical spelling.
+    let existing_term = find_duplicate_term(&conn, user_id, trimmed);
+    if let Some(ref existing) = existing_term {
+        if existing != trimmed {
+            tracing::info!(
+                "[vocab] dedup: merging {existing:?} → {trimmed:?} (user's latest spelling wins)"
+            );
+            // Rename the existing row so ON CONFLICT fires correctly below.
+            // Also update FTS index and STT replacements that reference
+            // the old spelling so the whole pipeline stays consistent.
+            let _ = conn.execute(
+                "UPDATE vocabulary SET term = ?3 WHERE user_id = ?1 AND term = ?2",
+                params![user_id, existing, trimmed],
+            );
+            let _ = conn.execute(
+                "UPDATE stt_replacements SET correct_form = ?3 WHERE user_id = ?1 AND correct_form = ?2",
+                params![user_id, existing, trimmed],
+            );
+            let _ = conn.execute(
+                "DELETE FROM vocab_fts WHERE user_id = ?1 AND term = ?2",
+                params![user_id, existing],
+            );
+        }
     }
     let now = now_ms();
     // Cap context to keep prompt size reasonable. 240 chars ≈ 60 tokens —
@@ -342,6 +433,31 @@ pub fn get_term(pool: &DbPool, user_id: &str, term: &str) -> Option<VocabTerm> {
     .ok()
 }
 
+pub fn find_by_term_ci(pool: &DbPool, user_id: &str, term: &str) -> Option<VocabTerm> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        "SELECT term, weight, use_count, last_used, source,
+                example_context, term_type, meaning
+           FROM vocabulary
+          WHERE user_id = ?1 AND LOWER(term) = LOWER(?2)
+          LIMIT 1",
+        params![user_id, term.trim()],
+        |row| {
+            Ok(VocabTerm {
+                term: row.get(0)?,
+                weight: row.get(1)?,
+                use_count: row.get(2)?,
+                last_used: row.get(3)?,
+                source: row.get(4)?,
+                example_context: row.get(5).ok(),
+                term_type: row.get(6).ok(),
+                meaning: row.get(7).ok(),
+            })
+        },
+    )
+    .ok()
+}
+
 pub fn top_terms_for_language(
     pool: &DbPool,
     user_id: &str,
@@ -435,6 +551,32 @@ pub fn update_meaning(pool: &DbPool, user_id: &str, term: &str, meaning: &str) -
             meaning.trim().len()
         );
     }
+    n > 0
+}
+
+pub fn update_term_type(pool: &DbPool, user_id: &str, term: &str, term_type: &str) -> bool {
+    let Ok(conn) = pool.get() else {
+        return false;
+    };
+    let n = conn
+        .execute(
+            "UPDATE vocabulary SET term_type = ?3 WHERE user_id = ?1 AND term = ?2",
+            params![user_id, term.trim(), term_type.trim()],
+        )
+        .unwrap_or(0);
+    n > 0
+}
+
+pub fn update_example_context(pool: &DbPool, user_id: &str, term: &str, ctx: &str) -> bool {
+    let Ok(conn) = pool.get() else {
+        return false;
+    };
+    let n = conn
+        .execute(
+            "UPDATE vocabulary SET example_context = ?3 WHERE user_id = ?1 AND term = ?2",
+            params![user_id, term.trim(), ctx.trim()],
+        )
+        .unwrap_or(0);
     n > 0
 }
 
@@ -533,6 +675,68 @@ pub fn backfill_missing_term_types(pool: &DbPool) -> usize {
             .unwrap_or(0);
     }
     repaired
+}
+
+/// Reward vocabulary terms that appear in the polished output (no-edit path).
+///
+/// When the user accepts our output without edits, every known vocab term
+/// that was actively used in `polished_text` gets a small weight bump. This
+/// is positive reinforcement: "you used this term correctly, keep doing it."
+///
+/// Matching is case-insensitive whole-word. Weight is capped at 5.0.
+/// Returns the number of terms that received a bump.
+pub fn reward_active_terms(pool: &DbPool, user_id: &str, polished_text: &str, bump: f64) -> usize {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let terms = top_terms(pool, user_id, 200);
+    if terms.is_empty() {
+        return 0;
+    }
+
+    // Tokenize polished text into lowercase words for whole-word matching.
+    let polished_lower = polished_text.to_ascii_lowercase();
+    let polished_tokens: Vec<&str> = polished_lower
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let now = now_ms();
+    let mut rewarded = 0_usize;
+    for t in &terms {
+        let term_lower = t.term.to_ascii_lowercase();
+        let term_words: Vec<&str> = term_lower.split_whitespace().collect();
+
+        let found = if term_words.len() == 1 {
+            // Single-word: whole-word token match
+            polished_tokens.iter().any(|tok| *tok == term_lower)
+        } else {
+            // Multi-word phrase: check if consecutive tokens match
+            polished_tokens
+                .windows(term_words.len())
+                .any(|window| window == term_words.as_slice())
+        };
+
+        if found {
+            let n = conn
+                .execute(
+                    "UPDATE vocabulary
+                        SET weight = MIN(5.0, weight + ?3),
+                            last_used = ?4
+                      WHERE user_id = ?1 AND term = ?2",
+                    params![user_id, t.term, bump, now],
+                )
+                .unwrap_or(0);
+            if n > 0 {
+                rewarded += 1;
+            }
+        }
+    }
+    if rewarded > 0 {
+        info!("[vocab] rewarded {rewarded} active term(s) with +{bump} weight");
+    }
+    rewarded
 }
 
 /// Total count of vocabulary entries for a user (UI badge).

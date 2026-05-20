@@ -343,7 +343,8 @@ async fn connect_meeting_ws(
     let options = Options::builder()
         .model(Model::Nova3)
         .language(Language::en)
-        .smart_format(true)
+        .smart_format(false)
+        .punctuate(true)
         .build();
 
     let transcription = client.transcription();

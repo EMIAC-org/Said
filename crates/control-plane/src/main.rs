@@ -49,6 +49,10 @@ struct Cli {
     /// JWT signing secret for session tokens
     #[arg(long, env = "JWT_SECRET", default_value = "said-enterprise-dev-secret")]
     jwt_secret: String,
+
+    /// Deepgram API key for guest browser STT relay
+    #[arg(long, env = "DEEPGRAM_API_KEY", default_value = "")]
+    deepgram_api_key: String,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -90,6 +94,7 @@ async fn main() {
         started_at: Arc::new(Instant::now()),
         lark,
         hub,
+        deepgram_api_key: cli.deepgram_api_key,
     };
 
     let app = build_router(state);

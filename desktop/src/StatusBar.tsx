@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize, primaryMonitor } from "@tauri-apps/api/window";
-import { Languages, RotateCcw, Sparkles, X } from "lucide-react";
+import { RotateCcw, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
 
 // ── State machine ─────────────────────────────────────────────────────────────
@@ -14,7 +14,8 @@ type BarState =
   | { kind: "done" }
   | { kind: "pasted" }
   | { kind: "manual_paste" }
-  | { kind: "error"; message: string; audioId?: string };
+  | { kind: "error"; message: string; audioId?: string }
+  | { kind: "learned"; term: string; message: string };
 
 type VoiceErrorPayload = {
   message: string;
@@ -24,7 +25,6 @@ type VoiceErrorPayload = {
 };
 
 type PillKind = BarState["kind"];
-type HoverPanel = "language" | "tone" | null;
 
 const BOTTOM_OFFSET = 64;
 const HUD_CANVAS_WIDTH = 300;
@@ -32,27 +32,15 @@ const HUD_CANVAS_HEIGHT = 142;
 
 const LEVEL_SHAPE = [0.28, 0.38, 0.52, 0.68, 0.82, 1.0, 0.78, 0.62, 0.78, 1.0, 0.82, 0.68, 0.52, 0.38, 0.28];
 const BAR_DECAY = [0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.87, 0.86, 0.87, 0.88, 0.87, 0.86, 0.85, 0.84, 0.82];
-const LANG_OPTIONS = [
-  { value: "hinglish", label: "Hinglish" },
-  { value: "english", label: "English" },
-  { value: "hindi", label: "Hindi" },
-];
-const TONE_OPTIONS = [
-  { value: "professional", label: "Pro" },
-  { value: "casual", label: "Casual" },
-  { value: "concise", label: "Concise" },
-  { value: "hinglish", label: "Hinglish" },
-];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function pillSize(kind: PillKind, hasTranscript = false, hovered = false, hasPanel = false): { width: number; height: number } {
-  if (hasPanel && hasTranscript) return { width: 300, height: 142 };
-  if (hasPanel) return { width: 300, height: 80 };
-  if (hasTranscript) return { width: 300, height: 102 };
-  if (kind === "error") return { width: 300, height: 56 };
-  if (kind === "idle" && hovered) return { width: 206, height: 40 };
-  return { width: 184, height: 40 };
+function pillSize(kind: PillKind, hasTranscript = false, hovered = false): { width: number; height: number } {
+  if (hasTranscript) return { width: 280, height: 96 };
+  if (kind === "learned") return { width: 220, height: 36 };
+  if (kind === "error") return { width: 220, height: 36 };
+  if (kind === "idle" && hovered) return { width: 160, height: 36 };
+  return { width: 140, height: 36 };
 }
 
 function processingLabel(phase: string): string {
@@ -74,17 +62,13 @@ export default function StatusBar() {
   const [idleHovered, setIdleHovered] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
   const [audioLevel, setAudioLevel] = useState(0);
-  const [hoverPanel, setHoverPanel] = useState<HoverPanel>(null);
-  const [outputLanguage, setOutputLanguage] = useState("hinglish");
-  const [tonePreset, setTonePreset] = useState("professional");
   const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLevelRef = useRef(0);
   const barTargets = useRef<number[]>(new Array(15).fill(0));
   const [, forceFrame] = useState(0);
   const win = getCurrentWindow();
   const hasTranscript = bar.kind === "processing" && liveTranscript.trim().length > 0;
-  const hasPanel = hoverPanel !== null && bar.kind !== "error";
-  const innerSize = pillSize(bar.kind, hasTranscript, bar.kind === "idle" && idleHovered, hasPanel);
+  const innerSize = pillSize(bar.kind, hasTranscript, bar.kind === "idle" && idleHovered);
 
   useEffect(() => {
     console.info("[status-bar] mounted", {
@@ -140,7 +124,6 @@ export default function StatusBar() {
 
   useEffect(() => {
     if (bar.kind === "idle") {
-      setHoverPanel(null);
       setIdleHovered(false);
     }
   }, [bar.kind]);
@@ -162,15 +145,6 @@ export default function StatusBar() {
   }, []);
 
   useEffect(() => {
-    invoke<{ output_language: string; tone_preset: string }>("get_preferences")
-      .then((prefs) => {
-        if (prefs.output_language) setOutputLanguage(prefs.output_language);
-        if (prefs.tone_preset) setTonePreset(prefs.tone_preset);
-      })
-      .catch((err) => console.warn("[status-bar] prefs fetch failed", err));
-  }, []);
-
-  useEffect(() => {
     const subs: Array<() => void> = [];
 
     // ── Source of truth for recording / processing / idle ──────────────────
@@ -189,6 +163,10 @@ export default function StatusBar() {
             : prev.kind === "processing" ? prev
             : { kind: "processing", phase: "stt" }
         );
+        if (doneTimer.current) clearTimeout(doneTimer.current);
+        doneTimer.current = setTimeout(() => {
+          setBar((prev) => prev.kind === "processing" ? { kind: "idle" } : prev);
+        }, 15000);
       } else if (state === "idle") {
         // Only auto-hide if we're not waiting on a user-action (error/done)
         setBar((prev) => {
@@ -252,9 +230,9 @@ export default function StatusBar() {
     }).catch((err) => console.warn("[status-bar] voice-output subscribe failed", err));
 
     // ── Error: show message + optional retry ──────────────────────────────
-    listen<VoiceErrorPayload>("voice-error", (e) => {
-      const { message, audio_id, auto_hide_ms } = e.payload;
-      console.info("[status-bar] voice-error event", { message, hasAudioId: Boolean(audio_id), autoHideMs: auto_hide_ms });
+    listen<VoiceErrorPayload & { raw_error?: string }>("voice-error", (e) => {
+      const { message, audio_id, auto_hide_ms, raw_error } = e.payload;
+      console.error("[status-bar] voice-error event", { message, raw_error, hasAudioId: Boolean(audio_id) });
       if (doneTimer.current) clearTimeout(doneTimer.current);
       win.show().catch((err) => console.warn("[status-bar] show failed for error", err));
       setBar({ kind: "error", message, audioId: audio_id });
@@ -266,13 +244,16 @@ export default function StatusBar() {
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] voice-error subscribe failed", err));
 
-    listen("prefs-changed", () => {
-      invoke<{ output_language: string; tone_preset: string }>("get_preferences")
-        .then((prefs) => {
-          if (prefs.output_language) setOutputLanguage(prefs.output_language);
-          if (prefs.tone_preset) setTonePreset(prefs.tone_preset);
-        })
-        .catch(() => {});
+    // ── Learning: show term in status bar with undo ──────────────────
+    listen<{ term: string; message: string }>("vocab-learned", (e) => {
+      console.info("[status-bar] vocab-learned", e.payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      win.show().catch(() => {});
+      setBar({ kind: "learned", term: e.payload.term, message: e.payload.message });
+      doneTimer.current = setTimeout(() => {
+        setBar({ kind: "idle" });
+        invoke("dismiss_status_bar").catch(() => {});
+      }, 3000);
     }).then((fn) => {
       subs.push(fn);
     }).catch(() => {});
@@ -285,19 +266,11 @@ export default function StatusBar() {
 
   useEffect(() => () => { if (doneTimer.current) clearTimeout(doneTimer.current); }, []);
 
-  async function patchPref(update: Record<string, string>) {
-    try {
-      const prefs = await invoke<{ output_language: string; tone_preset: string }>("patch_preferences", { update });
-      if (prefs.output_language) setOutputLanguage(prefs.output_language);
-      if (prefs.tone_preset) setTonePreset(prefs.tone_preset);
-    } catch (err) {
-      console.warn("[status-bar] patch_preferences failed", err);
-    }
-  }
+
 
   return (
     <div
-      className={`sb-shell sb-shell--${bar.kind}${hasTranscript ? " sb-shell--expanded" : ""}${hasPanel ? " sb-shell--with-panel" : ""}${bar.kind === "idle" && idleHovered ? " sb-shell--hovered" : ""}`}
+      className={`sb-shell sb-shell--${bar.kind}${hasTranscript ? " sb-shell--expanded" : ""}${bar.kind === "idle" && idleHovered ? " sb-shell--hovered" : ""}`}
       style={{ width: innerSize.width, height: innerSize.height }}
       aria-label={`Said ${bar.kind}`}
       title={`Said ${bar.kind}`}
@@ -306,7 +279,6 @@ export default function StatusBar() {
       }}
       onMouseLeave={() => {
         setIdleHovered(false);
-        setHoverPanel(null);
       }}
     >
       {hasTranscript && (
@@ -315,44 +287,7 @@ export default function StatusBar() {
         </div>
       )}
 
-      {hasPanel && (
-        <div className="sb-hover-panel">
-          {(hoverPanel === "language" ? LANG_OPTIONS : TONE_OPTIONS).map((option) => {
-            const active = hoverPanel === "language"
-              ? option.value === outputLanguage
-              : option.value === tonePreset;
-            return (
-              <button
-                key={option.value}
-                className={`sb-chip${active ? " sb-chip--active" : ""}`}
-                onClick={() => {
-                  if (hoverPanel === "language") {
-                    setOutputLanguage(option.value);
-                    void patchPref({ output_language: option.value });
-                  } else {
-                    setTonePreset(option.value);
-                    void patchPref({ tone_preset: option.value });
-                  }
-                }}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
       <div className="sb-controlbar">
-        <button
-          className={`sb-icon-btn${hoverPanel === "language" ? " sb-icon-btn--active" : ""}`}
-          title="Output language"
-          aria-label="Output language"
-          onMouseEnter={() => setHoverPanel("language")}
-          onFocus={() => setHoverPanel("language")}
-        >
-          <Languages size={13} />
-        </button>
-
         <div className="sb-center">
           {bar.kind === "processing" ? (
             <div className="sb-processing">
@@ -375,6 +310,11 @@ export default function StatusBar() {
             <div className="sb-manual">
               <span />
             </div>
+          ) : bar.kind === "learned" ? (
+            <div className="sb-learned">
+              <span className="sb-learned-dot" />
+              <span className="sb-learned-text"><strong>{bar.term}</strong> learned</span>
+            </div>
           ) : bar.kind === "error" ? (
             <div className="sb-error-copy">
               <span className="sb-error-pulse" />
@@ -395,7 +335,25 @@ export default function StatusBar() {
           )}
         </div>
 
-        {bar.kind === "error" ? (
+        {bar.kind === "learned" ? (
+          <button
+            className="sb-undo-btn"
+            title="Undo — remove this term"
+            aria-label="Undo"
+            onClick={async () => {
+              try {
+                await invoke("delete_vocabulary_term", { term: bar.term });
+              } catch (e) {
+                console.warn("[status-bar] delete_vocab_term failed", e);
+              }
+              setBar({ kind: "idle" });
+              invoke("dismiss_status_bar").catch(() => {});
+            }}
+          >
+            <RotateCcw size={10} />
+            <span>Undo</span>
+          </button>
+        ) : bar.kind === "error" ? (
           <div className="sb-error-actions">
             {bar.audioId && (
               <button
@@ -428,17 +386,7 @@ export default function StatusBar() {
               <X size={13} />
             </button>
           </div>
-        ) : (
-          <button
-            className={`sb-icon-btn${hoverPanel === "tone" ? " sb-icon-btn--active" : ""}`}
-            title="Tone mode"
-            aria-label="Tone mode"
-            onMouseEnter={() => setHoverPanel("tone")}
-            onFocus={() => setHoverPanel("tone")}
-          >
-            <Sparkles size={13} />
-          </button>
-        )}
+        ) : null}
       </div>
 
     </div>

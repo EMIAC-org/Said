@@ -99,26 +99,33 @@ cd "$DESKTOP_DIR"
 npm run tauri:build -- --target "$TARGET"
 ok "tauri build finished"
 
-# ── Post-verify: ensure deep ad-hoc signature ────────────────────────────────
-step "Re-sign deep (ad-hoc) and verify"
+# ── Post-verify: Developer ID signing ────────────────────────────────────────
+step "Sign with Developer ID"
 
 [ -d "$APP_PATH" ] || fail ".app not found at $APP_PATH"
 
-# Do not embed local .env secrets in packaged app builds. The desktop app stores
-# user-entered keys in the SQLite preferences DB, and runtime routes read prefs
-# before considering any process-level environment fallback.
+# Signing identity — set via env var or default to EMIAC's Developer ID.
+SIGN_ID="${APPLE_SIGNING_IDENTITY:-Developer ID Application: EMIAC TECHNOLOGIES LIMITED (96ZQGP7L3B)}"
+TEAM_ID="${APPLE_TEAM_ID:-96ZQGP7L3B}"
+
+# Do not embed local .env secrets in packaged app builds.
 rm -f "$APP_PATH/Contents/MacOS/.env"
 ok "no .env embedded; packaged app will use API keys from preferences DB"
 
-# Strip quarantine so future user-side `xattr -dr com.apple.quarantine` is
-# unnecessary for local testing.
+# Strip quarantine for local testing.
 xattr -cr "$APP_PATH" 2>/dev/null || true
 
-# Re-sign deep — Tauri's `signingIdentity: "-"` does sign the outer bundle,
-# but historically does not reliably deep-sign embedded sidecar binaries
-# (tauri-apps/tauri#11992). Doing it ourselves guarantees the sidecar carries
-# a matching ad-hoc signature so TCC sees a single coherent bundle.
-codesign --force --deep --sign - "$APP_PATH" 2>&1 | sed 's/^/  /'
+# Sign the embedded sidecar first, then the outer bundle.
+EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/said-backend"
+[ -x "$EMBEDDED_BACKEND" ] || fail "embedded sidecar not found at $EMBEDDED_BACKEND"
+
+ENTITLEMENTS="$TAURI_DIR/Said.entitlements"
+
+codesign --force --options runtime --sign "$SIGN_ID" --entitlements "$ENTITLEMENTS" "$EMBEDDED_BACKEND" 2>&1 | sed 's/^/  /'
+ok "sidecar signed"
+
+codesign --force --deep --options runtime --sign "$SIGN_ID" --entitlements "$ENTITLEMENTS" "$APP_PATH" 2>&1 | sed 's/^/  /'
+ok "app bundle signed"
 
 # Verify
 codesign --verify --deep --strict --verbose=2 "$APP_PATH" 2>&1 | sed 's/^/  /'
@@ -126,15 +133,10 @@ codesign --verify --deep --strict --verbose=2 "$APP_PATH" 2>&1 | sed 's/^/  /'
 ACTUAL_ID=$(codesign -dv "$APP_PATH" 2>&1 | awk -F= '/^Identifier=/ {print $2}')
 [ "$ACTUAL_ID" = "$BUNDLE_ID" ] \
   || fail "bundle id mismatch — expected $BUNDLE_ID got $ACTUAL_ID"
-ok "outer bundle: Identifier=$ACTUAL_ID, signature=adhoc"
+ok "outer bundle: Identifier=$ACTUAL_ID, signed with Developer ID"
 
-# Tauri strips the target triple when injecting externalBin into the bundle —
-# the file inside Contents/MacOS is `said-backend`, not the triple-suffixed
-# source name.
-EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/said-backend"
-[ -x "$EMBEDDED_BACKEND" ] || fail "embedded sidecar not found at $EMBEDDED_BACKEND"
 codesign --verify --strict "$EMBEDDED_BACKEND"
-ok "embedded sidecar signed: $(codesign -dv "$EMBEDDED_BACKEND" 2>&1 | awk -F= '/^Identifier=/ {print $2}')"
+ok "embedded sidecar verified: $(codesign -dv "$EMBEDDED_BACKEND" 2>&1 | awk -F= '/^Identifier=/ {print $2}')"
 
 # ── Build the DMG ourselves with plain hdiutil ───────────────────────────────
 #
@@ -227,6 +229,33 @@ DMG_VOL=$(echo "$ATTACH_OUT" | awk '/\/Volumes\// {for (i=3;i<=NF;i++) printf "%
 codesign --verify --deep --strict --verbose=2 "$DMG_VOL/Said.app" 2>&1 | sed 's/^/  /'
 hdiutil detach "$DMG_DEV" -force >/dev/null
 ok "DMG verified — Said.app inside is correctly signed and mounts cleanly"
+
+# ── Notarize the DMG ─────────────────────────────────────────────────────────
+# Requires APPLE_ID and APPLE_APP_SPECIFIC_PASSWORD env vars.
+# Skip notarization if credentials are not set (local dev builds).
+APPLE_ID_EMAIL="${APPLE_ID:-}"
+APPLE_ASP="${APPLE_APP_SPECIFIC_PASSWORD:-}"
+
+if [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ]; then
+  step "Notarize DMG with Apple"
+  xcrun notarytool submit "$DMG_OUT" \
+    --apple-id "$APPLE_ID_EMAIL" \
+    --team-id "$TEAM_ID" \
+    --password "$APPLE_ASP" \
+    --wait 2>&1 | sed 's/^/  /'
+  ok "notarization submitted"
+
+  step "Staple notarization ticket"
+  xcrun stapler staple "$DMG_OUT" 2>&1 | sed 's/^/  /'
+  ok "stapled"
+
+  step "Verify notarization"
+  spctl --assess --type open --context context:primary-signature -v "$DMG_OUT" 2>&1 | sed 's/^/  /'
+  ok "DMG is signed + notarized — ready for distribution"
+else
+  warn "APPLE_ID and APPLE_APP_SPECIFIC_PASSWORD not set — skipping notarization"
+  warn "DMG is signed but NOT notarized (users will see 'identified developer' warning)"
+fi
 
 # ── Output ───────────────────────────────────────────────────────────────────
 step "Done"

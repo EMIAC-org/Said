@@ -61,7 +61,7 @@
     "macOS": {
       "minimumSystemVersion": "13.0",
       "infoPlist": "Info.plist",
-      "signingIdentity": "-"
+      "signingIdentity": "Developer ID Application: EMIAC TECHNOLOGIES LIMITED (96ZQGP7L3B)"
     },
     "windows": {
       "digestAlgorithm": "sha256",

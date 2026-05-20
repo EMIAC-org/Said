@@ -44,7 +44,6 @@ pub fn resolve_for_prompt(
         }
     }
 
-    let mut resolved_text = transcript.to_string();
     let mut context_match_count = 0;
 
     for term in selected_terms {
@@ -52,8 +51,7 @@ pub fn resolve_for_prompt(
         if resolved_keys.contains(&key) {
             continue;
         }
-        if let Some(next_text) = try_context_resolve(&resolved_text, term) {
-            resolved_text = next_text;
+        if try_context_resolve(transcript, term).is_some() {
             resolved_keys.insert(key);
             resolved_terms.push(term.clone());
             context_match_count += 1;
@@ -67,7 +65,7 @@ pub fn resolve_for_prompt(
         .collect();
 
     ResolutionResult {
-        transcript: resolved_text,
+        transcript: transcript.to_string(),
         resolved_terms,
         candidate_terms,
         alias_match_count: alias_result.matches.len(),
@@ -373,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn context_resolution_recovers_macobs_before_llm() {
+    fn context_resolution_selects_macobs_without_rewriting() {
         let term = vocab(
             "MACOBS",
             Some("MACOBS ka IPO ka 12 hazaar batana"),
@@ -391,7 +389,10 @@ mod tests {
             std::slice::from_ref(&term),
             &apply,
         );
-        assert_eq!(out.transcript, "MACOBS ka IPO ka 12 hazaar batana");
+        assert_eq!(
+            out.transcript, "Main corps ka IPO ka 12 hazaar batana",
+            "transcript must pass through unmodified — LLM decides"
+        );
         assert_eq!(out.context_match_count, 1);
         assert_eq!(out.resolved_terms[0].term, "MACOBS");
     }

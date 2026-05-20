@@ -17,7 +17,7 @@
 //!   polish_window vs kept_window:
 //!     ┌─────────────────────────────────────────────────────────────────┐
 //!     │ phonetic match (≥ 0.7) AND short Lev (≤ 2)  → STT_ERROR (clear) │
-//!     │ phonetic mismatch (< 0.4) AND big Lev (≥ 4) AND no jargon      │
+//!     │ phonetic mismatch (< 0.4) AND big Lev (≥ 4) AND jargon < 0.15  │
 //!     │                                              → USER_REPHRASE   │
 //!     │ kept_window is multi-word, polish is single word               │
 //!     │                                              → AMBIGUOUS (LLM) │
@@ -138,8 +138,13 @@ fn triage_one(hunk: &Hunk) -> TriageDecision {
     // We require ALL three to be confident:
     //   • phon_sim < 0.4   (phonetically distinct)
     //   • lev      ≥ 4     (visually distinct)
-    //   • jargon   < 0.3   (the kept token isn't a name/code/brand)
-    if phon_sim < 0.4 && lev >= 4 && jargon < 0.3 {
+    //   • jargon   < 0.15  (the kept token isn't a name/code/brand)
+    //
+    // The jargon threshold was 0.3, but that let proper nouns like "Emiac"
+    // (jargon=0.2 from initial-cap) slip through as rephrases, silently
+    // killing the user's first correction.  Tightened to 0.15 so any
+    // jargon signal at all sends the hunk to the LLM for a real decision.
+    if phon_sim < 0.4 && lev >= 4 && jargon < 0.15 {
         return TriageDecision::Resolved(synthesize(
             hunk,
             EditClass::UserRephrase,

@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Said — LLM Runtime Context Visualizer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #e0e0e8; font-family: 'Inter', -apple-system, sans-serif; padding: 40px; max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 24px; margin-bottom: 8px; color: #fff; }
+  .subtitle { color: #888; font-size: 14px; margin-bottom: 32px; }
+  .tabs { display: flex; gap: 0; margin-bottom: 0; }
+  .tab { padding: 12px 24px; background: #12121a; border: 1px solid #1e1e2e; border-bottom: none; cursor: pointer; font-size: 14px; color: #888; border-radius: 8px 8px 0 0; }
+  .tab.active { background: #1a1a2e; color: #fff; border-color: #4a6cf7; }
+  .panel { display: none; background: #1a1a2e; border: 1px solid #1e1e2e; border-radius: 0 8px 8px 8px; padding: 24px; }
+  .panel.active { display: block; }
+  .section { margin-bottom: 24px; }
+  .section-title { font-size: 15px; font-weight: 600; color: #4a6cf7; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .section-title .badge { background: #2a2a4a; color: #8a8af0; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+  .prompt-block { background: #0d0d16; border-radius: 8px; padding: 16px; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.8; white-space: pre-wrap; word-wrap: break-word; color: #ccc; max-height: 500px; overflow-y: auto; }
+  .prompt-block .highlight { color: #4af77a; font-weight: 600; }
+  .prompt-block .warn { color: #f0a050; }
+  .prompt-block .dim { color: #555; }
+  .prompt-block .key { color: #90c0f0; }
+  .table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .table th { text-align: left; padding: 8px 12px; background: #12121a; color: #888; font-weight: 500; border-bottom: 1px solid #2a2a3e; }
+  .table td { padding: 8px 12px; border-bottom: 1px solid #1a1a2e; color: #ccc; }
+  .table tr:hover td { background: #22223a; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .tag.green { background: #1a3a1a; color: #4af77a; }
+  .tag.red { background: #3a1a1a; color: #f74a4a; }
+  .tag.blue { background: #1a2a3a; color: #90c0f0; }
+  .tag.yellow { background: #3a2a1a; color: #f0c090; }
+  .issue { background: #1a0a0a; border: 1px solid #3a1a1a; border-radius: 8px; padding: 14px; margin-top: 12px; font-size: 13px; color: #f08080; line-height: 1.6; }
+  .issue strong { color: #ff6060; }
+  .good { background: #0a1a0a; border: 1px solid #1a3a1a; border-radius: 8px; padding: 14px; margin-top: 12px; font-size: 13px; color: #80f080; line-height: 1.6; }
+  .flow { display: flex; flex-direction: column; gap: 0; }
+  .flow-step { background: #12121a; border: 1px solid #1e1e2e; border-radius: 8px; padding: 16px; }
+  .flow-step.active { border-color: #4a6cf7; }
+  .flow-arrow { display: flex; align-items: center; justify-content: center; height: 32px; color: #444; font-size: 18px; }
+  .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .comparison > div { background: #0d0d16; border-radius: 8px; padding: 14px; }
+  .comparison .label { font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Said — LLM Runtime Context</h1>
+<p class="subtitle">Real data from your DB as of May 2026. Shows exactly what each LLM sees.</p>
+
+<div class="tabs">
+  <div class="tab active" onclick="showTab('polish')">Voice Polish (Main)</div>
+  <div class="tab" onclick="showTab('formatter')">Option+1 Formatter</div>
+  <div class="tab" onclick="showTab('data')">Raw DB Data</div>
+  <div class="tab" onclick="showTab('diagnosis')">Diagnosis</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!--  TAB 1: Voice Polish System Prompt                            -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="panel active" id="panel-polish">
+  <div class="section">
+    <div class="section-title">Pipeline Flow</div>
+    <div class="flow">
+      <div class="flow-step">
+        <strong>1. Deepgram STT</strong> &rarr; raw transcript (Devanagari + English mix)<br>
+        <code style="color:#f0a050">&#x092E;&#x0948;&#x0902; &#x0906;&#x0916;&#x093F;&#x0930; &#x0907;&#x0924;&#x0928;&#x093E; &#x0915;&#x093E;&#x092E; &#x0939;&#x094B; &#x0915;&#x0948;&#x0938;&#x0947; &#x0930;&#x0939;&#x093E;?</code>
+      </div>
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-step" style="border-color:#3a1a1a">
+        <strong>2. STT Replacements</strong> <span class="tag red">REMOVED</span><br>
+        Was: brainless find-replace ("Main" &rarr; "Emiac"). Now skipped. Raw transcript goes straight to LLM.
+      </div>
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-step active">
+        <strong>3. Vocab Selection</strong> &rarr; picks relevant terms for the prompt<br>
+        BM25 + phonetic matching (threshold: <strong>0.60</strong>) + context anchor matching<br>
+        <span class="tag blue">7 terms in DB</span>
+      </div>
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-step active">
+        <strong>4. LLM Polish</strong> <span class="tag green">Scout 17B on Groq</span><br>
+        Gets: system prompt + vocab entries + corrections + user message with transcript
+      </div>
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-step" style="border-color:#3a1a1a">
+        <strong>5. Step-2 Formatter</strong> <span class="tag red">REMOVED</span><br>
+        Was: separate LLM call for numbers/emails. Now the main LLM handles formatting directly.
+      </div>
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-step">
+        <strong>6. Output</strong> &rarr; word-by-word typing into focused app
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">System Prompt (what Scout sees) <span class="badge">~2500 tokens</span></div>
+    <div class="prompt-block"><span class="dim">// The actual system prompt rendered with your DB data:</span>
+
+<span class="key">You are a TRANSCRIPTION CLEANER</span> — not a conversational AI, not an assistant.
+Your ONLY job is to output the cleaned transcript text.
+
+<span class="key">LANGUAGE RULES:</span>
+Hinglish mode — preserve the speaker's Hindi-English mix.
+Romanize any Devanagari to Roman script.
+
+<span class="key">FIDELITY PRIORITY:</span>
+- The transcript is the source of truth.
+- Preserve the speaker's intended words before improving style.
+- "Concise" means remove filler noise only.
+
+<span class="key">CLEANING RULES:</span>
+- Fix punctuation, casing, grammar, sentence boundaries.
+- Remove only true fillers: um, uh, aaa, like, basically, stutters.
+- Preserve politeness: please, kindly, thanks, zara, etc.
+- Adjacent retry cleanup: keep only the clearer version.
+
+<span class="key">FORMATTING:</span>
+- "at the rate" &rarr; @, "dot" &rarr; ., "slash" &rarr; /, "underscore" &rarr; _
+- Only fold when unambiguous (email, URL, file path).
+
+<span class="key">NUMBER &amp; DATE FORMATTING:</span>
+- "thirty two billion" &rarr; "32 billion", "paanch sau" &rarr; "500"
+- "two three zero five" &rarr; "2305"
+- Hindi: ek=1, do=2, teen=3, paanch=5, chheh/chah/cheh=6, saat=7...
+- "saat baje" &rarr; "7 baje", "chah baje" &rarr; "6 baje"
+- "anish two three at the rate gmail dot com" &rarr; "anish23@gmail.com"
+- "paanch sau rupaye" &rarr; "&#x20B9;500"
+
+<span class="key">VOCABULARY (from your DB):</span>
+<span class="highlight">  Emiac [proper noun]
+    means: possibly a stock ticker or company name
+    STT often hears: "amaix" (1x), "maine" (1x), "meah" (1x)
+    example: "Emiac technology mein kaam karte hain"</span>
+  ChatGPT
+    means: possibly a conversational AI model or chatbot
+    example: "CatGPT ka kitna kaam ho gaya?"
+<span class="highlight">  Macobs [proper noun]
+    means: possibly a stock ticker or company name
+    STT often hears: "mccorb" (1x)
+    example: "Macobs se kaafi badi company hai."</span>
+  n8n [code identifier]
+    means: n8n — possibly a workflow or automation tool
+    STT often hears: "na 10" (1x)
+    example: "n a 10 par kitna kaam ho gaya bhai aapka?"
+  claude
+    means: Claude — possibly a person's name or a brand name
+    STT often hears: "claud" (1x)
+    example: "Claud ka kitan kam ho gaya?"
+  D2C [code identifier]
+    means: D2C stands for Direct-to-Consumer...
+    STT often hears: "d to c" (1x)
+<span class="highlight">  emiactech.com
+    means: emiactech.com refers to a website or domain name
+    STT often hears: "meactech.com" (1x)</span>
+
+<span class="key">CORRECTIONS:</span>
+  r sixty four &rarr; r64
+  slash dot slash ./dev.sh &rarr; /dev.sh
+
+Use personal vocabulary and preferences only as hints.
+The transcript remains the source of truth.
+
+<span class="key">OUTPUT FORMAT:</span>
+Write only the final cleaned text. One time. No preamble, no explanation.</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">User Message (transcript input)</div>
+    <div class="prompt-block"><span class="key">Clean this transcript (Hinglish mode — preserve Hindi-English mix, Romanize Devanagari):</span>
+
+&#x092E;&#x0948;&#x0902; &#x0906;&#x0916;&#x093F;&#x0930; &#x0907;&#x0924;&#x0928;&#x093E; &#x0915;&#x093E;&#x092E; &#x0939;&#x094B; &#x0915;&#x0948;&#x0938;&#x0947; &#x0930;&#x0939;&#x093E;? &#x0906;&#x091C; &#x0926;&#x094B;&#x092A;&#x0939;&#x0930; &#x0932;&#x0917;&#x092D;&#x0917; &#x092C;&#x093E;&#x0930;&#x0939; &#x092C;&#x091C;&#x0947; MEAC &#x0926;&#x0947;&#x0916;&#x093E; &#x0925;&#x093E; &#x0907;&#x0938;&#x0915;&#x094B;</div>
+  </div>
+
+  <div class="issue">
+    <strong>WHY "MEAC" &rarr; "Emiac" FAILS:</strong><br><br>
+    The vocab entry for Emiac IS in the prompt (see above). It even lists STT aliases: "amaix", "maine", "meah".<br><br>
+    But "MEAC" is NOT in the alias list. The LLM needs to:<br>
+    1. See "MEAC" in the transcript<br>
+    2. See "Emiac [proper noun]" in the vocab block with alias "meah"<br>
+    3. Infer: "MEAC" sounds like "meah" sounds like "Emiac" &rarr; replace<br><br>
+    <strong>The connection is there but weak.</strong> The LLM has to do a 2-hop phonetic inference.<br>
+    The prompt says "STT often hears" but doesn't say <em>"if you see anything that sounds like these, use Emiac"</em>.<br><br>
+    <strong>Fix:</strong> The STT alias block should be more directive: <em>"When you see words like amaix, maine, meah, MEAC, meack, or similar in the transcript, replace with Emiac."</em>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!--  TAB 2: Option+1 Formatter                                    -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="panel" id="panel-formatter">
+  <div class="section">
+    <div class="section-title">Option+1 Flow</div>
+    <div class="flow">
+      <div class="flow-step">
+        <strong>1. User selects text</strong> in any app, presses Option+1
+      </div>
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-step">
+        <strong>2. Desktop reads selection</strong> via Cmd+C
+      </div>
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-step active">
+        <strong>3. POST /v1/text/polish</strong> with <code>tone_override="format"</code><br>
+        <span class="tag yellow">Currently: NO vocab, NO corrections</span><br>
+        <span class="tag green">After fix: vocab + corrections included</span>
+      </div>
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-step">
+        <strong>4. LLM formats</strong> &rarr; numbers, emails, URLs, dates, currency
+      </div>
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-step">
+        <strong>5. Paste result</strong> replaces selection via Cmd+V
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Formatter System Prompt <span class="badge">CURRENT (no context)</span></div>
+    <div class="prompt-block"><span class="key">You are a selected-text formatter for dictation output.</span>
+Your ONLY job is to repair formatting artifacts.
+
+CORE POLICY:
+- Preserve meaning, language mix, sentence order, and tone.
+- Do not rewrite for style.
+- Structured-token correctness beats preserving spaces.
+
+WHAT TO FIX:
+- Spoken numbers to digits: "two hundred" &rarr; "200"
+- Hindi numbers: paanch=5, chah=6, saat=7...
+- Emails: fold spoken email into one token
+- URLs, file paths, env vars, code identifiers
+- Currency: "paanch sau rupaye" &rarr; "&#x20B9;500"
+
+<span class="warn">VOCABULARY: (empty - no vocab loaded)</span>
+<span class="warn">CORRECTIONS: (empty - no corrections loaded)</span>
+
+17 examples follow...</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Formatter System Prompt <span class="badge" style="background:#1a3a1a;color:#4af77a">AFTER FIX (with context)</span></div>
+    <div class="prompt-block"><span class="key">You are a selected-text formatter for dictation output.</span>
+Your ONLY job is to repair formatting artifacts and fix known vocabulary errors.
+
+... same core rules ...
+
+<span class="highlight">VOCABULARY (fix misspellings/STT errors to the correct form):</span>
+<span class="highlight">  Emiac [proper noun]
+    means: possibly a stock ticker or company name
+    STT often hears: "amaix" (1x), "maine" (1x), "meah" (1x)
+    example: "Emiac technology mein kaam karte hain"
+  Macobs [proper noun]
+    means: possibly a stock ticker or company name
+    STT often hears: "mccorb" (1x)
+  emiactech.com
+    means: emiactech.com refers to a website or domain name
+    STT often hears: "meactech.com" (1x)
+  n8n [code identifier]
+    STT often hears: "na 10" (1x)
+  ...</span>
+
+<span class="highlight">KNOWN CORRECTIONS:</span>
+<span class="highlight">  r sixty four &rarr; r64
+  slash dot slash ./dev.sh &rarr; /dev.sh</span>
+
+12 examples follow...</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!--  TAB 3: Raw DB Data                                            -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="panel" id="panel-data">
+  <div class="section">
+    <div class="section-title">Vocabulary Terms <span class="badge">7 terms</span></div>
+    <table class="table">
+      <tr><th>Term</th><th>Type</th><th>Meaning</th><th>Weight</th><th>Uses</th></tr>
+      <tr><td><strong>Emiac</strong></td><td><span class="tag blue">proper_noun</span></td><td>stock ticker or company name</td><td>4.5</td><td>14</td></tr>
+      <tr><td>ChatGPT</td><td><span class="tag yellow">other</span></td><td>conversational AI model</td><td>1.5</td><td>3</td></tr>
+      <tr><td><strong>Macobs</strong></td><td><span class="tag blue">proper_noun</span></td><td>stock ticker or company name</td><td>1.0</td><td>8</td></tr>
+      <tr><td>n8n</td><td><span class="tag green">code_identifier</span></td><td>workflow automation tool</td><td>1.0</td><td>5</td></tr>
+      <tr><td>claude</td><td><span class="tag yellow">other</span></td><td>person's name or brand</td><td>1.0</td><td>11</td></tr>
+      <tr><td>D2C</td><td><span class="tag green">code_identifier</span></td><td>Direct-to-Consumer</td><td>1.0</td><td>4</td></tr>
+      <tr><td>emiactech.com</td><td><span class="tag yellow">other</span></td><td>website or domain name</td><td>1.0</td><td>1</td></tr>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-title">STT Replacement Rules <span class="badge">9 rules</span> <span class="tag red">NOT APPLIED (removed)</span></div>
+    <table class="table">
+      <tr><th>Deepgram hears</th><th>Correct form</th><th>Phonetic key</th><th>Uses</th></tr>
+      <tr><td>amaix</td><td>Emiac</td><td>AMK</td><td>1</td></tr>
+      <tr><td>mccorb</td><td>Macobs</td><td>MKRB</td><td>1</td></tr>
+      <tr><td>na 10</td><td>n8n</td><td>N</td><td>1</td></tr>
+      <tr><td>claud</td><td>claude</td><td>KLD</td><td>1</td></tr>
+      <tr><td>dev dot s h</td><td>./dev.sh</td><td>DFDTSH</td><td>1</td></tr>
+      <tr><td>d to c</td><td>D2C</td><td>DTK</td><td>1</td></tr>
+      <tr><td style="color:#f74a4a"><strong>maine</strong></td><td style="color:#f74a4a"><strong>Emiac</strong></td><td>MN</td><td>1</td></tr>
+      <tr><td>meah</td><td>Emiac</td><td>MH</td><td>1</td></tr>
+      <tr><td>meactech.com</td><td>emiactech.com</td><td>MKTXKM</td><td>1</td></tr>
+    </table>
+    <div class="issue">
+      <strong>maine &rarr; Emiac</strong> is the rule that caused "Main" (Hindi "I/me") to become "Emiac".<br>
+      This is why STT replacements were removed from the pipeline.
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Word Corrections <span class="badge">2 rules</span></div>
+    <table class="table">
+      <tr><th>Wrong</th><th>Correct</th></tr>
+      <tr><td>r sixty four</td><td>r64</td></tr>
+      <tr><td>slash dot slash ./dev.sh</td><td>/dev.sh</td></tr>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Preferences</div>
+    <table class="table">
+      <tr><th>Setting</th><th>Value</th></tr>
+      <tr><td>Output Language</td><td>hinglish</td></tr>
+      <tr><td>LLM Provider</td><td>groq</td></tr>
+      <tr><td>Learning</td><td><span class="tag green">enabled</span></td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!--  TAB 4: Diagnosis                                              -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="panel" id="panel-diagnosis">
+  <div class="section">
+    <div class="section-title">Why "MEAC" doesn't become "Emiac"</div>
+    <div class="comparison">
+      <div>
+        <div class="label">What the LLM sees in vocab block</div>
+        <div style="font-family:monospace;font-size:12px;line-height:1.8;color:#ccc">
+          Emiac [proper noun]<br>
+          &nbsp;&nbsp;means: stock ticker or company name<br>
+          &nbsp;&nbsp;<span style="color:#f0a050">STT often hears: "amaix" (1x), "maine" (1x), "meah" (1x)</span><br>
+          &nbsp;&nbsp;example: "Emiac technology mein kaam karte hain"
+        </div>
+      </div>
+      <div>
+        <div class="label">What's in the transcript</div>
+        <div style="font-family:monospace;font-size:12px;line-height:1.8;color:#ccc">
+          <span style="color:#f74a4a">MEAC</span> mein kitna bhi kaam karoon...<br><br>
+          "MEAC" is NOT in the alias list.<br>
+          The LLM must infer:<br>
+          MEAC &asymp; meah &asymp; Emiac<br>
+          <span style="color:#888">This 2-hop inference is too weak.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="issue" style="margin-top:16px">
+      <strong>ROOT CAUSE:</strong> The "STT often hears" line is <em>informational</em>, not <em>directive</em>.<br><br>
+      The prompt says: <code>STT often hears: "amaix", "maine", "meah"</code><br>
+      But it should say: <code>When you see MEAC, meah, amaix, maine, or anything that sounds like Emiac in the transcript, replace it with Emiac.</code><br><br>
+      <strong>The fix:</strong> Change the vocab entry rendering from passive hints to active correction directives.
+      The STT aliases should be framed as: <em>"If you encounter these words, they are STT errors for this term."</em>
+    </div>
+
+    <div class="good" style="margin-top:16px">
+      <strong>WHAT ALREADY WORKS:</strong><br>
+      - Emiac is in the prompt with weight 4.5 (highest of all terms)<br>
+      - 3 STT aliases are listed: amaix, maine, meah<br>
+      - The meaning says "company name" — grammatically, it can't replace "Main" (pronoun)<br>
+      - Phonetic threshold lowered to 0.60 — "MEAC" (key: MK) vs "Emiac" (key: EMK) = 0.67 &rarr; now passes<br><br>
+      <strong>The data is there. The prompt phrasing needs to be more actionable.</strong>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Proposed Fix: Directive STT Alias Block</div>
+    <div class="prompt-block"><span class="dim">// Current rendering:</span>
+  Emiac [proper noun]
+    means: stock ticker or company name
+    STT often hears: "amaix" (1x), "maine" (1x), "meah" (1x)
+    example: "Emiac technology mein kaam karte hain"
+
+<span class="dim">// Proposed rendering:</span>
+<span class="highlight">  Emiac [proper noun]
+    means: stock ticker or company name
+    STT ERRORS FOR THIS TERM (replace with Emiac when context fits):
+      "amaix", "maine", "meah", "MEAC", "meack"
+    example: "Emiac technology mein kaam karte hain"</span>
+
+<span class="dim">// The key difference: "STT ERRORS FOR THIS TERM (replace with X)"
+// is a directive, not just information. The LLM knows what to DO.</span></div>
+  </div>
+</div>
+
+<script>
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('panel-' + name).classList.add('active');
+}
+</script>
+</body>
+</html>

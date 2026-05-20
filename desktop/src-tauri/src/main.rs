@@ -238,59 +238,75 @@ fn notify_macos(_app: &tauri::AppHandle, _title: &str, _body: &str) {}
 /// to plain English and falls back to a generic apology for everything
 /// else.  Keep wording calm and blame-free; no "Error:" prefix, no codes,
 /// no emoji.
+fn emit_voice_error_quiet(app: &tauri::AppHandle, raw: &str) {
+    tracing::error!("[pipeline] error: {raw}");
+    let human = humanize_error(raw);
+    let _ = app.emit(
+        "voice-error",
+        serde_json::json!({
+            "message": human,
+            "raw_error": raw,
+            "auto_hide_ms": 4000,
+        }),
+    );
+}
+
 fn humanize_error(raw: &str) -> String {
     let lower = raw.to_lowercase();
 
-    // STT-side cases
     if lower.contains("empty transcript") || lower.contains("nothing spoken") {
-        return "We couldn't hear anything in that recording. Try again.".to_string();
+        return "Couldn't hear anything".into();
+    }
+    if lower.contains("recording interrupted") {
+        return "Recording interrupted".into();
     }
     if lower.contains("deepgram")
         && (lower.contains("401") || lower.contains("403") || lower.contains("unauthorized"))
     {
-        return "Speech recognition is offline because the API key isn't accepted. Check your Deepgram key in Settings.".to_string();
+        return "Deepgram key invalid".into();
     }
     if lower.contains("deepgram") && (lower.contains("429") || lower.contains("rate")) {
-        return "Speech recognition is rate-limited right now. Give it a few seconds and try again.".to_string();
+        return "STT rate limited".into();
     }
     if lower.contains("deepgram") || lower.contains("stt") {
-        return "Speech recognition couldn't process that recording. Try again in a moment."
-            .to_string();
+        return "STT failed — try again".into();
     }
-
-    // LLM-side cases
     if lower.contains("openai")
         && (lower.contains("not connected") || lower.contains("401") || lower.contains("403"))
     {
-        return "OpenAI isn't connected. Open Settings to sign in again.".to_string();
+        return "OpenAI not connected".into();
     }
     if lower.contains("groq") && (lower.contains("401") || lower.contains("403")) {
-        return "Groq isn't accepting the API key. Check it in Settings.".to_string();
+        return "Groq key invalid".into();
+    }
+    if lower.contains("groq") && lower.contains("not set") {
+        return "Groq key missing".into();
     }
     if lower.contains("gemini") && (lower.contains("401") || lower.contains("403")) {
-        return "Gemini isn't accepting the API key. Check it in Settings.".to_string();
+        return "Gemini key invalid".into();
     }
     if lower.contains("rate") || lower.contains("429") {
-        return "The polish service is rate-limited right now. Try again in a moment.".to_string();
+        return "Rate limited — wait a moment".into();
     }
     if lower.contains("preferences not found") {
-        return "Settings aren't loaded yet. Wait a moment and try again.".to_string();
+        return "Loading settings…".into();
     }
     if lower.contains("missing_api_keys") || lower.contains("api keys required") {
-        return "API keys required — open Settings to add them.".to_string();
+        return "API keys needed".into();
     }
-
-    // Network / transport
     if lower.contains("timeout") || lower.contains("timed out") {
-        return "The connection took too long. Check your internet and try again.".to_string();
+        return "Connection timed out".into();
     }
     if lower.contains("dns") || lower.contains("unreachable") || lower.contains("failed to connect")
     {
-        return "Couldn't reach the network. Check your internet and try again.".to_string();
+        return "Network unreachable".into();
+    }
+    if lower.contains("backend") && (lower.contains("not started") || lower.contains("lock")) {
+        return "Backend starting…".into();
     }
 
-    // Generic fallback — never expose raw error text.
-    "Something went wrong with that recording. Please try again.".to_string()
+    let short: String = raw.chars().take(30).collect();
+    format!("Failed: {short}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,6 +357,12 @@ struct EditWatcherState(Mutex<Option<CancellationToken>>);
 /// watcher reads that app directly instead of chasing whatever system focus is
 /// later. This matches OpenWhispr's target-PID monitoring model.
 struct EditTargetState(Mutex<Option<i32>>);
+
+/// Screen context captured at recording start — the text already in the
+/// focused field.  Sent to the backend so the LLM can use surrounding text
+/// as a hint for smarter STT corrections (e.g. if the field already mentions
+/// "MACOBS", the LLM knows "main corps" is likely "MACOBS").
+struct ScreenContextState(Mutex<Option<String>>);
 
 /// P5: Holds the oneshot receiver that delivers the pre-transcript from the
 /// Deepgram WebSocket streaming task.  Replaced on every new recording.
@@ -801,7 +823,7 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
         }
     };
 
-    tracing::info!("[status-bar] sync state={state}");
+    tracing::debug!("[status-bar] sync state={state}");
     if state == "idle" {
         tracing::debug!("[status-bar] idle state — scheduling native hide");
         let my_gen = handle
@@ -836,7 +858,7 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
             }
             if let Some(win) = app.get_webview_window("status-bar") {
                 match win.hide() {
-                    Ok(_) => tracing::info!("[status-bar] hidden after idle"),
+                    Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
                     Err(e) => tracing::warn!("[status-bar] hide after idle failed: {e}"),
                 }
             }
@@ -863,7 +885,7 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
         Err(e) => tracing::warn!("[status-bar] set_visible_on_all_workspaces failed: {e}"),
     }
     match win.show() {
-        Ok(_) => tracing::info!("[status-bar] show ok for state={state}"),
+        Ok(_) => tracing::debug!("[status-bar] show ok for state={state}"),
         Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
     }
     #[cfg(target_os = "macos")]
@@ -1006,6 +1028,7 @@ fn tray_toggle_recording(app: &tauri::AppHandle) {
 ///
 /// Flow: read selection → POST /v1/text/polish (SSE) with tone_override → paste result.
 fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
+    cancel_edit_watcher(app, "tray polish (Option+1) triggered");
     let backend = app.state::<BackendState>();
     let ep_opt = backend.0.lock().ok().and_then(|g| g.clone());
     let ep = match ep_opt {
@@ -1515,6 +1538,23 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             if let Ok(mut target) = app.state::<EditTargetState>().0.lock() {
                 *target = pid;
             }
+            // Capture the text currently in the focused field. This gives the
+            // polish LLM surrounding context for smarter STT corrections —
+            // e.g. if the field already mentions "MACOBS", the LLM knows
+            // "main corps" in the transcript is likely "MACOBS".
+            let screen_text = match pid {
+                Some(p) => paster::read_focused_value_fast_for_pid(p),
+                None => paster::read_focused_value_fast(),
+            };
+            if let Ok(mut ctx) = app.state::<ScreenContextState>().0.lock() {
+                *ctx = screen_text.filter(|s| !s.trim().is_empty());
+                if ctx.is_some() {
+                    tracing::info!(
+                        "[record] screen context: {} chars",
+                        ctx.as_ref().unwrap().len()
+                    );
+                }
+            }
         }
     }
 
@@ -1946,7 +1986,7 @@ fn do_finish_recording(
                         None
                     } else {
                         tracing::info!(
-                            "[finish] ✓ WS pre-transcript ready after {wait_ms}ms ({} chars, {} words, {:.1}s audio): {:?}",
+                            "[finish] ✓ WS pre-transcript ready after {wait_ms}ms ({} chars, {} words, {:.1}s audio): \"{}\"",
                             t.transcript.len(),
                             word_count,
                             wav_duration_s,
@@ -1988,12 +2028,17 @@ fn do_finish_recording(
             None
         };
 
+        let screen_context = app2
+            .try_state::<ScreenContextState>()
+            .and_then(|s| s.0.lock().ok()?.clone());
+
         let result = run_voice_polish_sse(
             &back_arc2,
             wav,
             None,
             pre_transcript,
             None,
+            screen_context,
             &app2,
             is_meeting,
         )
@@ -2033,7 +2078,10 @@ fn do_finish_recording(
             {
                 let mut d = match shared2.lock() {
                     Ok(g) => g,
-                    Err(_) => return,
+                    Err(_) => {
+                        emit_voice_error_quiet(&app2, "Recording interrupted");
+                        return;
+                    }
                 };
                 let snap = match result {
                     Ok(done) => d.finish_ok(ProcessSummary {
@@ -2044,7 +2092,10 @@ fn do_finish_recording(
                         transcribe_ms: done.latency_ms.transcribe as u64,
                         polish_ms: done.latency_ms.polish as u64,
                     }),
-                    Err(e) => d.finish_err(e),
+                    Err(ref e) => {
+                        emit_voice_error_quiet(&app2, e);
+                        d.finish_err(e.clone())
+                    }
                 };
                 sync_tray(&app2, &snap);
                 let _ = app2.emit("app-state", &snap);
@@ -2087,7 +2138,10 @@ fn do_finish_recording(
 
             let mut d = match shared2.lock() {
                 Ok(g) => g,
-                Err(_) => return,
+                Err(_) => {
+                    emit_voice_error_quiet(&app2, "Recording interrupted");
+                    return;
+                }
             };
             let snap = match result {
                 Ok(done) => d.finish_ok(ProcessSummary {
@@ -2098,7 +2152,10 @@ fn do_finish_recording(
                     transcribe_ms: done.latency_ms.transcribe as u64,
                     polish_ms: done.latency_ms.polish as u64,
                 }),
-                Err(e) => d.finish_err(e),
+                Err(ref e) => {
+                    emit_voice_error_quiet(&app2, e);
+                    d.finish_err(e.clone())
+                }
             };
             sync_tray(&app2, &snap);
             let _ = app2.emit("app-state", &snap);
@@ -2116,6 +2173,7 @@ async fn run_voice_polish_sse(
     target_app: Option<String>,
     pre_transcript: Option<dg_stream::StreamingTranscript>,
     repair_mode: Option<String>,
+    screen_context: Option<String>,
     app: &tauri::AppHandle,
     #[allow(unused_variables)] is_meeting: bool,
 ) -> Result<api::PolishDone, String> {
@@ -2202,7 +2260,10 @@ async fn run_voice_polish_sse(
                 }
             }
             api::PolishEvent::Status { phase, transcript } => {
-                tracing::info!("[pipeline] status: phase={phase} transcript={transcript:?}");
+                tracing::info!(
+                    "[pipeline] status: phase={phase} transcript={}",
+                    transcript.as_deref().unwrap_or("—")
+                );
                 let _ = app_clone.emit(
                     "voice-status",
                     serde_json::json!({ "phase": phase, "transcript": transcript }),
@@ -2228,7 +2289,7 @@ async fn run_voice_polish_sse(
                 } else {
                     ""
                 };
-                tracing::info!("[pipeline] polished text: {preview:?}{suffix}");
+                tracing::info!("[pipeline] polished text: \"{preview}{suffix}\"");
                 let _ = app_clone.emit("voice-done", done);
             }
             api::PolishEvent::Error {
@@ -2236,29 +2297,17 @@ async fn run_voice_polish_sse(
                 audio_id,
                 error_code,
             } => {
-                let human = humanize_error(message);
+                tracing::error!("[pipeline] backend error: {message}");
+                let human = humanize_error(&message);
                 let _ = app_clone.emit(
                     "voice-error",
                     serde_json::json!({
-                        "message":  human.clone(),
+                        "message":  human,
+                        "raw_error": message,
                         "audio_id": audio_id,
                         "error_code": error_code,
+                        "auto_hide_ms": 4000,
                     }),
-                );
-                // Native macOS banner — informational only.  In dev mode the
-                // osascript path can't attach action buttons (those require a
-                // bundled .app with a registered UNNotificationCategory), so
-                // the banner simply tells the user something went wrong and
-                // they switch to Said when ready.  The in-app toast carries
-                // the actual History / Retry buttons.
-                //
-                // No auto-focus, no dock bounce — per user preference.  The
-                // banner is the only attention signal; the user controls when
-                // to bring Said forward.
-                notify_macos(
-                    &app_clone,
-                    "Said couldn't finish that recording",
-                    &format!("{human}  Open Said to retry or view history."),
                 );
             }
         }
@@ -2273,6 +2322,7 @@ async fn run_voice_polish_sse(
             Some(transcript.transcript),
             Some(transcript.meta),
             repair_mode,
+            screen_context,
             &mut on_polish_event,
         )
         .await?
@@ -2284,6 +2334,7 @@ async fn run_voice_polish_sse(
             None,
             None,
             repair_mode,
+            screen_context,
             &mut on_polish_event,
         )
         .await?
@@ -2344,7 +2395,7 @@ async fn run_voice_polish_sse(
             *g = Some(done.polished.clone());
         }
         cache_last_voice_action(app, &done, LastRepairStage::None);
-        tracing::info!(
+        tracing::debug!(
             "[main] result stored ({} chars) — Ctrl+Cmd+V to paste again",
             done.polished.len()
         );
@@ -2359,7 +2410,7 @@ async fn run_voice_polish_sse(
         } else {
             ""
         };
-        tracing::info!("[main] polished text: {:?}{}", preview, suffix);
+        tracing::debug!("[main] polished text: \"{preview}{suffix}\"");
     }
 
     let output_status = if is_meeting {
@@ -2385,7 +2436,7 @@ async fn run_voice_polish_sse(
             "Use the tray menu → Paste latest"
         }
     };
-    tracing::info!("[main] voice-output status={output_status}");
+    tracing::debug!("[main] voice-output status={output_status}");
     let _ = app.emit(
         "voice-output",
         serde_json::json!({
@@ -2973,6 +3024,7 @@ fn retry_recording_spawn(
             None,
             None,
             Some("preserve_recall".into()),
+            None, // no screen context for re-polish
             &app2,
             false,
         )
@@ -3131,6 +3183,17 @@ async fn delete_vocabulary_term(
 }
 
 #[tauri::command]
+async fn reset_all_vocabulary(
+    app: tauri::AppHandle,
+    backend: State<'_, BackendState>,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    api::reset_all_vocabulary(&ep).await?;
+    let _ = app.emit("vocabulary-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
 async fn star_vocabulary_term(
     app: tauri::AppHandle,
     backend: State<'_, BackendState>,
@@ -3156,6 +3219,28 @@ async fn star_vocabulary_term(
         );
     }
     Ok(starred)
+}
+
+#[tauri::command]
+async fn patch_vocabulary_term(
+    app: tauri::AppHandle,
+    backend: State<'_, BackendState>,
+    term: String,
+    meaning: Option<String>,
+    term_type: Option<String>,
+    example_context: Option<String>,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    api::patch_vocabulary_term(
+        &ep,
+        &term,
+        meaning.as_deref(),
+        term_type.as_deref(),
+        example_context.as_deref(),
+    )
+    .await?;
+    let _ = app.emit("vocabulary-changed", ());
+    Ok(())
 }
 
 // ── Invite-a-friend ───────────────────────────────────────────────────────────
@@ -3193,6 +3278,95 @@ async fn send_invite_email(
 /// Tauri's webview blocks `window.open("mailto:…")` silently — calls fall
 /// through to the browser's noop handler, so the user sees nothing happen.
 /// This command shells out to the OS opener instead.
+
+// ── OpenAI / ChatGPT OAuth ───────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct OpenAIStatus {
+    connected: bool,
+    expires_at: Option<i64>,
+    connected_at: Option<i64>,
+}
+
+#[tauri::command]
+async fn openai_connect(app: tauri::AppHandle) -> Result<String, String> {
+    let ep = {
+        let st = app.state::<BackendState>();
+        st.0.lock().ok().and_then(|g| g.clone())
+    }
+    .ok_or("backend not ready")?;
+
+    let url = format!("{}/v1/openai-oauth/initiate", ep.url);
+    let resp: serde_json::Value = reqwest::Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("initiate failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("parse failed: {e}"))?;
+
+    let auth_url = resp
+        .get("auth_url")
+        .and_then(|u| u.as_str())
+        .ok_or("no auth_url in response")?
+        .to_string();
+
+    open_external(auth_url.clone())?;
+    Ok(auth_url)
+}
+
+#[tauri::command]
+async fn openai_status(app: tauri::AppHandle) -> Result<OpenAIStatus, String> {
+    let ep = {
+        let st = app.state::<BackendState>();
+        st.0.lock().ok().and_then(|g| g.clone())
+    }
+    .ok_or("backend not ready")?;
+
+    let url = format!("{}/v1/openai-oauth/status", ep.url);
+    let resp: serde_json::Value = reqwest::Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("status failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("parse failed: {e}"))?;
+
+    Ok(OpenAIStatus {
+        connected: resp
+            .get("connected")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        expires_at: resp.get("expires_at").and_then(|v| v.as_i64()),
+        connected_at: resp.get("connected_at").and_then(|v| v.as_i64()),
+    })
+}
+
+#[tauri::command]
+async fn openai_disconnect(app: tauri::AppHandle) -> Result<(), String> {
+    let ep = {
+        let st = app.state::<BackendState>();
+        st.0.lock().ok().and_then(|g| g.clone())
+    }
+    .ok_or("backend not ready")?;
+
+    let url = format!("{}/v1/openai-oauth/disconnect", ep.url);
+    reqwest::Client::new()
+        .delete(&url)
+        .header("Authorization", ep.bearer())
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("disconnect failed: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
     use std::process::Command;
@@ -3968,29 +4142,27 @@ async fn watch_for_edit(
                             );
                         }
                     }
-                    // OS-level fallback for when the Said window isn't focused.
-                    // Plain human copy — never the LLM's raw reason string,
-                    // never internal class names, never punctuation flair.
-                    let (title, body) = match resp.class.as_str() {
-                        "STT_ERROR" => (
-                            "Said learned a new word",
-                            match &first_term {
-                                Some(t) => {
-                                    format!("Said will recognise \"{t}\" on your next recording.")
-                                }
-                                None => "Said remembered your correction.".to_string(),
-                            },
-                        ),
-                        "POLISH_ERROR" => (
-                            "Said updated a writing preference",
-                            "Said will use your wording next time.".to_string(),
-                        ),
-                        _ => (
-                            "Said learned from your edit",
-                            "Said remembered your correction.".to_string(),
-                        ),
+                    // Show learning result in the status bar (not OS notification)
+                    let term_display = first_term
+                        .clone()
+                        .unwrap_or_else(|| "your correction".to_string());
+                    let msg = match resp.class.as_str() {
+                        "STT_ERROR" | "stt_error" => {
+                            format!("Will recognise \"{}\" next time", term_display)
+                        }
+                        "POLISH_ERROR" | "polish_error" => "Updated writing preference".to_string(),
+                        _ => "Remembered your correction".to_string(),
                     };
-                    notify_macos(&app, title, &body);
+                    if let Some(w) = app.get_webview_window("status-bar") {
+                        let _ = w.show();
+                    }
+                    let _ = app.emit(
+                        "vocab-learned",
+                        serde_json::json!({
+                            "term": term_display,
+                            "message": msg,
+                        }),
+                    );
                 }
 
                 // Surface queued (k-event sighting recorded but not yet promoted)
@@ -4097,17 +4269,27 @@ fn is_format_transformation(text: &str) -> bool {
 }
 
 fn shares_word_overlap(candidate: &str, reference: &str) -> bool {
-    let ref_words: std::collections::HashSet<String> = reference
+    let cand_lower = candidate.to_lowercase();
+    let ref_lower = reference.to_lowercase();
+    let ref_words: Vec<String> = ref_lower
         .split_whitespace()
-        .filter(|w| w.chars().count() > 3)
-        .map(|w| w.to_lowercase())
+        .filter(|w| w.chars().count() > 2)
+        .map(|w| w.to_string())
         .collect();
     if ref_words.is_empty() {
         return !candidate.is_empty();
     }
-    candidate
-        .split_whitespace()
-        .any(|w| ref_words.contains(&w.to_lowercase()))
+    for cw in cand_lower.split_whitespace() {
+        if cw.chars().count() <= 2 {
+            continue;
+        }
+        for rw in &ref_words {
+            if cw == *rw || rw.contains(&*cw) || cw.contains(&**rw) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Given what we pasted (`polished`), where the field was right after paste
@@ -4354,6 +4536,16 @@ fn main() {
                     tracing::info!("[main] macOS activation policy set to Accessory");
                 }
 
+                // ── Request notification permission (macOS) ─────────────────
+                #[cfg(target_os = "macos")]
+                {
+                    use tauri_plugin_notification::NotificationExt;
+                    match app.notification().request_permission() {
+                        Ok(perm) => tracing::info!("[perm] Notifications={perm:?}"),
+                        Err(e) => tracing::warn!("[perm] Notification permission request failed: {e}"),
+                    }
+                }
+
                 // ── Spawn backend daemon ──────────────────────────────────────
                 // ── Permission status at launch (visible in the said.log file under the platform log dir) ──
                 let ax_ok = paster::is_accessibility_granted();
@@ -4559,8 +4751,6 @@ fn main() {
                     ])?,
                 };
 
-                // Brand mark — embedded retina PNG, marked as template so
-                // macOS auto-tints to match menu bar appearance.
                 let tray_icon = tauri::image::Image::from_bytes(
                     include_bytes!("../icons/tray@2x.png")
                 ).ok();
@@ -4568,7 +4758,7 @@ fn main() {
                 let mut tray_builder = TrayIconBuilder::with_id("said")
                     .tooltip("Said — Voice Polish Studio")
                     .menu(&initial_menu)
-                    .show_menu_on_left_click(true);   // ← left-click opens menu
+                    .show_menu_on_left_click(true);
 
                 if let Some(icon) = tray_icon {
                     tray_builder = tray_builder.icon(icon).icon_as_template(true);
@@ -4731,6 +4921,7 @@ fn main() {
         .manage(BackendHandleState(Mutex::new(None)))
         .manage(EditWatcherState(Mutex::new(None)))
         .manage(EditTargetState(Mutex::new(None)))
+        .manage(ScreenContextState(Mutex::new(None)))
         .manage(StreamingState(Mutex::new(None)))
         .manage(RecordingRouteState(Mutex::new(None)))
         .manage(DeepgramSessionState(dg_stream::DeepgramSession::spawn()))
@@ -4788,9 +4979,15 @@ fn main() {
             list_vocabulary,
             add_vocabulary_term,
             delete_vocabulary_term,
+            reset_all_vocabulary,
             star_vocabulary_term,
+            patch_vocabulary_term,
             // Invite a friend
             send_invite_email,
+            // OpenAI / ChatGPT OAuth
+            openai_connect,
+            openai_status,
+            openai_disconnect,
             // External URL opener (mailto:, https://) — Tauri webview blocks window.open
             open_external,
             // Desktop-only prefs read at process startup (Sentry on/off + update channel).

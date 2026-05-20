@@ -14,7 +14,9 @@ import {
   listVocabulary,
   addVocabularyTerm,
   deleteVocabularyTerm,
+  resetAllVocabulary,
   starVocabularyTerm,
+  patchVocabularyTerm,
   onVocabularyChanged,
   requestNotifications,
   type VocabRow,
@@ -74,14 +76,16 @@ interface RowProps {
   row:       VocabRow;
   onStar:    (term: string) => void;
   onDelete:  (term: string) => void;
+  onClick:   (row: VocabRow) => void;
 }
 
-function VocabRowItem({ row, onStar, onDelete }: RowProps) {
+function VocabRowItem({ row, onStar, onDelete, onClick }: RowProps) {
   const isStarred = row.source === "starred";
 
   return (
     <div
-      className="relative flex items-center gap-4 px-5 py-4 transition-colors group"
+      className="relative flex items-center gap-4 px-5 py-4 transition-colors group cursor-pointer"
+      onClick={() => onClick(row)}
       onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-hover))"; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
     >
@@ -92,8 +96,19 @@ function VocabRowItem({ row, onStar, onDelete }: RowProps) {
             {row.term}
           </span>
           <SourceBadge source={row.source} />
+          {row.term_type && row.term_type !== "other" && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded"
+              style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}>
+              {row.term_type.replace("_", " ")}
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-3 mt-1.5">
+        {row.meaning && (
+          <p className="text-[11px] text-muted-foreground mt-0.5 truncate max-w-[300px]">
+            {row.meaning}
+          </p>
+        )}
+        <div className="flex items-center gap-3 mt-1">
           <span className="text-[11px] text-muted-foreground tabular-nums">
             used {row.use_count}×
           </span>
@@ -138,6 +153,134 @@ function VocabRowItem({ row, onStar, onDelete }: RowProps) {
         >
           <Trash2 size={13} />
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Vocab Detail Modal ──────────────────────────────────────────────────────
+
+function VocabDetailModal({
+  row,
+  onClose,
+  onSave,
+}: {
+  row: VocabRow;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const [meaning, setMeaning] = useState(row.meaning ?? "");
+  const [termType, setTermType] = useState(row.term_type ?? "other");
+  const [exampleCtx, setExampleCtx] = useState(row.example_context ?? "");
+  const [saving, setSaving] = useState(false);
+
+  const TERM_TYPES = ["proper_noun", "brand", "acronym", "code_identifier", "phrase", "other"];
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await patchVocabularyTerm(row.term, {
+        meaning: meaning.trim(),
+        term_type: termType,
+        example_context: exampleCtx.trim(),
+      });
+      onSave();
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+      onClick={onClose}
+    >
+      <div
+        className="w-[420px] rounded-xl overflow-hidden"
+        style={{ background: "hsl(var(--surface-1))", border: "1px solid hsl(var(--surface-3))" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 pt-5 pb-3 flex items-center justify-between">
+          <div>
+            <h3 className="text-[16px] font-semibold text-foreground">{row.term}</h3>
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              used {row.use_count}x · weight {row.weight.toFixed(2)} · {row.source}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-7 h-7 rounded-lg flex items-center justify-center"
+            style={{ color: "hsl(var(--muted-foreground))" }}
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Fields */}
+        <div className="px-5 pb-4 space-y-3">
+          {/* Term Type */}
+          <div>
+            <label className="text-[11px] text-muted-foreground font-medium block mb-1">Type</label>
+            <select
+              value={termType}
+              onChange={(e) => setTermType(e.target.value)}
+              className="w-full px-3 py-1.5 rounded-lg text-[13px] text-foreground"
+              style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--surface-4))" }}
+            >
+              {TERM_TYPES.map((t) => (
+                <option key={t} value={t}>{t.replace("_", " ")}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Meaning */}
+          <div>
+            <label className="text-[11px] text-muted-foreground font-medium block mb-1">Meaning</label>
+            <textarea
+              value={meaning}
+              onChange={(e) => setMeaning(e.target.value)}
+              placeholder="What this term means (1-2 sentences)"
+              rows={2}
+              className="w-full px-3 py-2 rounded-lg text-[13px] text-foreground resize-none"
+              style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--surface-4))" }}
+            />
+          </div>
+
+          {/* Example Context */}
+          <div>
+            <label className="text-[11px] text-muted-foreground font-medium block mb-1">Example context</label>
+            <textarea
+              value={exampleCtx}
+              onChange={(e) => setExampleCtx(e.target.value)}
+              placeholder="A sentence where this term is used"
+              rows={2}
+              className="w-full px-3 py-2 rounded-lg text-[13px] text-foreground resize-none"
+              style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--surface-4))" }}
+            />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 pb-5 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-4 py-1.5 rounded-lg text-[12px] font-medium text-muted-foreground"
+            style={{ border: "1px solid hsl(var(--surface-4))" }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => void handleSave()}
+            disabled={saving}
+            className="px-4 py-1.5 rounded-lg text-[12px] font-medium text-white"
+            style={{ background: "hsl(var(--accent-violet))", opacity: saving ? 0.6 : 1 }}
+          >
+            {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -252,6 +395,7 @@ export function VocabularyView() {
   const [rows,    setRows]    = useState<VocabRow[]>([]);
   const [filter,  setFilter]  = useState("");
   const [loading, setLoading] = useState(true);
+  const [detailRow, setDetailRow] = useState<VocabRow | null>(null);
 
   // Note: confirmation toasts (add / star / delete) are emitted by the
   // backend as `vocab-toast` events and handled by the global toast in
@@ -286,6 +430,13 @@ export function VocabularyView() {
     setRows((prev) => prev.filter((r) => r.term !== term));
   }
 
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  async function handleResetAll() {
+    await resetAllVocabulary();
+    setRows([]);
+    setShowResetConfirm(false);
+  }
+
   // Apply filter (case-insensitive substring on term).
   const filtered = rows.filter((r) =>
     r.term.toLowerCase().includes(filter.trim().toLowerCase()),
@@ -301,14 +452,72 @@ export function VocabularyView() {
     <ScrollArea className="h-full">
       <div className="p-7 pb-12 max-w-3xl mx-auto">
         {/* ── Header ─────────────────────────────────────────── */}
-        <div className="mb-7">
-          <h1 className="text-[28px] font-bold tracking-tight text-foreground leading-tight">
-            Vocabulary
-          </h1>
-          <p className="text-[13px] text-muted-foreground mt-1 tabular-nums">
-            {rows.length} word{rows.length !== 1 ? "s" : ""} Said remembers when you dictate
-          </p>
+        <div className="mb-7 flex items-start justify-between">
+          <div>
+            <h1 className="text-[28px] font-bold tracking-tight text-foreground leading-tight">
+              Vocabulary
+            </h1>
+            <p className="text-[13px] text-muted-foreground mt-1 tabular-nums">
+              {rows.length} word{rows.length !== 1 ? "s" : ""} Said remembers when you dictate
+            </p>
+          </div>
+          {rows.length > 0 && (
+            <button
+              onClick={() => setShowResetConfirm(true)}
+              className="flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-md transition-colors"
+              style={{
+                color: "hsl(var(--destructive))",
+                background: "hsl(var(--destructive) / 0.1)",
+                border: "1px solid hsl(var(--destructive) / 0.2)",
+              }}
+            >
+              <Trash2 size={12} />
+              Reset Learning
+            </button>
+          )}
         </div>
+
+        {showResetConfirm && (
+          <div
+            className="mb-5 p-4 rounded-lg border flex items-start gap-3"
+            style={{
+              background: "hsl(var(--destructive) / 0.06)",
+              borderColor: "hsl(var(--destructive) / 0.25)",
+            }}
+          >
+            <AlertCircle size={18} style={{ color: "hsl(var(--destructive))", flexShrink: 0, marginTop: 2 }} />
+            <div className="flex-1">
+              <p className="text-[13px] font-semibold text-foreground mb-1">
+                Reset all learning data?
+              </p>
+              <p className="text-[12px] text-muted-foreground mb-3">
+                This will permanently delete all {rows.length} vocabulary terms, STT corrections, and learned preferences. Your API keys, settings, and recording history are not affected.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleResetAll}
+                  className="text-[11px] font-semibold px-3 py-1.5 rounded-md"
+                  style={{
+                    background: "hsl(var(--destructive))",
+                    color: "white",
+                  }}
+                >
+                  Yes, reset everything
+                </button>
+                <button
+                  onClick={() => setShowResetConfirm(false)}
+                  className="text-[11px] font-medium px-3 py-1.5 rounded-md"
+                  style={{
+                    background: "hsl(var(--surface-2))",
+                    color: "hsl(var(--foreground))",
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Add term ──────────────────────────────────────── */}
         <AddTermRow onAdd={handleAdd} />
@@ -361,6 +570,7 @@ export function VocabularyView() {
                         row={row}
                         onStar={handleStar}
                         onDelete={handleDelete}
+                        onClick={setDetailRow}
                       />
                     </React.Fragment>
                   ))}
@@ -390,6 +600,7 @@ export function VocabularyView() {
                         row={row}
                         onStar={handleStar}
                         onDelete={handleDelete}
+                        onClick={setDetailRow}
                       />
                     </React.Fragment>
                   ))}
@@ -409,6 +620,13 @@ export function VocabularyView() {
         )}
       </div>
 
+      {detailRow && (
+        <VocabDetailModal
+          row={detailRow}
+          onClose={() => setDetailRow(null)}
+          onSave={refresh}
+        />
+      )}
     </ScrollArea>
   );
 }
