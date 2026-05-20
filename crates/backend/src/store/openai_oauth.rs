@@ -53,14 +53,11 @@ pub fn save_token(
         params![user_id, access_token, refresh_token, expires_at, now],
     ).ok();
 
-    // Automatically switch llm_provider to openai_codex
-    conn.execute(
-        "UPDATE preferences SET llm_provider = 'openai_codex', updated_at = ?2 WHERE user_id = ?1",
-        params![user_id, now],
-    )
-    .ok();
+    // Do NOT change llm_provider — Codex token is used for the learning
+    // pipeline (analyzer/classifier), not for the main voice polish.
+    // The user's chosen polish provider (Groq/Gemini/etc.) stays untouched.
 
-    info!("[openai_oauth] token saved, llm_provider → openai_codex");
+    info!("[openai_oauth] token saved — Codex available for learning pipeline");
 }
 
 /// Update only the access_token + expires_at (after a refresh).
@@ -95,11 +92,8 @@ pub fn delete_token(pool: &DbPool, user_id: &str) {
     )
     .ok();
 
-    conn.execute(
-        "UPDATE preferences SET llm_provider = 'gateway', updated_at = ?2 WHERE user_id = ?1",
-        params![user_id, now],
-    )
-    .ok();
+    // Do NOT change llm_provider — disconnecting Codex only affects the
+    // learning pipeline. The user's polish provider stays as-is.
 
-    info!("[openai_oauth] token deleted, llm_provider → gateway");
+    info!("[openai_oauth] token deleted — learning falls back to Groq");
 }

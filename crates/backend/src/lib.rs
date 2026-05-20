@@ -235,7 +235,8 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/v1/vocabulary", post(routes::vocabulary::create))
         .route(
             "/v1/vocabulary/:term",
-            axum::routing::delete(routes::vocabulary::delete),
+            axum::routing::delete(routes::vocabulary::delete)
+                .patch(routes::vocabulary::patch),
         )
         .route(
             "/v1/vocabulary/:term/star",

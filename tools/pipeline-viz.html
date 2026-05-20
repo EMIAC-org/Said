@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Said — Voice Pipeline Visualization</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #e0e0e8; font-family: 'Inter', -apple-system, sans-serif; padding: 40px; }
+  h1 { font-size: 24px; margin-bottom: 8px; color: #fff; }
+  .subtitle { color: #888; font-size: 14px; margin-bottom: 40px; }
+
+  .pipeline { display: flex; flex-direction: column; gap: 0; max-width: 900px; margin: 0 auto; }
+
+  .step {
+    background: #12121a;
+    border: 1px solid #1e1e2e;
+    border-radius: 12px;
+    padding: 24px;
+    position: relative;
+  }
+  .step.active { border-color: #4a6cf7; }
+  .step.problem { border-color: #f74a4a; }
+  .step.good { border-color: #4af77a; }
+
+  .arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 40px;
+    color: #444;
+    font-size: 20px;
+  }
+
+  .step-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .step-num {
+    width: 32px; height: 32px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700;
+    background: #1e1e2e; color: #888;
+  }
+  .step.active .step-num { background: #4a6cf7; color: #fff; }
+  .step.problem .step-num { background: #f74a4a; color: #fff; }
+  .step.good .step-num { background: #4af77a; color: #000; }
+
+  .step-title { font-size: 16px; font-weight: 600; }
+  .step-model { font-size: 12px; color: #666; margin-left: auto; }
+
+  .step-body { font-size: 13px; color: #aaa; line-height: 1.6; }
+  .step-body code { background: #1a1a2e; padding: 2px 6px; border-radius: 4px; color: #ddd; font-size: 12px; }
+
+  .example {
+    background: #0d0d16;
+    border-radius: 8px;
+    padding: 14px;
+    margin-top: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.8;
+  }
+  .example .label { color: #666; font-size: 11px; text-transform: uppercase; margin-bottom: 4px; }
+  .example .in { color: #f0a050; }
+  .example .out { color: #50f0a0; }
+  .example .bad { color: #f05050; }
+  .example .note { color: #666; font-style: italic; }
+
+  .issues {
+    background: #1a0a0a;
+    border: 1px solid #3a1a1a;
+    border-radius: 8px;
+    padding: 14px;
+    margin-top: 12px;
+    font-size: 12px;
+    color: #f08080;
+    line-height: 1.6;
+  }
+  .issues strong { color: #ff6060; }
+
+  .decision {
+    background: #0a1a0a;
+    border: 1px solid #1a3a1a;
+    border-radius: 8px;
+    padding: 14px;
+    margin-top: 12px;
+    font-size: 12px;
+    color: #80f080;
+    line-height: 1.6;
+  }
+
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .tag.latency { background: #2a1a3a; color: #c090f0; }
+  .tag.model { background: #1a2a3a; color: #90c0f0; }
+  .tag.gate { background: #3a2a1a; color: #f0c090; }
+
+  .section-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #fff;
+    margin: 40px 0 16px;
+    padding-top: 20px;
+    border-top: 1px solid #1e1e2e;
+  }
+</style>
+</head>
+<body>
+
+<h1>Said — Voice Polish Pipeline</h1>
+<p class="subtitle">Current architecture as of May 2026. Red = known issues, Green = working well.</p>
+
+<div class="pipeline">
+
+  <!-- STEP 0: User speaks -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">0</div>
+      <div class="step-title">User Speaks</div>
+      <span class="tag latency">0ms</span>
+    </div>
+    <div class="step-body">
+      User holds Fn/CapsLock, speaks into microphone. Audio captured at 48kHz, downsampled to 16kHz PCM.
+      <br>At this point: <code>screen_context</code> captured from focused field via AX APIs.
+    </div>
+    <div class="example">
+      <div class="label">User said</div>
+      <div class="in">"Anish Suman two three zero five at the rate Gmail dot com ko mail likhna hai chheh baje ka"</div>
+    </div>
+  </div>
+
+  <div class="arrow">&#8595;</div>
+
+  <!-- STEP 1: Deepgram STT -->
+  <div class="step active">
+    <div class="step-header">
+      <div class="step-num">1</div>
+      <div class="step-title">Deepgram Nova-3 STT</div>
+      <span class="tag model">WebSocket streaming</span>
+      <span class="tag latency">~300-500ms</span>
+    </div>
+    <div class="step-body">
+      Audio streamed via WebSocket to Deepgram.
+      <br><code>smart_format=false</code> <code>punctuate=true</code> <code>keyterms=0</code> <code>replacements=0</code>
+      <br>Deepgram transcribes neutrally — no biasing, no number expansion.
+      <br>Output may be in Devanagari for Hindi words.
+    </div>
+    <div class="example">
+      <div class="label">Deepgram output</div>
+      <div class="out">"&#x0905;&#x0928;&#x0940;&#x0937; &#x0938;&#x0941;&#x092E;&#x0928; two three zero five at the rate Gmail dot com &#x0915;&#x094B; mail &#x0932;&#x093F;&#x0916;&#x0928;&#x093E; &#x0939;&#x0948; &#x091B;&#x0939; &#x092C;&#x091C;&#x0947; &#x0915;&#x093E;."</div>
+    </div>
+    <div class="issues">
+      <strong>Issues:</strong> Deepgram outputs Devanagari for Hindi words. "chheh" may appear as "&#x091B;&#x0939;" (Devanagari).
+      Names may be distorted ("Anish" &#8594; "&#x0905;&#x0928;&#x0940;&#x0937;").
+    </div>
+  </div>
+
+  <div class="arrow">&#8595;</div>
+
+  <!-- STEP 1.5: STT Replacements -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">1.5</div>
+      <div class="step-title">STT Replacements (local, deterministic)</div>
+      <span class="tag latency">&lt;1ms</span>
+    </div>
+    <div class="step-body">
+      Learned <code>stt_replacements</code> applied: exact match + phonetic fallback + correct_form fallback.
+      <br>E.g., <code>"amaix" &#8594; "Emiac"</code>, <code>"claud" &#8594; "claude"</code>
+    </div>
+  </div>
+
+  <div class="arrow">&#8595;</div>
+
+  <!-- STEP 2: Vocab Selection + Resolution -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">2</div>
+      <div class="step-title">Vocab Selection + Resolution</div>
+      <span class="tag latency">&lt;5ms</span>
+    </div>
+    <div class="step-body">
+      BM25 lexical search + context anchor matching &#8594; vocab resolver (alias, exact, context).
+      <br>Resolved terms get their canonical spelling injected into the transcript.
+      <br>E.g., "main corps" in transcript + context anchors "IPO, hazaar" &#8594; resolved as "MACOBS"
+    </div>
+  </div>
+
+  <div class="arrow">&#8595;</div>
+
+  <!-- STEP 3: Main Polish LLM -->
+  <div class="step good">
+    <div class="step-header">
+      <div class="step-num">3</div>
+      <div class="step-title">Main Polish LLM</div>
+      <span class="tag model">Scout 17B MoE</span>
+      <span class="tag latency">~200-400ms</span>
+    </div>
+    <div class="step-body">
+      <strong>Job: Content cleaning ONLY.</strong>
+      <br>Fillers removed, grammar fixed, vocab applied, Devanagari &#8594; Roman (Hinglish mode), tone preserved.
+      <br>Told explicitly: "Do NOT format numbers, dates, emails — a separate step handles that."
+      <br>
+      <br>System prompt includes: language rules, vocab block, corrections, screen context, RAG examples.
+      <br>Streams tokens word-by-word into the focused app via AX typing.
+    </div>
+    <div class="example">
+      <div class="label">Polish output</div>
+      <div class="out">"Anish Suman two three zero five at the rate Gmail dot com ko mail likhna hai chah baje ka."</div>
+      <div class="note">&#8593; Devanagari romanized, fillers removed, grammar fixed. But spoken-form patterns remain.</div>
+    </div>
+    <div class="issues">
+      <strong>Known issue:</strong> Romanizer outputs "chah" for "&#x091B;&#x0939;" but standard transliteration is "chheh".
+      Different Deepgram outputs &#8594; different romanizations &#8594; inconsistent spelled-out numbers.
+    </div>
+  </div>
+
+  <div class="arrow">&#8595; <span style="color:#666;font-size:12px">Devanagari &#8594; Roman guard runs here (Hinglish mode)</span></div>
+
+  <!-- STEP 4: Formatter -->
+  <div class="step problem">
+    <div class="step-header">
+      <div class="step-num">4</div>
+      <div class="step-title">Formatter LLM (Step 2)</div>
+      <span class="tag model">Scout 17B MoE</span>
+      <span class="tag latency">~150-300ms (when triggered)</span>
+      <span class="tag gate">Regex gate</span>
+    </div>
+    <div class="step-body">
+      <strong>Job: Presentation formatting ONLY.</strong>
+      <br>Converts spoken-form patterns to written form via JSON find/replace pairs.
+      <br>
+      <br><strong>Current flow:</strong>
+      <br>1. <code>needs_formatting()</code> regex scans polished text for known spoken-form patterns
+      <br>2. If regex matches &#8594; call Scout for JSON <code>[{"find":"...","replace":"..."}]</code>
+      <br>3. Apply replacements surgically (case-insensitive find, exact replace)
+      <br>4. If regex doesn't match &#8594; <strong>SKIP entirely (0ms)</strong>
+    </div>
+    <div class="example">
+      <div class="label">Formatter input</div>
+      <div class="in">"Anish Suman two three zero five at the rate Gmail dot com ko mail likhna hai chah baje ka."</div>
+      <div class="label" style="margin-top:8px">Expected output</div>
+      <div class="out">"anishsuman2305@gmail.com ko mail likhna hai 6 baje ka."</div>
+      <div class="label" style="margin-top:8px">Actual output</div>
+      <div class="bad">"maneeshsuman2305@gmail.com ko mail likhnaa hai 4:00 PM."</div>
+      <div class="note">&#8593; Wrong name (manish vs anish), wrong time (4 PM vs 6 baje), "likhnaa" double-a</div>
+    </div>
+    <div class="issues">
+      <strong>PROBLEM 1 — Regex gate too narrow:</strong>
+      <br>&#x2022; "chah baje" not caught (regex has "chheh" not "chah/cheh/chhah")
+      <br>&#x2022; "paanch sau" not caught (regex missing "sau")
+      <br>&#x2022; Hindi number transliterations vary wildly: chheh/chah/cheh/che
+      <br>
+      <br><strong>PROBLEM 2 — Regex is the wrong approach:</strong>
+      <br>&#x2022; The LLM is smart enough to recognize "chah baje = 6 o'clock" without regex help
+      <br>&#x2022; But the regex GATE prevents the LLM from seeing the text
+      <br>&#x2022; We're using a dumb filter to decide when a smart model should run
+      <br>
+      <br><strong>PROBLEM 3 — LLM formatting errors:</strong>
+      <br>&#x2022; "&#x091B;&#x0939; baje" (6 o'clock) &#8594; "4:00 PM" (wrong number entirely)
+      <br>&#x2022; Name spelling inconsistent across recordings
+      <br>&#x2022; The LLM sometimes changes content words it shouldn't
+    </div>
+    <div class="decision">
+      <strong>DECISION NEEDED:</strong>
+      <br>
+      <br><strong>Option A:</strong> Remove the regex gate entirely. Run formatter on EVERY recording.
+      <br>Cost: +200ms per recording. Benefit: catches everything the LLM can see.
+      <br>
+      <br><strong>Option B:</strong> Keep regex gate but make it much broader (catch any Hindi number word).
+      <br>Cost: more false triggers. Benefit: still skips pure-English recordings.
+      <br>
+      <br><strong>Option C:</strong> Hybrid — run the formatter only when the polish step outputs
+      Hinglish (detected by checking for romanized Hindi words). English-only recordings skip.
+    </div>
+  </div>
+
+  <div class="arrow">&#8595;</div>
+
+  <!-- STEP 5: Output -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">5</div>
+      <div class="step-title">Paste / Type Output</div>
+      <span class="tag latency">&lt;50ms</span>
+    </div>
+    <div class="step-body">
+      Final text pasted into focused app via clipboard (Cmd+V) or typed word-by-word via AX.
+      <br>Edit watcher starts monitoring for user corrections (30s window).
+    </div>
+  </div>
+
+  <div class="arrow">&#8595;</div>
+
+  <!-- STEP 6: Learning -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">6</div>
+      <div class="step-title">Edit Watch + Learning</div>
+      <span class="tag latency">30s window</span>
+    </div>
+    <div class="step-body">
+      Monitors the text field for user corrections. If user edits the output:
+      <br>&#8594; Classify (STT_ERROR / POLISH_ERROR / USER_REPHRASE / USER_REWRITE)
+      <br>&#8594; Learn vocab terms, STT replacements, corrections
+      <br>&#8594; Smart dedup (phonetic + case-insensitive)
+      <br>&#8594; Common word + numeric junk blocklist
+      <br>&#8594; Quality gate (phonetic resemblance check for STT rules)
+    </div>
+  </div>
+
+</div>
+
+<div class="section-title">End-to-End Latency Budget</div>
+<div class="example" style="max-width:900px;margin:0 auto;">
+  <div class="label">Typical recording (no formatting needed)</div>
+  <div class="out">Deepgram WS: ~400ms + Polish LLM: ~300ms = <strong>~700ms total</strong></div>
+  <div class="label" style="margin-top:12px">Recording with formatting (email/date/etc)</div>
+  <div class="out">Deepgram WS: ~400ms + Polish LLM: ~300ms + Formatter LLM: ~200ms = <strong>~900ms total</strong></div>
+  <div class="label" style="margin-top:12px">HTTP STT fallback</div>
+  <div class="bad">Deepgram HTTP: ~2-5s + Polish LLM: ~300ms + Formatter: ~200ms = <strong>~3-5.5s total</strong></div>
+</div>
+
+</body>
+</html>

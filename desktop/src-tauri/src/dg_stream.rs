@@ -414,7 +414,7 @@ impl DeepgramSession {
                             let transcript = self.drain_finalize(&mut ws, &mut current).await;
                             let had_transcript = transcript.is_some();
                             current.send_result(transcript);
-                            info!(
+                            debug!(
                                 "[dg_session] finalized id={id} transcript={} chunks={} elapsed={}ms",
                                 had_transcript,
                                 current.chunks_sent,
@@ -467,7 +467,7 @@ impl DeepgramSession {
                         if !drain_available_responses(&mut ws, &mut active).await {
                             return true;
                         }
-                        info!("[dg_session] KeepAlive sent");
+                        debug!("[dg_session] KeepAlive sent");
                     }
                 }
                 _ = tokio::time::sleep_until(idle_warm_deadline), if self.state == SessionState::Idle => {
@@ -567,7 +567,7 @@ impl DeepgramSession {
         }
 
         let drain_ms = drain_start.elapsed().as_millis();
-        info!(
+        debug!(
             "[dg_session] finalize drain id={} drain={}ms timeout={}ms ws_messages={} result_messages={} text_results={} from_finalize={} parts={}",
             current.id,
             drain_ms,
@@ -645,7 +645,7 @@ impl DeepgramSession {
 
     fn set_state(&mut self, new_state: SessionState) {
         if self.state != new_state {
-            info!("[dg_session] state {} → {}", self.state, new_state);
+            debug!("[dg_session] state {} → {}", self.state, new_state);
             self.state = new_state;
         }
     }
@@ -880,7 +880,8 @@ fn sdk_options(bias: &BiasPackage) -> Options {
     Options::builder()
         .model(Model::Nova3)
         .language(Language::from(bias.stt_mode.clone()))
-        .smart_format(true)
+        .smart_format(false)
+        .punctuate(false)
         .keyterms(keyterms)
         .replace(replacements)
         .build()
@@ -985,7 +986,7 @@ fn collect_result_value(
         };
     }
     if let Some(chunk) = extract_result_chunk(&v) {
-        info!("[dg_session] segment: {:?}", chunk.enriched);
+        info!("[dg_session] segment: \"{}\"", chunk.enriched);
         parts.push(chunk.enriched);
         *word_count += chunk.word_count;
         *low_conf += chunk.low_confidence_count;
@@ -1021,13 +1022,11 @@ fn log_stream_response(v: &Value, recording_id: Option<&str>, phase: &str) {
         let from_finalize = v["from_finalize"].as_bool().unwrap_or(false);
         let transcript_chars = result_transcript(v).chars().count();
         let words = result_word_count(v);
-        if is_final || from_finalize || transcript_chars > 0 {
-            info!(
-                "[dg_session] WS Results phase={phase} id={recording_id} final={is_final} speech_final={speech_final} from_finalize={from_finalize} transcript_chars={transcript_chars} words={words}"
-            );
+        if is_final {
+            info!("[dg_session] transcript ({words} words, {transcript_chars} chars)");
         } else {
             debug!(
-                "[dg_session] WS Results phase={phase} id={recording_id} final={is_final} speech_final={speech_final} from_finalize={from_finalize} transcript_chars=0 words={words}"
+                "[dg_session] WS Results phase={phase} id={recording_id} final={is_final} speech_final={speech_final} from_finalize={from_finalize} transcript_chars={transcript_chars} words={words}"
             );
         }
         return;
@@ -1035,7 +1034,7 @@ fn log_stream_response(v: &Value, recording_id: Option<&str>, phase: &str) {
 
     if message_type == "SpeechStarted" {
         let ts = v["timestamp"].as_f64().unwrap_or_default();
-        info!("[dg_session] WS SpeechStarted phase={phase} id={recording_id} timestamp={ts:.3}");
+        debug!("[dg_session] WS SpeechStarted phase={phase} id={recording_id} timestamp={ts:.3}");
         return;
     }
 
@@ -1133,11 +1132,9 @@ fn extract_result_chunk(v: &Value) -> Option<ResultChunk> {
             }
         }
         if conf < LOW_CONFIDENCE_THRESHOLD {
-            parts.push(format!("[{}?{:.0}%]", word, conf * 100.0));
             low_confidence_count += 1;
-        } else {
-            parts.push(word.to_string());
         }
+        parts.push(word.to_string());
     }
 
     if let Some(alt_languages) = alt["languages"].as_array() {
@@ -1257,7 +1254,7 @@ mod tests {
         assert_eq!(chunk.word_count, 2);
         assert_eq!(chunk.low_confidence_count, 1);
         assert!(chunk.languages.contains(&"en".to_string()));
-        assert!(chunk.enriched.contains("[hai?61%]"));
+        assert!(chunk.enriched.contains("hai"));
     }
 
     #[test]

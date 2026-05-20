@@ -98,7 +98,7 @@ use crate::{
     AppState,
     embedder::gemini,
     llm::{
-        gateway, gemini_direct, groq, openai_codex,
+        cerebras, gateway, gemini_direct, groq, openai_codex,
         prompt::{
             VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE, VocabEntry,
             build_user_message_with_hints, build_voice_repair_system_prompt,
@@ -141,6 +141,7 @@ struct VoicePolishInput {
     pre_transcript: Option<String>,
     pre_transcript_meta: Option<TranscriptMeta>,
     repair_mode: Option<String>,
+    screen_context: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,6 +172,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
     let mut pre_transcript: Option<String> = None; // P5: from Deepgram WS
     let mut pre_transcript_meta: Option<TranscriptMeta> = None;
     let mut repair_mode: Option<String> = None;
+    let mut screen_context: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name() {
@@ -203,6 +205,9 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             Some("repair_mode") => {
                 repair_mode = field.text().await.ok().filter(|s| !s.is_empty());
             }
+            Some("screen_context") => {
+                screen_context = field.text().await.ok().filter(|s| !s.trim().is_empty());
+            }
             _ => {}
         }
     }
@@ -215,6 +220,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             pre_transcript,
             pre_transcript_meta,
             repair_mode,
+            screen_context,
         },
     )
     .await
@@ -238,6 +244,7 @@ pub async fn polish_transcript(
             pre_transcript: Some(transcript),
             pre_transcript_meta: req.pre_transcript_meta,
             repair_mode: None,
+            screen_context: None,
         },
     )
     .await
@@ -292,6 +299,9 @@ pub async fn repair_transcript(
         let groq_key = prefs.groq_api_key.clone()
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
             .unwrap_or_default();
+        let cerebras_key = prefs.cerebras_api_key.clone()
+            .or_else(|| std::env::var("CEREBRAS_API_KEY").ok())
+            .unwrap_or_default();
         let llm_provider = prefs.llm_provider.clone();
         let llm_provider_for_task = llm_provider.clone();
         let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
@@ -311,6 +321,8 @@ pub async fn repair_transcript(
             (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
         } else if llm_provider == "groq" {
             (groq::GROQ_MODEL_DEFAULT.to_string(), None)
+        } else if llm_provider == "cerebras" {
+            (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
         } else {
             (model.clone(), None)
         };
@@ -331,6 +343,10 @@ pub async fn repair_transcript(
             } else if llm_provider_for_task == "groq" {
                 groq::stream_polish(
                     &client_c, &groq_key, &model_for_llm, &sys_p, &usr_m, token_tx,
+                ).await
+            } else if llm_provider_for_task == "cerebras" {
+                cerebras::stream_polish(
+                    &client_c, &cerebras_key, &model_for_llm, &sys_p, &usr_m, token_tx,
                 ).await
             } else {
                 gateway::stream_polish(&client_c, &gateway_key, &model_for_llm, &sys_p, &usr_m, token_tx).await
@@ -406,12 +422,6 @@ pub async fn repair_transcript(
             llm_result.polished = cleaned;
         }
 
-        // format_recover disabled — will re-enable with targeted replacement
-        // let recovered = crate::llm::format_recover::recover(&llm_result.polished);
-        // if recovered != llm_result.polished {
-        //     llm_result.polished = recovered;
-        // }
-
         let total_ms = total_start.elapsed().as_millis() as i64;
         let recording_id = Uuid::new_v4().to_string();
         let word_count = llm_result.polished.split_whitespace().count() as i64;
@@ -480,6 +490,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         pre_transcript,
         pre_transcript_meta,
         repair_mode,
+        screen_context,
     } = input;
 
     // Allow empty WAV when the caller supplied a pre_transcript (P5 / WS path).
@@ -574,6 +585,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             .unwrap_or_default();
         let groq_key = prefs.groq_api_key.clone()
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
+            .unwrap_or_default();
+        let cerebras_key = prefs.cerebras_api_key.clone()
+            .or_else(|| std::env::var("CEREBRAS_API_KEY").ok())
             .unwrap_or_default();
 
         let stt_bias_package = tokio::task::spawn_blocking({
@@ -690,7 +704,12 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             }
         };
 
-        let (stt_transcript, _enriched_transcript, alias_result) = if stt_replacement_rules.is_empty() {
+        // STT replacements are NOT applied here. The LLM handles all
+        // corrections using vocab entries (with meanings and context) in
+        // the prompt. Deterministic replacement was removed because it
+        // has zero context awareness — e.g. replacing "Main" (Hindi "I")
+        // with "Emiac" (company name) because of a phonetic match.
+        let (stt_transcript, _enriched_transcript, alias_result) = {
             let text = stt_transcript_raw.clone();
             let enriched = enriched_raw.clone();
             (
@@ -701,44 +720,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     matches: vec![],
                 },
             )
-        } else {
-            let alias_result =
-                stt_replacements::apply_with_matches(&stt_transcript_raw, &stt_replacement_rules);
-            let plain_rewritten = alias_result.text.clone();
-            let enriched_rewritten = stt_replacements::apply(&enriched_raw, &stt_replacement_rules);
-            if plain_rewritten != stt_transcript_raw {
-                info!("[voice] lexicon replacement: {:?} → {:?}", stt_transcript_raw, plain_rewritten);
-            } else {
-                // No rule matched — log near-misses so we can diagnose why
-                // learned replacements fail on variable STT garbage.
-                let transcript_tokens: Vec<&str> = stt_transcript_raw
-                    .split_whitespace()
-                    .collect();
-                for rule in &stt_replacement_rules {
-                    let rule_key = &rule.phonetic_key;
-                    let mut best_sim = 0.0_f64;
-                    let mut best_token = "";
-                    for tok in &transcript_tokens {
-                        let tok_core = tok.trim_matches(|c: char| !c.is_alphanumeric())
-                            .to_ascii_lowercase();
-                        if tok_core.is_empty() { continue; }
-                        let tok_key = crate::llm::phonetics::phonetic_key(&tok_core);
-                        let sim = crate::llm::phonetics::similarity(&tok_core, &rule.transcript_form);
-                        if sim > best_sim {
-                            best_sim = sim;
-                            best_token = tok;
-                        }
-                        let _ = tok_key;
-                    }
-                    if best_sim > 0.3 {
-                        info!(
-                            "[stt-repl] no match for {:?}→{:?} — best candidate {:?} sim={:.2} (threshold=0.85, key={:?})",
-                            rule.transcript_form, rule.correct_form, best_token, best_sim, rule_key,
-                        );
-                    }
-                }
-            }
-            (plain_rewritten, enriched_rewritten, alias_result)
         };
 
         let status_payload = json!({"phase": "polishing", "transcript": &stt_transcript}).to_string();
@@ -842,11 +823,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 (resolved.transcript, entries)
             }
         };
-        let low_conf_transcript = keep_low_confidence_markers(&enriched_raw, 50.0);
         let user_message = build_user_message_with_hints(
             &resolved_transcript,
             &prefs.output_language,
-            Some(&low_conf_transcript),
+            None,
         );
 
         let default_prompt_body = default_voice_prompt_template();
@@ -872,13 +852,35 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let relevant_corrections = crate::store::corrections::filter_relevant(
             &word_corrections, &resolved_transcript, 2, 10,
         );
-        let base_system_prompt = render_voice_system_prompt_template(
+        let mut base_system_prompt = render_voice_system_prompt_template(
             &prompt_body,
             &prefs,
             &rag_examples,
             &relevant_corrections,
             &vocab_entries,
         );
+
+        if let Some(ref ctx) = screen_context {
+            let trimmed: String = ctx.chars().take(500).collect();
+            if !trimmed.trim().is_empty() {
+                info!(
+                    "[voice] screen context: {} chars",
+                    trimmed.len()
+                );
+                base_system_prompt.push_str(&format!(
+                    "\n\nSCREEN CONTEXT (text currently visible in the user's app):\n\
+                     \"{trimmed}\"\n\n\
+                     Use this context to:\n\
+                     1. Disambiguate similar-sounding words: if the screen discusses \"Said\" (the app) \
+                     and the transcript has \"set\", prefer \"Said\". If the screen discusses settings \
+                     and the transcript has \"said\", prefer \"set\".\n\
+                     2. Recognize names, brands, or terms visible on screen that STT may have mangled.\n\
+                     3. Match the tone and topic of what the user is already writing.\n\
+                     Do NOT blindly copy words from the screen into the output — only use it as a signal \
+                     when two interpretations of the audio are equally plausible.\n"
+                ));
+            }
+        }
 
         let system_prompt = if repair_mode.as_deref() == Some("preserve_recall") {
             format!(
@@ -889,9 +891,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             base_system_prompt
         };
 
-        // ── STEP 5: LLM stream ────────────────────────────────────────────────────
+        // ── STEP 5: LLM stream (single pass) ─────────────────────────────────────
         let llm_provider = prefs.llm_provider.clone();
-        let llm_provider_for_task = llm_provider.clone();
         let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
         let sys_p       = system_prompt.clone();
         let usr_m       = user_message.clone();
@@ -903,19 +904,22 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let tok = tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
                 .await
                 .unwrap_or(None);
-            let m = openai_codex::MODEL_MINI.to_string();
-            (m, tok.map(|t| t.access_token))
+            (openai_codex::MODEL_MINI.to_string(), tok.map(|t| t.access_token))
         } else if llm_provider == "gemini_direct" {
             (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
         } else if llm_provider == "groq" {
             (groq::GROQ_MODEL_DEFAULT.to_string(), None)
+        } else if llm_provider == "cerebras" {
+            (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
         } else {
             (model.clone(), None)
         };
+        let llm_provider_for_task = llm_provider.clone();
 
         let gk          = gateway_key.clone();
         let gk_gemini   = gemini_key.clone();
         let gk_groq     = groq_key.clone();
+        let gk_cerebras = cerebras_key.clone();
         let groq_key_for_recovery = groq_key.clone();
 
         let llm_start = Instant::now();
@@ -937,6 +941,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             } else if llm_provider_for_task == "groq" {
                 groq::stream_polish(
                     &client_c, &gk_groq, &model_for_llm, &sys_p, &usr_m, token_tx,
+                ).await
+            } else if llm_provider_for_task == "cerebras" {
+                cerebras::stream_polish(
+                    &client_c, &gk_cerebras, &model_for_llm, &sys_p, &usr_m, token_tx,
                 ).await
             } else {
                 gateway::stream_polish(&client_c, &gk, &model_for_llm, &sys_p, &usr_m, token_tx).await
@@ -1075,17 +1083,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             );
             llm_result.polished = cleaned;
         }
-
-        // Final safety-net: fold spoken-form emails, URLs, identifiers, and
-        // recover misheard URL protocols the LLM left un-formatted. Runs
-        // AFTER the content guard and AFTER Hinglish romanization so shapes
-        // are in their cleanest form. Deterministic + idempotent + prose-safe.
-        //
-        // format_recover disabled — will re-enable with targeted replacement
-        // let recovered = crate::llm::format_recover::recover(&llm_result.polished);
-        // if recovered != llm_result.polished {
-        //     llm_result.polished = recovered;
-        // }
 
         let word_count = llm_result.polished.split_whitespace().count() as i64;
         info!("[timing] LLM={}ms (TTFT inside) | total={}ms ← STT={}ms embed={}ms rag={}ms llm={}ms",

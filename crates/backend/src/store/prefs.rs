@@ -22,7 +22,8 @@ pub struct Preferences {
     pub deepgram_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
     pub groq_api_key: Option<String>,
-    /// LLM routing: "gateway" (default) | "gemini_direct" | "groq" | "openai_codex"
+    pub cerebras_api_key: Option<String>,
+    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
     pub llm_provider: String,
 }
 
@@ -44,7 +45,8 @@ pub struct PrefsUpdate {
     pub deepgram_api_key: Option<Option<String>>,
     pub gemini_api_key: Option<Option<String>>,
     pub groq_api_key: Option<Option<String>>,
-    /// LLM provider: "gateway" | "gemini_direct" | "groq" | "openai_codex"
+    pub cerebras_api_key: Option<Option<String>>,
+    /// LLM provider: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
     pub llm_provider: Option<String>,
 }
 
@@ -54,7 +56,8 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
         "SELECT user_id, selected_model, tone_preset, custom_prompt, language,
                 output_language, auto_paste, edit_capture, polish_text_hotkey, record_hotkey,
                 learning_enabled, updated_at,
-                gateway_api_key, deepgram_api_key, gemini_api_key, llm_provider, groq_api_key
+                gateway_api_key, deepgram_api_key, gemini_api_key, llm_provider, groq_api_key,
+                cerebras_api_key
          FROM preferences WHERE user_id = ?1",
         params![user_id],
         |row| {
@@ -82,6 +85,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                     .get::<_, Option<String>>(15)?
                     .unwrap_or_else(|| "groq".into()),
                 groq_api_key: row.get(16)?,
+                cerebras_api_key: row.get(17)?,
             })
         },
     )
@@ -186,6 +190,13 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
     if let Some(v) = update.groq_api_key {
         conn.execute(
             "UPDATE preferences SET groq_api_key = ?1, updated_at = ?2 WHERE user_id = ?3",
+            params![v, now, user_id],
+        )
+        .ok()?;
+    }
+    if let Some(v) = update.cerebras_api_key {
+        conn.execute(
+            "UPDATE preferences SET cerebras_api_key = ?1, updated_at = ?2 WHERE user_id = ?3",
             params![v, now, user_id],
         )
         .ok()?;

@@ -174,6 +174,16 @@ For each hunk, pick exactly ONE class:
      • Code identifiers (n8n, k8s, snake_case, camelCase)
      • Non-English / technical terms (Vipassana, satsang)
    Signature: kept_window is absent from transcript AND polish AND looks jargon-like (digits, mixed case, all-caps acronym, capitalised proper noun, rare term).  When polish has multiple common words and kept compresses them into a single jargon-y token (e.g. "Main corps" → "MACOBS", "Cloud Code" → "ClaudeCode"), this is virtually always STT_ERROR — set confidence high (≥ 0.85).
+
+   CRITICAL — STT_ERROR vs legitimate Hindi/Hinglish words:
+   The transcript_form in an STT_ERROR must be GIBBERISH — a word that does NOT exist in Hindi, English, or Hinglish. Deepgram produces nonsense like "amaix", "meah", "mccorb", "claud" when it cannot recognize a proper noun. These are legitimate STT errors worth learning.
+   However, if the transcript_form is a REAL Hindi/Hinglish word that Deepgram correctly transcribed (maine, tumne, kisko, dekho, hoga, kaise, abhi, bhai, etc.), then the user is REPHRASING, not correcting an STT error. Deepgram heard "maine" correctly — the user just decided to replace that word with something else.
+   ASK YOURSELF: "Does this transcript_form exist as a real word in Hindi or English?" If YES → USER_REPHRASE. If NO (it's gibberish/nonsense) → STT_ERROR.
+   Example: transcript_window="meah", kept_window="Emiac" → STT_ERROR ("meah" is gibberish, Deepgram mangled "Emiac").
+   Example: transcript_window="maine", kept_window="Emiac" → USER_REPHRASE ("maine" is Hindi for "I did", Deepgram heard correctly, user is replacing a real word).
+   Example: transcript_window="amaix", kept_window="Emiac" → STT_ERROR ("amaix" is nonsense).
+   Example: transcript_window="abhi", kept_window="Emiac" → USER_REPHRASE ("abhi" is Hindi for "now/currently", not an STT error).
+
    Example: transcript_window="written", polish_window="written", kept_window="n8n" → STT_ERROR (confidence 0.95).
    Example: transcript_window="Main corps", polish_window="Main corps", kept_window="MACOBS" → STT_ERROR (confidence 0.9), extracted_term: {"transcript_form":"Main corps","correct_form":"MACOBS"}.
 
@@ -248,14 +258,15 @@ OUTPUT — strict JSON only, no markdown, no commentary:
 pub async fn classify_edit(
     client: &Client,
     groq_api_key: &str,
+    codex_access_token: Option<&str>,
     transcript: &str,
     ai_output: &str,
     user_kept: &str,
     hunks: &[Hunk],
     output_language: &str,
 ) -> Option<ClassifyResult> {
-    if groq_api_key.is_empty() {
-        warn!("[classifier] no Groq API key — skipping classification");
+    if groq_api_key.is_empty() && codex_access_token.is_none() {
+        warn!("[classifier] no API keys — skipping classification");
         return None;
     }
     if hunks.is_empty() {
@@ -263,8 +274,12 @@ pub async fn classify_edit(
         return None;
     }
 
-    // Compact, structured hunk presentation.  The LLM sees indices it must
-    // label and cannot fabricate new ones.
+    info!(
+        "[classifier] model={} (codex={})",
+        if codex_access_token.map(|t| !t.is_empty()).unwrap_or(false) { "gpt-5.4-mini" } else { CLASSIFIER_MODEL },
+        codex_access_token.is_some()
+    );
+
     let hunks_block: String = hunks
         .iter()
         .enumerate()
@@ -292,6 +307,52 @@ pub async fn classify_edit(
          Return overall + labels[] + reason as strict JSON."
     );
 
+    // Try Codex (GPT-5.4-mini) first — smarter model, better at distinguishing
+    // real Hindi words from STT gibberish. Fall back to Groq 8B if unavailable.
+    if let Some(token) = codex_access_token {
+        if !token.is_empty() {
+            let start = std::time::Instant::now();
+            info!("[classifier] trying Codex gpt-5.4-mini");
+            match super::openai_codex::call_json(
+                client,
+                token,
+                super::openai_codex::MODEL_MINI,
+                SYSTEM_PROMPT,
+                &user_message,
+            )
+            .await
+            {
+                Ok(content) => {
+                    let ms = start.elapsed().as_millis();
+                    let content = content
+                        .trim_start_matches("```json")
+                        .trim_start_matches("```")
+                        .trim_end_matches("```")
+                        .trim();
+                    if !content.is_empty() {
+                        if let Some(r) = parse_label_response(content, hunks) {
+                            info!(
+                                "[classifier] codex {ms}ms — overall={} labelled={}/{} conf={:.2} reason={:?}",
+                                r.class.as_str(), r.candidates.len(), hunks.len(), r.confidence, r.reason,
+                            );
+                            return Some(r);
+                        }
+                        warn!("[classifier] codex returned unparseable JSON, falling back to Groq");
+                    }
+                }
+                Err(e) => {
+                    warn!("[classifier] codex failed: {e} — falling back to Groq");
+                }
+            }
+        }
+    }
+
+    // Fallback: Groq llama-3.1-8b-instant
+    if groq_api_key.is_empty() {
+        warn!("[classifier] no Groq API key — skipping classification");
+        return None;
+    }
+
     let body = json!({
         "model":           CLASSIFIER_MODEL,
         "temperature":     0.0,
@@ -304,7 +365,7 @@ pub async fn classify_edit(
     });
 
     let start = std::time::Instant::now();
-    info!("[classifier] POST {GROQ_ENDPOINT} model={CLASSIFIER_MODEL}");
+    info!("[classifier] fallback POST {GROQ_ENDPOINT} model={CLASSIFIER_MODEL}");
 
     let resp = match client
         .post(GROQ_ENDPOINT)
@@ -362,7 +423,7 @@ pub async fn classify_edit(
     parse_label_response(content, hunks)
         .map(|r| {
             info!(
-                "[classifier] {ms}ms — overall={} labelled={}/{} mean_conf={:.2} reason={:?}",
+                "[classifier] groq {ms}ms — overall={} labelled={}/{} mean_conf={:.2} reason={:?}",
                 r.class.as_str(),
                 r.candidates.len(),
                 hunks.len(),

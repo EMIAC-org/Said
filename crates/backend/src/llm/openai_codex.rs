@@ -184,6 +184,80 @@ pub async fn stream_polish(
     })
 }
 
+/// Non-streaming JSON call to the Codex endpoint — for background tasks
+/// like the edit classifier where we need a single JSON response, not a
+/// token stream. Uses the same Codex Responses API but collects the full
+/// output instead of streaming.
+pub async fn call_json(
+    client: &Client,
+    access_token: &str,
+    model: &str,
+    system_prompt: &str,
+    user_message: &str,
+) -> Result<String, String> {
+    let start = Instant::now();
+
+    let payload = json!({
+        "model":               model,
+        "instructions":        system_prompt,
+        "input": [
+            { "type": "message", "role": "user", "content": user_message }
+        ],
+        "tools":               [],
+        "store":               false,
+        "stream":              false,
+    });
+
+    info!("[codex-json] POST {CODEX_ENDPOINT} model={model}");
+
+    let resp = client
+        .post(CODEX_ENDPOINT)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| format!("codex request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        warn!("[codex-json] HTTP {status}: {}", &body[..body.len().min(300)]);
+        return Err(format!("Codex API error {status}"));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("codex json parse: {e}"))?;
+
+    let ms = start.elapsed().as_millis();
+
+    let content = body
+        .get("output")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .filter(|item| item.get("type").and_then(|t| t.as_str()) == Some("message"))
+                .last()
+        })
+        .and_then(|msg| msg.get("content"))
+        .and_then(|c| c.as_array())
+        .and_then(|parts| {
+            parts.iter()
+                .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("output_text"))
+                .map(|p| p.get("text").and_then(|t| t.as_str()).unwrap_or(""))
+                .reduce(|a, b| if b.len() > a.len() { b } else { a })
+        })
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    info!("[codex-json] done in {ms}ms, {} chars", content.len());
+    Ok(content)
+}
+
 pub fn is_auth_error(raw: &str) -> bool {
     let lower = raw.to_ascii_lowercase();
     lower.contains("401")

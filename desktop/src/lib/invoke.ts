@@ -278,6 +278,43 @@ export async function patchPreferences(
   }
 }
 
+// ── OpenAI / ChatGPT OAuth ───────────────────────────────────────────────────
+
+export interface OpenAIStatus {
+  connected: boolean;
+  expires_at: number | null;
+  connected_at: number | null;
+}
+
+export async function openaiConnect(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<string>("openai_connect");
+  } catch (e) {
+    console.error("openai_connect failed:", e);
+    return null;
+  }
+}
+
+export async function openaiStatus(): Promise<OpenAIStatus | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<OpenAIStatus>("openai_status");
+  } catch {
+    return null;
+  }
+}
+
+export async function openaiDisconnect(): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    await tauriInvoke("openai_disconnect");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function getVoicePrompt(): Promise<PromptTemplateResponse | null> {
   if (!isTauriRuntime()) {
     const defaultBody = [
@@ -787,11 +824,14 @@ export function onPendingEditsChanged(handler: () => void): () => void {
 // ── Vocabulary management ────────────────────────────────────────────────────
 
 export interface VocabRow {
-  term:      string;
-  weight:    number;
-  use_count: number;
-  last_used: number;
-  source:    "auto" | "manual" | "starred";
+  term:            string;
+  weight:          number;
+  use_count:       number;
+  last_used:       number;
+  source:          "auto" | "manual" | "starred";
+  meaning?:        string | null;
+  term_type?:      string | null;
+  example_context?: string | null;
 }
 
 export interface VocabListResponse {
@@ -816,6 +856,19 @@ export async function addVocabularyTerm(term: string): Promise<void> {
 export async function deleteVocabularyTerm(term: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await tauriInvoke("delete_vocabulary_term", { term });
+}
+
+export async function patchVocabularyTerm(
+  term: string,
+  updates: { meaning?: string; term_type?: string; example_context?: string },
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await tauriInvoke("patch_vocabulary_term", {
+    term,
+    meaning: updates.meaning ?? null,
+    termType: updates.term_type ?? null,
+    exampleContext: updates.example_context ?? null,
+  });
 }
 
 export async function starVocabularyTerm(term: string): Promise<boolean> {

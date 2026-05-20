@@ -94,11 +94,11 @@ fn replacement_threshold(term: &vocabulary::VocabTerm, alias: &str) -> Option<i6
     }
 
     match term.term_type.as_deref() {
-        Some("acronym" | "proper_noun" | "brand" | "code_identifier" | "phrase") => Some(3),
+        Some("acronym" | "proper_noun" | "brand" | "code_identifier" | "phrase") => Some(1),
         _ => {
             if phonetics::jargon_score(&term.term) >= 0.55 && phonetics::jargon_score(alias) >= 0.4
             {
-                Some(3)
+                Some(2)
             } else {
                 None
             }
@@ -123,20 +123,23 @@ fn replacement_trust_score(
     if rule.use_count < threshold || rule.weight < threshold as f64 {
         return None;
     }
-    if canonical_keyterm_score(term) < 3.0 {
+    if canonical_keyterm_score(term) < 2.5 {
         return None;
     }
 
     let phonetic = phonetics::similarity(alias, canonical);
-    let min_phonetic = match term.term_type.as_deref() {
-        Some("acronym") => 0.42,
-        Some("phrase") => 0.52,
-        Some("code_identifier") => 0.48,
-        Some("brand" | "proper_noun") => 0.58,
-        _ => 0.65,
-    };
-    if phonetic < min_phonetic {
-        return None;
+
+    // For typed terms (acronym, proper_noun, brand, code_id), the classify
+    // pipeline already validated this correction via phonetic triage + LLM +
+    // promotion gates.  The phonetic check here is redundant and actively
+    // harmful for cross-lingual pairs (e.g. Hindi "MEAH" → "Emiac" scores
+    // 0.33 in the English phonetic system).  Skip it for high-signal types.
+    let skip_phonetic_gate = is_high_signal_term_type(term.term_type.as_deref());
+    if !skip_phonetic_gate {
+        let min_phonetic = 0.50;
+        if phonetic < min_phonetic {
+            return None;
+        }
     }
 
     let mut score = phonetic * 4.0;
@@ -167,9 +170,9 @@ pub fn deterministic_export_tier(
         return ExportTier::ExportReplaceReady;
     }
     if is_precise_keyterm(canonical)
-        && canonical_keyterm_score(canonical) >= 3.0
-        && rule.use_count >= 2
-        && rule.weight >= 2.0
+        && canonical_keyterm_score(canonical) >= 2.5
+        && rule.use_count >= 1
+        && rule.weight >= 1.0
         && rule.contradiction_count < 2
     {
         return ExportTier::ExportKeytermSupport;
@@ -195,6 +198,13 @@ pub fn build_bias_package(
     transcription_language: &str,
     output_language: &str,
 ) -> BiasPackage {
+    // v4: Selective biasing — only high-weight, high-confidence terms.
+    // The learning pipeline guards what enters the DB (classifier rejects
+    // common Hindi words like "maine", "mac"). What survives into the DB
+    // with high weight is safe to bias Deepgram with.
+    //
+    // Only top terms (weight ≥ 2.0, use_count ≥ 3) get exported as keyterms.
+    // This prevents low-confidence one-off corrections from biasing STT.
     let requested_stt_mode = resolve_stt_mode(transcription_language);
     let stt_mode = if output_language == "hinglish"
         && (transcription_language.trim().is_empty()
@@ -205,112 +215,27 @@ pub fn build_bias_package(
     } else {
         requested_stt_mode
     };
-    let vocab_terms = vocabulary::top_terms_for_language(pool, user_id, output_language, 200);
-    let alias_rules = stt_replacements::load_for_language(pool, user_id, output_language);
-    let vocab_by_term: HashMap<String, vocabulary::VocabTerm> = vocab_terms
+
+    let vocab = vocabulary::top_terms(pool, user_id, 50);
+    let keyterms: Vec<String> = vocab
         .iter()
-        .cloned()
-        .map(|term| (term.term.to_ascii_lowercase(), term))
+        .filter(|v| v.weight >= 2.0 && v.use_count >= 3)
+        .map(|v| v.term.clone())
+        .take(20)
         .collect();
-    let mut alias_support_by_canonical: HashMap<String, f64> = HashMap::new();
-    for rule in &alias_rules {
-        let Some(canonical) = vocab_by_term.get(&rule.correct_form.to_ascii_lowercase()) else {
-            continue;
-        };
-        let effective_tier = effective_export_tier(canonical, rule);
-        if effective_tier == ExportTier::Blocked {
-            continue;
-        }
-        let mut effective_rule = rule.clone();
-        effective_rule.export_tier = effective_tier;
-        *alias_support_by_canonical
-            .entry(rule.correct_form.to_ascii_lowercase())
-            .or_insert(0.0) += alias_support_score(&effective_rule);
-    }
 
-    let mut seen_terms = HashSet::new();
-    let mut keyterms = Vec::new();
-    let mut keyterm_candidates: Vec<&vocabulary::VocabTerm> = vocab_terms
-        .iter()
-        .filter(|t| is_precise_keyterm(t))
-        .collect();
-    keyterm_candidates.sort_by(|a, b| {
-        let sb = canonical_keyterm_score(b)
-            + alias_support_by_canonical
-                .get(&b.term.to_ascii_lowercase())
-                .copied()
-                .unwrap_or(0.0);
-        let sa = canonical_keyterm_score(a)
-            + alias_support_by_canonical
-                .get(&a.term.to_ascii_lowercase())
-                .copied()
-                .unwrap_or(0.0);
-        sb.partial_cmp(&sa).unwrap_or(Ordering::Equal)
-    });
-    for term in keyterm_candidates {
-        let lowered = term.term.to_ascii_lowercase();
-        if seen_terms.insert(lowered) {
-            keyterms.push(term.term.clone());
-        }
-        if keyterms.len() >= said_core::deepgram::MAX_KEYTERMS {
-            break;
-        }
-    }
-
-    let mut seen_replacements = HashSet::new();
-    let mut replacement_candidates: Vec<(f64, ReplacementRule)> = Vec::new();
-    for rule in alias_rules {
-        let find = rule.transcript_form.trim();
-        let replace = rule.correct_form.trim();
-        if find.is_empty() || replace.is_empty() {
-            continue;
-        }
-        if find.eq_ignore_ascii_case(replace) {
-            continue;
-        }
-        if rule.review_status == ReviewStatus::Blocked {
-            continue;
-        }
-
-        let Some(canonical) = vocab_by_term.get(&replace.to_ascii_lowercase()) else {
-            continue;
-        };
-        let effective_tier = effective_export_tier(canonical, &rule);
-        if effective_tier != ExportTier::ExportReplaceReady {
-            continue;
-        }
-        let Some(score) = replacement_trust_score(canonical, &rule) else {
-            continue;
-        };
-
-        let dedupe_key = format!(
-            "{}=>{}",
-            find.to_ascii_lowercase(),
-            replace.to_ascii_lowercase()
+    if !keyterms.is_empty() {
+        tracing::info!(
+            "[stt-bias] exporting {} keyterm(s): {:?}",
+            keyterms.len(),
+            keyterms,
         );
-        if !seen_replacements.insert(dedupe_key) {
-            continue;
-        }
-        replacement_candidates.push((
-            score,
-            ReplacementRule {
-                find: find.to_ascii_lowercase(),
-                replace: Some(replace.to_string()),
-            },
-        ));
     }
-
-    replacement_candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
-    let replacements = replacement_candidates
-        .into_iter()
-        .take(said_core::deepgram::MAX_REPLACEMENTS)
-        .map(|(_, rule)| rule)
-        .collect();
 
     BiasPackage {
         stt_mode,
         keyterms,
-        replacements,
+        replacements: Vec::new(),
     }
 }
 
@@ -365,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_multi_bias_and_filters_low_trust_replacements() {
+    fn bias_returns_no_keyterms_and_no_replacements() {
         let pool = mem_pool();
         vocabulary::upsert_for_language_with_context(
             &pool,
@@ -376,81 +301,10 @@ mod tests {
             "hinglish",
             Some("EMIAC technology ke baare mein"),
         );
-        vocabulary::upsert_for_language_with_context(
-            &pool,
-            "u1",
-            "return",
-            1.0,
-            "auto",
-            "hinglish",
-            Some("return ka automation"),
-        );
-        stt_replacements::upsert_aliases_for_language(
-            &pool, "u1", "emi", "emi", "EMIAC", 1.0, "hinglish",
-        );
-        stt_replacements::upsert_aliases_for_language(
-            &pool, "u1", "emi", "emi", "EMIAC", 1.0, "hinglish",
-        );
-        stt_replacements::upsert_aliases_for_language(
-            &pool, "u1", "emi", "emi", "EMIAC", 1.0, "hinglish",
-        );
-        stt_replacements::upsert_aliases_for_language(
-            &pool, "u1", "return", "return", "return", 1.0, "hinglish",
-        );
-        stt_replacements::upsert_aliases_for_language(
-            &pool, "u1", "return", "return", "return", 1.0, "hinglish",
-        );
-        stt_replacements::upsert_aliases_for_language(
-            &pool, "u1", "return", "return", "return", 1.0, "hinglish",
-        );
 
         let bias = build_bias_package(&pool, "u1", "auto", "hinglish");
         assert_eq!(bias.stt_mode, "hi");
-        assert!(bias.keyterms.contains(&"EMIAC".to_string()));
-        assert!(
-            bias.replacements
-                .iter()
-                .any(|r| r.find == "emi" && r.replace.as_deref() == Some("EMIAC"))
-        );
-        assert!(
-            !bias
-                .replacements
-                .iter()
-                .any(|r| r.find == "return" && r.replace.as_deref() == Some("return"))
-        );
-    }
-
-    #[test]
-    fn common_word_aliases_never_export_as_replacements() {
-        let pool = mem_pool();
-        vocabulary::upsert_for_language_with_context(
-            &pool,
-            "u1",
-            "ProjectAtlas",
-            2.0,
-            "manual",
-            "hinglish",
-            Some("ProjectAtlas roadmap dekhna"),
-        );
-        for _ in 0..5 {
-            stt_replacements::upsert_aliases_for_language(
-                &pool,
-                "u1",
-                "return",
-                "return",
-                "ProjectAtlas",
-                1.0,
-                "hinglish",
-            );
-        }
-
-        let bias = build_bias_package(&pool, "u1", "auto", "hinglish");
-        assert!(
-            !bias
-                .replacements
-                .iter()
-                .any(|r| r.find == "return" && r.replace.as_deref() == Some("ProjectAtlas"))
-        );
-        assert!(bias.keyterms.contains(&"ProjectAtlas".to_string()));
+        assert!(bias.keyterms.is_empty(), "keyterms must be empty — biasing disabled");
+        assert!(bias.replacements.is_empty());
     }
 }

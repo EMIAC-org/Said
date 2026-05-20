@@ -38,7 +38,9 @@ pub struct Preferences {
     pub gateway_api_key: Option<String>,
     #[serde(default)]
     pub groq_api_key: Option<String>,
-    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
+    #[serde(default)]
+    pub cerebras_api_key: Option<String>,
+    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
     #[serde(default = "default_llm_provider")]
     pub llm_provider: String,
 }
@@ -82,7 +84,9 @@ pub struct PrefsUpdate {
     pub gemini_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groq_api_key: Option<Option<String>>,
-    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cerebras_api_key: Option<Option<String>>,
+    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_provider: Option<String>,
 }
@@ -237,6 +241,7 @@ pub async fn stream_voice_polish<F>(
     pre_transcript: Option<String>,
     pre_transcript_meta: Option<TranscriptMeta>,
     repair_mode: Option<String>,
+    screen_context: Option<String>,
     mut on_event: F,
 ) -> Result<PolishDone, String>
 where
@@ -270,6 +275,12 @@ where
     }
     if let Some(mode) = repair_mode {
         form = form.text("repair_mode", mode);
+    }
+    if let Some(ctx) = screen_context {
+        let trimmed = ctx.chars().take(500).collect::<String>();
+        if !trimmed.trim().is_empty() {
+            form = form.text("screen_context", trimmed);
+        }
     }
 
     let resp = client
@@ -1067,7 +1078,13 @@ pub struct VocabRow {
     pub weight: f64,
     pub use_count: i64,
     pub last_used: i64,
-    pub source: String, // "auto" | "manual" | "starred"
+    pub source: String,
+    #[serde(default)]
+    pub meaning: Option<String>,
+    #[serde(default)]
+    pub term_type: Option<String>,
+    #[serde(default)]
+    pub example_context: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1088,6 +1105,41 @@ pub async fn list_vocabulary(ep: &BackendEndpoint) -> Result<VocabListResponse, 
         .json::<VocabListResponse>()
         .await
         .map_err(|e| format!("parse vocab list: {e}"))
+}
+
+pub async fn patch_vocabulary_term(
+    ep: &BackendEndpoint,
+    term: &str,
+    meaning: Option<&str>,
+    term_type: Option<&str>,
+    example_context: Option<&str>,
+) -> Result<(), String> {
+    let encoded_term: String = term.chars().map(|c| {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+            c.to_string()
+        } else {
+            format!("%{:02X}", c as u32)
+        }
+    }).collect();
+    let url = format!("{}/v1/vocabulary/{}", ep.url, encoded_term);
+    let mut body = serde_json::Map::new();
+    if let Some(m) = meaning {
+        body.insert("meaning".into(), serde_json::Value::String(m.to_string()));
+    }
+    if let Some(t) = term_type {
+        body.insert("term_type".into(), serde_json::Value::String(t.to_string()));
+    }
+    if let Some(c) = example_context {
+        body.insert("example_context".into(), serde_json::Value::String(c.to_string()));
+    }
+    Client::new()
+        .patch(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::Value::Object(body))
+        .send()
+        .await
+        .map_err(|e| format!("patch vocab failed: {e}"))?;
+    Ok(())
 }
 
 /// Manually add a term (source = "manual", weight 1.5).

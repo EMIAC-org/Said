@@ -14,7 +14,8 @@ type BarState =
   | { kind: "done" }
   | { kind: "pasted" }
   | { kind: "manual_paste" }
-  | { kind: "error"; message: string; audioId?: string };
+  | { kind: "error"; message: string; audioId?: string }
+  | { kind: "learned"; term: string; message: string };
 
 type VoiceErrorPayload = {
   message: string;
@@ -50,6 +51,7 @@ function pillSize(kind: PillKind, hasTranscript = false, hovered = false, hasPan
   if (hasPanel && hasTranscript) return { width: 300, height: 142 };
   if (hasPanel) return { width: 300, height: 80 };
   if (hasTranscript) return { width: 300, height: 102 };
+  if (kind === "learned") return { width: 300, height: 48 };
   if (kind === "error") return { width: 300, height: 56 };
   if (kind === "idle" && hovered) return { width: 206, height: 40 };
   return { width: 184, height: 40 };
@@ -266,6 +268,20 @@ export default function StatusBar() {
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] voice-error subscribe failed", err));
 
+    // ── Learning: show term in status bar with undo ──────────────────
+    listen<{ term: string; message: string }>("vocab-learned", (e) => {
+      console.info("[status-bar] vocab-learned", e.payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      win.show().catch(() => {});
+      setBar({ kind: "learned", term: e.payload.term, message: e.payload.message });
+      doneTimer.current = setTimeout(() => {
+        setBar({ kind: "idle" });
+        invoke("dismiss_status_bar").catch(() => {});
+      }, 3000);
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch(() => {});
+
     listen("prefs-changed", () => {
       invoke<{ output_language: string; tone_preset: string }>("get_preferences")
         .then((prefs) => {
@@ -375,6 +391,11 @@ export default function StatusBar() {
             <div className="sb-manual">
               <span />
             </div>
+          ) : bar.kind === "learned" ? (
+            <div className="sb-learned">
+              <span className="sb-learned-dot" />
+              <span className="sb-learned-text">Learned <strong>{bar.term}</strong></span>
+            </div>
           ) : bar.kind === "error" ? (
             <div className="sb-error-copy">
               <span className="sb-error-pulse" />
@@ -395,7 +416,24 @@ export default function StatusBar() {
           )}
         </div>
 
-        {bar.kind === "error" ? (
+        {bar.kind === "learned" ? (
+          <button
+            className="sb-icon-btn sb-icon-btn--dismiss"
+            title="Remove learned term"
+            aria-label="Remove"
+            onClick={async () => {
+              try {
+                await invoke("delete_vocabulary_term", { term: bar.term });
+              } catch (e) {
+                console.warn("[status-bar] delete_vocab_term failed", e);
+              }
+              setBar({ kind: "idle" });
+              invoke("dismiss_status_bar").catch(() => {});
+            }}
+          >
+            <X size={13} />
+          </button>
+        ) : bar.kind === "error" ? (
           <div className="sb-error-actions">
             {bar.audioId && (
               <button

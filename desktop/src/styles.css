@@ -1201,6 +1201,36 @@ body.statusbar-mode #app {
   animation: sb-scan 1s linear infinite;
 }
 
+.sb-learned {
+  min-width: 0;
+  max-width: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-size: 11px;
+  line-height: 1.15;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.85);
+}
+.sb-learned-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: hsl(142 70% 55%);
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.6);
+  flex-shrink: 0;
+}
+.sb-learned-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb-learned-text strong {
+  color: hsl(226 80% 78%);
+  font-weight: 700;
+}
+
 .sb-error-copy {
   min-width: 0;
   max-width: 210px;

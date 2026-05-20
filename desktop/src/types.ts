@@ -70,7 +70,8 @@ export interface Preferences {
   deepgram_api_key:   string | null;
   gemini_api_key:     string | null;
   groq_api_key:       string | null;
-  /** LLM routing: "gateway" (default) | "gemini_direct" | "groq" | "openai_codex" */
+  cerebras_api_key:   string | null;
+  /** LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex" */
   llm_provider:       string;
 }
 
@@ -90,7 +91,8 @@ export interface PrefsUpdate {
   deepgram_api_key?:   string | null;
   gemini_api_key?:     string | null;
   groq_api_key?:       string | null;
-  /** LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex" */
+  cerebras_api_key?:   string | null;
+  /** LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex" */
   llm_provider?:       string;
 }
 

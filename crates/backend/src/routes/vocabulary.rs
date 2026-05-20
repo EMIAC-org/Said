@@ -223,6 +223,7 @@ pub async fn create(
         // example_context yet — the FTS row is keyed on the term alone
         // until a future sighting fills in context.
         vocab_fts::upsert(&state.pool, &state.default_user_id, trimmed, None);
+        crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
         info!("[vocab] manual add: {trimmed:?}");
         (
             StatusCode::CREATED,
@@ -273,8 +274,46 @@ pub async fn delete(State(state): State<AppState>, Path(term): Path<String>) -> 
     let stt_n =
         stt_replacements::delete_by_correct_form(&state.pool, &state.default_user_id, trimmed);
     info!("[vocab] delete term={trimmed:?} vocab_rows={n} stt_aliases={stt_n}",);
+    crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
     if n > 0 {
         StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+// ── PATCH /v1/vocabulary/:term ───────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct PatchBody {
+    pub meaning: Option<String>,
+    pub term_type: Option<String>,
+    pub example_context: Option<String>,
+}
+
+pub async fn patch(
+    State(state): State<AppState>,
+    Path(term): Path<String>,
+    Json(body): Json<PatchBody>,
+) -> StatusCode {
+    let trimmed = term.trim();
+    if trimmed.is_empty() {
+        return StatusCode::BAD_REQUEST;
+    }
+    let uid = state.default_user_id.as_str();
+    let mut updated = false;
+    if let Some(ref meaning) = body.meaning {
+        updated |= vocabulary::update_meaning(&state.pool, uid, trimmed, meaning);
+    }
+    if let Some(ref tt) = body.term_type {
+        updated |= vocabulary::update_term_type(&state.pool, uid, trimmed, tt);
+    }
+    if let Some(ref ctx) = body.example_context {
+        updated |= vocabulary::update_example_context(&state.pool, uid, trimmed, ctx);
+    }
+    if updated {
+        info!("[vocab] patched term={trimmed:?}");
+        StatusCode::OK
     } else {
         StatusCode::NOT_FOUND
     }
@@ -341,5 +380,6 @@ pub async fn toggle_star(
         )
         .unwrap_or(0);
     info!("[vocab] toggle_star term={trimmed:?} → source={new_source} starred={starred} rows={n}");
+    crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
     (StatusCode::OK, Json(StarResponse { starred }))
 }

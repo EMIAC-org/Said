@@ -70,6 +70,7 @@ fn prefs(output_language: &str, custom_prompt: Option<&str>) -> Preferences {
         gateway_api_key: None,
         groq_api_key: None,
         llm_provider: "groq".into(),
+        cerebras_api_key: None,
         updated_at: 0,
     }
 }
@@ -421,6 +422,7 @@ async fn test_vocab_terms_preserved() {
         resolution: VocabResolution::Resolved,
         term_type: Some("code_identifier".into()),
         meaning: Some("Workflow automation tool.".into()),
+        stt_aliases: vec![],
     }];
     let transcript = "set up the n8n workflow for the new client today";
     let out = polish(&key, transcript, "english", &entries, &[], &[], None)

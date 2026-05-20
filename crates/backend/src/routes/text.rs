@@ -29,7 +29,8 @@ use crate::{
         prompt::{
             VocabEntry, build_refine_last_transform_prompt,
             build_refine_last_transform_user_message, build_system_prompt_with_vocab_entries,
-            build_tray_format_user_message, build_tray_system_prompt, build_user_message,
+            build_tray_format_system_prompt, build_tray_format_user_message,
+            build_tray_system_prompt, build_user_message,
             resolved_vocab_terms_to_entries,
         },
         script,
@@ -148,7 +149,8 @@ pub async fn polish(
         };
         let examples_used = rag_examples.len();
 
-        // 2. Word corrections from LexiconCache (loaded before stream started)
+        // 2. Word corrections
+        let is_formatter = tone_override.as_deref() == Some("format");
         let word_corrections = if tone_override.is_none() {
             word_corrections_cached
         } else {
@@ -158,11 +160,14 @@ pub async fn polish(
             info!("[text] {} word correction(s) loaded", word_corrections.len());
         }
 
-        // tone_override → use tray-specific English-locked prompt (no RAG, no persona)
-        // Otherwise → use full RACC prompt with user prefs + RAG examples + corrections
+        // tone_override → use tray-specific prompt. Format tone gets vocab + corrections.
+        // Other tones get raw transcript with no vocab.
         let (resolved_transcript, vocab_entries): (String, Vec<VocabEntry>) = if tone_override.is_none() {
             let alias_t0 = Instant::now();
-            let alias_result = stt_replacements::apply_with_matches(&transcript, &stt_replacement_rules);
+            let alias_result = stt_replacements::ApplyResult {
+                text: transcript.clone(),
+                matches: vec![],
+            };
             let selected_terms = vocab_embeddings::select_for_prompt(
                 &pool,
                 &user_id,
@@ -190,11 +195,12 @@ pub async fn polish(
         } else {
             (transcript.clone(), vec![])
         };
-        let is_formatter = tone_override.as_deref() == Some("format");
         let relevant_corrections = crate::store::corrections::filter_relevant(
             &word_corrections, &resolved_transcript, 2, 10,
         );
-        let system_prompt = if let Some(ref tone) = tone_override {
+        let system_prompt = if is_formatter {
+            build_tray_format_system_prompt(&[], &[])
+        } else if let Some(ref tone) = tone_override {
             build_tray_system_prompt(tone)
         } else {
             build_system_prompt_with_vocab_entries(

@@ -19,6 +19,18 @@ path = "src/main.rs"
 name = "eval-pipeline"
 path = "src/bin/eval_pipeline.rs"
 
+[[bin]]
+name = "e2e-pipeline"
+path = "src/bin/e2e_pipeline.rs"
+
+[[bin]]
+name = "e2e-groq"
+path = "src/bin/e2e_groq.rs"
+
+[[bin]]
+name = "e2e-formatter"
+path = "src/bin/e2e_formatter.rs"
+
 [lints]
 workspace = true
 
