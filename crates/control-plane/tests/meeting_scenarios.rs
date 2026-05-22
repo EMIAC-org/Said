@@ -126,14 +126,22 @@ impl TestServer {
     }
 
     /// Create a meeting via the API. Returns meeting_id.
+    /// If participant_ids is empty, a dummy peer account is auto-created to
+    /// satisfy the "at least one invitee" validation.
     async fn create_meeting(&self, token: Uuid, title: &str, participant_ids: &[Uuid]) -> Uuid {
+        let ids: Vec<Uuid> = if participant_ids.is_empty() {
+            let (peer_id, _) = self.create_account(&Uuid::new_v4().to_string()).await;
+            vec![peer_id]
+        } else {
+            participant_ids.to_vec()
+        };
         let res = self
             .client
             .post(self.url("/v1/meetings"))
             .header("Authorization", format!("Bearer {token}"))
             .json(&json!({
                 "title": title,
-                "participant_ids": participant_ids,
+                "participant_ids": ids,
             }))
             .send()
             .await
@@ -419,6 +427,38 @@ async fn s03_member_blocked_from_creating_meeting() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Scenario 3b: Empty participant list rejected
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn s03b_empty_participants_rejected() {
+    let srv = TestServer::start().await;
+    let tag = Uuid::new_v4();
+
+    let (account_id, token) = srv.create_account(&format!("empty-{tag}")).await;
+    srv.create_org(token, account_id, &tag.to_string(), "COMPANY_ADMIN")
+        .await;
+
+    let res = srv
+        .client
+        .post(srv.url("/v1/meetings"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({"title": "Solo meeting", "participant_ids": []}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), 422);
+    let body: Value = res.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("at least one participant")
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Scenario 4: COMPANY_ADMIN can create meeting
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -430,12 +470,13 @@ async fn s04_admin_can_create_meeting() {
     let (account_id, token) = srv.create_account(&format!("admin-{tag}")).await;
     srv.create_org(token, account_id, &tag.to_string(), "COMPANY_ADMIN")
         .await;
+    let (peer_id, _) = srv.create_account(&format!("peer-admin-{tag}")).await;
 
     let res = srv
         .client
         .post(srv.url("/v1/meetings"))
         .header("Authorization", format!("Bearer {token}"))
-        .json(&json!({"title": "Admin meeting", "participant_ids": []}))
+        .json(&json!({"title": "Admin meeting", "participant_ids": [peer_id]}))
         .send()
         .await
         .unwrap();
@@ -455,12 +496,13 @@ async fn s05_manager_can_create_meeting() {
     let (account_id, token) = srv.create_account(&format!("mgr-{tag}")).await;
     srv.create_org(token, account_id, &tag.to_string(), "MANAGER")
         .await;
+    let (peer_id, _) = srv.create_account(&format!("peer-mgr-{tag}")).await;
 
     let res = srv
         .client
         .post(srv.url("/v1/meetings"))
         .header("Authorization", format!("Bearer {token}"))
-        .json(&json!({"title": "Manager meeting", "participant_ids": []}))
+        .json(&json!({"title": "Manager meeting", "participant_ids": [peer_id]}))
         .send()
         .await
         .unwrap();
@@ -1396,11 +1438,12 @@ async fn s20_configurable_creator_roles() {
         .unwrap();
 
     // Now MEMBER should be able to create
+    let (peer_id, _) = srv.create_account(&format!("cfg-peer-{tag}")).await;
     let res = srv
         .client
         .post(srv.url("/v1/meetings"))
         .header("Authorization", format!("Bearer {member_token}"))
-        .json(&json!({"title": "member meeting", "participant_ids": []}))
+        .json(&json!({"title": "member meeting", "participant_ids": [peer_id]}))
         .send()
         .await
         .unwrap();

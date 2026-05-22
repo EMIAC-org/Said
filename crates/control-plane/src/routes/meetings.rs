@@ -125,6 +125,13 @@ pub async fn create(
         ));
     }
 
+    if body.participant_ids.is_empty() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "at least one participant must be invited"})),
+        ));
+    }
+
     // Insert meeting
     let meeting_id: Uuid = sqlx::query_scalar(
         "INSERT INTO meetings (org_id, title, agenda, scheduled_at, duration_minutes, created_by)
@@ -358,7 +365,8 @@ pub async fn detail(
         ));
     };
 
-    // Fetch participants (including disconnect_count)
+    // Fetch participants with resolved display names.
+    // Guest accounts have said.guest emails — strip the trailing -{uuid32} suffix.
     let participants: Vec<(
         Uuid,
         Uuid,
@@ -366,13 +374,22 @@ pub async fn detail(
         Option<DateTime<Utc>>,
         Option<DateTime<Utc>>,
         i32,
+        String,
     )> = sqlx::query_as(
-        "SELECT id, account_id, status, joined_at, left_at, disconnect_count
-               FROM meeting_participants
-              WHERE meeting_id = $1
-              ORDER BY joined_at ASC NULLS LAST",
+        "SELECT mp.id, mp.account_id, mp.status, mp.joined_at, mp.left_at,
+                mp.disconnect_count,
+                CASE WHEN a.email LIKE '%@said.guest'
+                     THEN regexp_replace(split_part(a.email, '@', 1), '-[0-9a-f]{32}$', '')
+                     ELSE COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1))
+                END
+           FROM meeting_participants mp
+           JOIN accounts a ON a.id = mp.account_id
+           LEFT JOIN org_members om ON om.account_id = mp.account_id AND om.org_id = $2
+          WHERE mp.meeting_id = $1
+          ORDER BY mp.joined_at ASC NULLS LAST",
     )
     .bind(meeting_id)
+    .bind(org_id)
     .fetch_all(&state.db)
     .await
     .map_err(db_err)?;
@@ -380,7 +397,7 @@ pub async fn detail(
     let participants_json: Vec<Value> = participants
         .into_iter()
         .map(
-            |(pid, account_id, pstatus, joined_at, left_at, disconnect_count)| {
+            |(pid, account_id, pstatus, joined_at, left_at, disconnect_count, name)| {
                 json!({
                     "id":               pid,
                     "account_id":       account_id,
@@ -388,6 +405,7 @@ pub async fn detail(
                     "joined_at":        joined_at,
                     "left_at":          left_at,
                     "disconnect_count": disconnect_count,
+                    "name":             name,
                 })
             },
         )
@@ -447,10 +465,14 @@ pub async fn detail(
         .map(|(did, text)| json!({"id": did, "text": text}))
         .collect();
 
-    // Fetch transcript with speaker names
+    // Fetch transcript with speaker names.
+    // Guest accounts use said.guest emails — strip the trailing -{uuid32} suffix.
     let transcript: Vec<(String, Option<String>, String, i64, i32)> = sqlx::query_as(
         "SELECT tc.speaker_id::text,
-                COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1)),
+                CASE WHEN a.email LIKE '%@said.guest'
+                     THEN regexp_replace(split_part(a.email, '@', 1), '-[0-9a-f]{32}$', '')
+                     ELSE COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1))
+                END,
                 tc.text, tc.timestamp_ms, tc.chunk_index
            FROM transcript_chunks tc
            JOIN accounts a ON a.id = tc.speaker_id
