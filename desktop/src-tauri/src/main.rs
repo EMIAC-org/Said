@@ -34,6 +34,49 @@ const MEETING_PAUSE_MS: u64 = 900;
 const MEETING_MIN_CHUNK_MS: u64 = 700;
 const MEETING_MAX_CHUNK_MS: u64 = 30_000;
 
+#[derive(Debug, Clone, Serialize)]
+struct StatusBarMetrics {
+    has_notch: bool,
+    screen_x: f64,
+    screen_y: f64,
+    screen_width: f64,
+    screen_height: f64,
+    notch_width: f64,
+    notch_height: f64,
+    menu_bar_height: f64,
+    window_x: f64,
+    window_y: f64,
+    window_width: f64,
+    window_height: f64,
+    closed_width: f64,
+    closed_height: f64,
+    hover_width: f64,
+    hover_height: f64,
+    recording_width: f64,
+    recording_height: f64,
+    processing_width: f64,
+    processing_height: f64,
+    transcript_width: f64,
+    transcript_height: f64,
+    done_width: f64,
+    done_height: f64,
+    learned_width: f64,
+    learned_height: f64,
+    error_width: f64,
+    error_height: f64,
+    top_radius: f64,
+    bottom_radius: f64,
+    expanded_bottom_radius: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeDisplayCutout {
+    has_notch: bool,
+    notch_width: f64,
+    notch_height: f64,
+    menu_bar_height: f64,
+}
+
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
 }
@@ -146,6 +189,223 @@ fn schedule_status_bar_macos_tune(win: &tauri::WebviewWindow) {
     }) {
         tracing::warn!("[status-bar] could not schedule macOS tune on main thread: {e}");
     }
+}
+
+#[cfg(target_os = "macos")]
+fn native_display_cutout() -> Option<NativeDisplayCutout> {
+    use cocoa::base::id;
+    use cocoa::foundation::NSRect;
+    use objc::runtime::{Class, Object, Sel};
+    use objc::{Encode, Encoding, Message};
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default)]
+    struct NSEdgeInsets {
+        top: f64,
+        left: f64,
+        bottom: f64,
+        right: f64,
+    }
+
+    unsafe impl Encode for NSEdgeInsets {
+        fn encode() -> Encoding {
+            unsafe { Encoding::from_str("{NSEdgeInsets=dddd}") }
+        }
+    }
+
+    unsafe {
+        let cls = Class::get("NSScreen")?;
+        let screen: id = cls.send_message(Sel::register("mainScreen"), ()).ok()?;
+        if screen.is_null() {
+            return None;
+        }
+        let screen_obj = &*(screen as *mut Object);
+
+        let frame: NSRect = screen_obj.send_message(Sel::register("frame"), ()).ok()?;
+        let visible: NSRect = screen_obj
+            .send_message(Sel::register("visibleFrame"), ())
+            .ok()?;
+        let menu_bar_height = ((frame.origin.y + frame.size.height)
+            - (visible.origin.y + visible.size.height))
+            .max(0.0);
+
+        let safe_sel = Sel::register("safeAreaInsets");
+        let has_safe_area: bool = screen_obj
+            .send_message(Sel::register("respondsToSelector:"), (safe_sel,))
+            .unwrap_or(false);
+        let safe = if has_safe_area {
+            screen_obj
+                .send_message(Sel::register("safeAreaInsets"), ())
+                .unwrap_or_default()
+        } else {
+            NSEdgeInsets::default()
+        };
+
+        let left_sel = Sel::register("auxiliaryTopLeftArea");
+        let right_sel = Sel::register("auxiliaryTopRightArea");
+        let has_aux_left: bool = screen_obj
+            .send_message(Sel::register("respondsToSelector:"), (left_sel,))
+            .unwrap_or(false);
+        let has_aux_right: bool = screen_obj
+            .send_message(Sel::register("respondsToSelector:"), (right_sel,))
+            .unwrap_or(false);
+
+        let mut notch_width = 0.0;
+        if has_aux_left && has_aux_right {
+            let left: NSRect = screen_obj
+                .send_message(Sel::register("auxiliaryTopLeftArea"), ())
+                .ok()?;
+            let right: NSRect = screen_obj
+                .send_message(Sel::register("auxiliaryTopRightArea"), ())
+                .ok()?;
+            notch_width = (frame.size.width - left.size.width - right.size.width).max(0.0);
+        }
+
+        let notch_height = safe.top.max(0.0);
+        let has_notch = notch_height >= 18.0 && notch_width >= 80.0;
+
+        Some(NativeDisplayCutout {
+            has_notch,
+            notch_width,
+            notch_height,
+            menu_bar_height,
+        })
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_display_cutout() -> Option<NativeDisplayCutout> {
+    None
+}
+
+fn status_bar_metrics(app: &tauri::AppHandle) -> StatusBarMetrics {
+    let (screen_x, screen_y, screen_width, screen_height) = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| {
+            let sf = m.scale_factor();
+            (
+                m.position().x as f64 / sf,
+                m.position().y as f64 / sf,
+                m.size().width as f64 / sf,
+                m.size().height as f64 / sf,
+            )
+        })
+        .unwrap_or((0.0, 0.0, 1440.0, 900.0));
+
+    let cutout = native_display_cutout().unwrap_or(NativeDisplayCutout {
+        has_notch: false,
+        notch_width: 0.0,
+        notch_height: 0.0,
+        menu_bar_height: 28.0,
+    });
+
+    let menu_bar_height = cutout.menu_bar_height.clamp(22.0, 40.0);
+    let has_notch = cutout.has_notch;
+    let notch_width = if has_notch {
+        cutout.notch_width.clamp(150.0, 240.0)
+    } else {
+        184.0
+    };
+    let notch_height = if has_notch {
+        cutout.notch_height.clamp(24.0, 38.0)
+    } else {
+        32.0
+    };
+
+    let closed_width = notch_width.round();
+    let closed_height = notch_height.round();
+    let hover_width = (closed_width + 34.0).min(screen_width * 0.22).round();
+    let hover_height = if has_notch {
+        (closed_height + 12.0).round()
+    } else {
+        40.0
+    };
+    let recording_width = (closed_width + 48.0).min(screen_width * 0.26).round();
+    let recording_height = (closed_height + 28.0).clamp(54.0, 64.0).round();
+    let processing_width = (closed_width + 54.0).min(screen_width * 0.27).round();
+    let processing_height = (closed_height + 26.0).clamp(52.0, 62.0).round();
+    let done_width = (closed_width + 28.0).round();
+    let done_height = (closed_height + 20.0).clamp(48.0, 58.0).round();
+    let learned_width = (closed_width + 118.0).min(screen_width * 0.36).round();
+    let learned_height = (closed_height + 18.0).clamp(50.0, 58.0).round();
+    let error_width = (closed_width + 142.0).min(screen_width * 0.38).round();
+    let error_height = (closed_height + 18.0).clamp(50.0, 58.0).round();
+    let transcript_width = (screen_width * 0.36)
+        .clamp((closed_width + 160.0).max(360.0), 500.0)
+        .round();
+    let transcript_height = (closed_height + 82.0).clamp(104.0, 122.0).round();
+
+    let window_width = (transcript_width.max(error_width).max(learned_width) + 40.0).round();
+    let window_height = (transcript_height + 22.0).round();
+    let window_x = (screen_x + screen_width / 2.0 - window_width / 2.0).round();
+    let window_y = if has_notch {
+        screen_y
+    } else {
+        (screen_y + menu_bar_height + 6.0).round()
+    };
+
+    StatusBarMetrics {
+        has_notch,
+        screen_x,
+        screen_y,
+        screen_width,
+        screen_height,
+        notch_width,
+        notch_height,
+        menu_bar_height,
+        window_x,
+        window_y,
+        window_width,
+        window_height,
+        closed_width,
+        closed_height,
+        hover_width,
+        hover_height,
+        recording_width,
+        recording_height,
+        processing_width,
+        processing_height,
+        transcript_width,
+        transcript_height,
+        done_width,
+        done_height,
+        learned_width,
+        learned_height,
+        error_width,
+        error_height,
+        top_radius: if has_notch { 0.0 } else { 999.0 },
+        bottom_radius: if has_notch { 14.0 } else { 999.0 },
+        expanded_bottom_radius: if has_notch { 24.0 } else { 24.0 },
+    }
+}
+
+fn apply_status_bar_metrics(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
+    let metrics = status_bar_metrics(app);
+    if let Err(e) = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
+        width: metrics.window_width,
+        height: metrics.window_height,
+    })) {
+        tracing::warn!("[status-bar] set metrics size failed: {e}");
+    }
+    if let Err(e) = win.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+        x: metrics.window_x,
+        y: metrics.window_y,
+    })) {
+        tracing::warn!("[status-bar] set metrics position failed: {e}");
+    }
+    let _ = app.emit("status-bar-metrics", &metrics);
+    tracing::debug!(
+        "[status-bar] metrics notch={} notch={}x{} window={}x{} at {},{}",
+        metrics.has_notch,
+        metrics.notch_width,
+        metrics.notch_height,
+        metrics.window_width,
+        metrics.window_height,
+        metrics.window_x,
+        metrics.window_y
+    );
 }
 
 // ── Keystroke reconstruction (edit detection for AX-blind apps) ──────────────
@@ -824,6 +1084,8 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
     };
 
     tracing::debug!("[status-bar] sync state={state}");
+    apply_status_bar_metrics(handle, &win);
+
     if state == "idle" {
         tracing::debug!("[status-bar] idle state — scheduling native hide");
         let my_gen = handle
@@ -925,32 +1187,24 @@ fn create_status_bar(app: &tauri::AppHandle) {
         return;
     }
 
-    // Position: top-center, attached to the macOS notch area. Keep a max-size
-    // transparent native canvas and let the React HUD resize inside it.
-    let idle_w = 640.0;
-    let idle_h = 198.0;
-    let (x, y) = if let Ok(Some(m)) = app.primary_monitor() {
-        let sf = m.scale_factor();
-        let sw = m.size().width as f64 / sf;
-        let mx = m.position().x as f64 / sf;
-        let my = m.position().y as f64 / sf;
-        (
-            mx + sw / 2.0 - idle_w / 2.0,
-            my,
-        )
-    } else {
-        (400.0, 0.0)
-    };
+    // Native geometry owns placement. React only animates inside this transparent
+    // canvas, so physical notch alignment stays deterministic across displays.
+    let metrics = status_bar_metrics(app);
 
     let url = "index.html?view=statusbar#statusbar";
     tracing::info!(
-        "[status-bar] creating window url={url} x={x:.0} y={y:.0} size={idle_w:.0}x{idle_h:.0} visible=false"
+        "[status-bar] creating window url={url} x={:.0} y={:.0} size={:.0}x{:.0} notch={} visible=false",
+        metrics.window_x,
+        metrics.window_y,
+        metrics.window_width,
+        metrics.window_height,
+        metrics.has_notch
     );
 
     match tauri::WebviewWindowBuilder::new(app, "status-bar", tauri::WebviewUrl::App(url.into()))
         .title("Said")
-        .inner_size(idle_w, idle_h)
-        .position(x, y)
+        .inner_size(metrics.window_width, metrics.window_height)
+        .position(metrics.window_x, metrics.window_y)
         .decorations(false)
         .always_on_top(true)
         .visible_on_all_workspaces(true)
@@ -970,6 +1224,7 @@ fn create_status_bar(app: &tauri::AppHandle) {
             }
             #[cfg(target_os = "macos")]
             schedule_status_bar_macos_tune(&win);
+            apply_status_bar_metrics(app, &win);
             sync_status_bar(app, "idle");
         }
         Err(e) => tracing::warn!("[status-bar] could not create window: {e}"),
@@ -1246,6 +1501,11 @@ fn dismiss_status_bar(app: tauri::AppHandle) -> Result<(), String> {
             .map_err(|e| format!("hide status bar failed: {e}"))?;
     }
     Ok(())
+}
+
+#[tauri::command]
+fn get_status_bar_metrics(app: tauri::AppHandle) -> StatusBarMetrics {
+    status_bar_metrics(&app)
 }
 
 /// Return `{url, secret}` so the frontend can hit the backend directly.
@@ -4934,6 +5194,7 @@ fn main() {
             bootstrap,
             get_snapshot,
             dismiss_status_bar,
+            get_status_bar_metrics,
             get_backend_endpoint,
             get_preferences,
             get_voice_prompt,

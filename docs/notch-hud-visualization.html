@@ -286,8 +286,8 @@
       top: 0;
       left: 50%;
       z-index: 5;
-      width: min(640px, 70%);
-      height: 198px;
+      width: min(540px, 62%);
+      height: 136px;
       transform: translateX(-50%);
       display: flex;
       justify-content: center;
@@ -325,14 +325,14 @@
       background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent);
     }
 
-    .hud[data-state="idle"] { width: 214px; height: 34px; }
-    .hud[data-state="hover"] { width: 260px; height: 48px; }
-    .hud[data-state="recording"] { width: 292px; height: 70px; }
-    .hud[data-state="processing"] { width: 300px; height: 68px; }
-    .hud[data-state="transcript"] { width: 520px; height: 124px; border-radius: 0 0 30px 30px; }
-    .hud[data-state="done"] { width: 236px; height: 58px; }
-    .hud[data-state="learned"] { width: 340px; height: 54px; }
-    .hud[data-state="error"] { width: 360px; height: 54px; }
+    .hud[data-state="idle"] { width: 208px; height: 32px; }
+    .hud[data-state="hover"] { width: 242px; height: 44px; }
+    .hud[data-state="recording"] { width: 256px; height: 60px; }
+    .hud[data-state="processing"] { width: 262px; height: 58px; }
+    .hud[data-state="transcript"] { width: 500px; height: 114px; border-radius: 0 0 24px 24px; }
+    .hud[data-state="done"] { width: 236px; height: 52px; }
+    .hud[data-state="learned"] { width: 326px; height: 52px; }
+    .hud[data-state="error"] { width: 350px; height: 52px; }
 
     .hud-content {
       min-height: 34px;
@@ -654,27 +654,28 @@
 <body>
   <main class="page">
     <div class="topbar">
-      <div class="eyebrow">Current Tauri notch HUD</div>
-      <div class="commit mono">commit: 85a1635 / UI-only patch</div>
+      <div class="eyebrow">Geometry-driven Tauri notch HUD</div>
+      <div class="commit mono">Rust/AppKit metrics + React animation</div>
     </div>
 
     <section class="hero" aria-label="Notch HUD overview">
       <div class="headline">
         <h1>What the new Said notch HUD currently looks like on a MacBook Pro.</h1>
         <p>
-          This is a visual approximation of the Tauri implementation we just made:
-          a transparent 640 x 198 status window pinned to the top-center of the
-          primary monitor, with a black inner HUD resizing through each state.
+          This shows the deterministic Tauri implementation: Rust reads the
+          Mac display's notch-safe geometry, creates a transparent native window
+          exactly around that top-center area, and React only animates the black
+          HUD surface inside it.
         </p>
       </div>
       <aside class="fact-card">
         <h2>Implementation facts</h2>
         <div class="facts">
           <div class="fact"><span>Native window</span><strong>top-center canvas</strong></div>
-          <div class="fact"><span>Canvas size</span><strong>640 x 198</strong></div>
+          <div class="fact"><span>Canvas size</span><strong>derived per display</strong></div>
           <div class="fact"><span>Runtime path</span><strong>Tauri + Rust kept</strong></div>
           <div class="fact"><span>STT / learning</span><strong>untouched</strong></div>
-          <div class="fact"><span>Visual source</span><strong>Swift notch reference</strong></div>
+          <div class="fact"><span>Notch source</span><strong>NSScreen safe areas</strong></div>
         </div>
       </aside>
     </section>
@@ -732,8 +733,8 @@
           </div>
         </div>
         <div class="caption-strip">
-          <span class="mono">Canvas: 640 x 198, y = monitor top</span>
-          <span id="stateSize" class="mono">Recording HUD: 292 x 70</span>
+          <span class="mono">Canvas: display-derived, y = monitor top</span>
+          <span id="stateSize" class="mono">Recording HUD: 256 x 60</span>
         </div>
       </div>
     </section>
@@ -759,24 +760,24 @@
         <h3>What is already correct</h3>
         <ul>
           <li>It uses the current Rust/Tauri dictation path, so quality should not regress from a Swift rewrite.</li>
-          <li>The HUD now visually belongs to the notch area instead of floating near the Dock.</li>
-          <li>The transparent canvas prevents resize clipping during state changes.</li>
+          <li>Rust owns placement from native display metrics; React no longer guesses screen position.</li>
+          <li>The closed black surface is derived from the physical notch width and height on notch Macs.</li>
         </ul>
       </article>
       <article class="analysis-card">
-        <h3>What is still approximate</h3>
+        <h3>Fallback behavior</h3>
         <ul>
-          <li>Current placement is simply top-center; it does not yet read physical notch metrics.</li>
-          <li>Closed size is fixed, not derived from each MacBook model's notch width.</li>
-          <li>Screen changes and multi-monitor movement need deterministic repositioning rules.</li>
+          <li>External and non-notch displays get a small top floating island instead of fake notch geometry.</li>
+          <li>The status window is resized/repositioned from Rust when the app state syncs.</li>
+          <li>The larger transparent canvas prevents clipping while the black HUD expands downward.</li>
         </ul>
       </article>
       <article class="analysis-card">
-        <h3>Next deterministic pass</h3>
+        <h3>Remaining tuning</h3>
         <ul>
-          <li>Detect notch width / safe area per display, then derive closed and open HUD sizes from that.</li>
-          <li>Lock exact y-offset and Space behavior in Rust, not only React CSS.</li>
-          <li>Use a state table for every size, animation duration, and hide timeout.</li>
+          <li>Test on the actual MacBook notch screen and one external monitor.</li>
+          <li>If the notch has a small visual mismatch, tune only the clamp/fudge values in Rust.</li>
+          <li>Later choose focused-display placement instead of primary-display placement if needed.</li>
         </ul>
       </article>
     </section>
@@ -784,14 +785,14 @@
 
   <script>
     const states = {
-      idle: { label: "Idle", size: "214 x 34", note: "The app is hidden after idle timeout; if visible, this is the tiny closed notch surface." },
-      hover: { label: "Hover", size: "260 x 48", note: "Slightly wider ready state. This is a visual affordance, not a recording state." },
-      recording: { label: "Recording", size: "292 x 70", note: "Audio bars show live mic level while Caps Lock is held." },
-      processing: { label: "Processing", size: "300 x 68", note: "Shows Transcribing or Enhancing while backend SSE is running." },
-      transcript: { label: "Transcript", size: "520 x 124", note: "Expanded processing state when a pre-transcript is available." },
-      done: { label: "Done", size: "236 x 58", note: "Brief pasted confirmation before the status-bar window hides." },
-      learned: { label: "Learned", size: "340 x 54", note: "Vocabulary learning toast, including undo in the real app." },
-      error: { label: "Error", size: "360 x 54", note: "Compact error message with optional retry/dismiss in the real app." }
+      idle: { label: "Idle", size: "208 x 32", note: "The app is hidden after idle timeout; if visible, this matches the closed physical notch surface." },
+      hover: { label: "Hover", size: "242 x 44", note: "Slightly wider ready state derived from the measured notch width." },
+      recording: { label: "Recording", size: "256 x 60", note: "Audio bars show live mic level while Caps Lock is held." },
+      processing: { label: "Processing", size: "262 x 58", note: "Shows Transcribing or Enhancing while backend SSE is running." },
+      transcript: { label: "Transcript", size: "500 x 114", note: "Expanded processing state when a pre-transcript is available." },
+      done: { label: "Done", size: "236 x 52", note: "Brief pasted confirmation before the status-bar window hides." },
+      learned: { label: "Learned", size: "326 x 52", note: "Vocabulary learning toast, including undo in the real app." },
+      error: { label: "Error", size: "350 x 52", note: "Compact error message with optional retry/dismiss in the real app." }
     };
 
     const hud = document.getElementById("mainHud");
