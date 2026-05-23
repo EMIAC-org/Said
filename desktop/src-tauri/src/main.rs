@@ -3298,7 +3298,8 @@ async fn block_correction(
     let _ = app.emit("vocabulary-changed", ());
     tracing::info!(
         "[block] user blocked correction {:?} → {:?}",
-        variant, wrong_replacement
+        variant,
+        wrong_replacement
     );
     Ok(())
 }
@@ -3608,7 +3609,9 @@ fn toggle_meeting_mute(
 
     if meeting_mode.is_muted() {
         if current != desktop::AppState::Idle {
-            return Err("finish the current AirNote recording before resuming meeting capture".into());
+            return Err(
+                "finish the current AirNote recording before resuming meeting capture".into(),
+            );
         }
         meeting_mode.set_muted(false);
         emit_meeting_stt_status(&app);
@@ -3949,7 +3952,7 @@ async fn watch_for_edit(
     polished: String,                // the AI-generated text we pasted
     watch_start: std::time::Instant, // captured at the call site, right after paste
     target_pid: Option<i32>,
-    pre_paste_text: Option<String>,  // field text BEFORE Said typed (from ScreenContextState)
+    pre_paste_text: Option<String>, // field text BEFORE Said typed (from ScreenContextState)
 ) {
     use std::time::Instant;
 
@@ -4113,7 +4116,8 @@ async fn watch_for_edit(
         }
         .unwrap_or_default();
         let ax_latency = ax_read_start.elapsed();
-        if ax_latency > Duration::from_millis(100) && current_interval < Duration::from_millis(200) {
+        if ax_latency > Duration::from_millis(100) && current_interval < Duration::from_millis(200)
+        {
             current_interval = Duration::from_millis(ax_latency.as_millis() as u64 * 2);
             tracing::debug!(
                 "[edit-watch] AX slow ({}ms) — adapting poll to {}ms",
@@ -4182,7 +4186,12 @@ async fn watch_for_edit(
             tracing::info!("[edit-watch] ax_no_edit for {recording_id}");
             return;
         }
-        user_kept = extract_kept(&polished, &post_paste, &effective_val, pre_paste_text.as_deref());
+        user_kept = extract_kept(
+            &polished,
+            &post_paste,
+            &effective_val,
+            pre_paste_text.as_deref(),
+        );
         capture_method = "ax";
         tracing::info!(
             "[edit-watch] ax_capture for {recording_id}: {:?} → {:?}",
@@ -4347,7 +4356,8 @@ async fn watch_for_edit(
                     );
                     tracing::info!(
                         "[edit-watch] asking user: {:?} → {:?} — ambiguous",
-                        amb.original, amb.corrected,
+                        amb.original,
+                        amb.corrected,
                     );
                 }
 
@@ -4365,7 +4375,9 @@ async fn watch_for_edit(
                     );
                     tracing::info!(
                         "[edit-watch] wrong correction: {:?} → {:?} ({}x)",
-                        neg.term, neg.wrong_replacement, neg.correction_count,
+                        neg.term,
+                        neg.wrong_replacement,
+                        neg.correction_count,
                     );
                 }
 
@@ -4467,7 +4479,8 @@ fn shares_word_overlap(candidate: &str, reference: &str) -> bool {
         // Check if >40% of reference chars appear in candidate.
         let ref_lower = reference.to_lowercase();
         let cand_lower = candidate.to_lowercase();
-        let shared = ref_lower.chars()
+        let shared = ref_lower
+            .chars()
             .filter(|c| !c.is_whitespace())
             .filter(|c| cand_lower.contains(*c))
             .count();
@@ -4491,7 +4504,12 @@ fn shares_word_overlap(candidate: &str, reference: &str) -> bool {
 /// (`post_paste`), the final field value (`last_val`), and optionally the field
 /// text from BEFORE Said typed (`pre_paste`), extract only the user's edited
 /// version of Said's output — stripping any pre-existing text.
-fn extract_kept(polished: &str, post_paste: &str, last_val: &str, pre_paste: Option<&str>) -> String {
+fn extract_kept(
+    polished: &str,
+    post_paste: &str,
+    last_val: &str,
+    pre_paste: Option<&str>,
+) -> String {
     // ── Strategy 1: use pre_paste to reliably find prefix/suffix ─────────
     // pre_paste = field content before Said typed.  post_paste = field content
     // after Said typed.  The common prefix between them is text before cursor;
@@ -4518,7 +4536,8 @@ fn extract_kept(polished: &str, post_paste: &str, last_val: &str, pre_paste: Opt
                     if let Some(middle) = after_prefix.strip_suffix(suffix) {
                         tracing::info!(
                             "[edit-watch] extract_kept via pre_paste: prefix={}b suffix={}b",
-                            prefix_bytes, suffix_bytes,
+                            prefix_bytes,
+                            suffix_bytes,
                         );
                         return middle.trim().to_string();
                     }

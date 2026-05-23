@@ -306,8 +306,8 @@ pub async fn classify(
             continue;
         }
         let skip = change.skip_reason.as_deref().unwrap_or("");
-        let is_ambiguous_case = skip.contains("common word")
-            || skip.contains("might be rephrasing");
+        let is_ambiguous_case =
+            skip.contains("common word") || skip.contains("might be rephrasing");
         if !is_ambiguous_case {
             continue;
         }
@@ -822,10 +822,17 @@ fn schedule_onnx_retrain(state: crate::AppState) {
                 return;
             };
             if !script_path.is_file() {
-                warn!("[retrain] ══════ ONNX RETRAIN SKIPPED — script not found at {} ══════", script_path.display());
+                warn!(
+                    "[retrain] ══════ ONNX RETRAIN SKIPPED — script not found at {} ══════",
+                    script_path.display()
+                );
                 return;
             }
-            info!("[retrain] script={} db={}", script_path.display(), db.display());
+            info!(
+                "[retrain] script={} db={}",
+                script_path.display(),
+                db.display()
+            );
             match std::process::Command::new("python3")
                 .arg(&script_path)
                 .arg("--db")
@@ -1135,9 +1142,8 @@ fn deterministic_classify_hunks(
                     continue;
                 }
                 let t_tok = transcript_tokens.get(idx).map(|s| s.as_str()).unwrap_or("");
-                let sub_change = classify_single_token_change(
-                    p_tok, k_tok, t_tok, user_kept, pool, user_id,
-                );
+                let sub_change =
+                    classify_single_token_change(p_tok, k_tok, t_tok, user_kept, pool, user_id);
                 changes.push(sub_change);
             }
             continue;
@@ -1195,8 +1201,7 @@ fn deterministic_classify_hunks(
             }
 
             // Check if the corrected term is already in vocabulary
-            let in_vocab = vocabulary::find_by_term_ci(pool, user_id, &corrected_surface)
-                .is_some();
+            let in_vocab = vocabulary::find_by_term_ci(pool, user_id, &corrected_surface).is_some();
             // Check if original is a common word (Hindi/English)
             let original_is_common = promotion_gate::is_common_word(&original_surface);
             // Check if corrected is a common/stop word — don't learn stop words
@@ -1229,7 +1234,10 @@ fn deterministic_classify_hunks(
                     context_example: None,
                     should_learn: false,
                     confidence: 0.6,
-                    skip_reason: Some("original is a real word, corrected not yet in vocab — might be rephrasing".into()),
+                    skip_reason: Some(
+                        "original is a real word, corrected not yet in vocab — might be rephrasing"
+                            .into(),
+                    ),
                     format_rule: None,
                 });
                 continue;

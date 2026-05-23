@@ -668,7 +668,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(remaining, 0, "alias should be deleted after demotion (weight 1.5 - 1.5 <= 0)");
+        assert_eq!(
+            remaining, 0,
+            "alias should be deleted after demotion (weight 1.5 - 1.5 <= 0)"
+        );
     }
 
     #[test]
@@ -709,6 +712,9 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!((weight - 2.0).abs() < 0.01, "alias weight should be unchanged");
+        assert!(
+            (weight - 2.0).abs() < 0.01,
+            "alias weight should be unchanged"
+        );
     }
 }

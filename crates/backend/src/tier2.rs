@@ -1441,11 +1441,11 @@ static DICTIONARY: Lazy<HashSet<String>> = Lazy::new(|| {
         }
     }
     for w in &[
-        "dock", "oath", "white", "just", "verse", "tower", "guard", "cool", "press",
-        "super", "base", "graph", "local", "red", "post", "type", "strip", "fire",
-        "cell", "hub", "lab", "prism", "meaning", "react", "swift", "rust", "dart",
-        "flask", "spring", "nest", "corps", "main", "time", "return", "course",
-        "prayer", "house", "table", "next", "rest", "google", "accounts",
+        "dock", "oath", "white", "just", "verse", "tower", "guard", "cool", "press", "super",
+        "base", "graph", "local", "red", "post", "type", "strip", "fire", "cell", "hub", "lab",
+        "prism", "meaning", "react", "swift", "rust", "dart", "flask", "spring", "nest", "corps",
+        "main", "time", "return", "course", "prayer", "house", "table", "next", "rest", "google",
+        "accounts",
     ] {
         words.insert(w.to_string());
     }
@@ -1461,7 +1461,6 @@ pub fn is_in_dictionary(token: &str) -> bool {
         .collect::<String>();
     DICTIONARY.contains(&norm) || promotion_gate::is_common_word(&norm)
 }
-
 
 fn default_max_len() -> usize {
     DEFAULT_MAX_LEN
