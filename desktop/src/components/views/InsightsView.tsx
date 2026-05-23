@@ -63,7 +63,7 @@ function WpmGauge({ wpm }: { wpm: number }) {
 // ── Heatmap helpers ────────────────────────────────────────────────────────────
 
 const DAYS      = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const COL_COUNT = 18;
+const COL_COUNT = 14;
 
 function heatmapMonths(): string[] {
   const now  = new Date();
@@ -138,7 +138,7 @@ export function InsightsView({ snapshot }: InsightsViewProps) {
 
   return (
     <ScrollArea className="h-full">
-      <div className="p-7 pb-12 max-w-4xl mx-auto">
+      <div className="p-5 pb-12 mx-auto overflow-hidden" style={{ maxWidth: "min(900px, 100%)" }}>
 
         {/* ── Header ──────────────────────────────── */}
         <div className="mb-7">
@@ -157,8 +157,8 @@ export function InsightsView({ snapshot }: InsightsViewProps) {
           </p>
         </div>
 
-        {/* ── Top grid: 3 cols ─────────────────────── */}
-        <div className="grid grid-cols-3 gap-4 mb-4">
+        {/* ── Top grid: responsive ─────────────────── */}
+        <div className="grid gap-3 mb-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
 
           {/* WPM gauge */}
           <div className="panel p-5">
@@ -233,8 +233,8 @@ export function InsightsView({ snapshot }: InsightsViewProps) {
           </div>
         </div>
 
-        {/* ── Bottom grid: 2 cols ──────────────────── */}
-        <div className="grid grid-cols-2 gap-4">
+        {/* ── Bottom grid: responsive ────────────────── */}
+        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
 
           {/* Accuracy card */}
           <div className="panel p-5">
@@ -322,7 +322,7 @@ export function InsightsView({ snapshot }: InsightsViewProps) {
           </div>
 
           {/* Heatmap */}
-          <div className="tile p-5">
+          <div className="tile p-5 overflow-hidden" style={{ minWidth: 0 }}>
             <div className="flex items-baseline justify-between mb-4">
               <h2 className="text-[14px] font-semibold text-foreground">
                 {streak > 0 ? `${streak} day streak` : "No streak yet"}
@@ -343,7 +343,7 @@ export function InsightsView({ snapshot }: InsightsViewProps) {
                 · cells anchored to the most-recent Sunday so columns align */}
             <div
               className="grid gap-1"
-              style={{ gridTemplateColumns: `36px repeat(${COL_COUNT}, 1fr)` }}
+              style={{ gridTemplateColumns: `32px repeat(${COL_COUNT}, minmax(0, 1fr))` }}
             >
               {(() => {
                 const todayDow     = new Date().getDay();   // local DOW

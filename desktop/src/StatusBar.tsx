@@ -5,6 +5,17 @@ import { getCurrentWindow, LogicalPosition, LogicalSize, primaryMonitor } from "
 import { RotateCcw, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
 
+function notifEnabled(key: string): boolean {
+  try {
+    const raw = localStorage.getItem("airnote-notif-prefs");
+    if (!raw) return true;
+    const prefs = JSON.parse(raw);
+    return prefs[key] !== false;
+  } catch { return true; }
+}
+
+function soundsEnabled(): boolean { return notifEnabled("sounds"); }
+
 // ── Sound synthesis (Web Audio, no external files) ───────────────────────────
 
 let _audioCtx: AudioContext | null = null;
@@ -60,7 +71,7 @@ const sounds = {
 type SoundName = keyof typeof sounds;
 
 function playSound(name: SoundName | null) {
-  if (!name) return;
+  if (!name || !soundsEnabled()) return;
   try { sounds[name](); } catch { /* audio context not ready */ }
 }
 
@@ -302,6 +313,7 @@ export default function StatusBar() {
       const { message, audio_id, auto_hide_ms, raw_error } = e.payload;
       console.error("[status-bar] voice-error event", { message, raw_error, hasAudioId: Boolean(audio_id) });
       if (doneTimer.current) clearTimeout(doneTimer.current);
+      if (!notifEnabled("error")) return;
       win.show().catch((err) => console.warn("[status-bar] show failed for error", err));
       playSound("lowThud");
       setBar({ kind: "error", message, audioId: audio_id });
@@ -315,6 +327,7 @@ export default function StatusBar() {
 
     // ── Learning: show term in status bar with undo ──────────────────
     listen<{ term: string; message: string }>("vocab-learned", (e) => {
+      if (!notifEnabled("learned")) return;
       console.info("[status-bar] vocab-learned", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
       win.show().catch(() => {});
@@ -330,6 +343,7 @@ export default function StatusBar() {
 
     // ── Ambiguous term — needs user confirmation ──────────────────────
     listen<{ term: string; original: string; context: string; recording_id: string }>("vocab-confirm", (e) => {
+      if (!notifEnabled("confirm")) return;
       console.info("[status-bar] vocab-confirm", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
       win.show().catch(() => {});
@@ -342,6 +356,7 @@ export default function StatusBar() {
 
     // ── Wrong correction detected ────────────────────────────────────
     listen<{ term: string; wrong_replacement: string }>("vocab-negative", (e) => {
+      if (!notifEnabled("negative")) return;
       console.info("[status-bar] vocab-negative", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
       win.show().catch(() => {});
@@ -354,6 +369,7 @@ export default function StatusBar() {
 
     // ── Retrain progress ─────────────────────────────────────────────
     listen<{ phase: string; duration_s?: number }>("retrain-status", (e) => {
+      if (!notifEnabled("retrain")) return;
       console.info("[status-bar] retrain-status", e.payload);
       if (e.payload.phase === "started") {
         if (doneTimer.current) clearTimeout(doneTimer.current);

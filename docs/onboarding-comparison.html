@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AirNote — Onboarding Flow Comparison</title>
+<style>
+  :root { --bg:#08080c; --s1:#0f1115; --s2:#181b22; --border:#252830; --text:#e2e4e9; --dim:#7a7f8d; --accent:#6366f1; --green:#34d399; --red:#f87171; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Inter',sans-serif; background:var(--bg); color:var(--text); }
+  .page { max-width:1400px; margin:0 auto; padding:2rem; }
+  h1 { font-size:1.8rem; font-weight:700; letter-spacing:-0.5px; }
+  h1 span { color:var(--accent); }
+  .sub { color:var(--dim); font-size:0.9rem; margin:0.5rem 0 2rem; }
+
+  .compare { display:grid; grid-template-columns:1fr 1fr; gap:2rem; margin-bottom:3rem; }
+  .col-label { text-align:center; padding:10px; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:1.5px; border-radius:8px 8px 0 0; }
+  .col-old .col-label { background:rgba(248,113,113,0.1); color:var(--red); }
+  .col-new .col-label { background:rgba(99,102,241,0.1); color:var(--accent); }
+
+  /* Onboarding screen mockup */
+  .screen { background:var(--s1); border:1px solid var(--border); border-radius:12px; overflow:hidden; margin-bottom:1.5rem; }
+  .screen-header { display:flex; align-items:center; gap:6px; padding:10px 14px; border-bottom:1px solid var(--border); }
+  .screen-dot { width:8px; height:8px; border-radius:50%; }
+  .screen-dot.r { background:#ff5f57; }
+  .screen-dot.y { background:#febc2e; }
+  .screen-dot.g { background:#28c840; }
+  .screen-title { margin-left:auto; font-size:0.65rem; color:var(--dim); }
+
+  .screen-body { display:flex; min-height:320px; }
+  .screen-left { flex:1; padding:24px; display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center; border-right:1px solid var(--border); position:relative; overflow:hidden; }
+  .screen-right { flex:1; padding:24px; display:flex; flex-direction:column; justify-content:center; }
+
+  .brand-icon { width:48px; height:48px; border-radius:14px; display:flex; align-items:center; justify-content:center; font-size:1.4rem; margin-bottom:12px; }
+  .brand-icon.old { background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08); }
+  .brand-icon.new { background:linear-gradient(135deg, rgba(99,102,241,0.2), rgba(52,211,153,0.15)); border:1px solid rgba(99,102,241,0.2); box-shadow:0 0 24px rgba(99,102,241,0.15); }
+
+  .brand-name { font-size:28px; font-weight:500; letter-spacing:-0.03em; color:var(--text); }
+  .brand-tag { font-size:12px; color:var(--dim); margin-top:8px; max-width:220px; line-height:1.5; }
+
+  .step-eyebrow { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1.5px; margin-bottom:8px; }
+  .step-eyebrow.old { color:var(--dim); }
+  .step-eyebrow.new { color:var(--accent); }
+  .step-title { font-size:20px; font-weight:600; letter-spacing:-0.02em; color:var(--text); margin-bottom:6px; }
+  .step-desc { font-size:12px; color:var(--dim); line-height:1.6; margin-bottom:16px; }
+
+  .btn-mock { display:inline-flex; align-items:center; gap:6px; padding:8px 18px; border-radius:8px; font-size:12px; font-weight:600; border:none; cursor:default; }
+  .btn-old { background:rgba(255,255,255,0.08); color:var(--text); }
+  .btn-new { background:var(--accent); color:#fff; box-shadow:0 2px 12px rgba(99,102,241,0.3); }
+  .btn-outline { background:transparent; color:var(--dim); border:1px solid var(--border); }
+
+  .perm-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.04); }
+  .perm-icon { width:28px; height:28px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:0.7rem; }
+  .perm-icon.old { background:rgba(255,255,255,0.05); color:var(--dim); }
+  .perm-icon.new { background:rgba(99,102,241,0.12); color:var(--accent); }
+  .perm-text { flex:1; }
+  .perm-title { font-size:12px; font-weight:600; color:var(--text); }
+  .perm-desc { font-size:10px; color:var(--dim); }
+  .perm-badge { font-size:9px; padding:3px 8px; border-radius:4px; font-weight:600; }
+  .perm-badge.granted { background:rgba(52,211,153,0.12); color:var(--green); }
+  .perm-badge.needed { background:rgba(248,113,113,0.12); color:var(--red); }
+
+  .key-input { width:100%; padding:8px 10px; border-radius:6px; font-size:11px; font-family:'SF Mono',monospace; border:1px solid var(--border); color:var(--text); margin-bottom:8px; }
+  .key-input.old { background:rgba(0,0,0,0.25); }
+  .key-input.new { background:rgba(99,102,241,0.05); border-color:rgba(99,102,241,0.2); }
+
+  .hotkey-pill { display:inline-flex; align-items:center; gap:6px; padding:10px 20px; border-radius:10px; font-size:13px; font-weight:600; cursor:default; }
+  .hotkey-pill.old { background:rgba(255,255,255,0.05); border:1px solid var(--border); color:var(--text); }
+  .hotkey-pill.new { background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.25); color:var(--accent); }
+  .hotkey-pill.selected { background:rgba(99,102,241,0.15); border-color:var(--accent); box-shadow:0 0 16px rgba(99,102,241,0.2); }
+
+  /* New features callout */
+  .new-badge { font-size:8px; padding:2px 6px; border-radius:4px; background:rgba(52,211,153,0.15); color:var(--green); font-weight:700; text-transform:uppercase; letter-spacing:0.5px; vertical-align:middle; margin-left:6px; }
+  .change-note { font-size:11px; color:var(--accent); margin-top:8px; padding:6px 10px; background:rgba(99,102,241,0.06); border-radius:6px; border-left:2px solid var(--accent); }
+
+  /* Step indicator */
+  .step-dots { display:flex; gap:6px; margin-bottom:16px; }
+  .step-dot { width:6px; height:6px; border-radius:50%; background:rgba(255,255,255,0.1); }
+  .step-dot.active { background:var(--accent); box-shadow:0 0 8px rgba(99,102,241,0.4); }
+  .step-dot.done { background:var(--green); }
+
+  .progress-bar { height:3px; background:rgba(255,255,255,0.06); border-radius:2px; margin-bottom:16px; overflow:hidden; }
+  .progress-fill { height:100%; border-radius:2px; transition:width 0.3s; }
+  .progress-fill.old { background:var(--dim); }
+  .progress-fill.new { background:linear-gradient(90deg, var(--accent), var(--green)); }
+
+  /* Ambient glow for new design */
+  .ambient { position:absolute; border-radius:50%; pointer-events:none; filter:blur(60px); opacity:0.15; }
+  .ambient-1 { width:200px; height:200px; background:var(--accent); top:-50px; left:-50px; }
+  .ambient-2 { width:150px; height:150px; background:var(--green); bottom:-30px; right:-30px; }
+
+  .section-title { font-size:1rem; font-weight:600; margin:2rem 0 1rem; color:var(--text); }
+  .diff-table { width:100%; font-size:0.8rem; border-collapse:collapse; margin:1rem 0; }
+  .diff-table th { text-align:left; padding:8px; color:var(--dim); font-weight:500; border-bottom:1px solid var(--border); }
+  .diff-table td { padding:8px; border-bottom:1px solid rgba(255,255,255,0.03); }
+  .diff-table .old-val { color:var(--red); text-decoration:line-through; }
+  .diff-table .new-val { color:var(--green); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>Onboarding <span>Comparison</span></h1>
+<p class="sub">Current flow (left) vs. proposed premium flow (right). Same 4 steps, elevated polish.</p>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<!-- STEP 1: WELCOME -->
+<!-- ════════════════════════════════════════════════════════════════ -->
+
+<h2 class="section-title">Step 1 — Welcome</h2>
+<div class="compare">
+  <div class="col-old">
+    <div class="col-label">Current</div>
+    <div class="screen">
+      <div class="screen-header">
+        <span class="screen-dot r"></span><span class="screen-dot y"></span><span class="screen-dot g"></span>
+        <span class="screen-title">AirNote — Onboarding</span>
+      </div>
+      <div class="screen-body">
+        <div class="screen-left">
+          <div class="brand-icon old">🎙</div>
+          <div class="brand-name">AirNote</div>
+          <div class="brand-tag">Voice polish for Mac. Hold a key, speak, release — AirNote types polished text into any app.</div>
+        </div>
+        <div class="screen-right">
+          <div class="step-eyebrow old">GET STARTED</div>
+          <div class="step-title">Welcome to AirNote.</div>
+          <div class="step-desc">A two-minute setup. Three permissions, two free API keys, one hold-key. Then you'll never type by hand again.</div>
+          <div>
+            <button class="btn-mock btn-old">Get started →</button>
+          </div>
+          <div style="margin-top:auto;font-size:10px;color:var(--dim);">Step 1 of 4</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-new">
+    <div class="col-label">Proposed</div>
+    <div class="screen">
+      <div class="screen-header">
+        <span class="screen-dot r"></span><span class="screen-dot y"></span><span class="screen-dot g"></span>
+        <span class="screen-title">AirNote</span>
+      </div>
+      <div class="screen-body">
+        <div class="screen-left" style="background:linear-gradient(180deg, rgba(99,102,241,0.04) 0%, transparent 60%);">
+          <div class="ambient ambient-1"></div>
+          <div class="ambient ambient-2"></div>
+          <div class="brand-icon new">✦</div>
+          <div class="brand-name" style="font-weight:600;letter-spacing:-0.04em;">AirNote</div>
+          <div class="brand-tag">Speak naturally. Get polished text. In any app, any language.</div>
+          <div style="margin-top:24px;display:flex;gap:8px;">
+            <span style="font-size:9px;padding:3px 8px;border-radius:4px;background:rgba(99,102,241,0.1);color:var(--accent);">Hinglish</span>
+            <span style="font-size:9px;padding:3px 8px;border-radius:4px;background:rgba(52,211,153,0.1);color:var(--green);">Hindi</span>
+            <span style="font-size:9px;padding:3px 8px;border-radius:4px;background:rgba(255,255,255,0.06);color:var(--dim);">English</span>
+          </div>
+        </div>
+        <div class="screen-right">
+          <div class="progress-bar"><div class="progress-fill new" style="width:25%"></div></div>
+          <div class="step-eyebrow new">WELCOME</div>
+          <div class="step-title" style="font-size:22px;">Two minutes to magic.</div>
+          <div class="step-desc">Three permissions. Two API keys. One hotkey.<br>Then speak and watch your words appear — polished, formatted, in any app.</div>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px;">
+            <button class="btn-mock btn-new" style="width:100%;justify-content:center;">Let's go →</button>
+            <button class="btn-mock btn-outline" style="width:100%;justify-content:center;font-size:11px;">I already have API keys</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="change-note">
+      <strong>Changes:</strong> Ambient glow on brand canvas · language pills · progress bar replaces step counter · "Skip ahead" button for returning users · shorter, punchier copy
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<!-- STEP 2: PERMISSIONS -->
+<!-- ════════════════════════════════════════════════════════════════ -->
+
+<h2 class="section-title">Step 2 — Permissions</h2>
+<div class="compare">
+  <div class="col-old">
+    <div class="col-label">Current</div>
+    <div class="screen">
+      <div class="screen-header">
+        <span class="screen-dot r"></span><span class="screen-dot y"></span><span class="screen-dot g"></span>
+      </div>
+      <div class="screen-body">
+        <div class="screen-left">
+          <div class="brand-icon old">🎙</div>
+          <div class="brand-name" style="font-size:22px;">AirNote</div>
+          <div class="brand-tag" style="font-size:11px;">macOS will ask you once for each permission.</div>
+        </div>
+        <div class="screen-right">
+          <div class="step-eyebrow old">PERMISSIONS</div>
+          <div class="step-title">A few system grants.</div>
+          <div class="step-desc">Three macOS permissions — one click each.</div>
+          <div>
+            <div class="perm-row">
+              <div class="perm-icon old">🎤</div>
+              <div class="perm-text"><div class="perm-title">Microphone</div><div class="perm-desc">Capture audio while you hold the hotkey.</div></div>
+              <span class="perm-badge needed">Allow</span>
+            </div>
+            <div class="perm-row">
+              <div class="perm-icon old">🛡</div>
+              <div class="perm-text"><div class="perm-title">Accessibility</div><div class="perm-desc">Type text into any focused app.</div></div>
+              <span class="perm-badge needed">Allow</span>
+            </div>
+            <div class="perm-row">
+              <div class="perm-icon old">⌨</div>
+              <div class="perm-text"><div class="perm-title">Input Monitoring</div><div class="perm-desc">Detect hotkey even when unfocused.</div></div>
+              <span class="perm-badge needed">Allow</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-new">
+    <div class="col-label">Proposed</div>
+    <div class="screen">
+      <div class="screen-header">
+        <span class="screen-dot r"></span><span class="screen-dot y"></span><span class="screen-dot g"></span>
+      </div>
+      <div class="screen-body">
+        <div class="screen-left" style="background:linear-gradient(180deg, rgba(99,102,241,0.04) 0%, transparent 60%);">
+          <div class="ambient ambient-1"></div>
+          <div style="font-size:48px;margin-bottom:16px;">🔒</div>
+          <div style="font-size:16px;font-weight:600;color:var(--text);">Your data stays local</div>
+          <div class="brand-tag">Audio goes straight to Deepgram via encrypted WebSocket. Nothing is stored on any server. Zero telemetry by default.</div>
+        </div>
+        <div class="screen-right">
+          <div class="progress-bar"><div class="progress-fill new" style="width:50%"></div></div>
+          <div class="step-eyebrow new">PERMISSIONS</div>
+          <div class="step-title" style="font-size:22px;">Three quick taps.</div>
+          <div class="step-desc">macOS needs these once. AirNote detects each grant instantly.</div>
+          <div>
+            <div class="perm-row">
+              <div class="perm-icon new">🎤</div>
+              <div class="perm-text"><div class="perm-title">Microphone</div><div class="perm-desc">Record while you hold Fn</div></div>
+              <span class="perm-badge granted">✓ Granted</span>
+            </div>
+            <div class="perm-row">
+              <div class="perm-icon new">⌨️</div>
+              <div class="perm-text"><div class="perm-title">Accessibility</div><div class="perm-desc">Type into any focused field</div></div>
+              <span class="perm-badge needed">Grant</span>
+            </div>
+            <div class="perm-row">
+              <div class="perm-icon new">👁</div>
+              <div class="perm-text"><div class="perm-title">Input Monitoring</div><div class="perm-desc">Detect Fn even in background</div></div>
+              <span class="perm-badge needed">Grant</span>
+            </div>
+          </div>
+          <div style="margin-top:12px;font-size:10px;color:var(--dim);text-align:center;">Auto-advances when all three are granted</div>
+        </div>
+      </div>
+    </div>
+    <div class="change-note">
+      <strong>Changes:</strong> Left panel shows privacy message (trust signal) · "Grant" buttons instead of "Allow" (active verb) · progress bar · shorter descriptions · auto-advance hint
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<!-- STEP 3: API KEYS -->
+<!-- ════════════════════════════════════════════════════════════════ -->
+
+<h2 class="section-title">Step 3 — API Keys</h2>
+<div class="compare">
+  <div class="col-old">
+    <div class="col-label">Current</div>
+    <div class="screen">
+      <div class="screen-header">
+        <span class="screen-dot r"></span><span class="screen-dot y"></span><span class="screen-dot g"></span>
+      </div>
+      <div class="screen-body">
+        <div class="screen-left">
+          <div class="brand-icon old">🎙</div>
+          <div class="brand-name" style="font-size:22px;">AirNote</div>
+          <div class="brand-tag">Both services have generous free tiers.</div>
+        </div>
+        <div class="screen-right">
+          <div class="step-eyebrow old">API KEYS</div>
+          <div class="step-title">Connect your keys.</div>
+          <div class="step-desc">AirNote uses Groq for polishing and Deepgram for speech-to-text.</div>
+          <div style="font-size:11px;color:var(--dim);margin-bottom:4px;">Groq API Key</div>
+          <div class="key-input old" style="color:var(--dim);">gsk_••••••••••••••••</div>
+          <div style="font-size:11px;color:var(--dim);margin-bottom:4px;">Deepgram API Key</div>
+          <div class="key-input old" style="color:var(--dim);">dg_••••••••••••••••</div>
+          <button class="btn-mock btn-old" style="width:100%;margin-top:8px;justify-content:center;">Save & continue</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-new">
+    <div class="col-label">Proposed</div>
+    <div class="screen">
+      <div class="screen-header">
+        <span class="screen-dot r"></span><span class="screen-dot y"></span><span class="screen-dot g"></span>
+      </div>
+      <div class="screen-body">
+        <div class="screen-left" style="background:linear-gradient(180deg, rgba(99,102,241,0.04) 0%, transparent 60%);">
+          <div class="ambient ambient-1"></div>
+          <div style="font-size:48px;margin-bottom:16px;">🔑</div>
+          <div style="font-size:16px;font-weight:600;color:var(--text);">Free tier is enough</div>
+          <div class="brand-tag">Groq: 4,000 requests/min<br>Deepgram: $200 free credit<br>That's months of daily use.</div>
+        </div>
+        <div class="screen-right">
+          <div class="progress-bar"><div class="progress-fill new" style="width:75%"></div></div>
+          <div class="step-eyebrow new">API KEYS</div>
+          <div class="step-title" style="font-size:22px;">Two free keys.</div>
+          <div class="step-desc">Your keys stay on this device. Never sent to us.</div>
+
+          <div style="margin-bottom:12px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+              <span style="font-size:11px;font-weight:600;color:var(--text);">Groq</span>
+              <a style="font-size:10px;color:var(--accent);text-decoration:none;">Get free key ↗</a>
+            </div>
+            <div class="key-input new" style="color:var(--dim);">gsk_••••••••••••••••</div>
+          </div>
+
+          <div style="margin-bottom:12px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+              <span style="font-size:11px;font-weight:600;color:var(--text);">Deepgram</span>
+              <a style="font-size:10px;color:var(--accent);text-decoration:none;">Get free key ↗</a>
+            </div>
+            <div class="key-input new" style="color:var(--dim);">dg_••••••••••••••••</div>
+          </div>
+
+          <button class="btn-mock btn-new" style="width:100%;justify-content:center;">Continue →</button>
+        </div>
+      </div>
+    </div>
+    <div class="change-note">
+      <strong>Changes:</strong> Left panel shows free tier limits (reduces anxiety) · inline "Get free key" links · key labels are bolder · "keys stay on device" trust signal · accent-tinted inputs
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<!-- STEP 4: HOTKEY -->
+<!-- ════════════════════════════════════════════════════════════════ -->
+
+<h2 class="section-title">Step 4 — Hotkey Selection</h2>
+<div class="compare">
+  <div class="col-old">
+    <div class="col-label">Current</div>
+    <div class="screen">
+      <div class="screen-header">
+        <span class="screen-dot r"></span><span class="screen-dot y"></span><span class="screen-dot g"></span>
+      </div>
+      <div class="screen-body">
+        <div class="screen-left">
+          <div class="brand-icon old">🎙</div>
+          <div class="brand-name" style="font-size:22px;">AirNote</div>
+          <div class="brand-tag">Choose your trigger key.</div>
+        </div>
+        <div class="screen-right">
+          <div class="step-eyebrow old">HOTKEY</div>
+          <div class="step-title">Pick your key.</div>
+          <div class="step-desc">Hold it to record, release to paste polished text.</div>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px;">
+            <div class="hotkey-pill old">Fn (Globe) — recommended</div>
+            <div class="hotkey-pill old">Right Option ⌥</div>
+          </div>
+          <button class="btn-mock btn-old" style="width:100%;margin-top:16px;justify-content:center;">Start using AirNote</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-new">
+    <div class="col-label">Proposed</div>
+    <div class="screen">
+      <div class="screen-header">
+        <span class="screen-dot r"></span><span class="screen-dot y"></span><span class="screen-dot g"></span>
+      </div>
+      <div class="screen-body">
+        <div class="screen-left" style="background:linear-gradient(180deg, rgba(52,211,153,0.04) 0%, transparent 60%);">
+          <div class="ambient ambient-2"></div>
+          <div style="font-size:48px;margin-bottom:16px;">🎯</div>
+          <div style="font-size:16px;font-weight:600;color:var(--text);">You're ready</div>
+          <div class="brand-tag">Hold your key, speak naturally, release. AirNote handles the rest — polished, formatted, typed into whatever app you're in.</div>
+        </div>
+        <div class="screen-right">
+          <div class="progress-bar"><div class="progress-fill new" style="width:100%"></div></div>
+          <div class="step-eyebrow new">ALMOST DONE</div>
+          <div class="step-title" style="font-size:22px;">Choose your trigger.</div>
+          <div class="step-desc">Hold to record · release to paste</div>
+          <div style="display:flex;flex-direction:column;gap:10px;margin-top:16px;">
+            <div class="hotkey-pill selected">
+              <span style="font-size:16px;">🌐</span>
+              <div>
+                <div style="font-size:12px;font-weight:600;">Fn (Globe key)</div>
+                <div style="font-size:10px;color:var(--dim);font-weight:400;">Recommended — bottom-left of keyboard</div>
+              </div>
+            </div>
+            <div class="hotkey-pill new">
+              <span style="font-size:16px;">⌥</span>
+              <div>
+                <div style="font-size:12px;font-weight:600;">Right Option</div>
+                <div style="font-size:10px;color:var(--dim);font-weight:400;">If Fn is mapped to emoji picker</div>
+              </div>
+            </div>
+          </div>
+          <button class="btn-mock btn-new" style="width:100%;margin-top:20px;justify-content:center;font-size:13px;padding:10px 20px;">Start using AirNote ✨</button>
+        </div>
+      </div>
+    </div>
+    <div class="change-note">
+      <strong>Changes:</strong> Green-tinted left panel (completion) · rich hotkey cards with icon + description · progress bar at 100% · celebratory finish button · "You're ready" affirmation
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<!-- DIFF TABLE -->
+<!-- ════════════════════════════════════════════════════════════════ -->
+
+<h2 class="section-title">Change Summary</h2>
+<table class="diff-table">
+  <tr><th>Element</th><th>Current</th><th>Proposed</th></tr>
+  <tr><td>Progress indicator</td><td class="old-val">Step X of 4 (text)</td><td class="new-val">Gradient progress bar (visual)</td></tr>
+  <tr><td>Brand canvas</td><td class="old-val">Static: icon + name + tagline</td><td class="new-val">Contextual: changes per step (privacy, free tier, completion)</td></tr>
+  <tr><td>Ambient lighting</td><td class="old-val">None</td><td class="new-val">Soft indigo/green glow blurs</td></tr>
+  <tr><td>Copy tone</td><td class="old-val">Informational: "A two-minute setup..."</td><td class="new-val">Punchy: "Two minutes to magic."</td></tr>
+  <tr><td>Skip option</td><td class="old-val">None</td><td class="new-val">"I already have API keys" button</td></tr>
+  <tr><td>Permission labels</td><td class="old-val">Generic descriptions</td><td class="new-val">Action-specific: "Record while you hold Fn"</td></tr>
+  <tr><td>Key input styling</td><td class="old-val">Dark flat input</td><td class="new-val">Accent-tinted with inline "Get key" links</td></tr>
+  <tr><td>Hotkey selector</td><td class="old-val">Text-only pills</td><td class="new-val">Rich cards: icon + name + context hint</td></tr>
+  <tr><td>Trust signals</td><td class="old-val">Privacy quote in left panel</td><td class="new-val">Per-step: "data stays local" + "free tier" + "you're ready"</td></tr>
+  <tr><td>Finish button</td><td class="old-val">"Start using AirNote"</td><td class="new-val">"Start using AirNote ✨" with glow</td></tr>
+  <tr><td>Language tags</td><td class="old-val">None</td><td class="new-val">Hinglish / Hindi / English pills on welcome</td></tr>
+  <tr><td>Brand icon</td><td class="old-val">Plain circle with emoji</td><td class="new-val">Gradient glass with ✦ mark + glow</td></tr>
+</table>
+
+<p style="color:var(--dim);font-size:0.75rem;text-align:center;margin-top:3rem;">
+  AirNote Onboarding Comparison · Current 4-step flow vs. proposed premium flow
+</p>
+
+</div>
+</body>
+</html>

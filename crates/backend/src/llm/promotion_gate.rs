@@ -226,7 +226,9 @@ pub fn is_numeric_junk(term: &str) -> bool {
         return true;
     }
     // Short digit+letter combos that are number formats, not terms: "30B", "8GB"
-    // Exception: known code patterns like "n8n", "k8s" (consonant-digit-consonant)
+    // Exceptions:
+    //   - code patterns like "n8n", "k8s" (consonant-digit-consonant)
+    //   - letter-heavy identifiers like "Hrm8", "v2" where alpha >= digits
     if total <= 4 && digits > 0 && alpha > 0 {
         let has_consonant_digit_consonant = total == 3
             && t.chars().nth(0).map(|c| c.is_alphabetic()).unwrap_or(false)
@@ -235,7 +237,9 @@ pub fn is_numeric_junk(term: &str) -> bool {
                 .map(|c| c.is_ascii_digit())
                 .unwrap_or(false)
             && t.chars().nth(2).map(|c| c.is_alphabetic()).unwrap_or(false);
-        if !has_consonant_digit_consonant {
+        let starts_with_letter = t.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false);
+        let alpha_dominant = starts_with_letter && alpha >= digits * 2;
+        if !has_consonant_digit_consonant && !alpha_dominant {
             return true;
         }
     }

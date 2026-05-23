@@ -600,6 +600,22 @@ pub async fn classify(
                         ctx.clone(),
                         codex_token.clone(),
                     );
+
+                    // Auto-activate ALL candidate edit-policy rules for this term.
+                    // The term is now confirmed (3 sightings) — no reason to keep
+                    // rules as candidates. Each Deepgram distortion is different,
+                    // so individual rules rarely reach 2 positives on their own.
+                    let activated = tier2_edit_policy::activate_all_for_term(
+                        &state.pool,
+                        &state.default_user_id,
+                        &canonical_term,
+                    );
+                    if activated > 0 {
+                        policy_touched = true;
+                        info!(
+                            "[classify] auto-activated {activated} edit-policy rule(s) for promoted term {canonical_term:?}"
+                        );
+                    }
                 }
 
                 // ── Update meaning if provided ───────────────────────────
@@ -687,7 +703,7 @@ pub async fn classify(
         schedule_onnx_retrain(state.clone());
     }
 
-    let notify = learned && promoted_count > 0;
+    let notify = learned && (promoted_count > 0 || policy_touched);
 
     info!(
         "[classify] {} overall={} changes={} promoted={} notify={} learned={}",
@@ -747,6 +763,10 @@ static RETRAIN_RUNNING: AtomicBool = AtomicBool::new(false);
 static LAST_EDIT_EPOCH: AtomicI64 = AtomicI64::new(0);
 
 const DEBOUNCE_SECS: u64 = 15;
+
+pub fn schedule_retrain_public(state: crate::AppState) {
+    schedule_onnx_retrain(state);
+}
 
 fn schedule_onnx_retrain(state: crate::AppState) {
     let epoch = crate::store::now_ms();

@@ -4269,25 +4269,23 @@ async fn watch_for_edit(
                     resp.pending_id
                 );
 
-                if resp.notify {
-                    // In-app toast per learnable term (matches website UI,
-                    // includes Undo affordance).  We surface the first term
-                    // — most edits produce one; on rare multi-promote edits
-                    // the others land silently in vocab.
+                if resp.notify || resp.learned {
                     let first_term = resp.promoted_terms.first().cloned();
-                    if let Some(ref term) = first_term {
-                        if !term.trim().is_empty() {
-                            let _ = app.emit(
-                                "vocab-toast",
-                                serde_json::json!({
-                                    "kind":   "added",
-                                    "term":   term,
-                                    "source": "auto",
-                                }),
-                            );
+                    if resp.notify {
+                        if let Some(ref term) = first_term {
+                            if !term.trim().is_empty() {
+                                let _ = app.emit(
+                                    "vocab-toast",
+                                    serde_json::json!({
+                                        "kind":   "added",
+                                        "term":   term,
+                                        "source": "auto",
+                                    }),
+                                );
+                            }
                         }
                     }
-                    // Show learning result in the status bar (not OS notification)
+                    // Show learning result in the status bar
                     let term_display = first_term
                         .clone()
                         .unwrap_or_else(|| "your correction".to_string());

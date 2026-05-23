@@ -223,6 +223,25 @@ pub fn load_active_replace_rules(pool: &DbPool, user_id: &str) -> Vec<Tier2EditP
     .unwrap_or_default()
 }
 
+pub fn activate_all_for_term(pool: &DbPool, user_id: &str, correct_form: &str) -> usize {
+    let norm = normalize_token(correct_form);
+    if norm.is_empty() {
+        return 0;
+    }
+    let Ok(conn) = pool.get() else { return 0 };
+    conn.execute(
+        "UPDATE tier2_edit_policy_rules
+            SET status = 'active',
+                positive_count = MAX(positive_count, 2)
+          WHERE user_id = ?1
+            AND correct_form_norm = ?2
+            AND status = 'candidate'
+            AND edit_type = 'replace'",
+        rusqlite::params![user_id, norm],
+    )
+    .unwrap_or(0)
+}
+
 pub fn mark_removed_feedback(
     pool: &DbPool,
     user_id: &str,

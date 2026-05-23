@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   X, RefreshCw, CloudCheck,
-  Wand2, ShieldCheck, Key, Info, Bug, Palette, Link,
+  Wand2, ShieldCheck, Key, Info, Bug, Palette, Link, Bell,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -19,9 +19,10 @@ import type { AppSnapshot } from "@/types";
    ════════════════════════════════════════════════════════════════════════════ */
 
 const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
-  "appearance":  <Palette      size={14} />,
-  "writing":     <Wand2        size={14} />,
-  "permissions": <ShieldCheck  size={14} />,
+  "appearance":    <Palette      size={14} />,
+  "writing":       <Wand2        size={14} />,
+  "notifications": <Bell         size={14} />,
+  "permissions":   <ShieldCheck  size={14} />,
   "api-keys":    <Key          size={14} />,
   "enterprise":  <Link         size={14} />,
   "debug":       <Bug          size={14} />,
@@ -29,9 +30,10 @@ const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
 };
 
 const SECTION_TITLES: Record<SettingsSection, string> = {
-  "appearance":  "Appearance",
-  "writing":     "Writing style",
-  "permissions": "Permissions",
+  "appearance":    "Appearance",
+  "writing":       "Writing style",
+  "notifications": "Notifications",
+  "permissions":   "Permissions",
   "api-keys":    "API keys",
   "enterprise":  "Enterprise",
   "debug":       "Debug",
@@ -39,9 +41,10 @@ const SECTION_TITLES: Record<SettingsSection, string> = {
 };
 
 const SECTION_SUBTITLES: Record<SettingsSection, string> = {
-  "appearance":  "Choose how the dashboard surfaces your activity.",
-  "writing":     "Tone, persona and language preferences.",
-  "permissions": "Accessibility, input monitoring, notifications.",
+  "appearance":    "Choose how the dashboard surfaces your activity.",
+  "writing":       "Tone, persona and language preferences.",
+  "notifications": "Control which status bar alerts you see.",
+  "permissions":   "Accessibility, input monitoring, notifications.",
   "api-keys":    "Gateway, Deepgram and Gemini keys (stored locally).",
   "enterprise":  "Connect to your organization's AirNote Enterprise server.",
   "debug":       "Recent app and backend logs.",

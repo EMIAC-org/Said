@@ -201,6 +201,7 @@ function ChatGPTSection() {
 export type SettingsSection =
   | "appearance"
   | "writing"
+  | "notifications"
   | "permissions"
   | "api-keys"
   | "enterprise"
@@ -208,9 +209,10 @@ export type SettingsSection =
   | "about";
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
-  { id: "appearance",  label: "Appearance"    },
-  { id: "writing",     label: "Writing style" },
-  { id: "permissions", label: "Permissions"   },
+  { id: "appearance",     label: "Appearance"     },
+  { id: "writing",        label: "Writing style"  },
+  { id: "notifications",  label: "Notifications"  },
+  { id: "permissions",    label: "Permissions"     },
   { id: "api-keys",    label: "API keys"      },
   { id: "enterprise",  label: "Enterprise"    },
   { id: "debug",       label: "Debug"         },
@@ -1617,6 +1619,14 @@ export function SettingsView({
         </Section>
         </Show>
 
+        {/* ── Notifications ─────────────────────────────── */}
+        <Show when={isOn("notifications")}>
+        <div className="mb-7">
+          <p className="section-label px-1 mb-2.5">Status Bar Notifications</p>
+          <NotificationToggles />
+        </div>
+        </Show>
+
         {/* ── Permissions ──────────────────────────────── */}
         <Show when={isOn("permissions")}>
         <div className="mb-7">
@@ -2446,5 +2456,106 @@ export function SettingsView({
         {inner}
       </div>
     </ScrollArea>
+  );
+}
+
+// ── Notification Toggles ──────────────────────────────────────────────────────
+
+const NOTIF_STORAGE_KEY = "airnote-notif-prefs";
+
+interface NotifPrefs {
+  learned: boolean;
+  queued: boolean;
+  confirm: boolean;
+  negative: boolean;
+  retrain: boolean;
+  error: boolean;
+  sounds: boolean;
+}
+
+const DEFAULT_NOTIF: NotifPrefs = {
+  learned: true,
+  queued: true,
+  confirm: true,
+  negative: true,
+  retrain: true,
+  error: true,
+  sounds: true,
+};
+
+function loadNotifPrefs(): NotifPrefs {
+  try {
+    const raw = localStorage.getItem(NOTIF_STORAGE_KEY);
+    if (raw) return { ...DEFAULT_NOTIF, ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+  return { ...DEFAULT_NOTIF };
+}
+
+function saveNotifPrefs(p: NotifPrefs) {
+  try { localStorage.setItem(NOTIF_STORAGE_KEY, JSON.stringify(p)); } catch { /* ignore */ }
+}
+
+// Exported so StatusBar.tsx can read these prefs
+export function getNotifPrefs(): NotifPrefs { return loadNotifPrefs(); }
+
+const NOTIF_ITEMS: { key: keyof NotifPrefs; label: string; desc: string }[] = [
+  { key: "learned",  label: "Word learned",          desc: "When a new vocabulary term is added or a new spelling is recorded" },
+  { key: "queued",   label: "Correction noticed",    desc: "When a correction is queued but not yet confirmed (sighting 1/3)" },
+  { key: "confirm",  label: "Ambiguous term",        desc: "Ask whether a corrected word is a brand/name (one-click confirm)" },
+  { key: "negative", label: "Wrong correction",      desc: "Alert when AirNote keeps making the same wrong correction" },
+  { key: "retrain",  label: "Model updated",         desc: "When the ONNX correction model finishes retraining" },
+  { key: "error",    label: "Errors",                desc: "Recording errors, backend connection issues" },
+  { key: "sounds",   label: "Sound effects",         desc: "Play subtle sounds on recording start, paste, learning events" },
+];
+
+function NotificationToggles() {
+  const [prefs, setPrefs] = useState<NotifPrefs>(loadNotifPrefs);
+
+  function toggle(key: keyof NotifPrefs) {
+    setPrefs(prev => {
+      const next = { ...prev, [key]: !prev[key] };
+      saveNotifPrefs(next);
+      return next;
+    });
+  }
+
+  return (
+    <div className="panel p-4 space-y-1">
+      <p className="text-[12px] mb-3" style={{ color: "hsl(var(--muted-foreground))" }}>
+        Choose which notifications appear in the floating status bar.
+      </p>
+      {NOTIF_ITEMS.map(item => (
+        <div
+          key={item.key}
+          className="flex items-center justify-between py-2.5 px-1"
+          style={{ borderBottom: "1px solid hsl(var(--border) / 0.5)" }}
+        >
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-medium" style={{ color: "hsl(var(--foreground))" }}>
+              {item.label}
+            </div>
+            <div className="text-[11px] mt-0.5" style={{ color: "hsl(var(--muted-foreground))" }}>
+              {item.desc}
+            </div>
+          </div>
+          <button
+            onClick={() => toggle(item.key)}
+            className="ml-3 w-9 h-5 rounded-full transition-colors flex-shrink-0 relative"
+            style={{
+              background: prefs[item.key]
+                ? "hsl(var(--primary))"
+                : "hsl(var(--surface-4))",
+            }}
+          >
+            <span
+              className="block w-3.5 h-3.5 rounded-full bg-white absolute top-[3px] transition-transform"
+              style={{
+                transform: prefs[item.key] ? "translateX(17px)" : "translateX(3px)",
+              }}
+            />
+          </button>
+        </div>
+      ))}
+    </div>
   );
 }

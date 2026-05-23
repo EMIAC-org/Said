@@ -323,8 +323,26 @@ pub async fn delete(State(state): State<AppState>, Path(term): Path<String>) -> 
         stt_replacements::delete_by_correct_form(&state.pool, &state.default_user_id, trimmed);
     let pending_n =
         pending_promotions::delete_all_for_term(&state.pool, &state.default_user_id, trimmed);
-    info!("[vocab] delete term={trimmed:?} vocab_rows={n} stt_aliases={stt_n} pending={pending_n}",);
+    // Also clean edit-policy rules that target this term
+    let policy_n = {
+        let conn2 = state.pool.get().ok();
+        conn2.map(|c| {
+            c.execute(
+                "DELETE FROM tier2_edit_policy_rules WHERE user_id = ?1 AND correct_form_norm = ?2",
+                params![state.default_user_id.as_str(), trimmed.to_ascii_lowercase()],
+            ).unwrap_or(0)
+        }).unwrap_or(0)
+    };
+    info!(
+        "[vocab] delete term={trimmed:?} vocab_rows={n} stt_aliases={stt_n} pending={pending_n} policy_rules={policy_n}",
+    );
     crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
+
+    // Retrain ONNX model without this term so the scorer forgets it
+    if n > 0 {
+        crate::routes::classify::schedule_retrain_public(state.clone());
+    }
+
     if n > 0 {
         StatusCode::NO_CONTENT
     } else {
