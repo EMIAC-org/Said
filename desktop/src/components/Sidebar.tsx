@@ -125,7 +125,7 @@ export function Sidebar({
         />
 
         {/* Brand mark — single source of truth in BrandMark.tsx */}
-        <div className="no-drag" title="Said — Voice Polish Studio">
+        <div className="no-drag" title="AutoNote — Voice Polish Studio">
           <BrandMark size={32} idSuffix="sidebar" />
         </div>
       </div>
@@ -354,7 +354,7 @@ function PerformanceMonitor() {
           </div>
 
           <div className="grid gap-1.5">
-            <ProcessLine icon={<Server size={10} />} label="Said" process={sample.desktop} />
+            <ProcessLine icon={<Server size={10} />} label="AutoNote" process={sample.desktop} />
             <ProcessLine icon={<Cpu size={10} />} label="Backend" process={sample.backend} />
           </div>
 

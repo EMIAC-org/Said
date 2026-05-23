@@ -24,6 +24,9 @@ pub struct Recording {
     pub source: String,
     pub audio_id: Option<String>,
     pub enriched_transcript: Option<String>,
+    pub raw_transcript: Option<String>,
+    pub local_corrected_transcript: Option<String>,
+    pub polished_output: Option<String>,
 }
 
 pub struct InsertRecording<'a> {
@@ -42,6 +45,9 @@ pub struct InsertRecording<'a> {
     pub source: &'a str,
     pub audio_id: Option<&'a str>,
     pub enriched_transcript: Option<&'a str>,
+    pub raw_transcript: Option<&'a str>,
+    pub local_corrected_transcript: Option<&'a str>,
+    pub polished_output: Option<&'a str>,
 }
 
 pub fn insert_recording(pool: &DbPool, rec: InsertRecording<'_>) -> Option<()> {
@@ -50,8 +56,8 @@ pub fn insert_recording(pool: &DbPool, rec: InsertRecording<'_>) -> Option<()> {
         "INSERT INTO recordings
          (id, user_id, timestamp_ms, transcript, polished, word_count, recording_seconds,
           model_used, confidence, transcribe_ms, embed_ms, polish_ms, target_app, source, audio_id,
-          enriched_transcript)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+          enriched_transcript, raw_transcript, local_corrected_transcript, polished_output)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
         params![
             rec.id,
             rec.user_id,
@@ -69,6 +75,9 @@ pub fn insert_recording(pool: &DbPool, rec: InsertRecording<'_>) -> Option<()> {
             rec.source,
             rec.audio_id,
             rec.enriched_transcript,
+            rec.raw_transcript,
+            rec.local_corrected_transcript,
+            rec.polished_output,
         ],
     )
     .ok()?;
@@ -95,13 +104,16 @@ fn row_to_recording(row: &rusqlite::Row<'_>) -> rusqlite::Result<Recording> {
         source: row.get(15)?,
         audio_id: row.get(16)?,
         enriched_transcript: row.get(17)?,
+        raw_transcript: row.get(18)?,
+        local_corrected_transcript: row.get(19)?,
+        polished_output: row.get(20)?,
     })
 }
 
 const SELECT_COLS: &str = "id, user_id, timestamp_ms, transcript, polished, final_text,
      word_count, recording_seconds, model_used, confidence,
      transcribe_ms, embed_ms, polish_ms, target_app, edit_count, source, audio_id,
-     enriched_transcript";
+     enriched_transcript, raw_transcript, local_corrected_transcript, polished_output";
 
 pub fn list_recordings(
     pool: &DbPool,
@@ -176,7 +188,13 @@ pub fn set_recording_audio_id(pool: &DbPool, id: &str, audio_id: &str) -> Option
 pub fn apply_edit_feedback(pool: &DbPool, recording_id: &str, user_kept: &str) -> Option<()> {
     let conn = pool.get().ok()?;
     conn.execute(
-        "UPDATE recordings SET final_text = ?1, edit_count = edit_count + 1 WHERE id = ?2",
+        "UPDATE recordings
+            SET final_text = ?1,
+                edit_count = CASE
+                    WHEN final_text IS NULL OR final_text != ?1 THEN edit_count + 1
+                    ELSE edit_count
+                END
+          WHERE id = ?2",
         params![user_kept, recording_id],
     )
     .ok()?;

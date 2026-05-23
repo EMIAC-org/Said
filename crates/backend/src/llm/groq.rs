@@ -27,10 +27,14 @@ pub use super::PolishResult;
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 
-/// Default model — Llama 4 Scout, best quality + speed for Hinglish on Groq.
-pub const GROQ_MODEL_DEFAULT: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
-/// Fast model — lower latency fallback.
-pub const GROQ_MODEL_FAST: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
+/// Default model — Llama 3.1 8B on Groq. Fast, disciplined, no hallucination.
+/// Hindi→Roman is a simple structured task; 8B follows system prompts tightly.
+/// Groq gives 4K RPM + sub-200ms latency — production-grade for voice polish.
+pub const GROQ_MODEL_DEFAULT: &str = "llama-3.1-8b-instant";
+/// Fast model — same as default on Groq (8B is already the fastest).
+pub const GROQ_MODEL_FAST: &str = "llama-3.1-8b-instant";
+/// Smart model — Llama 4 Scout 17B on Groq. Better quality for complex sentences.
+pub const GROQ_MODEL_SMART: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
 
 // ── SSE types (identical to OpenAI format) ────────────────────────────────────
 

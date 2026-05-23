@@ -470,7 +470,7 @@ export async function getPerformanceSnapshot(): Promise<PerformanceSnapshot | nu
       used_swap_bytes: 0,
       desktop: {
         pid: 101,
-        name: "Said",
+        name: "AutoNote",
         cpu_percent: 3.4,
         memory_bytes: 240 * 1024 ** 2,
         virtual_memory_bytes: 0,

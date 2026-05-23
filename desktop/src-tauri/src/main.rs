@@ -773,9 +773,9 @@ fn build_tray_menu(
     let polish_submenu = Submenu::with_items(app, "Polish my message", true, &polish_item_refs)?;
 
     // ── 4. Window actions + quit ────────────────────────────────────────
-    let show_item = MenuItem::with_id(app, "show", "Open Said", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(app, "show", "Open AutoNote", true, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Quit Said", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit AutoNote", true, None::<&str>)?;
 
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
@@ -950,7 +950,7 @@ fn create_status_bar(app: &tauri::AppHandle) {
     );
 
     match tauri::WebviewWindowBuilder::new(app, "status-bar", tauri::WebviewUrl::App(url.into()))
-        .title("Said")
+        .title("AutoNote")
         .inner_size(idle_w, idle_h)
         .position(x, y)
         .decorations(false)
@@ -1037,7 +1037,7 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
             tracing::warn!("[tray_polish] backend not ready");
             emit_tray_error(
                 app,
-                "Said backend is still starting. Try again in a moment.",
+                "AutoNote backend is still starting. Try again in a moment.",
             );
             return;
         }
@@ -1201,7 +1201,7 @@ fn tray_set_output_language(app: &tauri::AppHandle, lang: &str) {
         let Some(ep) = ep_opt else {
             emit_tray_error(
                 &app_h,
-                "Said backend is still starting. Language will update once Settings are available.",
+                "AutoNote backend is still starting. Language will update once Settings are available.",
             );
             return;
         };
@@ -1517,8 +1517,53 @@ fn toggle_recording(
 
 // ── Recording flow ────────────────────────────────────────────────────────────
 
+/// Guards against overlapping start-start or start-cancel-start races.
+/// The start→finish pair is allowed through (finish clears the flag),
+/// but a second START while the first hasn't finished is rejected.
+static RECORDING_STARTING: AtomicBool = AtomicBool::new(false);
+
+/// Minimum time between consecutive finish→start cycles (ms).
+/// Prevents rapid Caps Lock taps from flooding the recording pipeline.
+static LAST_FINISH_MS: AtomicU64 = AtomicU64::new(0);
+const MIN_CYCLE_GAP_MS: u64 = 300;
+
+fn now_ms_desktop() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 /// Start recording. Called when user presses Caps Lock (or taps the button).
 fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
+    // Reject if another start is already in progress
+    if RECORDING_STARTING.swap(true, Ordering::SeqCst) {
+        tracing::info!("[record] start skipped — another start already in progress");
+        return;
+    }
+
+    // Reject rapid re-entry after a recent finish
+    let now = now_ms_desktop();
+    let last_finish = LAST_FINISH_MS.load(Ordering::SeqCst);
+    if last_finish > 0 && now.saturating_sub(last_finish) < MIN_CYCLE_GAP_MS {
+        tracing::info!(
+            "[record] start skipped — too soon after last finish ({}ms < {}ms)",
+            now.saturating_sub(last_finish),
+            MIN_CYCLE_GAP_MS,
+        );
+        RECORDING_STARTING.store(false, Ordering::SeqCst);
+        return;
+    }
+
+    // Clear the flag when this function returns (success or failure)
+    struct StartGuard;
+    impl Drop for StartGuard {
+        fn drop(&mut self) {
+            RECORDING_STARTING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = StartGuard;
+
     cancel_edit_watcher(app, "new recording");
 
     // Lock and pre-unlock the frontmost app's AX tree BEFORE recording begins.
@@ -1558,8 +1603,16 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
         }
     }
 
-    let started = match shared.lock() {
-        Ok(mut d) => d.start_recording(),
+    let (started, level_recv) = match shared.lock() {
+        Ok(mut d) => {
+            let result = d.start_recording();
+            let lr = if result.is_ok() {
+                d.take_level_receiver()
+            } else {
+                None
+            };
+            (result, lr)
+        }
         Err(_) => return,
     };
     match started {
@@ -1597,7 +1650,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     // Drive the floating HUD visualizer from the same microphone samples used
     // by recording. This stays independent from Deepgram so the UI remains
     // responsive even if streaming is disabled or falls back to HTTP STT.
-    let level_recv = shared.lock().ok().and_then(|mut d| d.take_level_receiver());
+    let level_recv = level_recv;
     if let Some(level_recv) = level_recv {
         let app_levels = app.clone();
         let meeting_pause = app.try_state::<MeetingModeState>().and_then(|meeting| {
@@ -1790,6 +1843,8 @@ fn do_cancel_recording(
     app: tauri::AppHandle,
     reason: &'static str,
 ) {
+    LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
+
     if let Ok(mut route) = app.state::<RecordingRouteState>().0.lock() {
         *route = None;
     }
@@ -1810,7 +1865,7 @@ fn do_cancel_recording(
             return;
         }
         if let Some(t) = app.tray_by_id("said") {
-            let _ = t.set_title(Some("[     ]  Said"));
+            let _ = t.set_title(Some("[     ]  AutoNote"));
         }
         let stop_rx = match d.begin_stop() {
             Ok((stop_rx, _)) => Some(stop_rx),
@@ -1842,6 +1897,8 @@ fn do_finish_recording(
     app: tauri::AppHandle,
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
 ) {
+    LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
+
     let edit_target_pid = app
         .state::<EditTargetState>()
         .0
@@ -1857,7 +1914,7 @@ fn do_finish_recording(
             Err(_) => return,
         };
         if let Some(t) = app.tray_by_id("said") {
-            let _ = t.set_title(Some("[  …  ]  Said"));
+            let _ = t.set_title(Some("[  …  ]  AutoNote"));
         }
         match d.begin_stop() {
             Ok((stop_rx, was_too_short)) => {
@@ -2126,6 +2183,9 @@ fn do_finish_recording(
             let watch_start = std::time::Instant::now();
             if let Ok(ref done) = result {
                 let back3 = Arc::clone(&back_arc2);
+                let pre_paste = app2
+                    .try_state::<ScreenContextState>()
+                    .and_then(|s| s.0.lock().ok()?.clone());
                 start_edit_watcher(
                     back3,
                     app2.clone(),
@@ -2133,6 +2193,7 @@ fn do_finish_recording(
                     done.polished.clone(),
                     watch_start,
                     edit_target_pid,
+                    pre_paste,
                 );
             }
 
@@ -2890,7 +2951,7 @@ fn choose_recording_audio_save_path(filename: &str) -> Result<Option<std::path::
     {
         let script = format!(
             "set chosenFile to choose file name with prompt {} default name {} default location (path to downloads folder)\nPOSIX path of chosenFile",
-            applescript_string("Save Said audio recording"),
+            applescript_string("Save AutoNote audio recording"),
             applescript_string(&filename),
         );
         let out = std::process::Command::new("osascript")
@@ -3040,6 +3101,7 @@ fn retry_recording_spawn(
                 done.polished.clone(),
                 watch_start,
                 None,
+                None, // re-polish: no pre_paste context
             );
         }
 
@@ -3159,7 +3221,7 @@ async fn add_vocabulary_term(
     notify_macos(
         &app,
         "Added to vocabulary",
-        &format!("Said will recognise \"{term}\" on your next recording."),
+        &format!("AutoNote will recognise \"{term}\" on your next recording."),
     );
     Ok(())
 }
@@ -3178,6 +3240,73 @@ async fn delete_vocabulary_term(
         serde_json::json!({
             "kind": "removed", "term": term,
         }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+async fn confirm_term(
+    app: tauri::AppHandle,
+    backend: State<'_, BackendState>,
+    term: String,
+    original: String,
+    action: String,
+    recording_id: Option<String>,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    let body = serde_json::json!({
+        "term": term,
+        "original": original,
+        "action": action,
+        "recording_id": recording_id,
+    });
+    let url = format!("{}/v1/confirm-term", ep.url);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("confirm-term failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("confirm-term returned {}", resp.status()));
+    }
+    if action == "learn" {
+        let _ = app.emit("vocabulary-changed", ());
+        tracing::info!("[confirm] user confirmed term {:?} — learning", term);
+    } else {
+        tracing::info!("[confirm] user skipped term {:?}", term);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn block_correction(
+    app: tauri::AppHandle,
+    backend: State<'_, BackendState>,
+    variant: String,
+    wrong_replacement: String,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    let body = serde_json::json!({
+        "variant": variant,
+        "wrong_replacement": wrong_replacement,
+    });
+    let url = format!("{}/v1/block-correction", ep.url);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("block-correction failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("block-correction returned {}", resp.status()));
+    }
+    let _ = app.emit("vocabulary-changed", ());
+    tracing::info!(
+        "[block] user blocked correction {:?} → {:?}",
+        variant, wrong_replacement
     );
     Ok(())
 }
@@ -3215,7 +3344,7 @@ async fn star_vocabulary_term(
         notify_macos(
             &app,
             "Pinned to vocabulary",
-            &format!("Said will keep \"{term}\" even if you stop using it."),
+            &format!("AutoNote will keep \"{term}\" even if you stop using it."),
         );
     }
     Ok(starred)
@@ -3487,7 +3616,7 @@ fn toggle_meeting_mute(
 
     if meeting_mode.is_muted() {
         if current != desktop::AppState::Idle {
-            return Err("finish the current Said recording before resuming meeting capture".into());
+            return Err("finish the current AutoNote recording before resuming meeting capture".into());
         }
         meeting_mode.set_muted(false);
         emit_meeting_stt_status(&app);
@@ -3633,7 +3762,7 @@ fn get_debug_logs() -> DebugLogs {
     let (backend, backend_truncated) = read_recent_log(&backend_path, "polish-backend build=");
 
     let combined = format!(
-        "── Said desktop ({}) ──\n{}\n\n── polish-backend ({}) ──\n{}",
+        "── AutoNote desktop ({}) ──\n{}\n\n── polish-backend ({}) ──\n{}",
         desktop_path.display(),
         if desktop.trim().is_empty() {
             "(no desktop log found)"
@@ -3721,12 +3850,10 @@ fn get_performance_snapshot(
 
 // ── Edit watcher ──────────────────────────────────────────────────────────────
 
-const EDIT_WATCH_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+const EDIT_WATCH_IDLE_TIMEOUT: Duration = Duration::from_secs(8);
 const EDIT_WATCH_MAX_DURATION: Duration = Duration::from_secs(30);
-// AX reads can be expensive in Electron/Chromium apps, so keep this responsive
-// without polling at frame-rate cadence.
-const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(150);
-const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(500);
+const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(50);
+const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
 
 async fn blocking_ax_option<T, F>(label: &'static str, f: F) -> Option<T>
@@ -3758,9 +3885,9 @@ fn cancel_edit_watcher(app: &tauri::AppHandle, reason: &str) {
     let st = app.state::<EditWatcherState>();
     let mut guard = match st.0.lock() {
         Ok(g) => g,
-        Err(_) => {
-            tracing::warn!("[edit-watch] watcher state lock poisoned; cannot cancel");
-            return;
+        Err(e) => {
+            tracing::warn!("[edit-watch] watcher state lock poisoned; recovering");
+            e.into_inner()
         }
     };
     if let Some(prev) = guard.take() {
@@ -3776,19 +3903,21 @@ fn start_edit_watcher(
     polished: String,
     watch_start: std::time::Instant,
     target_pid: Option<i32>,
+    pre_paste_text: Option<String>,
 ) {
     let token = {
         let st = app.state::<EditWatcherState>();
         let mut guard = match st.0.lock() {
             Ok(g) => g,
-            Err(_) => {
-                tracing::warn!("[edit-watch] watcher state lock poisoned; skipping watcher");
-                return;
+            Err(e) => {
+                tracing::warn!("[edit-watch] watcher state lock poisoned; recovering");
+                e.into_inner()
             }
         };
         if let Some(prev) = guard.take() {
             tracing::info!("[edit-watch] cancelling previous watcher");
             prev.cancel();
+            std::thread::yield_now();
         }
         let token = CancellationToken::new();
         *guard = Some(token.clone());
@@ -3805,6 +3934,7 @@ fn start_edit_watcher(
             polished,
             watch_start,
             target_pid,
+            pre_paste_text,
         )
         .await;
 
@@ -3827,11 +3957,13 @@ async fn watch_for_edit(
     polished: String,                // the AI-generated text we pasted
     watch_start: std::time::Instant, // captured at the call site, right after paste
     target_pid: Option<i32>,
+    pre_paste_text: Option<String>,  // field text BEFORE Said typed (from ScreenContextState)
 ) {
     use std::time::Instant;
 
     // Let the paste animation settle and focus move into the text field.
-    if !cancellable_sleep(&token, Duration::from_millis(700)).await {
+    // 400ms covers paste animation (~200ms) + AX cache start; retries handle the rest.
+    if !cancellable_sleep(&token, Duration::from_millis(400)).await {
         tracing::info!("[edit-watch] watcher cancelled before start for {recording_id}");
         return;
     }
@@ -3946,8 +4078,20 @@ async fn watch_for_edit(
             app_switched_during_capture = true;
         }
 
+        // Detect if target app exited — stop polling a dead process
+        if let Some(pid) = initial_pid {
+            if now_pid.is_none() || now_pid == Some(1) {
+                tracing::info!(
+                    "[edit-watch] target process pid={pid} appears dead — finalizing early"
+                );
+                break;
+            }
+        }
+
         // Read the current field value from the locked target app when we have
-        // one. This avoids accidentally sampling our HUD or a newly focused app.
+        // one. Measure AX latency for adaptive polling.
+        let ax_read_start = std::time::Instant::now();
+        // This avoids accidentally sampling our HUD or a newly focused app.
         let now_val = if let Some(pid) = initial_pid {
             let fast = blocking_ax_option("read_focused_value_fast target-pid poll", move || {
                 paster::read_focused_value_fast_for_pid(pid)
@@ -3976,6 +4120,15 @@ async fn watch_for_edit(
             .await
         }
         .unwrap_or_default();
+        let ax_latency = ax_read_start.elapsed();
+        if ax_latency > Duration::from_millis(100) && current_interval < Duration::from_millis(200) {
+            current_interval = Duration::from_millis(ax_latency.as_millis() as u64 * 2);
+            tracing::debug!(
+                "[edit-watch] AX slow ({}ms) — adapting poll to {}ms",
+                ax_latency.as_millis(),
+                current_interval.as_millis(),
+            );
+        }
         if now_val != last_val {
             idle_at = Instant::now();
             last_change_at = Instant::now();
@@ -4037,7 +4190,7 @@ async fn watch_for_edit(
             tracing::info!("[edit-watch] ax_no_edit for {recording_id}");
             return;
         }
-        user_kept = extract_kept(&polished, &post_paste, &effective_val);
+        user_kept = extract_kept(&polished, &post_paste, &effective_val, pre_paste_text.as_deref());
         capture_method = "ax";
         tracing::info!(
             "[edit-watch] ax_capture for {recording_id}: {:?} → {:?}",
@@ -4146,11 +4299,16 @@ async fn watch_for_edit(
                     let term_display = first_term
                         .clone()
                         .unwrap_or_else(|| "your correction".to_string());
-                    let msg = match resp.class.as_str() {
-                        "STT_ERROR" | "stt_error" => {
+                    let msg = match (resp.class.as_str(), resp.is_repeat) {
+                        ("STT_ERROR" | "stt_error", true) => {
+                            format!("Added new spelling for \"{}\"", term_display)
+                        }
+                        ("STT_ERROR" | "stt_error", false) => {
                             format!("Will recognise \"{}\" next time", term_display)
                         }
-                        "POLISH_ERROR" | "polish_error" => "Updated writing preference".to_string(),
+                        ("POLISH_ERROR" | "polish_error", _) => {
+                            "Updated writing preference".to_string()
+                        }
                         _ => "Remembered your correction".to_string(),
                     };
                     if let Some(w) = app.get_webview_window("status-bar") {
@@ -4181,6 +4339,44 @@ async fn watch_for_edit(
                             }),
                         );
                     }
+                }
+
+                // Ambiguous terms — show confirmation toast in status bar
+                for amb in &resp.ambiguous_terms {
+                    if let Some(w) = app.get_webview_window("status-bar") {
+                        let _ = w.show();
+                    }
+                    let _ = app.emit(
+                        "vocab-confirm",
+                        serde_json::json!({
+                            "term": amb.corrected,
+                            "original": amb.original,
+                            "context": amb.context,
+                            "recording_id": amb.recording_id,
+                        }),
+                    );
+                    tracing::info!(
+                        "[edit-watch] asking user: {:?} → {:?} — ambiguous",
+                        amb.original, amb.corrected,
+                    );
+                }
+
+                // Negative corrections — show blocking toast
+                for neg in &resp.negative_terms {
+                    if let Some(w) = app.get_webview_window("status-bar") {
+                        let _ = w.show();
+                    }
+                    let _ = app.emit(
+                        "vocab-negative",
+                        serde_json::json!({
+                            "term": neg.term,
+                            "wrong_replacement": neg.wrong_replacement,
+                        }),
+                    );
+                    tracing::info!(
+                        "[edit-watch] wrong correction: {:?} → {:?} ({}x)",
+                        neg.term, neg.wrong_replacement, neg.correction_count,
+                    );
                 }
 
                 if resp.learned || resp.pending_id.is_some() {
@@ -4277,7 +4473,16 @@ fn shares_word_overlap(candidate: &str, reference: &str) -> bool {
         .map(|w| w.to_string())
         .collect();
     if ref_words.is_empty() {
-        return !candidate.is_empty();
+        // Short reference text — fall back to character-level overlap.
+        // Check if >40% of reference chars appear in candidate.
+        let ref_lower = reference.to_lowercase();
+        let cand_lower = candidate.to_lowercase();
+        let shared = ref_lower.chars()
+            .filter(|c| !c.is_whitespace())
+            .filter(|c| cand_lower.contains(*c))
+            .count();
+        let total = ref_lower.chars().filter(|c| !c.is_whitespace()).count();
+        return total > 0 && shared * 100 / total > 40;
     }
     for cw in cand_lower.split_whitespace() {
         if cw.chars().count() <= 2 {
@@ -4293,12 +4498,52 @@ fn shares_word_overlap(candidate: &str, reference: &str) -> bool {
 }
 
 /// Given what we pasted (`polished`), where the field was right after paste
-/// (`post_paste`), and the final field value (`last_val`), extract the user's
-/// edited version of our text.
-fn extract_kept(polished: &str, post_paste: &str, last_val: &str) -> String {
-    // Find where our polished text starts in the field.
+/// (`post_paste`), the final field value (`last_val`), and optionally the field
+/// text from BEFORE Said typed (`pre_paste`), extract only the user's edited
+/// version of Said's output — stripping any pre-existing text.
+fn extract_kept(polished: &str, post_paste: &str, last_val: &str, pre_paste: Option<&str>) -> String {
+    // ── Strategy 1: use pre_paste to reliably find prefix/suffix ─────────
+    // pre_paste = field content before Said typed.  post_paste = field content
+    // after Said typed.  The common prefix between them is text before cursor;
+    // the common suffix is text after cursor.  Whatever is in the middle of
+    // post_paste is what Said actually inserted (after any app normalization).
+    // We strip the same prefix/suffix from last_val to get the user's edit.
+    if let Some(pre) = pre_paste {
+        if !pre.is_empty() && post_paste.len() > pre.len() {
+            let prefix_bytes = common_prefix_bytes(pre, post_paste);
+            let pre_rest = &pre[prefix_bytes..];
+            let post_rest = &post_paste[prefix_bytes..];
+            let suffix_bytes = common_suffix_bytes(pre_rest, post_rest);
+
+            let prefix = &post_paste[..prefix_bytes];
+            let suffix = if suffix_bytes > 0 && suffix_bytes <= pre_rest.len() {
+                &pre_rest[pre_rest.len() - suffix_bytes..]
+            } else {
+                ""
+            };
+
+            if last_val.starts_with(prefix) {
+                let after_prefix = &last_val[prefix.len()..];
+                if !suffix.is_empty() {
+                    if let Some(middle) = after_prefix.strip_suffix(suffix) {
+                        tracing::info!(
+                            "[edit-watch] extract_kept via pre_paste: prefix={}b suffix={}b",
+                            prefix_bytes, suffix_bytes,
+                        );
+                        return middle.trim().to_string();
+                    }
+                }
+                tracing::info!(
+                    "[edit-watch] extract_kept via pre_paste prefix only: {}b",
+                    prefix_bytes,
+                );
+                return after_prefix.trim().to_string();
+            }
+        }
+    }
+
+    // ── Strategy 2 (fallback): find polished verbatim in post_paste ──────
     let Some(offset) = post_paste.find(polished.trim()) else {
-        // Can't locate it precisely — return the full field value.
         return last_val.to_string();
     };
 
@@ -4306,17 +4551,36 @@ fn extract_kept(polished: &str, post_paste: &str, last_val: &str) -> String {
     let after_end = offset + polished.trim().len();
     let suffix = &post_paste[after_end..];
 
-    // In last_val, strip the same prefix and suffix to get the edited middle.
     if let Some(lv_after_prefix) = last_val.strip_prefix(prefix) {
         if let Some(edited) = lv_after_prefix.strip_suffix(suffix) {
             return edited.trim().to_string();
         }
-        // Suffix changed too — return everything after the prefix.
         return lv_after_prefix.trim().to_string();
     }
 
-    // Prefix changed — return full field value as a fallback.
     last_val.to_string()
+}
+
+fn common_prefix_bytes(a: &str, b: &str) -> usize {
+    let mut bytes = 0;
+    for (ac, bc) in a.chars().zip(b.chars()) {
+        if ac != bc {
+            break;
+        }
+        bytes += ac.len_utf8();
+    }
+    bytes
+}
+
+fn common_suffix_bytes(a: &str, b: &str) -> usize {
+    let mut bytes = 0;
+    for (ac, bc) in a.chars().rev().zip(b.chars().rev()) {
+        if ac != bc {
+            break;
+        }
+        bytes += ac.len_utf8();
+    }
+    bytes
 }
 
 /// Returns true only if `user_kept` is *meaningfully* different from `polished`.
@@ -4745,9 +5009,9 @@ fn main() {
                 let initial_menu = match &initial_snap {
                     Some(snap) => build_tray_menu(app.handle(), snap, None, "hinglish")?,
                     None => Menu::with_items(app, &[
-                        &MenuItem::with_id(app, "show", "Open Said", true, None::<&str>)?,
+                        &MenuItem::with_id(app, "show", "Open AutoNote", true, None::<&str>)?,
                         &PredefinedMenuItem::separator(app)?,
-                        &MenuItem::with_id(app, "quit", "Quit Said", true, None::<&str>)?,
+                        &MenuItem::with_id(app, "quit", "Quit AutoNote", true, None::<&str>)?,
                     ])?,
                 };
 
@@ -4756,7 +5020,7 @@ fn main() {
                 ).ok();
 
                 let mut tray_builder = TrayIconBuilder::with_id("said")
-                    .tooltip("Said — Voice Polish Studio")
+                    .tooltip("AutoNote — Voice Polish Studio")
                     .menu(&initial_menu)
                     .show_menu_on_left_click(true);
 
@@ -4834,9 +5098,11 @@ fn main() {
                                 meeting_generation_press.fetch_add(1, Ordering::SeqCst);
                                 emit_meeting_stt_status(&app_h);
                                 std::thread::spawn(move || {
-                                    let current = shared.lock().ok().map(|d| d.state);
+                                    let current = shared.try_lock().ok().map(|d| d.state);
                                     if current == Some(desktop::AppState::Recording) {
                                         do_cancel_recording(shared, app_h, "hotkey mute");
+                                    } else if current.is_none() {
+                                        tracing::info!("[hotkey] mute skipped — shared lock busy");
                                     }
                                 });
                             } else {
@@ -4979,6 +5245,8 @@ fn main() {
             list_vocabulary,
             add_vocabulary_term,
             delete_vocabulary_term,
+            confirm_term,
+            block_correction,
             reset_all_vocabulary,
             star_vocabulary_term,
             patch_vocabulary_term,

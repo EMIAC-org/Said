@@ -43,7 +43,7 @@ const SECTION_SUBTITLES: Record<SettingsSection, string> = {
   "writing":     "Tone, persona and language preferences.",
   "permissions": "Accessibility, input monitoring, notifications.",
   "api-keys":    "Gateway, Deepgram and Gemini keys (stored locally).",
-  "enterprise":  "Connect to your organization's Said Enterprise server.",
+  "enterprise":  "Connect to your organization's AutoNote Enterprise server.",
   "debug":       "Recent app and backend logs.",
   "about":       "Version and credits.",
 };
@@ -183,7 +183,7 @@ export function SettingsModal({
           >
             <p className="text-[11px] tabular-nums"
                style={{ color: "hsl(var(--muted-foreground))" }}>
-              Said v{appVersion}
+              AutoNote v{appVersion}
             </p>
             <span
               className="flex items-center justify-center w-5 h-5 rounded-full"

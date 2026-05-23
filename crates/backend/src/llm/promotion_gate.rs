@@ -199,7 +199,9 @@ pub fn is_common_word(term: &str) -> bool {
         "the", "this", "that", "with", "from", "have", "been", "will", "would", "could", "should",
         "going", "doing", "said", "says", "like", "just", "also", "very", "much", "good", "great",
         "nice", "okay", "fine", "sure", "yeah", "here", "there", "where", "when", "what", "which",
-        "who", "about", "after", "before", "between", "through",
+        "who", "about", "after", "before", "between", "through", "time", "can", "go", "one", "two",
+        "three", "four", "five", "six", "seven", "eight", "nine", "ten", "zero", "hundred",
+        "thousand",
     ];
     HINDI_COMMON.contains(&t.as_str()) || ENGLISH_COMMON.contains(&t.as_str())
 }

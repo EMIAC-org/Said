@@ -167,6 +167,7 @@ pub async fn polish(
             let alias_result = stt_replacements::ApplyResult {
                 text: transcript.clone(),
                 matches: vec![],
+                traces: vec![],
             };
             let selected_terms = vocab_embeddings::select_for_prompt(
                 &pool,
@@ -234,7 +235,13 @@ pub async fn polish(
         let client_c    = http_client.clone();
 
         let (llm_provider, model_for_llm, openai_token_opt) = if is_formatter {
-            ("groq".to_string(), "llama-3.3-70b-versatile".to_string(), None)
+            // Formatter: prefer GPT-5.4-mini (Codex) for quality, fall back to Groq 70B
+            let codex_tok = openai_oauth::get_token(&pool, &user_id);
+            if let Some(tok) = codex_tok {
+                ("openai_codex".to_string(), openai_codex::MODEL_MINI.to_string(), Some(tok.access_token))
+            } else {
+                ("groq".to_string(), "llama-3.3-70b-versatile".to_string(), None)
+            }
         } else {
             let provider = prefs.llm_provider.clone();
             let (m, tok) = if provider == "openai_codex" {
@@ -248,7 +255,7 @@ pub async fn polish(
             } else if provider == "gemini_direct" {
                 (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
             } else if provider == "groq" {
-                (groq::GROQ_MODEL_DEFAULT.to_string(), None)
+                (if prefs.selected_model == "smart" { groq::GROQ_MODEL_SMART } else { groq::GROQ_MODEL_FAST }.to_string(), None)
             } else {
                 (model.clone(), None)
             };
@@ -398,6 +405,9 @@ pub async fn polish(
                     source:        "text",
                     audio_id:      None,
                     enriched_transcript: None,
+                    raw_transcript: Some(&t2),
+                    local_corrected_transcript: Some(&t2),
+                    polished_output: Some(&p2),
                 });
             });
         }
@@ -505,7 +515,7 @@ pub async fn refine_last(
         } else if llm_provider == "gemini_direct" {
             (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
         } else if llm_provider == "groq" {
-            (groq::GROQ_MODEL_DEFAULT.to_string(), None)
+            (if prefs.selected_model == "smart" { groq::GROQ_MODEL_SMART } else { groq::GROQ_MODEL_FAST }.to_string(), None)
         } else {
             (model.clone(), None)
         };
@@ -582,6 +592,9 @@ pub async fn refine_last(
                     source:        "text_refine",
                     audio_id:      None,
                     enriched_transcript: None,
+                    raw_transcript: Some(&t2),
+                    local_corrected_transcript: Some(&t2),
+                    polished_output: Some(&p2),
                 });
             });
         }
@@ -719,6 +732,7 @@ mod tests {
         let alias_result = stt_replacements::ApplyResult {
             text: "what time is it".into(),
             matches: vec![],
+            traces: vec![],
         };
         let resolved = vocab_resolver::resolve_for_prompt(
             &alias_result.text,

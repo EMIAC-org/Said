@@ -1,5 +1,5 @@
 /**
- * Said brand mark — a 4-bar audio waveform.
+ * AutoNote brand mark — a 4-bar audio waveform.
  *
  * Renders crisp from 14px (macOS menu bar) up to 64px+ (onboarding brand
  * canvas). Uses `currentColor` so the mark tints correctly in any context

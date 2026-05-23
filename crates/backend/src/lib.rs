@@ -18,6 +18,7 @@ pub mod llm;
 pub mod routes;
 pub mod store;
 pub mod stt;
+pub mod tier2;
 pub mod watchdog;
 
 // Re-export the cross-platform path helpers from said-core so that code
@@ -275,6 +276,7 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/corrections", get(routes::prefs::get_corrections))
         .route("/v1/stt/bias", get(routes::stt::get_bias))
+        .route("/v1/tier2/status", get(routes::tier2::status))
         // Cloud auth bridge — store/clear cloud token, query cloud status
         .route(
             "/v1/cloud/token",
@@ -294,6 +296,12 @@ pub fn router_with_state(state: AppState) -> Router {
         .route(
             "/v1/openai-oauth/disconnect",
             axum::routing::delete(routes::openai_oauth::disconnect),
+        )
+        // Confirm / block term corrections
+        .route("/v1/confirm-term", post(routes::confirm::confirm_term))
+        .route(
+            "/v1/block-correction",
+            post(routes::confirm::block_correction),
         )
         // Invite-a-friend email
         .route("/v1/invite", post(routes::invite::send))

@@ -95,6 +95,25 @@ impl ReviewStatus {
 pub enum MatchKind {
     Exact,
     Phonetic,
+    Tier2Policy,
+    Tier2EditPolicy,
+    Tier2ClusterFuzzy,
+    Tier2Deterministic,
+    Tier2Onnx,
+}
+
+impl MatchKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Phonetic => "phonetic",
+            Self::Tier2Policy => "tier2_policy",
+            Self::Tier2EditPolicy => "tier2_edit_policy",
+            Self::Tier2ClusterFuzzy => "tier2_cluster_fuzzy",
+            Self::Tier2Deterministic => "tier2_deterministic",
+            Self::Tier2Onnx => "tier2_onnx",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,10 +123,27 @@ pub struct AppliedMatch {
     pub kind: MatchKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoringTrace {
+    pub token: String,
+    pub candidate: String,
+    pub second_candidate: Option<String>,
+    pub kind: MatchKind,
+    pub score: f64,
+    pub second_score: f64,
+    pub margin: f64,
+    pub deterministic_score: f64,
+    pub onnx_score: Option<f64>,
+    pub policy_score: Option<f64>,
+    pub policy_boost: f64,
+    pub applied: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ApplyResult {
     pub text: String,
     pub matches: Vec<AppliedMatch>,
+    pub traces: Vec<ScoringTrace>,
 }
 
 /// Upsert a (transcript_form → correct_form) replacement rule.
@@ -177,26 +213,9 @@ fn upsert_inner(
     if from.is_ascii() && to.is_ascii() && from == to.to_ascii_lowercase() {
         return false;
     }
-    // Quality gate: reject garbage rules where the transcript_form bears
-    // no phonetic resemblance to the correct_form AND both are pure ASCII
-    // single words. "men" → "Emiac" (sim 0.0) makes no sense.
-    //
-    // Skip this gate when:
-    //   • Either side contains non-ASCII (Devanagari STT output is common)
-    //   • Either side contains spaces (multi-word like "Main corps" → MACOBS)
-    //   • First letters match (catches "claud" → "claude", "d to c" → "D2C")
-    let both_ascii_single =
-        from.is_ascii() && to.is_ascii() && !from.contains(' ') && !to.contains(' ');
-    if both_ascii_single {
-        let phon_sim = phonetics::similarity(&from, &to);
-        let first_match = from.chars().next().map(|f| f.to_ascii_lowercase())
-            == to.chars().next().map(|t| t.to_ascii_lowercase());
-        if phon_sim < 0.30 && !first_match {
-            tracing::info!(
-                "[stt-replace] rejected garbage rule: {from:?} → {to:?} (phon={phon_sim:.2}, first_match={first_match})"
-            );
-            return false;
-        }
+    if !is_plausible_alias(&from, &to) {
+        tracing::info!("[stt-replace] rejected implausible alias: {from:?} → {to:?}");
+        return false;
     }
     let key = phonetics::phonetic_key(&from);
     let now = now_ms();
@@ -220,7 +239,152 @@ fn upsert_inner(
         .unwrap_or(0);
 
     info!("[stt-repl] upsert {from:?} → {to:?} (key={key}, bump={bump}, rows={rows})");
+    if rows > 0 {
+        drop(conn);
+        enforce_alias_cap(pool, user_id, correct_form);
+    }
     rows > 0
+}
+
+pub fn is_plausible_alias(transcript_form: &str, correct_form: &str) -> bool {
+    let from = transcript_form.trim().to_ascii_lowercase();
+    let to = correct_form.trim().to_ascii_lowercase();
+    if from.is_empty() || to.is_empty() {
+        return false;
+    }
+    if from.is_ascii() && to.is_ascii() && from == to {
+        return false;
+    }
+
+    let to_compact = compact_ascii(&to);
+    if to_compact.is_empty() {
+        return true;
+    }
+
+    let ascii_tokens = ascii_alias_tokens(&from);
+    if from.is_ascii() && to.is_ascii() {
+        if ascii_tokens.len() <= 1 && !from.contains(' ') && !to.contains(' ') {
+            let phon_sim = phonetics::similarity(&from, &to);
+            let first_match = from.chars().next().map(|f| f.to_ascii_lowercase())
+                == to.chars().next().map(|t| t.to_ascii_lowercase());
+            return phon_sim >= 0.30 || first_match;
+        }
+        let (best_sim, first_match) = alias_phrase_score(&ascii_tokens, &to_compact);
+        return best_sim >= 0.34 || (first_match && best_sim >= 0.24);
+    }
+
+    // Mixed-script aliases are common because Deepgram can emit Devanagari
+    // around an English proper noun ("मैं Corps" → "MACOBS"). Keep those
+    // allowed; the unrelated-alias pollution we are blocking here is the
+    // pure ASCII multi-word case ("urban aura" → "Macobs").
+    if !from.is_ascii() && to.is_ascii() {
+        return true;
+    }
+
+    true
+}
+
+fn ascii_alias_tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_ascii_lowercase())
+        .collect()
+}
+
+fn compact_ascii(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn alias_phrase_score(tokens: &[String], correct_compact: &str) -> (f64, bool) {
+    let content_tokens = tokens
+        .iter()
+        .filter(|token| !is_alias_glue_word(token))
+        .cloned()
+        .collect::<Vec<_>>();
+    let compared = if content_tokens.is_empty() {
+        tokens.to_vec()
+    } else {
+        content_tokens
+    };
+    let compact_all = tokens.join("");
+    let compact_content = compared.join("");
+    let best_sim = std::iter::once(compact_all.as_str())
+        .chain(std::iter::once(compact_content.as_str()))
+        .chain(compared.iter().map(String::as_str))
+        .filter(|token| !token.is_empty())
+        .map(|token| phonetics::similarity(token, correct_compact))
+        .fold(0.0_f64, f64::max);
+    let first_match = compared.iter().any(|token| {
+        token.chars().next().map(|f| f.to_ascii_lowercase())
+            == correct_compact
+                .chars()
+                .next()
+                .map(|t| t.to_ascii_lowercase())
+    });
+    (best_sim, first_match)
+}
+
+fn is_alias_glue_word(token: &str) -> bool {
+    matches!(
+        token,
+        "a" | "an"
+            | "and"
+            | "aur"
+            | "hai"
+            | "hain"
+            | "he"
+            | "hi"
+            | "ka"
+            | "ke"
+            | "ki"
+            | "ko"
+            | "main"
+            | "mein"
+            | "me"
+            | "the"
+            | "to"
+            | "with"
+    )
+}
+
+const MAX_ALIASES_PER_TERM: usize = 15;
+
+fn enforce_alias_cap(pool: &DbPool, user_id: &str, correct_form: &str) {
+    let Ok(conn) = pool.get() else { return };
+    let canon = correct_form.trim();
+    if canon.is_empty() {
+        return;
+    }
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM stt_replacements \
+             WHERE user_id = ?1 AND LOWER(correct_form) = LOWER(?2)",
+            params![user_id, canon],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if count as usize <= MAX_ALIASES_PER_TERM {
+        return;
+    }
+    let evicted = conn
+        .execute(
+            "DELETE FROM stt_replacements \
+             WHERE user_id = ?1 AND LOWER(correct_form) = LOWER(?2) \
+               AND rowid NOT IN ( \
+                   SELECT rowid FROM stt_replacements \
+                   WHERE user_id = ?1 AND LOWER(correct_form) = LOWER(?2) \
+                   ORDER BY use_count DESC, weight DESC, last_used DESC \
+                   LIMIT ?3 \
+               )",
+            params![user_id, canon, MAX_ALIASES_PER_TERM as i64],
+        )
+        .unwrap_or(0);
+    if evicted > 0 {
+        info!("[stt-repl] evicted {evicted} alias(es) for {canon:?} (cap={MAX_ALIASES_PER_TERM})");
+    }
 }
 
 /// Upsert all known aliases for a canonical correct_form in one shot.
@@ -636,10 +800,48 @@ pub fn apply(transcript: &str, rules: &[SttReplacement]) -> String {
 }
 
 pub fn apply_with_matches(transcript: &str, rules: &[SttReplacement]) -> ApplyResult {
+    apply_inner(transcript, rules, true)
+}
+
+/// Apply ONLY exact whole-word matches, skipping phonetic fallback, and
+/// filtering out aliases whose transcript_form is a common Hindi/English
+/// word. Safe for pre-LLM substitution where false positives are costly.
+pub fn apply_exact_safe(transcript: &str, rules: &[SttReplacement]) -> ApplyResult {
     if rules.is_empty() {
         return ApplyResult {
             text: transcript.to_string(),
             matches: vec![],
+            traces: vec![],
+        };
+    }
+    let safe: Vec<SttReplacement> = rules
+        .iter()
+        .filter(|r| {
+            if r.transcript_form.trim().len() < 2 {
+                return false;
+            }
+            if crate::llm::promotion_gate::is_common_word(&r.transcript_form) {
+                return false;
+            }
+            if r.review_status != ReviewStatus::Approved {
+                return false;
+            }
+            if !is_plausible_alias(&r.transcript_form, &r.correct_form) {
+                return false;
+            }
+            true
+        })
+        .cloned()
+        .collect();
+    apply_inner(transcript, &safe, false)
+}
+
+fn apply_inner(transcript: &str, rules: &[SttReplacement], allow_phonetic: bool) -> ApplyResult {
+    if rules.is_empty() {
+        return ApplyResult {
+            text: transcript.to_string(),
+            matches: vec![],
+            traces: vec![],
         };
     }
 
@@ -729,77 +931,83 @@ pub fn apply_with_matches(transcript: &str, rules: &[SttReplacement]) -> ApplyRe
             continue;
         }
 
-        // Fall back to single-token phonetic match against transcript_form.
-        let chunk = chunks[i];
-        let core = &cores[i];
-        let key = phonetics::phonetic_key(core);
-        let mut phonetic_hit = None;
-        if !key.is_empty() {
-            for (_, rule) in &indexed {
-                if rule.phonetic_key == key {
-                    let sim = phonetics::similarity(core, &rule.transcript_form);
-                    if sim >= 0.85 {
-                        phonetic_hit = Some(rule);
-                        break;
+        if allow_phonetic {
+            // Fall back to single-token phonetic match against transcript_form.
+            let chunk = chunks[i];
+            let core = &cores[i];
+            let key = phonetics::phonetic_key(core);
+            let mut phonetic_hit = None;
+            if !key.is_empty() {
+                for (_, rule) in &indexed {
+                    if rule.phonetic_key == key {
+                        let sim = phonetics::similarity(core, &rule.transcript_form);
+                        if sim >= 0.85 {
+                            phonetic_hit = Some(rule);
+                            break;
+                        }
                     }
                 }
             }
-        }
-        // Second phonetic fallback: match against the CORRECT_FORM.
-        // Deepgram distorts the same word differently each time
-        // (e.g. "Emiac" → "MEAH" first time, "MEX" second time).
-        // We store a rule for (MEAH→Emiac) but next time Deepgram says "MEX"
-        // which doesn't match "MEAH" phonetically. However "MEX" DOES
-        // phonetically resemble "Emiac" (the correct_form). So we try
-        // matching the transcript token against correct_form too.
-        //
-        // Guards to prevent false positives (e.g. "MACOBS" matching "Emiac"):
-        //   • High threshold (0.75) — only very close phonetic matches
-        //   • Token must be short relative to correct_form (≤ 1.5x length)
-        //     to avoid matching full words against unrelated short rules
-        //   • Token must not be longer than correct_form + 2 chars
-        if phonetic_hit.is_none() && !key.is_empty() && core.len() >= 3 {
-            let mut best_sim = 0.0_f64;
-            let mut best_rule = None;
-            for (_, rule) in &indexed {
-                let correct_lower = rule.correct_form.to_ascii_lowercase();
-                if *core == correct_lower {
-                    continue;
+            // Second phonetic fallback: match against the CORRECT_FORM.
+            // Deepgram distorts the same word differently each time
+            // (e.g. "Emiac" → "MEAH" first time, "MEX" second time).
+            // We store a rule for (MEAH→Emiac) but next time Deepgram says "MEX"
+            // which doesn't match "MEAH" phonetically. However "MEX" DOES
+            // phonetically resemble "Emiac" (the correct_form). So we try
+            // matching the transcript token against correct_form too.
+            //
+            // Guards to prevent false positives (e.g. "MACOBS" matching "Emiac"):
+            //   • High threshold (0.75) — only very close phonetic matches
+            //   • Token must be short relative to correct_form (≤ 1.5x length)
+            //     to avoid matching full words against unrelated short rules
+            //   • Token must not be longer than correct_form + 2 chars
+            if phonetic_hit.is_none() && !key.is_empty() && core.len() >= 3 {
+                let mut best_sim = 0.0_f64;
+                let mut best_rule = None;
+                for (_, rule) in &indexed {
+                    let correct_lower = rule.correct_form.to_ascii_lowercase();
+                    if *core == correct_lower {
+                        continue;
+                    }
+                    let len_ratio = core.len() as f64 / correct_lower.len().max(1) as f64;
+                    if len_ratio > 1.5 || core.len() > correct_lower.len() + 2 {
+                        continue;
+                    }
+                    let correct_sim = phonetics::similarity(core, &rule.correct_form);
+                    if correct_sim >= 0.65 && correct_sim > best_sim {
+                        best_sim = correct_sim;
+                        best_rule = Some(rule);
+                    }
                 }
-                let len_ratio = core.len() as f64 / correct_lower.len().max(1) as f64;
-                if len_ratio > 1.5 || core.len() > correct_lower.len() + 2 {
-                    continue;
-                }
-                let correct_sim = phonetics::similarity(core, &rule.correct_form);
-                if correct_sim >= 0.65 && correct_sim > best_sim {
-                    best_sim = correct_sim;
-                    best_rule = Some(rule);
+                if best_rule.is_some() {
+                    phonetic_hit = best_rule;
                 }
             }
-            if best_rule.is_some() {
-                phonetic_hit = best_rule;
+            if let Some(rule) = phonetic_hit {
+                let (lead, trail) = split_punct(chunk);
+                let (_, trail2) = split_punct_trailing(trail);
+                out.push_str(lead);
+                out.push_str(&rule.correct_form);
+                out.push_str(trail2);
+                matches.push(AppliedMatch {
+                    transcript_form: rule.transcript_form.clone(),
+                    correct_form: rule.correct_form.clone(),
+                    kind: MatchKind::Phonetic,
+                });
+                i += 1;
+                continue;
             }
-        }
-        if let Some(rule) = phonetic_hit {
-            let (lead, trail) = split_punct(chunk);
-            let (_, trail2) = split_punct_trailing(trail);
-            out.push_str(lead);
-            out.push_str(&rule.correct_form);
-            out.push_str(trail2);
-            matches.push(AppliedMatch {
-                transcript_form: rule.transcript_form.clone(),
-                correct_form: rule.correct_form.clone(),
-                kind: MatchKind::Phonetic,
-            });
-            i += 1;
-            continue;
         }
 
-        out.push_str(chunk);
+        out.push_str(chunks[i]);
         i += 1;
     }
 
-    ApplyResult { text: out, matches }
+    ApplyResult {
+        text: out,
+        matches,
+        traces: vec![],
+    }
 }
 
 /// Split a transcript into chunks where each chunk is one whitespace-bounded
@@ -876,7 +1084,7 @@ mod tests {
             language: None,
             export_tier: ExportTier::LocalOnly,
             contradiction_count: 0,
-            review_status: ReviewStatus::Pending,
+            review_status: ReviewStatus::Approved,
             review_reason: None,
             last_reviewed_at: None,
         }
@@ -1026,6 +1234,14 @@ mod tests {
     }
 
     #[test]
+    fn upsert_aliases_rejects_unrelated_multiword_alias() {
+        let pool = mem_pool();
+        let n = super::upsert_aliases(&pool, "u1", "urban aura", "urban aura", "Macobs", 1.0);
+        assert_eq!(n, 0);
+        assert!(super::load_all(&pool, "u1").is_empty());
+    }
+
+    #[test]
     fn contradiction_signal_revokes_export_before_blocking_local_memory() {
         let pool = mem_pool();
         assert!(super::upsert_with_language(
@@ -1165,6 +1381,96 @@ mod tests {
             super::load_all(&pool, "u1").len(),
             0,
             "rule must evict when weight ≤ 0",
+        );
+    }
+
+    // ── apply_exact_safe tests ──────────────────────────────────────────────
+
+    #[test]
+    fn exact_safe_replaces_gibberish_alias() {
+        let rules = vec![rule("meac", "EMIAC")];
+        let result = super::apply_exact_safe("meac mein bahut kaam hai", &rules);
+        assert_eq!(result.text, "EMIAC mein bahut kaam hai");
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].kind, MatchKind::Exact);
+    }
+
+    #[test]
+    fn exact_safe_skips_common_hindi_word() {
+        let rules = vec![rule("main", "EMIAC")];
+        let result = super::apply_exact_safe("main bahut kaam karta hoon", &rules);
+        assert_eq!(
+            result.text, "main bahut kaam karta hoon",
+            "common Hindi word 'main' must not be replaced"
+        );
+        assert!(result.matches.is_empty());
+    }
+
+    #[test]
+    fn exact_safe_skips_phonetic_fallback() {
+        let rules = vec![rule("meac", "EMIAC")];
+        // "meah" is phonetically similar to "meac" but NOT an exact match.
+        // apply_exact_safe must skip it (no phonetic fallback).
+        let result = super::apply_exact_safe("meah mein kaam hai", &rules);
+        assert_eq!(
+            result.text, "meah mein kaam hai",
+            "exact_safe must not use phonetic matching"
+        );
+        assert!(result.matches.is_empty());
+    }
+
+    #[test]
+    fn exact_safe_skips_single_char_alias() {
+        let rules = vec![rule("m", "EMIAC")];
+        let result = super::apply_exact_safe("m se matlab", &rules);
+        assert_eq!(result.text, "m se matlab");
+        assert!(result.matches.is_empty());
+    }
+
+    #[test]
+    fn exact_safe_handles_multiple_aliases() {
+        let rules = vec![
+            rule("meac", "EMIAC"),
+            rule("mecobs", "Macobs"),
+            rule("aneten", "n8n"),
+        ];
+        let result = super::apply_exact_safe("meac aur mecobs mein aneten use karte hain", &rules);
+        assert_eq!(result.text, "EMIAC aur Macobs mein n8n use karte hain");
+        assert_eq!(result.matches.len(), 3);
+    }
+
+    #[test]
+    fn exact_safe_skips_blocked_review_status() {
+        let mut r = rule("meac", "EMIAC");
+        r.review_status = ReviewStatus::Blocked;
+        let result = super::apply_exact_safe("meac mein kaam", &[r]);
+        assert_eq!(result.text, "meac mein kaam");
+        assert!(result.matches.is_empty());
+    }
+
+    #[test]
+    fn exact_safe_skips_implausible_multiword_alias() {
+        let result =
+            super::apply_exact_safe("Urban Aura ka data bhejo", &[rule("urban aura", "Macobs")]);
+        assert_eq!(result.text, "Urban Aura ka data bhejo");
+        assert!(result.matches.is_empty());
+    }
+
+    // ── alias cap tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn alias_cap_evicts_lowest_weight_when_over_limit() {
+        let pool = mem_pool();
+        for i in 0..20 {
+            let form = format!("variant{i}");
+            super::upsert(&pool, "u1", &form, "EMIAC", 1.0 + i as f64 * 0.1);
+        }
+        let rules = super::load_all(&pool, "u1");
+        assert!(
+            rules.len() <= super::MAX_ALIASES_PER_TERM,
+            "alias count {} should be capped at {}",
+            rules.len(),
+            super::MAX_ALIASES_PER_TERM,
         );
     }
 }

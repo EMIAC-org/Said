@@ -86,6 +86,24 @@ async fn main() {
     };
     said_backend::routes::vocabulary::spawn_prompt_artifact_repair(state.clone());
 
+    #[cfg(feature = "local-stt")]
+    {
+        let whisper_model = said_backend::paths::whisper_model_path();
+        if whisper_model.is_file() {
+            match said_backend::stt::whisper::ensure_model_loaded(
+                whisper_model.to_str().unwrap_or_default(),
+            ) {
+                Ok(()) => info!("whisper model loaded from {}", whisper_model.display()),
+                Err(e) => tracing::warn!("whisper model load failed: {e}"),
+            }
+        } else {
+            info!(
+                "whisper model not found at {} — local STT unavailable",
+                whisper_model.display()
+            );
+        }
+    }
+
     said_backend::watchdog::spawn_watchdog(pool.clone(), wd, tokio::runtime::Handle::current());
 
     // ── Build router ──────────────────────────────────────────────────────────

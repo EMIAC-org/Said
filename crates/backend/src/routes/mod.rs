@@ -1,5 +1,6 @@
 pub mod classify;
 pub mod cloud;
+pub mod confirm;
 pub mod feedback;
 pub mod health;
 pub mod history;
@@ -13,5 +14,6 @@ pub mod prefs;
 pub mod prompts;
 pub mod stt;
 pub mod text;
+pub mod tier2;
 pub mod vocabulary;
 pub mod voice;

@@ -25,6 +25,8 @@ pub struct Preferences {
     pub cerebras_api_key: Option<String>,
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
     pub llm_provider: String,
+    /// STT routing: "deepgram" | "whisper_local"
+    pub stt_provider: String,
 }
 
 /// Partial update payload — all fields optional.
@@ -48,6 +50,8 @@ pub struct PrefsUpdate {
     pub cerebras_api_key: Option<Option<String>>,
     /// LLM provider: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
     pub llm_provider: Option<String>,
+    /// STT provider: "deepgram" | "whisper_local"
+    pub stt_provider: Option<String>,
 }
 
 pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
@@ -57,7 +61,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                 output_language, auto_paste, edit_capture, polish_text_hotkey, record_hotkey,
                 learning_enabled, updated_at,
                 gateway_api_key, deepgram_api_key, gemini_api_key, llm_provider, groq_api_key,
-                cerebras_api_key
+                cerebras_api_key, stt_provider
          FROM preferences WHERE user_id = ?1",
         params![user_id],
         |row| {
@@ -91,6 +95,9 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                 },
                 groq_api_key: row.get(16)?,
                 cerebras_api_key: row.get(17)?,
+                stt_provider: row
+                    .get::<_, Option<String>>(18)?
+                    .unwrap_or_else(|| "deepgram".into()),
             })
         },
     )
@@ -209,6 +216,13 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
     if let Some(v) = update.llm_provider {
         conn.execute(
             "UPDATE preferences SET llm_provider = ?1, updated_at = ?2 WHERE user_id = ?3",
+            params![v, now, user_id],
+        )
+        .ok()?;
+    }
+    if let Some(v) = update.stt_provider {
+        conn.execute(
+            "UPDATE preferences SET stt_provider = ?1, updated_at = ?2 WHERE user_id = ?3",
             params![v, now, user_id],
         )
         .ok()?;

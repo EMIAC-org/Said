@@ -19,7 +19,10 @@ use crate::{
     AppState,
     embedder::gemini,
     llm::meaning,
-    store::{now_ms, prefs::get_prefs, stt_replacements, vocab_embeddings, vocab_fts, vocabulary},
+    store::{
+        now_ms, pending_promotions, prefs::get_prefs, stt_replacements, vocab_embeddings,
+        vocab_fts, vocabulary,
+    },
 };
 
 pub fn spawn_prompt_artifact_repair(state: AppState) {
@@ -313,14 +316,14 @@ pub async fn delete(State(state): State<AppState>, Path(term): Path<String>) -> 
     //   • vocab_fts           — stale BM25 hit surfaces in lexical gate
     //   • vocab_embedding_examples — zombie ring resurfaces if term re-added
     //   • stt_replacements    — pre-polish layer keeps rewriting → canonical
-    // pending_promotions is no longer written by the live promotion path
-    // (promotion is now first-sighting; see classify.rs), so no cascade
-    // entry is needed here.
+    //   • pending_promotions  — queued sightings can resurrect deleted terms
     vocab_embeddings::delete(&state.pool, &state.default_user_id, trimmed);
     vocab_fts::delete(&state.pool, &state.default_user_id, trimmed);
     let stt_n =
         stt_replacements::delete_by_correct_form(&state.pool, &state.default_user_id, trimmed);
-    info!("[vocab] delete term={trimmed:?} vocab_rows={n} stt_aliases={stt_n}",);
+    let pending_n =
+        pending_promotions::delete_all_for_term(&state.pool, &state.default_user_id, trimmed);
+    info!("[vocab] delete term={trimmed:?} vocab_rows={n} stt_aliases={stt_n} pending={pending_n}",);
     crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
     if n > 0 {
         StatusCode::NO_CONTENT

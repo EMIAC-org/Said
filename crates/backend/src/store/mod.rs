@@ -12,6 +12,9 @@ pub mod pending_promotions;
 pub mod prefs;
 pub mod prompt_templates;
 pub mod stt_replacements;
+pub mod tier2_edit_policy;
+pub mod tier2_model;
+pub mod tier2_policy;
 pub mod users;
 pub mod vectors;
 pub mod vocab_embeddings;
@@ -46,6 +49,10 @@ const MIGRATION_023: &str = include_str!("migrations/023_enriched_transcript.sql
 const MIGRATION_024: &str = include_str!("migrations/024_prompt_templates.sql");
 const MIGRATION_025: &str = include_str!("migrations/025_pending_edits_notified.sql");
 const MIGRATION_026: &str = include_str!("migrations/026_cerebras_api_key.sql");
+const MIGRATION_027: &str = include_str!("migrations/027_tier2_model_metadata.sql");
+const MIGRATION_028: &str = include_str!("migrations/028_tier2_policy_learning.sql");
+const MIGRATION_029: &str = include_str!("migrations/029_tier2_edit_policy.sql");
+const MIGRATION_030: &str = include_str!("migrations/030_stt_provider.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -304,6 +311,38 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 26")
             .expect("failed to set user_version to 26");
     }
+
+    if version < 27 {
+        info!("running migration 027_tier2_model_metadata");
+        conn.execute_batch(MIGRATION_027)
+            .expect("migration 027 failed");
+        conn.execute_batch("PRAGMA user_version = 27")
+            .expect("failed to set user_version to 27");
+    }
+
+    if version < 28 {
+        info!("running migration 028_tier2_policy_learning");
+        conn.execute_batch(MIGRATION_028)
+            .expect("migration 028 failed");
+        conn.execute_batch("PRAGMA user_version = 28")
+            .expect("failed to set user_version to 28");
+    }
+
+    if version < 29 {
+        info!("running migration 029_tier2_edit_policy");
+        conn.execute_batch(MIGRATION_029)
+            .expect("migration 029 failed");
+        conn.execute_batch("PRAGMA user_version = 29")
+            .expect("failed to set user_version to 29");
+    }
+
+    if version < 30 {
+        info!("running migration 030_stt_provider");
+        conn.execute_batch(MIGRATION_030)
+            .expect("migration 030 failed");
+        conn.execute_batch("PRAGMA user_version = 30")
+            .expect("failed to set user_version to 30");
+    }
 }
 
 /// Return the default database path. Delegates to `paths::default_db_path()`
@@ -425,4 +464,53 @@ fn has_word_overlap(a: &str, b: &str) -> bool {
     }
     a.split_whitespace()
         .any(|w| b_words.contains(&w.to_lowercase()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    #[test]
+    fn migration_029_creates_tier2_edit_policy_tables() {
+        let manager = SqliteConnectionManager::memory();
+        let pool = Pool::builder().max_size(1).build(manager).unwrap();
+        run_migrations(&pool);
+
+        let conn = pool.get().unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 30);
+
+        for table in [
+            "tier2_policy_weights",
+            "tier2_decision_events",
+            "tier2_edit_policy_rules",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "{table} should exist after migration 029");
+        }
+
+        for column in [
+            "raw_transcript",
+            "local_corrected_transcript",
+            "polished_output",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('recordings') WHERE name = ?1",
+                    params![column],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "recordings.{column} should exist");
+        }
+    }
 }

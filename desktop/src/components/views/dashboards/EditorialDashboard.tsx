@@ -64,7 +64,7 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
 
   return (
     <ScrollArea className="h-full">
-      <div className="mx-auto" style={{ maxWidth: 720, padding: "40px 48px 64px" }}>
+      <div className="mx-auto" style={{ maxWidth: "min(720px, 100%)", padding: "24px 28px 40px" }}>
 
         {/* Live polish strip — only when in flight */}
         {(statusPhase || liveText) && (
@@ -98,7 +98,7 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
         )}
 
         {/* Hero — personalised headline */}
-        <div className="mb-9">
+        <div className="mb-7">
           <p
             className="text-[11px] font-semibold uppercase tracking-[0.16em] mb-2.5"
             style={{ color: "hsl(var(--primary))" }}
@@ -120,10 +120,10 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
           </h1>
           <p
             className="mt-2.5 mb-0 leading-relaxed"
-            style={{ fontSize: 13.5, color: "hsl(var(--muted-foreground))", maxWidth: 540 }}
+            style={{ fontSize: 13.5, color: "hsl(var(--muted-foreground))", maxWidth: "min(540px, 100%)" }}
           >
             {wordsToday === 0
-              ? "Hold your hotkey and speak — Said will type polished text into the focused app. Your daily summary appears here once you've started."
+              ? "Hold your hotkey and speak — AutoNote will type polished text into the focused app. Your daily summary appears here once you've started."
               : (
                 <>
                   That's roughly{" "}
@@ -141,8 +141,9 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
           <div
             className="grid"
             style={{
-              gridTemplateColumns: "repeat(3, 1fr)",
+              gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
               padding: "14px 0",
+              gap: "12px 0",
               borderTop: "1px solid hsl(var(--border))",
               borderBottom: "1px solid hsl(var(--border))",
             }}
@@ -155,7 +156,7 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
 
         {/* Activity — last 14 days, bar chart */}
         <Section label="Activity — last 14 days">
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 64, paddingTop: 6 }}>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 64, paddingTop: 6, overflow: "hidden", minWidth: 0 }}>
             {bars.map((b, i) => {
               const h = b.words === 0 ? 8 : Math.max(8, Math.round((b.words / maxBar) * 64));
               const isAccent = i % 2 === 1;
@@ -235,7 +236,7 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <section className="mb-9">
+    <section className="mb-7">
       <h2
         className="m-0 mb-3"
         style={{
@@ -255,7 +256,7 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 
 function Glance({ label, value, unit, border }: { label: string; value: string; unit: string; border?: boolean }) {
   return (
-    <div style={{ padding: "0 18px", borderLeft: border ? "1px solid hsl(var(--border))" : "none" }}>
+    <div style={{ padding: "0 14px", borderLeft: border ? "1px solid hsl(var(--border))" : "none", minWidth: 0 }}>
       <div className="text-[10px] uppercase" style={{ color: "hsl(var(--muted-foreground))", letterSpacing: "0.12em" }}>
         {label}
       </div>

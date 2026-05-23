@@ -53,6 +53,12 @@ pub fn default_db_path() -> PathBuf {
     data_dir().join("db.sqlite")
 }
 
+/// Path to the local whisper.cpp ggml model file for offline STT.
+/// `<data_dir>/models/ggml-tiny.bin`
+pub fn whisper_model_path() -> PathBuf {
+    data_dir().join("models").join("ggml-tiny.bin")
+}
+
 /// Stable anonymous device ID. Generated once on first call and persisted to
 /// `<data_dir>/device_id`. Used to deduplicate Sentry crash reports without
 /// tying them to any user-controlled identifier. Deleting the file or the

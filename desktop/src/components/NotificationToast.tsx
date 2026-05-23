@@ -219,7 +219,7 @@ export function EditConfirmToast({ aiOutput, userKept, onSave, onDismiss }: Edit
       </div>
 
       <p className="text-[10px] text-muted-foreground leading-relaxed opacity-70">
-        Said will remember this style for future recordings.
+        AutoNote will remember this style for future recordings.
       </p>
 
       {/* Buttons */}
@@ -318,16 +318,16 @@ export function VocabularyToast({ kind, term, source, onUndo, onDismiss }: Vocab
     if (kind === "queued")  return "Noticed your correction";
     return source === "manual"
       ? "Added to vocabulary"
-      : "Said learned a new word";
+      : "AutoNote learned a new word";
   })();
 
   const subtle = (() => {
-    if (kind === "starred") return "Said will keep this even if you stop using it.";
-    if (kind === "removed") return "Said won't recognise this any more.";
-    if (kind === "queued")  return "Make this fix once more and Said will remember it.";
+    if (kind === "starred") return "AutoNote will keep this even if you stop using it.";
+    if (kind === "removed") return "AutoNote won't recognise this any more.";
+    if (kind === "queued")  return "Make this fix once more and AutoNote will remember it.";
     return source === "manual"
-      ? "Said will recognise this on your next recording."
-      : "Said remembered your correction.";
+      ? "AutoNote will recognise this on your next recording."
+      : "AutoNote remembered your correction.";
   })();
 
   return (

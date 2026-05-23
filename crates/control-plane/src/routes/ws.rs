@@ -123,20 +123,20 @@ pub async fn handler(
             .ok()
             .flatten();
 
-            // Current open slot chunks (slot where end_ms IS NULL), fallback to all chunks
+            // All chunks for this meeting, newest sessions last.
+            // Guest speaker names: strip the trailing -{uuid32} suffix from said.guest emails.
             let chunks: Vec<(String, String, String, i64, i32)> = sqlx::query_as(
                 "SELECT tc.speaker_id::text,
-                        COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1)),
+                        CASE WHEN a.email LIKE '%@said.guest'
+                             THEN regexp_replace(split_part(a.email, '@', 1), '-[0-9a-f]{32}$', '')
+                             ELSE COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1))
+                        END,
                         tc.text, tc.timestamp_ms, tc.chunk_index
                    FROM transcript_chunks tc
                    JOIN accounts a ON a.id = tc.speaker_id
                    LEFT JOIN org_members om ON om.account_id = tc.speaker_id
                         AND om.org_id = (SELECT org_id FROM meetings WHERE id = $1)
-                   LEFT JOIN meeting_slots ms ON ms.meeting_id = tc.meeting_id
-                        AND ms.end_ms IS NULL
                   WHERE tc.meeting_id = $1
-                    AND (ms.id IS NOT NULL
-                         OR NOT EXISTS (SELECT 1 FROM meeting_slots WHERE meeting_id = $1))
                   ORDER BY tc.chunk_index ASC",
             )
             .bind(meeting_id)

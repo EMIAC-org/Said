@@ -399,6 +399,7 @@ fn main() {
         let alias_result = ApplyResult {
             text: transcript.to_string(),
             matches: vec![],
+            traces: vec![],
         };
         let resolved =
             vocab_resolver::resolve_for_prompt(transcript, &selected, &all_terms, &alias_result);
@@ -443,6 +444,7 @@ fn main() {
         let alias_result = ApplyResult {
             text: transcript.to_string(),
             matches: vec![],
+            traces: vec![],
         };
         let resolved =
             vocab_resolver::resolve_for_prompt(transcript, &selected, &all_terms, &alias_result);
@@ -826,5 +828,6 @@ fn make_test_prefs() -> Preferences {
         groq_api_key: None,
         cerebras_api_key: None,
         llm_provider: "gateway".to_string(),
+        stt_provider: "deepgram".to_string(),
     }
 }

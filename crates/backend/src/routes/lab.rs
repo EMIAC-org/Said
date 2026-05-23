@@ -217,13 +217,23 @@ pub async fn trace(
     let stt_confidence = stt_result.confidence;
     info!("[lab] STT done in {}ms: {:?}", stt_ms, deepgram_raw);
 
-    // ── STAGE 2: STT Replacements ───────────────────────────────────────────────
+    // ── STAGE 2: Local corrections ──────────────────────────────────────────────
     let (transcript_after_replacements, replacement_traces, near_misses) =
-        if stt_replacement_rules.is_empty() {
+        if stt_replacement_rules.is_empty() && vocab_full.is_empty() {
             (deepgram_raw.clone(), vec![], vec![])
         } else {
-            let alias_result =
-                stt_replacements::apply_with_matches(&deepgram_raw, &stt_replacement_rules);
+            let pool_t = pool.clone();
+            let uid_t = user_id.clone();
+            let deepgram_t = deepgram_raw.clone();
+            let rules_t = stt_replacement_rules.clone();
+            let vocab_t = vocab_full.clone();
+            let alias_result = tokio::task::spawn_blocking(move || {
+                crate::tier2::correct_with_store(&pool_t, &uid_t, &deepgram_t, &rules_t, &vocab_t)
+            })
+            .await
+            .unwrap_or_else(|_| {
+                stt_replacements::apply_exact_safe(&deepgram_raw, &stt_replacement_rules)
+            });
 
             let traces: Vec<SttReplacementTrace> = alias_result
                 .matches
@@ -231,10 +241,7 @@ pub async fn trace(
                 .map(|m| SttReplacementTrace {
                     from: m.transcript_form.clone(),
                     to: m.correct_form.clone(),
-                    method: match m.kind {
-                        stt_replacements::MatchKind::Exact => "exact".to_string(),
-                        stt_replacements::MatchKind::Phonetic => "phonetic".to_string(),
-                    },
+                    method: m.kind.as_str().to_string(),
                 })
                 .collect();
 
@@ -298,6 +305,7 @@ pub async fn trace(
         stt_replacements::ApplyResult {
             text: deepgram_raw.clone(),
             matches: vec![],
+            traces: vec![],
         }
     } else {
         stt_replacements::apply_with_matches(&deepgram_raw, &stt_replacement_rules)
@@ -467,7 +475,7 @@ pub async fn trace(
             None,
         )
     } else if llm_provider == "groq" {
-        (crate::llm::groq::GROQ_MODEL_DEFAULT.to_string(), None)
+        (if prefs.selected_model == "smart" { crate::llm::groq::GROQ_MODEL_SMART } else { crate::llm::groq::GROQ_MODEL_FAST }.to_string(), None)
     } else {
         (model.clone(), None)
     };

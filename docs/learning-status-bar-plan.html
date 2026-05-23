@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Said — Learning UX &amp; Status Bar Plan</title>
+<style>
+  :root {
+    --bg: #08080c; --surface: #111318; --surface2: #1a1d24;
+    --border: #2a2d35; --text: #e2e4e9; --dim: #8b8f9a;
+    --accent: #58a6ff; --green: #34d399; --yellow: #fbbf24;
+    --red: #f87171; --purple: #a78bfa; --orange: #fb923c;
+    --glass: rgba(255,255,255,0.06); --glass-border: rgba(255,255,255,0.10);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', sans-serif; background: var(--bg); color: var(--text); line-height: 1.65; }
+  .page { max-width: 1000px; margin: 0 auto; padding: 3rem 2rem; }
+  h1 { font-size: 2.2rem; font-weight: 700; letter-spacing: -0.5px; }
+  h1 .accent { color: var(--green); }
+  .subtitle { color: var(--dim); margin: 0.5rem 0 3rem; font-size: 0.95rem; }
+  h2 { font-size: 1.4rem; font-weight: 600; margin: 3rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.5rem 0 0.5rem; color: var(--accent); }
+  p, li { font-size: 0.9rem; color: var(--text); }
+  p { margin-bottom: 0.8rem; }
+
+  /* ── Status bar mockups ── */
+  .mockup-row { display: flex; gap: 1.5rem; flex-wrap: wrap; margin: 1.5rem 0; justify-content: center; }
+  .mockup { text-align: center; }
+  .mockup-label { font-size: 0.7rem; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+
+  .pill { border-radius: 100px; display: inline-flex; align-items: center; gap: 8px; padding: 8px 18px; font-size: 13px; font-weight: 500; backdrop-filter: blur(24px); border: 1px solid var(--glass-border); position: relative; }
+  .pill-dark { background: rgba(8,8,12,0.92); box-shadow: 0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06); }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot-green { background: var(--green); box-shadow: 0 0 8px rgba(52,211,153,0.5); }
+  .dot-red { background: var(--red); box-shadow: 0 0 8px rgba(248,113,113,0.4); }
+  .dot-yellow { background: var(--yellow); box-shadow: 0 0 8px rgba(251,191,36,0.4); }
+  .dot-blue { background: var(--accent); box-shadow: 0 0 8px rgba(88,166,255,0.4); }
+  .dot-purple { background: var(--purple); box-shadow: 0 0 8px rgba(167,139,250,0.4); }
+
+  /* ── Expanded toast ── */
+  .toast-mockup { background: rgba(8,8,12,0.95); border: 1px solid var(--glass-border); border-radius: 16px; padding: 16px 20px; max-width: 360px; margin: 1rem auto; backdrop-filter: blur(24px); box-shadow: 0 16px 48px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.05); }
+  .toast-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .toast-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .toast-body { font-size: 12px; color: var(--dim); margin-bottom: 12px; line-height: 1.5; }
+  .toast-body em { color: var(--text); font-style: normal; font-weight: 600; }
+  .toast-actions { display: flex; gap: 8px; }
+  .toast-btn { border: none; border-radius: 8px; padding: 7px 16px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+  .toast-btn-primary { background: var(--green); color: #000; }
+  .toast-btn-primary:hover { background: #4ade80; }
+  .toast-btn-secondary { background: rgba(255,255,255,0.08); color: var(--dim); border: 1px solid var(--glass-border); }
+  .toast-btn-secondary:hover { background: rgba(255,255,255,0.12); color: var(--text); }
+  .toast-btn-danger { background: rgba(248,113,113,0.15); color: var(--red); border: 1px solid rgba(248,113,113,0.2); }
+
+  .toast-term { display: inline-block; background: rgba(52,211,153,0.12); color: var(--green); padding: 2px 8px; border-radius: 6px; font-family: 'SF Mono', monospace; font-size: 12px; font-weight: 600; }
+  .toast-arrow { color: var(--dim); margin: 0 4px; }
+  .toast-old { color: var(--red); text-decoration: line-through; font-family: 'SF Mono', monospace; font-size: 12px; }
+
+  /* ── Flow diagrams ── */
+  .flow { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin: 1rem 0; overflow-x: auto; }
+  .flow pre { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem; color: var(--dim); line-height: 1.6; white-space: pre; }
+  .flow .g { color: var(--green); font-weight: 600; }
+  .flow .r { color: var(--red); font-weight: 600; }
+  .flow .b { color: var(--accent); font-weight: 600; }
+  .flow .y { color: var(--yellow); font-weight: 600; }
+  .flow .p { color: var(--purple); font-weight: 600; }
+
+  /* ── Event catalog ── */
+  .event-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+  @media (max-width: 700px) { .event-grid { grid-template-columns: 1fr; } }
+  .event-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; }
+  .event-card .tag { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 6px; border-radius: 4px; font-weight: 600; margin-bottom: 6px; display: inline-block; }
+  .tag-new { background: rgba(52,211,153,0.15); color: var(--green); }
+  .tag-existing { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .tag-fix { background: rgba(248,113,113,0.15); color: var(--red); }
+  .event-card h4 { font-size: 0.85rem; font-weight: 600; margin: 4px 0; }
+  .event-card p { font-size: 0.78rem; color: var(--dim); margin: 0; }
+
+  /* ── Architecture sections ── */
+  .arch-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin: 1rem 0; }
+  .arch-card h4 { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.8rem; }
+  .arch-steps { list-style: none; counter-reset: step; }
+  .arch-steps li { padding: 0.5rem 0; padding-left: 2rem; position: relative; border-left: 2px solid var(--border); margin-left: 8px; font-size: 0.85rem; }
+  .arch-steps li:last-child { border-left-color: transparent; }
+  .arch-steps li::before { counter-increment: step; content: counter(step); position: absolute; left: -11px; top: 0.5rem; width: 20px; height: 20px; border-radius: 50%; background: var(--surface2); border: 2px solid var(--border); font-size: 0.65rem; font-weight: 700; display: flex; align-items: center; justify-content: center; color: var(--accent); }
+  .arch-steps li strong { color: var(--text); }
+  .arch-steps li .code { font-family: 'SF Mono', monospace; font-size: 0.75rem; color: var(--purple); }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>Learning UX <span class="accent">&amp; Status Bar</span> Plan</h1>
+<p class="subtitle">Interactive learning confirmation &bull; Negative marking fix &bull; Status bar as the single notification surface</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>1. Current Status Bar States</h2>
+<p>The status bar is a floating glass-morphism pill (300x142px window, always-on-top, all Spaces). It currently handles 6 states:</p>
+
+<div class="mockup-row">
+  <div class="mockup">
+    <div class="mockup-label">Idle</div>
+    <div class="pill pill-dark" style="width:140px;height:36px;justify-content:center;">
+      <div style="display:flex;gap:2px;align-items:end;">
+        <div style="width:3px;height:6px;background:rgba(255,255,255,0.25);border-radius:1px;"></div>
+        <div style="width:3px;height:10px;background:rgba(255,255,255,0.3);border-radius:1px;"></div>
+        <div style="width:3px;height:14px;background:rgba(255,255,255,0.35);border-radius:1px;"></div>
+        <div style="width:3px;height:8px;background:rgba(255,255,255,0.3);border-radius:1px;"></div>
+        <div style="width:3px;height:5px;background:rgba(255,255,255,0.25);border-radius:1px;"></div>
+      </div>
+    </div>
+  </div>
+  <div class="mockup">
+    <div class="mockup-label">Recording</div>
+    <div class="pill pill-dark" style="justify-content:center;">
+      <div style="display:flex;gap:2px;align-items:end;">
+        <div style="width:3px;height:18px;background:rgba(255,255,255,0.8);border-radius:1px;"></div>
+        <div style="width:3px;height:24px;background:rgba(255,255,255,0.9);border-radius:1px;"></div>
+        <div style="width:3px;height:12px;background:rgba(255,255,255,0.7);border-radius:1px;"></div>
+        <div style="width:3px;height:28px;background:rgba(255,255,255,0.95);border-radius:1px;"></div>
+        <div style="width:3px;height:16px;background:rgba(255,255,255,0.75);border-radius:1px;"></div>
+      </div>
+    </div>
+  </div>
+  <div class="mockup">
+    <div class="mockup-label">Processing</div>
+    <div class="pill pill-dark"><span style="color:var(--dim);font-size:11px;">Enhancing</span><span style="color:var(--dim);">...</span></div>
+  </div>
+  <div class="mockup">
+    <div class="mockup-label">Learned</div>
+    <div class="pill pill-dark"><div class="dot dot-green"></div><span style="font-size:12px;"><strong>EMIAC</strong> <span style="color:var(--dim);">learned</span></span></div>
+  </div>
+  <div class="mockup">
+    <div class="mockup-label">Error</div>
+    <div class="pill pill-dark"><div class="dot dot-red"></div><span style="font-size:12px;color:var(--dim);">Recording too short</span></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>2. New Status Bar States — Learning Toasts</h2>
+<p>The status bar expands from pill → rectangular toast when the learning system needs user input. Three new toast types:</p>
+
+<h3>Toast A: Ambiguous Term Confirmation</h3>
+<p>When the deterministic classifier can't decide (both original and corrected are real words), expand the pill into a confirmation card:</p>
+
+<div class="toast-mockup">
+  <div class="toast-header">
+    <div class="dot dot-yellow"></div>
+    <div class="toast-title">Quick question</div>
+  </div>
+  <div class="toast-body">
+    You changed <span class="toast-old">Set</span> <span class="toast-arrow">&rarr;</span> <span class="toast-term">Said</span><br>
+    Is <em>"Said"</em> a product, brand, or name?
+  </div>
+  <div class="toast-actions">
+    <button class="toast-btn toast-btn-primary">Yes, learn it</button>
+    <button class="toast-btn toast-btn-secondary">No, just rephrasing</button>
+  </div>
+</div>
+
+<h3>Toast B: Negative Feedback Confirmation</h3>
+<p>When the system detects it's making a mistake repeatedly (user corrects a tier2 replacement back), show a removal toast:</p>
+
+<div class="toast-mockup">
+  <div class="toast-header">
+    <div class="dot dot-red"></div>
+    <div class="toast-title">Wrong correction detected</div>
+  </div>
+  <div class="toast-body">
+    Said keeps changing <span class="toast-term">Mac</span> to <em>"EMIAC"</em> but you changed it back.<br>
+    Should I stop this correction?
+  </div>
+  <div class="toast-actions">
+    <button class="toast-btn toast-btn-danger">Yes, stop it</button>
+    <button class="toast-btn toast-btn-secondary">It was right this time</button>
+  </div>
+</div>
+
+<h3>Toast C: Successful Learning Confirmation</h3>
+<p>When learning succeeds (deterministic, no ambiguity), show a brief confirmation with undo:</p>
+
+<div class="toast-mockup" style="max-width: 300px;">
+  <div class="toast-header">
+    <div class="dot dot-green"></div>
+    <div class="toast-title">Learned</div>
+  </div>
+  <div class="toast-body" style="margin-bottom:8px;">
+    <span class="toast-term">AutoNote</span> will be recognized next time.<br>
+    <span style="font-size:11px;">Retraining model... 15s</span>
+  </div>
+  <div class="toast-actions">
+    <button class="toast-btn toast-btn-secondary">Undo</button>
+  </div>
+</div>
+
+<h3>Toast D: Retrain Progress (subtle)</h3>
+<p>After learning, show retrain progress inline — no separate toast, just update the learned toast:</p>
+
+<div class="mockup-row" style="gap: 2rem;">
+  <div class="mockup">
+    <div class="mockup-label">Training</div>
+    <div class="pill pill-dark"><div class="dot dot-blue"></div><span style="font-size:11px;color:var(--dim);">Improving model</span><span style="color:var(--dim);">...</span></div>
+  </div>
+  <div class="mockup">
+    <div class="mockup-label">Done</div>
+    <div class="pill pill-dark"><div class="dot dot-green"></div><span style="font-size:11px;">Model updated</span></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>3. Complete Event Catalog</h2>
+
+<div class="event-grid">
+  <div class="event-card">
+    <span class="tag tag-existing">Existing</span>
+    <h4>app-state</h4>
+    <p>Recording/processing/idle state changes. Drives pill visualization.</p>
+  </div>
+  <div class="event-card">
+    <span class="tag tag-existing">Existing</span>
+    <h4>voice-level</h4>
+    <p>Real-time audio level (0-1). 15-bar visualizer updates at 50ms.</p>
+  </div>
+  <div class="event-card">
+    <span class="tag tag-existing">Existing</span>
+    <h4>vocab-learned</h4>
+    <p>Term learned with high confidence. Shows Toast C with undo.</p>
+  </div>
+  <div class="event-card">
+    <span class="tag tag-existing">Existing</span>
+    <h4>voice-error</h4>
+    <p>Error with optional retry. Red pulse + message.</p>
+  </div>
+  <div class="event-card">
+    <span class="tag tag-new">New</span>
+    <h4>vocab-confirm</h4>
+    <p>Ambiguous term needs user decision. Shows Toast A with Yes/No buttons. Payload: <code>{term, original, context, recording_id}</code></p>
+  </div>
+  <div class="event-card">
+    <span class="tag tag-new">New</span>
+    <h4>vocab-negative</h4>
+    <p>System detected it's repeatedly making a wrong correction. Shows Toast B. Payload: <code>{term, wrong_replacement, count}</code></p>
+  </div>
+  <div class="event-card">
+    <span class="tag tag-new">New</span>
+    <h4>retrain-status</h4>
+    <p>ONNX retrain progress. Shows Training pill then Done pill. Payload: <code>{phase: "started"|"done", duration_s?}</code></p>
+  </div>
+  <div class="event-card">
+    <span class="tag tag-fix">Fix</span>
+    <h4>vocab-toast (queued)</h4>
+    <p>Currently fires for queued terms but has no visual. Will show "Noted, 1/3 sightings" with progress indicator.</p>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>4. Ambiguous Term Flow — Architecture</h2>
+
+<div class="flow"><pre>
+  <span class="b">User corrects "Set" → "Said"</span>
+       │
+       ▼
+  ┌────────────────────────────────────────────────────────────┐
+  │  <span class="b">DETERMINISTIC CLASSIFIER</span>                                  │
+  │                                                            │
+  │  is_common_word("Set") = false                             │
+  │  is_common_word("Said") = <span class="y">true</span>  ← corrected is common      │
+  │                                                            │
+  │  <span class="y">AMBIGUOUS</span>: original is not gibberish, corrected is a       │
+  │  real word. Could be style swap OR product name.           │
+  │                                                            │
+  │  Decision: <span class="y">Don't guess → ask user</span>                         │
+  └────────────────────┬───────────────────────────────────────┘
+                       │
+                       ▼
+  ┌────────────────────────────────────────────────────────────┐
+  │  <span class="b">BACKEND RESPONSE</span>                                          │
+  │                                                            │
+  │  class: "ambiguous"                                        │
+  │  ambiguous_terms: [{                                       │
+  │    original: "Set",                                        │
+  │    corrected: "Said",                                      │
+  │    context: "Hello bhai... Set ka kaam khatam ho gaya",    │
+  │    recording_id: "c52fd998-..."                            │
+  │  }]                                                        │
+  └────────────────────┬───────────────────────────────────────┘
+                       │
+                       ▼
+  ┌────────────────────────────────────────────────────────────┐
+  │  <span class="g">DESKTOP: emit "vocab-confirm"</span>                              │
+  │                                                            │
+  │  Status bar expands → <span class="y">Toast A</span>                              │
+  │  "Is Said a product, brand, or name?"                      │
+  │  [Yes, learn it]  [No, just rephrasing]                    │
+  └──────────┬─────────────────────────┬───────────────────────┘
+             │                         │
+        <span class="g">User clicks YES</span>            <span class="r">User clicks NO / ignores</span>
+             │                         │
+             ▼                         ▼
+  ┌──────────────────────┐   ┌──────────────────────┐
+  │  POST /v1/confirm    │   │  Nothing learned.    │
+  │  term="Said"         │   │  Pair "Set→Said"     │
+  │  action="learn"      │   │  marked as style     │
+  │  meaning=auto-gen    │   │  preference forever. │
+  │                      │   │  Never asked again   │
+  │  → vocab promoted    │   │  for this pair.      │
+  │  → edit-policy saved │   └──────────────────────┘
+  │  → retrain triggered │
+  │  → Toast C shows     │
+  └──────────────────────┘
+</pre></div>
+
+<div class="arch-card">
+  <h4>When to show Toast A (ambiguous confirmation)</h4>
+  <ol class="arch-steps">
+    <li><strong>Corrected form is a common English/Hindi word</strong> AND original is also a real word — both are valid, can't tell if it's style or STT correction. <span class="code">is_common_word(corrected) && !is_gibberish(original)</span></li>
+    <li><strong>Corrected form has mixed casing</strong> (brand signal like "Said", "Vite") but is also a dictionary word — need confirmation. <span class="code">mixed_case && is_dictionary_word(corrected_lower)</span></li>
+    <li><strong>Same word, different casing</strong> — "react" → "React". Is it the library or the verb? <span class="code">original_lower == corrected_lower && original != corrected</span></li>
+  </ol>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>5. Negative Marking Fix — "Mac → EMIAC" Bug</h2>
+
+<div class="flow"><pre>
+  <span class="r">THE BUG</span>
+
+  1. User says "Mac" (the computer) — Deepgram hears "mac"
+  2. Tier2 has rule: "mac" → "EMIAC" (from earlier when user said EMIAC)
+  3. Tier2 replaces: output shows "EMIAC"
+  4. User corrects "EMIAC" → "Mac"
+  5. classify-edit fires:
+     │
+     ├─ <span class="g">run_demotion_pass()</span>: checks vocab terms in polish vs kept
+     │  "EMIAC" in polish? YES. "EMIAC" in kept? NO → <span class="g">demotes EMIAC weight</span> ✓
+     │
+     └─ <span class="r">mark_removed_feedback()</span>: checks tier2 decision events
+        Looks for rule: variant="mac", correct="EMIAC"
+        But this came from <span class="r">STT replacements</span>, not edit-policy!
+        <span class="r">→ penalize_rule() finds nothing → silent failure</span>
+
+  <span class="b">THE FIX</span>
+
+  Two changes needed:
+
+  <span class="g">Fix A</span>: Extend penalize to ALL correction sources
+  ─────────────────────────────────────────────────────
+  When user corrects a tier2 replacement back, penalize the
+  source regardless of where it came from:
+  • STT replacement alias → delete or reduce weight
+  • Edit-policy rule → increment negative_count
+  • Cluster-fuzzy match → no rule to penalize (transient)
+  • ONNX scorer match → add to negative training data
+
+  <span class="g">Fix B</span>: Proactive detection with Toast B
+  ─────────────────────────────────────────────────────
+  If the user corrects the SAME replacement ≥2 times:
+  • Show Toast B: "Should I stop changing Mac to EMIAC?"
+  • If YES: block the rule + remove alias + retrain
+  • If NO: keep the rule (user made a mistake this time)
+
+  <span class="g">Fix C</span>: Cross-source decision event logging
+  ─────────────────────────────────────────────────────
+  Currently tier2_decision_events only logs edit-policy and
+  cluster-fuzzy. Must also log:
+  • STT replacement matches (scorer_kind="stt_alias")
+  • ONNX scorer matches (already logged)
+  So mark_removed_feedback can find ALL applied corrections.
+</pre></div>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>6. Status Bar Expansion Animation</h2>
+
+<div class="flow"><pre>
+  <span class="b">PILL → TOAST TRANSITION</span>
+
+  The status bar window is always 300×142px. The pill lives inside this
+  canvas. When a toast appears, the pill morphs:
+
+  ┌─ IDLE (140×36px pill, centered) ────────────────────────────┐
+  │                                                              │
+  │              ┌──────────────────────┐                        │
+  │              │   ▊▊▊▊▊  (visualizer)│                        │
+  │              └──────────────────────┘                        │
+  │                                                              │
+  └──────────────────────────────────────────────────────────────┘
+
+                        ↓  vocab-confirm event
+                        ↓  0.25s ease-out animation
+
+  ┌─ TOAST (280×120px card, centered) ──────────────────────────┐
+  │                                                              │
+  │  ┌──────────────────────────────────────────────────────┐   │
+  │  │  <span class="y">●</span> Quick question                                    │   │
+  │  │                                                      │   │
+  │  │  You changed <span class="r">Set</span> → <span class="g">Said</span>                           │   │
+  │  │  Is "Said" a product, brand, or name?                │   │
+  │  │                                                      │   │
+  │  │  <span class="g">[Yes, learn it]</span>     [No, just rephrasing]         │   │
+  │  └──────────────────────────────────────────────────────┘   │
+  │                                                              │
+  └──────────────────────────────────────────────────────────────┘
+
+  Window size stays 300×142. Inner content scales.
+  border-radius transitions from 100px (pill) → 16px (card).
+  Background stays same glass-morphism. Smooth spring animation.
+
+  <span class="b">AUTO-DISMISS</span>: If user doesn't interact within 15s, toast collapses
+  back to pill and the term is treated as "skipped" (style_preference,
+  not learned, but NOT permanently blocked — will ask again next time).
+</pre></div>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>7. Implementation Roadmap</h2>
+
+<div class="arch-card">
+  <h4>Phase 1: Backend — Ambiguous Classification + Confirm Endpoint</h4>
+  <ol class="arch-steps">
+    <li><strong>Add ambiguous detection</strong> to deterministic classifier — when <code>corrected_is_common && !original_is_gibberish</code>, set <code>reason = Ambiguous</code> instead of <code>StylePreference</code>. <span class="code">classify.rs: deterministic_classify_hunks()</span></li>
+    <li><strong>Add <code>ambiguous_terms</code></strong> field to <code>ClassifyResponse</code>. Each entry: <code>{original, corrected, context, recording_id}</code>. <span class="code">classify.rs: ClassifyResponse</span></li>
+    <li><strong>New endpoint: POST /v1/confirm-term</strong> — receives <code>{term, action: "learn"|"skip", recording_id}</code>. If "learn": promote to vocab, create edit-policy, retrain. If "skip": store in a <code>skipped_pairs</code> table so we never ask again. <span class="code">routes/confirm.rs (new file)</span></li>
+  </ol>
+</div>
+
+<div class="arch-card">
+  <h4>Phase 2: Backend — Negative Marking Fix</h4>
+  <ol class="arch-steps">
+    <li><strong>Log STT replacement decisions</strong> in <code>tier2_decision_events</code> with <code>scorer_kind = "stt_alias"</code>. Currently only edit-policy and cluster-fuzzy are logged. <span class="code">tier2.rs: apply_exact_safe result → insert event</span></li>
+    <li><strong>Extend <code>mark_removed_feedback</code></strong> to also check <code>stt_alias</code> scorer_kind. When user corrects an STT alias back, delete or weight-reduce the alias. <span class="code">tier2_edit_policy.rs: mark_removed_feedback()</span></li>
+    <li><strong>Count repeated negative corrections</strong> per (variant, correct_form) pair. If count >= 2, return <code>negative_terms</code> in ClassifyResponse for Toast B. <span class="code">classify.rs: new negative_terms field</span></li>
+    <li><strong>New endpoint: POST /v1/block-correction</strong> — permanently blocks a correction rule and cleans up aliases. <span class="code">routes/confirm.rs</span></li>
+  </ol>
+</div>
+
+<div class="arch-card">
+  <h4>Phase 3: Desktop — Status Bar Toast System</h4>
+  <ol class="arch-steps">
+    <li><strong>Add new BarState variants</strong>: <code>confirming</code> (Toast A), <code>negative_confirm</code> (Toast B), <code>retraining</code> (Training pill). <span class="code">StatusBar.tsx</span></li>
+    <li><strong>Listen for new events</strong>: <code>vocab-confirm</code>, <code>vocab-negative</code>, <code>retrain-status</code>. Each triggers the appropriate toast. <span class="code">StatusBar.tsx: useEffect listeners</span></li>
+    <li><strong>Pill → Toast animation</strong>: CSS transition from <code>border-radius: 100px</code> → <code>16px</code>, height from <code>36px</code> → <code>120px</code>, with 0.25s spring easing. <span class="code">styles.css</span></li>
+    <li><strong>Button click handlers</strong>: Invoke Tauri commands <code>confirm_term</code> and <code>block_correction</code> which POST to the backend. <span class="code">main.rs: new Tauri commands</span></li>
+    <li><strong>Auto-dismiss timer</strong>: 15s for confirmations (collapses back to pill). 3s for success toasts. <span class="code">StatusBar.tsx: setTimeout</span></li>
+  </ol>
+</div>
+
+<div class="arch-card">
+  <h4>Phase 4: Retrain Visibility</h4>
+  <ol class="arch-steps">
+    <li><strong>Backend emits retrain events</strong> via SSE or polling: <code>retrain-status: {phase: "started"}</code> when debounce fires, <code>retrain-status: {phase: "done", duration_s}</code> when Python finishes. <span class="code">classify.rs: schedule_onnx_retrain()</span></li>
+    <li><strong>Status bar shows training pill</strong>: Blue dot + "Improving model..." during train. Green dot + "Model updated" when done (2s auto-hide). <span class="code">StatusBar.tsx</span></li>
+  </ol>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>8. Edge Cases Covered</h2>
+
+<div class="flow"><pre>
+  <span class="b">CASE 1: User ignores Toast A (15s timeout)</span>
+  → Term NOT learned, NOT permanently blocked
+  → Will ask again on next correction of same pair
+  → After 3 ignores of same pair → auto-classify as style_preference
+
+  <span class="b">CASE 2: User clicks "Yes, learn it" on Toast A</span>
+  → Immediate vocab promotion (no 3-sighting wait)
+  → Edit-policy rule created for exact variant
+  → Retrain triggered
+  → Toast C shows with undo (3s)
+
+  <span class="b">CASE 3: Multiple corrections in one edit</span>
+  → Each ambiguous pair gets its own Toast A (queued)
+  → First toast shows immediately, next after dismiss/timeout
+  → Non-ambiguous corrections are learned silently
+
+  <span class="b">CASE 4: "Mac" → "EMIAC" keeps happening</span>
+  → First correction: penalize the specific rule/alias
+  → Second correction: show Toast B ("Stop this?")
+  → User clicks "Yes, stop it": rule blocked, alias deleted
+  → User clicks "It was right": negative count reset
+
+  <span class="b">CASE 5: User corrects then Cmd+Z undoes</span>
+  → Edit watcher sees field revert to post_paste
+  → Treated as "no edit" — nothing learned, nothing asked
+
+  <span class="b">CASE 6: AX-blind app (Lark, Notion)</span>
+  → No toast shown (can't detect edits)
+  → Future: passive clipboard learning may trigger toasts
+</pre></div>
+
+<p style="color:var(--dim); font-size:0.8rem; text-align:center; margin-top:3rem;">
+  Plan generated from research across 5,000+ lines of Rust &amp; TypeScript<br>
+  Status bar: main.rs (922-979) + StatusBar.tsx + styles.css (697-1326)<br>
+  Demotion: classify.rs (672-689) + tier2_edit_policy.rs (143-283)
+</p>
+
+</div>
+</body>
+</html>

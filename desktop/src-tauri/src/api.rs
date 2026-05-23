@@ -1007,6 +1007,27 @@ pub struct ClassifyEditResponse {
     /// toast so the user knows the system saw the correction.
     #[serde(default)]
     pub queued_terms: Vec<String>,
+    /// Ambiguous terms where the classifier can't decide — needs user confirmation.
+    #[serde(default)]
+    pub ambiguous_terms: Vec<AmbiguousTermResponse>,
+    /// Corrections the system keeps making wrong — needs user to confirm blocking.
+    #[serde(default)]
+    pub negative_terms: Vec<NegativeTermResponse>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AmbiguousTermResponse {
+    pub original: String,
+    pub corrected: String,
+    pub context: String,
+    pub recording_id: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct NegativeTermResponse {
+    pub term: String,
+    pub wrong_replacement: String,
+    pub correction_count: i64,
 }
 
 /// Classify an edit using the four-way classifier.

@@ -1323,3 +1323,147 @@ body.statusbar-mode #app {
     opacity: 1;
   }
 }
+
+/* ── Learning Toast (expanded card) ─────────────────────────────────────── */
+
+.sb-toast {
+  background: rgba(8, 8, 12, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 16px;
+  padding: 14px 18px;
+  width: 280px;
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  animation: sb-toast-in 0.25s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes sb-toast-in {
+  from { opacity: 0; transform: scale(0.9) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.sb-toast-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sb-toast-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.sb-toast-body {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.55);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
+.sb-toast-body strong {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.sb-toast-old {
+  color: #f87171;
+  text-decoration: line-through;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 11px;
+}
+
+.sb-toast-arrow {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.sb-toast-term {
+  display: inline-block;
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sb-toast-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.sb-toast-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  -webkit-app-region: no-drag;
+}
+
+.sb-toast-btn-primary {
+  background: #34d399;
+  color: #000;
+}
+.sb-toast-btn-primary:hover {
+  background: #4ade80;
+}
+
+.sb-toast-btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+}
+.sb-toast-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.sb-toast-btn-danger {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.2);
+}
+.sb-toast-btn-danger:hover {
+  background: rgba(248, 113, 113, 0.25);
+}
+
+/* Toast dot indicators (separate from .sb-dot to avoid size conflicts) */
+.sb-toast-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.sb-toast-dot-yellow {
+  background: #fbbf24;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.4);
+}
+
+.sb-toast-dot-red {
+  background: #f87171;
+  box-shadow: 0 0 8px rgba(248, 113, 113, 0.4);
+}
+
+.sb-toast-dot-blue {
+  background: #58a6ff;
+  box-shadow: 0 0 8px rgba(88, 166, 255, 0.4);
+}
+
+/* Retraining pill */
+.sb-shell--retraining {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+}
+
+.sb-retrain-label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+}

@@ -71,7 +71,7 @@ function SplitShell({
           <span style={{ width: 18, height: 18, display: "inline-grid", placeItems: "center", color: "hsl(var(--foreground))" }}>
             <BrandMark size={18} />
           </span>
-          Said
+          AutoNote
         </div>
 
         <div className="relative z-10 flex-1 flex flex-col items-center justify-center gap-6 text-center">
@@ -88,7 +88,7 @@ function SplitShell({
                 color: "hsl(var(--foreground))",
               }}
             >
-              Said
+              AutoNote
             </div>
             <p
               style={{
@@ -356,9 +356,9 @@ export function OnboardingFlow({
       <SplitShell
         step={stepIndex}
         eyebrow="Get started"
-        title="Welcome to Said."
+        title="Welcome to AutoNote."
         subtitle="A two-minute setup. Three permissions, two free API keys, one hold-key. Then you’ll never type by hand again."
-        brandTagline="Voice polish for Mac. Hold a key, speak, release — Said types polished text into any app."
+        brandTagline="Voice polish for Mac. Hold a key, speak, release — AutoNote types polished text into any app."
         brandKicker="Built for macOS"
         brandQuote="It’s like typing, except your brain is the keyboard."
         bottomNote={<span>v2.0.3 · macOS 14+</span>}
@@ -381,8 +381,8 @@ export function OnboardingFlow({
         step={stepIndex}
         eyebrow="Permissions"
         title="A few system grants."
-        subtitle="Three macOS permissions — one click each. Said detects each grant automatically."
-        brandTagline="macOS will ask you once for each permission. Said detects each grant the moment it happens."
+        subtitle="Three macOS permissions — one click each. AutoNote detects each grant automatically."
+        brandTagline="macOS will ask you once for each permission. AutoNote detects each grant the moment it happens."
         brandKicker="Privacy"
         brandQuote="Audio never leaves the path between your mic and Deepgram. Nothing is stored on our servers."
         topRight={<span>2 of 4</span>}
@@ -407,7 +407,7 @@ export function OnboardingFlow({
           <PermRow
             icon={<Keyboard size={15} />}
             title="Input Monitoring"
-            desc="Hear your hotkey from any app — even when Said isn’t focused."
+            desc="Hear your hotkey from any app — even when AutoNote isn’t focused."
             granted={imGranted}
             onAllow={onInputMonitoring}
           />
@@ -543,7 +543,7 @@ export function OnboardingFlow({
           onClick={() => handleHotkeySelect(currentHotkey)}
           className="btn-primary btn-lg w-full"
         >
-          Start using Said
+          Start using AutoNote
           <ArrowRight size={14} />
         </button>
       </div>

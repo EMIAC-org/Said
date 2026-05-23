@@ -8,22 +8,24 @@
 //! Usage:
 //!   cargo run -p said-backend --bin eval-pipeline -- \
 //!       --transcripts tools/eval-pipeline/transcripts.jsonl \
-//!       --vocab tools/eval-pipeline/vocab_seed.json
+//!       --vocab tools/eval-pipeline/vocab_seed.json \
+//!       --dev-quality tools/eval-pipeline/dev_terms_quality.json
 
 use clap::Parser;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use said_backend::llm::phonetics;
 use said_backend::llm::vocab_resolver;
 use said_backend::store::corrections::{self, Correction};
 use said_backend::store::pending_promotions;
 use said_backend::store::stt_replacements::ApplyResult;
+use said_backend::store::tier2_edit_policy;
 use said_backend::store::vocab_embeddings;
 use said_backend::store::vocab_fts;
 use said_backend::store::vocabulary::{self, VocabTerm};
 use said_backend::store::{self, DbPool};
+use said_backend::tier2;
 
 #[derive(Parser)]
 struct Args {
@@ -31,6 +33,8 @@ struct Args {
     transcripts: PathBuf,
     #[arg(long)]
     vocab: PathBuf,
+    #[arg(long)]
+    dev_quality: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -50,10 +54,40 @@ struct VocabSeed {
     source: String,
 }
 
+#[derive(Deserialize)]
+struct DevQualitySuite {
+    terms: Vec<DevQualityTerm>,
+    #[serde(default)]
+    negatives: Vec<DevQualityNegative>,
+}
+
+#[derive(Deserialize)]
+struct DevQualityTerm {
+    term: String,
+    #[serde(rename = "type")]
+    term_type: String,
+    meaning: String,
+    context: String,
+    #[serde(default = "default_dev_quality_source")]
+    source: String,
+    positive_template: String,
+    distortions: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct DevQualityNegative {
+    text: String,
+    forbidden_terms: Vec<String>,
+}
+
 fn main() {
     let args = Args::parse();
     let transcripts = load_transcripts(&args.transcripts);
     let seeds = load_seeds(&args.vocab);
+    let dev_quality = args
+        .dev_quality
+        .as_ref()
+        .map(|path| load_dev_quality_suite(path));
     eprintln!(
         "Loaded {} transcripts, {} vocab seeds\n",
         transcripts.len(),
@@ -402,6 +436,7 @@ fn main() {
         let alias_result = ApplyResult {
             text: transcript.to_string(),
             matches: vec![],
+            traces: vec![],
         };
         let selected = vocab_embeddings::select_for_prompt(
             &adv_pool,
@@ -453,6 +488,7 @@ fn main() {
         let alias_result = ApplyResult {
             text: transcript.to_string(),
             matches: vec![],
+            traces: vec![],
         };
         let selected = vocab_embeddings::select_for_prompt(
             &pos_pool,
@@ -482,6 +518,14 @@ fn main() {
                     .collect::<Vec<_>>()
             ),
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  LAYER 4: DEV TERM QUALITY — learned variants + no pollution
+    // ═══════════════════════════════════════════════════════════
+    if let Some(dev_quality) = dev_quality.as_ref() {
+        println!("\n══ LAYER 4: DEV TERM QUALITY (distortions → learned policy) ══\n");
+        run_dev_quality_suite(dev_quality, &mut total_pass, &mut total_fail, &mut failures);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -552,6 +596,7 @@ fn sweep_retrieval(
         let alias_result = ApplyResult {
             text: transcript.to_string(),
             matches: vec![],
+            traces: vec![],
         };
         let resolved =
             vocab_resolver::resolve_for_prompt(transcript, &selected, all_terms, &alias_result);
@@ -626,6 +671,314 @@ fn is_false_injection(transcript: &str, term: &str) -> bool {
             .windows(term_tokens.len())
             .any(|w| w.iter().zip(term_tokens.iter()).all(|(a, b)| a == b))
     }
+}
+
+fn run_dev_quality_suite(
+    suite: &DevQualitySuite,
+    total_pass: &mut usize,
+    total_fail: &mut usize,
+    failures: &mut Vec<String>,
+) {
+    let user_id = "eval-user";
+    let seeds: Vec<VocabSeed> = suite
+        .terms
+        .iter()
+        .map(|term| VocabSeed {
+            term: term.term.clone(),
+            term_type: term.term_type.clone(),
+            meaning: term.meaning.clone(),
+            context: term.context.clone(),
+            source: term.source.clone(),
+        })
+        .collect();
+    let total_distortions: usize = suite.terms.iter().map(|term| term.distortions.len()).sum();
+    let duplicate_variants = duplicate_distortions(suite);
+    check(
+        total_pass,
+        total_fail,
+        failures,
+        "Dev quality fixture: every term has at least 6 distortions and no duplicate variant conflicts",
+        suite.terms.iter().all(|term| term.distortions.len() >= 6) && duplicate_variants.is_empty(),
+        &format!(
+            "terms={} distortions={} duplicate_conflicts={:?}",
+            suite.terms.len(),
+            total_distortions,
+            duplicate_variants
+        ),
+    );
+
+    let shadow_pool = setup_db(&seeds);
+    let shadow_terms = vocabulary::top_terms(&shadow_pool, user_id, 1000);
+    let mut shadow_mutations = 0usize;
+    let mut shadow_correct = 0usize;
+    let mut first_shadow_miss = String::new();
+
+    for term in &suite.terms {
+        for variant in &term.distortions {
+            let transcript = render_dev_quality_transcript(&term.positive_template, variant);
+            let result =
+                tier2::correct_with_store(&shadow_pool, user_id, &transcript, &[], &shadow_terms);
+            if result.text != transcript {
+                shadow_mutations += 1;
+            }
+            if trace_points_to_term(&result, variant, &term.term) {
+                shadow_correct += 1;
+            } else if first_shadow_miss.is_empty() {
+                first_shadow_miss = format!(
+                    "{} → {} in '{}'",
+                    variant,
+                    term.term,
+                    truncate(&transcript, 80)
+                );
+            }
+        }
+    }
+    check(
+        total_pass,
+        total_fail,
+        failures,
+        "Dev quality shadow: fuzzy scorer never mutates transcript",
+        shadow_mutations == 0,
+        &format!("{shadow_mutations}/{total_distortions} shadow transcripts mutated"),
+    );
+    let shadow_coverage = if total_distortions == 0 {
+        0.0
+    } else {
+        shadow_correct as f64 / total_distortions as f64
+    };
+    check(
+        total_pass,
+        total_fail,
+        failures,
+        "Dev quality shadow: scorer points to expected term in >=70% of variants",
+        shadow_coverage >= 0.70,
+        &format!(
+            "{shadow_correct}/{total_distortions} ({:.1}%), first miss: {}",
+            shadow_coverage * 100.0,
+            first_shadow_miss
+        ),
+    );
+
+    let learned_pool = setup_db(&seeds);
+    let mut failed_rule_writes = 0usize;
+    let mut first_rule_failure = String::new();
+    for term in &suite.terms {
+        let (left_context, right_context) = template_context(&term.positive_template);
+        for variant in &term.distortions {
+            let first = tier2_edit_policy::record_explicit_edit(
+                &learned_pool,
+                user_id,
+                variant,
+                &term.term,
+                "replace",
+                &left_context,
+                &right_context,
+                None,
+            );
+            let second = tier2_edit_policy::record_explicit_edit(
+                &learned_pool,
+                user_id,
+                variant,
+                &term.term,
+                "replace",
+                &left_context,
+                &right_context,
+                None,
+            );
+            if !(first && second) {
+                failed_rule_writes += 1;
+                if first_rule_failure.is_empty() {
+                    first_rule_failure = format!("{variant} -> {}", term.term);
+                }
+            }
+        }
+    }
+    let status = tier2_edit_policy::status(&learned_pool, user_id);
+    check(
+        total_pass,
+        total_fail,
+        failures,
+        "Dev quality learning: 2 confirmations activate every variant rule",
+        failed_rule_writes == 0 && status.active_rule_count as usize == total_distortions,
+        &format!(
+            "failed_writes={failed_rule_writes}, active_rules={}, expected={}, first={}",
+            status.active_rule_count, total_distortions, first_rule_failure
+        ),
+    );
+
+    let learned_terms = vocabulary::top_terms(&learned_pool, user_id, 1000);
+    let mut active_failures = 0usize;
+    let mut first_active_failure = String::new();
+    for term in &suite.terms {
+        for variant in &term.distortions {
+            let transcript = render_dev_quality_transcript(&term.positive_template, variant);
+            let result =
+                tier2::correct_with_store(&learned_pool, user_id, &transcript, &[], &learned_terms);
+            let corrected = contains_termish(&result.text, &term.term);
+            let removed_variant = !contains_token_norm(&result.text, variant);
+            let edit_policy_match = result.matches.iter().any(|m| {
+                normalize_eval_token(&m.transcript_form) == normalize_eval_token(variant)
+                    && same_eval_term(&m.correct_form, &term.term)
+            });
+            if !(corrected && removed_variant && edit_policy_match) {
+                active_failures += 1;
+                if first_active_failure.is_empty() {
+                    first_active_failure = format!(
+                        "{} -> {} produced '{}' matches={:?}",
+                        variant, term.term, result.text, result.matches
+                    );
+                }
+            }
+        }
+    }
+    check(
+        total_pass,
+        total_fail,
+        failures,
+        "Dev quality active policy: learned variants correct 100%",
+        active_failures == 0,
+        &format!("{active_failures}/{total_distortions} failed, first: {first_active_failure}"),
+    );
+
+    let mut pollution_failures = 0usize;
+    let mut first_pollution_failure = String::new();
+    for negative in &suite.negatives {
+        let result =
+            tier2::correct_with_store(&learned_pool, user_id, &negative.text, &[], &learned_terms);
+        for forbidden in &negative.forbidden_terms {
+            if !contains_termish(&negative.text, forbidden)
+                && contains_termish(&result.text, forbidden)
+            {
+                pollution_failures += 1;
+                if first_pollution_failure.is_empty() {
+                    first_pollution_failure = format!(
+                        "'{}' injected into '{}' -> '{}'",
+                        forbidden, negative.text, result.text
+                    );
+                }
+            }
+        }
+    }
+    check(
+        total_pass,
+        total_fail,
+        failures,
+        "Dev quality pollution: active rules do not rewrite negative sentences",
+        pollution_failures == 0,
+        &format!(
+            "{pollution_failures}/{} forbidden checks failed, first: {first_pollution_failure}",
+            suite
+                .negatives
+                .iter()
+                .map(|n| n.forbidden_terms.len())
+                .sum::<usize>()
+        ),
+    );
+}
+
+fn duplicate_distortions(suite: &DevQualitySuite) -> Vec<String> {
+    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut conflicts = Vec::new();
+    for term in &suite.terms {
+        for variant in &term.distortions {
+            let norm = normalize_eval_token(variant);
+            if norm.is_empty() {
+                continue;
+            }
+            if let Some(existing_term) = seen.insert(norm.clone(), term.term.clone()) {
+                if !same_eval_term(&existing_term, &term.term) {
+                    conflicts.push(format!("{variant}: {existing_term} vs {}", term.term));
+                }
+            }
+        }
+    }
+    conflicts
+}
+
+fn trace_points_to_term(result: &ApplyResult, variant: &str, term: &str) -> bool {
+    let variant_norm = normalize_eval_token(variant);
+    result.traces.iter().any(|trace| {
+        normalize_eval_token(&trace.token) == variant_norm && same_eval_term(&trace.candidate, term)
+    })
+}
+
+fn render_dev_quality_transcript(template: &str, variant: &str) -> String {
+    template.replace("{variant}", variant)
+}
+
+fn template_context(template: &str) -> (Vec<String>, Vec<String>) {
+    let parts: Vec<&str> = template.split_whitespace().collect();
+    let Some(idx) = parts.iter().position(|part| part.contains("{variant}")) else {
+        return (vec![], vec![]);
+    };
+    let left = parts[..idx]
+        .iter()
+        .rev()
+        .take(3)
+        .map(|part| normalize_eval_token(part))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let right = parts[idx + 1..]
+        .iter()
+        .take(3)
+        .map(|part| normalize_eval_token(part))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    (left, right)
+}
+
+fn contains_token_norm(text: &str, token: &str) -> bool {
+    let needle = normalize_eval_token(token);
+    !needle.is_empty()
+        && eval_tokens(text)
+            .iter()
+            .any(|part| normalize_eval_token(part) == needle)
+}
+
+fn contains_termish(text: &str, term: &str) -> bool {
+    let text_tokens = eval_tokens(text);
+    let term_tokens = eval_tokens(term);
+    if term_tokens.is_empty() {
+        return false;
+    }
+    if term_tokens.len() == 1 {
+        return text_tokens.iter().any(|token| token == &term_tokens[0]);
+    }
+    text_tokens.windows(term_tokens.len()).any(|window| {
+        window
+            .iter()
+            .zip(term_tokens.iter())
+            .all(|(actual, expected)| actual == expected)
+    })
+}
+
+fn eval_tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .map(normalize_eval_token)
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn normalize_eval_token(text: &str) -> String {
+    text.trim()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+fn same_eval_term(a: &str, b: &str) -> bool {
+    normalize_eval_token(a) == normalize_eval_token(b)
+}
+
+fn load_dev_quality_suite(path: &PathBuf) -> DevQualitySuite {
+    let data = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    serde_json::from_str(&data).expect("bad dev quality JSON")
+}
+
+fn default_dev_quality_source() -> String {
+    "manual".to_string()
 }
 
 fn load_transcripts(path: &PathBuf) -> Vec<TranscriptRow> {
