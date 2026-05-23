@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalPosition, LogicalSize, primaryMonitor } from "@tauri-apps/api/window";
 import { RotateCcw, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
-import type { CSSProperties } from "react";
 
 // ── State machine ─────────────────────────────────────────────────────────────
 
@@ -27,77 +26,21 @@ type VoiceErrorPayload = {
 
 type PillKind = BarState["kind"];
 
-type StatusBarMetrics = {
-  has_notch: boolean;
-  window_width: number;
-  window_height: number;
-  surface_top: number;
-  closed_width: number;
-  closed_height: number;
-  hover_width: number;
-  hover_height: number;
-  recording_width: number;
-  recording_height: number;
-  processing_width: number;
-  processing_height: number;
-  transcript_width: number;
-  transcript_height: number;
-  done_width: number;
-  done_height: number;
-  learned_width: number;
-  learned_height: number;
-  error_width: number;
-  error_height: number;
-  top_radius: number;
-  bottom_radius: number;
-  expanded_bottom_radius: number;
-};
-
-const DEFAULT_METRICS: StatusBarMetrics = {
-  has_notch: false,
-  window_width: 540,
-  window_height: 144,
-  surface_top: 0,
-  closed_width: 184,
-  closed_height: 32,
-  hover_width: 218,
-  hover_height: 40,
-  recording_width: 232,
-  recording_height: 60,
-  processing_width: 238,
-  processing_height: 58,
-  transcript_width: 500,
-  transcript_height: 114,
-  done_width: 212,
-  done_height: 52,
-  learned_width: 302,
-  learned_height: 52,
-  error_width: 326,
-  error_height: 52,
-  top_radius: 999,
-  bottom_radius: 999,
-  expanded_bottom_radius: 24,
-};
+const BOTTOM_OFFSET = 64;
+const HUD_CANVAS_WIDTH = 300;
+const HUD_CANVAS_HEIGHT = 142;
 
 const LEVEL_SHAPE = [0.28, 0.38, 0.52, 0.68, 0.82, 1.0, 0.78, 0.62, 0.78, 1.0, 0.82, 0.68, 0.52, 0.38, 0.28];
 const BAR_DECAY = [0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.87, 0.86, 0.87, 0.88, 0.87, 0.86, 0.85, 0.84, 0.82];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function pillSize(
-  kind: PillKind,
-  metrics: StatusBarMetrics,
-  hasTranscript = false,
-  hovered = false,
-): { width: number; height: number } {
-  if (hasTranscript) return { width: metrics.transcript_width, height: metrics.transcript_height };
-  if (kind === "learned") return { width: metrics.learned_width, height: metrics.learned_height };
-  if (kind === "error") return { width: metrics.error_width, height: metrics.error_height };
-  if (kind === "recording") return { width: metrics.recording_width, height: metrics.recording_height };
-  if (kind === "processing") return { width: metrics.processing_width, height: metrics.processing_height };
-  if (kind === "done" || kind === "pasted" || kind === "manual_paste") return { width: metrics.done_width, height: metrics.done_height };
-  if (kind === "idle" && hovered) return { width: metrics.hover_width, height: metrics.hover_height };
-  return { width: metrics.closed_width, height: metrics.closed_height };
+function pillSize(kind: PillKind, hasTranscript = false, hovered = false): { width: number; height: number } {
+  if (hasTranscript) return { width: 280, height: 96 };
+  if (kind === "learned") return { width: 220, height: 36 };
+  if (kind === "error") return { width: 220, height: 36 };
+  if (kind === "idle" && hovered) return { width: 160, height: 36 };
+  return { width: 140, height: 36 };
 }
 
 function processingLabel(phase: string): string {
@@ -116,7 +59,6 @@ function barHeight(barLevel: number, active: boolean): number {
 
 export default function StatusBar() {
   const [bar, setBar] = useState<BarState>({ kind: "idle" });
-  const [metrics, setMetrics] = useState<StatusBarMetrics>(DEFAULT_METRICS);
   const [idleHovered, setIdleHovered] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
   const [audioLevel, setAudioLevel] = useState(0);
@@ -126,15 +68,7 @@ export default function StatusBar() {
   const [, forceFrame] = useState(0);
   const win = getCurrentWindow();
   const hasTranscript = bar.kind === "processing" && liveTranscript.trim().length > 0;
-  const innerSize = pillSize(bar.kind, metrics, hasTranscript, bar.kind === "idle" && idleHovered);
-  const shellStyle = {
-    width: innerSize.width,
-    height: innerSize.height,
-    "--sb-top-radius": `${metrics.top_radius}px`,
-    "--sb-bottom-radius": `${metrics.bottom_radius}px`,
-    "--sb-expanded-bottom-radius": `${metrics.expanded_bottom_radius}px`,
-    "--sb-surface-top": `${metrics.surface_top}px`,
-  } as CSSProperties;
+  const innerSize = pillSize(bar.kind, hasTranscript, bar.kind === "idle" && idleHovered);
 
   useEffect(() => {
     console.info("[status-bar] mounted", {
@@ -145,28 +79,25 @@ export default function StatusBar() {
     });
   }, []);
 
-  // Native Rust/AppKit owns window placement. React only receives the measured
-  // notch/fallback sizes and animates the HUD surface inside that canvas.
+  // VoiceInk uses a max-size native panel and expands the inner capsule inside it.
+  // Keep our native Tauri window at the largest HUD size so hover panels are never clipped.
   useEffect(() => {
-    let unsubscribe: (() => void) | undefined;
-    invoke<StatusBarMetrics>("get_status_bar_metrics")
-      .then((next) => {
-        console.info("[status-bar] metrics initial", next);
-        setMetrics(next);
+    console.info("[status-bar] state", bar);
+    primaryMonitor()
+      .then((monitor) => {
+        const scale = monitor?.scaleFactor ?? 1;
+        const sw = monitor ? monitor.size.width / scale : 1440;
+        const sh = monitor ? monitor.size.height / scale : 900;
+        const sx = monitor ? monitor.position.x / scale : 0;
+        const sy = monitor ? monitor.position.y / scale : 0;
+        const x = sx + sw / 2 - HUD_CANVAS_WIDTH / 2;
+        const y = sy + sh - HUD_CANVAS_HEIGHT - BOTTOM_OFFSET;
+        return win
+          .setSize(new LogicalSize(HUD_CANVAS_WIDTH, HUD_CANVAS_HEIGHT))
+          .then(() => win.setPosition(new LogicalPosition(x, y)));
       })
-      .catch((err) => console.warn("[status-bar] metrics fetch failed", err));
-
-    listen<StatusBarMetrics>("status-bar-metrics", (event) => {
-      setMetrics(event.payload);
-    })
-      .then((fn) => {
-        unsubscribe = fn;
-      })
-      .catch((err) => console.warn("[status-bar] metrics subscribe failed", err));
-
-    return () => {
-      unsubscribe?.();
-    };
+      .then(() => console.info("[status-bar] chrome sized", { width: HUD_CANVAS_WIDTH, height: HUD_CANVAS_HEIGHT }))
+      .catch((err) => console.warn("[status-bar] chrome size failed", err));
   }, []);
 
   useEffect(() => {
@@ -339,8 +270,8 @@ export default function StatusBar() {
 
   return (
     <div
-      className={`sb-shell sb-shell--${bar.kind}${hasTranscript ? " sb-shell--expanded" : ""}${bar.kind === "idle" && idleHovered ? " sb-shell--hovered" : ""}${metrics.has_notch ? "" : " sb-shell--floating"}`}
-      style={shellStyle}
+      className={`sb-shell sb-shell--${bar.kind}${hasTranscript ? " sb-shell--expanded" : ""}${bar.kind === "idle" && idleHovered ? " sb-shell--hovered" : ""}`}
+      style={{ width: innerSize.width, height: innerSize.height }}
       aria-label={`Said ${bar.kind}`}
       title={`Said ${bar.kind}`}
       onMouseEnter={() => {
