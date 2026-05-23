@@ -62,16 +62,23 @@ pub async fn confirm_term(
             body.recording_id.as_deref(),
         );
 
-        // ── Create STT alias ─────────────────────────────────────────────────
-        stt_replacements::upsert_aliases_for_language(
-            &state.pool,
-            user_id,
-            &body.original,
-            &body.original,
-            &body.term,
-            1.0,
-            &language,
-        );
+        // ── Create STT alias (skip if original is a common word) ────────────
+        if !crate::llm::promotion_gate::is_common_word(&body.original) {
+            stt_replacements::upsert_aliases_for_language(
+                &state.pool,
+                user_id,
+                &body.original,
+                &body.original,
+                &body.term,
+                1.0,
+                &language,
+            );
+        } else {
+            info!(
+                "[confirm] skipped STT alias {:?} → {:?} — original is a common word",
+                body.original, body.term,
+            );
+        }
 
         // ── Invalidate lexicon cache ─────────────────────────────────────────
         crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
