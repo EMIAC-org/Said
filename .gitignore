@@ -37,3 +37,6 @@ __pycache__/
 
 # Eval pipeline downloaded data (regenerate with download_transcripts.py)
 tools/eval-pipeline/transcripts.jsonl
+
+# Whisper model files (large binary, downloaded separately)
+models/*.bin

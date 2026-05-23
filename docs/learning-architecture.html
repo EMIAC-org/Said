@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Said - Local Learning Pipeline, Explained</title>
+<style>
+  :root {
+    --bg: #0b0c0f;
+    --panel: #111318;
+    --panel-2: #151922;
+    --panel-3: #1b202a;
+    --text: #f2f4f8;
+    --muted: #a6adba;
+    --faint: #747c8b;
+    --line: #2a303b;
+    --blue: #8fb3ff;
+    --cyan: #77d7d0;
+    --green: #72dc91;
+    --amber: #ffd07a;
+    --red: #ff8b9a;
+    --violet: #b8a7ff;
+    --shadow: 0 18px 50px rgba(0,0,0,.28);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    color: var(--text);
+    background: var(--bg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, Segoe UI, sans-serif;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.026) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: linear-gradient(to bottom, rgba(0,0,0,.82), transparent 74%);
+  }
+
+  a { color: var(--blue); text-decoration: none; }
+  code {
+    color: #bed0ff;
+    background: #202532;
+    border: 1px solid #2c3444;
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .92em;
+  }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: rgba(11,12,15,.84);
+    backdrop-filter: blur(18px);
+    border-bottom: 1px solid rgba(255,255,255,.07);
+  }
+  .topbar-inner {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 12px 22px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 800;
+    letter-spacing: -.02em;
+    white-space: nowrap;
+  }
+  .mark {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+  }
+  .mark svg { width: 17px; height: 17px; fill: var(--cyan); }
+  .nav {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .nav a {
+    color: var(--muted);
+    border: 1px solid transparent;
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+  .nav a:hover { color: var(--text); border-color: var(--line); background: var(--panel); }
+
+  .wrap {
+    position: relative;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 42px 22px 90px;
+  }
+  .hero {
+    min-height: 560px;
+    display: grid;
+    align-items: center;
+    grid-template-columns: 1.02fr .98fr;
+    gap: 32px;
+    padding: 22px 0 52px;
+  }
+  .eyebrow {
+    color: var(--cyan);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  h1, h2, h3, p { margin-top: 0; }
+  h1 {
+    font-size: clamp(42px, 7vw, 78px);
+    line-height: .96;
+    letter-spacing: -.055em;
+    margin-bottom: 22px;
+  }
+  .hero p {
+    color: var(--muted);
+    font-size: 18px;
+    max-width: 650px;
+  }
+  .hero strong { color: var(--text); }
+
+  .hero-board {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .board-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    background: #0f1116;
+    border-bottom: 1px solid var(--line);
+    color: var(--faint);
+    font-size: 12px;
+  }
+  .dots { display: flex; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 999px; background: var(--line); }
+  .dot:nth-child(1) { background: var(--red); }
+  .dot:nth-child(2) { background: var(--amber); }
+  .dot:nth-child(3) { background: var(--green); }
+  .board-body { padding: 18px; }
+
+  .terminal {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.9;
+    color: var(--muted);
+  }
+  .terminal .ok { color: var(--green); }
+  .terminal .warn { color: var(--amber); }
+  .terminal .bad { color: var(--red); }
+  .terminal .blue { color: var(--blue); }
+  .terminal .cyan { color: var(--cyan); }
+
+  section {
+    padding: 58px 0;
+    border-top: 1px solid rgba(255,255,255,.07);
+  }
+  .section-head {
+    max-width: 820px;
+    margin-bottom: 24px;
+  }
+  .section-num {
+    color: var(--blue);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  h2 {
+    font-size: clamp(28px, 4vw, 44px);
+    line-height: 1.08;
+    letter-spacing: -.04em;
+    margin-bottom: 14px;
+  }
+  .section-head p, .lede {
+    color: var(--muted);
+    font-size: 17px;
+    max-width: 860px;
+  }
+
+  .grid { display: grid; gap: 16px; }
+  .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 18px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.035) inset;
+  }
+  .card h3 {
+    font-size: 18px;
+    margin-bottom: 8px;
+    letter-spacing: -.02em;
+  }
+  .card p, .card li { color: var(--muted); font-size: 14px; }
+  .card ul { margin: 10px 0 0; padding-left: 18px; }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--panel-2);
+    padding: 5px 10px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .pill.green { color: var(--green); border-color: rgba(114,220,145,.3); background: rgba(114,220,145,.08); }
+  .pill.amber { color: var(--amber); border-color: rgba(255,208,122,.32); background: rgba(255,208,122,.08); }
+  .pill.red { color: var(--red); border-color: rgba(255,139,154,.32); background: rgba(255,139,154,.08); }
+  .pill.blue { color: var(--blue); border-color: rgba(143,179,255,.32); background: rgba(143,179,255,.08); }
+
+  .callout {
+    margin: 22px 0;
+    padding: 18px 20px;
+    border-radius: 8px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--cyan);
+  }
+  .callout strong { color: var(--text); }
+  .callout p { color: var(--muted); margin: 6px 0 0; }
+  .callout.warn { border-left-color: var(--amber); }
+  .callout.good { border-left-color: var(--green); }
+
+  .flow {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(110px, 1fr));
+    gap: 10px;
+    align-items: stretch;
+    margin: 22px 0;
+  }
+  .node {
+    position: relative;
+    min-height: 145px;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+  }
+  .node::after {
+    content: ">";
+    position: absolute;
+    right: -12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--faint);
+    font-family: ui-monospace, monospace;
+  }
+  .node:last-child::after { display: none; }
+  .node .kicker { color: var(--faint); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+  .node .title { margin-top: 7px; font-size: 15px; font-weight: 800; }
+  .node .body { color: var(--muted); margin-top: 6px; font-size: 12px; line-height: 1.45; }
+  .node.alias { border-color: rgba(114,220,145,.35); }
+  .node.policy { border-color: rgba(143,179,255,.38); }
+  .node.scorer { border-color: rgba(119,215,208,.42); background: rgba(119,215,208,.045); }
+  .node.gate { border-color: rgba(255,208,122,.42); }
+
+  .equation {
+    display: grid;
+    grid-template-columns: 1.2fr .7fr .9fr;
+    gap: 16px;
+    align-items: stretch;
+  }
+  .feature-list {
+    display: grid;
+    gap: 8px;
+  }
+  .feature {
+    display: grid;
+    grid-template-columns: 145px 1fr 50px;
+    gap: 10px;
+    align-items: center;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .bar {
+    height: 9px;
+    border-radius: 999px;
+    background: var(--panel-3);
+    overflow: hidden;
+  }
+  .bar span {
+    display: block;
+    height: 100%;
+    background: linear-gradient(90deg, var(--blue), var(--cyan));
+  }
+  .math-box {
+    display: grid;
+    place-items: center;
+    min-height: 260px;
+    text-align: center;
+  }
+  .formula {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 2;
+  }
+  .score {
+    display: inline-grid;
+    place-items: center;
+    width: 138px;
+    height: 138px;
+    border-radius: 999px;
+    border: 1px solid rgba(114,220,145,.38);
+    background: rgba(114,220,145,.08);
+    color: var(--green);
+    font-size: 34px;
+    font-weight: 900;
+    letter-spacing: -.04em;
+  }
+  .score small {
+    display: block;
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .example-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    overflow: hidden;
+  }
+  .example-table th {
+    text-align: left;
+    color: var(--faint);
+    font-size: 11px;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    padding: 11px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .example-table td {
+    padding: 12px;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+    color: var(--muted);
+  }
+  .example-table tr:last-child td { border-bottom: 0; }
+  .example-table strong { color: var(--text); }
+
+  .split-demo {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .decision {
+    position: relative;
+    padding: 18px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .decision.good { border-color: rgba(114,220,145,.34); }
+  .decision.bad { border-color: rgba(255,139,154,.34); }
+  .decision .big {
+    font-size: 28px;
+    font-weight: 900;
+    letter-spacing: -.04em;
+    margin: 8px 0 6px;
+  }
+  .decision .reason { color: var(--muted); font-size: 14px; }
+
+  .timeline {
+    display: grid;
+    gap: 12px;
+  }
+  .step {
+    display: grid;
+    grid-template-columns: 42px 1fr;
+    gap: 14px;
+    align-items: start;
+  }
+  .step-num {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    color: var(--blue);
+    font-weight: 900;
+  }
+  .step-body {
+    padding-bottom: 18px;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+  }
+  .step-body h3 { margin: 0 0 4px; font-size: 16px; }
+  .step-body p { margin: 0; color: var(--muted); font-size: 14px; }
+
+  .word-card {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 8px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+  }
+  .word {
+    padding: 12px;
+    border-radius: 8px;
+    background: #0f1116;
+    border: 1px solid var(--line);
+  }
+  .word .label {
+    color: var(--faint);
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    font-size: 10px;
+    font-weight: 900;
+  }
+  .word .value {
+    margin-top: 4px;
+    font-size: 22px;
+    font-weight: 850;
+    letter-spacing: -.03em;
+  }
+  .arrow {
+    color: var(--faint);
+    font-size: 22px;
+    font-family: ui-monospace, monospace;
+  }
+
+  .matrix {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+  }
+  .matrix .card { min-height: 250px; }
+  .matrix h3 { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+  .quote {
+    padding: 22px;
+    border: 1px solid rgba(119,215,208,.36);
+    border-radius: 8px;
+    background: rgba(119,215,208,.055);
+    font-size: 21px;
+    line-height: 1.5;
+    letter-spacing: -.02em;
+  }
+  .quote b { color: var(--cyan); }
+
+  @media (max-width: 920px) {
+    .hero, .grid.two, .grid.three, .grid.four, .equation, .split-demo, .matrix {
+      grid-template-columns: 1fr;
+    }
+    .flow {
+      grid-template-columns: 1fr;
+    }
+    .node::after {
+      content: "v";
+      right: 50%;
+      top: auto;
+      bottom: -18px;
+      transform: translateX(50%);
+    }
+    .topbar-inner { align-items: flex-start; flex-direction: column; }
+    .nav { justify-content: flex-start; }
+  }
+
+  @media (max-width: 600px) {
+    .wrap { padding-left: 16px; padding-right: 16px; }
+    .hero { min-height: auto; padding-top: 34px; }
+    .word-card { grid-template-columns: 1fr; }
+    .arrow { transform: rotate(90deg); text-align: center; }
+    .feature { grid-template-columns: 1fr; gap: 5px; }
+    .topbar { position: static; }
+  }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><rect x="3" y="9" width="3.4" height="6" rx="1.7"/><rect x="8.1" y="5" width="3.4" height="14" rx="1.7"/><rect x="13.2" y="3" width="3.4" height="18" rx="1.7"/><rect x="18.3" y="7" width="3.4" height="10" rx="1.7"/></svg>
+        </div>
+        Said Learning
+      </div>
+      <nav class="nav" aria-label="Page sections">
+        <a href="#one-line">One Line</a>
+        <a href="#pipeline">Pipeline</a>
+        <a href="#ml">ML</a>
+        <a href="#training">Training</a>
+        <a href="#safety">Safety</a>
+        <a href="#explain">Explain It</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero" id="top">
+      <div>
+        <div class="eyebrow">Tier 2 local learning, explained simply</div>
+        <h1>We are not training a big brain. We are teaching a small scorer.</h1>
+        <p>
+          Said listens through Deepgram, then locally fixes high-confidence custom-word mistakes before LLM polish.
+          The ML part is a <strong>supervised correction scorer</strong>: it learns from examples like
+          <code>macops -> Macobs</code> and rejects tempting mistakes like <code>dock -> Docker</code>.
+        </p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:22px;">
+          <span class="pill green">Local only</span>
+          <span class="pill blue">Supervised ML</span>
+          <span class="pill amber">Hard-negative trained</span>
+          <span class="pill">ONNX optional artifact</span>
+        </div>
+      </div>
+
+      <div class="hero-board" aria-label="Training example board">
+        <div class="board-head">
+          <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+          <span>mental-model.txt</span>
+        </div>
+        <div class="board-body terminal">
+          <div><span class="blue">raw STT:</span> "n a ten meac ka model macops me chalta hai"</div>
+          <div><span class="blue">user edit:</span> "n8n EMIAC ka model Macobs me chalta hai"</div>
+          <br>
+          <div><span class="ok">positive:</span> meac -> EMIAC</div>
+          <div><span class="ok">positive:</span> macops -> Macobs</div>
+          <div><span class="bad">negative:</span> main -> EMIAC</div>
+          <div><span class="bad">negative:</span> corps -> Macobs</div>
+          <br>
+          <div><span class="cyan">model learns:</span> which garbles are safe to repair</div>
+          <div><span class="warn">gate decides:</span> only apply if score + margin are strong</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="one-line">
+      <div class="section-head">
+        <div class="section-num">01 / The one-line answer</div>
+        <h2>What kind of ML is this?</h2>
+        <p>
+          It is <strong>supervised binary classification</strong> used like a <strong>ranker</strong>.
+          For every suspicious token, Said asks: "Is this token a garbled version of this protected word?"
+        </p>
+      </div>
+
+      <div class="quote">
+        <b>The clean explanation:</b> "We train a tiny local scorer on user correction pairs.
+        It scores possible replacements, but strict safety gates decide whether anything is actually changed."
+      </div>
+
+      <div class="grid three" style="margin-top:16px;">
+        <div class="card">
+          <span class="pill blue">Input</span>
+          <h3 style="margin-top:12px;">A pair</h3>
+          <p><code>("macops", "Macobs")</code></p>
+          <p>The model never sees the whole sentence first. It scores one raw token against one candidate term.</p>
+        </div>
+        <div class="card">
+          <span class="pill green">Output</span>
+          <h3 style="margin-top:12px;">A probability-like score</h3>
+          <p><code>0.94</code> means likely match. <code>0.12</code> means leave it alone.</p>
+        </div>
+        <div class="card">
+          <span class="pill amber">Decision</span>
+          <h3 style="margin-top:12px;">Threshold + margin</h3>
+          <p>Even if the scorer likes something, Said applies only when the best match is clearly better than the second best.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="pipeline">
+      <div class="section-head">
+        <div class="section-num">02 / Runtime pipeline</div>
+        <h2>Where the learning sits in Said</h2>
+        <p>
+          The scorer does not replace Deepgram and it does not replace the LLM. It sits between them.
+          Deepgram gives raw text. Local learning repairs protected words. The LLM then polishes cleaner text.
+        </p>
+      </div>
+
+      <div class="flow">
+        <div class="node">
+          <div class="kicker">Step 1</div>
+          <div class="title">Mic audio</div>
+          <div class="body">Caps Lock recording produces WAV/PCM audio.</div>
+        </div>
+        <div class="node">
+          <div class="kicker">Step 2</div>
+          <div class="title">Deepgram STT</div>
+          <div class="body">Outputs honest raw transcript, often garbling custom terms.</div>
+        </div>
+        <div class="node alias">
+          <div class="kicker">Step 3</div>
+          <div class="title">Exact aliases</div>
+          <div class="body"><code>meac</code> is already known, so it becomes <code>EMIAC</code>.</div>
+        </div>
+        <div class="node policy">
+          <div class="kicker">Step 4</div>
+          <div class="title">Edit policy</div>
+          <div class="body">Confirmed user variants fire before fuzzy guesses.</div>
+        </div>
+        <div class="node scorer">
+          <div class="kicker">Step 5</div>
+          <div class="title">ML scorer</div>
+          <div class="body">Scores remaining suspicious tokens against protected vocab.</div>
+        </div>
+        <div class="node gate">
+          <div class="kicker">Step 6</div>
+          <div class="title">Safety gates</div>
+          <div class="body">Common words, low margin, weak score, and risky terms are vetoed.</div>
+        </div>
+        <div class="node">
+          <div class="kicker">Step 7</div>
+          <div class="title">LLM polish</div>
+          <div class="body">Receives cleaner text and focuses on tone/format, not guessing names.</div>
+        </div>
+      </div>
+
+      <div class="callout good">
+        <strong>Important:</strong>
+        <p>We keep trust order conservative: exact alias first, confirmed edit-policy second, ML scorer third, safety gates final. The model suggests; gates decide.</p>
+      </div>
+    </section>
+
+    <section id="ml">
+      <div class="section-head">
+        <div class="section-num">03 / What the model learns</div>
+        <h2>The scorer is a small weighted calculator</h2>
+        <p>
+          The easiest high-ROI model is logistic regression or a tiny tree model over hand-built features.
+          It can later be exported as ONNX, but ONNX is just the portable file format. ONNX does not automatically mean neural network.
+        </p>
+      </div>
+
+      <div class="equation">
+        <div class="card">
+          <h3>Features for <code>macops -> Macobs</code></h3>
+          <div class="feature-list">
+            <div class="feature"><span>edit similarity</span><div class="bar"><span style="width:88%"></span></div><span>0.88</span></div>
+            <div class="feature"><span>phonetic similarity</span><div class="bar"><span style="width:83%"></span></div><span>0.83</span></div>
+            <div class="feature"><span>length match</span><div class="bar"><span style="width:94%"></span></div><span>0.94</span></div>
+            <div class="feature"><span>dictionary word?</span><div class="bar"><span style="width:4%"></span></div><span>no</span></div>
+            <div class="feature"><span>protected term?</span><div class="bar"><span style="width:100%"></span></div><span>yes</span></div>
+            <div class="feature"><span>user rewards</span><div class="bar"><span style="width:72%"></span></div><span>2+</span></div>
+          </div>
+        </div>
+
+        <div class="card math-box">
+          <div class="formula">
+            score =<br>
+            w1 * edit<br>
+            + w2 * sound<br>
+            + w3 * user_reward<br>
+            - w4 * dictionary_word<br>
+            + bias<br>
+            <br>
+            then sigmoid(score)
+          </div>
+        </div>
+
+        <div class="card math-box">
+          <div>
+            <div class="score"><span>0.94<small>match score</small></span></div>
+            <p style="margin:16px 0 0;color:var(--muted);font-size:14px;">High enough to consider. Still needs safety gates.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout">
+        <strong>Why this is ML:</strong>
+        <p>We do not hand-pick every weight. The training data teaches the model which signals matter. It may learn that phonetic similarity matters a lot for <code>EMIAC</code>, but dictionary-word penalties matter more for <code>Docker</code>.</p>
+      </div>
+    </section>
+
+    <section id="training">
+      <div class="section-head">
+        <div class="section-num">04 / Training data</div>
+        <h2>Training means showing good pairs and dangerous bad pairs</h2>
+        <p>
+          The hardest part is not teaching the model that <code>macops -> Macobs</code> is good.
+          The hard part is teaching it that <code>corps -> Macobs</code> is dangerous because <code>corps</code> may be a real intended word.
+        </p>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden;">
+        <table class="example-table">
+          <thead>
+            <tr>
+              <th>Training row</th>
+              <th>Raw token</th>
+              <th>Candidate</th>
+              <th>Label</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Positive</strong></td>
+              <td><code>meac</code></td>
+              <td><code>EMIAC</code></td>
+              <td><span class="pill green">1</span></td>
+              <td>User explicitly corrected this.</td>
+            </tr>
+            <tr>
+              <td><strong>Positive</strong></td>
+              <td><code>macops</code></td>
+              <td><code>Macobs</code></td>
+              <td><span class="pill green">1</span></td>
+              <td>Looks and sounds like the protected term.</td>
+            </tr>
+            <tr>
+              <td><strong>Hard negative</strong></td>
+              <td><code>main</code></td>
+              <td><code>EMIAC</code></td>
+              <td><span class="pill red">0</span></td>
+              <td>Common Hinglish word. Never rewrite it.</td>
+            </tr>
+            <tr>
+              <td><strong>Hard negative</strong></td>
+              <td><code>dock</code></td>
+              <td><code>Docker</code></td>
+              <td><span class="pill red">0</span></td>
+              <td>Real English word that looks tempting.</td>
+            </tr>
+            <tr>
+              <td><strong>Wrong candidate</strong></td>
+              <td><code>macops</code></td>
+              <td><code>EMIAC</code></td>
+              <td><span class="pill red">0</span></td>
+              <td>Token may need fixing, but not to this term.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="grid two" style="margin-top:16px;">
+        <div class="card">
+          <h3>Where positives come from</h3>
+          <ul>
+            <li>User edits pasted output.</li>
+            <li>Classifier says the edit was an STT correction.</li>
+            <li>Deterministic diff extracts the exact changed span.</li>
+            <li>Protected terms like <code>EMIAC</code>, <code>Macobs</code>, <code>n8n</code> become learning targets.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Where negatives come from</h3>
+          <ul>
+            <li>Common English/Hindi/Hinglish words.</li>
+            <li>Real dictionary words close to dev terms.</li>
+            <li>Wrong candidates for the same raw token.</li>
+            <li>Past corrections the user removed or rejected.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="safety">
+      <div class="section-head">
+        <div class="section-num">05 / Safety and quality</div>
+        <h2>Quality comes from saying "no" often</h2>
+        <p>
+          The scorer can be powerful, but Said should be conservative. A missed correction is annoying.
+          A wrong correction changes meaning and destroys trust.
+        </p>
+      </div>
+
+      <div class="split-demo">
+        <div class="decision good">
+          <span class="pill green">Apply</span>
+          <div class="big"><code>macops</code> -> Macobs</div>
+          <div class="reason">
+            Score is high, candidate is protected, token is not a common word, and second-best candidate is far behind.
+          </div>
+        </div>
+        <div class="decision bad">
+          <span class="pill red">Reject</span>
+          <div class="big"><code>dock</code> -> Docker</div>
+          <div class="reason">
+            Score may look tempting, but <code>dock</code> is a real word. The dictionary/common-word veto blocks it.
+          </div>
+        </div>
+      </div>
+
+      <div class="grid four" style="margin-top:16px;">
+        <div class="card">
+          <h3>Threshold</h3>
+          <p>Do not apply unless score is high enough, for example <code>>= 0.86</code>.</p>
+        </div>
+        <div class="card">
+          <h3>Margin</h3>
+          <p>Best candidate must beat second-best clearly. Otherwise the model is confused.</p>
+        </div>
+        <div class="card">
+          <h3>Protected terms</h3>
+          <p>Only fix brands, acronyms, proper nouns, identifiers, and starred local vocabulary.</p>
+        </div>
+        <div class="card">
+          <h3>Veto list</h3>
+          <p>Common words like <code>main</code>, <code>time</code>, <code>can</code>, <code>go</code> stay untouched.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="onnx">
+      <div class="section-head">
+        <div class="section-num">06 / ONNX, neurons, and RL</div>
+        <h2>These are different things</h2>
+        <p>
+          This is where confusion usually happens. ONNX, neural network, and RL are not the same concept.
+        </p>
+      </div>
+
+      <div class="matrix">
+        <div class="card">
+          <h3>ONNX <span class="pill blue">file format</span></h3>
+          <p>ONNX is a portable model artifact. Rust can load it with ONNX Runtime. The model inside can be logistic regression, a tree model, or a neural net.</p>
+          <p><strong>In simple words:</strong> ONNX is the container, not the intelligence itself.</p>
+        </div>
+        <div class="card">
+          <h3>Neural net <span class="pill amber">optional</span></h3>
+          <p>A neural model uses hidden neurons. It can learn more complex patterns, but needs more data and is harder to debug.</p>
+          <p><strong>For Said v1:</strong> start with a simpler scorer unless eval proves it is not enough.</p>
+        </div>
+        <div class="card">
+          <h3>RL <span class="pill red">not the right label</span></h3>
+          <p>User edits are feedback, but we are not running classic reinforcement learning. We are converting edits into labeled examples.</p>
+          <p><strong>Correct term:</strong> supervised learning from correction feedback.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="loop">
+      <div class="section-head">
+        <div class="section-num">07 / End-to-end learning loop</div>
+        <h2>How it improves after a user edit</h2>
+        <p>
+          The immediate learning should come from SQLite edit-policy memory. The model refresh can happen later after enough clean examples.
+        </p>
+      </div>
+
+      <div class="timeline">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <h3>User says a sentence</h3>
+            <p>Example: "macops ka data bhejo". Deepgram may output <code>macops</code> or <code>mecobs</code>.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <h3>Said produces output</h3>
+            <p>If no safe rule exists yet, it may leave the token unchanged. This is intentional until we have evidence.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <h3>User edits to the correct word</h3>
+            <p>User changes <code>macops</code> to <code>Macobs</code>. The deterministic diff must extract this exact pair.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-body">
+            <h3>SQLite policy updates immediately</h3>
+            <p>Local memory stores <code>macops -> Macobs</code> as a candidate. After enough confirmations, it becomes active.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">5</div>
+          <div class="step-body">
+            <h3>Future dictation uses it before polish</h3>
+            <p>Next time, Said repairs the token locally before the LLM sees it.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">6</div>
+          <div class="step-body">
+            <h3>Model refresh happens later</h3>
+            <p>After enough clean examples, the offline trainer refreshes the scorer and exports an updated ONNX artifact.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="explain">
+      <div class="section-head">
+        <div class="section-num">08 / How to explain this to anyone</div>
+        <h2>Your crisp explanation</h2>
+        <p>
+          Use this language when someone asks what you built. It is technically accurate without sounding overcomplicated.
+        </p>
+      </div>
+
+      <div class="word-card">
+        <div class="word">
+          <div class="label">Bad explanation</div>
+          <div class="value">"We trained RL/neural STT."</div>
+        </div>
+        <div class="arrow">-></div>
+        <div class="word">
+          <div class="label">Good explanation</div>
+          <div class="value">"We trained a local correction scorer."</div>
+        </div>
+      </div>
+
+      <div class="grid two" style="margin-top:16px;">
+        <div class="card">
+          <h3>30-second version</h3>
+          <p>
+            "Said does not fine-tune the speech model. It keeps user data local and learns from edits.
+            Each edit creates supervised examples like <code>meac -> EMIAC</code>. A tiny scorer ranks possible fixes,
+            and strict gates apply only high-confidence protected-word corrections before LLM polish."
+          </p>
+        </div>
+        <div class="card">
+          <h3>Technical version</h3>
+          <p>
+            "It is a local supervised binary classifier used as a ranker. Features include edit distance,
+            phonetic similarity, dictionary-word detection, term type, and user reward counts.
+            We train with positives and hard negatives, export the model to ONNX, and run inference in Rust."
+          </p>
+        </div>
+      </div>
+
+      <div class="callout good">
+        <strong>The product principle:</strong>
+        <p>Do not make the model powerful first. Make the data clean, the labels reliable, and the false-positive tests brutal. Then even a tiny model becomes useful.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

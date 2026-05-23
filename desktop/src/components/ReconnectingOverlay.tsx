@@ -43,7 +43,7 @@ export function ReconnectingOverlay({ level, showOverlay, justRecovered }: Props
         <Loader2 size={22} className="animate-spin" style={{ color: "hsl(var(--primary))" }} />
         <div className="text-center">
           <p className="text-[14px] font-semibold" style={{ color: "hsl(var(--foreground))" }}>
-            {level === "unreachable" ? "Reconnecting…" : "Said is recovering…"}
+            {level === "unreachable" ? "Reconnecting…" : "AirNote is recovering…"}
           </p>
           <p className="text-[11.5px] mt-1" style={{ color: "hsl(var(--muted-foreground))" }}>
             Please wait, this should only take a moment.

@@ -5,6 +5,76 @@ import { getCurrentWindow, LogicalPosition, LogicalSize, primaryMonitor } from "
 import { RotateCcw, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
 
+function notifEnabled(key: string): boolean {
+  try {
+    const raw = localStorage.getItem("airnote-notif-prefs");
+    if (!raw) return true;
+    const prefs = JSON.parse(raw);
+    return prefs[key] !== false;
+  } catch { return true; }
+}
+
+function soundsEnabled(): boolean { return notifEnabled("sounds"); }
+
+// ── Sound synthesis (Web Audio, no external files) ───────────────────────────
+
+let _audioCtx: AudioContext | null = null;
+function getAudioCtx(): AudioContext {
+  if (!_audioCtx) _audioCtx = new AudioContext();
+  if (_audioCtx.state === "suspended") _audioCtx.resume();
+  return _audioCtx;
+}
+
+function osc(freq: number, type: OscillatorType, vol: number, dur: number, delay = 0) {
+  const ctx = getAudioCtx();
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = type;
+  o.frequency.value = freq;
+  g.gain.setValueAtTime(0, ctx.currentTime + delay);
+  g.gain.linearRampToValueAtTime(vol, ctx.currentTime + delay + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + dur);
+  o.connect(g);
+  g.connect(ctx.destination);
+  o.start(ctx.currentTime + delay);
+  o.stop(ctx.currentTime + delay + dur);
+}
+
+function oscSweep(from: number, to: number, type: OscillatorType, vol: number, dur: number) {
+  const ctx = getAudioCtx();
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(from, ctx.currentTime);
+  o.frequency.exponentialRampToValueAtTime(to, ctx.currentTime + dur * 0.5);
+  g.gain.setValueAtTime(vol, ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+  o.connect(g);
+  g.connect(ctx.destination);
+  o.start();
+  o.stop(ctx.currentTime + dur);
+}
+
+const sounds = {
+  chimeUp:   () => { osc(660, "sine", 0.1, 0.12, 0); osc(880, "sine", 0.1, 0.12, 0.07); },
+  chimeDown: () => { osc(880, "sine", 0.1, 0.1, 0); osc(660, "sine", 0.1, 0.1, 0.06); },
+  ding:      () => { osc(1046, "sine", 0.08, 0.15, 0); osc(1318, "sine", 0.08, 0.15, 0.06); },
+  whoosh:    () => { oscSweep(440, 1760, "sine", 0.06, 0.15); },
+  lowThud:   () => { oscSweep(220, 110, "triangle", 0.12, 0.2); },
+  levelUp:   () => { osc(523, "sine", 0.09, 0.2, 0); osc(659, "sine", 0.09, 0.2, 0.08); osc(784, "sine", 0.09, 0.2, 0.16); },
+  knock:     () => { osc(330, "triangle", 0.1, 0.06, 0); osc(330, "triangle", 0.1, 0.06, 0.1); },
+  alert:     () => { osc(440, "triangle", 0.1, 0.12, 0); osc(330, "triangle", 0.1, 0.12, 0.1); },
+  shimmer:   () => { osc(784, "sine", 0.05, 0.3, 0); osc(988, "sine", 0.05, 0.3, 0.04); osc(1175, "sine", 0.05, 0.3, 0.08); osc(1568, "sine", 0.05, 0.3, 0.12); },
+  tick:      () => { osc(1200, "sine", 0.06, 0.06); },
+} as const;
+
+type SoundName = keyof typeof sounds;
+
+function playSound(name: SoundName | null) {
+  if (!name || !soundsEnabled()) return;
+  try { sounds[name](); } catch { /* audio context not ready */ }
+}
+
 // ── State machine ─────────────────────────────────────────────────────────────
 
 type BarState =
@@ -15,7 +85,10 @@ type BarState =
   | { kind: "pasted" }
   | { kind: "manual_paste" }
   | { kind: "error"; message: string; audioId?: string }
-  | { kind: "learned"; term: string; message: string };
+  | { kind: "learned"; term: string; message: string }
+  | { kind: "confirming"; term: string; original: string; context: string; recordingId: string }
+  | { kind: "negative_confirm"; term: string; wrongReplacement: string }
+  | { kind: "retraining" };
 
 type VoiceErrorPayload = {
   message: string;
@@ -37,6 +110,9 @@ const BAR_DECAY = [0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.87, 0.86, 0.87, 0.88, 0
 
 function pillSize(kind: PillKind, hasTranscript = false, hovered = false): { width: number; height: number } {
   if (hasTranscript) return { width: 280, height: 96 };
+  if (kind === "confirming") return { width: 280, height: 142 };
+  if (kind === "negative_confirm") return { width: 280, height: 142 };
+  if (kind === "retraining") return { width: 180, height: 36 };
   if (kind === "learned") return { width: 220, height: 36 };
   if (kind === "error") return { width: 220, height: 36 };
   if (kind === "idle" && hovered) return { width: 160, height: 36 };
@@ -155,6 +231,7 @@ export default function StatusBar() {
         if (doneTimer.current) clearTimeout(doneTimer.current);
         setLiveTranscript("");
         setAudioLevel(0);
+        playSound("chimeUp");
         setBar({ kind: "recording", startMs: Date.now() });
       } else if (state === "processing") {
         setBar((prev) =>
@@ -168,9 +245,10 @@ export default function StatusBar() {
           setBar((prev) => prev.kind === "processing" ? { kind: "idle" } : prev);
         }, 15000);
       } else if (state === "idle") {
-        // Only auto-hide if we're not waiting on a user-action (error/done)
+        // Only auto-hide if we're not waiting on a user-action (error/done/confirm)
         setBar((prev) => {
           if (prev.kind === "error") return prev; // user must dismiss
+          if (prev.kind === "confirming" || prev.kind === "negative_confirm") return prev; // user must respond
           if (prev.kind === "done" || prev.kind === "pasted" || prev.kind === "manual_paste") {
             return prev; // timer handles it
           }
@@ -219,6 +297,7 @@ export default function StatusBar() {
     listen<{ status: "pasted" | "manual_paste"; message?: string }>("voice-output", (e) => {
       console.info("[status-bar] voice-output event", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
+      playSound("whoosh");
       setBar({ kind: e.payload.status });
       doneTimer.current = setTimeout(
         () => setBar({ kind: "idle" }),
@@ -234,7 +313,9 @@ export default function StatusBar() {
       const { message, audio_id, auto_hide_ms, raw_error } = e.payload;
       console.error("[status-bar] voice-error event", { message, raw_error, hasAudioId: Boolean(audio_id) });
       if (doneTimer.current) clearTimeout(doneTimer.current);
+      if (!notifEnabled("error")) return;
       win.show().catch((err) => console.warn("[status-bar] show failed for error", err));
+      playSound("lowThud");
       setBar({ kind: "error", message, audioId: audio_id });
       if (typeof auto_hide_ms === "number" && auto_hide_ms > 0) {
         doneTimer.current = setTimeout(() => setBar({ kind: "idle" }), auto_hide_ms);
@@ -246,14 +327,60 @@ export default function StatusBar() {
 
     // ── Learning: show term in status bar with undo ──────────────────
     listen<{ term: string; message: string }>("vocab-learned", (e) => {
+      if (!notifEnabled("learned")) return;
       console.info("[status-bar] vocab-learned", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
       win.show().catch(() => {});
+      playSound("levelUp");
       setBar({ kind: "learned", term: e.payload.term, message: e.payload.message });
       doneTimer.current = setTimeout(() => {
         setBar({ kind: "idle" });
         invoke("dismiss_status_bar").catch(() => {});
       }, 3000);
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch(() => {});
+
+    // ── Ambiguous term — needs user confirmation ──────────────────────
+    listen<{ term: string; original: string; context: string; recording_id: string }>("vocab-confirm", (e) => {
+      if (!notifEnabled("confirm")) return;
+      console.info("[status-bar] vocab-confirm", e.payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      win.show().catch(() => {});
+      playSound("knock");
+      setBar({ kind: "confirming", term: e.payload.term, original: e.payload.original, context: e.payload.context, recordingId: e.payload.recording_id });
+      doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 10000);
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch(() => {});
+
+    // ── Wrong correction detected ────────────────────────────────────
+    listen<{ term: string; wrong_replacement: string }>("vocab-negative", (e) => {
+      if (!notifEnabled("negative")) return;
+      console.info("[status-bar] vocab-negative", e.payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      win.show().catch(() => {});
+      playSound("alert");
+      setBar({ kind: "negative_confirm", term: e.payload.term, wrongReplacement: e.payload.wrong_replacement });
+      doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 10000);
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch(() => {});
+
+    // ── Retrain progress ─────────────────────────────────────────────
+    listen<{ phase: string; duration_s?: number }>("retrain-status", (e) => {
+      if (!notifEnabled("retrain")) return;
+      console.info("[status-bar] retrain-status", e.payload);
+      if (e.payload.phase === "started") {
+        if (doneTimer.current) clearTimeout(doneTimer.current);
+        win.show().catch(() => {});
+        setBar({ kind: "retraining" });
+      } else if (e.payload.phase === "done") {
+        playSound("shimmer");
+        setBar({ kind: "done" });
+        if (doneTimer.current) clearTimeout(doneTimer.current);
+        doneTimer.current = setTimeout(() => setBar({ kind: "idle" }), 2000);
+      }
     }).then((fn) => {
       subs.push(fn);
     }).catch(() => {});
@@ -266,14 +393,116 @@ export default function StatusBar() {
 
   useEffect(() => () => { if (doneTimer.current) clearTimeout(doneTimer.current); }, []);
 
+  function dismissToIdle() {
+    setBar({ kind: "idle" });
+    if (doneTimer.current) clearTimeout(doneTimer.current);
+    doneTimer.current = setTimeout(() => {
+      invoke("dismiss_status_bar").catch(() => {});
+    }, 1500);
+  }
 
+  async function handleConfirm(term: string, original: string, action: "learn" | "skip", recordingId: string) {
+    try {
+      await invoke("confirm_term", { term, original, action, recordingId: recordingId || null });
+    } catch (e) {
+      console.warn("[status-bar] confirm_term failed:", e);
+    }
+    if (action === "learn") {
+      setBar({ kind: "learned", term, message: `Will recognise "${term}" next time` });
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      doneTimer.current = setTimeout(() => dismissToIdle(), 3000);
+    } else {
+      dismissToIdle();
+    }
+  }
+
+  async function handleBlock(variant: string, wrongReplacement: string) {
+    try {
+      await invoke("block_correction", { variant, wrongReplacement });
+    } catch (e) {
+      console.warn("[status-bar] block_correction failed:", e);
+    }
+    dismissToIdle();
+  }
+
+  // ── Toast states render as expanded cards, not pills ──────────────────
+  if (bar.kind === "confirming") {
+    return (
+      <div
+        className="sb-toast sb-toast-confirm"
+        style={{ width: innerSize.width }}
+        aria-label="AirNote confirming"
+      >
+        <div className="sb-toast-header">
+          <span className="sb-toast-dot sb-toast-dot-yellow" />
+          <span className="sb-toast-title">Quick question</span>
+        </div>
+        <div className="sb-toast-body">
+          You changed <span className="sb-toast-old">{bar.original}</span>
+          <span className="sb-toast-arrow"> → </span>
+          <span className="sb-toast-term">{bar.term}</span>
+          <br />
+          Is <strong>"{bar.term}"</strong> a product, brand, or name?
+        </div>
+        <div className="sb-toast-actions">
+          <button className="sb-toast-btn sb-toast-btn-primary" onClick={() => handleConfirm(bar.term, bar.original, "learn", bar.recordingId)}>
+            Yes, learn it
+          </button>
+          <button className="sb-toast-btn sb-toast-btn-secondary" onClick={() => handleConfirm(bar.term, bar.original, "skip", bar.recordingId)}>
+            No, just rephrasing
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (bar.kind === "negative_confirm") {
+    return (
+      <div
+        className="sb-toast sb-toast-negative"
+        style={{ width: innerSize.width }}
+        aria-label="AirNote wrong correction"
+      >
+        <div className="sb-toast-header">
+          <span className="sb-toast-dot sb-toast-dot-red" />
+          <span className="sb-toast-title">Wrong correction detected</span>
+        </div>
+        <div className="sb-toast-body">
+          AirNote keeps changing <span className="sb-toast-term">{bar.term}</span> to <strong>"{bar.wrongReplacement}"</strong> but you changed it back.
+          <br />
+          Should I stop this correction?
+        </div>
+        <div className="sb-toast-actions">
+          <button className="sb-toast-btn sb-toast-btn-danger" onClick={() => handleBlock(bar.term, bar.wrongReplacement)}>
+            Yes, stop it
+          </button>
+          <button className="sb-toast-btn sb-toast-btn-secondary" onClick={() => setBar({ kind: "idle" })}>
+            It was right this time
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (bar.kind === "retraining") {
+    return (
+      <div
+        className="sb-shell sb-shell--retraining"
+        style={{ width: innerSize.width, height: innerSize.height }}
+        aria-label="AirNote retraining"
+      >
+        <span className="sb-toast-dot sb-toast-dot-blue" />
+        <span className="sb-retrain-label">Improving model...</span>
+      </div>
+    );
+  }
 
   return (
     <div
       className={`sb-shell sb-shell--${bar.kind}${hasTranscript ? " sb-shell--expanded" : ""}${bar.kind === "idle" && idleHovered ? " sb-shell--hovered" : ""}`}
       style={{ width: innerSize.width, height: innerSize.height }}
-      aria-label={`Said ${bar.kind}`}
-      title={`Said ${bar.kind}`}
+      aria-label={`AirNote ${bar.kind}`}
+      title={`AirNote ${bar.kind}`}
       onMouseEnter={() => {
         if (bar.kind === "idle") setIdleHovered(true);
       }}

@@ -716,156 +716,274 @@ pub fn select_for_polish_hybrid(
         }
     }
 
-    // Bucket 2 — Lexical gate via BM25.
-    //
-    // Without a transcript we can't run the gate; fall back to starred +
-    // top-weight (legacy behaviour) so existing callers without text don't
-    // silently get empty prompts.
-    let lexical_hits: Vec<String> = match query_text {
-        Some(text) if !text.trim().is_empty() => {
-            // Pull a generous candidate set; we'll re-rank by
-            // cosine × decay × use_count after.
-            vocab_fts::search(pool, user_id, text, k_relevant.max(20))
-        }
-        _ => Vec::new(),
-    };
-
-    // Resolve hits to full rows + rank within the lexically-gated set.
-    let by_term_lower: std::collections::HashMap<String, &VocabTerm> = all
-        .iter()
-        .map(|t| (t.term.to_ascii_lowercase(), t))
-        .collect();
-
-    // Tokenize the transcript once for the term-presence + phonetic-match gates.
+    // Tokenize the transcript once for all matching paths.
     let transcript_lower = query_text.unwrap_or_default().to_ascii_lowercase();
     let transcript_tokens: Vec<&str> = transcript_lower
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
         .collect();
+    let has_transcript = matches!(query_text, Some(t) if !t.trim().is_empty());
 
-    let mut gated: Vec<VocabTerm> = lexical_hits
-        .iter()
-        .filter_map(|term| {
-            let key = term.to_ascii_lowercase();
-            by_term_lower.get(&key).map(|vt| (*vt).clone())
-        })
-        // Quality gate 1 — meaning must be filled in. A NULL meaning means
-        // either Groq+OpenAI both failed for this term or it was learned
-        // before the meaning pipeline existed. Without `means:` we can't
-        // semantically gate replacement decisions in the polish prompt; the
-        // LLM has nothing to align the transcript context against, which is
-        // exactly the "vocab hallucinated into unrelated places" failure mode.
-        // Starred terms (handled in Bucket 1 above) intentionally bypass this.
-        .filter(|vt| {
-            vt.meaning
+    // Load alias map: term_lower → [alias1, alias2, ...] from stt_replacements.
+    let alias_map: std::collections::HashMap<String, Vec<String>> = {
+        let mut map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        if let Ok(conn) = pool.get() {
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT LOWER(correct_form), LOWER(transcript_form) \
+                 FROM stt_replacements WHERE user_id = ?1",
+            ) {
+                if let Ok(rows) = stmt.query_map(rusqlite::params![user_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                }) {
+                    for row in rows.flatten() {
+                        map.entry(row.0).or_default().push(row.1);
+                    }
+                }
+            }
+        }
+        map
+    };
+
+    // ── Bucket A: Legacy top-weight fallback ───────────────────────────
+    // Prompt callers that pass transcript text use the strict evidence gate
+    // below. Legacy callers with no transcript keep the old top-weight behavior.
+    if !has_transcript {
+        let bucket_a_limit = n_top_weight.min(5);
+        for t in all.iter().take(bucket_a_limit) {
+            if t.meaning
                 .as_deref()
                 .map(|m| !m.trim().is_empty())
                 .unwrap_or(false)
-        })
-        // Quality gate 2 — context confirmed. Three paths:
-        //   a) the term appears as a whole word in the transcript, OR
-        //   b) some transcript token is phonetically close to the term
-        //      (length-aware: short tokens need higher similarity), OR
-        //   c) the term's example_context has ≥3 strong anchor tokens
-        //      present in the transcript.
-        .filter(|vt| {
-            let term_lower = vt.term.to_ascii_lowercase();
-            let term_words: Vec<&str> = term_lower
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|s| !s.is_empty())
-                .collect();
-            let whole_word_match = if term_words.len() == 1 {
-                transcript_tokens.iter().any(|tok| *tok == term_words[0])
-            } else {
-                transcript_tokens
-                    .windows(term_words.len())
-                    .any(|w| w == term_words.as_slice())
-            };
-            if whole_word_match {
-                return true;
-            }
-            if term_lower.len() >= 4 {
-                let term_phon = crate::llm::phonetics::phonetic_key(&vt.term);
-                let phon_match = transcript_tokens.iter().any(|tok| {
-                    if tok.len() < 3 {
-                        return false;
+            {
+                if seen.insert(t.term.to_ascii_lowercase()) {
+                    chosen.push(t.clone());
+                    if chosen.len() >= max_total {
+                        return chosen;
                     }
-                    let min_sim = if tok.len() <= 4 { 0.85 } else { 0.75 };
-                    let tok_phon = crate::llm::phonetics::phonetic_key(tok);
-                    crate::llm::phonetics::similarity(&tok_phon, &term_phon) >= min_sim
-                });
-                if phon_match {
-                    return true;
                 }
             }
-            // Path c: context anchor matching.
-            if let Some(ctx) = vt.example_context.as_deref() {
-                if !ctx.trim().is_empty()
-                    && !matches!(vt.term_type.as_deref(), Some("other") | None)
-                {
-                    let term_tokens_set: std::collections::HashSet<&str> =
-                        term_words.iter().copied().collect();
-                    let anchors: std::collections::HashSet<String> = ctx
-                        .split(|c: char| !c.is_alphanumeric())
-                        .filter(|w| !w.is_empty())
-                        .map(|w| w.to_ascii_lowercase())
-                        .filter(|w| *w != term_lower)
-                        .filter(|w| !term_tokens_set.contains(w.as_str()))
-                        .filter(|w| w.chars().any(|c| c.is_ascii_digit()) || w.len() >= 3)
-                        .collect();
-                    if anchors.len() >= 3 {
-                        let matched_anchors = anchors
+        }
+    }
+
+    // ── Bucket B: Phonetic/alias scan (catches distortions) ────────────
+    // For each transcript token, check if ANY vocab term matches via:
+    //   b1) whole-word exact match
+    //   b2) alias exact/substring/fuzzy match
+    //   b3) phonetic similarity to term
+    //   b4) context anchor overlap
+    //   b5) email fragment match
+    // This is independent of Bucket A — a low-weight term that matches
+    // phonetically still enters the prompt.
+    // Bucket B scans ALL vocab terms (not just BM25 hits) for phonetic,
+    // alias, or context matches against the transcript. This is the key
+    // change: terms no longer need to pass BM25 first.
+    let mut gated: Vec<VocabTerm> = if !has_transcript {
+        Vec::new()
+    } else {
+        all.iter()
+            .filter(|vt| !seen.contains(&vt.term.to_ascii_lowercase()))
+            .filter(|vt| {
+                vt.meaning
+                    .as_deref()
+                    .map(|m| !m.trim().is_empty())
+                    .unwrap_or(false)
+            })
+            .filter(|vt| {
+                let term_lower = vt.term.to_ascii_lowercase();
+                let term_words: Vec<&str> = term_lower
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let whole_word_match = if term_words.len() == 1 {
+                    transcript_tokens.iter().any(|tok| *tok == term_words[0])
+                } else {
+                    transcript_tokens
+                        .windows(term_words.len())
+                        .any(|w| w == term_words.as_slice())
+                };
+                if whole_word_match {
+                    return true;
+                }
+                // Path a2: STT alias matching — three sub-paths:
+                //   a2i)   exact token match against known alias
+                //   a2ii)  substring match — alias appears inside a longer token
+                //          (catches Deepgram joins like "yarmiac" containing "miac")
+                //   a2iii) fuzzy alias — transcript token is phonetically close
+                //          to a known alias (catches "macops" ≈ "macobs")
+                if let Some(aliases) = alias_map.get(&term_lower) {
+                    // a2i: exact alias match
+                    let alias_exact = transcript_tokens
+                        .iter()
+                        .any(|tok| aliases.iter().any(|a| a == tok));
+                    if alias_exact {
+                        return true;
+                    }
+                    // a2ii: substring alias match — Deepgram often concatenates
+                    // adjacent words ("yaar" + "miac" → "yarmiac"). If a known
+                    // alias (≥3 chars) appears as a suffix or substring of a
+                    // transcript token, that's a match.
+                    let alias_substring = transcript_tokens.iter().any(|tok| {
+                        if tok.len() < 4 {
+                            return false;
+                        }
+                        aliases.iter().any(|a| {
+                            a.len() >= 3 && tok.len() > a.len() && tok.contains(a.as_str())
+                        })
+                    });
+                    if alias_substring {
+                        return true;
+                    }
+                    // a2iii: fuzzy alias match — Deepgram may output a novel
+                    // distortion close to a stored alias ("macops" ≈ "mccorb").
+                    // Check transcript tokens against each alias phonetically.
+                    let alias_fuzzy = transcript_tokens.iter().any(|tok| {
+                        if tok.len() < 3 {
+                            return false;
+                        }
+                        aliases.iter().any(|a| {
+                            if a.len() < 3 {
+                                return false;
+                            }
+                            let sim = crate::llm::phonetics::similarity(
+                                &crate::llm::phonetics::phonetic_key(tok),
+                                &crate::llm::phonetics::phonetic_key(a),
+                            );
+                            sim >= 0.65
+                        })
+                    });
+                    if alias_fuzzy {
+                        return true;
+                    }
+                }
+                // Path b: phonetic match against the TERM itself.
+                // Also strip non-ASCII (Devanagari) before matching so mixed-
+                // script tokens like "meaक" → "mea" can still match.
+                if term_lower.len() >= 4 {
+                    let term_phon = crate::llm::phonetics::phonetic_key(&vt.term);
+                    let term_first = term_lower.chars().next();
+                    let phon_match = transcript_tokens.iter().any(|tok| {
+                        if tok.len() < 3 {
+                            return false;
+                        }
+                        if tok.chars().next().map(|c| c.to_ascii_lowercase()) != term_first {
+                            return false;
+                        }
+                        // Try the token as-is first
+                        let min_sim = if tok.len() <= 4 { 0.65 } else { 0.75 };
+                        let tok_phon = crate::llm::phonetics::phonetic_key(tok);
+                        if crate::llm::phonetics::similarity(&tok_phon, &term_phon) >= min_sim {
+                            return true;
+                        }
+                        // Try with Devanagari stripped (mixed-script tokens)
+                        let ascii_only: String =
+                            tok.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+                        if ascii_only.len() >= 3 && ascii_only != *tok {
+                            let ascii_phon = crate::llm::phonetics::phonetic_key(&ascii_only);
+                            let ascii_sim = if ascii_only.len() <= 4 { 0.65 } else { 0.75 };
+                            if crate::llm::phonetics::similarity(&ascii_phon, &term_phon)
+                                >= ascii_sim
+                            {
+                                return true;
+                            }
+                        }
+                        false
+                    });
+                    if phon_match {
+                        return true;
+                    }
+                }
+                // Path c: structured token matching (emails, URLs).
+                // Spoken emails share almost no whole words with the written
+                // form: "vabhi.verma2678@gmail.com" vs "vab dot verma two
+                // six seven eight at the rate gmail dot com". Fragment
+                // matching: split the term on punctuation and check if the
+                // domain + enough local-part fragments appear in the
+                // transcript, plus an email signal word.
+                if term_lower.contains('@') {
+                    let has_email_signal = transcript_tokens.iter().any(|tok| {
+                        matches!(
+                            *tok,
+                            "rate"
+                                | "gmail"
+                                | "yahoo"
+                                | "outlook"
+                                | "hotmail"
+                                | "email"
+                                | "mail"
+                                | "protonmail"
+                        )
+                    });
+                    if has_email_signal {
+                        let matched_fragments = term_words
                             .iter()
-                            .filter(|a| transcript_tokens.iter().any(|tok| *tok == a.as_str()))
+                            .filter(|frag| frag.len() >= 3)
+                            .filter(|frag| {
+                                transcript_tokens.iter().any(|tok| {
+                                    *tok == **frag
+                                        || (tok.len() >= 3
+                                            && frag.len() >= 3
+                                            && (tok.starts_with(*frag) || frag.starts_with(tok)))
+                                })
+                            })
                             .count();
-                        if matched_anchors >= 3 {
+                        if matched_fragments >= 2 {
                             return true;
                         }
                     }
                 }
-            }
-            // Path d: structured token matching (emails, URLs).
-            // Spoken emails share almost no whole words with the written
-            // form: "vabhi.verma2678@gmail.com" vs "vab dot verma two
-            // six seven eight at the rate gmail dot com". Fragment
-            // matching: split the term on punctuation and check if the
-            // domain + enough local-part fragments appear in the
-            // transcript, plus an email signal word.
-            if term_lower.contains('@') {
-                let has_email_signal = transcript_tokens.iter().any(|tok| {
-                    matches!(
-                        *tok,
-                        "rate"
-                            | "gmail"
-                            | "yahoo"
-                            | "outlook"
-                            | "hotmail"
-                            | "email"
-                            | "mail"
-                            | "protonmail"
-                    )
-                });
-                if has_email_signal {
-                    let matched_fragments = term_words
-                        .iter()
-                        .filter(|frag| frag.len() >= 3)
-                        .filter(|frag| {
-                            transcript_tokens.iter().any(|tok| {
-                                *tok == **frag
-                                    || (tok.len() >= 3
-                                        && frag.len() >= 3
-                                        && (tok.starts_with(*frag) || frag.starts_with(tok)))
-                            })
-                        })
-                        .count();
-                    if matched_fragments >= 2 {
-                        return true;
+                false
+            })
+            .cloned()
+            .collect()
+    };
+    let mut gated_seen: std::collections::HashSet<String> =
+        gated.iter().map(|t| t.term.to_ascii_lowercase()).collect();
+
+    // ── Bucket C: BM25 text matches ────────────────────────────────────
+    // BM25 is only an auxiliary exact-term path. Example-context-only overlap
+    // must not admit a term into the polish prompt.
+    if has_transcript {
+        let lexical_hits: Vec<String> = vocab_fts::search(
+            pool,
+            user_id,
+            query_text.unwrap_or_default(),
+            k_relevant.max(20),
+        );
+        let by_term_lower: std::collections::HashMap<String, &VocabTerm> = all
+            .iter()
+            .map(|t| (t.term.to_ascii_lowercase(), t))
+            .collect();
+        for term_str in &lexical_hits {
+            let key = term_str.to_ascii_lowercase();
+            if let Some(vt) = by_term_lower.get(&key) {
+                let term_words: Vec<&str> = key
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let term_present = if term_words.len() == 1 {
+                    transcript_tokens.contains(&term_words[0])
+                } else {
+                    transcript_tokens
+                        .windows(term_words.len())
+                        .any(|w| w == term_words.as_slice())
+                };
+                if !term_present {
+                    continue;
+                }
+                if vt
+                    .meaning
+                    .as_deref()
+                    .map(|m| !m.trim().is_empty())
+                    .unwrap_or(false)
+                {
+                    if !seen.contains(&key) && gated_seen.insert(key) {
+                        gated.push((*vt).clone());
                     }
                 }
             }
-            false
-        })
-        .collect();
+        }
+    }
 
     // Intra-set ranking: cosine × decay × use_count. When no embedding,
     // fall back to weight × decay so we still produce a sensible order.
@@ -903,27 +1021,7 @@ pub fn select_for_polish_hybrid(
         }
     }
 
-    // Bucket 3 — top-N by weight ONLY when no lexical gate ran (legacy
-    // callers passing no transcript). With a transcript present, an empty
-    // gate result is the CORRECT outcome — that's what stops the
-    // "tembeess for time" class of bug. Top-weight fallback running anyway
-    // would defeat the purpose.
-    //
-    // Starred terms are still included from Bucket 1; this only adds
-    // unstarred high-weight terms when we have no other way to populate
-    // the prompt.
-    let _ = gate_added; // kept for future telemetry
-    let lexical_gate_ran = matches!(query_text, Some(t) if !t.trim().is_empty());
-    if !lexical_gate_ran {
-        for t in all.iter().take(n_top_weight) {
-            if seen.insert(t.term.to_ascii_lowercase()) {
-                chosen.push(t.clone());
-                if chosen.len() >= max_total {
-                    return chosen;
-                }
-            }
-        }
-    }
+    let _ = gate_added;
 
     chosen
 }

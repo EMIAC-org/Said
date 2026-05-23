@@ -310,7 +310,7 @@ export default function App() {
         const ai   = edit.ai_output.length > 50 ? edit.ai_output.slice(0, 50) + "…" : edit.ai_output;
         const kept = edit.user_kept.length  > 50 ? edit.user_kept.slice(0, 50)  + "…" : edit.user_kept;
         sendNotification(
-          "Said noticed an edit — tap to review",
+          "AirNote noticed an edit — tap to review",
           `"${ai}"  →  "${kept}"`
         );
       }
@@ -491,7 +491,7 @@ export default function App() {
       >
         <div className="flex flex-col items-center gap-3">
           <BrandMark size={36} idSuffix="loading" className="opacity-70" />
-          <span className="text-[12px] text-muted-foreground">Starting Said…</span>
+          <span className="text-[12px] text-muted-foreground">Starting AirNote…</span>
         </div>
       </div>
     );
@@ -544,7 +544,7 @@ export default function App() {
                 className="text-[18px] font-extrabold tracking-tight"
                 style={{ color: "hsl(var(--foreground))", letterSpacing: "-0.02em" }}
               >
-                {authMode === "login" ? "Welcome back" : "Welcome to Said"}
+                {authMode === "login" ? "Welcome back" : "Welcome to AirNote"}
               </h1>
               <p className="text-[11.5px] text-muted-foreground mt-1">
                 {authMode === "login"

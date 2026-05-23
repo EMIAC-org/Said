@@ -185,9 +185,15 @@ pub fn build_bias_package(
     let vocab = vocabulary::top_terms(pool, user_id, 50);
     let keyterms: Vec<String> = vocab
         .iter()
-        .filter(|v| v.weight >= 2.0 && v.use_count >= 3)
+        .filter(|v| {
+            v.weight >= 2.0
+                && v.use_count >= 3
+                && matches!(
+                    v.term_type.as_deref(),
+                    Some("brand" | "acronym" | "proper_noun" | "code_identifier")
+                )
+        })
         .map(|v| v.term.clone())
-        .take(20)
         .collect();
 
     if !keyterms.is_empty() {

@@ -1,0 +1,342 @@
+[
+  {
+    "id": "PN1",
+    "category": "proper_noun_distortion",
+    "description": "Deepgram outputs meac for Emiac",
+    "transcript": "meac और में कितना काम हो गया",
+    "expected_contains": [
+      "Emiac"
+    ],
+    "expected_not_contains": [
+      "meac",
+      "MEAC"
+    ],
+    "vocab_needed": [
+      "Emiac"
+    ],
+    "difficulty": "hard"
+  },
+  {
+    "id": "PN2",
+    "category": "proper_noun_distortion",
+    "description": "Deepgram outputs मेकोर्स for Macobs",
+    "transcript": "मेकोर्स जो है emiac के अंदर आती है",
+    "expected_contains": [
+      "Macobs",
+      "Emiac"
+    ],
+    "expected_not_contains": [
+      "मेकोर्स",
+      "Mecors"
+    ],
+    "vocab_needed": [
+      "Macobs",
+      "Emiac"
+    ],
+    "difficulty": "hard"
+  },
+  {
+    "id": "PN3",
+    "category": "proper_noun_distortion",
+    "description": "meac in complex sentence with email",
+    "transcript": "अभिषेक वर्मा का email है b a b dot वर्मा two six seven eight at the rate gmail dot com और meac का रेवेन्यू पांच करोड़ cross कर गया है",
+    "expected_contains": [
+      "Emiac",
+      "@gmail.com"
+    ],
+    "expected_not_contains": [
+      "meac",
+      "MEAC",
+      "at the rate",
+      "b a b dot"
+    ],
+    "vocab_needed": [
+      "Emiac",
+      "vabhi.verma2678@gmail.com"
+    ],
+    "difficulty": "extreme"
+  },
+  {
+    "id": "PN4",
+    "category": "proper_noun_distortion",
+    "description": "meac technologies - Deepgram distortion",
+    "transcript": "मैं meac technologies में काम करता हूं",
+    "expected_contains": [
+      "Emiac"
+    ],
+    "expected_not_contains": [
+      "meac",
+      "MEAC"
+    ],
+    "vocab_needed": [
+      "Emiac"
+    ],
+    "difficulty": "medium"
+  },
+  {
+    "id": "PN5",
+    "category": "proper_noun_distortion",
+    "description": "meac as MNC - LLM hallucination",
+    "transcript": "यह जो meac जैसी बड़ी companies होती हैं ना इनका कुछ नहीं होने वाला भाई",
+    "expected_contains": [
+      "Emiac"
+    ],
+    "expected_not_contains": [
+      "MNC",
+      "meac"
+    ],
+    "vocab_needed": [
+      "Emiac"
+    ],
+    "difficulty": "hard"
+  },
+  {
+    "id": "PN6",
+    "category": "proper_noun_distortion",
+    "description": "macpaced for Macobs - totally wrong",
+    "transcript": "मैं emiac में काम करता हूं और मैं यह भी बोलूंगा कि macpaced app बहुत अच्छा चल रहा है लेकिन मैं अभी busy हूं",
+    "expected_contains": [
+      "Emiac"
+    ],
+    "expected_not_contains": [
+      "macpaced"
+    ],
+    "vocab_needed": [
+      "Emiac",
+      "Macobs"
+    ],
+    "difficulty": "hard"
+  },
+  {
+    "id": "HP1",
+    "category": "homophone_preservation",
+    "description": "main as Hindi I pronoun - must NOT become Emiac",
+    "transcript": "main kal office jaunga",
+    "expected_contains": [
+      "main",
+      "kal",
+      "office"
+    ],
+    "expected_not_contains": [
+      "Emiac"
+    ],
+    "vocab_needed": [
+      "Emiac"
+    ],
+    "difficulty": "critical"
+  },
+  {
+    "id": "HP2",
+    "category": "homophone_preservation",
+    "description": "maine as Hindi I-did - must NOT become Emiac",
+    "transcript": "maine khana kha liya hai",
+    "expected_contains": [
+      "maine",
+      "khana"
+    ],
+    "expected_not_contains": [
+      "Emiac"
+    ],
+    "vocab_needed": [
+      "Emiac"
+    ],
+    "difficulty": "critical"
+  },
+  {
+    "id": "HP3",
+    "category": "homophone_preservation",
+    "description": "mac as MacBook - must NOT become Emiac or Macobs",
+    "transcript": "emiac में mac पर ही mostly काम होता है",
+    "expected_contains": [
+      "Emiac",
+      "mac",
+      "Mac"
+    ],
+    "expected_not_contains": [
+      "Macobs"
+    ],
+    "vocab_needed": [
+      "Emiac",
+      "Macobs"
+    ],
+    "difficulty": "critical"
+  },
+  {
+    "id": "EF1",
+    "category": "email_folding",
+    "description": "Email with Devanagari name parts",
+    "transcript": "मेरा email है v a b dot वर्मा two six seven eight at the rate gmail dot com",
+    "expected_contains": [
+      "@gmail.com"
+    ],
+    "expected_not_contains": [
+      "at the rate",
+      "v a b dot"
+    ],
+    "vocab_needed": [
+      "vabhi.verma2678@gmail.com"
+    ],
+    "difficulty": "hard"
+  },
+  {
+    "id": "EF2",
+    "category": "email_folding",
+    "description": "Email in complex multi-topic sentence",
+    "transcript": "अभिषेक वर्मा का email है b a b dot वर्मा two six seven eight at the rate gmail dot com और meac का रेवेन्यू पांच करोड़ cross कर गया है",
+    "expected_contains": [
+      "@gmail.com",
+      "Emiac"
+    ],
+    "expected_not_contains": [
+      "at the rate",
+      "b a b"
+    ],
+    "vocab_needed": [
+      "Emiac",
+      "vabhi.verma2678@gmail.com"
+    ],
+    "difficulty": "extreme"
+  },
+  {
+    "id": "NC1",
+    "category": "number_conversion",
+    "description": "Invoice with mixed Hindi-English numbers",
+    "transcript": "invoice number two three zero five में तीन हज़ार six hundred रुपए का amount है और gst eighteen percent एड करना है total में",
+    "expected_contains": [
+      "2305",
+      "3600",
+      "18%"
+    ],
+    "expected_not_contains": [
+      "two three zero five",
+      "eighteen percent"
+    ],
+    "vocab_needed": [],
+    "difficulty": "hard"
+  },
+  {
+    "id": "NC2",
+    "category": "number_conversion",
+    "description": "Date + time + budget in one sentence",
+    "transcript": "अनीष सुमन को बोल दो कि कल सात बजे राहुल के साथ meeting है और budget दो लाख fifty thousand fixed है already",
+    "expected_contains": [
+      "7 baje",
+      "Anish"
+    ],
+    "expected_not_contains": [],
+    "vocab_needed": [
+      "Anish"
+    ],
+    "difficulty": "hard"
+  },
+  {
+    "id": "NC3",
+    "category": "number_conversion",
+    "description": "Date not converted - twenty sixth May",
+    "transcript": "macobs का ipo और emiac partnership दोनों एक साथ announce होगा twenty sixth may",
+    "expected_contains": [
+      "26th May",
+      "Macobs",
+      "Emiac"
+    ],
+    "expected_not_contains": [
+      "twenty sixth"
+    ],
+    "vocab_needed": [
+      "Macobs",
+      "Emiac"
+    ],
+    "difficulty": "hard"
+  },
+  {
+    "id": "DR1",
+    "category": "devanagari_roman",
+    "description": "Pure Devanagari casual Hinglish",
+    "transcript": "hello भाई कैसे हो क्या कर रहे हो",
+    "expected_contains": [
+      "bhai",
+      "kaise",
+      "ho"
+    ],
+    "expected_not_contains": [
+      "भाई",
+      "कैसे"
+    ],
+    "vocab_needed": [],
+    "difficulty": "easy"
+  },
+  {
+    "id": "DR2",
+    "category": "devanagari_roman",
+    "description": "Mixed script with tech terms",
+    "transcript": "sed app में deepgram से transcript आता है फिर grock पर scout model polish करता है लेकिन local host three thousand पर back end crash हो रहा है",
+    "expected_contains": [
+      "Deepgram",
+      "localhost",
+      "3000"
+    ],
+    "expected_not_contains": [
+      "आता",
+      "करता",
+      "grock"
+    ],
+    "vocab_needed": [],
+    "difficulty": "hard"
+  },
+  {
+    "id": "CX1",
+    "category": "complex_real",
+    "description": "Long formal message with time, report, and courtesy",
+    "transcript": "hello भाई कैसे हो कल शाम की बात हुई थी अपनी कि आप पूरा जो भी है सात बजे तक अपना report दे दो but अभी तक मेरे पास वह आई नहीं है तो please jaldi se bhejo",
+    "expected_contains": [
+      "7 baje",
+      "report",
+      "please"
+    ],
+    "expected_not_contains": [
+      "भाई",
+      "कैसे"
+    ],
+    "vocab_needed": [],
+    "difficulty": "medium"
+  },
+  {
+    "id": "CX2",
+    "category": "complex_real",
+    "description": "Multiple proper nouns in one sentence",
+    "transcript": "मैं एक macobs technologies नाम की company के अंदर काम करता हूं जो कि emiac technologies के अंदर आती है",
+    "expected_contains": [
+      "Macobs",
+      "Emiac"
+    ],
+    "expected_not_contains": [],
+    "vocab_needed": [
+      "Macobs",
+      "Emiac"
+    ],
+    "difficulty": "medium"
+  },
+  {
+    "id": "CM1",
+    "category": "low_confidence",
+    "description": "Low confidence on proper noun (73%)",
+    "transcript": "m.e.a.c और मैकॉफ्स में कितना काम हो गया",
+    "enriched": "[m.e.a.c?73%] और [मैकॉफ्स?74%] में कितना काम हो गया",
+    "expected_contains": [
+      "Emiac",
+      "Macobs"
+    ],
+    "expected_not_contains": [
+      "m.e.a.c",
+      "मैकॉफ्स",
+      "macOS"
+    ],
+    "vocab_needed": [
+      "Emiac",
+      "Macobs"
+    ],
+    "difficulty": "extreme"
+  }
+]
+
+// Total test cases: 19

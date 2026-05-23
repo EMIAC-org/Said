@@ -1324,8 +1324,10 @@ mod imp {
             ffi::CFRelease(up);
 
             // Pause after keyup so the next token's keydown doesn't arrive
-            // before this event pair is fully processed.
-            thread::sleep(Duration::from_millis(6));
+            // before this event pair is fully processed.  6ms was insufficient
+            // for multi-char tokens at streaming speed — "par bhai" became
+            // "parai bh".  12ms eliminates interleaving on all tested hardware.
+            thread::sleep(Duration::from_millis(12));
 
             if !source.is_null() {
                 ffi::CFRelease(source);

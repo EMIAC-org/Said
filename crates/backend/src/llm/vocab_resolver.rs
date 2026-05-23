@@ -81,6 +81,9 @@ fn try_context_resolve(transcript: &str, term: &VocabTerm) -> Option<String> {
     if matches!(term.term_type.as_deref(), Some("other") | None) {
         return None;
     }
+    if matches!(term.term_type.as_deref(), Some("acronym")) && term.term.chars().count() <= 3 {
+        return None;
+    }
 
     let anchors = strong_anchor_tokens(context, &term.term);
     if anchors.len() < 2 {
@@ -215,8 +218,65 @@ fn strong_anchor_tokens(example_context: &str, term: &str) -> HashSet<String> {
         .filter(|w| !w.is_empty())
         .map(|w| w.to_ascii_lowercase())
         .filter(|w| *w != term_lower)
+        .filter(|w| !is_context_glue_word(w))
         .filter(|w| w.chars().any(|c| c.is_ascii_digit()) || w.chars().count() >= 3)
         .collect()
+}
+
+fn is_context_glue_word(word: &str) -> bool {
+    matches!(
+        word,
+        "a" | "an"
+            | "aa"
+            | "and"
+            | "are"
+            | "aur"
+            | "aaya"
+            | "aayegi"
+            | "aayi"
+            | "do"
+            | "gaya"
+            | "gaye"
+            | "gayi"
+            | "hai"
+            | "hain"
+            | "he"
+            | "hi"
+            | "ho"
+            | "is"
+            | "iska"
+            | "isko"
+            | "iss"
+            | "it"
+            | "ka"
+            | "kar"
+            | "karo"
+            | "karna"
+            | "ke"
+            | "ki"
+            | "ko"
+            | "lag"
+            | "laga"
+            | "mein"
+            | "me"
+            | "mera"
+            | "mere"
+            | "meri"
+            | "mujhe"
+            | "nahi"
+            | "pe"
+            | "please"
+            | "raha"
+            | "rahe"
+            | "rahi"
+            | "se"
+            | "the"
+            | "to"
+            | "usko"
+            | "wala"
+            | "wali"
+            | "we"
+    )
 }
 
 fn replace_span(chunks: &[&str], start: usize, end: usize, canonical: &str) -> String {
@@ -331,6 +391,7 @@ mod tests {
                 correct_form: "n8n".into(),
                 kind: MatchKind::Exact,
             }],
+            traces: vec![],
         };
         let out = resolve_for_prompt(
             &apply.text,
@@ -359,6 +420,7 @@ mod tests {
                 correct_form: "Aiden".into(),
                 kind: MatchKind::Phonetic,
             }],
+            traces: vec![],
         };
         let out = resolve_for_prompt(
             &apply.text,
@@ -382,6 +444,7 @@ mod tests {
         let apply = ApplyResult {
             text: "Main corps ka IPO ka 12 hazaar batana".into(),
             matches: vec![],
+            traces: vec![],
         };
         let out = resolve_for_prompt(
             &apply.text,
@@ -409,6 +472,7 @@ mod tests {
         let apply = ApplyResult {
             text: "what time is it".into(),
             matches: vec![],
+            traces: vec![],
         };
         let out = resolve_for_prompt(
             &apply.text,
@@ -433,6 +497,7 @@ mod tests {
         let apply = ApplyResult {
             text: "what time is it".into(),
             matches: vec![],
+            traces: vec![],
         };
         let out = resolve_for_prompt(
             &apply.text,
@@ -442,5 +507,31 @@ mod tests {
         );
         assert_eq!(out.transcript, "what time is it");
         assert!(out.resolved_terms.is_empty());
+    }
+
+    #[test]
+    fn acronym_context_does_not_resolve_on_glue_words_only() {
+        let term = vocab(
+            "RAM",
+            Some("RAM upgrade karna hai"),
+            Some("acronym"),
+            Some("Random access memory."),
+            "auto",
+        );
+        let apply = ApplyResult {
+            text: "server connect karna hai".into(),
+            matches: vec![],
+            traces: vec![],
+        };
+        let out = resolve_for_prompt(
+            &apply.text,
+            std::slice::from_ref(&term),
+            std::slice::from_ref(&term),
+            &apply,
+        );
+        assert!(
+            out.resolved_terms.is_empty(),
+            "generic context words must not pull RAM into unrelated transcripts"
+        );
     }
 }

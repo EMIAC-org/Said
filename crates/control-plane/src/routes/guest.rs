@@ -177,34 +177,58 @@ pub async fn guest_auth(
         ));
     }
 
-    let guest_id = Uuid::new_v4();
-    let email = guest_email(&display_name, guest_id);
-
-    sqlx::query(
-        "INSERT INTO accounts (id, email, password_hash, is_guest) VALUES ($1, $2, '', true)",
-    )
-    .bind(guest_id)
-    .bind(&email)
-    .execute(&state.db)
-    .await
-    .map_err(db_err)?;
-
-    sqlx::query(
-        "INSERT INTO meeting_participants (meeting_id, account_id, status)
-         VALUES ($1, $2, 'invited')
-         ON CONFLICT (meeting_id, account_id) DO NOTHING",
+    // Deduplicate: reuse an existing guest account for the same name+meeting rather than
+    // creating a new one on every auth call (browser retries, page reloads, etc.).
+    let email_prefix = guest_local_name(&display_name);
+    let existing: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT a.id, a.email
+           FROM accounts a
+           JOIN meeting_participants mp ON mp.account_id = a.id
+          WHERE mp.meeting_id = $1
+            AND a.is_guest = true
+            AND a.email LIKE $2 || '-%@said.guest'
+          LIMIT 1",
     )
     .bind(invite.meeting_id)
-    .bind(guest_id)
-    .execute(&state.db)
+    .bind(&email_prefix)
+    .fetch_optional(&state.db)
     .await
     .map_err(db_err)?;
 
-    sqlx::query("UPDATE guest_invites SET use_count = use_count + 1 WHERE token = $1")
-        .bind(&token)
+    let (guest_id, email) = if let Some((existing_id, existing_email)) = existing {
+        (existing_id, existing_email)
+    } else {
+        let guest_id = Uuid::new_v4();
+        let email = guest_email(&display_name, guest_id);
+
+        sqlx::query(
+            "INSERT INTO accounts (id, email, password_hash, is_guest) VALUES ($1, $2, '', true)",
+        )
+        .bind(guest_id)
+        .bind(&email)
         .execute(&state.db)
         .await
         .map_err(db_err)?;
+
+        sqlx::query(
+            "INSERT INTO meeting_participants (meeting_id, account_id, status)
+             VALUES ($1, $2, 'invited')
+             ON CONFLICT (meeting_id, account_id) DO NOTHING",
+        )
+        .bind(invite.meeting_id)
+        .bind(guest_id)
+        .execute(&state.db)
+        .await
+        .map_err(db_err)?;
+
+        sqlx::query("UPDATE guest_invites SET use_count = use_count + 1 WHERE token = $1")
+            .bind(&token)
+            .execute(&state.db)
+            .await
+            .map_err(db_err)?;
+
+        (guest_id, email)
+    };
 
     let exp = (Utc::now() + Duration::hours(24)).timestamp() as usize;
     let claims = GuestClaims {
@@ -315,8 +339,8 @@ fn normalize_display_name(input: &str) -> Option<String> {
     }
 }
 
-fn guest_email(display_name: &str, guest_id: Uuid) -> String {
-    let local_name: String = display_name
+fn guest_local_name(display_name: &str) -> String {
+    let local: String = display_name
         .chars()
         .filter_map(|ch| {
             if ch.is_ascii_alphanumeric() {
@@ -332,12 +356,19 @@ fn guest_email(display_name: &str, guest_id: Uuid) -> String {
         .chars()
         .take(24)
         .collect();
-    let local_name = if local_name.is_empty() {
+    if local.is_empty() {
         "guest".to_string()
     } else {
-        local_name
-    };
-    format!("{local_name}-{}@said.guest", guest_id.simple())
+        local
+    }
+}
+
+fn guest_email(display_name: &str, guest_id: Uuid) -> String {
+    format!(
+        "{}-{}@said.guest",
+        guest_local_name(display_name),
+        guest_id.simple()
+    )
 }
 
 fn db_err(_e: sqlx::Error) -> (StatusCode, Json<Value>) {

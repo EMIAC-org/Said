@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Said — Edit Watcher Reliability Plan</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #21262d;
+    --border: #30363d; --text: #c9d1d9; --text-dim: #8b949e;
+    --accent: #58a6ff; --green: #3fb950; --yellow: #d29922;
+    --red: #f85149; --purple: #bc8cff; --orange: #f0883e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; padding: 2rem; }
+  .container { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem; }
+  h1 span { color: var(--accent); }
+  .subtitle { color: var(--text-dim); font-size: 1rem; margin-bottom: 2.5rem; }
+  h2 { font-size: 1.3rem; font-weight: 600; margin: 2rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  h2 .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; font-weight: 500; vertical-align: middle; margin-left: 8px; }
+  .badge-critical { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
+  .badge-high { background: rgba(240,136,62,0.15); color: var(--orange); border: 1px solid rgba(240,136,62,0.3); }
+  .badge-medium { background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
+
+  /* Current state diagram */
+  .flow-diagram { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin: 1rem 0; overflow-x: auto; }
+  .flow-diagram pre { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.78rem; color: var(--text-dim); line-height: 1.5; white-space: pre; }
+  .flow-diagram .highlight { color: var(--accent); font-weight: 600; }
+  .flow-diagram .danger { color: var(--red); font-weight: 600; }
+  .flow-diagram .ok { color: var(--green); }
+  .flow-diagram .warn { color: var(--yellow); }
+
+  /* Problem cards */
+  .problem-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+  @media (max-width: 768px) { .problem-grid { grid-template-columns: 1fr; } }
+  .problem-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem; }
+  .problem-card.critical { border-left: 3px solid var(--red); }
+  .problem-card.high { border-left: 3px solid var(--orange); }
+  .problem-card.medium { border-left: 3px solid var(--yellow); }
+  .problem-card h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 6px; }
+  .problem-card h3 .icon { font-size: 1.1rem; }
+  .problem-card p { font-size: 0.85rem; color: var(--text-dim); }
+  .problem-card .example { background: var(--surface2); border-radius: 6px; padding: 0.6rem; margin-top: 0.5rem; font-family: 'SF Mono', monospace; font-size: 0.75rem; color: var(--text); }
+
+  /* Solution phases */
+  .phase { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin: 1rem 0; overflow: hidden; }
+  .phase-header { padding: 1rem 1.2rem; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); }
+  .phase-number { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; flex-shrink: 0; }
+  .phase-1 .phase-number { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
+  .phase-2 .phase-number { background: rgba(240,136,62,0.15); color: var(--orange); border: 1px solid rgba(240,136,62,0.3); }
+  .phase-3 .phase-number { background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
+  .phase-4 .phase-number { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+  .phase-title { font-weight: 600; font-size: 1rem; }
+  .phase-subtitle { color: var(--text-dim); font-size: 0.8rem; margin-left: auto; }
+  .phase-body { padding: 1.2rem; }
+  .task-list { list-style: none; }
+  .task-list li { padding: 0.6rem 0; border-bottom: 1px solid var(--surface2); display: flex; gap: 10px; align-items: flex-start; }
+  .task-list li:last-child { border-bottom: none; }
+  .task-check { width: 18px; height: 18px; border: 2px solid var(--border); border-radius: 4px; flex-shrink: 0; margin-top: 2px; }
+  .task-text { font-size: 0.88rem; }
+  .task-text strong { color: var(--text); }
+  .task-text .file { color: var(--purple); font-family: 'SF Mono', monospace; font-size: 0.78rem; }
+  .task-text .detail { color: var(--text-dim); font-size: 0.8rem; display: block; margin-top: 2px; }
+
+  /* Timing comparison */
+  .timing-table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.85rem; }
+  .timing-table th { text-align: left; padding: 0.6rem; border-bottom: 2px solid var(--border); color: var(--text-dim); font-weight: 500; }
+  .timing-table td { padding: 0.6rem; border-bottom: 1px solid var(--surface2); }
+  .timing-table .old { color: var(--red); text-decoration: line-through; }
+  .timing-table .new { color: var(--green); font-weight: 600; }
+  .timing-table .metric { color: var(--text-dim); }
+
+  /* Impact meter */
+  .impact { display: flex; gap: 4px; margin-top: 0.3rem; }
+  .impact-bar { width: 28px; height: 6px; border-radius: 3px; background: var(--surface2); }
+  .impact-bar.filled { background: var(--green); }
+  .impact-bar.filled.high { background: var(--orange); }
+  .impact-bar.filled.critical { background: var(--red); }
+
+  /* Architecture diagram */
+  .arch-box { display: inline-block; padding: 6px 14px; border-radius: 6px; font-size: 0.8rem; font-weight: 500; margin: 3px; }
+  .arch-ax { background: rgba(88,166,255,0.15); color: var(--accent); border: 1px solid rgba(88,166,255,0.3); }
+  .arch-poll { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+  .arch-classify { background: rgba(188,140,255,0.15); color: var(--purple); border: 1px solid rgba(188,140,255,0.3); }
+  .arch-learn { background: rgba(240,136,62,0.15); color: var(--orange); border: 1px solid rgba(240,136,62,0.3); }
+
+  .summary-stat { display: flex; gap: 2rem; margin: 1.5rem 0; flex-wrap: wrap; }
+  .stat { text-align: center; }
+  .stat .value { font-size: 2rem; font-weight: 700; }
+  .stat .label { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat.red .value { color: var(--red); }
+  .stat.green .value { color: var(--green); }
+  .stat.yellow .value { color: var(--yellow); }
+  .stat.blue .value { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Edit Watcher <span>Reliability Plan</span></h1>
+<p class="subtitle">Deep architecture analysis &bull; 4 parallel research agents &bull; 13 identified problems &bull; 4-phase fix plan</p>
+
+<div class="summary-stat">
+  <div class="stat red"><div class="value">3</div><div class="label">Critical Issues</div></div>
+  <div class="stat yellow"><div class="value">5</div><div class="label">High Impact</div></div>
+  <div class="stat blue"><div class="value">150ms</div><div class="label">Current Poll</div></div>
+  <div class="stat green"><div class="value">50ms</div><div class="label">Target Poll</div></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>Current Architecture</h2>
+
+<div class="flow-diagram"><pre>
+  <span class="highlight">Caps Lock Release</span>
+       │
+       ▼
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  <span class="highlight">PASTER</span> types text token-by-token (6ms keydown + 6ms post-keyup)   │
+  └─────────────────────┬───────────────────────────────────────────────┘
+                        │
+                        ▼
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  <span class="warn">INITIAL DELAY: 700ms</span>  (paste settle + AX cache rebuild)            │
+  │  Then 3 retries: 0ms → +300ms → +500ms to read post_paste          │
+  └──────────────────────┬───────────────────────────────────────────────┘
+                         │
+                         ▼
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  <span class="highlight">POLL LOOP</span> (up to 30s max, 5s idle timeout)                        │
+  │                                                                      │
+  │  ┌─ <span class="ok">FAST: 150ms</span> ─── while text changing ──────────────────────┐      │
+  │  │  Read AX value (5-15ms per read)                           │      │
+  │  │  Track last_val + best_candidate                           │      │
+  │  │  Check PID switch                                          │      │
+  │  └────────────────────────────────────────────────────────────┘      │
+  │                                                                      │
+  │  ┌─ <span class="warn">SLOW: 500ms</span> ─── after 2s of no change ────────────────────┐     │
+  │  │  Same reads, less frequent                                 │     │
+  │  └────────────────────────────────────────────────────────────┘     │
+  │                                                                      │
+  │  EXIT: idle > 5s  OR  total > 30s  OR  app switched (no PID lock)   │
+  └──────────────────────┬───────────────────────────────────────────────┘
+                         │
+                         ▼
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  <span class="highlight">EXTRACT</span>                                                           │
+  │  extract_kept(polished, post_paste, effective_val, pre_paste)       │
+  │  → pre_paste prefix/suffix stripping                                │
+  │  → fallback: find polished verbatim in post_paste                   │
+  └──────────────────────┬───────────────────────────────────────────────┘
+                         │
+                         ▼
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  <span class="highlight">GATES</span> (cheap, no API call)                                        │
+  │  • No diff? → skip                                                  │
+  │  • No word overlap? → garbage, skip  <span class="danger">(fails for short texts!)</span>      │
+  │  • Not meaningful? → skip (whitespace/case/punctuation only)        │
+  └──────────────────────┬───────────────────────────────────────────────┘
+                         │
+                         ▼
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  <span class="highlight">POST /v1/classify-edit</span>                                            │
+  │  recording_id, ai_output, user_kept, capture_method, capture_meta   │
+  │                                                                      │
+  │  Backend: deterministic classifier → save → retrain trigger          │
+  │  Response: learned, promoted_terms, notify                           │
+  └──────────────────────┬───────────────────────────────────────────────┘
+                         │
+                         ▼
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  <span class="highlight">FEEDBACK</span>                                                          │
+  │  • vocab-toast → user sees "Will recognise X next time"             │
+  │  • GET /v1/stt/bias → refresh Deepgram keywords                     │
+  │  • SessionCommand::Reconfigure → live-update STT stream             │
+  │  • schedule_onnx_retrain → 15s debounce → Python train (~25s)       │
+  └─────────────────────────────────────────────────────────────────────┘
+</pre></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>Problems Found <span class="badge badge-critical">13 total</span></h2>
+
+<div class="problem-grid">
+
+<div class="problem-card critical">
+  <h3><span class="icon">🔴</span> P1: Mutex Poisoning = Silent Death</h3>
+  <p>If <code>EditWatcherState</code> mutex is poisoned (watcher panicked), ALL future edit-watches are silently disabled. No error to user, no recovery until app restart.</p>
+  <div class="example">main.rs:3848 — Err(_) => return silently</div>
+  <div class="impact"><div class="impact-bar filled critical"></div><div class="impact-bar filled critical"></div><div class="impact-bar filled critical"></div><div class="impact-bar filled critical"></div><div class="impact-bar filled critical"></div></div>
+</div>
+
+<div class="problem-card critical">
+  <h3><span class="icon">🔴</span> P2: AX-Blind Apps Can't Learn</h3>
+  <p>Lark, Claude, Notion, some Electron apps — AX API returns empty. Edit-watch is <strong>completely skipped</strong>. Earlier clipboard fallback was removed for being "too autonomous".</p>
+  <div class="example">main.rs:4122 — ax_unreadable_skip, no fallback</div>
+  <div class="impact"><div class="impact-bar filled critical"></div><div class="impact-bar filled critical"></div><div class="impact-bar filled critical"></div><div class="impact-bar filled critical"></div><div class="impact-bar"></div></div>
+</div>
+
+<div class="problem-card critical">
+  <h3><span class="icon">🔴</span> P3: 5s Idle = Watcher Dies</h3>
+  <p>If user pauses typing for 5 seconds (thinking, reading), watcher declares "done" and fires the classify call. User's remaining edits are LOST. Very common with slow typists or multi-edit sessions.</p>
+  <div class="example">Idle timeout: 5s — too aggressive for careful corrections</div>
+  <div class="impact"><div class="impact-bar filled critical"></div><div class="impact-bar filled critical"></div><div class="impact-bar filled critical"></div><div class="impact-bar filled critical"></div><div class="impact-bar"></div></div>
+</div>
+
+<div class="problem-card high">
+  <h3><span class="icon">🟠</span> P4: Multiple Edits = One Event</h3>
+  <p>User corrects 3 words in one sentence. All changes arrive as a single classify-edit call. The deterministic classifier handles each hunk independently, but <strong>extract_kept sends the ENTIRE edited text</strong> — context for per-token attribution is weak.</p>
+  <div class="example">"automot hi dikh" → "AutoNote ye likh" = 1 event, 3 corrections</div>
+  <div class="impact"><div class="impact-bar filled high"></div><div class="impact-bar filled high"></div><div class="impact-bar filled high"></div><div class="impact-bar filled high"></div><div class="impact-bar"></div></div>
+</div>
+
+<div class="problem-card high">
+  <h3><span class="icon">🟠</span> P5: Polling Too Slow (150ms)</h3>
+  <p>Fast typists can enter 3-4 keystrokes between polls. The watcher may see "automot" → "AutoNote" as a single jump, missing intermediate states. For reactive feel, sub-100ms polling is needed.</p>
+  <div class="example">150ms fast / 500ms slow — should be 50ms / 200ms</div>
+  <div class="impact"><div class="impact-bar filled high"></div><div class="impact-bar filled high"></div><div class="impact-bar filled high"></div><div class="impact-bar"></div><div class="impact-bar"></div></div>
+</div>
+
+<div class="problem-card high">
+  <h3><span class="icon">🟠</span> P6: 700ms Initial Delay</h3>
+  <p>The watcher waits 700ms after paste before first AX read. A fast corrector could have already edited and moved on. Should pre-read immediately after paste and retry if empty.</p>
+  <div class="example">700ms delay = user already typing by the time we start watching</div>
+  <div class="impact"><div class="impact-bar filled high"></div><div class="impact-bar filled high"></div><div class="impact-bar filled high"></div><div class="impact-bar"></div><div class="impact-bar"></div></div>
+</div>
+
+<div class="problem-card high">
+  <h3><span class="icon">🟠</span> P7: Same-App Field Switch</h3>
+  <p>User clicks a different text field in the SAME app (same PID). Watcher continues monitoring the new field, thinking user is editing Said's output. No detection mechanism for within-app focus changes.</p>
+  <div class="example">Slack: click from message input → thread input = wrong field</div>
+  <div class="impact"><div class="impact-bar filled high"></div><div class="impact-bar filled high"></div><div class="impact-bar filled high"></div><div class="impact-bar"></div><div class="impact-bar"></div></div>
+</div>
+
+<div class="problem-card medium">
+  <h3><span class="icon">🟡</span> P8: AX Timeout Drops Edits</h3>
+  <p>Each AX read has a 500ms timeout. Slow Electron apps (Slack, VS Code) can timeout, returning None. Treated as "no change" — real edits are silently missed.</p>
+  <div class="example">AX timeout 500ms → None → "field unchanged" (wrong)</div>
+  <div class="impact"><div class="impact-bar filled"></div><div class="impact-bar filled"></div><div class="impact-bar filled"></div><div class="impact-bar"></div><div class="impact-bar"></div></div>
+</div>
+
+<div class="problem-card medium">
+  <h3><span class="icon">🟡</span> P9: Undo (Cmd+Z) Confusion</h3>
+  <p>If user undoes an edit during the watch window, watcher captures the intermediate state. Partial undos create garbled learning data.</p>
+  <div class="example">Type "AutoNote" → Cmd+Z → back to "auto note" → learns nothing (good) or learns wrong (bad)</div>
+  <div class="impact"><div class="impact-bar filled"></div><div class="impact-bar filled"></div><div class="impact-bar"></div><div class="impact-bar"></div><div class="impact-bar"></div></div>
+</div>
+
+<div class="problem-card medium">
+  <h3><span class="icon">🟡</span> P10: App Closed During Watch</h3>
+  <p>If the target app quits or crashes during the 30s watch window, AX reads return None. best_candidate saves the last valid read, but the watcher keeps polling a dead process.</p>
+  <div class="example">User quits Chrome → watcher polls dead PID for 5s before idle timeout</div>
+  <div class="impact"><div class="impact-bar filled"></div><div class="impact-bar filled"></div><div class="impact-bar"></div><div class="impact-bar"></div><div class="impact-bar"></div></div>
+</div>
+
+<div class="problem-card medium">
+  <h3><span class="icon">🟡</span> P11: Short Text Garbage Gate</h3>
+  <p><code>shares_word_overlap</code> filters words ≤2 chars. If polished text is "I am ok" (all short words), ANY candidate passes the garbage gate. False positives with short utterances.</p>
+  <div class="example">Polished: "I am ok" → ref_words = [] → any non-empty text accepted</div>
+  <div class="impact"><div class="impact-bar filled"></div><div class="impact-bar filled"></div><div class="impact-bar"></div><div class="impact-bar"></div><div class="impact-bar"></div></div>
+</div>
+
+<div class="problem-card medium">
+  <h3><span class="icon">🟡</span> P12: CancellationToken Race</h3>
+  <p>Cancelling a watcher doesn't wait for it to stop. New watcher + old watcher can overlap briefly (up to 150ms). Both read AX and potentially both send classify-edit.</p>
+  <div class="example">Rapid record → cancel → record → two watchers alive for ~150ms</div>
+  <div class="impact"><div class="impact-bar filled"></div><div class="impact-bar"></div><div class="impact-bar"></div><div class="impact-bar"></div><div class="impact-bar"></div></div>
+</div>
+
+<div class="problem-card medium">
+  <h3><span class="icon">🟡</span> P13: No AX Latency Adaptation</h3>
+  <p>If AX reads consistently take 200-400ms (heavy Electron), the 150ms poll interval means the watcher is always behind. Should detect slow AX and adjust cadence.</p>
+  <div class="example">AX takes 300ms → 150ms poll → every read overlaps, queue builds up</div>
+  <div class="impact"><div class="impact-bar filled"></div><div class="impact-bar"></div><div class="impact-bar"></div><div class="impact-bar"></div><div class="impact-bar"></div></div>
+</div>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>Fix Plan — 4 Phases</h2>
+
+<!-- Phase 1 -->
+<div class="phase phase-1">
+  <div class="phase-header">
+    <div class="phase-number">1</div>
+    <div class="phase-title">Speed &amp; Responsiveness</div>
+    <div class="phase-subtitle">Fixes P5, P6, P3 &bull; ~2 hours</div>
+  </div>
+  <div class="phase-body">
+    <p style="color: var(--text-dim); font-size: 0.85rem; margin-bottom: 1rem;">Make the edit watcher feel instant. Users should see corrections captured within 50ms of their last keystroke, and the watcher should wait long enough for thoughtful multi-edit corrections.</p>
+    <ul class="task-list">
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Reduce FAST_INTERVAL from 150ms → 50ms</strong>
+          <span class="file">main.rs:3790</span>
+          <span class="detail">AX reads take 5-15ms. At 50ms polling, we catch every keystroke with room to spare. CPU impact is negligible (one AX syscall per 50ms).</span>
+        </div>
+      </li>
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Reduce SLOW_INTERVAL from 500ms → 200ms</strong>
+          <span class="file">main.rs:3791</span>
+          <span class="detail">When user pauses 2s then resumes typing, catch the first keystroke within 200ms instead of 500ms.</span>
+        </div>
+      </li>
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Reduce initial delay from 700ms → 400ms</strong>
+          <span class="file">main.rs:3899</span>
+          <span class="detail">700ms was overly conservative. Paste animation is ~200ms, AX cache rebuild is covered by the 3-retry loop. 400ms is safe for all tested apps.</span>
+        </div>
+      </li>
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Increase IDLE_TIMEOUT from 5s → 8s</strong>
+          <span class="file">main.rs:3786</span>
+          <span class="detail">Users who pause to think (5-7s) currently lose their remaining edits. 8s covers the "read, think, correct" cycle while still being responsive. Revisit with telemetry.</span>
+        </div>
+      </li>
+    </ul>
+
+    <table class="timing-table">
+      <tr><th>Parameter</th><th>Current</th><th>New</th><th class="metric">Why</th></tr>
+      <tr><td>Fast poll</td><td class="old">150ms</td><td class="new">50ms</td><td class="metric">Catch every keystroke</td></tr>
+      <tr><td>Slow poll</td><td class="old">500ms</td><td class="new">200ms</td><td class="metric">Faster resume detection</td></tr>
+      <tr><td>Initial delay</td><td class="old">700ms</td><td class="new">400ms</td><td class="metric">Start watching sooner</td></tr>
+      <tr><td>Idle timeout</td><td class="old">5s</td><td class="new">8s</td><td class="metric">Don't kill on thinking pauses</td></tr>
+      <tr><td>Retrain debounce</td><td class="old">15s</td><td class="new">15s</td><td class="metric">Already optimized</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- Phase 2 -->
+<div class="phase phase-2">
+  <div class="phase-header">
+    <div class="phase-number">2</div>
+    <div class="phase-title">Crash-Proof Reliability</div>
+    <div class="phase-subtitle">Fixes P1, P10, P12 &bull; ~1.5 hours</div>
+  </div>
+  <div class="phase-body">
+    <p style="color: var(--text-dim); font-size: 0.85rem; margin-bottom: 1rem;">The watcher must never silently die. Every failure mode should either recover automatically or alert the user.</p>
+    <ul class="task-list">
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Recover from mutex poisoning — replace poisoned mutex with fresh one</strong>
+          <span class="file">main.rs:3848</span>
+          <span class="detail">Instead of <code>Err(_) => return</code>, create a new Mutex and replace the poisoned one. Log a warning. The watcher continues working.</span>
+        </div>
+      </li>
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Detect dead target PID and exit early</strong>
+          <span class="file">main.rs poll loop</span>
+          <span class="detail">Check <code>kill(pid, 0)</code> once per slow-interval poll. If the process is dead, immediately finalize with best_candidate and send classify-edit. Don't waste 5s waiting.</span>
+        </div>
+      </li>
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Await old watcher cancellation before starting new one</strong>
+          <span class="file">main.rs:3830</span>
+          <span class="detail">After <code>prev.cancel()</code>, add a brief <code>tokio::task::yield_now()</code> or a 10ms sleep to let the old watcher exit its current poll iteration. Prevents overlapping watchers.</span>
+        </div>
+      </li>
+    </ul>
+  </div>
+</div>
+
+<!-- Phase 3 -->
+<div class="phase phase-3">
+  <div class="phase-header">
+    <div class="phase-number">3</div>
+    <div class="phase-title">Multi-Edit &amp; Focus Intelligence</div>
+    <div class="phase-subtitle">Fixes P4, P7, P9 &bull; ~3 hours</div>
+  </div>
+  <div class="phase-body">
+    <p style="color: var(--text-dim); font-size: 0.85rem; margin-bottom: 1rem;">Handle the hard cases: multiple corrections in one sentence, field switches within the same app, and undo detection.</p>
+    <ul class="task-list">
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Track AX element identity (not just PID) for within-app field detection</strong>
+          <span class="file">paster/src/lib.rs</span>
+          <span class="detail">Store the AXUIElement pointer/role of the focused field at paste time. On each poll, compare the current focused element's identity. If it changed (different field in same app), stop watching.</span>
+        </div>
+      </li>
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Detect Cmd+Z by tracking if field value reverts toward post_paste</strong>
+          <span class="file">main.rs poll loop</span>
+          <span class="detail">If <code>now_val</code> becomes closer to <code>post_paste</code> than to <code>last_val</code> (edit distance decreasing), the user is undoing. Mark this in capture_meta so the classifier can weight it lower.</span>
+        </div>
+      </li>
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Multi-edit hunk splitting already done — verify with real data</strong>
+          <span class="file">classify.rs: classify_single_token_change()</span>
+          <span class="detail">Already implemented: equal-count multi-token hunks are split per-token. "automot hi" → "AutoNote ye" produces 2 independent classifications. Verify with logs from real usage.</span>
+        </div>
+      </li>
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Capture field snapshots at each change — not just final state</strong>
+          <span class="file">main.rs poll loop</span>
+          <span class="detail">Store a Vec of (timestamp, field_value) for every change detected. Send the edit history to the backend so the classifier can see the full correction timeline, not just start→end.</span>
+        </div>
+      </li>
+    </ul>
+  </div>
+</div>
+
+<!-- Phase 4 -->
+<div class="phase phase-4">
+  <div class="phase-header">
+    <div class="phase-number">4</div>
+    <div class="phase-title">AX-Blind Recovery &amp; Adaptive Cadence</div>
+    <div class="phase-subtitle">Fixes P2, P8, P11, P13 &bull; ~3 hours</div>
+  </div>
+  <div class="phase-body">
+    <p style="color: var(--text-dim); font-size: 0.85rem; margin-bottom: 1rem;">Handle apps where AX doesn't work at all, adapt to slow AX environments, and fix edge cases in the garbage gate.</p>
+    <ul class="task-list">
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>AX-blind passive learning: compare clipboard at watcher end</strong>
+          <span class="file">main.rs:4122</span>
+          <span class="detail">When AX is blind, DON'T actively capture (no Cmd+A/C). Instead, check if the clipboard content changed during the watch window and if it overlaps with polished text. If the user copied their edited text to clipboard (common in Slack/Discord before paste elsewhere), learn from it passively.</span>
+        </div>
+      </li>
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Adaptive polling: measure AX latency and scale interval</strong>
+          <span class="file">main.rs poll loop</span>
+          <span class="detail">Time each <code>blocking_ax_option</code> call. If AX reads consistently take >100ms, increase poll interval to 2× the measured latency. Prevents queue buildup in slow Electron apps while staying fast in native apps.</span>
+        </div>
+      </li>
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>Fix short-text garbage gate — use char-level overlap for ≤5 word texts</strong>
+          <span class="file">main.rs:4339</span>
+          <span class="detail">When polished text has ≤5 words, switch from word-overlap to character-overlap (>50% of chars shared). Prevents "I am ok" from accepting any candidate.</span>
+        </div>
+      </li>
+      <li>
+        <div class="task-check"></div>
+        <div class="task-text">
+          <strong>AX timeout retry with exponential backoff</strong>
+          <span class="file">main.rs:3799</span>
+          <span class="detail">When AX read times out (500ms), retry once with 1s timeout before declaring None. If 2+ consecutive timeouts, switch to SLOW_INTERVAL to reduce AX pressure.</span>
+        </div>
+      </li>
+    </ul>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>Expected Impact</h2>
+
+<div class="flow-diagram"><pre>
+  <span class="ok">BEFORE</span>                                          <span class="highlight">AFTER</span>
+
+  Initial delay: 700ms                            Initial delay: <span class="ok">400ms</span> (-43%)
+  First poll:    850ms after paste                 First poll:    <span class="ok">450ms</span> after paste
+  Poll cadence:  150ms fast / 500ms slow           Poll cadence:  <span class="ok">50ms</span> fast / <span class="ok">200ms</span> slow
+  Idle timeout:  5s (loses slow edits)             Idle timeout:  <span class="ok">8s</span> (catches thinkers)
+  AX-blind:      <span class="danger">skip entirely</span>                     AX-blind:      <span class="ok">passive clipboard check</span>
+  Mutex poison:  <span class="danger">silent death</span>                     Mutex poison:  <span class="ok">auto-recover</span>
+  Field switch:  <span class="danger">reads wrong field</span>               Field switch:  <span class="ok">element identity check</span>
+  Dead process:  <span class="danger">polls for 5s</span>                    Dead process:  <span class="ok">instant exit</span>
+  Multi-edit:    <span class="danger">garbled hunk windows</span>             Multi-edit:    <span class="ok">per-token split</span>
+
+  <span class="ok">End-to-end correction detection:</span>
+  Paste → first detection:  <span class="old">~1.5s</span>  →  <span class="ok">~0.5s</span>  (3× faster)
+  Idle → classify fire:     <span class="old">~5s</span>    →  <span class="ok">~8s</span>    (more corrections captured)
+  Total learn cycle:        <span class="old">~85s</span>   →  <span class="ok">~50s</span>   (retrain included)
+</pre></div>
+
+<p style="color: var(--text-dim); font-size: 0.85rem; margin-top: 2rem; text-align: center;">
+  Generated from 4 parallel research agents analyzing 4,900+ lines of Rust across paster, main.rs, classify.rs, and api.rs
+</p>
+
+</div>
+</body>
+</html>

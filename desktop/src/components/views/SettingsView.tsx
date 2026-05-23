@@ -201,6 +201,7 @@ function ChatGPTSection() {
 export type SettingsSection =
   | "appearance"
   | "writing"
+  | "notifications"
   | "permissions"
   | "api-keys"
   | "enterprise"
@@ -208,9 +209,10 @@ export type SettingsSection =
   | "about";
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
-  { id: "appearance",  label: "Appearance"    },
-  { id: "writing",     label: "Writing style" },
-  { id: "permissions", label: "Permissions"   },
+  { id: "appearance",     label: "Appearance"     },
+  { id: "writing",        label: "Writing style"  },
+  { id: "notifications",  label: "Notifications"  },
+  { id: "permissions",    label: "Permissions"     },
   { id: "api-keys",    label: "API keys"      },
   { id: "enterprise",  label: "Enterprise"    },
   { id: "debug",       label: "Debug"         },
@@ -544,7 +546,7 @@ function EnterpriseSection() {
       </p>
       <div className="panel p-5 space-y-4">
         <p className="text-[12px] text-muted-foreground leading-relaxed">
-          Connect to your organization's Said Enterprise server for team management, shared vocabulary, and centralized billing.
+          Connect to your organization's AirNote Enterprise server for team management, shared vocabulary, and centralized billing.
         </p>
 
         {/* Server URL input */}
@@ -1617,6 +1619,14 @@ export function SettingsView({
         </Section>
         </Show>
 
+        {/* ── Notifications ─────────────────────────────── */}
+        <Show when={isOn("notifications")}>
+        <div className="mb-7">
+          <p className="section-label px-1 mb-2.5">Status Bar Notifications</p>
+          <NotificationToggles />
+        </div>
+        </Show>
+
         {/* ── Permissions ──────────────────────────────── */}
         <Show when={isOn("permissions")}>
         <div className="mb-7">
@@ -1630,16 +1640,16 @@ export function SettingsView({
             >
               <p className="font-semibold mb-1">Permissions needed</p>
               {!micGranted && (
-                <p>• <strong>Microphone</strong> — lets Said record your voice.</p>
+                <p>• <strong>Microphone</strong> — lets AirNote record your voice.</p>
               )}
               {!axGranted && (
-                <p>• <strong>Accessibility</strong> — lets Said paste text directly into any app.</p>
+                <p>• <strong>Accessibility</strong> — lets AirNote paste text directly into any app.</p>
               )}
               {!imGranted && (
-                <p>• <strong>Input Monitoring</strong> — lets Said listen for the {recordHotkeyLabel} recording hotkey.</p>
+                <p>• <strong>Input Monitoring</strong> — lets AirNote listen for the {recordHotkeyLabel} recording hotkey.</p>
               )}
               <p className="mt-1.5 opacity-70">
-                After granting a permission, return to Said. This page updates automatically.
+                After granting a permission, return to AirNote. This page updates automatically.
               </p>
             </div>
           )}
@@ -1657,7 +1667,7 @@ export function SettingsView({
                 <p className="text-[13px] font-medium text-foreground">Microphone</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
                   {micGranted
-                    ? "Granted — Said can record your voice."
+                    ? "Granted — AirNote can record your voice."
                     : isWindows
                     ? "Required for dictation. Windows asks the first time you start recording."
                     : "Required for dictation. macOS will ask once, then use System Settings if denied."}
@@ -1703,7 +1713,7 @@ export function SettingsView({
                     <p className="text-[13px] font-medium text-foreground">Accessibility</p>
                     <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
                       {axGranted
-                        ? "Granted — Said can paste text into any app."
+                        ? "Granted — AirNote can paste text into any app."
                         : "Required for auto-paste. Opens System Settings → Privacy & Security → Accessibility."}
                     </p>
                   </div>
@@ -1754,12 +1764,12 @@ export function SettingsView({
                 <p className="text-[13px] font-medium text-foreground">Notifications</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
                   {notifPerm === "granted"
-                    ? "Granted — Said will notify you when a learning edit is ready to review."
+                    ? "Granted — AirNote will notify you when a learning edit is ready to review."
                     : notifPerm === "denied"
                     ? isWindows
-                      ? "Denied — open Windows Settings → System → Notifications & actions → Said to enable."
-                      : "Denied — open System Settings → Notifications → Said to enable."
-                    : "Said asks once to send learning-edit notifications."}
+                      ? "Denied — open Windows Settings → System → Notifications & actions → AirNote to enable."
+                      : "Denied — open System Settings → Notifications → AirNote to enable."
+                    : "AirNote asks once to send learning-edit notifications."}
                 </p>
               </div>
               <div className="flex-shrink-0 ml-4">
@@ -2081,6 +2091,68 @@ export function SettingsView({
             );
           })}
         </Section>
+
+        {/* ── Polish Model toggle ────────────────────── */}
+        <Section title="Polish Model">
+          <div className="px-5 py-3">
+            <div
+              className="flex rounded-xl p-1"
+              style={{ background: "hsl(var(--surface-3))" }}
+            >
+              {([
+                {
+                  key: "fast",
+                  icon: <Zap size={13} />,
+                  label: "Fast (Llama 3.1 8B)",
+                  desc: "Fastest response, great for simple dictation",
+                },
+                {
+                  key: "smart",
+                  icon: <Sparkles size={13} />,
+                  label: "Smart (Llama 4 Scout)",
+                  desc: "Best quality, handles complex sentences",
+                },
+              ] as const).map((opt) => {
+                const isActive = (prefs?.selected_model ?? "fast") === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    onClick={() => void patch({ selected_model: opt.key })}
+                    className="flex-1 text-left px-3 py-2.5 rounded-[10px] transition-all"
+                    style={{
+                      background: isActive ? "hsl(var(--surface-1))" : "transparent",
+                      boxShadow: isActive
+                        ? "0 1px 3px hsl(0 0% 0% / 0.3)"
+                        : "none",
+                    }}
+                  >
+                    <p
+                      className="text-[12px] font-semibold leading-tight flex items-center gap-1.5"
+                      style={{
+                        color: isActive
+                          ? "hsl(var(--foreground))"
+                          : "hsl(var(--muted-foreground))",
+                      }}
+                    >
+                      {opt.icon}
+                      {opt.label}
+                    </p>
+                    <p
+                      className="text-[10px] leading-snug mt-0.5"
+                      style={{
+                        color: isActive
+                          ? "hsl(var(--muted-foreground))"
+                          : "hsl(var(--muted-foreground) / 0.6)",
+                      }}
+                    >
+                      {opt.desc}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </Section>
         </Show>
 
         {/* ── Enterprise ──────────────────────────────── */}
@@ -2180,7 +2252,7 @@ export function SettingsView({
               >
                 {([
                   ["combined", "Combined"],
-                  ["desktop",  "Said"],
+                  ["desktop",  "AirNote"],
                   ["backend",  "Backend"],
                 ] as const).map(([id, label]) => {
                   const active = debugTab === id;
@@ -2222,7 +2294,7 @@ export function SettingsView({
                 >
                   <FileText size={12} />
                   <span className="text-[11px] font-medium">
-                    {debugBusy ? "Loading" : debugTab === "combined" ? "Combined" : debugTab === "desktop" ? "Said desktop" : "polish-backend"}
+                    {debugBusy ? "Loading" : debugTab === "combined" ? "Combined" : debugTab === "desktop" ? "AirNote desktop" : "polish-backend"}
                   </span>
                 </div>
                 <textarea
@@ -2249,7 +2321,7 @@ export function SettingsView({
         <Section title="About">
           <Row
             icon={<Info size={16} />}
-            label={`Said v${appVersion}`}
+            label={`AirNote v${appVersion}`}
             description="Voice Polish Studio · Local-first · Tauri + Rust + React"
           />
 
@@ -2384,5 +2456,106 @@ export function SettingsView({
         {inner}
       </div>
     </ScrollArea>
+  );
+}
+
+// ── Notification Toggles ──────────────────────────────────────────────────────
+
+const NOTIF_STORAGE_KEY = "airnote-notif-prefs";
+
+interface NotifPrefs {
+  learned: boolean;
+  queued: boolean;
+  confirm: boolean;
+  negative: boolean;
+  retrain: boolean;
+  error: boolean;
+  sounds: boolean;
+}
+
+const DEFAULT_NOTIF: NotifPrefs = {
+  learned: true,
+  queued: true,
+  confirm: true,
+  negative: true,
+  retrain: true,
+  error: true,
+  sounds: true,
+};
+
+function loadNotifPrefs(): NotifPrefs {
+  try {
+    const raw = localStorage.getItem(NOTIF_STORAGE_KEY);
+    if (raw) return { ...DEFAULT_NOTIF, ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+  return { ...DEFAULT_NOTIF };
+}
+
+function saveNotifPrefs(p: NotifPrefs) {
+  try { localStorage.setItem(NOTIF_STORAGE_KEY, JSON.stringify(p)); } catch { /* ignore */ }
+}
+
+// Exported so StatusBar.tsx can read these prefs
+export function getNotifPrefs(): NotifPrefs { return loadNotifPrefs(); }
+
+const NOTIF_ITEMS: { key: keyof NotifPrefs; label: string; desc: string }[] = [
+  { key: "learned",  label: "Word learned",          desc: "When a new vocabulary term is added or a new spelling is recorded" },
+  { key: "queued",   label: "Correction noticed",    desc: "When a correction is queued but not yet confirmed (sighting 1/3)" },
+  { key: "confirm",  label: "Ambiguous term",        desc: "Ask whether a corrected word is a brand/name (one-click confirm)" },
+  { key: "negative", label: "Wrong correction",      desc: "Alert when AirNote keeps making the same wrong correction" },
+  { key: "retrain",  label: "Model updated",         desc: "When the ONNX correction model finishes retraining" },
+  { key: "error",    label: "Errors",                desc: "Recording errors, backend connection issues" },
+  { key: "sounds",   label: "Sound effects",         desc: "Play subtle sounds on recording start, paste, learning events" },
+];
+
+function NotificationToggles() {
+  const [prefs, setPrefs] = useState<NotifPrefs>(loadNotifPrefs);
+
+  function toggle(key: keyof NotifPrefs) {
+    setPrefs(prev => {
+      const next = { ...prev, [key]: !prev[key] };
+      saveNotifPrefs(next);
+      return next;
+    });
+  }
+
+  return (
+    <div className="panel p-4 space-y-1">
+      <p className="text-[12px] mb-3" style={{ color: "hsl(var(--muted-foreground))" }}>
+        Choose which notifications appear in the floating status bar.
+      </p>
+      {NOTIF_ITEMS.map(item => (
+        <div
+          key={item.key}
+          className="flex items-center justify-between py-2.5 px-1"
+          style={{ borderBottom: "1px solid hsl(var(--border) / 0.5)" }}
+        >
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-medium" style={{ color: "hsl(var(--foreground))" }}>
+              {item.label}
+            </div>
+            <div className="text-[11px] mt-0.5" style={{ color: "hsl(var(--muted-foreground))" }}>
+              {item.desc}
+            </div>
+          </div>
+          <button
+            onClick={() => toggle(item.key)}
+            className="ml-3 w-9 h-5 rounded-full transition-colors flex-shrink-0 relative"
+            style={{
+              background: prefs[item.key]
+                ? "hsl(var(--primary))"
+                : "hsl(var(--surface-4))",
+            }}
+          >
+            <span
+              className="block w-3.5 h-3.5 rounded-full bg-white absolute top-[3px] transition-transform"
+              style={{
+                transform: prefs[item.key] ? "translateX(17px)" : "translateX(3px)",
+              }}
+            />
+          </button>
+        </div>
+      ))}
+    </div>
   );
 }

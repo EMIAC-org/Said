@@ -1,9 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Said",
-  "mainBinaryName": "Said",
-  "version": "2.1.8",
-  "identifier": "com.emiac.said.desktop",
+  "productName": "AirNote",
+  "mainBinaryName": "AirNote",
+  "version": "2.1.9",
+  "identifier": "com.emiac.airnote.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -14,11 +14,11 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "Said",
-        "width": 1240,
-        "height": 880,
-        "minWidth": 980,
-        "minHeight": 760,
+        "title": "AirNote",
+        "width": 940,
+        "height": 680,
+        "minWidth": 780,
+        "minHeight": 580,
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
@@ -26,7 +26,7 @@
         "hiddenTitle": true,
         "transparent": true,
         "windowEffects": {
-          "effects": ["hudWindow"],
+          "effects": ["underPageBackground"],
           "state": "followsWindowActiveState",
           "radius": 12.0
         }

@@ -1,0 +1,222 @@
+{
+  "terms": [
+    {
+      "term": "Macobs",
+      "type": "proper_noun",
+      "meaning": "Local protected company name used in Said tests.",
+      "context": "Macobs company report deployment status",
+      "positive_template": "please check {variant} company status today",
+      "distortions": ["mecobs", "mcorbs", "mecorbs", "macops", "mccorps", "micorbs", "corps"]
+    },
+    {
+      "term": "EMIAC",
+      "type": "acronym",
+      "meaning": "Local protected acronym used in Said tests.",
+      "context": "EMIAC company dashboard update",
+      "positive_template": "please check {variant} dashboard status today",
+      "distortions": ["meac", "meic", "emiak", "emiyac", "emeac", "miyac", "mnc"]
+    },
+    {
+      "term": "Kubernetes",
+      "type": "proper_noun",
+      "meaning": "Container orchestration platform.",
+      "context": "Kubernetes cluster deployment pod rollout",
+      "positive_template": "please check {variant} cluster status today",
+      "distortions": ["cubernetes", "kubernates", "kuberneties", "cuberneties", "kuberntes", "kubernetees", "kubernetis"]
+    },
+    {
+      "term": "kubectl",
+      "type": "code_identifier",
+      "meaning": "Kubernetes command line tool.",
+      "context": "kubectl apply deployment namespace",
+      "positive_template": "please run {variant} apply today",
+      "distortions": ["cubectl", "kubectel", "kubekitl", "kubectrl", "cubectrl", "kubectal", "kubecuttle"]
+    },
+    {
+      "term": "Docker",
+      "type": "proper_noun",
+      "meaning": "Container runtime and tooling.",
+      "context": "Docker container compose image build",
+      "positive_template": "please check {variant} container status today",
+      "distortions": ["doker", "dockor", "dokar", "doccur", "dauker", "dokker", "dockar"]
+    },
+    {
+      "term": "TypeScript",
+      "type": "proper_noun",
+      "meaning": "Typed JavaScript language.",
+      "context": "TypeScript compiler types build",
+      "positive_template": "please fix {variant} compiler errors today",
+      "distortions": ["typscript", "typescrpt", "typecript", "typscrpt", "typescrypt", "typskript", "typescrip"]
+    },
+    {
+      "term": "JavaScript",
+      "type": "proper_noun",
+      "meaning": "Programming language used in web development.",
+      "context": "JavaScript frontend bundle runtime",
+      "positive_template": "please inspect {variant} bundle today",
+      "distortions": ["javascrip", "javascrpt", "javascrypt", "javscript", "javaskript", "javascrept", "javascripted"]
+    },
+    {
+      "term": "PostgreSQL",
+      "type": "proper_noun",
+      "meaning": "Relational database.",
+      "context": "PostgreSQL migration query index",
+      "positive_template": "please check {variant} migration today",
+      "distortions": ["postgres", "postgress", "postgre", "postgrsql", "postgressql", "postgresh", "postgray"]
+    },
+    {
+      "term": "Redis",
+      "type": "proper_noun",
+      "meaning": "In-memory data store.",
+      "context": "Redis cache queue latency",
+      "positive_template": "please check {variant} cache today",
+      "distortions": ["rediss", "reddis", "readis", "reedis", "radis", "redice", "redes"]
+    },
+    {
+      "term": "GraphQL",
+      "type": "acronym",
+      "meaning": "API query language.",
+      "context": "GraphQL resolver schema query",
+      "positive_template": "please inspect {variant} resolver today",
+      "distortions": ["graphquel", "graphcool", "graphqel", "grafql", "graphqueue", "graphkyuel", "graphquell"]
+    },
+    {
+      "term": "WebSocket",
+      "type": "proper_noun",
+      "meaning": "Persistent bidirectional web connection.",
+      "context": "WebSocket stream reconnect latency",
+      "positive_template": "please check {variant} stream today",
+      "distortions": ["websocet", "websoket", "websacket", "websockit", "websockets", "websokit", "websocat"]
+    },
+    {
+      "term": "OAuth",
+      "type": "acronym",
+      "meaning": "Authorization protocol.",
+      "context": "OAuth token redirect callback",
+      "positive_template": "please debug {variant} token flow today",
+      "distortions": ["oath", "owauth", "ohath", "oaut", "oauthh", "ooth", "ohoth"]
+    },
+    {
+      "term": "JWT",
+      "type": "acronym",
+      "meaning": "JSON web token.",
+      "context": "JWT auth token claims",
+      "positive_template": "please inspect {variant} auth token today",
+      "distortions": ["jot", "jwd", "jvt", "jaywt", "jdoublet", "jwty", "jwet"]
+    },
+    {
+      "term": "GitHub",
+      "type": "proper_noun",
+      "meaning": "Code hosting platform.",
+      "context": "GitHub pull request workflow",
+      "positive_template": "please check {variant} pull request today",
+      "distortions": ["gethub", "githab", "gitub", "gidhub", "githhub", "githup", "gethap"]
+    },
+    {
+      "term": "GitLab",
+      "type": "proper_noun",
+      "meaning": "Code hosting and CI platform.",
+      "context": "GitLab pipeline merge request",
+      "positive_template": "please check {variant} pipeline today",
+      "distortions": ["getlab", "gitlap", "gitlub", "gidlabs", "gitlabb", "getlabs", "gitlabz"]
+    },
+    {
+      "term": "Vercel",
+      "type": "proper_noun",
+      "meaning": "Frontend deployment platform.",
+      "context": "Vercel deployment preview domain",
+      "positive_template": "please check {variant} deployment today",
+      "distortions": ["vercell", "versal", "versel", "vercil", "varsell", "wersel", "vercelapp"]
+    },
+    {
+      "term": "Supabase",
+      "type": "proper_noun",
+      "meaning": "Backend platform built on Postgres.",
+      "context": "Supabase auth storage edge function",
+      "positive_template": "please check {variant} auth today",
+      "distortions": ["superbase", "supabse", "supabas", "supabaze", "superbace", "soopabase", "supaabase"]
+    },
+    {
+      "term": "Prisma",
+      "type": "proper_noun",
+      "meaning": "Database ORM.",
+      "context": "Prisma schema migration client",
+      "positive_template": "please check {variant} schema today",
+      "distortions": ["prizma", "presma", "prismma", "prismuh", "prezma", "prismaa", "prism"]
+    },
+    {
+      "term": "Tauri",
+      "type": "proper_noun",
+      "meaning": "Desktop app framework.",
+      "context": "Tauri desktop sidecar command",
+      "positive_template": "please check {variant} sidecar today",
+      "distortions": ["taury", "tawri", "towri", "taorie", "tauryapp", "taure", "tori"]
+    },
+    {
+      "term": "Vite",
+      "type": "proper_noun",
+      "meaning": "Frontend build tool.",
+      "context": "Vite dev server bundle",
+      "positive_template": "please restart {variant} dev server today",
+      "distortions": ["veet", "vait", "vitey", "vit", "veit", "wite", "white"]
+    },
+    {
+      "term": "SQLite",
+      "type": "proper_noun",
+      "meaning": "Embedded SQL database.",
+      "context": "SQLite migration local database",
+      "positive_template": "please check {variant} migration today",
+      "distortions": ["sqllite", "sequelite", "sqlight", "esquelite", "sqlitee", "sqlit", "sqllight"]
+    },
+    {
+      "term": "localhost",
+      "type": "code_identifier",
+      "meaning": "Local machine network host.",
+      "context": "localhost dev server port",
+      "positive_template": "please open {variant} dev server today",
+      "distortions": ["localost", "localhostt", "localhouse", "localhast", "locahost", "loaclhost", "localtoast"]
+    }
+  ],
+  "negatives": [
+    {
+      "text": "think about the meaning of these accounts before return prayer time",
+      "forbidden_terms": ["EMIAC", "Macobs", "JWT", "OAuth"]
+    },
+    {
+      "text": "army corps division submitted a regular company report",
+      "forbidden_terms": ["Macobs"]
+    },
+    {
+      "text": "he took an oath during the ceremony",
+      "forbidden_terms": ["OAuth"]
+    },
+    {
+      "text": "use a white background for the landing page",
+      "forbidden_terms": ["Vite"]
+    },
+    {
+      "text": "the dock worker checked the container manually",
+      "forbidden_terms": ["Docker"]
+    },
+    {
+      "text": "a graph can look cool without being an api query",
+      "forbidden_terms": ["GraphQL"]
+    },
+    {
+      "text": "post gray color choices are not database related",
+      "forbidden_terms": ["PostgreSQL"]
+    },
+    {
+      "text": "local house address is not a server host",
+      "forbidden_terms": ["localhost"]
+    },
+    {
+      "text": "super base hit in a cricket match",
+      "forbidden_terms": ["Supabase"]
+    },
+    {
+      "text": "next week we can go over the time estimate",
+      "forbidden_terms": ["Next.js", "Go", "Vite"]
+    }
+  ]
+}

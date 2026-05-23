@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build a release DMG of Said.app with a stable ad-hoc signature.
+# Build a release DMG of AirNote.app with a stable ad-hoc signature.
 #
 # The ad-hoc signature is what lets macOS TCC track the app by bundle ID
 # instead of binary hash, so granted permissions (Input Monitoring,
@@ -26,10 +26,10 @@ case "$TARGET" in
 esac
 
 BUNDLE_DIR="$REPO_ROOT/target/$TARGET/release/bundle"
-APP_PATH="$BUNDLE_DIR/macos/Said.app"
+APP_PATH="$BUNDLE_DIR/macos/AirNote.app"
 SIDECAR_SRC="$REPO_ROOT/target/$TARGET/release/said-backend"
 SIDECAR_DEST="$TAURI_DIR/binaries/said-backend-$TARGET"
-BUNDLE_ID="com.emiac.said.desktop"
+BUNDLE_ID="com.emiac.airnote.desktop"
 
 # Read the workspace version from Cargo.toml. Single source of truth — bumped
 # via scripts/bump-version.sh, never hand-edited here.
@@ -54,12 +54,12 @@ fail()  { echo -e "\n  ${red}✗ $*${nc}\n"; exit 1; }
 export PATH="$HOME/.cargo/bin:$PATH"
 
 # ── Pre-clean: undo whatever Tauri's bundle_dmg.sh left attached ─────────────
-step "Pre-clean: detach stale Said volumes & temp DMGs"
+step "Pre-clean: detach stale AirNote volumes & temp DMGs"
 
 # Detach any volume mounted with the product name (read-only finalized DMGs
 # the user mounted, plus any read-write working DMG still attached from a
 # prior failed run).
-for vol in "/Volumes/Said" "/Volumes/Said 1" "/Volumes/Said 2"; do
+for vol in "/Volumes/AirNote" "/Volumes/AirNote 1" "/Volumes/AirNote 2"; do
   if mount | grep -q "on $vol "; then
     hdiutil detach "$vol" -force 2>/dev/null || true
     ok "detached $vol"
@@ -72,10 +72,10 @@ while IFS= read -r dev; do
   [ -n "$dev" ] || continue
   hdiutil detach "$dev" -force 2>/dev/null || true
   ok "detached $dev (stale rw image)"
-done < <(hdiutil info | awk '/image-path.*rw\.[0-9]+\.Said/ {p=1} p && /^\/dev\/disk[0-9]+\t/ {print $1; p=0}')
+done < <(hdiutil info | awk '/image-path.*rw\.[0-9]+\.AirNote/ {p=1} p && /^\/dev\/disk[0-9]+\t/ {print $1; p=0}')
 
 # Remove the temp files themselves.
-rm -f "$BUNDLE_DIR"/macos/rw.*.Said_*.dmg 2>/dev/null || true
+rm -f "$BUNDLE_DIR"/macos/rw.*.AirNote_*.dmg 2>/dev/null || true
 ok "pre-clean done"
 
 # ── Build the Rust sidecar ────────────────────────────────────────────────────
@@ -119,7 +119,7 @@ xattr -cr "$APP_PATH" 2>/dev/null || true
 EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/said-backend"
 [ -x "$EMBEDDED_BACKEND" ] || fail "embedded sidecar not found at $EMBEDDED_BACKEND"
 
-ENTITLEMENTS="$TAURI_DIR/Said.entitlements"
+ENTITLEMENTS="$TAURI_DIR/AirNote.entitlements"
 
 codesign --force --options runtime --sign "$SIGN_ID" --entitlements "$ENTITLEMENTS" "$EMBEDDED_BACKEND" 2>&1 | sed 's/^/  /'
 ok "sidecar signed"
@@ -148,8 +148,8 @@ ok "embedded sidecar verified: $(codesign -dv "$EMBEDDED_BACKEND" 2>&1 | awk -F=
 step "Build DMG with hdiutil"
 
 STAGING="$BUNDLE_DIR/dmg-staging"
-DMG_OUT="$BUNDLE_DIR/dmg/Said_${VERSION}_${ARCH_SHORT}.dmg"
-VOLNAME="Said"
+DMG_OUT="$BUNDLE_DIR/dmg/AirNote_${VERSION}_${ARCH_SHORT}.dmg"
+VOLNAME="AirNote"
 
 # Ensure no leftover staging from a prior run.
 rm -rf "$STAGING" "$DMG_OUT"
@@ -157,14 +157,14 @@ mkdir -p "$STAGING" "$BUNDLE_DIR/dmg"
 
 # Stage: .app + /Applications symlink + a .DS_Store that sets the window
 # size and icon positions so Finder opens a proper drag-to-install layout.
-cp -R "$APP_PATH" "$STAGING/Said.app"
+cp -R "$APP_PATH" "$STAGING/AirNote.app"
 ln -s /Applications "$STAGING/Applications"
 
 # ── Inject window layout via a writable interim DMG ──────────────────────
 # We mount a temporary read-write image, use osascript to position the two
 # icons side-by-side (app on the left, Applications folder on the right),
 # then convert to the final read-only UDZO for distribution.
-RW_DMG="$BUNDLE_DIR/dmg/Said_rw.dmg"
+RW_DMG="$BUNDLE_DIR/dmg/AirNote_rw.dmg"
 rm -f "$RW_DMG"
 
 hdiutil create \
@@ -178,7 +178,7 @@ hdiutil create \
 RW_VOL=$(hdiutil attach "$RW_DMG" -readwrite -nobrowse | awk '/\/Volumes\// {for(i=3;i<=NF;i++) printf "%s%s",$i,(i<NF?" ":""); print ""; exit}')
 ok "mounted rw volume at $RW_VOL"
 
-# Set icon positions: Said.app at (150,180), Applications at (410,180).
+# Set icon positions: AirNote.app at (150,180), Applications at (410,180).
 # Window: 560×340, icon size 128px, no toolbar, no sidebar.
 osascript <<APPLESCRIPT >/dev/null 2>&1 || true
 tell application "Finder"
@@ -191,7 +191,7 @@ tell application "Finder"
     set theViewOptions to the icon view options of container window
     set arrangement of theViewOptions to not arranged
     set icon size of theViewOptions to 128
-    set position of item "Said.app"    of container window to {150, 180}
+    set position of item "AirNote.app"    of container window to {150, 180}
     set position of item "Applications" of container window to {410, 180}
     close
     open
@@ -226,9 +226,9 @@ ATTACH_OUT=$(hdiutil attach -nobrowse -readonly "$DMG_OUT")
 echo "$ATTACH_OUT" | sed 's/^/  /'
 DMG_DEV=$(echo "$ATTACH_OUT" | awk '/\/dev\/disk[0-9]+s[0-9]+/ && /\/Volumes\// {print $1; exit}')
 DMG_VOL=$(echo "$ATTACH_OUT" | awk '/\/Volumes\// {for (i=3;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""; exit}')
-codesign --verify --deep --strict --verbose=2 "$DMG_VOL/Said.app" 2>&1 | sed 's/^/  /'
+codesign --verify --deep --strict --verbose=2 "$DMG_VOL/AirNote.app" 2>&1 | sed 's/^/  /'
 hdiutil detach "$DMG_DEV" -force >/dev/null
-ok "DMG verified — Said.app inside is correctly signed and mounts cleanly"
+ok "DMG verified — AirNote.app inside is correctly signed and mounts cleanly"
 
 # ── Notarize the DMG ─────────────────────────────────────────────────────────
 # Requires APPLE_ID and APPLE_APP_SPECIFIC_PASSWORD env vars.
@@ -263,7 +263,7 @@ echo "  app: $APP_PATH"
 echo "  dmg: $DMG_OUT"
 echo ""
 echo "  Install for testing:"
-echo "    open '$DMG_OUT'   # then drag Said.app to /Applications"
+echo "    open '$DMG_OUT'   # then drag AirNote.app to /Applications"
 echo "  or directly:"
-echo "    rm -rf /Applications/Said.app && cp -R '$APP_PATH' /Applications/Said.app && open /Applications/Said.app"
+echo "    rm -rf /Applications/AirNote.app && cp -R '$APP_PATH' /Applications/AirNote.app && open /Applications/AirNote.app"
 echo ""

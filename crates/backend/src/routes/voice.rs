@@ -103,7 +103,7 @@ use crate::{
             VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE, VocabEntry,
             build_user_message_with_hints, build_voice_repair_system_prompt,
             build_voice_repair_user_message, default_voice_prompt_template,
-            render_voice_system_prompt_template, resolved_vocab_terms_to_entries,
+            render_voice_system_prompt_template, resolved_vocab_terms_to_entries_with_aliases,
         },
         script,
         stream_safety::{
@@ -320,7 +320,7 @@ pub async fn repair_transcript(
         } else if llm_provider == "gemini_direct" {
             (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
         } else if llm_provider == "groq" {
-            (groq::GROQ_MODEL_DEFAULT.to_string(), None)
+            (if prefs.selected_model == "smart" { groq::GROQ_MODEL_SMART } else { groq::GROQ_MODEL_FAST }.to_string(), None)
         } else if llm_provider == "cerebras" {
             (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
         } else {
@@ -450,6 +450,9 @@ pub async fn repair_transcript(
                     source: "voice_repair",
                     audio_id: aid2.as_deref(),
                     enriched_transcript: enr2.as_deref(),
+                    raw_transcript: Some(&t2),
+                    local_corrected_transcript: Some(&t2),
+                    polished_output: Some(&p2),
                 });
             });
         }
@@ -617,6 +620,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
 
         // ── STEP 1: STT ───────────────────────────────────────────────────────────
         let audio_seconds = wav_duration_seconds(&wav_data);
+        let use_alt_stt = prefs.stt_provider == "whisper_local" || prefs.stt_provider == "groq_whisper";
+        let pre_transcript = if use_alt_stt { None } else { pre_transcript };
         let (stt_transcript_raw, enriched_raw, stt_confidence, transcribe_ms) = if let Some(t) = pre_transcript {
             let plain = strip_confidence_markers(&t);
             let ws_meta = pre_transcript_meta.unwrap_or_else(|| TranscriptMeta {
@@ -669,57 +674,154 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         } else {
             yield Ok(Event::default().event("status")
                 .data(json!({"phase": "transcribing"}).to_string()));
-            match maybe_rescue_transcript(
-                &http_client,
-                &deepgram_key,
-                wav_data.clone(),
-                audio_seconds,
-                &stt_bias_package,
-                None,
-            )
-            .await {
-                Ok((chosen, _rescue_ms)) => {
-                    let ms = total_start.elapsed().as_millis() as i64;
-                    info!(
-                        "[timing] STT={}ms ({}, {} words, conf={:.2})",
-                        ms,
-                        chosen.source,
-                        chosen.meta.word_count,
-                        chosen.meta.confidence
-                    );
-                    (
-                        chosen.transcript,
-                        chosen.meta.enriched_transcript.clone(),
-                        chosen.meta.confidence,
-                        ms,
-                    )
+
+            #[cfg(feature = "local-stt")]
+            let use_whisper = prefs.stt_provider == "whisper_local";
+            #[cfg(not(feature = "local-stt"))]
+            let use_whisper = false;
+
+            if prefs.stt_provider == "groq_whisper" {
+                match crate::stt::groq_whisper::transcribe(
+                    &http_client,
+                    &groq_key,
+                    wav_data.clone(),
+                    &prefs.language,
+                ).await {
+                    Ok(result) => {
+                        let ms = total_start.elapsed().as_millis() as i64;
+                        info!(
+                            "[timing] STT={}ms (groq_whisper, {} words, conf={:.2})",
+                            ms, result.word_count, result.confidence,
+                        );
+                        (
+                            result.transcript,
+                            result.enriched_transcript,
+                            result.confidence,
+                            ms,
+                        )
+                    }
+                    Err(e) => {
+                        warn!("[voice] groq whisper STT error: {e}");
+                        yield Ok(Event::default().event("error").data(
+                            json!({"message": e, "audio_id": aid}).to_string()
+                        ));
+                        return;
+                    }
                 }
-                Err(e) => {
-                    warn!("[voice] STT error: {e}");
-                    yield Ok(Event::default().event("error").data(
-                        json!({"message": e, "audio_id": aid}).to_string()
-                    ));
-                    return;
+            } else if use_whisper {
+                #[cfg(feature = "local-stt")]
+                {
+                    let wav_c = wav_data.clone();
+                    let lang_c = prefs.language.clone();
+                    let whisper_result = tokio::task::spawn_blocking(move || {
+                        crate::stt::whisper::transcribe_wav(&wav_c, &lang_c)
+                    }).await;
+                    match whisper_result {
+                        Ok(Ok(result)) => {
+                            let ms = total_start.elapsed().as_millis() as i64;
+                            info!(
+                                "[timing] STT={}ms (whisper_local, {} words)",
+                                ms, result.word_count,
+                            );
+                            (
+                                result.transcript,
+                                result.enriched_transcript,
+                                result.confidence,
+                                ms,
+                            )
+                        }
+                        Ok(Err(e)) => {
+                            warn!("[voice] whisper STT error: {e}");
+                            yield Ok(Event::default().event("error").data(
+                                json!({"message": e, "audio_id": aid}).to_string()
+                            ));
+                            return;
+                        }
+                        Err(e) => {
+                            warn!("[voice] whisper task panicked: {e}");
+                            yield Ok(Event::default().event("error").data(
+                                json!({"message": format!("{e}"), "audio_id": aid}).to_string()
+                            ));
+                            return;
+                        }
+                    }
+                }
+                #[cfg(not(feature = "local-stt"))]
+                unreachable!()
+            } else {
+                match maybe_rescue_transcript(
+                    &http_client,
+                    &deepgram_key,
+                    wav_data.clone(),
+                    audio_seconds,
+                    &stt_bias_package,
+                    None,
+                )
+                .await {
+                    Ok((chosen, _rescue_ms)) => {
+                        let ms = total_start.elapsed().as_millis() as i64;
+                        info!(
+                            "[timing] STT={}ms ({}, {} words, conf={:.2})",
+                            ms,
+                            chosen.source,
+                            chosen.meta.word_count,
+                            chosen.meta.confidence
+                        );
+                        (
+                            chosen.transcript,
+                            chosen.meta.enriched_transcript.clone(),
+                            chosen.meta.confidence,
+                            ms,
+                        )
+                    }
+                    Err(e) => {
+                        warn!("[voice] STT error: {e}");
+                        yield Ok(Event::default().event("error").data(
+                            json!({"message": e, "audio_id": aid}).to_string()
+                        ));
+                        return;
+                    }
                 }
             }
         };
 
-        // STT replacements are NOT applied here. The LLM handles all
-        // corrections using vocab entries (with meanings and context) in
-        // the prompt. Deterministic replacement was removed because it
-        // has zero context awareness — e.g. replacing "Main" (Hindi "I")
-        // with "Emiac" (company name) because of a phonetic match.
+        // Pre-LLM local correction: exact safe aliases first, then Tier 2
+        // candidate scoring for the remaining suspicious single tokens.
+        // This keeps user-specific repairs local before embedding lookup,
+        // vocab selection, and LLM polish.
         let (stt_transcript, enriched_for_hints, alias_result) = {
-            let text = stt_transcript_raw.clone();
-            let enriched = enriched_raw.clone();
-            (
-                text.clone(),
-                enriched,
-                stt_replacements::ApplyResult {
-                    text,
-                    matches: vec![],
-                },
-            )
+            let pool_t = pool.clone();
+            let uid_t = user_id.clone();
+            let raw_t = stt_transcript_raw.clone();
+            let rules_t = stt_replacement_rules.clone();
+            let vocab_t = vocab_full.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::tier2::correct_with_store(
+                    &pool_t,
+                    &uid_t,
+                    &raw_t,
+                    &rules_t,
+                    &vocab_t,
+                )
+            }).await.unwrap_or_else(|e| {
+                warn!("[voice] tier2 correction task failed, using exact aliases only: {e}");
+                stt_replacements::apply_exact_safe(
+                    &stt_transcript_raw,
+                    &stt_replacement_rules,
+                )
+            });
+            if !result.matches.is_empty() {
+                info!(
+                    "[voice] pre-LLM local correction: {} replacement(s): {}",
+                    result.matches.len(),
+                    result.matches
+                        .iter()
+                        .map(|m| format!("{:?}→{} ({:?})", m.transcript_form, m.correct_form, m.kind))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+            }
+            (result.text.clone(), enriched_raw.clone(), result)
         };
 
         let status_payload = json!({"phase": "polishing", "transcript": &stt_transcript}).to_string();
@@ -767,40 +869,40 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     &pool_v, &uid_v, &lang_v, emb_v.as_deref(), Some(&txt_v),
                 )
             }).await.unwrap_or_default();
+            // Load safe STT aliases for prompt rendering. These are displayed
+            // only for terms the resolver admits below; Tier 2 has already
+            // applied high-confidence corrections before the LLM sees text.
+            let alias_map: std::collections::HashMap<String, Vec<(String, i64)>> = {
+                let conn = pool.get().ok();
+                if let Some(c) = conn {
+                    let mut map: std::collections::HashMap<String, Vec<(String, i64)>> =
+                        std::collections::HashMap::new();
+                    if let Ok(mut stmt) = c.prepare(
+                        "SELECT LOWER(correct_form), transcript_form, use_count \
+                         FROM stt_replacements WHERE user_id = ?1"
+                    ) {
+                        let rows = stmt.query_map(rusqlite::params![user_id], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+                        });
+                        if let Ok(rows) = rows {
+                            for row in rows.flatten() {
+                                if stt_replacements::is_plausible_alias(&row.1, &row.0) {
+                                    map.entry(row.0).or_default().push((row.1, row.2));
+                                }
+                            }
+                        }
+                    }
+                    map
+                } else {
+                    std::collections::HashMap::new()
+                }
+            };
+
             if chosen.is_empty() {
                 info!(
                     "[voice] vocab selector picked 0/{} entries — no transcript evidence",
                     vocab_full.len(),
                 );
-                // Log why each vocab term was rejected so we can diagnose
-                // learning failures like "emiac" never matching.
-                let transcript_lower = alias_result.text.to_ascii_lowercase();
-                let transcript_tokens: Vec<String> = transcript_lower
-                    .split(|c: char| !c.is_alphanumeric())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-                    .collect();
-                for vt in &vocab_full {
-                    let has_meaning = vt.meaning.as_deref().map(|m| !m.trim().is_empty()).unwrap_or(false);
-                    let term_lower = vt.term.to_ascii_lowercase();
-                    let is_substring = transcript_lower.contains(&term_lower);
-                    let best_phon = transcript_tokens.iter().map(|tok| {
-                        crate::llm::phonetics::similarity(tok, &vt.term)
-                    }).fold(0.0_f64, f64::max);
-                    let reason = if !has_meaning {
-                        "no_meaning"
-                    } else if is_substring {
-                        "substring_ok(BM25_miss?)"
-                    } else if best_phon >= 0.70 {
-                        "phonetic_ok(BM25_miss?)"
-                    } else {
-                        "phonetic_too_low"
-                    };
-                    info!(
-                        "[vocab] rejected {:?} — {} (best_phon={:.2}, meaning={}, weight={:.1}, use={})",
-                        vt.term, reason, best_phon, has_meaning, vt.weight, vt.use_count,
-                    );
-                }
                 (alias_result.text.clone(), vec![])
             } else {
                 let resolve_t0 = Instant::now();
@@ -819,7 +921,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     resolved.resolved_terms.len(),
                     resolved.candidate_terms.len(),
                 );
-                let entries = resolved_vocab_terms_to_entries(resolved.resolved_terms);
+                let entries = resolved_vocab_terms_to_entries_with_aliases(
+                    resolved.resolved_terms,
+                    &alias_map,
+                );
                 (resolved.transcript, entries)
             }
         };
@@ -865,6 +970,37 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             &relevant_corrections,
             &vocab_entries,
         );
+
+        if llm_debug_enabled() {
+            let debug_msg = format!(
+                "━━━ LLM INPUT ━━━\ntranscript: {:?}\nvocab_count: {}\ncorrections: {}\n{}{}━━━━━━━━━━━━━━━━━",
+                &resolved_transcript,
+                vocab_entries.len(),
+                relevant_corrections.len(),
+                vocab_entries.iter().map(|ve| format!(
+                    "  VOCAB: {:?} type={:?} aliases={:?}\n",
+                    ve.term,
+                    ve.term_type,
+                    ve.stt_aliases.iter().map(|(a, c)| format!("{a}({c})")).collect::<Vec<_>>(),
+                )).collect::<String>(),
+                if vocab_entries.is_empty() { "  *** NO VOCAB IN PROMPT ***\n".to_string() } else { String::new() },
+            );
+            let vocab_in_prompt = if let Some(start) = base_system_prompt.find("PERSONAL VOCABULARY") {
+                let end = base_system_prompt[start..].find("\n\n\n").map(|i| start + i).unwrap_or(base_system_prompt.len().min(start + 800));
+                &base_system_prompt[start..end]
+            } else {
+                "*** NO VOCAB BLOCK IN PROMPT ***"
+            };
+            let full_debug = format!("{debug_msg}\n\nPROMPT VOCAB SECTION:\n{vocab_in_prompt}");
+            tracing::debug!("{full_debug}");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true).append(true)
+                .open("/tmp/said-llm-debug.log")
+            {
+                use std::io::Write;
+                let _ = writeln!(f, "\n{full_debug}");
+            }
+        }
 
         if let Some(ref ctx) = screen_context {
             let trimmed: String = ctx.chars().take(500).collect();
@@ -914,7 +1050,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         } else if llm_provider == "gemini_direct" {
             (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
         } else if llm_provider == "groq" {
-            (groq::GROQ_MODEL_DEFAULT.to_string(), None)
+            (if prefs.selected_model == "smart" { groq::GROQ_MODEL_SMART } else { groq::GROQ_MODEL_FAST }.to_string(), None)
         } else if llm_provider == "cerebras" {
             (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
         } else {
@@ -1112,6 +1248,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let p_ms    = llm_result.polish_ms as i64;
             let aid2    = saved_audio_id.clone();
             let enr2    = enriched_raw.clone();
+            let raw2    = stt_transcript_raw.clone();
+            let local2  = resolved_transcript.clone();
             let inserted = tokio::task::spawn_blocking(move || {
                 insert_recording(&pool2, InsertRecording {
                     id: &id2, user_id: &uid2,
@@ -1126,10 +1264,54 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     source:        "voice",
                     audio_id:      aid2.as_deref(),
                     enriched_transcript: Some(&enr2),
+                    raw_transcript: Some(&raw2),
+                    local_corrected_transcript: Some(&local2),
+                    polished_output: Some(&p2),
                 }).is_some()
             }).await.unwrap_or(false);
             if !inserted {
                 warn!("[voice] failed to insert recording history row");
+            }
+            if inserted && !alias_result.traces.is_empty() {
+                let pool_policy = pool.clone();
+                let uid_policy = user_id.clone();
+                let recording_policy = recording_id.clone();
+                let result_policy = alias_result.clone();
+                tokio::task::spawn_blocking(move || {
+                    let n = crate::store::tier2_policy::record_decisions(
+                        &pool_policy,
+                        &uid_policy,
+                        &recording_policy,
+                        &result_policy,
+                    );
+                    if n > 0 {
+                        tracing::info!(
+                            "[voice] recorded {n} tier2 policy decision event(s) for {recording_policy}"
+                        );
+                    }
+                });
+            }
+            // Record decision events for exact STT alias matches so that
+            // mark_removed_feedback can penalise the alias when the user
+            // reverts a wrong replacement.
+            if inserted && !alias_result.matches.is_empty() {
+                let pool_alias = pool.clone();
+                let uid_alias = user_id.clone();
+                let recording_alias = recording_id.clone();
+                let result_alias = alias_result.clone();
+                tokio::task::spawn_blocking(move || {
+                    let n = crate::store::tier2_policy::record_applied_matches(
+                        &pool_alias,
+                        &uid_alias,
+                        &recording_alias,
+                        &result_alias,
+                    );
+                    if n > 0 {
+                        tracing::info!(
+                            "[voice] recorded {n} stt_alias decision event(s) for {recording_alias}"
+                        );
+                    }
+                });
             }
 
             // Reinforcement-on-use: bump last_used + use_count for vocab
@@ -1516,6 +1698,12 @@ fn wav_duration_seconds(wav_data: &[u8]) -> f64 {
         return 0.0;
     }
     (wav_data.len().saturating_sub(44)) as f64 / 32_000.0
+}
+
+fn llm_debug_enabled() -> bool {
+    std::env::var("SAID_LLM_DEBUG")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }
 
 /// Strip high-confidence markers but KEEP markers below `threshold` so the

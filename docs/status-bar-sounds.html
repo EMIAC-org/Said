@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Said — Status Bar Sound Picker</title>
+<style>
+  :root { --bg:#0d1117; --s1:#161b22; --s2:#21262d; --border:#30363d; --text:#c9d1d9; --dim:#8b949e; --green:#34d399; --red:#f87171; --yellow:#fbbf24; --blue:#58a6ff; --purple:#a78bfa; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif; background:var(--bg); color:var(--text); padding:2rem; }
+  .page { max-width:900px; margin:0 auto; }
+  h1 { font-size:1.8rem; font-weight:700; margin-bottom:0.3rem; }
+  h1 span { color:var(--green); }
+  .sub { color:var(--dim); font-size:0.9rem; margin-bottom:2rem; }
+  h2 { font-size:1.1rem; margin:2rem 0 0.8rem; padding-bottom:0.4rem; border-bottom:1px solid var(--border); }
+
+  .state-row { display:flex; align-items:center; gap:12px; padding:12px 16px; margin:6px 0; background:var(--s1); border:1px solid var(--border); border-radius:10px; flex-wrap:wrap; }
+  .state-label { min-width:160px; font-weight:600; font-size:0.88rem; display:flex; align-items:center; gap:8px; }
+  .dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+  .sound-options { display:flex; gap:6px; flex-wrap:wrap; flex:1; }
+  .sound-btn { border:none; border-radius:6px; padding:6px 12px; font-size:0.75rem; font-weight:600; cursor:pointer; transition:all 0.15s; display:flex; align-items:center; gap:4px; }
+  .sound-btn:hover { transform:scale(1.05); }
+  .sound-btn.active { outline:2px solid var(--green); outline-offset:2px; }
+  .opt-a { background:rgba(52,211,153,0.15); color:var(--green); }
+  .opt-b { background:rgba(88,166,255,0.15); color:var(--blue); }
+  .opt-c { background:rgba(167,139,250,0.15); color:var(--purple); }
+  .opt-d { background:rgba(251,191,36,0.15); color:var(--yellow); }
+  .opt-none { background:rgba(255,255,255,0.06); color:var(--dim); }
+
+  .selected-tag { font-size:0.7rem; padding:2px 8px; border-radius:4px; background:rgba(52,211,153,0.15); color:var(--green); margin-left:auto; white-space:nowrap; }
+
+  .export-box { margin-top:2rem; background:var(--s1); border:1px solid var(--border); border-radius:10px; padding:16px; }
+  .export-box h3 { font-size:0.9rem; margin-bottom:8px; }
+  .export-code { background:var(--s2); border-radius:6px; padding:12px; font-family:'SF Mono',monospace; font-size:0.78rem; color:var(--text); white-space:pre; overflow-x:auto; min-height:80px; cursor:text; user-select:all; }
+  .copy-btn { border:none; border-radius:6px; padding:6px 14px; font-size:0.75rem; font-weight:600; cursor:pointer; background:var(--green); color:#000; margin-top:8px; }
+  .copy-btn:hover { background:#4ade80; }
+
+  .note { font-size:0.78rem; color:var(--dim); margin-top:6px; }
+</style>
+</head>
+<body>
+<div class="page">
+<h1>Status Bar <span>Sound Picker</span></h1>
+<p class="sub">Click any option to hear the sound. Select your preferred sound for each state. Copy the final config at the bottom.</p>
+
+<h2>Recording States</h2>
+
+<div class="state-row" id="row-record-start">
+  <div class="state-label"><div class="dot" style="background:var(--green)"></div> Recording Start</div>
+  <div class="sound-options">
+    <button class="sound-btn opt-a" onclick="playAndSelect('record-start','A',this)" data-choice="A">A: Soft pop</button>
+    <button class="sound-btn opt-b" onclick="playAndSelect('record-start','B',this)" data-choice="B">B: Bubble</button>
+    <button class="sound-btn opt-c" onclick="playAndSelect('record-start','C',this)" data-choice="C">C: Chime up</button>
+    <button class="sound-btn opt-none" onclick="playAndSelect('record-start','none',this)" data-choice="none">No sound</button>
+  </div>
+  <span class="selected-tag" id="tag-record-start">—</span>
+</div>
+
+<div class="state-row" id="row-record-stop">
+  <div class="state-label"><div class="dot" style="background:var(--yellow)"></div> Recording Stop</div>
+  <div class="sound-options">
+    <button class="sound-btn opt-a" onclick="playAndSelect('record-stop','A',this)" data-choice="A">A: Soft click</button>
+    <button class="sound-btn opt-b" onclick="playAndSelect('record-stop','B',this)" data-choice="B">B: Tap</button>
+    <button class="sound-btn opt-c" onclick="playAndSelect('record-stop','C',this)" data-choice="C">C: Chime down</button>
+    <button class="sound-btn opt-none" onclick="playAndSelect('record-stop','none',this)" data-choice="none">No sound</button>
+  </div>
+  <span class="selected-tag" id="tag-record-stop">—</span>
+</div>
+
+<h2>Output States</h2>
+
+<div class="state-row" id="row-paste-done">
+  <div class="state-label"><div class="dot" style="background:var(--green)"></div> Paste Complete</div>
+  <div class="sound-options">
+    <button class="sound-btn opt-a" onclick="playAndSelect('paste-done','A',this)" data-choice="A">A: Ding</button>
+    <button class="sound-btn opt-b" onclick="playAndSelect('paste-done','B',this)" data-choice="B">B: Whoosh</button>
+    <button class="sound-btn opt-c" onclick="playAndSelect('paste-done','C',this)" data-choice="C">C: Sparkle</button>
+    <button class="sound-btn opt-none" onclick="playAndSelect('paste-done','none',this)" data-choice="none">No sound</button>
+  </div>
+  <span class="selected-tag" id="tag-paste-done">—</span>
+</div>
+
+<div class="state-row" id="row-error">
+  <div class="state-label"><div class="dot" style="background:var(--red)"></div> Error</div>
+  <div class="sound-options">
+    <button class="sound-btn opt-a" onclick="playAndSelect('error','A',this)" data-choice="A">A: Low thud</button>
+    <button class="sound-btn opt-b" onclick="playAndSelect('error','B',this)" data-choice="B">B: Bonk</button>
+    <button class="sound-btn opt-c" onclick="playAndSelect('error','C',this)" data-choice="C">C: Buzz</button>
+    <button class="sound-btn opt-none" onclick="playAndSelect('error','none',this)" data-choice="none">No sound</button>
+  </div>
+  <span class="selected-tag" id="tag-error">—</span>
+</div>
+
+<h2>Learning States</h2>
+
+<div class="state-row" id="row-learned">
+  <div class="state-label"><div class="dot" style="background:var(--green)"></div> Term Learned</div>
+  <div class="sound-options">
+    <button class="sound-btn opt-a" onclick="playAndSelect('learned','A',this)" data-choice="A">A: Level up</button>
+    <button class="sound-btn opt-b" onclick="playAndSelect('learned','B',this)" data-choice="B">B: Coin</button>
+    <button class="sound-btn opt-c" onclick="playAndSelect('learned','C',this)" data-choice="C">C: Bell</button>
+    <button class="sound-btn opt-d" onclick="playAndSelect('learned','D',this)" data-choice="D">D: Harp</button>
+    <button class="sound-btn opt-none" onclick="playAndSelect('learned','none',this)" data-choice="none">No sound</button>
+  </div>
+  <span class="selected-tag" id="tag-learned">—</span>
+</div>
+
+<div class="state-row" id="row-confirm">
+  <div class="state-label"><div class="dot" style="background:var(--yellow)"></div> Confirm Toast</div>
+  <div class="sound-options">
+    <button class="sound-btn opt-a" onclick="playAndSelect('confirm','A',this)" data-choice="A">A: Question</button>
+    <button class="sound-btn opt-b" onclick="playAndSelect('confirm','B',this)" data-choice="B">B: Knock</button>
+    <button class="sound-btn opt-c" onclick="playAndSelect('confirm','C',this)" data-choice="C">C: Bloop</button>
+    <button class="sound-btn opt-none" onclick="playAndSelect('confirm','none',this)" data-choice="none">No sound</button>
+  </div>
+  <span class="selected-tag" id="tag-confirm">—</span>
+</div>
+
+<div class="state-row" id="row-negative">
+  <div class="state-label"><div class="dot" style="background:var(--red)"></div> Wrong Correction</div>
+  <div class="sound-options">
+    <button class="sound-btn opt-a" onclick="playAndSelect('negative','A',this)" data-choice="A">A: Alert</button>
+    <button class="sound-btn opt-b" onclick="playAndSelect('negative','B',this)" data-choice="B">B: Dip</button>
+    <button class="sound-btn opt-c" onclick="playAndSelect('negative','C',this)" data-choice="C">C: Wobble</button>
+    <button class="sound-btn opt-none" onclick="playAndSelect('negative','none',this)" data-choice="none">No sound</button>
+  </div>
+  <span class="selected-tag" id="tag-negative">—</span>
+</div>
+
+<div class="state-row" id="row-retrain-done">
+  <div class="state-label"><div class="dot" style="background:var(--blue)"></div> Model Updated</div>
+  <div class="sound-options">
+    <button class="sound-btn opt-a" onclick="playAndSelect('retrain-done','A',this)" data-choice="A">A: Shimmer</button>
+    <button class="sound-btn opt-b" onclick="playAndSelect('retrain-done','B',this)" data-choice="B">B: Glow</button>
+    <button class="sound-btn opt-c" onclick="playAndSelect('retrain-done','C',this)" data-choice="C">C: Resolved</button>
+    <button class="sound-btn opt-none" onclick="playAndSelect('retrain-done','none',this)" data-choice="none">No sound</button>
+  </div>
+  <span class="selected-tag" id="tag-retrain-done">—</span>
+</div>
+
+<div class="state-row" id="row-queued">
+  <div class="state-label"><div class="dot" style="background:var(--purple)"></div> Term Queued (1/3)</div>
+  <div class="sound-options">
+    <button class="sound-btn opt-a" onclick="playAndSelect('queued','A',this)" data-choice="A">A: Tick</button>
+    <button class="sound-btn opt-b" onclick="playAndSelect('queued','B',this)" data-choice="B">B: Drip</button>
+    <button class="sound-btn opt-c" onclick="playAndSelect('queued','C',this)" data-choice="C">C: Ping</button>
+    <button class="sound-btn opt-none" onclick="playAndSelect('queued','none',this)" data-choice="none">No sound</button>
+  </div>
+  <span class="selected-tag" id="tag-queued">—</span>
+</div>
+
+<div class="export-box">
+  <h3>Your Sound Map — copy this config</h3>
+  <div class="export-code" id="export-output">// Click sounds above to build your config</div>
+  <button class="copy-btn" onclick="copyExport()">Copy to clipboard</button>
+  <p class="note">Paste this into StatusBar.tsx as the SOUND_MAP constant. Each value is the Web Audio synthesis function name.</p>
+</div>
+
+</div>
+
+<script>
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const selections = {};
+
+const synths = {
+  // ── Recording ──
+  'record-start': {
+    A: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.setValueAtTime(880,audioCtx.currentTime); o.frequency.exponentialRampToValueAtTime(1320,audioCtx.currentTime+0.06); g.gain.setValueAtTime(0.15,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.12); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.12); },
+    B: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.setValueAtTime(520,audioCtx.currentTime); o.frequency.exponentialRampToValueAtTime(780,audioCtx.currentTime+0.08); g.gain.setValueAtTime(0.12,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.15); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.15); },
+    C: () => { [660,880].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.07); g.gain.linearRampToValueAtTime(0.1,audioCtx.currentTime+i*0.07+0.02); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.07+0.12); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.07); o.stop(audioCtx.currentTime+i*0.07+0.12); }); },
+  },
+  'record-stop': {
+    A: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.setValueAtTime(660,audioCtx.currentTime); o.frequency.exponentialRampToValueAtTime(440,audioCtx.currentTime+0.08); g.gain.setValueAtTime(0.12,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.1); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.1); },
+    B: () => { const b=audioCtx.createBufferSource(),buf=audioCtx.createBuffer(1,audioCtx.sampleRate*0.04,audioCtx.sampleRate),d=buf.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/d.length*6)*0.08; b.buffer=buf; b.connect(audioCtx.destination); b.start(); },
+    C: () => { [880,660].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.06); g.gain.linearRampToValueAtTime(0.1,audioCtx.currentTime+i*0.06+0.02); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.06+0.1); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.06); o.stop(audioCtx.currentTime+i*0.06+0.1); }); },
+  },
+  // ── Output ──
+  'paste-done': {
+    A: () => { [1046,1318].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.06); g.gain.linearRampToValueAtTime(0.08,audioCtx.currentTime+i*0.06+0.01); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.06+0.15); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.06); o.stop(audioCtx.currentTime+i*0.06+0.15); }); },
+    B: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.setValueAtTime(440,audioCtx.currentTime); o.frequency.exponentialRampToValueAtTime(1760,audioCtx.currentTime+0.08); g.gain.setValueAtTime(0.06,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.15); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.15); },
+    C: () => { [1318,1568,2093].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.05); g.gain.linearRampToValueAtTime(0.06,audioCtx.currentTime+i*0.05+0.01); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.05+0.12); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.05); o.stop(audioCtx.currentTime+i*0.05+0.12); }); },
+  },
+  'error': {
+    A: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='triangle'; o.frequency.setValueAtTime(220,audioCtx.currentTime); o.frequency.exponentialRampToValueAtTime(110,audioCtx.currentTime+0.15); g.gain.setValueAtTime(0.12,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.2); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.2); },
+    B: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='square'; o.frequency.value=180; g.gain.setValueAtTime(0.06,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.1); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.1); },
+    C: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sawtooth'; o.frequency.setValueAtTime(200,audioCtx.currentTime); o.frequency.linearRampToValueAtTime(150,audioCtx.currentTime+0.12); g.gain.setValueAtTime(0.05,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.15); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.15); },
+  },
+  // ── Learning ──
+  'learned': {
+    A: () => { [523,659,784].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.08); g.gain.linearRampToValueAtTime(0.09,audioCtx.currentTime+i*0.08+0.02); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.08+0.2); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.08); o.stop(audioCtx.currentTime+i*0.08+0.2); }); },
+    B: () => { [1046,1318].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.05); g.gain.linearRampToValueAtTime(0.1,audioCtx.currentTime+i*0.05+0.01); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.05+0.08); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.05); o.stop(audioCtx.currentTime+i*0.05+0.08); }); },
+    C: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=1568; g.gain.setValueAtTime(0.1,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.3); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.3); },
+    D: () => { [523,659,784,1046].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.06); g.gain.linearRampToValueAtTime(0.07,audioCtx.currentTime+i*0.06+0.01); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.06+0.25); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.06); o.stop(audioCtx.currentTime+i*0.06+0.25); }); },
+  },
+  'confirm': {
+    A: () => { [880,660].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.12); g.gain.linearRampToValueAtTime(0.08,audioCtx.currentTime+i*0.12+0.02); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.12+0.15); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.12); o.stop(audioCtx.currentTime+i*0.12+0.15); }); },
+    B: () => { [330,330].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='triangle'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.1); g.gain.linearRampToValueAtTime(0.1,audioCtx.currentTime+i*0.1+0.01); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.1+0.06); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.1); o.stop(audioCtx.currentTime+i*0.1+0.06); }); },
+    C: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.setValueAtTime(600,audioCtx.currentTime); o.frequency.exponentialRampToValueAtTime(400,audioCtx.currentTime+0.1); g.gain.setValueAtTime(0.1,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.12); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.12); },
+  },
+  'negative': {
+    A: () => { [440,330].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='triangle'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.1); g.gain.linearRampToValueAtTime(0.1,audioCtx.currentTime+i*0.1+0.01); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.1+0.12); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.1); o.stop(audioCtx.currentTime+i*0.1+0.12); }); },
+    B: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.setValueAtTime(500,audioCtx.currentTime); o.frequency.exponentialRampToValueAtTime(250,audioCtx.currentTime+0.15); g.gain.setValueAtTime(0.1,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.18); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.18); },
+    C: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(),lfo=audioCtx.createOscillator(); o.type='sine'; o.frequency.value=350; lfo.type='sine'; lfo.frequency.value=12; const lfoG=audioCtx.createGain(); lfoG.gain.value=30; lfo.connect(lfoG); lfoG.connect(o.frequency); g.gain.setValueAtTime(0.08,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.2); o.connect(g); g.connect(audioCtx.destination); o.start(); lfo.start(); o.stop(audioCtx.currentTime+0.2); lfo.stop(audioCtx.currentTime+0.2); },
+  },
+  'retrain-done': {
+    A: () => { [784,988,1175,1568].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.04); g.gain.linearRampToValueAtTime(0.05,audioCtx.currentTime+i*0.04+0.01); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.04+0.3); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.04); o.stop(audioCtx.currentTime+i*0.04+0.3); }); },
+    B: () => { [523,784].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.1); g.gain.linearRampToValueAtTime(0.06,audioCtx.currentTime+i*0.1+0.02); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.1+0.35); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.1); o.stop(audioCtx.currentTime+i*0.1+0.35); }); },
+    C: () => { [659,784,1046].forEach((f,i) => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=f; g.gain.setValueAtTime(0,audioCtx.currentTime+i*0.07); g.gain.linearRampToValueAtTime(0.07,audioCtx.currentTime+i*0.07+0.01); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+i*0.07+0.2); o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime+i*0.07); o.stop(audioCtx.currentTime+i*0.07+0.2); }); },
+  },
+  'queued': {
+    A: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=1200; g.gain.setValueAtTime(0.06,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.06); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.06); },
+    B: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.setValueAtTime(800,audioCtx.currentTime); o.frequency.exponentialRampToValueAtTime(600,audioCtx.currentTime+0.08); g.gain.setValueAtTime(0.07,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.1); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.1); },
+    C: () => { const o=audioCtx.createOscillator(),g=audioCtx.createGain(); o.type='sine'; o.frequency.value=1400; g.gain.setValueAtTime(0.05,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.04); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.04); },
+  },
+};
+
+function playAndSelect(state, choice, btn) {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  // Play sound
+  if (choice !== 'none' && synths[state] && synths[state][choice]) {
+    synths[state][choice]();
+  }
+  // Mark selected
+  selections[state] = choice;
+  // Update UI
+  const row = document.getElementById('row-' + state);
+  row.querySelectorAll('.sound-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const tag = document.getElementById('tag-' + state);
+  tag.textContent = choice === 'none' ? 'No sound' : 'Option ' + choice;
+  // Update export
+  updateExport();
+}
+
+function updateExport() {
+  const states = ['record-start','record-stop','paste-done','error','learned','confirm','negative','retrain-done','queued'];
+  const names = {
+    'record-start': 'recordStart',
+    'record-stop': 'recordStop',
+    'paste-done': 'pasteDone',
+    'error': 'error',
+    'learned': 'learned',
+    'confirm': 'confirm',
+    'negative': 'negative',
+    'retrain-done': 'retrainDone',
+    'queued': 'queued',
+  };
+  const descriptions = {
+    'record-start': { A:'softPop', B:'bubble', C:'chimeUp' },
+    'record-stop': { A:'softClick', B:'tap', C:'chimeDown' },
+    'paste-done': { A:'ding', B:'whoosh', C:'sparkle' },
+    'error': { A:'lowThud', B:'bonk', C:'buzz' },
+    'learned': { A:'levelUp', B:'coin', C:'bell', D:'harp' },
+    'confirm': { A:'question', B:'knock', C:'bloop' },
+    'negative': { A:'alert', B:'dip', C:'wobble' },
+    'retrain-done': { A:'shimmer', B:'glow', C:'resolved' },
+    'queued': { A:'tick', B:'drip', C:'ping' },
+  };
+  let lines = ['const SOUND_MAP = {'];
+  for (const s of states) {
+    const choice = selections[s];
+    if (!choice) continue;
+    const name = names[s];
+    const val = choice === 'none' ? 'null' : '"' + descriptions[s][choice] + '"';
+    lines.push('  ' + name + ': ' + val + ',');
+  }
+  lines.push('};');
+  document.getElementById('export-output').textContent = lines.join('\n');
+}
+
+function copyExport() {
+  const text = document.getElementById('export-output').textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.querySelector('.copy-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy to clipboard', 1500);
+  });
+}
+</script>
+</div>
+</body>
+</html>

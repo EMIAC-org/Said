@@ -163,6 +163,9 @@ export interface Recording {
   source:            string;
   audio_id:          string | null;
   enriched_transcript: string | null;
+  raw_transcript: string | null;
+  local_corrected_transcript: string | null;
+  polished_output: string | null;
 }
 
 /** Backend endpoint info (url + shared secret) */

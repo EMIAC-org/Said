@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { listHistory } from "@/lib/invoke";
+import { listHistory, downloadRecordingAudio, getRecordingAudioBytes } from "@/lib/invoke";
+import { Copy, Download, Check, Play, Square } from "lucide-react";
 import type { AppSnapshot, Recording } from "@/types";
 
 interface Props {
@@ -57,14 +58,14 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
   const bars = useMemo(() => buildLast14Days(recordings), [recordings]);
   const maxBar = Math.max(1, ...bars.map((b) => b.words));
 
-  // ── Latest 3 recordings ─────────────────────────────────────────────────
-  const latest = recordings.slice(0, 3);
+  // ── Today's recordings ──────────────────────────────────────────────────
+  const latest = today;
 
   const dateLabel = useMemo(() => formatDate(new Date()), []);
 
   return (
     <ScrollArea className="h-full">
-      <div className="mx-auto" style={{ maxWidth: 720, padding: "40px 48px 64px" }}>
+      <div className="mx-auto" style={{ maxWidth: "min(720px, 100%)", padding: "24px 28px 40px" }}>
 
         {/* Live polish strip — only when in flight */}
         {(statusPhase || liveText) && (
@@ -98,7 +99,7 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
         )}
 
         {/* Hero — personalised headline */}
-        <div className="mb-9">
+        <div className="mb-7">
           <p
             className="text-[11px] font-semibold uppercase tracking-[0.16em] mb-2.5"
             style={{ color: "hsl(var(--primary))" }}
@@ -120,10 +121,10 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
           </h1>
           <p
             className="mt-2.5 mb-0 leading-relaxed"
-            style={{ fontSize: 13.5, color: "hsl(var(--muted-foreground))", maxWidth: 540 }}
+            style={{ fontSize: 13.5, color: "hsl(var(--muted-foreground))", maxWidth: "min(540px, 100%)" }}
           >
             {wordsToday === 0
-              ? "Hold your hotkey and speak — Said will type polished text into the focused app. Your daily summary appears here once you've started."
+              ? "Hold your hotkey and speak — AirNote will type polished text into the focused app. Your daily summary appears here once you've started."
               : (
                 <>
                   That's roughly{" "}
@@ -141,8 +142,9 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
           <div
             className="grid"
             style={{
-              gridTemplateColumns: "repeat(3, 1fr)",
+              gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
               padding: "14px 0",
+              gap: "12px 0",
               borderTop: "1px solid hsl(var(--border))",
               borderBottom: "1px solid hsl(var(--border))",
             }}
@@ -155,7 +157,7 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
 
         {/* Activity — last 14 days, bar chart */}
         <Section label="Activity — last 14 days">
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 64, paddingTop: 6 }}>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 64, paddingTop: 6, overflow: "hidden", minWidth: 0 }}>
             {bars.map((b, i) => {
               const h = b.words === 0 ? 8 : Math.max(8, Math.round((b.words / maxBar) * 64));
               const isAccent = i % 2 === 1;
@@ -187,8 +189,8 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
           </div>
         </Section>
 
-        {/* Latest — last 3 recordings */}
-        <Section label="Latest">
+        {/* Today's history — all recordings from last 24h */}
+        <Section label={`Today — ${latest.length} recording${latest.length !== 1 ? "s" : ""}`}>
           {latest.length === 0 ? (
             <p className="text-[13px] py-4" style={{ color: "hsl(var(--muted-foreground))" }}>
               Your first dictation will land here.
@@ -196,32 +198,7 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
           ) : (
             <div>
               {latest.map((r) => (
-                <div
-                  key={r.id}
-                  className="flex items-baseline justify-between py-2.5"
-                  style={{ borderBottom: "1px solid hsl(var(--border))", gap: 12 }}
-                >
-                  <div
-                    className="text-[13.5px] flex-1 leading-snug min-w-0"
-                    style={{
-                      color: "hsl(var(--foreground))",
-                      display: "-webkit-box",
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: "vertical",
-                      overflow: "hidden",
-                      wordBreak: "break-word",
-                    }}
-                    title={r.polished}
-                  >
-                    {r.polished}
-                  </div>
-                  <span
-                    className="text-[11px] whitespace-nowrap"
-                    style={{ color: "hsl(var(--muted-foreground))", fontFamily: "ui-monospace, SF Mono, monospace" }}
-                  >
-                    {relativeTime(r.timestamp_ms)}
-                  </span>
-                </div>
+                <HistoryRow key={r.id} recording={r} />
               ))}
             </div>
           )}
@@ -235,7 +212,7 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <section className="mb-9">
+    <section className="mb-7">
       <h2
         className="m-0 mb-3"
         style={{
@@ -255,7 +232,7 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 
 function Glance({ label, value, unit, border }: { label: string; value: string; unit: string; border?: boolean }) {
   return (
-    <div style={{ padding: "0 18px", borderLeft: border ? "1px solid hsl(var(--border))" : "none" }}>
+    <div style={{ padding: "0 14px", borderLeft: border ? "1px solid hsl(var(--border))" : "none", minWidth: 0 }}>
       <div className="text-[10px] uppercase" style={{ color: "hsl(var(--muted-foreground))", letterSpacing: "0.12em" }}>
         {label}
       </div>
@@ -306,4 +283,132 @@ function buildLast14Days(recordings: Recording[]): { dayKey: string; label: stri
     });
   }
   return out;
+}
+
+let _activeAudio: HTMLAudioElement | null = null;
+
+function HistoryRow({ recording: r }: { recording: Recording }) {
+  const [copied, setCopied] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [playing, setPlaying] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(r.polished || r.transcript);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard not available */ }
+  };
+
+  const handlePlay = async () => {
+    if (!r.audio_id) return;
+    if (playing && _activeAudio) {
+      _activeAudio.pause();
+      _activeAudio = null;
+      setPlaying(false);
+      return;
+    }
+    try {
+      const bytes = await getRecordingAudioBytes(r.id);
+      if (!bytes) return;
+      const blob = new Blob([new Uint8Array(bytes)], { type: "audio/wav" });
+      const blobUrl = URL.createObjectURL(blob);
+      if (_activeAudio) { _activeAudio.pause(); _activeAudio = null; }
+      const audio = new Audio(blobUrl);
+      _activeAudio = audio;
+      setPlaying(true);
+      audio.onended = () => { setPlaying(false); _activeAudio = null; URL.revokeObjectURL(blobUrl); };
+      audio.onerror = () => { setPlaying(false); _activeAudio = null; URL.revokeObjectURL(blobUrl); };
+      audio.play();
+    } catch { setPlaying(false); }
+  };
+
+  const handleDownload = async () => {
+    if (!r.audio_id) return;
+    setDownloading(true);
+    try {
+      const filename = `airnote-${new Date(r.timestamp_ms).toISOString().slice(0, 10)}-${r.id.slice(0, 8)}.wav`;
+      await downloadRecordingAudio(r.id, filename);
+    } catch { /* download failed */ }
+    setDownloading(false);
+  };
+
+  return (
+    <div
+      className="group flex items-start gap-3 py-3"
+      style={{ borderBottom: "1px solid hsl(var(--border))" }}
+    >
+      <div className="flex-1 min-w-0">
+        <div
+          className="text-[13.5px] leading-snug"
+          style={{
+            color: "hsl(var(--foreground))",
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+            wordBreak: "break-word",
+          }}
+          title={r.polished}
+        >
+          {r.polished}
+        </div>
+        <div className="flex items-center gap-2 mt-1">
+          <span
+            className="text-[11px]"
+            style={{ color: "hsl(var(--muted-foreground))", fontFamily: "ui-monospace, SF Mono, monospace" }}
+          >
+            {relativeTime(r.timestamp_ms)}
+          </span>
+          {r.word_count > 0 && (
+            <span className="text-[10px]" style={{ color: "hsl(var(--muted-foreground) / 0.6)" }}>
+              {r.word_count} words
+            </span>
+          )}
+          {r.target_app && (
+            <span className="text-[10px]" style={{ color: "hsl(var(--muted-foreground) / 0.5)" }}>
+              {r.target_app}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity pt-0.5">
+        {r.audio_id && (
+          <button
+            onClick={handlePlay}
+            className="p-1.5 rounded-md hover:bg-[hsl(var(--surface-hover))] transition-colors"
+            title={playing ? "Stop" : "Play audio"}
+          >
+            {playing
+              ? <Square size={13} style={{ color: "hsl(var(--primary))" }} />
+              : <Play size={14} style={{ color: "hsl(var(--muted-foreground))" }} />
+            }
+          </button>
+        )}
+        <button
+          onClick={handleCopy}
+          className="p-1.5 rounded-md hover:bg-[hsl(var(--surface-hover))] transition-colors"
+          title="Copy to clipboard"
+        >
+          {copied
+            ? <Check size={14} style={{ color: "hsl(var(--primary))" }} />
+            : <Copy size={14} style={{ color: "hsl(var(--muted-foreground))" }} />
+          }
+        </button>
+        {r.audio_id && (
+          <button
+            onClick={handleDownload}
+            disabled={downloading}
+            className="p-1.5 rounded-md hover:bg-[hsl(var(--surface-hover))] transition-colors"
+            title="Download WAV"
+          >
+            <Download
+              size={14}
+              style={{ color: downloading ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))" }}
+            />
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
