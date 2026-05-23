@@ -925,23 +925,21 @@ fn create_status_bar(app: &tauri::AppHandle) {
         return;
     }
 
-    // Position: bottom-center, low above the dock. Match VoiceInk's panel model:
-    // keep a max-size transparent native canvas and expand the inner HUD inside it.
-    let idle_w = 300.0;
-    let idle_h = 142.0;
-    let bottom_offset = 64.0;
+    // Position: top-center, attached to the macOS notch area. Keep a max-size
+    // transparent native canvas and let the React HUD resize inside it.
+    let idle_w = 640.0;
+    let idle_h = 198.0;
     let (x, y) = if let Ok(Some(m)) = app.primary_monitor() {
         let sf = m.scale_factor();
         let sw = m.size().width as f64 / sf;
-        let sh = m.size().height as f64 / sf;
         let mx = m.position().x as f64 / sf;
         let my = m.position().y as f64 / sf;
         (
             mx + sw / 2.0 - idle_w / 2.0,
-            my + sh - idle_h - bottom_offset,
+            my,
         )
     } else {
-        (560.0, 860.0)
+        (400.0, 0.0)
     };
 
     let url = "index.html?view=statusbar#statusbar";

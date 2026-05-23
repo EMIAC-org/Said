@@ -26,9 +26,8 @@ type VoiceErrorPayload = {
 
 type PillKind = BarState["kind"];
 
-const BOTTOM_OFFSET = 64;
-const HUD_CANVAS_WIDTH = 300;
-const HUD_CANVAS_HEIGHT = 142;
+const HUD_CANVAS_WIDTH = 640;
+const HUD_CANVAS_HEIGHT = 198;
 
 const LEVEL_SHAPE = [0.28, 0.38, 0.52, 0.68, 0.82, 1.0, 0.78, 0.62, 0.78, 1.0, 0.82, 0.68, 0.52, 0.38, 0.28];
 const BAR_DECAY = [0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.87, 0.86, 0.87, 0.88, 0.87, 0.86, 0.85, 0.84, 0.82];
@@ -36,11 +35,14 @@ const BAR_DECAY = [0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.87, 0.86, 0.87, 0.88, 0
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function pillSize(kind: PillKind, hasTranscript = false, hovered = false): { width: number; height: number } {
-  if (hasTranscript) return { width: 280, height: 96 };
-  if (kind === "learned") return { width: 220, height: 36 };
-  if (kind === "error") return { width: 220, height: 36 };
-  if (kind === "idle" && hovered) return { width: 160, height: 36 };
-  return { width: 140, height: 36 };
+  if (hasTranscript) return { width: 520, height: 124 };
+  if (kind === "learned") return { width: 340, height: 54 };
+  if (kind === "error") return { width: 360, height: 54 };
+  if (kind === "recording") return { width: 292, height: 70 };
+  if (kind === "processing") return { width: 300, height: 68 };
+  if (kind === "done" || kind === "pasted" || kind === "manual_paste") return { width: 236, height: 58 };
+  if (kind === "idle" && hovered) return { width: 260, height: 48 };
+  return { width: 214, height: 34 };
 }
 
 function processingLabel(phase: string): string {
@@ -79,19 +81,18 @@ export default function StatusBar() {
     });
   }, []);
 
-  // VoiceInk uses a max-size native panel and expands the inner capsule inside it.
-  // Keep our native Tauri window at the largest HUD size so hover panels are never clipped.
+  // Keep a max-size transparent native canvas pinned to the top center.
+  // The inner React surface changes size inside it, so the native window never clips transitions.
   useEffect(() => {
     console.info("[status-bar] state", bar);
     primaryMonitor()
       .then((monitor) => {
         const scale = monitor?.scaleFactor ?? 1;
         const sw = monitor ? monitor.size.width / scale : 1440;
-        const sh = monitor ? monitor.size.height / scale : 900;
         const sx = monitor ? monitor.position.x / scale : 0;
         const sy = monitor ? monitor.position.y / scale : 0;
         const x = sx + sw / 2 - HUD_CANVAS_WIDTH / 2;
-        const y = sy + sh - HUD_CANVAS_HEIGHT - BOTTOM_OFFSET;
+        const y = sy;
         return win
           .setSize(new LogicalSize(HUD_CANVAS_WIDTH, HUD_CANVAS_HEIGHT))
           .then(() => win.setPosition(new LogicalPosition(x, y)));

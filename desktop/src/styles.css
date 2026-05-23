@@ -959,59 +959,82 @@ body.statusbar-mode #app {
   background: transparent;
 }
 
-/* ── Floating status pill ─────────────────────────────────────────────────── */
+/* ── Top notch HUD ────────────────────────────────────────────────────────── */
+
+.statusbar-mode #app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: hidden;
+}
 
 .sb-shell {
+  position: relative;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   box-sizing: border-box;
-  background: rgba(8, 8, 12, 0.92);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  align-items: stretch;
+  justify-content: flex-end;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.012) 44%, rgba(0, 0, 0, 0) 100%),
+    rgba(2, 2, 5, 0.985);
   color: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  border-radius: 100px;
+  border: 0;
+  border-radius: 0 0 28px 28px;
   box-shadow:
-    0 12px 32px rgba(0, 0, 0, 0.45),
-    0 0 0 0.5px rgba(255, 255, 255, 0.06) inset;
+    0 18px 34px rgba(0, 0, 0, 0.42),
+    0 2px 8px rgba(0, 0, 0, 0.38),
+    0 -1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 0 0 0.5px rgba(255, 255, 255, 0.08) inset;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   letter-spacing: 0;
   cursor: default;
+  transform-origin: top center;
   animation: sb-hud-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1);
   transition:
     width 0.32s cubic-bezier(0.2, 0.9, 0.2, 1),
     height 0.32s cubic-bezier(0.2, 0.9, 0.2, 1),
     border-radius 0.25s ease,
-    border-color 0.2s ease,
-    box-shadow 0.2s ease,
+    box-shadow 0.22s ease,
     background 0.2s ease;
 }
 
+.sb-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0 18px auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent);
+  pointer-events: none;
+}
+
 .sb-shell--expanded {
-  border-radius: 16px;
+  border-radius: 0 0 30px 30px;
 }
 
 .sb-shell--hovered {
-  border-color: rgba(255, 255, 255, 0.18);
   box-shadow:
-    0 14px 36px rgba(0, 0, 0, 0.5),
-    0 0 0 0.5px rgba(255, 255, 255, 0.08) inset,
-    0 0 20px rgba(100, 210, 255, 0.06);
+    0 20px 40px rgba(0, 0, 0, 0.48),
+    0 0 0 0.5px rgba(255, 255, 255, 0.11) inset,
+    0 0 24px rgba(255, 255, 255, 0.035);
 }
 
 .sb-controlbar {
-  min-height: 36px;
+  flex: 1;
+  min-height: 34px;
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 0 6px;
+  padding: 10px 18px 12px;
 }
 
 .sb-shell--learned .sb-controlbar,
 .sb-shell--error .sb-controlbar {
-  gap: 0;
-  padding: 0 10px;
+  gap: 8px;
+  padding: 11px 16px 13px;
 }
 
 .sb-hover-panel {
@@ -1054,17 +1077,18 @@ body.statusbar-mode #app {
 }
 
 .sb-transcript {
-  height: 62px;
-  padding: 8px 16px 6px;
+  height: 74px;
+  padding: 16px 22px 10px;
   box-sizing: border-box;
   display: flex;
   align-items: flex-end;
   overflow: hidden;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.13);
-  color: rgba(255, 255, 255, 0.78);
-  font-size: 12px;
-  line-height: 1.25;
-  font-weight: 450;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.075);
+  background: rgba(255, 255, 255, 0.022);
+  color: rgba(255, 255, 255, 0.74);
+  font-size: 12.5px;
+  line-height: 1.32;
+  font-weight: 440;
   mask-image: linear-gradient(180deg, transparent 0%, #000 22%, #000 100%);
   -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 22%, #000 100%);
 }
@@ -1109,43 +1133,44 @@ body.statusbar-mode #app {
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
 }
 
 .sb-visualizer {
-  height: 28px;
+  height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 2.5px;
+  gap: 3px;
   overflow: visible;
 }
 
 .sb-visualizer span {
-  width: 2.5px;
+  width: 3px;
   min-height: 3px;
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.35);
-  transition: background 0.15s ease, box-shadow 0.15s ease;
+  background: rgba(255, 255, 255, 0.34);
+  transition: background 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
 }
 
 .sb-visualizer--active span {
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 0 6px rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 0 9px rgba(255, 255, 255, 0.16);
 }
 
 .sb-processing {
-  height: 24px;
-  min-width: 80px;
+  height: 34px;
+  min-width: 120px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 5px;
   color: rgba(255, 255, 255, 0.85);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1;
-  font-weight: 560;
-  letter-spacing: 0.02em;
+  font-weight: 620;
+  letter-spacing: 0;
 }
 
 .sb-progress-dots {
@@ -1170,7 +1195,14 @@ body.statusbar-mode #app {
 .sb-success {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 8px;
+}
+
+.sb-success::before {
+  content: "Pasted";
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .sb-success span {
@@ -1192,8 +1224,8 @@ body.statusbar-mode #app {
 }
 
 .sb-manual {
-  width: 42px;
-  height: 16px;
+  width: 76px;
+  height: 24px;
   display: flex;
   align-items: center;
   overflow: hidden;
@@ -1215,7 +1247,7 @@ body.statusbar-mode #app {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.15;
   font-weight: 500;
   color: rgba(255, 255, 255, 0.75);
@@ -1237,7 +1269,7 @@ body.statusbar-mode #app {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 160px;
+  max-width: 220px;
 }
 .sb-learned-text strong {
   color: rgba(255, 255, 255, 0.95);
@@ -1251,7 +1283,7 @@ body.statusbar-mode #app {
   padding: 0;
   border: 0;
   background: transparent;
-  color: rgba(255, 255, 255, 0.3);
+  color: rgba(255, 255, 255, 0.38);
   font-family: inherit;
   font-size: 9px;
   font-weight: 500;
@@ -1265,13 +1297,13 @@ body.statusbar-mode #app {
 
 .sb-error-copy {
   min-width: 0;
-  max-width: 240px;
+  max-width: 288px;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   color: rgba(255, 255, 255, 0.75);
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.15;
   font-weight: 500;
 }
@@ -1299,7 +1331,7 @@ body.statusbar-mode #app {
 }
 
 @keyframes sb-hud-in {
-  from { opacity: 0; transform: scale(0.92) translateY(6px); filter: blur(4px); }
+  from { opacity: 0; transform: scale(0.94) translateY(-10px); filter: blur(5px); }
   to   { opacity: 1; transform: scale(1) translateY(0); filter: blur(0); }
 }
 
