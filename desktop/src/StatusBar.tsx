@@ -31,6 +31,7 @@ type StatusBarMetrics = {
   has_notch: boolean;
   window_width: number;
   window_height: number;
+  surface_top: number;
   closed_width: number;
   closed_height: number;
   hover_width: number;
@@ -56,6 +57,7 @@ const DEFAULT_METRICS: StatusBarMetrics = {
   has_notch: false,
   window_width: 540,
   window_height: 144,
+  surface_top: 0,
   closed_width: 184,
   closed_height: 32,
   hover_width: 218,
@@ -131,6 +133,7 @@ export default function StatusBar() {
     "--sb-top-radius": `${metrics.top_radius}px`,
     "--sb-bottom-radius": `${metrics.bottom_radius}px`,
     "--sb-expanded-bottom-radius": `${metrics.expanded_bottom_radius}px`,
+    "--sb-surface-top": `${metrics.surface_top}px`,
   } as CSSProperties;
 
   useEffect(() => {

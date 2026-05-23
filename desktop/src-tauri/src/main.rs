@@ -48,6 +48,7 @@ struct StatusBarMetrics {
     window_y: f64,
     window_width: f64,
     window_height: f64,
+    surface_top: f64,
     closed_width: f64,
     closed_height: f64,
     hover_width: f64,
@@ -314,31 +315,85 @@ fn status_bar_metrics(app: &tauri::AppHandle) -> StatusBarMetrics {
         32.0
     };
 
-    let closed_width = notch_width.round();
-    let closed_height = notch_height.round();
-    let hover_width = (closed_width + 34.0).min(screen_width * 0.22).round();
-    let hover_height = if has_notch {
-        (closed_height + 12.0).round()
+    let surface_top = if has_notch {
+        (notch_height - 1.0).max(0.0).round()
     } else {
-        40.0
+        0.0
     };
-    let recording_width = (closed_width + 48.0).min(screen_width * 0.26).round();
-    let recording_height = (closed_height + 28.0).clamp(54.0, 64.0).round();
-    let processing_width = (closed_width + 54.0).min(screen_width * 0.27).round();
-    let processing_height = (closed_height + 26.0).clamp(52.0, 62.0).round();
-    let done_width = (closed_width + 28.0).round();
-    let done_height = (closed_height + 20.0).clamp(48.0, 58.0).round();
-    let learned_width = (closed_width + 118.0).min(screen_width * 0.36).round();
-    let learned_height = (closed_height + 18.0).clamp(50.0, 58.0).round();
-    let error_width = (closed_width + 142.0).min(screen_width * 0.38).round();
-    let error_height = (closed_height + 18.0).clamp(50.0, 58.0).round();
-    let transcript_width = (screen_width * 0.36)
-        .clamp((closed_width + 160.0).max(360.0), 500.0)
+
+    let closed_width = if has_notch {
+        (notch_width + 8.0).round()
+    } else {
+        notch_width.round()
+    };
+    let closed_height = if has_notch { 4.0 } else { notch_height.round() };
+    let hover_width = if has_notch {
+        (closed_width + 14.0).min(screen_width * 0.18).round()
+    } else {
+        (closed_width + 34.0).min(screen_width * 0.22).round()
+    };
+    let hover_height = if has_notch { 22.0 } else { 40.0 };
+    let recording_width = if has_notch {
+        (closed_width + 42.0).min(screen_width * 0.22).round()
+    } else {
+        (closed_width + 48.0).min(screen_width * 0.26).round()
+    };
+    let recording_height = if has_notch {
+        44.0
+    } else {
+        (closed_height + 28.0).clamp(54.0, 64.0).round()
+    };
+    let processing_width = if has_notch {
+        (closed_width + 48.0).min(screen_width * 0.23).round()
+    } else {
+        (closed_width + 54.0).min(screen_width * 0.27).round()
+    };
+    let processing_height = if has_notch {
+        42.0
+    } else {
+        (closed_height + 26.0).clamp(52.0, 62.0).round()
+    };
+    let done_width = if has_notch {
+        (closed_width + 28.0).round()
+    } else {
+        (closed_width + 28.0).round()
+    };
+    let done_height = if has_notch {
+        34.0
+    } else {
+        (closed_height + 20.0).clamp(48.0, 58.0).round()
+    };
+    let learned_width = if has_notch {
+        (closed_width + 112.0).min(screen_width * 0.32).round()
+    } else {
+        (closed_width + 118.0).min(screen_width * 0.36).round()
+    };
+    let learned_height = if has_notch {
+        38.0
+    } else {
+        (closed_height + 18.0).clamp(50.0, 58.0).round()
+    };
+    let error_width = if has_notch {
+        (closed_width + 136.0).min(screen_width * 0.34).round()
+    } else {
+        (closed_width + 142.0).min(screen_width * 0.38).round()
+    };
+    let error_height = if has_notch {
+        38.0
+    } else {
+        (closed_height + 18.0).clamp(50.0, 58.0).round()
+    };
+    let transcript_width = (screen_width * 0.34)
+        .clamp((closed_width + 150.0).max(340.0), 500.0)
         .round();
-    let transcript_height = (closed_height + 82.0).clamp(104.0, 122.0).round();
+    let transcript_height = if has_notch {
+        94.0
+    } else {
+        (closed_height + 82.0).clamp(104.0, 122.0).round()
+    };
 
     let window_width = (transcript_width.max(error_width).max(learned_width) + 40.0).round();
-    let window_height = (transcript_height + 22.0).round();
+    let window_height = (surface_top + transcript_height + 18.0).round();
     let window_x = (screen_x + screen_width / 2.0 - window_width / 2.0).round();
     let window_y = if has_notch {
         screen_y
@@ -359,6 +414,7 @@ fn status_bar_metrics(app: &tauri::AppHandle) -> StatusBarMetrics {
         window_y,
         window_width,
         window_height,
+        surface_top,
         closed_width,
         closed_height,
         hover_width,
@@ -376,9 +432,95 @@ fn status_bar_metrics(app: &tauri::AppHandle) -> StatusBarMetrics {
         error_width,
         error_height,
         top_radius: if has_notch { 0.0 } else { 999.0 },
-        bottom_radius: if has_notch { 14.0 } else { 999.0 },
+        bottom_radius: if has_notch { 16.0 } else { 999.0 },
         expanded_bottom_radius: if has_notch { 24.0 } else { 24.0 },
     }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_status_bar_macos_frame_on_main(
+    win: &tauri::WebviewWindow,
+    metrics: &StatusBarMetrics,
+) -> bool {
+    use cocoa::foundation::{NSPoint, NSRect, NSSize};
+    use objc::Message;
+    use objc::runtime::{Class, Object, Sel};
+
+    if !metrics.has_notch {
+        return false;
+    }
+
+    let Ok(ns_window) = win.ns_window() else {
+        return false;
+    };
+    if ns_window.is_null() {
+        return false;
+    }
+
+    unsafe {
+        let Some(cls) = Class::get("NSScreen") else {
+            return false;
+        };
+        let Ok(screen) = cls.send_message::<_, *mut Object>(Sel::register("mainScreen"), ()) else {
+            return false;
+        };
+        if screen.is_null() {
+            return false;
+        }
+        let Some(screen_obj) = screen.as_ref() else {
+            return false;
+        };
+        let Ok(screen_frame) = screen_obj.send_message::<_, NSRect>(Sel::register("frame"), ())
+        else {
+            return false;
+        };
+
+        let ns_window = &*(ns_window as *mut Object);
+        let frame = NSRect {
+            origin: NSPoint {
+                x: screen_frame.origin.x + screen_frame.size.width / 2.0
+                    - metrics.window_width / 2.0,
+                y: screen_frame.origin.y + screen_frame.size.height - metrics.window_height,
+            },
+            size: NSSize {
+                width: metrics.window_width,
+                height: metrics.window_height,
+            },
+        };
+        let _: Result<(), _> =
+            ns_window.send_message(Sel::register("setFrame:display:"), (frame, true));
+        tracing::info!(
+            "[status-bar] native macOS frame applied x={:.0} y={:.0} size={:.0}x{:.0} notch={}x{} surface_top={}",
+            frame.origin.x,
+            frame.origin.y,
+            frame.size.width,
+            frame.size.height,
+            metrics.notch_width,
+            metrics.notch_height,
+            metrics.surface_top
+        );
+        true
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_status_bar_macos_frame(win: &tauri::WebviewWindow, metrics: &StatusBarMetrics) {
+    if !metrics.has_notch {
+        return;
+    }
+    let win_for_main = win.clone();
+    let metrics_for_main = metrics.clone();
+    if let Err(e) = win.run_on_main_thread(move || {
+        if !apply_status_bar_macos_frame_on_main(&win_for_main, &metrics_for_main) {
+            tracing::warn!("[status-bar] native macOS frame apply returned false");
+        }
+    }) {
+        tracing::warn!("[status-bar] could not schedule native macOS frame: {e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn schedule_status_bar_macos_frame(_win: &tauri::WebviewWindow, _metrics: &StatusBarMetrics) {
 }
 
 fn apply_status_bar_metrics(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
@@ -395,6 +537,7 @@ fn apply_status_bar_metrics(app: &tauri::AppHandle, win: &tauri::WebviewWindow) 
     })) {
         tracing::warn!("[status-bar] set metrics position failed: {e}");
     }
+    schedule_status_bar_macos_frame(win, &metrics);
     let _ = app.emit("status-bar-metrics", &metrics);
     tracing::debug!(
         "[status-bar] metrics notch={} notch={}x{} window={}x{} at {},{}",
