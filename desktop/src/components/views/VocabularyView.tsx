@@ -33,7 +33,7 @@ function SourceBadge({ source }: { source: VocabRow["source"] }) {
           color:      "hsl(var(--chip-amber-fg))",
           background: "hsl(var(--chip-amber-bg))",
         }}
-        title="AutoNote keeps starred words even if you stop using them"
+        title="AirNote keeps starred words even if you stop using them"
       >
         <Star size={9} fill="currentColor" />
         Starred
@@ -326,7 +326,7 @@ function AddTermRow({ onAdd }: { onAdd: (term: string) => Promise<void> }) {
         type="text"
         value={value}
         onChange={(e) => { setValue(e.target.value); setError(null); }}
-        placeholder="Add a name or word AutoNote often gets wrong, like n8n or Vipassana"
+        placeholder="Add a name or word AirNote often gets wrong, like n8n or Vipassana"
         maxLength={64}
         disabled={busy}
         className="flex-1 bg-transparent outline-none text-[13.5px] text-foreground placeholder:text-muted-foreground/70"
@@ -458,7 +458,7 @@ export function VocabularyView() {
               Vocabulary
             </h1>
             <p className="text-[13px] text-muted-foreground mt-1 tabular-nums">
-              {rows.length} word{rows.length !== 1 ? "s" : ""} AutoNote remembers when you dictate
+              {rows.length} word{rows.length !== 1 ? "s" : ""} AirNote remembers when you dictate
             </p>
           </div>
           {rows.length > 0 && (
@@ -537,7 +537,7 @@ export function VocabularyView() {
               </p>
               <p className="text-[12px] text-muted-foreground max-w-xs leading-relaxed">
                 Names and words you add or correct land here automatically.
-                AutoNote will use them on your next recording.
+                AirNote will use them on your next recording.
               </p>
             </div>
           </div>

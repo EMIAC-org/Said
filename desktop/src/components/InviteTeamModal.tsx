@@ -4,7 +4,7 @@ import { sendInviteEmail, openExternal } from "@/lib/invoke";
 
 /* ════════════════════════════════════════════════════════════════════════════
    InviteTeamModal — single-input "invite a friend".
-   AutoNote is free while we're early — no team/billing pitch.
+   AirNote is free while we're early — no team/billing pitch.
 
    How sending works:
    - Tries the backend first (POST /v1/invite → Resend).
@@ -27,11 +27,11 @@ interface Props {
 
 const VALID_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const MAIL_SUBJECT = "You should try AutoNote";
+const MAIL_SUBJECT = "You should try AirNote";
 const MAIL_BODY =
-  "Hey — I've been using AutoNote to dictate and polish text. " +
+  "Hey — I've been using AirNote to dictate and polish text. " +
   "It's quietly become my favourite way to write.\n\n" +
-  "Thought you'd like it: https://autonote.app";
+  "Thought you'd like it: https://airnote.app";
 
 type SendState =
   | { kind: "idle" }
@@ -176,7 +176,7 @@ export function InviteTeamModal({ open, onClose }: Props) {
             className="text-[13px] text-center max-w-[320px] leading-relaxed mb-7"
             style={{ color: "hsl(var(--muted-foreground))" }}
           >
-            AutoNote is free while we're early. If someone in your life would love it, send them a note.
+            AirNote is free while we're early. If someone in your life would love it, send them a note.
           </p>
 
           {/* Email input — uses .input utility for full token consistency */}
@@ -250,7 +250,7 @@ export function InviteTeamModal({ open, onClose }: Props) {
             className="text-[11px] text-center mt-5"
             style={{ color: "hsl(var(--muted-foreground))", opacity: 0.7 }}
           >
-            A short note from AutoNote. No account needed.
+            A short note from AirNote. No account needed.
           </p>
         </div>
       </div>

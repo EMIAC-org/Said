@@ -210,7 +210,7 @@ function ProfileDropdown({
             {info.signedIn ? (info.email ?? "Signed in") : "Guest"}
           </p>
           <p className="text-[11px] text-muted-foreground leading-tight mt-0.5 truncate">
-            {info.signedIn ? "Signed in to AutoNote" : "Not signed in"}
+            {info.signedIn ? "Signed in to AirNote" : "Not signed in"}
           </p>
         </div>
       </div>
@@ -289,33 +289,24 @@ export function Topbar({ snapshot: _snapshot, theme, toggleTheme, onLoginClick }
     };
 
     const unsubVocab = onVocabToast((payload) => {
-      if (payload.kind === "added") {
-        push({
-          kind:  "vocab-added",
-          title: payload.source === "manual"
-            ? "Added to vocabulary"
-            : "AutoNote learned a new word",
-          body:  payload.source === "manual"
-            ? `AutoNote will recognise "${payload.term}" on your next recording.`
-            : `AutoNote remembered "${payload.term}".`,
-        });
-      } else if (payload.kind === "starred") {
+      // "added" is handled by the in-app VocabularyToast — don't duplicate in bell
+      if (payload.kind === "starred") {
         push({
           kind:  "vocab-starred",
           title: "Pinned to vocabulary",
-          body:  `AutoNote will keep "${payload.term}" even if you stop using it.`,
+          body:  `AirNote will keep "${payload.term}" even if you stop using it.`,
         });
       } else if (payload.kind === "removed") {
         push({
           kind:  "vocab-removed",
           title: "Removed from vocabulary",
-          body:  `AutoNote won't recognise "${payload.term}" any more.`,
+          body:  `AirNote won't recognise "${payload.term}" any more.`,
         });
       } else if (payload.kind === "queued") {
         push({
           kind:  "info",
           title: "Noticed your correction",
-          body:  `Make this fix once more and AutoNote will remember "${payload.term}".`,
+          body:  `Make this fix once more and AirNote will remember "${payload.term}".`,
         });
       }
     });

@@ -278,7 +278,7 @@ export function AIProviderSection() {
               Sign in to OpenAI
             </p>
             <p className="text-[11.5px] text-muted-foreground mb-2 leading-relaxed pl-7">
-              Click the button below to open OpenAI's authorization page. Sign in and authorize AutoNote.
+              Click the button below to open OpenAI's authorization page. Sign in and authorize AirNote.
             </p>
             <div className="pl-7">
               <button

@@ -643,7 +643,6 @@ impl Default for TrayCacheInner {
 fn tray_title(state: &str) -> &'static str {
     match state {
         "recording" => " ● REC",
-        "processing" => " …",
         _ => "",
     }
 }
@@ -659,10 +658,9 @@ fn build_tray_menu(
     // ── 1. Toggle recording (state-aware label + enabled) ──────────────
     let toggle_label = match snap.state.as_str() {
         "recording" => "Stop recording",
-        "processing" => "Processing…",
         _ => "Start recording",
     };
-    let toggle_enabled = snap.state.as_str() != "processing";
+    let toggle_enabled = snap.state.as_str() == "idle";
     let toggle = MenuItem::with_id(
         app,
         "tray_toggle",
@@ -773,9 +771,9 @@ fn build_tray_menu(
     let polish_submenu = Submenu::with_items(app, "Polish my message", true, &polish_item_refs)?;
 
     // ── 4. Window actions + quit ────────────────────────────────────────
-    let show_item = MenuItem::with_id(app, "show", "Open AutoNote", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(app, "show", "Open AirNote", true, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Quit AutoNote", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit AirNote", true, None::<&str>)?;
 
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
@@ -950,7 +948,7 @@ fn create_status_bar(app: &tauri::AppHandle) {
     );
 
     match tauri::WebviewWindowBuilder::new(app, "status-bar", tauri::WebviewUrl::App(url.into()))
-        .title("AutoNote")
+        .title("AirNote")
         .inner_size(idle_w, idle_h)
         .position(x, y)
         .decorations(false)
@@ -1037,7 +1035,7 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
             tracing::warn!("[tray_polish] backend not ready");
             emit_tray_error(
                 app,
-                "AutoNote backend is still starting. Try again in a moment.",
+                "AirNote backend is still starting. Try again in a moment.",
             );
             return;
         }
@@ -1201,7 +1199,7 @@ fn tray_set_output_language(app: &tauri::AppHandle, lang: &str) {
         let Some(ep) = ep_opt else {
             emit_tray_error(
                 &app_h,
-                "AutoNote backend is still starting. Language will update once Settings are available.",
+                "AirNote backend is still starting. Language will update once Settings are available.",
             );
             return;
         };
@@ -1864,9 +1862,6 @@ fn do_cancel_recording(
         if d.state != desktop::AppState::Recording {
             return;
         }
-        if let Some(t) = app.tray_by_id("said") {
-            let _ = t.set_title(Some("[     ]  AutoNote"));
-        }
         let stop_rx = match d.begin_stop() {
             Ok((stop_rx, _)) => Some(stop_rx),
             Err(e) => {
@@ -1913,9 +1908,6 @@ fn do_finish_recording(
             Ok(g) => g,
             Err(_) => return,
         };
-        if let Some(t) = app.tray_by_id("said") {
-            let _ = t.set_title(Some("[  …  ]  AutoNote"));
-        }
         match d.begin_stop() {
             Ok((stop_rx, was_too_short)) => {
                 let snap = d.snapshot();
@@ -2951,7 +2943,7 @@ fn choose_recording_audio_save_path(filename: &str) -> Result<Option<std::path::
     {
         let script = format!(
             "set chosenFile to choose file name with prompt {} default name {} default location (path to downloads folder)\nPOSIX path of chosenFile",
-            applescript_string("Save AutoNote audio recording"),
+            applescript_string("Save AirNote audio recording"),
             applescript_string(&filename),
         );
         let out = std::process::Command::new("osascript")
@@ -3221,7 +3213,7 @@ async fn add_vocabulary_term(
     notify_macos(
         &app,
         "Added to vocabulary",
-        &format!("AutoNote will recognise \"{term}\" on your next recording."),
+        &format!("AirNote will recognise \"{term}\" on your next recording."),
     );
     Ok(())
 }
@@ -3344,7 +3336,7 @@ async fn star_vocabulary_term(
         notify_macos(
             &app,
             "Pinned to vocabulary",
-            &format!("AutoNote will keep \"{term}\" even if you stop using it."),
+            &format!("AirNote will keep \"{term}\" even if you stop using it."),
         );
     }
     Ok(starred)
@@ -3616,7 +3608,7 @@ fn toggle_meeting_mute(
 
     if meeting_mode.is_muted() {
         if current != desktop::AppState::Idle {
-            return Err("finish the current AutoNote recording before resuming meeting capture".into());
+            return Err("finish the current AirNote recording before resuming meeting capture".into());
         }
         meeting_mode.set_muted(false);
         emit_meeting_stt_status(&app);
@@ -3762,7 +3754,7 @@ fn get_debug_logs() -> DebugLogs {
     let (backend, backend_truncated) = read_recent_log(&backend_path, "polish-backend build=");
 
     let combined = format!(
-        "── AutoNote desktop ({}) ──\n{}\n\n── polish-backend ({}) ──\n{}",
+        "── AirNote desktop ({}) ──\n{}\n\n── polish-backend ({}) ──\n{}",
         desktop_path.display(),
         if desktop.trim().is_empty() {
             "(no desktop log found)"
@@ -3850,7 +3842,7 @@ fn get_performance_snapshot(
 
 // ── Edit watcher ──────────────────────────────────────────────────────────────
 
-const EDIT_WATCH_IDLE_TIMEOUT: Duration = Duration::from_secs(8);
+const EDIT_WATCH_IDLE_TIMEOUT: Duration = Duration::from_secs(12);
 const EDIT_WATCH_MAX_DURATION: Duration = Duration::from_secs(30);
 const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(50);
 const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
@@ -5009,9 +5001,9 @@ fn main() {
                 let initial_menu = match &initial_snap {
                     Some(snap) => build_tray_menu(app.handle(), snap, None, "hinglish")?,
                     None => Menu::with_items(app, &[
-                        &MenuItem::with_id(app, "show", "Open AutoNote", true, None::<&str>)?,
+                        &MenuItem::with_id(app, "show", "Open AirNote", true, None::<&str>)?,
                         &PredefinedMenuItem::separator(app)?,
-                        &MenuItem::with_id(app, "quit", "Quit AutoNote", true, None::<&str>)?,
+                        &MenuItem::with_id(app, "quit", "Quit AirNote", true, None::<&str>)?,
                     ])?,
                 };
 
@@ -5020,7 +5012,7 @@ fn main() {
                 ).ok();
 
                 let mut tray_builder = TrayIconBuilder::with_id("said")
-                    .tooltip("AutoNote — Voice Polish Studio")
+                    .tooltip("AirNote — Voice Polish Studio")
                     .menu(&initial_menu)
                     .show_menu_on_left_click(true);
 

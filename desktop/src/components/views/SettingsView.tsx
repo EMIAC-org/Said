@@ -544,7 +544,7 @@ function EnterpriseSection() {
       </p>
       <div className="panel p-5 space-y-4">
         <p className="text-[12px] text-muted-foreground leading-relaxed">
-          Connect to your organization's AutoNote Enterprise server for team management, shared vocabulary, and centralized billing.
+          Connect to your organization's AirNote Enterprise server for team management, shared vocabulary, and centralized billing.
         </p>
 
         {/* Server URL input */}
@@ -1630,16 +1630,16 @@ export function SettingsView({
             >
               <p className="font-semibold mb-1">Permissions needed</p>
               {!micGranted && (
-                <p>• <strong>Microphone</strong> — lets AutoNote record your voice.</p>
+                <p>• <strong>Microphone</strong> — lets AirNote record your voice.</p>
               )}
               {!axGranted && (
-                <p>• <strong>Accessibility</strong> — lets AutoNote paste text directly into any app.</p>
+                <p>• <strong>Accessibility</strong> — lets AirNote paste text directly into any app.</p>
               )}
               {!imGranted && (
-                <p>• <strong>Input Monitoring</strong> — lets AutoNote listen for the {recordHotkeyLabel} recording hotkey.</p>
+                <p>• <strong>Input Monitoring</strong> — lets AirNote listen for the {recordHotkeyLabel} recording hotkey.</p>
               )}
               <p className="mt-1.5 opacity-70">
-                After granting a permission, return to AutoNote. This page updates automatically.
+                After granting a permission, return to AirNote. This page updates automatically.
               </p>
             </div>
           )}
@@ -1657,7 +1657,7 @@ export function SettingsView({
                 <p className="text-[13px] font-medium text-foreground">Microphone</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
                   {micGranted
-                    ? "Granted — AutoNote can record your voice."
+                    ? "Granted — AirNote can record your voice."
                     : isWindows
                     ? "Required for dictation. Windows asks the first time you start recording."
                     : "Required for dictation. macOS will ask once, then use System Settings if denied."}
@@ -1703,7 +1703,7 @@ export function SettingsView({
                     <p className="text-[13px] font-medium text-foreground">Accessibility</p>
                     <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
                       {axGranted
-                        ? "Granted — AutoNote can paste text into any app."
+                        ? "Granted — AirNote can paste text into any app."
                         : "Required for auto-paste. Opens System Settings → Privacy & Security → Accessibility."}
                     </p>
                   </div>
@@ -1754,12 +1754,12 @@ export function SettingsView({
                 <p className="text-[13px] font-medium text-foreground">Notifications</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
                   {notifPerm === "granted"
-                    ? "Granted — AutoNote will notify you when a learning edit is ready to review."
+                    ? "Granted — AirNote will notify you when a learning edit is ready to review."
                     : notifPerm === "denied"
                     ? isWindows
-                      ? "Denied — open Windows Settings → System → Notifications & actions → AutoNote to enable."
-                      : "Denied — open System Settings → Notifications → AutoNote to enable."
-                    : "AutoNote asks once to send learning-edit notifications."}
+                      ? "Denied — open Windows Settings → System → Notifications & actions → AirNote to enable."
+                      : "Denied — open System Settings → Notifications → AirNote to enable."
+                    : "AirNote asks once to send learning-edit notifications."}
                 </p>
               </div>
               <div className="flex-shrink-0 ml-4">
@@ -2242,7 +2242,7 @@ export function SettingsView({
               >
                 {([
                   ["combined", "Combined"],
-                  ["desktop",  "AutoNote"],
+                  ["desktop",  "AirNote"],
                   ["backend",  "Backend"],
                 ] as const).map(([id, label]) => {
                   const active = debugTab === id;
@@ -2284,7 +2284,7 @@ export function SettingsView({
                 >
                   <FileText size={12} />
                   <span className="text-[11px] font-medium">
-                    {debugBusy ? "Loading" : debugTab === "combined" ? "Combined" : debugTab === "desktop" ? "AutoNote desktop" : "polish-backend"}
+                    {debugBusy ? "Loading" : debugTab === "combined" ? "Combined" : debugTab === "desktop" ? "AirNote desktop" : "polish-backend"}
                   </span>
                 </div>
                 <textarea
@@ -2311,7 +2311,7 @@ export function SettingsView({
         <Section title="About">
           <Row
             icon={<Info size={16} />}
-            label={`AutoNote v${appVersion}`}
+            label={`AirNote v${appVersion}`}
             description="Voice Polish Studio · Local-first · Tauri + Rust + React"
           />
 

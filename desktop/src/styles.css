@@ -211,7 +211,14 @@
     pointer-events: none;
     background:
       var(--mesh-bg),
-      hsl(240 5% 2% / 0.81);
+      var(--body-overlay);
+  }
+
+  :root {
+    --body-overlay: hsl(240 5% 2% / 0.81);
+  }
+  [data-theme="light"] {
+    --body-overlay: hsl(220 14% 96% / 0.92);
   }
 
   body {

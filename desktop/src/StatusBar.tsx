@@ -415,7 +415,7 @@ export default function StatusBar() {
       <div
         className="sb-toast sb-toast-confirm"
         style={{ width: innerSize.width }}
-        aria-label="AutoNote confirming"
+        aria-label="AirNote confirming"
       >
         <div className="sb-toast-header">
           <span className="sb-toast-dot sb-toast-dot-yellow" />
@@ -445,14 +445,14 @@ export default function StatusBar() {
       <div
         className="sb-toast sb-toast-negative"
         style={{ width: innerSize.width }}
-        aria-label="AutoNote wrong correction"
+        aria-label="AirNote wrong correction"
       >
         <div className="sb-toast-header">
           <span className="sb-toast-dot sb-toast-dot-red" />
           <span className="sb-toast-title">Wrong correction detected</span>
         </div>
         <div className="sb-toast-body">
-          AutoNote keeps changing <span className="sb-toast-term">{bar.term}</span> to <strong>"{bar.wrongReplacement}"</strong> but you changed it back.
+          AirNote keeps changing <span className="sb-toast-term">{bar.term}</span> to <strong>"{bar.wrongReplacement}"</strong> but you changed it back.
           <br />
           Should I stop this correction?
         </div>
@@ -473,7 +473,7 @@ export default function StatusBar() {
       <div
         className="sb-shell sb-shell--retraining"
         style={{ width: innerSize.width, height: innerSize.height }}
-        aria-label="AutoNote retraining"
+        aria-label="AirNote retraining"
       >
         <span className="sb-toast-dot sb-toast-dot-blue" />
         <span className="sb-retrain-label">Improving model...</span>
@@ -485,8 +485,8 @@ export default function StatusBar() {
     <div
       className={`sb-shell sb-shell--${bar.kind}${hasTranscript ? " sb-shell--expanded" : ""}${bar.kind === "idle" && idleHovered ? " sb-shell--hovered" : ""}`}
       style={{ width: innerSize.width, height: innerSize.height }}
-      aria-label={`AutoNote ${bar.kind}`}
-      title={`AutoNote ${bar.kind}`}
+      aria-label={`AirNote ${bar.kind}`}
+      title={`AirNote ${bar.kind}`}
       onMouseEnter={() => {
         if (bar.kind === "idle") setIdleHovered(true);
       }}

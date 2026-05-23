@@ -1,9 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AutoNote",
-  "mainBinaryName": "AutoNote",
+  "productName": "AirNote",
+  "mainBinaryName": "AirNote",
   "version": "2.1.9",
-  "identifier": "com.emiac.autonote.desktop",
+  "identifier": "com.emiac.airnote.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -14,7 +14,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "AutoNote",
+        "title": "AirNote",
         "width": 940,
         "height": 680,
         "minWidth": 780,
@@ -26,7 +26,7 @@
         "hiddenTitle": true,
         "transparent": true,
         "windowEffects": {
-          "effects": ["sidebar"],
+          "effects": ["underPageBackground"],
           "state": "followsWindowActiveState",
           "radius": 12.0
         }
