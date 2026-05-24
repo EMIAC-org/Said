@@ -82,7 +82,7 @@ pub struct ClassifyResponse {
     pub promoted_count: usize,
     pub is_repeat: bool,
     pub promoted_terms: Vec<String>,
-    pub queued_terms: Vec<String>,
+    pub queued_terms: Vec<QueuedTerm>,
     /// Pass-through from the analyzer — each change the LLM identified.
     pub changes: Vec<AnalyzedChange>,
     /// Terms where the classifier can't decide — needs user confirmation via status bar toast.
@@ -91,6 +91,9 @@ pub struct ClassifyResponse {
     /// Corrections the system keeps making wrong — needs user to confirm blocking.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub negative_terms: Vec<NegativeTerm>,
+    /// Changes the user should review before learning (multi-change edits).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_candidates: Vec<ReviewCandidate>,
 }
 
 #[derive(Serialize, Clone)]
@@ -106,6 +109,23 @@ pub struct NegativeTerm {
     pub term: String,
     pub wrong_replacement: String,
     pub correction_count: i64,
+}
+
+/// A candidate change the user should review before learning.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ReviewCandidate {
+    pub original: String,
+    pub corrected: String,
+    pub term_type: String,
+    pub learnable: bool,
+    pub tag: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct QueuedTerm {
+    pub term: String,
+    pub sighting_count: i64,
+    pub k: i64,
 }
 
 pub async fn classify(
@@ -238,10 +258,21 @@ pub async fn classify(
         );
     }
 
-    // ── Step 3: Demotion (unconditional on every edit) ───────────────────────
-    let demoted = run_demotion_pass(&state, &body.ai_output, &body.user_kept);
-    if demoted > 0 {
-        info!("[classify] demoted {demoted} vocabulary term(s) on this edit");
+    // ── Step 3: Revert wrong aliases (unconditional on every edit) ────────────
+    // Detects vocab terms in the polish output that the user replaced with a
+    // different word. Deletes only the offending STT alias — the vocab entry
+    // itself is kept because the term is valid.
+    let reverted = run_alias_revert_pass(&state, &body.ai_output, &body.user_kept);
+    let mut negative_terms: Vec<NegativeTerm> = Vec::new();
+    if !reverted.is_empty() {
+        info!("[classify] reverted {} wrong alias(es) on this edit", reverted.len());
+        for r in &reverted {
+            negative_terms.push(NegativeTerm {
+                term: r.replaced_with.clone(),
+                wrong_replacement: r.term.clone(),
+                correction_count: 1,
+            });
+        }
     }
     let policy_feedback = tier2_edit_policy::mark_removed_feedback(
         &state.pool,
@@ -346,9 +377,17 @@ pub async fn classify(
     };
 
     // ── Step 5: Save learnable changes ───────────────────────────────────────
+    // Pre-count STT changes to decide: auto-learn vs review card.
+    let stt_change_count = analyzer_output
+        .changes
+        .iter()
+        .filter(|c| matches!(c.reason, ChangeReason::SttError) && c.should_learn)
+        .count();
+
     let mut promoted_count = 0_usize;
     let mut promoted_terms: Vec<String> = Vec::new();
-    let mut queued_terms: Vec<String> = Vec::new();
+    let mut queued_terms: Vec<QueuedTerm> = Vec::new();
+    let mut review_candidates: Vec<ReviewCandidate> = Vec::new();
     let mut has_repeat = false;
     let mut learned = false;
 
@@ -445,7 +484,6 @@ pub async fn classify(
             ChangeReason::SttError => {
                 if promotion_gate::is_common_word(corrected) {
                     info!("[classify] STT_ERROR skipped — common word: {corrected:?}");
-                    queued_terms.push(corrected.to_string());
                     continue;
                 }
                 if promotion_gate::is_numeric_junk(corrected) {
@@ -502,6 +540,7 @@ pub async fn classify(
                     continue;
                 }
 
+                // Record edit-policy rule (bookkeeping, does not count as "learned")
                 if let Some(pair) = deterministic_pair.as_ref() {
                     if tier2_edit_policy::record_explicit_edit(
                         &state.pool,
@@ -514,7 +553,6 @@ pub async fn classify(
                         Some(&body.recording_id),
                     ) {
                         policy_touched = true;
-                        learned = true;
                         info!(
                             "[classify] recorded tier2 edit-policy {} rule: {:?} -> {:?}",
                             pair.edit_type, pair.variant_form, canonical_for_policy
@@ -522,40 +560,72 @@ pub async fn classify(
                     }
                 }
 
-                let should_promote_now = if existing_term.is_some() {
+                // ── Route decision: auto-learn vs review card ───────────
+                //
+                // When 2+ STT changes exist, ALL go to the review card —
+                // the user picks which to learn. Nothing auto-fires.
+                //
+                // Only a single unambiguous K=1 change with no other STT
+                // changes bypasses the review card.
+                if stt_change_count >= 2 {
+                    let tag = if existing_term.is_some() { "stt" } else { "stt" };
+                    review_candidates.push(ReviewCandidate {
+                        original: original.to_string(),
+                        corrected: corrected.to_string(),
+                        term_type: term_type.to_string(),
+                        learnable: true,
+                        tag: tag.to_string(),
+                    });
+                    info!(
+                        "[classify] review candidate ({} total): {:?} → {:?} (type={term_type}, in_vocab={})",
+                        stt_change_count, original, corrected, existing_term.is_some(),
+                    );
+                    continue;
+                }
+
+                // Single change path — decide auto-learn vs review
+                if existing_term.is_some() {
+                    // Self-upgrade: capture new distortion for existing term
                     has_repeat = true;
-                    true
-                } else {
-                    match pending_promotions::record_sighting(
-                        &state.pool,
-                        &state.default_user_id,
-                        corrected,
-                        original,
-                        &output_language,
-                        pending_promotions::DEFAULT_K,
-                    ) {
-                        Some(pending_promotions::PromotionDecision::Promote { sighting_count }) => {
-                            info!(
-                                "[classify] pending STT term reached promotion threshold: {corrected:?} sightings={sighting_count}"
-                            );
-                            true
-                        }
-                        Some(pending_promotions::PromotionDecision::Pending { sighting_count }) => {
-                            info!(
-                                "[classify] queued STT term pending confirmation: {corrected:?} sightings={sighting_count}/{}",
-                                pending_promotions::DEFAULT_K
-                            );
-                            queued_terms.push(corrected.to_string());
-                            continue;
-                        }
-                        None => {
-                            info!(
-                                "[classify] STT_ERROR skipped — pending promotion write failed: {corrected:?}"
-                            );
-                            continue;
-                        }
+                    if !original.is_empty() {
+                        stt_replacements::upsert_aliases_for_language(
+                            &state.pool,
+                            &state.default_user_id,
+                            original,
+                            original,
+                            canonical_for_policy,
+                            1.0,
+                            &output_language,
+                        );
+                        info!(
+                            "[classify] self-upgrade: new distortion {:?} for known term {:?}",
+                            original, canonical_for_policy,
+                        );
                     }
-                };
+                } else if matches!(term_type, "brand" | "acronym" | "code_identifier")
+                    && !promotion_gate::is_common_word(original)
+                {
+                    info!(
+                        "[classify] auto-learn K=1: {:?} → {:?} (type={term_type})",
+                        original, corrected,
+                    );
+                } else {
+                    // Single change but not K=1 unambiguous — show review card
+                    review_candidates.push(ReviewCandidate {
+                        original: original.to_string(),
+                        corrected: corrected.to_string(),
+                        term_type: term_type.to_string(),
+                        learnable: true,
+                        tag: "stt".to_string(),
+                    });
+                    info!(
+                        "[classify] review candidate (single): {:?} → {:?} (type={term_type})",
+                        original, corrected,
+                    );
+                    continue;
+                }
+
+                let should_promote_now = true;
 
                 if !should_promote_now {
                     continue;
@@ -644,6 +714,22 @@ pub async fn classify(
                     promoted_count += aliases_written;
                 }
 
+                // ── Proactive distortion seeding ────────────────────────
+                // Pre-generate 8-12 likely Deepgram distortions as aliases
+                // so the system handles novel mis-hearings immediately.
+                let proactive = stt_replacements::generate_proactive_distortions(
+                    &state.pool,
+                    &state.default_user_id,
+                    &canonical_term,
+                    original,
+                    &output_language,
+                );
+                if proactive > 0 {
+                    info!(
+                        "[classify] seeded {proactive} proactive distortion(s) for {canonical_term:?}"
+                    );
+                }
+
                 // ── Auto-classify term type ──────────────────────────────
                 // classify_term_type is already called inside upsert, but
                 // we call it here for any term that already existed without
@@ -688,31 +774,50 @@ pub async fn classify(
                 }
             }
 
-            ChangeReason::StylePreference | ChangeReason::StructuralRewrite => {
+            ChangeReason::StructuralRewrite => {
+                if stt_change_count >= 2 && !corrected.is_empty() {
+                    review_candidates.push(ReviewCandidate {
+                        original: original.to_string(),
+                        corrected: corrected.to_string(),
+                        term_type: vocabulary::classify_term_type(corrected).to_string(),
+                        learnable: false,
+                        tag: "added".to_string(),
+                    });
+                }
+            }
+
+            ChangeReason::StylePreference => {
                 // Not learnable — intentional no-op.
             }
         }
     }
 
+    let has_negatives = !negative_terms.is_empty();
+    let has_review = !review_candidates.is_empty();
+
     // Invalidate after any corrections, stt_replacements, or Tier 2 policy writes.
-    if learned || policy_touched {
+    if learned || policy_touched || has_negatives {
         crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
     }
 
-    if learned {
+    // Only retrain if something was actually committed (not pending review).
+    // When review candidates exist, retrain happens after confirm-batch.
+    if (learned || has_negatives) && !has_review {
         schedule_onnx_retrain(state.clone());
     }
 
     let notify = learned && (promoted_count > 0 || policy_touched);
 
     info!(
-        "[classify] {} overall={} changes={} promoted={} notify={} learned={}",
+        "[classify] {} overall={} changes={} promoted={} notify={} learned={} negatives={} review={}",
         body.recording_id,
         analyzer_output.overall_class,
         analyzer_output.changes.len(),
         promoted_count,
         notify,
         learned,
+        negative_terms.len(),
+        review_candidates.len(),
     );
 
     (
@@ -732,28 +837,86 @@ pub async fn classify(
             queued_terms,
             changes: analyzer_output.changes,
             ambiguous_terms,
-            negative_terms: vec![],
+            negative_terms,
+            review_candidates,
         }),
     )
 }
 
-/// Demote vocabulary terms that appear in polish but are removed in user_kept.
-fn run_demotion_pass(state: &AppState, polish: &str, user_kept: &str) -> usize {
+/// Info about a wrong alias the system applied that the user reverted.
+struct RevertedAlias {
+    /// The vocab term the system wrongly output (e.g. "Macobs")
+    term: String,
+    /// What the user actually wanted (e.g. "access")
+    replaced_with: String,
+}
+
+/// Detect vocab terms in polish that the user replaced with a different word.
+/// Only deletes the offending STT alias — the vocabulary entry itself stays
+/// intact because the term is valid, just the alias was wrong.
+fn run_alias_revert_pass(state: &AppState, polish: &str, user_kept: &str) -> Vec<RevertedAlias> {
     let polish_lower = polish.to_ascii_lowercase();
     let kept_lower = user_kept.to_ascii_lowercase();
     let vocab = vocabulary::top_terms(&state.pool, &state.default_user_id, 1000);
 
-    let mut demoted = 0_usize;
+    let mut reverted = Vec::new();
     for v in vocab {
         let term_lower = v.term.to_ascii_lowercase();
-        if polish_lower.contains(&term_lower)
-            && !kept_lower.contains(&term_lower)
-            && vocabulary::demote(&state.pool, &state.default_user_id, &v.term, 1.0)
-        {
-            demoted += 1;
+        if !polish_lower.contains(&term_lower) || kept_lower.contains(&term_lower) {
+            continue;
+        }
+
+        let replaced_with = find_replacement_at_position(polish, user_kept, &v.term)
+            .unwrap_or_default();
+
+        if replaced_with.is_empty() {
+            continue;
+        }
+
+        // Delete only the specific alias that caused the wrong replacement.
+        // The vocabulary entry for "Macobs" stays — it's a real word. Only
+        // the alias "access" → "Macobs" was wrong.
+        let alias_deleted = stt_replacements::delete_alias_pair(
+            &state.pool,
+            &state.default_user_id,
+            &replaced_with,
+            &v.term,
+        );
+        if alias_deleted > 0 {
+            info!(
+                "[revert] deleted {alias_deleted} wrong alias(es) {:?} → {:?} (vocab kept)",
+                replaced_with, v.term,
+            );
+            reverted.push(RevertedAlias {
+                term: v.term.clone(),
+                replaced_with,
+            });
         }
     }
-    demoted
+    reverted
+}
+
+/// Given polish and user_kept, find what word the user wrote in place of `term`.
+fn find_replacement_at_position(polish: &str, user_kept: &str, term: &str) -> Option<String> {
+    let p_tokens: Vec<&str> = polish.split_whitespace().collect();
+    let k_tokens: Vec<&str> = user_kept.split_whitespace().collect();
+    let term_lower = term.to_ascii_lowercase();
+
+    for (i, pt) in p_tokens.iter().enumerate() {
+        if pt.trim_matches(|c: char| !c.is_alphanumeric())
+            .to_ascii_lowercase() == term_lower
+        {
+            if let Some(kt) = k_tokens.get(i) {
+                let cleaned = kt.trim_matches(|c: char| !c.is_alphanumeric());
+                if !cleaned.is_empty()
+                    && cleaned.to_ascii_lowercase() != term_lower
+                {
+                    return Some(cleaned.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -761,8 +924,35 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 static RETRAIN_SCHEDULED: AtomicBool = AtomicBool::new(false);
 static RETRAIN_RUNNING: AtomicBool = AtomicBool::new(false);
 static LAST_EDIT_EPOCH: AtomicI64 = AtomicI64::new(0);
+static RETRAIN_STARTED_AT: AtomicI64 = AtomicI64::new(0);
+static RETRAIN_FINISHED_AT: AtomicI64 = AtomicI64::new(0);
+static RETRAIN_DURATION_MS: AtomicI64 = AtomicI64::new(0);
+static RETRAIN_SUCCESS: AtomicBool = AtomicBool::new(false);
 
-const DEBOUNCE_SECS: u64 = 15;
+const DEBOUNCE_SECS: u64 = 5;
+
+// ── GET /v1/retrain-status ──────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct RetrainStatus {
+    pub scheduled: bool,
+    pub running: bool,
+    pub started_at: i64,
+    pub finished_at: i64,
+    pub duration_ms: i64,
+    pub success: bool,
+}
+
+pub async fn retrain_status() -> Json<RetrainStatus> {
+    Json(RetrainStatus {
+        scheduled: RETRAIN_SCHEDULED.load(Ordering::SeqCst),
+        running: RETRAIN_RUNNING.load(Ordering::SeqCst),
+        started_at: RETRAIN_STARTED_AT.load(Ordering::SeqCst),
+        finished_at: RETRAIN_FINISHED_AT.load(Ordering::SeqCst),
+        duration_ms: RETRAIN_DURATION_MS.load(Ordering::SeqCst),
+        success: RETRAIN_SUCCESS.load(Ordering::SeqCst),
+    })
+}
 
 pub fn schedule_retrain_public(state: crate::AppState) {
     schedule_onnx_retrain(state);
@@ -773,7 +963,7 @@ fn schedule_onnx_retrain(state: crate::AppState) {
     LAST_EDIT_EPOCH.store(epoch, Ordering::SeqCst);
 
     if RETRAIN_SCHEDULED.swap(true, Ordering::SeqCst) {
-        info!("[retrain] edit batched — timer resets to 30s");
+        info!("[retrain] edit batched — timer resets to {DEBOUNCE_SECS}s");
         return;
     }
 
@@ -803,11 +993,14 @@ fn schedule_onnx_retrain(state: crate::AppState) {
             return;
         }
 
+        RETRAIN_STARTED_AT.store(crate::store::now_ms(), Ordering::SeqCst);
+        RETRAIN_FINISHED_AT.store(0, Ordering::SeqCst);
+
         let db = db_path.clone();
         let user = uid.clone();
         let _ = tokio::task::spawn_blocking(move || {
             let train_start = std::time::Instant::now();
-            info!("[retrain] ══════ ONNX RETRAIN STARTED (--incremental) ══════");
+            info!("[retrain] ══════ ONNX RETRAIN STARTED (--micro) ══════");
             let script = std::path::Path::new("tools/tier2/train_correction_model.py");
             let script_path = if script.is_file() {
                 script.to_path_buf()
@@ -839,16 +1032,18 @@ fn schedule_onnx_retrain(state: crate::AppState) {
                 .arg(db.to_str().unwrap_or_default())
                 .arg("--user-id")
                 .arg(&user)
-                .arg("--incremental")
+                .arg("--micro")
                 .output()
             {
                 Ok(out) => {
                     let elapsed = train_start.elapsed();
+                    let dur_ms = elapsed.as_millis() as i64;
                     if out.status.success() {
                         let stdout = String::from_utf8_lossy(&out.stdout);
                         for line in stdout.lines() {
                             info!("[retrain]   {line}");
                         }
+                        RETRAIN_SUCCESS.store(true, Ordering::SeqCst);
                         info!(
                             "[retrain] ══════ ONNX RETRAIN FINISHED in {:.1}s ══════",
                             elapsed.as_secs_f64()
@@ -858,14 +1053,21 @@ fn schedule_onnx_retrain(state: crate::AppState) {
                         for line in stderr.lines().rev().take(5) {
                             warn!("[retrain]   {line}");
                         }
+                        RETRAIN_SUCCESS.store(false, Ordering::SeqCst);
                         warn!(
                             "[retrain] ══════ ONNX RETRAIN FAILED after {:.1}s (exit={}) ══════",
                             elapsed.as_secs_f64(),
                             out.status,
                         );
                     }
+                    RETRAIN_DURATION_MS.store(dur_ms, Ordering::SeqCst);
+                    RETRAIN_FINISHED_AT.store(crate::store::now_ms(), Ordering::SeqCst);
                 }
-                Err(e) => warn!("[retrain] ══════ ONNX RETRAIN SPAWN FAILED: {e} ══════"),
+                Err(e) => {
+                    RETRAIN_SUCCESS.store(false, Ordering::SeqCst);
+                    RETRAIN_FINISHED_AT.store(crate::store::now_ms(), Ordering::SeqCst);
+                    warn!("[retrain] ══════ ONNX RETRAIN SPAWN FAILED: {e} ══════");
+                }
             }
         })
         .await;
@@ -1731,6 +1933,7 @@ fn empty_response(class: &str, reason: &str) -> ClassifyResponse {
         changes: vec![],
         ambiguous_terms: vec![],
         negative_terms: vec![],
+        review_candidates: vec![],
     }
 }
 

@@ -157,27 +157,12 @@ pub struct TermsQuery {
 
 pub async fn list_terms(
     State(state): State<AppState>,
-    Query(q): Query<TermsQuery>,
+    Query(_q): Query<TermsQuery>,
 ) -> Json<TermsResponse> {
-    // Resolve effective language: explicit query parameter wins, else fall
-    // back to the user's stored output_language preference.  This means the
-    // desktop hot path automatically gets language-bucketed keyterms with
-    // no client-side change required.
-    let lang = q.language.filter(|s| !s.trim().is_empty()).or_else(|| {
-        get_prefs(&state.pool, &state.default_user_id)
-            .map(|p| p.output_language)
-            .filter(|s| !s.trim().is_empty())
-    });
-
-    let terms = match lang.as_deref() {
-        Some(lang) => vocabulary::top_term_strings_for_language(
-            &state.pool,
-            &state.default_user_id,
-            lang,
-            100,
-        ),
-        None => vocabulary::top_term_strings(&state.pool, &state.default_user_id, 100),
-    };
+    // Only starred (user-curated) terms are sent as Deepgram keyterm bias.
+    // Sending all vocab degrades STT accuracy — too many keywords confuse
+    // the model. Users star the terms they care most about.
+    let terms = vocabulary::starred_term_strings(&state.pool, &state.default_user_id);
     Json(TermsResponse { terms })
 }
 

@@ -505,6 +505,25 @@ pub fn top_term_strings(pool: &DbPool, user_id: &str, limit: usize) -> Vec<Strin
         .collect()
 }
 
+/// Only starred (user-curated) terms — used for Deepgram keyterm biasing.
+pub fn starred_term_strings(pool: &DbPool, user_id: &str) -> Vec<String> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT term FROM vocabulary
+          WHERE user_id = ?1 AND source = 'starred'
+          ORDER BY weight DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map(params![user_id], |row| row.get(0))
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
 /// Top-N vocabulary terms scoped to a specific language.  Rows whose
 /// `language` is NULL (legacy / language-agnostic) are always included so
 /// the backfill from before migration 013 doesn't disappear from the

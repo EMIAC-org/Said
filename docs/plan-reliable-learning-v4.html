@@ -1,0 +1,1817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AirNote — Reliable Learning Pipeline v4</title>
+<style>
+  :root {
+    --bg-primary: #1e1e2e;
+    --bg-secondary: #181825;
+    --bg-surface: #252538;
+    --bg-surface-hover: #2a2a40;
+    --bg-card: rgba(30, 30, 50, 0.85);
+    --bg-code: #11111b;
+    --border: rgba(255, 255, 255, 0.06);
+    --border-accent: rgba(137, 180, 250, 0.2);
+    --text-primary: #cdd6f4;
+    --text-secondary: #a6adc8;
+    --text-muted: #6c7086;
+    --text-heading: #f0f0ff;
+    --accent-blue: #89b4fa;
+    --accent-green: #a6e3a1;
+    --accent-red: #f38ba8;
+    --accent-yellow: #f9e2af;
+    --accent-mauve: #cba6f7;
+    --accent-peach: #fab387;
+    --accent-teal: #94e2d5;
+    --accent-pink: #f5c2e7;
+    --accent-sky: #89dceb;
+    --accent-lavender: #b4befe;
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --glass: rgba(255, 255, 255, 0.03);
+    --shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  }
+
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.7;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse at 20% 0%, rgba(137, 180, 250, 0.06) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 100%, rgba(203, 166, 247, 0.05) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Navigation */
+  nav {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 260px;
+    height: 100vh;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    padding: 24px 0;
+    overflow-y: auto;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+  }
+
+  nav .nav-header {
+    padding: 0 20px 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+
+  nav .nav-header h2 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent-blue);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  nav .nav-header .version {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+
+  nav a {
+    display: block;
+    padding: 8px 20px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 400;
+    transition: all 0.15s;
+    border-left: 2px solid transparent;
+  }
+
+  nav a:hover {
+    color: var(--text-primary);
+    background: var(--glass);
+    border-left-color: var(--accent-blue);
+  }
+
+  nav a.section-head {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-top: 12px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    pointer-events: none;
+    padding-bottom: 4px;
+  }
+
+  nav a.active {
+    color: var(--accent-blue);
+    border-left-color: var(--accent-blue);
+    background: rgba(137, 180, 250, 0.06);
+  }
+
+  nav .nav-footer {
+    margin-top: auto;
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* Main */
+  main {
+    margin-left: 260px;
+    max-width: 900px;
+    padding: 48px 56px 120px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Sections */
+  section {
+    margin-bottom: 64px;
+    scroll-margin-top: 32px;
+  }
+
+  /* Typography */
+  h1 {
+    font-size: 36px;
+    font-weight: 700;
+    color: var(--text-heading);
+    margin-bottom: 8px;
+    letter-spacing: -0.5px;
+  }
+
+  h1 .tag {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 3px 10px;
+    border-radius: 20px;
+    background: rgba(137, 180, 250, 0.12);
+    color: var(--accent-blue);
+    vertical-align: middle;
+    margin-left: 12px;
+    letter-spacing: 0.3px;
+  }
+
+  .subtitle {
+    font-size: 16px;
+    color: var(--text-secondary);
+    margin-bottom: 40px;
+    max-width: 640px;
+  }
+
+  h2 {
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--text-heading);
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  h2 .phase-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  h3 {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--accent-lavender);
+    margin: 28px 0 12px;
+  }
+
+  h4 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 20px 0 8px;
+  }
+
+  p { margin-bottom: 14px; }
+
+  /* Cards */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 20px;
+    backdrop-filter: blur(12px);
+    transition: border-color 0.2s;
+  }
+
+  .card:hover { border-color: var(--border-accent); }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .card-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+
+  .card-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-heading);
+  }
+
+  .card-subtitle {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  /* Problem cards */
+  .problem-card {
+    border-left: 3px solid var(--accent-red);
+    background: rgba(243, 139, 168, 0.04);
+  }
+
+  .solution-card {
+    border-left: 3px solid var(--accent-green);
+    background: rgba(166, 227, 161, 0.04);
+  }
+
+  /* Code */
+  code {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    background: var(--bg-code);
+    padding: 2px 7px;
+    border-radius: 5px;
+    color: var(--accent-peach);
+  }
+
+  pre {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+  }
+
+  pre .comment { color: var(--text-muted); }
+  pre .keyword { color: var(--accent-mauve); }
+  pre .string { color: var(--accent-green); }
+  pre .number { color: var(--accent-peach); }
+  pre .fn { color: var(--accent-blue); }
+  pre .type { color: var(--accent-yellow); }
+  pre .arrow { color: var(--accent-teal); }
+  pre .highlight-line {
+    display: inline-block;
+    width: calc(100% + 40px);
+    margin: 0 -20px;
+    padding: 0 20px;
+    background: rgba(137, 180, 250, 0.06);
+    border-left: 2px solid var(--accent-blue);
+  }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+
+  th {
+    text-align: left;
+    padding: 10px 14px;
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    font-weight: 500;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-primary);
+  }
+
+  tr:hover td { background: var(--glass); }
+
+  /* Tags / badges */
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+
+  .badge-blue { background: rgba(137, 180, 250, 0.15); color: var(--accent-blue); }
+  .badge-green { background: rgba(166, 227, 161, 0.15); color: var(--accent-green); }
+  .badge-red { background: rgba(243, 139, 168, 0.15); color: var(--accent-red); }
+  .badge-yellow { background: rgba(249, 226, 175, 0.15); color: var(--accent-yellow); }
+  .badge-mauve { background: rgba(203, 166, 247, 0.15); color: var(--accent-mauve); }
+  .badge-peach { background: rgba(250, 179, 135, 0.15); color: var(--accent-peach); }
+  .badge-teal { background: rgba(148, 226, 213, 0.15); color: var(--accent-teal); }
+
+  /* Flow diagrams */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin: 20px 0;
+    padding-left: 20px;
+    border-left: 2px solid var(--border);
+  }
+
+  .flow-step {
+    position: relative;
+    padding: 12px 16px 12px 24px;
+    margin-left: 0;
+  }
+
+  .flow-step::before {
+    content: '';
+    position: absolute;
+    left: -9px;
+    top: 18px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid var(--accent-blue);
+    background: var(--bg-primary);
+  }
+
+  .flow-step.done::before {
+    background: var(--accent-green);
+    border-color: var(--accent-green);
+  }
+
+  .flow-step.critical::before {
+    background: var(--accent-red);
+    border-color: var(--accent-red);
+  }
+
+  .flow-step .step-title {
+    font-weight: 600;
+    color: var(--text-heading);
+    font-size: 14px;
+  }
+
+  .flow-step .step-desc {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+
+  /* Metric boxes */
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin: 20px 0;
+  }
+
+  .metric {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 16px;
+    text-align: center;
+  }
+
+  .metric .value {
+    font-size: 28px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    margin-bottom: 4px;
+  }
+
+  .metric .label {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+
+  /* Callout boxes */
+  .callout {
+    border-radius: var(--radius-sm);
+    padding: 16px 20px;
+    margin: 16px 0;
+    font-size: 14px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+
+  .callout-icon {
+    font-size: 18px;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .callout-info {
+    background: rgba(137, 180, 250, 0.06);
+    border: 1px solid rgba(137, 180, 250, 0.12);
+    color: var(--text-primary);
+  }
+
+  .callout-warn {
+    background: rgba(249, 226, 175, 0.06);
+    border: 1px solid rgba(249, 226, 175, 0.12);
+    color: var(--text-primary);
+  }
+
+  .callout-danger {
+    background: rgba(243, 139, 168, 0.06);
+    border: 1px solid rgba(243, 139, 168, 0.12);
+    color: var(--text-primary);
+  }
+
+  .callout-success {
+    background: rgba(166, 227, 161, 0.06);
+    border: 1px solid rgba(166, 227, 161, 0.12);
+    color: var(--text-primary);
+  }
+
+  /* Lists */
+  ul, ol {
+    margin: 8px 0 16px 20px;
+    color: var(--text-primary);
+  }
+
+  li {
+    margin-bottom: 6px;
+    font-size: 14px;
+  }
+
+  li code { font-size: 12px; }
+
+  /* Diagrams (ASCII art in pre) */
+  .diagram {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 24px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--accent-sky);
+    white-space: pre;
+    margin: 16px 0;
+  }
+
+  /* Comparison grid */
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 20px 0;
+  }
+
+  .comparison .col-header {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .comparison .before .col-header { color: var(--accent-red); }
+  .comparison .after .col-header { color: var(--accent-green); }
+
+  /* Separator */
+  hr {
+    border: none;
+    height: 1px;
+    background: var(--border);
+    margin: 32px 0;
+  }
+
+  /* Strong */
+  strong { color: var(--text-heading); font-weight: 600; }
+
+  /* Links */
+  a { color: var(--accent-blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+
+  /* Phase colors */
+  .phase-1 { background: rgba(137, 180, 250, 0.15); color: var(--accent-blue); }
+  .phase-2 { background: rgba(203, 166, 247, 0.15); color: var(--accent-mauve); }
+  .phase-3 { background: rgba(166, 227, 161, 0.15); color: var(--accent-green); }
+  .phase-4 { background: rgba(249, 226, 175, 0.15); color: var(--accent-yellow); }
+  .phase-5 { background: rgba(250, 179, 135, 0.15); color: var(--accent-peach); }
+
+  /* File reference */
+  .file-ref {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    background: var(--bg-code);
+    padding: 2px 8px;
+    border-radius: 4px;
+    display: inline-block;
+    margin: 2px 0;
+  }
+
+  /* Timeline */
+  .timeline {
+    position: relative;
+    margin: 24px 0;
+  }
+
+  .timeline-bar {
+    display: flex;
+    height: 40px;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+
+  .timeline-segment {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--bg-primary);
+    padding: 0 8px;
+    white-space: nowrap;
+  }
+
+  .timeline-labels {
+    display: flex;
+    margin-top: 6px;
+  }
+
+  .timeline-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-align: center;
+    padding: 0 4px;
+  }
+
+  /* Responsive */
+  @media (max-width: 1100px) {
+    nav { display: none; }
+    main { margin-left: 0; padding: 32px 24px 80px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Navigation -->
+<nav>
+  <div class="nav-header">
+    <h2>AirNote</h2>
+    <div class="version">Learning Pipeline v4 &middot; Plan</div>
+  </div>
+
+  <a href="#diagnosis" class="active">Diagnosis</a>
+  <a href="#current-flow">Current Flow</a>
+  <a href="#target">Target Metrics</a>
+
+  <a class="section-head">The Plan</a>
+  <a href="#phase-1">Phase 1 &mdash; Adaptive K</a>
+  <a href="#phase-2">Phase 2 &mdash; Proactive Distortions</a>
+  <a href="#phase-3">Phase 3 &mdash; Faster Detection</a>
+  <a href="#phase-4">Phase 4 &mdash; Self-Upgrade</a>
+  <a href="#phase-5">Phase 5 &mdash; Instant Training</a>
+
+  <a class="section-head">Details</a>
+  <a href="#architecture">Architecture</a>
+  <a href="#edge-cases">Edge Cases</a>
+  <a href="#files">File Map</a>
+  <a href="#rollout">Rollout</a>
+
+  <div class="nav-footer">
+    Plan authored 2026-05-24<br>
+    Dev A &mdash; Abhishek
+  </div>
+</nav>
+
+<!-- Main Content -->
+<main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- HEADER -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="header">
+  <h1>Reliable Learning Pipeline <span class="tag">v4</span></h1>
+  <p class="subtitle">
+    Make AirNote learn a new word in 1&ndash;2 corrections &mdash; reliably.
+    Brand names in one edit. Ambiguous words in two. No calculated timing tricks.
+    The system should feel like it <em>understood</em> you, not like you had to game it.
+  </p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- DIAGNOSIS -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="diagnosis">
+  <h2>Diagnosis &mdash; Why Learning Feels Broken</h2>
+
+  <div class="card problem-card">
+    <div class="card-header">
+      <div class="card-icon" style="background: rgba(243,139,168,0.12);">&#x26A0;</div>
+      <div>
+        <div class="card-title">Problem 1: Blind K=3 Threshold</div>
+        <div class="card-subtitle">Every word needs 3 corrections regardless of confidence</div>
+      </div>
+    </div>
+    <p>
+      The system treats <code>"AirNote"</code> (obvious brand &mdash; mixed case, no dictionary match, zero ambiguity)
+      the same as <code>"said"</code> (common English word, Hindi pronoun, ambiguous). Both need 3 separate
+      sightings across 3 separate recordings before anything happens.
+    </p>
+    <p>
+      <code>classify_term_type()</code> already knows "AirNote" is a <strong>brand</strong> at first sight.
+      The K-gate ignores this intelligence entirely.
+    </p>
+  </div>
+
+  <div class="card problem-card">
+    <div class="card-header">
+      <div class="card-icon" style="background: rgba(243,139,168,0.12);">&#x26A0;</div>
+      <div>
+        <div class="card-title">Problem 2: Passive Distortion Collection</div>
+        <div class="card-subtitle">System waits for each Deepgram variant organically</div>
+      </div>
+    </div>
+    <p>
+      After learning "AirNote", the system only knows the <em>exact</em> STT distortion from that one recording
+      (e.g., <code>"air note"</code>). Next time Deepgram says <code>"airnot"</code> or <code>"airnaught"</code> &mdash;
+      unrecognised. The user must correct again, and again, for each new distortion.
+    </p>
+    <p>
+      The <code>variants()</code> function exists in the Python training script but is <strong>never used
+      at runtime</strong> to proactively generate aliases.
+    </p>
+  </div>
+
+  <div class="card problem-card">
+    <div class="card-header">
+      <div class="card-icon" style="background: rgba(243,139,168,0.12);">&#x26A0;</div>
+      <div>
+        <div class="card-title">Problem 3: 12-Second Idle Gate</div>
+        <div class="card-subtitle">Edit watcher waits for 12s of inactivity before acting</div>
+      </div>
+    </div>
+    <p>
+      After pasting, the edit watcher polls for changes but won't fire the classify call until the user
+      goes completely idle for 12 seconds OR hits the 30-second max. Users edit a word in 2 seconds,
+      then <em>wait</em> for something to happen &mdash; nothing does until they stop touching the keyboard
+      for a full 12 seconds.
+    </p>
+    <p>
+      The "stable edit" pattern (edited once, moved on to writing new text) is indistinguishable from
+      "still actively editing" because the watcher only looks at idle time, not edit semantics.
+    </p>
+  </div>
+
+  <div class="card problem-card">
+    <div class="card-header">
+      <div class="card-icon" style="background: rgba(243,139,168,0.12);">&#x26A0;</div>
+      <div>
+        <div class="card-title">Problem 4: No Re-correction Intelligence</div>
+        <div class="card-subtitle">Correcting a known word doesn't capture new distortions</div>
+      </div>
+    </div>
+    <p>
+      When a word is already in vocabulary and the user corrects it again (new Deepgram distortion),
+      the system bumps the weight but <strong>doesn't store the new distortion as an alias</strong>.
+      The user keeps correcting the same word for different STT mishearings, but only the original
+      alias persists.
+    </p>
+  </div>
+
+  <div class="card problem-card">
+    <div class="card-header">
+      <div class="card-icon" style="background: rgba(243,139,168,0.12);">&#x26A0;</div>
+      <div>
+        <div class="card-title">Problem 5: Training Delay</div>
+        <div class="card-subtitle">15s debounce + 10&ndash;20s training = ~30s before model is live</div>
+      </div>
+    </div>
+    <p>
+      After an edit triggers learning, the ONNX retrain waits 15 seconds (debounce), then takes
+      10&ndash;20 seconds to train 40 epochs. User won't see the ONNX-based correction for ~30&ndash;35 seconds.
+      Meanwhile, STT aliases and edit-policy rules take effect immediately &mdash; but without ONNX,
+      novel distortions fall through.
+    </p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- CURRENT FLOW -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="current-flow">
+  <h2>Current Flow &mdash; Where Time Goes</h2>
+
+  <div class="timeline">
+    <div class="timeline-bar">
+      <div class="timeline-segment" style="flex: 0.4; background: var(--accent-sky);">Paste</div>
+      <div class="timeline-segment" style="flex: 2; background: var(--accent-yellow);">User edits</div>
+      <div class="timeline-segment" style="flex: 12; background: var(--accent-red);">Idle wait (12s)</div>
+      <div class="timeline-segment" style="flex: 0.5; background: var(--accent-blue);">Classify</div>
+      <div class="timeline-segment" style="flex: 15; background: var(--accent-mauve);">Debounce (15s)</div>
+      <div class="timeline-segment" style="flex: 15; background: var(--accent-peach);">Train (15s)</div>
+    </div>
+    <div class="timeline-labels" style="display: flex;">
+      <div class="timeline-label" style="flex: 0.4;">0.4s</div>
+      <div class="timeline-label" style="flex: 2;">~2s</div>
+      <div class="timeline-label" style="flex: 12;">12s idle</div>
+      <div class="timeline-label" style="flex: 0.5;">API</div>
+      <div class="timeline-label" style="flex: 15;">15s debounce</div>
+      <div class="timeline-label" style="flex: 15;">~15s train</div>
+    </div>
+  </div>
+
+  <div class="callout callout-danger">
+    <div class="callout-icon">&#x23F1;</div>
+    <div>
+      <strong>Total wall time: ~45 seconds</strong> from paste to trained model.
+      Of that, the user's actual edit took ~2 seconds. The remaining 43 seconds are system overhead.
+      And if this was the first sighting, nothing is learned at all &mdash; the user must repeat this
+      2 more times across separate recordings.
+    </div>
+  </div>
+
+  <h3>Current Sighting-to-Learning Timeline</h3>
+  <div class="diagram">
+Recording 1: "air note" <span style="color:var(--accent-red);">&#x2717;</span>  User edits &rarr; "AirNote"
+  &boxur;&HorizontalLine; pending_promotions: sighting 1/3
+  &boxur;&HorizontalLine; <span style="color:var(--accent-yellow);">queued, no vocabulary entry</span>
+  &boxur;&HorizontalLine; <span style="color:var(--accent-red);">no STT alias created</span>
+  &boxur;&HorizontalLine; <span style="color:var(--accent-red);">no edit-policy rule activated</span>
+
+Recording 2: "airnot" <span style="color:var(--accent-red);">&#x2717;</span>  User edits &rarr; "AirNote"
+  &boxur;&HorizontalLine; pending_promotions: sighting 2/3
+  &boxur;&HorizontalLine; <span style="color:var(--accent-yellow);">still queued</span>
+
+Recording 3: "air naught" <span style="color:var(--accent-green);">&#x2713;</span>  User edits &rarr; "AirNote"
+  &boxur;&HorizontalLine; pending_promotions: sighting 3/3 &rarr; <span style="color:var(--accent-green);">PROMOTE</span>
+  &boxur;&HorizontalLine; vocabulary: AirNote (weight=1.0, source=auto)
+  &boxur;&HorizontalLine; stt_replacements: "air naught" &rarr; "AirNote"  <span style="color:var(--accent-red);">(only THIS distortion)</span>
+  &boxur;&HorizontalLine; edit_policy: activated
+  &boxur;&HorizontalLine; ONNX retrain scheduled
+
+Recording 4: "airr note"  <span style="color:var(--accent-red);">&#x2717;</span>  <span style="color:var(--accent-red);">NOT matched</span> (new distortion, no alias)
+  &boxur;&HorizontalLine; User must correct AGAIN
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- TARGET -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="target">
+  <h2>Target Metrics</h2>
+
+  <div class="metrics">
+    <div class="metric">
+      <div class="value" style="color: var(--accent-green);">1</div>
+      <div class="label">Edits for Brands</div>
+    </div>
+    <div class="metric">
+      <div class="value" style="color: var(--accent-blue);">2</div>
+      <div class="label">Edits for Ambiguous</div>
+    </div>
+    <div class="metric">
+      <div class="value" style="color: var(--accent-mauve);">&lt;5s</div>
+      <div class="label">Edit &rarr; Learned</div>
+    </div>
+    <div class="metric">
+      <div class="value" style="color: var(--accent-peach);">&lt;15s</div>
+      <div class="label">Edit &rarr; ONNX Live</div>
+    </div>
+    <div class="metric">
+      <div class="value" style="color: var(--accent-teal);">8+</div>
+      <div class="label">Pre-seeded Aliases</div>
+    </div>
+    <div class="metric">
+      <div class="value" style="color: var(--accent-yellow);">0</div>
+      <div class="label">Common-word Catastrophes</div>
+    </div>
+  </div>
+
+  <h3>Target Flow</h3>
+  <div class="diagram">
+Recording 1: "air note" <span style="color:var(--accent-green);">&#x2713;</span>  User edits &rarr; "AirNote"
+  &boxur;&HorizontalLine; classify_term_type("AirNote") = <span style="color:var(--accent-green);">"brand"</span> &rarr; K=1 &rarr; <span style="color:var(--accent-green);">INSTANT PROMOTE</span>
+  &boxur;&HorizontalLine; vocabulary: AirNote (weight=1.0, type=brand)
+  &boxur;&HorizontalLine; <span style="color:var(--accent-teal);">proactive_distortions()</span> spawns background:
+  &boxvr;&HorizontalLine;   &boxur;&HorizontalLine; "airnote"  &rarr; AirNote  <span style="color:var(--text-muted);">(joined, no space)</span>
+  &boxvr;&HorizontalLine;   &boxur;&HorizontalLine; "air note" &rarr; AirNote  <span style="color:var(--text-muted);">(observed original)</span>
+  &boxvr;&HorizontalLine;   &boxur;&HorizontalLine; "airnot"   &rarr; AirNote  <span style="color:var(--text-muted);">(vowel drop)</span>
+  &boxvr;&HorizontalLine;   &boxur;&HorizontalLine; "airnote"  &rarr; AirNote  <span style="color:var(--text-muted);">(exact lowercase)</span>
+  &boxvr;&HorizontalLine;   &boxur;&HorizontalLine; "arnote"   &rarr; AirNote  <span style="color:var(--text-muted);">(char drop)</span>
+  &boxvr;&HorizontalLine;   &boxur;&HorizontalLine; "aernote"  &rarr; AirNote  <span style="color:var(--text-muted);">(vowel swap)</span>
+  &boxvr;&HorizontalLine;   &boxur;&HorizontalLine; "eir note" &rarr; AirNote  <span style="color:var(--text-muted);">(vowel + space)</span>
+  &boxvr;&HorizontalLine;   &boxur;&HorizontalLine; <span style="color:var(--accent-red);">NOT "air"</span>  <span style="color:var(--text-muted);">(common word filter)</span>
+  &boxvr;&HorizontalLine;   &boxur;&HorizontalLine; <span style="color:var(--accent-red);">NOT "note"</span> <span style="color:var(--text-muted);">(common word filter)</span>
+  &boxur;&HorizontalLine; edit_policy: all rules activated
+  &boxur;&HorizontalLine; ONNX retrain (5s debounce, 10s train)
+  &boxur;&HorizontalLine; <span style="color:var(--accent-green);">toast: "Learned AirNote"</span>
+
+Recording 2: "airr note" <span style="color:var(--accent-green);">&#x2713;</span>  <span style="color:var(--accent-green);">AUTO-CORRECTED</span> (phonetic match to existing alias)
+  &boxur;&HorizontalLine; No user intervention needed
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- PHASE 1 -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="phase-1">
+  <h2><span class="phase-num phase-1">1</span> Adaptive K-Threshold</h2>
+
+  <p>
+    Instead of blind <code>K=3</code> for all words, compute K dynamically based on the word's
+    <strong>term type</strong> and <strong>jargon score</strong> at first sight. The system already has
+    <code>classify_term_type()</code> and <code>jargon_score()</code> &mdash; they're just not wired
+    into the promotion gate.
+  </p>
+
+  <h3>K-Threshold Matrix</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Term Type</th>
+        <th>Example</th>
+        <th>Detection Signal</th>
+        <th>K</th>
+        <th>Rationale</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="badge badge-green">brand</span></td>
+        <td><code>AirNote</code>, <code>iPhone</code>, <code>OpenAI</code></td>
+        <td>Mixed case, uppercase after pos 0</td>
+        <td style="color: var(--accent-green); font-weight: 700;">1</td>
+        <td>Zero ambiguity. Mixed-case words are never STT accidents.</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">acronym</span></td>
+        <td><code>MACOBS</code>, <code>NASA</code>, <code>EMIAC</code></td>
+        <td>All-caps, 2&ndash;8 chars, alphabetic</td>
+        <td style="color: var(--accent-green); font-weight: 700;">1</td>
+        <td>Users don't accidentally type all-caps. Intent is unambiguous.</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-blue">code_identifier</span></td>
+        <td><code>n8n</code>, <code>k8s</code>, <code>vue-router</code></td>
+        <td>Contains digits, underscores, or hyphens</td>
+        <td style="color: var(--accent-green); font-weight: 700;">1</td>
+        <td>Digits/symbols in a word &rarr; intentional technical term.</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-mauve">proper_noun</span></td>
+        <td><code>Vipassana</code>, <code>Anish</code></td>
+        <td>Initial-cap, rest lowercase, &ge;4 chars</td>
+        <td style="color: var(--accent-blue); font-weight: 700;">2</td>
+        <td>Could be start-of-sentence capitalisation. One confirmation needed.</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-yellow">phrase</span></td>
+        <td><code>auto note</code>, <code>control plane</code></td>
+        <td>Multi-word input</td>
+        <td style="color: var(--accent-blue); font-weight: 700;">2</td>
+        <td>Multi-word &rarr; higher chance of coincidental match. Confirm once.</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-peach">other + high jargon</span></td>
+        <td><code>groq</code> (jargon &ge; 0.3)</td>
+        <td>jargon_score() &ge; 0.3, not in common list</td>
+        <td style="color: var(--accent-blue); font-weight: 700;">2</td>
+        <td>Looks technical but lowercase &mdash; one confirmation.</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-red">other + low jargon</span></td>
+        <td><code>colour</code>, <code>organise</code></td>
+        <td>jargon_score() &lt; 0.3</td>
+        <td style="color: var(--accent-yellow); font-weight: 700;">3</td>
+        <td>Might be user rephrasing. Current threshold appropriate.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Safety Override</h3>
+  <div class="callout callout-warn">
+    <div class="callout-icon">&#x1F6E1;</div>
+    <div>
+      <strong>Common-word guard:</strong> If <code>is_common_word(original)</code> is true, enforce
+      <code>K = max(computed_K, 2)</code>. This prevents the <code>"main" &rarr; "Macobs"</code>
+      catastrophe even for brand-type corrections. The original STT form being a common word means
+      the correction might be a false positive.
+    </div>
+  </div>
+
+  <h3>Implementation</h3>
+  <p><span class="file-ref">crates/backend/src/store/pending_promotions.rs</span></p>
+
+  <pre><span class="keyword">pub fn</span> <span class="fn">compute_adaptive_k</span>(
+    corrected: &<span class="type">str</span>,
+    original: &<span class="type">str</span>,
+    jargon: <span class="type">f64</span>,
+) -> <span class="type">u32</span> {
+    <span class="keyword">let</span> term_type = vocabulary::<span class="fn">classify_term_type</span>(corrected);
+    <span class="keyword">let</span> original_is_common = promotion_gate::<span class="fn">is_common_word</span>(original);
+
+    <span class="keyword">let</span> base_k = <span class="keyword">match</span> term_type {
+        <span class="string">"brand"</span> | <span class="string">"acronym"</span> | <span class="string">"code_identifier"</span> <span class="arrow">=></span> <span class="number">1</span>,
+        <span class="string">"proper_noun"</span> | <span class="string">"phrase"</span>                        <span class="arrow">=></span> <span class="number">2</span>,
+        _ <span class="keyword">if</span> jargon >= <span class="number">0.3</span>                                 <span class="arrow">=></span> <span class="number">2</span>,
+        _                                                       <span class="arrow">=></span> <span class="number">3</span>,
+    };
+
+    <span class="comment">// Safety: common-word originals need at least K=2</span>
+    <span class="keyword">if</span> original_is_common { base_k.<span class="fn">max</span>(<span class="number">2</span>) } <span class="keyword">else</span> { base_k }
+}</pre>
+
+  <h3>Wiring into <code>record_sighting()</code></h3>
+  <p>
+    Change the call in <code>classify.rs</code> from <code>record_sighting(..., DEFAULT_K)</code>
+    to <code>record_sighting(..., compute_adaptive_k(corrected, original, jargon))</code>.
+    The <code>pending_promotions</code> table already stores <code>sighting_count</code> &mdash;
+    the threshold just becomes dynamic per-word.
+  </p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- PHASE 2 -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="phase-2">
+  <h2><span class="phase-num phase-2">2</span> Proactive Distortion Generation</h2>
+
+  <p>
+    When a word is promoted to vocabulary, spawn a background task that <strong>pre-generates</strong>
+    7&ndash;8 likely Deepgram distortions and seeds them as STT aliases. Each distortion is guarded
+    against being a common Hindi/English word.
+  </p>
+
+  <h3>Distortion Strategies</h3>
+
+  <div class="card">
+    <h4>Strategy A &mdash; Orthographic Mutations (from <code>variants()</code>)</h4>
+    <p>Port the Python <code>variants()</code> function to Rust. Generates:</p>
+    <ul>
+      <li><strong>Single-char deletion</strong>: "airnote" &rarr; "arnote", "airnot", "ainote"</li>
+      <li><strong>Vowel substitution</strong>: "airnote" &rarr; "aernote", "airnute", "airnota"</li>
+      <li><strong>Adjacent transposition</strong>: "airnote" &rarr; "iarnote", "arnote", "airntoe"</li>
+      <li><strong>Terminal rewrites</strong>: -c &rarr; -h, -s &rarr; -z</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h4>Strategy B &mdash; Phonetic Variants</h4>
+    <p>Use the existing <code>phonetic_key()</code> engine to generate phonetically plausible mishearings:</p>
+    <ul>
+      <li><strong>Consonant softening</strong>: b&harr;p, d&harr;t, g&harr;k, v&harr;f, s&harr;z</li>
+      <li><strong>Aspiration toggle</strong>: t&harr;th, d&harr;dh, k&harr;kh, g&harr;gh</li>
+      <li><strong>Vowel elongation</strong>: a&harr;aa, i&harr;ee, u&harr;oo</li>
+      <li><strong>Nasal variants</strong>: n&harr;m at word boundaries</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h4>Strategy C &mdash; Space/Join Variants (critical for multi-word)</h4>
+    <p>For terms detected as brands or containing capital letters mid-word:</p>
+    <ul>
+      <li><strong>CamelCase split</strong>: "AirNote" &rarr; "air note" (already observed, but ensure stored)</li>
+      <li><strong>Joined lowercase</strong>: "AirNote" &rarr; "airnote"</li>
+      <li><strong>Partial joins</strong>: For 3+ word phrases, generate bigram joins</li>
+    </ul>
+    <div class="callout callout-success">
+      <div class="callout-icon">&#x2728;</div>
+      <div>
+        <strong>Key insight:</strong> "airnote" (joined) is 100% deterministic for "AirNote" because
+        no common Hindi or English word matches "airnote". This single alias covers Deepgram's most
+        common failure mode (stripping spaces from compound words).
+      </div>
+    </div>
+  </div>
+
+  <h3>Common-Word Filter</h3>
+  <p>
+    Every generated distortion is checked against <code>is_common_word()</code> before insertion.
+    Additionally, each individual component of a split is checked:
+  </p>
+
+  <pre><span class="keyword">fn</span> <span class="fn">is_safe_distortion</span>(distortion: &<span class="type">str</span>, correct_form: &<span class="type">str</span>) -> <span class="type">bool</span> {
+    <span class="comment">// Reject if the whole distortion is a common word</span>
+    <span class="keyword">if</span> <span class="fn">is_common_word</span>(distortion) { <span class="keyword">return</span> <span class="number">false</span>; }
+
+    <span class="comment">// Reject if distortion is too short (&lt;3 chars)</span>
+    <span class="keyword">if</span> distortion.<span class="fn">len</span>() < <span class="number">3</span> { <span class="keyword">return</span> <span class="number">false</span>; }
+
+    <span class="comment">// Reject if distortion IS the correct form (no point)</span>
+    <span class="keyword">if</span> distortion.<span class="fn">eq_ignore_ascii_case</span>(correct_form) { <span class="keyword">return</span> <span class="number">false</span>; }
+
+    <span class="comment">// Reject if distortion is in system dictionary</span>
+    <span class="keyword">if</span> <span class="fn">is_dictionary_word</span>(distortion) { <span class="keyword">return</span> <span class="number">false</span>; }
+
+    <span class="number">true</span>
+}</pre>
+
+  <h3>Weight Strategy</h3>
+  <table>
+    <thead>
+      <tr><th>Alias Source</th><th>Weight</th><th>Rationale</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Observed (user correction)</td>
+        <td><code>1.0</code></td>
+        <td>Ground truth &mdash; this is what Deepgram actually said</td>
+      </tr>
+      <tr>
+        <td>Proactive (generated)</td>
+        <td><code>0.6</code></td>
+        <td>Speculative &mdash; might not be a real Deepgram distortion</td>
+      </tr>
+      <tr>
+        <td>Re-correction (self-upgrade)</td>
+        <td><code>1.0</code></td>
+        <td>Another ground truth &mdash; new observed distortion</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Implementation Sketch</h3>
+  <p><span class="file-ref">crates/backend/src/store/stt_replacements.rs</span> &mdash; new function</p>
+
+  <pre><span class="keyword">pub fn</span> <span class="fn">generate_proactive_distortions</span>(
+    pool: &<span class="type">Pool</span>,
+    user_id: &<span class="type">str</span>,
+    correct_form: &<span class="type">str</span>,
+    observed_transcript: &<span class="type">str</span>,
+    language: &<span class="type">str</span>,
+) -> <span class="type">usize</span> {
+    <span class="keyword">let</span> <span class="keyword">mut</span> distortions: <span class="type">HashSet</span>&lt;<span class="type">String</span>&gt; = <span class="type">HashSet</span>::<span class="fn">new</span>();
+
+    <span class="comment">// Strategy A: orthographic mutations of lowercase form</span>
+    <span class="keyword">let</span> base = correct_form.<span class="fn">to_lowercase</span>();
+    distortions.<span class="fn">extend</span>(<span class="fn">char_deletions</span>(&base));
+    distortions.<span class="fn">extend</span>(<span class="fn">vowel_substitutions</span>(&base));
+    distortions.<span class="fn">extend</span>(<span class="fn">adjacent_swaps</span>(&base));
+
+    <span class="comment">// Strategy B: phonetic consonant variants</span>
+    distortions.<span class="fn">extend</span>(<span class="fn">consonant_softening</span>(&base));
+
+    <span class="comment">// Strategy C: space/join variants for multi-component</span>
+    distortions.<span class="fn">extend</span>(<span class="fn">camel_case_splits</span>(correct_form));
+    distortions.<span class="fn">insert</span>(base.<span class="fn">replace</span>(<span class="string">" "</span>, <span class="string">""</span>));  <span class="comment">// joined</span>
+
+    <span class="comment">// Also include the observed transcript form</span>
+    distortions.<span class="fn">insert</span>(observed_transcript.<span class="fn">to_lowercase</span>());
+
+    <span class="comment">// Filter: remove common words and dictionary matches</span>
+    <span class="keyword">let</span> safe: <span class="type">Vec</span>&lt;_&gt; = distortions
+        .<span class="fn">into_iter</span>()
+        .<span class="fn">filter</span>(|d| <span class="fn">is_safe_distortion</span>(d, correct_form))
+        .<span class="fn">take</span>(<span class="number">12</span>)  <span class="comment">// cap at 12 proactive aliases</span>
+        .<span class="fn">collect</span>();
+
+    <span class="comment">// Insert each as a low-weight alias</span>
+    <span class="keyword">for</span> d <span class="keyword">in</span> &safe {
+        <span class="fn">upsert_alias_for_language</span>(pool, user_id, d, d, correct_form, <span class="number">0.6</span>, language);
+    }
+
+    safe.<span class="fn">len</span>()
+}</pre>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- PHASE 3 -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="phase-3">
+  <h2><span class="phase-num phase-3">3</span> Faster Edit Detection</h2>
+
+  <p>
+    Replace the blunt 12-second idle gate with <strong>semantic edit detection</strong> that
+    fires the classify call as soon as the user's edit stabilises &mdash; not when they go
+    completely idle.
+  </p>
+
+  <h3>Current vs Proposed Timing</h3>
+  <div class="comparison">
+    <div class="before">
+      <div class="col-header">Before (v3)</div>
+      <ul>
+        <li>50ms fast poll while editing</li>
+        <li>200ms slow poll after 2s idle</li>
+        <li><strong>Fire classify after 12s total idle</strong></li>
+        <li>30s absolute max</li>
+        <li>No distinction between "editing AirNote" and "writing new sentence"</li>
+      </ul>
+    </div>
+    <div class="after">
+      <div class="col-header">After (v4)</div>
+      <ul>
+        <li>50ms fast poll while editing (unchanged)</li>
+        <li>200ms slow poll after 1.5s idle (from 2s)</li>
+        <li><strong>Fire classify after 3s of stable text</strong></li>
+        <li>15s absolute max (from 30s)</li>
+        <li>Smart settle: region-aware stability detection</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Stable Edit Detection Algorithm</h3>
+
+  <div class="flow">
+    <div class="flow-step">
+      <div class="step-title">Detect first meaningful change</div>
+      <div class="step-desc">
+        Field value differs from <code>post_paste</code> by at least 1 word.
+        Record <code>first_edit_at = now()</code>.
+      </div>
+    </div>
+    <div class="flow-step">
+      <div class="step-title">Track edit region</div>
+      <div class="step-desc">
+        Diff <code>post_paste</code> vs <code>current_value</code> to identify which character
+        range was modified. Track the <strong>edit region</strong> (start_byte..end_byte).
+      </div>
+    </div>
+    <div class="flow-step">
+      <div class="step-title">Detect stability</div>
+      <div class="step-desc">
+        If the edit region hasn't changed for <strong>3 seconds</strong> but the user IS still
+        typing (characters appearing outside the edit region), the edit is <strong>stable</strong>.
+        The user corrected the word and moved on.
+      </div>
+    </div>
+    <div class="flow-step done">
+      <div class="step-title">Fire classify</div>
+      <div class="step-desc">
+        Send classify call immediately. Don't wait for full idle.
+        Total latency: <strong>~3&ndash;5 seconds</strong> from edit, not 12+.
+      </div>
+    </div>
+  </div>
+
+  <h3>Quick-Fire Heuristic</h3>
+  <div class="callout callout-info">
+    <div class="callout-icon">&#x26A1;</div>
+    <div>
+      <strong>Instant classify for single-word replacement:</strong> If the diff is exactly one word
+      changed (e.g., <code>"air note"</code> &rarr; <code>"AirNote"</code>) and the new word passes
+      <code>jargon_score() &gt; 0.3</code>, fire classify after only <strong>1.5 seconds</strong>
+      of stability. Single high-jargon word replacements are almost never accidental.
+    </div>
+  </div>
+
+  <h3>Implementation Constants</h3>
+  <pre><span class="comment">// New timing constants</span>
+<span class="keyword">const</span> EDIT_STABLE_SETTLE_MS: <span class="type">u64</span>  = <span class="number">3000</span>;   <span class="comment">// 3s stability = classify</span>
+<span class="keyword">const</span> EDIT_QUICK_SETTLE_MS: <span class="type">u64</span>  = <span class="number">1500</span>;   <span class="comment">// 1.5s for single jargon word</span>
+<span class="keyword">const</span> EDIT_WATCH_MAX_DURATION: <span class="type">u64</span> = <span class="number">15</span>;  <span class="comment">// 15s absolute max (from 30)</span>
+<span class="keyword">const</span> EDIT_IDLE_TIMEOUT_MS: <span class="type">u64</span> = <span class="number">6000</span>;   <span class="comment">// 6s full idle (from 12s)</span>
+
+<span class="comment">// Keep existing</span>
+<span class="keyword">const</span> EDIT_WATCH_FAST_INTERVAL: <span class="type">u64</span> = <span class="number">50</span>;   <span class="comment">// 50ms fast poll</span>
+<span class="keyword">const</span> EDIT_WATCH_SLOW_INTERVAL: <span class="type">u64</span> = <span class="number">200</span>; <span class="comment">// 200ms slow poll</span></pre>
+
+  <h3>State Machine</h3>
+  <div class="diagram">
+                          ┌──────────────┐
+                          │  WATCHING    │ ← initial state
+                          └──────┬───────┘
+                                 │ field changed
+                          ┌──────▼───────┐
+                    ┌─────│  EDITING     │─────┐
+                    │     └──────┬───────┘     │
+                    │            │ no change   │ 6s no change
+                    │            │ for 3s      │ at all
+                    │     ┌──────▼───────┐     │
+                    │     │   SETTLING   │     │
+           change   │     └──────┬───────┘     │
+           in edit  │            │ 3s stable   │
+           region   │            │ (or 1.5s    │
+                    │            │  quick-fire)│
+                    │     ┌──────▼───────┐     │
+                    └────►│  CLASSIFY    │◄────┘
+                          └──────────────┘
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- PHASE 4 -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="phase-4">
+  <h2><span class="phase-num phase-4">4</span> Self-Upgrade on Re-Correction</h2>
+
+  <p>
+    When a word is <strong>already in vocabulary</strong> and the user corrects it again, the system
+    currently bumps the weight. It should also <strong>capture the new Deepgram distortion</strong> as
+    an alias and optionally trigger a quick retrain.
+  </p>
+
+  <h3>Current vs Proposed (Re-correction)</h3>
+  <div class="comparison">
+    <div class="before">
+      <div class="col-header">Before (v3)</div>
+      <ul>
+        <li>Bump weight by 0.5</li>
+        <li>Set <code>is_repeat = true</code></li>
+        <li>Show "Will recognise X next time"</li>
+        <li><em>No new alias created</em></li>
+        <li><em>No retrain triggered</em></li>
+      </ul>
+    </div>
+    <div class="after">
+      <div class="col-header">After (v4)</div>
+      <ul>
+        <li>Bump weight by 0.5</li>
+        <li>Set <code>is_repeat = true</code></li>
+        <li><strong>Capture new transcript_form as alias</strong></li>
+        <li><strong>Trigger retrain (new distortion data)</strong></li>
+        <li>Show "Upgraded: learned new spelling for X"</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Implementation</h3>
+  <p>
+    In <code>classify.rs</code>, the <code>is_repeat</code> branch currently skips alias creation.
+    Add STT alias upsert for the new transcript form:
+  </p>
+
+  <pre><span class="comment">// When word is already in vocabulary (is_repeat path)</span>
+<span class="keyword">if</span> existing_term.is_some() {
+    has_repeat = <span class="number">true</span>;
+    should_promote_now = <span class="number">true</span>;
+
+<span class="highlight-line">    <span class="comment">// NEW: capture this distortion as a new alias</span></span>
+<span class="highlight-line">    stt_replacements::<span class="fn">upsert_aliases_for_language</span>(</span>
+<span class="highlight-line">        pool, user_id,</span>
+<span class="highlight-line">        &transcript_window, &polish_window,</span>
+<span class="highlight-line">        corrected, <span class="number">1.0</span>, &language,</span>
+<span class="highlight-line">    );</span>
+<span class="highlight-line">    info!(<span class="string">"[classify] re-correction: new distortion {:?} for known term {:?}"</span>,</span>
+<span class="highlight-line">         transcript_window, corrected);</span>
+}</pre>
+
+  <h3>Upgrade Notification</h3>
+  <p>
+    Differentiate the toast message for re-corrections vs first-time learns:
+  </p>
+  <table>
+    <thead>
+      <tr><th>Scenario</th><th>Toast Message</th><th>Sound</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>First promotion</td>
+        <td>"Learned AirNote"</td>
+        <td>levelUp</td>
+      </tr>
+      <tr>
+        <td>Re-correction (new distortion)</td>
+        <td>"Upgraded AirNote &mdash; new spelling added"</td>
+        <td>ding</td>
+      </tr>
+      <tr>
+        <td>Queued (not yet promoted)</td>
+        <td>"AirNote &mdash; 2/3 sightings"</td>
+        <td>tick</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- PHASE 5 -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="phase-5">
+  <h2><span class="phase-num phase-5">5</span> Instant Training</h2>
+
+  <p>
+    Reduce the wall time from edit to ONNX-live from ~45 seconds to <strong>under 15 seconds</strong>.
+    Three strategies, applied together.
+  </p>
+
+  <h3>Strategy A &mdash; Reduce Debounce</h3>
+  <table>
+    <thead><tr><th>Setting</th><th>Before</th><th>After</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>DEBOUNCE_SECS</td>
+        <td>15s</td>
+        <td><strong>5s</strong></td>
+        <td>With faster edit detection (Phase 3), edits arrive faster. 5s is enough to batch.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Strategy B &mdash; Fewer Epochs for Single-Term Additions</h3>
+  <p>
+    When a retrain is triggered by a single new term (most common case), the model only needs
+    fine-tuning on the new examples. Pass <code>--micro</code> flag:
+  </p>
+  <table>
+    <thead><tr><th>Mode</th><th>Epochs</th><th>Est. Time</th><th>When</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Full retrain</td>
+        <td>120</td>
+        <td>30&ndash;60s</td>
+        <td>First train from cold, or after vocabulary wipe</td>
+      </tr>
+      <tr>
+        <td>Incremental <code>--incremental</code></td>
+        <td>40</td>
+        <td>10&ndash;20s</td>
+        <td>Multiple terms changed</td>
+      </tr>
+      <tr>
+        <td><strong>Micro <code>--micro</code></strong></td>
+        <td><strong>15</strong></td>
+        <td><strong>3&ndash;6s</strong></td>
+        <td>Single term added/removed</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Strategy C &mdash; Warm Negative Cache</h3>
+  <p>
+    The training script regenerates hard negatives from <code>/usr/share/dict/words</code> every run.
+    Cache this in <code>neg_cache.json</code> (already partially implemented) and only refresh when
+    vocabulary changes significantly (&ge;5 new terms).
+  </p>
+
+  <h3>Combined Timeline (After All Phases)</h3>
+  <div class="timeline">
+    <div class="timeline-bar">
+      <div class="timeline-segment" style="flex: 0.4; background: var(--accent-sky);">Paste</div>
+      <div class="timeline-segment" style="flex: 2; background: var(--accent-yellow);">Edit</div>
+      <div class="timeline-segment" style="flex: 1.5; background: var(--accent-green);">Settle</div>
+      <div class="timeline-segment" style="flex: 0.5; background: var(--accent-blue);">Classify</div>
+      <div class="timeline-segment" style="flex: 5; background: var(--accent-mauve);">Debounce</div>
+      <div class="timeline-segment" style="flex: 5; background: var(--accent-peach);">Micro-train</div>
+    </div>
+    <div class="timeline-labels" style="display: flex;">
+      <div class="timeline-label" style="flex: 0.4;">0.4s</div>
+      <div class="timeline-label" style="flex: 2;">~2s</div>
+      <div class="timeline-label" style="flex: 1.5;">1.5s</div>
+      <div class="timeline-label" style="flex: 0.5;">&lt;1s</div>
+      <div class="timeline-label" style="flex: 5;">5s</div>
+      <div class="timeline-label" style="flex: 5;">~5s</div>
+    </div>
+  </div>
+
+  <div class="callout callout-success">
+    <div class="callout-icon">&#x1F3C6;</div>
+    <div>
+      <strong>New total: ~15 seconds</strong> from paste to ONNX-live.
+      STT aliases + edit-policy rules are live in <strong>&lt;5 seconds</strong> (after classify call).
+      The ONNX model catches up 10 seconds later for novel distortions.
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- ARCHITECTURE -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="architecture">
+  <h2>Architecture &mdash; Complete v4 Flow</h2>
+
+  <div class="diagram">
+                    ┌─────────────────────────────────────────────────────────┐
+                    │                    RECORDING                           │
+                    │  User speaks → Deepgram STT → LLM polish → HID paste  │
+                    └────────────────────────┬────────────────────────────────┘
+                                             │
+                    ┌────────────────────────▼────────────────────────────────┐
+                    │              EDIT WATCHER (Phase 3)                     │
+                    │                                                        │
+                    │  Poll @ 50ms │ Detect change │ Track edit region        │
+                    │  Stable for 1.5s (jargon) or 3s (general)?            │
+                    │  ───────────────────────────────────────────           │
+                    │  YES → fire /v1/classify-edit immediately              │
+                    └────────────────────────┬────────────────────────────────┘
+                                             │
+                    ┌────────────────────────▼────────────────────────────────┐
+                    │              CLASSIFY (Phase 1 + 4)                     │
+                    │                                                        │
+                    │  deterministic_classify_hunks()                         │
+                    │    ├─ SttError → compute_adaptive_k()                  │
+                    │    │   ├─ brand/acronym/code: K=1 → INSTANT PROMOTE    │
+                    │    │   ├─ proper_noun/phrase: K=2                      │
+                    │    │   └─ other: K=2 or K=3                            │
+                    │    │                                                    │
+                    │    ├─ Already in vocab? → SELF-UPGRADE (Phase 4)       │
+                    │    │   ├─ New distortion → alias                       │
+                    │    │   ├─ Weight bump                                   │
+                    │    │   └─ Retrain trigger                               │
+                    │    │                                                    │
+                    │    └─ On promote:                                       │
+                    │        ├─ vocabulary::upsert()                          │
+                    │        ├─ edit_policy::activate_all()                   │
+                    │        ├─ proactive_distortions() (Phase 2)            │
+                    │        └─ schedule_retrain(micro)                       │
+                    └────────────────────────┬────────────────────────────────┘
+                                             │
+                    ┌────────────────────────▼────────────────────────────────┐
+                    │         PROACTIVE DISTORTIONS (Phase 2)                │
+                    │                                                        │
+                    │  Background thread:                                     │
+                    │  1. Orthographic mutations (deletions, vowel swaps)     │
+                    │  2. Phonetic variants (consonant softening)             │
+                    │  3. Space/join variants (CamelCase split/join)          │
+                    │  4. Filter: is_common_word? is_dictionary_word?        │
+                    │  5. Insert 8-12 aliases @ weight=0.6                    │
+                    └────────────────────────┬────────────────────────────────┘
+                                             │
+                    ┌────────────────────────▼────────────────────────────────┐
+                    │           MICRO-TRAIN (Phase 5)                        │
+                    │                                                        │
+                    │  5s debounce → 15 epochs → ~5s training                │
+                    │  ONNX model hot-reloads on next inference               │
+                    └────────────────────────────────────────────────────────┘
+  </div>
+
+  <h3>Correction Pipeline at Inference Time (after learning)</h3>
+  <div class="diagram">
+STT says: "airnot mein kaam karo"
+    │
+    ▼
+<span style="color:var(--accent-green);">Pass 1: Exact alias match</span>
+    "airnot" → matches proactive alias "airnot"→"AirNote"  ✓
+    Result: "AirNote mein kaam karo"
+    │
+    ▼
+<span style="color:var(--accent-blue);">Pass 2: Edit-policy rules</span>
+    No remaining unmatched tokens with active rules
+    │
+    ▼
+<span style="color:var(--accent-mauve);">Pass 3: Phonetic fallback</span>
+    "airnot" already matched — skip
+    │
+    ▼
+<span style="color:var(--accent-peach);">Pass 4: ONNX fuzzy shadow</span>
+    All tokens handled — no further corrections
+    │
+    ▼
+Result: "AirNote mein kaam karo"  ✓  (zero user intervention needed)
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- EDGE CASES -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="edge-cases">
+  <h2>Edge Cases &amp; Safety Guards</h2>
+
+  <div class="card">
+    <h4>Edge Case 1: "Said" — Real Word That's Also a Brand</h4>
+    <p>
+      <code>classify_term_type("Said")</code> returns <code>"proper_noun"</code> (initial cap, rest lowercase, 4 chars).
+      K=2. But "said" (lowercase) is in <code>ENGLISH_COMMON</code>. The adaptive K doesn't apply because
+      the user would correct from "said" (common word) to "Said" (proper noun) &mdash; the
+      <code>is_common_word(original)</code> guard forces <code>K = max(2, 2) = 2</code>.
+    </p>
+    <p>
+      <strong>Result:</strong> Two corrections needed. First shows a queued toast, second promotes.
+      The proactive distortion generator won't create "said" as an alias because it's a common word.
+    </p>
+  </div>
+
+  <div class="card">
+    <h4>Edge Case 2: "main" &rarr; "Macobs" — The Catastrophe Scenario</h4>
+    <p>
+      <code>classify_term_type("Macobs")</code> = <code>"proper_noun"</code> &rarr; K=2.
+      <code>is_common_word("main")</code> = <code>true</code> &rarr; K = max(2, 2) = 2.
+    </p>
+    <p>
+      On first correction: queued (1/2). On second: promoted. Proactive distortions generate
+      "macobs", "mcobs", "macbs", "mecobs" etc. BUT critically: <code>"main"</code> is blocked
+      by <code>is_safe_distortion()</code> because it's a common word.
+    </p>
+    <p>
+      <strong>Safe.</strong> The word "main" never becomes an alias for "Macobs".
+    </p>
+  </div>
+
+  <div class="card">
+    <h4>Edge Case 3: "AirNote" from "air note" — Space-Separated Input</h4>
+    <p>
+      <code>classify_term_type("AirNote")</code> = <code>"brand"</code> &rarr; K=1.
+      <code>is_common_word("air note")</code> = <code>false</code> (multi-word, not in list).
+    </p>
+    <p>
+      Instant promotion. Proactive distortions include "air note" (observed), "airnote" (joined),
+      "airnot" (vowel drop), "arnote" (char deletion). Individual words "air" and "note" are
+      common but the <strong>joined</strong> forms are not, so they pass the filter.
+    </p>
+    <p>
+      <strong>Result:</strong> One correction, 8+ aliases, immediate coverage.
+    </p>
+  </div>
+
+  <div class="card">
+    <h4>Edge Case 4: "colour" &rarr; "color" — Style Preference</h4>
+    <p>
+      <code>classify_term_type("color")</code> = <code>"other"</code>.
+      <code>jargon_score("color")</code> = <code>0.0</code>.
+      K=3.
+    </p>
+    <p>
+      This IS the intended behaviour. Spelling preferences need multiple confirmations because
+      they could be accidental or context-dependent. The user genuinely needs to correct this
+      3 times before the system commits.
+    </p>
+  </div>
+
+  <div class="card">
+    <h4>Edge Case 5: "n8n" — Code Identifier with Digits</h4>
+    <p>
+      <code>classify_term_type("n8n")</code> = <code>"code_identifier"</code> &rarr; K=1.
+      <code>is_numeric_junk("n8n")</code> = <code>false</code> (alpha-dominant exception).
+      Instant promotion.
+    </p>
+    <p>
+      Proactive distortions: "aneten", "naten", "netn" (from seed vocab patterns).
+      None are common words. All safe.
+    </p>
+  </div>
+
+  <div class="card">
+    <h4>Edge Case 6: Rapid Corrections of Different Words</h4>
+    <p>
+      User corrects "emiac" → "EMIAC" and "macobs" → "Macobs" in the same edit.
+      Both are classified independently. EMIAC gets K=1 (acronym). Macobs gets K=2
+      (proper_noun) or K=1 if the original was not a common word.
+    </p>
+    <p>
+      The classify call handles multiple hunks &mdash; each is promoted independently.
+      Proactive distortions are generated for each promoted term in parallel.
+    </p>
+  </div>
+
+  <div class="card" style="border-left-color: var(--accent-red);">
+    <h4>Guard: Maximum Proactive Aliases</h4>
+    <p>
+      The existing <code>MAX_ALIASES_PER_TERM = 15</code> cap in <code>stt_replacements</code>
+      prevents alias explosion. Proactive distortions are capped at 12, leaving room for 3 organic
+      aliases from future re-corrections. Combined with the <code>weight=0.6</code> for proactive
+      (vs <code>1.0</code> for observed), the system naturally prioritises real distortions.
+    </p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- FILES -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="files">
+  <h2>File Map &mdash; Where to Change What</h2>
+
+  <table>
+    <thead>
+      <tr><th>Phase</th><th>File</th><th>Change</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="badge badge-blue">P1</span></td>
+        <td><code>crates/backend/src/store/pending_promotions.rs</code></td>
+        <td>Add <code>compute_adaptive_k()</code></td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-blue">P1</span></td>
+        <td><code>crates/backend/src/routes/classify.rs</code></td>
+        <td>Wire <code>compute_adaptive_k()</code> into <code>record_sighting()</code> call</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-mauve">P2</span></td>
+        <td><code>crates/backend/src/store/stt_replacements.rs</code></td>
+        <td>Add <code>generate_proactive_distortions()</code> + helper fns</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-mauve">P2</span></td>
+        <td><code>crates/backend/src/routes/classify.rs</code></td>
+        <td>Call <code>generate_proactive_distortions()</code> after promotion</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-mauve">P2</span></td>
+        <td><code>crates/backend/src/llm/promotion_gate.rs</code></td>
+        <td>Export <code>is_common_word()</code> as <code>pub</code> (already is)</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">P3</span></td>
+        <td><code>desktop/src-tauri/src/main.rs</code></td>
+        <td>Rewrite <code>watch_for_edit()</code> &mdash; new state machine with edit-region tracking</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-yellow">P4</span></td>
+        <td><code>crates/backend/src/routes/classify.rs</code></td>
+        <td>Add alias upsert in the <code>is_repeat</code> branch</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-yellow">P4</span></td>
+        <td><code>desktop/src/StatusBar.tsx</code></td>
+        <td>New "Upgraded" toast variant</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-peach">P5</span></td>
+        <td><code>crates/backend/src/routes/classify.rs</code></td>
+        <td>Reduce DEBOUNCE_SECS to 5, add <code>--micro</code> flag detection</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-peach">P5</span></td>
+        <td><code>tools/tier2/train_correction_model.py</code></td>
+        <td>Add <code>--micro</code> mode (15 epochs), warm neg cache</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-mauve">P2</span></td>
+        <td><code>crates/backend/src/routes/confirm.rs</code></td>
+        <td>Call <code>generate_proactive_distortions()</code> after user confirms ambiguous term</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- ROLLOUT -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="rollout">
+  <h2>Rollout Order</h2>
+
+  <div class="callout callout-info">
+    <div class="callout-icon">&#x1F4CB;</div>
+    <div>
+      Phases are independent but ordered by impact. Phase 1 + 4 are the highest ROI &mdash;
+      they make the system learn from fewer corrections with minimal code change.
+      Phase 2 makes it <em>stay</em> learned across novel distortions.
+      Phase 3 + 5 are polish for speed.
+    </div>
+  </div>
+
+  <h3>Wave 1 &mdash; Core Reliability <span class="badge badge-green">HIGH IMPACT</span></h3>
+  <p>Phase 1 (Adaptive K) + Phase 4 (Self-Upgrade). Estimated: ~2 hours.</p>
+  <ul>
+    <li><code>compute_adaptive_k()</code> in pending_promotions.rs (~30 lines)</li>
+    <li>Wire into classify.rs (~5 lines changed)</li>
+    <li>Add alias upsert in is_repeat branch (~15 lines)</li>
+    <li>Update toast messages for "Upgraded" variant</li>
+    <li><strong>Test:</strong> Fresh DB, speak "AirNote", correct once &rarr; should be learned</li>
+  </ul>
+
+  <h3>Wave 2 &mdash; Distortion Coverage <span class="badge badge-blue">HIGH IMPACT</span></h3>
+  <p>Phase 2 (Proactive Distortions). Estimated: ~3 hours.</p>
+  <ul>
+    <li><code>generate_proactive_distortions()</code> in stt_replacements.rs (~120 lines)</li>
+    <li>Mutation generators: char_deletions, vowel_subs, consonant_softening, camel_splits (~80 lines)</li>
+    <li><code>is_safe_distortion()</code> filter (~20 lines)</li>
+    <li>Wire into classify.rs + confirm.rs (~10 lines each)</li>
+    <li><strong>Test:</strong> Learn "AirNote", check stt_replacements has 8+ aliases.
+      Speak "airnot" on next recording &rarr; should auto-correct</li>
+  </ul>
+
+  <h3>Wave 3 &mdash; Speed <span class="badge badge-yellow">MEDIUM IMPACT</span></h3>
+  <p>Phase 3 (Faster Detection) + Phase 5 (Instant Training). Estimated: ~3 hours.</p>
+  <ul>
+    <li>Rewrite edit watcher state machine (~100 lines changed)</li>
+    <li>Edit-region tracking + stable-settle detection</li>
+    <li>Reduce debounce to 5s, add --micro training mode</li>
+    <li><strong>Test:</strong> Paste, edit one word, continue typing new text &rarr;
+      classify should fire within 3&ndash;5 seconds, not 12</li>
+  </ul>
+
+  <hr>
+
+  <h3>Success Criteria</h3>
+  <table>
+    <thead>
+      <tr><th>Scenario</th><th>Before</th><th>After</th><th>Gate</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Brand name ("AirNote")</td>
+        <td>3 corrections, 45s each</td>
+        <td><strong>1 correction, &lt;5s</strong></td>
+        <td>K=1, instant promote</td>
+      </tr>
+      <tr>
+        <td>Novel distortion after learning</td>
+        <td>Correction needed</td>
+        <td><strong>Auto-corrected</strong></td>
+        <td>Proactive aliases</td>
+      </tr>
+      <tr>
+        <td>Re-correction of known word</td>
+        <td>Weight bump only</td>
+        <td><strong>New alias + retrain</strong></td>
+        <td>Self-upgrade</td>
+      </tr>
+      <tr>
+        <td>Edit detection latency</td>
+        <td>12s idle wait</td>
+        <td><strong>3s stable settle</strong></td>
+        <td>Region-aware detection</td>
+      </tr>
+      <tr>
+        <td>ONNX live after learn</td>
+        <td>~45s</td>
+        <td><strong>~15s</strong></td>
+        <td>5s debounce + micro train</td>
+      </tr>
+      <tr>
+        <td>"main" &rarr; "Macobs" catastrophe</td>
+        <td>Possible via confirm</td>
+        <td><strong>Blocked</strong></td>
+        <td>Common-word filter on proactive</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout-success" style="margin-top: 32px;">
+    <div class="callout-icon">&#x2705;</div>
+    <div>
+      <strong>End state:</strong> AirNote learns like a human assistant. You say a word, correct it once,
+      and the system understands every future variation. No timing tricks, no repeated corrections,
+      no waiting. It just works.
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script>
+// Highlight active nav link on scroll
+const sections = document.querySelectorAll('section[id]');
+const navLinks = document.querySelectorAll('nav a[href^="#"]');
+
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      navLinks.forEach(link => link.classList.remove('active'));
+      const activeLink = document.querySelector(`nav a[href="#${entry.target.id}"]`);
+      if (activeLink) activeLink.classList.add('active');
+    }
+  });
+}, { rootMargin: '-20% 0px -80% 0px' });
+
+sections.forEach(section => observer.observe(section));
+</script>
+</body>
+</html>

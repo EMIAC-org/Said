@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AirNote — Edit Review Status Bar — Full Spec</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #1a1a2e;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px 80px;
+    color: #cdd6f4;
+  }
+
+  h1 { font-size: 28px; font-weight: 700; color: #f0f0ff; margin-bottom: 6px; }
+  .subtitle { color: #6c7086; font-size: 14px; margin-bottom: 48px; }
+
+  .section-label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px; color: #6c7086; margin: 40px 0 16px;
+    width: 100%; max-width: 700px; text-align: left;
+  }
+
+  /* ── Desktop mock ────────────────────────────────────────────────── */
+  .desktop-mock {
+    width: 340px; position: relative;
+    display: flex; align-items: flex-end; justify-content: center;
+    padding-bottom: 0; margin-bottom: 12px;
+  }
+
+  /* ── Pill (non-interactive states) ───────────────────────────────── */
+  .sb-pill {
+    background: rgba(8,8,12,0.92);
+    backdrop-filter: blur(24px) saturate(1.4);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 100px;
+    color: rgba(255,255,255,0.92);
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 18px; height: 36px;
+    pointer-events: none; white-space: nowrap;
+  }
+  .sb-pill.rect { border-radius: 14px; }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot-green { background: #4ade80; box-shadow: 0 0 8px rgba(74,222,128,0.4); }
+  .dot-yellow { background: #fbbf24; box-shadow: 0 0 8px rgba(251,191,36,0.4); }
+  .dot-blue { background: #58a6ff; box-shadow: 0 0 8px rgba(88,166,255,0.4); }
+  .dot-red { background: #f87171; box-shadow: 0 0 8px rgba(248,113,113,0.4); }
+
+  .lbl { font-size: 11px; color: rgba(255,255,255,0.55); }
+
+  /* ── Edit Review card ────────────────────────────────────────────── */
+  .sb-review {
+    background: rgba(8,8,12,0.94);
+    backdrop-filter: blur(24px) saturate(1.4);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+    color: rgba(255,255,255,0.92);
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+    width: 300px; padding: 14px;
+    pointer-events: auto;
+    animation: sb-slide-up 0.3s cubic-bezier(0.2,0.9,0.3,1);
+  }
+  @keyframes sb-slide-up {
+    from { opacity: 0; transform: translateY(8px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  .sb-review-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+  }
+  .sb-review-title { font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.7); }
+  .sb-review-sub { font-size: 10px; color: rgba(255,255,255,0.3); margin-top: 1px; }
+
+  .sb-changes { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+
+  .sb-change {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 9px;
+    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+    cursor: pointer; transition: all 0.15s ease; user-select: none;
+  }
+  .sb-change:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.10); }
+  .sb-change.selected { background: rgba(74,222,128,0.07); border-color: rgba(74,222,128,0.22); }
+
+  .sb-check {
+    width: 16px; height: 16px; border-radius: 4px;
+    border: 1.5px solid rgba(255,255,255,0.12); background: transparent;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; font-size: 10px; transition: all 0.15s ease;
+  }
+  .sb-change.selected .sb-check { background: #4ade80; border-color: #4ade80; color: #000; }
+
+  .sb-change-text { flex: 1; display: flex; align-items: center; gap: 5px; font-size: 11px; min-width: 0; }
+  .sb-from {
+    color: rgba(255,255,255,0.35); text-decoration: line-through;
+    text-decoration-color: rgba(248,113,113,0.4);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .sb-arrow { color: rgba(255,255,255,0.15); flex-shrink: 0; font-size: 10px; }
+  .sb-to { color: #4ade80; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-change.selected .sb-to { color: #6ee7b7; }
+
+  .sb-tag {
+    font-size: 8px; padding: 1px 5px; border-radius: 3px;
+    background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.25);
+    flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600;
+  }
+  .sb-tag-new { background: rgba(88,166,255,0.10); color: rgba(88,166,255,0.6); }
+  .sb-change.selected .sb-tag { background: rgba(74,222,128,0.10); color: rgba(74,222,128,0.6); }
+
+  .sb-confirm-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .sb-confirm-hint { font-size: 10px; color: rgba(255,255,255,0.2); flex: 1; text-align: center; }
+  .sb-confirm-btn {
+    background: #4ade80; color: #000; border: none; border-radius: 7px;
+    padding: 6px 14px; font-size: 11px; font-weight: 600;
+    cursor: pointer; transition: all 0.15s ease; font-family: inherit;
+  }
+  .sb-confirm-btn:hover { background: #6ee7b7; }
+  .sb-confirm-btn:disabled { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.2); cursor: default; }
+  .sb-skip-btn {
+    background: none; border: 1px solid rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.3); border-radius: 7px;
+    padding: 6px 10px; font-size: 11px; font-weight: 500;
+    cursor: pointer; transition: all 0.15s ease; font-family: inherit;
+  }
+  .sb-skip-btn:hover { border-color: rgba(255,255,255,0.12); color: rgba(255,255,255,0.5); }
+
+  /* ── Grid layout ─────────────────────────────────────────────────── */
+  .gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 28px 40px; max-width: 700px; width: 100%; }
+  .card { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .card-label { font-size: 10px; color: #6c7086; font-weight: 500; text-align: center; line-height: 1.4; }
+
+  /* ── Spec box ────────────────────────────────────────────────────── */
+  .spec {
+    max-width: 700px; width: 100%;
+    background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px; padding: 24px;
+    font-size: 13px; line-height: 1.7; color: #a6adc8;
+  }
+  .spec h3 { font-size: 15px; color: #f0f0ff; margin-bottom: 12px; font-weight: 600; }
+  .spec h4 { font-size: 13px; color: #89b4fa; margin: 18px 0 6px; font-weight: 600; }
+  .spec ul { margin-left: 18px; margin-bottom: 10px; }
+  .spec li { margin-bottom: 4px; }
+  .spec code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 3px; color: #fab387; font-size: 12px; }
+  .spec .highlight { background: rgba(137,180,250,0.08); border-left: 3px solid #89b4fa; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; }
+  .spec .highlight-warn { background: rgba(249,226,175,0.06); border-left-color: #f9e2af; }
+  .spec .highlight-green { background: rgba(166,227,161,0.06); border-left-color: #a6e3a1; }
+
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+</style>
+</head>
+<body>
+
+<h1>Edit Review &mdash; Full Spec</h1>
+<p class="subtitle">Every state, every edge case, every window size</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- INTERACTIVE MOCKUP -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<p class="section-label">Multi-change review card (interactive &mdash; click rows)</p>
+
+<div class="desktop-mock">
+  <div class="sb-review" id="review-card">
+    <div class="sb-review-header">
+      <span class="dot dot-yellow"></span>
+      <div>
+        <div class="sb-review-title">Which corrections should AirNote learn?</div>
+        <div class="sb-review-sub">Tap the ones you want remembered</div>
+      </div>
+    </div>
+    <div class="sb-changes" id="changes-list">
+      <div class="sb-change selected" onclick="toggleChange(this)">
+        <div class="sb-check">&#x2713;</div>
+        <div class="sb-change-text">
+          <span class="sb-from">main corps</span>
+          <span class="sb-arrow">&rarr;</span>
+          <span class="sb-to">Macobs</span>
+        </div>
+        <span class="sb-tag">stt</span>
+      </div>
+      <div class="sb-change" onclick="toggleChange(this)">
+        <div class="sb-check"></div>
+        <div class="sb-change-text">
+          <span class="sb-from">main</span>
+          <span class="sb-arrow">&rarr;</span>
+          <span class="sb-to">Macobs</span>
+        </div>
+        <span class="sb-tag">stt</span>
+      </div>
+      <div class="sb-change selected" onclick="toggleChange(this)">
+        <div class="sb-check">&#x2713;</div>
+        <div class="sb-change-text">
+          <span class="sb-from">meic</span>
+          <span class="sb-arrow">&rarr;</span>
+          <span class="sb-to">EMIAC</span>
+        </div>
+        <span class="sb-tag">stt</span>
+      </div>
+    </div>
+    <div class="sb-confirm-row">
+      <button class="sb-skip-btn" onclick="skipAll()">Skip all</button>
+      <span class="sb-confirm-hint" id="count-hint">2 selected</span>
+      <button class="sb-confirm-btn" id="confirm-btn" onclick="confirmSelected()">Learn 2</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- EDGE: USER ADDED A WORD (no transcript origin) -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<p class="section-label">Edge case: user added a word not in transcript</p>
+
+<div class="desktop-mock" style="margin-bottom: 4px;">
+  <div class="sb-review" style="width: 300px;">
+    <div class="sb-review-header">
+      <span class="dot dot-yellow"></span>
+      <div>
+        <div class="sb-review-title">Which corrections should AirNote learn?</div>
+        <div class="sb-review-sub">Tap the ones you want remembered</div>
+      </div>
+    </div>
+    <div class="sb-changes">
+      <div class="sb-change selected" onclick="toggleChange(this)">
+        <div class="sb-check">&#x2713;</div>
+        <div class="sb-change-text">
+          <span class="sb-from">cubernetti</span>
+          <span class="sb-arrow">&rarr;</span>
+          <span class="sb-to">Kubernetes</span>
+        </div>
+        <span class="sb-tag">stt</span>
+      </div>
+      <div class="sb-change" onclick="toggleChange(this)" style="opacity: 0.5; pointer-events: none;">
+        <div class="sb-check" style="border-color: rgba(255,255,255,0.06);"></div>
+        <div class="sb-change-text">
+          <span class="sb-from" style="text-decoration: none; color: rgba(255,255,255,0.2);">(not in audio)</span>
+          <span class="sb-arrow">&rarr;</span>
+          <span class="sb-to" style="color: rgba(255,255,255,0.3);">Docker</span>
+        </div>
+        <span class="sb-tag" style="opacity: 0.4;">added</span>
+      </div>
+      <div class="sb-change selected" onclick="toggleChange(this)">
+        <div class="sb-check">&#x2713;</div>
+        <div class="sb-change-text">
+          <span class="sb-from">reds</span>
+          <span class="sb-arrow">&rarr;</span>
+          <span class="sb-to">Redis</span>
+        </div>
+        <span class="sb-tag">stt</span>
+      </div>
+    </div>
+    <div class="sb-confirm-row">
+      <button class="sb-skip-btn">Skip all</button>
+      <span class="sb-confirm-hint">2 selected</span>
+      <button class="sb-confirm-btn">Learn 2</button>
+    </div>
+  </div>
+</div>
+<div style="font-size: 11px; color: #6c7086; max-width: 340px; text-align: center; margin-bottom: 24px; line-height: 1.5;">
+  "Docker" was inserted by the user (not a replacement of an STT word).
+  The row is <strong>greyed out and unselectable</strong> &mdash; nothing to learn
+  because there's no distortion to map from. Only STT replacements are learnable.
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- ALL PILL STATES -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<p class="section-label">All status bar states with window sizes</p>
+
+<div class="gallery">
+  <div class="card">
+    <div class="sb-pill" style="width: 140px;"><span class="dot dot-green"></span><span class="lbl">AirNote</span></div>
+    <span class="card-label">Idle &mdash; 140 &times; 36<br>click-through, no interaction</span>
+  </div>
+  <div class="card">
+    <div class="sb-pill" style="width: 140px;"><span class="dot dot-red" style="animation:pulse 1.5s ease infinite;"></span><span class="lbl">Recording</span></div>
+    <span class="card-label">Recording &mdash; 140 &times; 36<br>click-through</span>
+  </div>
+  <div class="card">
+    <div class="sb-pill rect" style="width: 280px;"><span class="dot dot-yellow"></span><span class="lbl">"Kafka" &mdash; 1 more edit to learn</span></div>
+    <span class="card-label">Queued &mdash; 280 &times; 36<br>click-through, 5s auto-dismiss</span>
+  </div>
+  <div class="card">
+    <div class="sb-pill rect" style="width: 200px;"><span class="dot dot-green"></span><span class="lbl">Learned "AirNote"</span></div>
+    <span class="card-label">Instant learn (K=1) &mdash; 200 &times; 36<br>click-through, 3s auto-dismiss</span>
+  </div>
+  <div class="card">
+    <div class="sb-pill rect" style="width: 320px; height: 40px;"><span class="dot dot-red"></span><span class="lbl">Got it &mdash; won't type "Macobs" for "access"</span></div>
+    <span class="card-label">Wrong alias fixed &mdash; 320 &times; 40<br>click-through, 4s auto-dismiss</span>
+  </div>
+  <div class="card">
+    <div class="sb-pill" style="width: 180px;"><span class="dot dot-blue"></span><span class="lbl">Improving model...</span></div>
+    <span class="card-label">Retraining &mdash; 180 &times; 36<br>click-through</span>
+  </div>
+  <div class="card">
+    <div class="sb-pill rect" style="width: 220px;"><span class="dot dot-green"></span><span class="lbl">Model updated (4.2s)</span></div>
+    <span class="card-label">Retrain done &mdash; 220 &times; 36<br>click-through, 3s auto-dismiss</span>
+  </div>
+  <div class="card">
+    <div class="sb-pill rect" style="width: 260px;"><span class="dot dot-blue"></span><span class="lbl">Upgraded "Macobs" &mdash; new spelling</span></div>
+    <span class="card-label">Self-upgrade &mdash; 260 &times; 36<br>click-through, 3s auto-dismiss</span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- REVIEW CARD SIZE SPEC -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<p class="section-label">Edit Review card &mdash; window size formula</p>
+
+<div class="spec">
+  <h3>Window sizing for the review card</h3>
+  <p>The native status bar window must resize to fit the review card content. Formula:</p>
+  <div class="highlight">
+    <strong>Width:</strong> <code>300px</code> (fixed)<br>
+    <strong>Height:</strong> <code>header (38) + changes (N &times; 38) + gaps (N &times; 5) + footer (36) + padding (28) = 102 + N &times; 43</code><br>
+    <br>
+    <strong>1 change:</strong> 300 &times; 145<br>
+    <strong>2 changes:</strong> 300 &times; 188<br>
+    <strong>3 changes:</strong> 300 &times; 231<br>
+    <strong>4 changes (max):</strong> 300 &times; 274
+  </div>
+  <p>Cap at <strong>4 rows</strong>. If more than 4 changes detected, show top 4 by confidence and group the rest under "and N more..."</p>
+
+  <h3 style="margin-top: 24px;">Decision logic &mdash; when to show what</h3>
+
+  <h4>Case 1: Single word, high confidence (K=1)</h4>
+  <ul>
+    <li>Term type is <code>brand</code>, <code>acronym</code>, or <code>code_identifier</code></li>
+    <li>Original is NOT a common word</li>
+    <li><strong>Action:</strong> Auto-learn instantly, show green "Learned" pill</li>
+    <li><strong>No review card</strong> &mdash; this is unambiguous</li>
+  </ul>
+
+  <h4>Case 2: Single word, moderate confidence (K=2)</h4>
+  <ul>
+    <li>Term type is <code>proper_noun</code> or <code>phrase</code></li>
+    <li><strong>Action:</strong> Record sighting, show yellow "1 more edit" pill</li>
+    <li><strong>No review card</strong> &mdash; just a status update</li>
+  </ul>
+
+  <h4>Case 3: Multiple changes detected (2+)</h4>
+  <ul>
+    <li>Show the <strong>Edit Review card</strong></li>
+    <li>Each change is a selectable row</li>
+    <li>User picks which ones to learn</li>
+    <li>Selected: learn + distortion seed + retrain</li>
+    <li>Unselected: completely ignored, not even queued</li>
+  </ul>
+
+  <h4>Case 4: Single word, low confidence (K=3)</h4>
+  <ul>
+    <li>Term type is <code>other</code>, low jargon score</li>
+    <li><strong>Action:</strong> Show review card with 1 row so user can explicitly confirm</li>
+    <li>This replaces the old blind K=3 queue &mdash; user decides on the spot</li>
+  </ul>
+
+  <div class="highlight-warn">
+    <h4 style="margin-top: 0; color: #f9e2af;">Edge: User added a word not in transcript</h4>
+    <p>When the classifier detects a <code>StructuralRewrite</code> (user inserted content that wasn't in the STT output at all), that change is <strong>not learnable</strong> because there's no source distortion to map from.</p>
+    <p>In the review card, these rows appear <strong>greyed out with "(not in audio)" label</strong> and are <strong>unselectable</strong>. They're shown for transparency ("we saw you added this") but can't be learned because there's nothing to teach the STT about.</p>
+    <p>Example: User says "deploy to Kubernetes using Docker" but STT only heard "deploy to cubernetti using" — the user adds "Docker" manually. There's no STT distortion of "Docker" to learn from.</p>
+  </div>
+
+  <div class="highlight-green">
+    <h4 style="margin-top: 0; color: #a6e3a1;">What happens after "Learn N"</h4>
+    <ol>
+      <li>Selected changes are sent to <code>POST /v1/confirm-batch</code></li>
+      <li>Each is promoted to vocabulary (adaptive K, bypasses queue)</li>
+      <li>Proactive distortions generated for each</li>
+      <li>Edit-policy rules activated</li>
+      <li>Lexicon cache invalidated</li>
+      <li>ONNX micro-retrain triggered</li>
+      <li>Card collapses to green pill: "Learned N corrections"</li>
+      <li>3s later &rarr; idle</li>
+    </ol>
+  </div>
+
+  <h3 style="margin-top: 24px;">Window interactivity toggle</h3>
+  <p>The status bar is click-through by default. When the review card appears:</p>
+  <ol>
+    <li>Call <code>set_status_bar_interactive(true)</code> &mdash; enables mouse events on native window</li>
+    <li>User interacts with checkboxes and buttons</li>
+    <li>On "Learn N" or "Skip all" or auto-dismiss (15s timeout):</li>
+    <li>Call <code>set_status_bar_interactive(false)</code> &mdash; back to click-through</li>
+  </ol>
+</div>
+
+<script>
+function toggleChange(el) {
+  el.classList.toggle('selected');
+  const check = el.querySelector('.sb-check');
+  check.innerHTML = el.classList.contains('selected') ? '&#x2713;' : '';
+  updateCount();
+}
+function updateCount() {
+  const n = document.querySelectorAll('#changes-list .sb-change.selected').length;
+  document.getElementById('count-hint').textContent = n === 0 ? 'none selected' : `${n} selected`;
+  const btn = document.getElementById('confirm-btn');
+  btn.disabled = n === 0;
+  btn.textContent = n === 0 ? 'Learn' : `Learn ${n}`;
+}
+function confirmSelected() {
+  const n = document.querySelectorAll('#changes-list .sb-change.selected').length;
+  const card = document.getElementById('review-card');
+  card.innerHTML = `<div style="display:flex;align-items:center;gap:8px;padding:2px 0;"><span class="dot dot-green"></span><span class="lbl">Learned ${n} correction${n>1?'s':''}</span></div>`;
+  card.style.width = '220px'; card.style.borderRadius = '100px'; card.style.padding = '8px 18px';
+}
+function skipAll() {
+  document.querySelectorAll('#changes-list .sb-change').forEach(el => {
+    el.classList.remove('selected'); el.querySelector('.sb-check').innerHTML = '';
+  });
+  updateCount();
+}
+</script>
+</body>
+</html>

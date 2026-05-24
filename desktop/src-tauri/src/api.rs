@@ -1006,13 +1006,16 @@ pub struct ClassifyEditResponse {
     /// (k-threshold not met). The desktop surfaces these as a soft "noticed"
     /// toast so the user knows the system saw the correction.
     #[serde(default)]
-    pub queued_terms: Vec<String>,
+    pub queued_terms: Vec<QueuedTermResponse>,
     /// Ambiguous terms where the classifier can't decide — needs user confirmation.
     #[serde(default)]
     pub ambiguous_terms: Vec<AmbiguousTermResponse>,
     /// Corrections the system keeps making wrong — needs user to confirm blocking.
     #[serde(default)]
     pub negative_terms: Vec<NegativeTermResponse>,
+    /// Changes the user should review before learning.
+    #[serde(default)]
+    pub review_candidates: Vec<ReviewCandidateResponse>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1028,6 +1031,57 @@ pub struct NegativeTermResponse {
     pub term: String,
     pub wrong_replacement: String,
     pub correction_count: i64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct QueuedTermResponse {
+    pub term: String,
+    pub sighting_count: i64,
+    pub k: i64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ReviewCandidateResponse {
+    pub original: String,
+    pub corrected: String,
+    pub term_type: String,
+    pub learnable: bool,
+    pub tag: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ConfirmBatchResponse {
+    pub learned_count: usize,
+    pub learned_terms: Vec<String>,
+}
+
+pub async fn confirm_batch(
+    ep: &BackendEndpoint,
+    items: &[(String, String)],
+    recording_id: Option<&str>,
+) -> Result<ConfirmBatchResponse, String> {
+    let url = format!("{}/v1/confirm-batch", ep.url);
+    let items_json: Vec<serde_json::Value> = items
+        .iter()
+        .map(|(orig, corr)| {
+            serde_json::json!({ "original": orig, "corrected": corr })
+        })
+        .collect();
+    let body = serde_json::json!({
+        "items": items_json,
+        "recording_id": recording_id,
+    });
+    Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("confirm batch failed: {e}"))?
+        .json::<ConfirmBatchResponse>()
+        .await
+        .map_err(|e| format!("parse confirm batch: {e}"))
 }
 
 /// Classify an edit using the four-way classifier.
@@ -1075,6 +1129,30 @@ pub async fn classify_edit(
         .json::<ClassifyEditResponse>()
         .await
         .map_err(|e| format!("parse classify response: {e}"))
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RetrainStatus {
+    pub scheduled: bool,
+    pub running: bool,
+    pub started_at: i64,
+    pub finished_at: i64,
+    pub duration_ms: i64,
+    pub success: bool,
+}
+
+pub async fn get_retrain_status(ep: &BackendEndpoint) -> Result<RetrainStatus, String> {
+    let url = format!("{}/v1/retrain-status", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .map_err(|e| format!("retrain status failed: {e}"))?
+        .json::<RetrainStatus>()
+        .await
+        .map_err(|e| format!("parse retrain status: {e}"))
 }
 
 pub async fn get_stt_bias(ep: &BackendEndpoint) -> Result<BiasPackage, String> {

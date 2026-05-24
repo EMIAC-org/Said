@@ -1,0 +1,1276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ONNX Model Activation Plan — Said v2.2</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --orange: #d29922;
+    --purple: #bc8cff;
+    --pink: #f778ba;
+    --cyan: #39d353;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 40px 20px;
+  }
+  .container { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 2em; font-weight: 700; margin-bottom: 8px; }
+  h1 span { color: var(--accent); }
+  .subtitle { color: var(--text-dim); font-size: 1.1em; margin-bottom: 40px; }
+  h2 {
+    font-size: 1.4em; font-weight: 600; margin: 48px 0 16px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    color: var(--accent);
+  }
+  h3 { font-size: 1.15em; font-weight: 600; margin: 24px 0 12px; color: var(--text); }
+
+  /* Status banner */
+  .status-now {
+    background: linear-gradient(135deg, #1a1e2e, #161b22);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 32px;
+  }
+  .status-now .label { color: var(--text-dim); font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.05em; }
+  .status-now .value { font-size: 1.6em; font-weight: 700; margin: 4px 0; }
+  .status-now .value.off { color: var(--red); }
+  .status-now .value.on { color: var(--green); }
+  .status-now .detail { color: var(--text-dim); font-size: 0.9em; margin-top: 8px; }
+
+  /* Pipeline diagram */
+  .pipeline {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin: 20px 0;
+    overflow-x: auto;
+    padding-bottom: 8px;
+  }
+  .pipe-stage {
+    flex: 1;
+    min-width: 160px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 16px 14px;
+    position: relative;
+    text-align: center;
+  }
+  .pipe-stage:first-child { border-radius: 8px 0 0 8px; }
+  .pipe-stage:last-child { border-radius: 0 8px 8px 0; }
+  .pipe-stage .num { color: var(--text-dim); font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.08em; }
+  .pipe-stage .name { font-weight: 600; margin: 4px 0; }
+  .pipe-stage .desc { font-size: 0.8em; color: var(--text-dim); }
+  .pipe-stage.active { border-color: var(--green); background: #0d1f0d; }
+  .pipe-stage.shadow { border-color: var(--orange); background: #1f1a0d; }
+  .pipe-stage.new { border-color: var(--accent); background: #0d1520; }
+  .pipe-stage::after {
+    content: '\2192';
+    position: absolute;
+    right: -14px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-dim);
+    font-size: 1.2em;
+    z-index: 1;
+  }
+  .pipe-stage:last-child::after { display: none; }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin: 12px 0;
+  }
+  .card-title { font-weight: 600; margin-bottom: 8px; }
+
+  /* Scenario grid */
+  .scenario-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 12px 0;
+  }
+  @media (max-width: 768px) { .scenario-grid { grid-template-columns: 1fr; } }
+  .scenario {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .scenario .tag {
+    display: inline-block;
+    font-size: 0.7em;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+  }
+  .tag.normal { background: #0d2818; color: var(--green); }
+  .tag.edge { background: #2d1a0d; color: var(--orange); }
+  .tag.danger { background: #2d0d0d; color: var(--red); }
+  .tag.learn { background: #0d1520; color: var(--accent); }
+  .scenario .title { font-weight: 600; margin-bottom: 4px; }
+  .scenario .body { font-size: 0.88em; color: var(--text-dim); }
+  .scenario .arrow { color: var(--accent); font-weight: 600; }
+  .scenario code { background: var(--bg); padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+
+  /* Gate table */
+  .gate-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 0.9em;
+  }
+  .gate-table th, .gate-table td {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    text-align: left;
+  }
+  .gate-table th { background: var(--surface2); font-weight: 600; color: var(--accent); }
+  .gate-table td { background: var(--surface); }
+  .gate-table tr:hover td { background: var(--surface2); }
+  .check { color: var(--green); }
+  .cross { color: var(--red); }
+
+  /* Flow diagram */
+  .flow {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    margin: 16px 0;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.85em;
+    line-height: 1.8;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .flow .kw { color: var(--purple); font-weight: 600; }
+  .flow .fn { color: var(--accent); }
+  .flow .str { color: var(--green); }
+  .flow .cm { color: var(--text-dim); }
+  .flow .warn { color: var(--orange); }
+  .flow .err { color: var(--red); }
+  .flow .ok { color: var(--green); }
+
+  /* Learning loop */
+  .loop-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    margin: 16px 0;
+  }
+  @media (max-width: 900px) { .loop-grid { grid-template-columns: 1fr; } }
+  .loop-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .loop-card .signal { font-size: 1.4em; margin-bottom: 4px; }
+  .loop-card .action { font-weight: 600; margin-bottom: 4px; }
+  .loop-card .detail { font-size: 0.85em; color: var(--text-dim); }
+
+  /* Phase timeline */
+  .phase-timeline { margin: 16px 0; }
+  .phase {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 16px;
+    position: relative;
+    padding-left: 40px;
+  }
+  .phase::before {
+    content: '';
+    position: absolute;
+    left: 15px;
+    top: 28px;
+    bottom: -16px;
+    width: 2px;
+    background: var(--border);
+  }
+  .phase:last-child::before { display: none; }
+  .phase-dot {
+    position: absolute;
+    left: 8px;
+    top: 4px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid var(--accent);
+    background: var(--bg);
+  }
+  .phase-dot.done { background: var(--green); border-color: var(--green); }
+  .phase-content {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    flex: 1;
+  }
+  .phase-title { font-weight: 600; margin-bottom: 4px; }
+  .phase-desc { font-size: 0.9em; color: var(--text-dim); }
+
+  ul { padding-left: 20px; margin: 8px 0; }
+  li { margin-bottom: 4px; }
+  p { margin: 8px 0; }
+  code { font-family: 'SF Mono', 'Fira Code', monospace; }
+
+  .highlight { color: var(--accent); font-weight: 600; }
+  .warn-text { color: var(--orange); }
+  .err-text { color: var(--red); }
+  .ok-text { color: var(--green); }
+
+  /* Comparison table */
+  .compare-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 12px 0;
+  }
+  .compare-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .compare-box .label { font-size: 0.8em; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
+  .compare-box.before { border-color: var(--red); }
+  .compare-box.after { border-color: var(--green); }
+
+  .divider { border-top: 1px solid var(--border); margin: 32px 0; }
+
+  .badge {
+    display: inline-block;
+    font-size: 0.75em;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  .badge.required { background: #2d0d0d; color: var(--red); }
+  .badge.important { background: #2d1a0d; color: var(--orange); }
+  .badge.nice { background: #0d2818; color: var(--green); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>ONNX Model Activation Plan <span>v2.2</span></h1>
+<p class="subtitle">Flipping the neural scorer from shadow-only to live corrections.<br>
+Every edge case. Every learning signal. Every safety gate.</p>
+
+<!-- ─── CURRENT STATE ─────────────────────────────────────────────── -->
+
+<h2>1. Where We Are Right Now</h2>
+
+<div class="status-now">
+  <div class="label">ONNX Neural Scorer</div>
+  <div class="value off">SHADOW-ONLY &mdash; zero corrections applied</div>
+  <div class="detail">
+    The model runs on every dictation. It scores every suspicious token against every vocab candidate.
+    It logs the result. It <strong>never applies a single correction</strong>.
+    All live corrections come from exact STT alias match, edit-policy rules, and cluster-fuzzy pass.
+  </div>
+</div>
+
+<h3>Current Correction Pipeline (4 passes)</h3>
+<div class="pipeline">
+  <div class="pipe-stage active">
+    <div class="num">Pass 1</div>
+    <div class="name">Exact Alias</div>
+    <div class="desc">STT heard "airnot" &rarr; exact match in stt_replacements &rarr; "AirNote"</div>
+  </div>
+  <div class="pipe-stage active">
+    <div class="num">Pass 2</div>
+    <div class="name">Edit Policy</div>
+    <div class="desc">Context-aware rules from user edits. Multi-token. Active if 2+ confirmations.</div>
+  </div>
+  <div class="pipe-stage active">
+    <div class="num">Pass 3</div>
+    <div class="name">Cluster Fuzzy</div>
+    <div class="desc">High-similarity match against edit-policy targets. Threshold: 0.78</div>
+  </div>
+  <div class="pipe-stage shadow">
+    <div class="num">Pass 4</div>
+    <div class="name">ONNX Neural</div>
+    <div class="desc">Scores all remaining tokens. Logs. <strong>Never applies.</strong></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">The one-line change</div>
+  <p>In <code>tier2.rs</code>, the <code>fuzzy_shadow_only_skipping()</code> function calls <code>apply_tier2(..., false)</code>.</p>
+  <p>That <code>false</code> is <code>allow_apply</code>. Change to <code>true</code> and the model starts making live corrections.</p>
+  <p><strong>But we can't just flip it.</strong> The training data has quality issues that would cause false positives.</p>
+</div>
+
+
+<!-- ─── THE PROBLEM WITH TRAINING DATA ────────────────────────────── -->
+
+<h2>2. Why We Can't Just Flip The Switch</h2>
+
+<h3>Training Data Quality Gaps</h3>
+
+<div class="scenario-grid">
+  <div class="scenario">
+    <span class="tag danger">GAP 1</span>
+    <div class="title">Real English AND Hindi words as aliases</div>
+    <div class="body">
+      If user says "air note" and corrects to "AirNote", the system creates alias <code>air note &rarr; AirNote</code>.
+      "air" is a real English word. "bol" is a real Hindi word. If the model trains on either as a positive,
+      it will aggressively replace them in all speech.
+      <br><br>
+      <strong>English:</strong> <code>COMMON_WORDS</code> has ~70 words. Misses thousands: "air", "note", "sprint", "dock", "tower", "graph".<br>
+      <strong>Hindi:</strong> Only 6 Hindi words in the filter. Misses critical Hinglish words like
+      "bol", "bas", "kya", "dekh", "sun", "chal", "mil" &mdash; all commonly emitted by Deepgram in Hinglish mode.
+      <br><br>
+      <strong>Rare Hindi is fine:</strong> Words like "pratigya", "vimarsh", "anushasan" are safe as aliases because
+      they almost never appear in casual Hinglish dictation. Only high-frequency conversational Hindi needs blocking.
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag danger">GAP 2</span>
+    <div class="title">Proactive distortions generating real words</div>
+    <div class="body">
+      <code>generate_proactive_distortions("sprint")</code> creates char deletions like "print", "sprit".
+      <code>vowel_substitutions("node")</code> creates "nod", "ned".
+      These are real English words &mdash; if they become training positives, the model will aggressively
+      replace "print" with "Sprint" everywhere.
+      <br><br>
+      <strong>Current check:</strong> <code>is_safe_distortion()</code> only checks common words + length. Doesn't check the dictionary.
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag danger">GAP 3</span>
+    <div class="title">Single-token splitting of compound terms</div>
+    <div class="body">
+      "AirNote" as a compound should match "air note" (two tokens), but the ONNX model only handles
+      <strong>single token &rarr; single candidate</strong> scoring. It can't reason about "air" + "note" together.
+      <br><br>
+      Multi-token compounds need a different handling strategy &mdash; edit-policy rules or dedicated compound matching.
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag danger">GAP 4</span>
+    <div class="title">No empty/junk transcript filtering</div>
+    <div class="body">
+      Deepgram sometimes returns empty strings, single characters, or garbled fragments.
+      If these get stored as correction pairs (<code>"" &rarr; "AirNote"</code>), they pollute training data.
+      <br><br>
+      <strong>Current check:</strong> <code>len(token) &lt; 3</code> filter exists but doesn't catch semantic junk.
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag danger">GAP 5</span>
+    <div class="title">Case variants treated as separate aliases</div>
+    <div class="body">
+      "Airnote", "airnote", "AIRNOTE", "AirNote" &mdash; these all get stored as separate aliases
+      pointing to the same canonical form. This inflates alias_count and creates noisy features.
+      <br><br>
+      The normalize function lowercases, but the training script creates variants from the original case forms.
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag edge">GAP 6</span>
+    <div class="title">Cross-term confusion in small vocab</div>
+    <div class="body">
+      With 5 vocab terms, the model has few candidates &mdash; fine.
+      But if two terms are similar ("Marcos" and "Macobs"), the model needs very clear training signal
+      to distinguish them. Currently, both would get positive examples from similar distortions.
+    </div>
+  </div>
+</div>
+
+
+<!-- ─── TRAINING DATA QUALITY GATES ───────────────────────────────── -->
+
+<h2>3. Training Data Quality Gates <span class="badge required">BEFORE ACTIVATION</span></h2>
+
+<p>Every alias and training example must pass these gates before it becomes a positive training pair.</p>
+
+<table class="gate-table">
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Gate</th>
+      <th>What It Catches</th>
+      <th>Where It Runs</th>
+      <th>Current?</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>G1</td>
+      <td><strong>Common word filter (English + Hindi)</strong><br>
+        Alias must NOT be a commonly used word in <strong>any language the user speaks</strong>.<br><br>
+        <strong>English:</strong> Full <code>/usr/share/dict/words</code> dictionary (~235K words).<br>
+        <strong>Hindi/Hinglish (romanized):</strong> ~120 high-frequency words that Deepgram routinely emits in Hinglish dictation.
+        Rare/literary Hindi words are fine &mdash; only everyday conversational words are blocked.<br><br>
+        <em>Rationale:</em> If "mein" or "bas" or "air" becomes a training positive, the model will
+        aggressively replace these extremely common words everywhere. Rare words like "pratigya" or "vimarsh"
+        are unlikely to appear in normal speech, so they're safe as aliases.
+      </td>
+      <td>
+        <strong>English:</strong> "air" &rarr; AirNote, "print" &rarr; Sprint, "note" &rarr; AirNote, "dock" &rarr; Docker<br>
+        <strong>Hindi:</strong> "mein" &rarr; EMIAC, "bas" &rarr; BAS-E, "kya" &rarr; Kaia, "bol" &rarr; Bolt, "aur" &rarr; Aura
+      </td>
+      <td>Training script: <code>build_examples()</code><br>
+        Runtime: <code>is_safe_distortion()</code><br>
+        Runtime: <code>stt_replacements::upsert()</code></td>
+      <td><span class="cross">&cross;</span> Only ~70 English + 6 Hindi</td>
+    </tr>
+    <tr>
+      <td colspan="5" style="background: var(--bg); padding: 4px;">
+        <details style="cursor: pointer;">
+          <summary style="color: var(--accent); font-weight: 600; font-size: 0.9em;">Hindi/Hinglish Common Words List (~120 words) &mdash; click to expand</summary>
+          <div style="columns: 4; column-gap: 16px; padding: 12px; font-size: 0.82em; color: var(--text-dim); line-height: 1.8;">
+            <strong style="color: var(--text);">Pronouns &amp; determiners:</strong><br>
+            mein, mai, tum, hum, aap, woh, yeh, yah, wah, koi, kuch, sab, apna, tera, mera, hamara, unka, inka, uska, iska<br><br>
+            <strong style="color: var(--text);">Verbs (common conjugations):</strong><br>
+            hai, hain, tha, thi, the, ho, hota, hoti, hote, kar, karo, karta, karti, karte, bol, bolo, bola, boli, de, do, dena, deta, le, lo, lena, leta, ja, jao, jana, jata, aa, aao, aana, aata, dekh, dekho, dekhna, dekha, sun, suno, sunna, suna, chal, chalo, chalna, chala, rakh, rakho, rakhna, rakha, mil, mila, milna<br><br>
+            <strong style="color: var(--text);">Conjunctions &amp; particles:</strong><br>
+            aur, ya, lekin, magar, agar, toh, bhi, hi, na, nahi, nahin, mat, bas, sirf, bilkul, zaroor, haan, ji, achha, accha, theek, thik<br><br>
+            <strong style="color: var(--text);">Question words:</strong><br>
+            kya, kaise, kahan, kahaan, kaun, kyun, kyon, kab, kitna, kitni, kitne, kidhar<br><br>
+            <strong style="color: var(--text);">Adverbs &amp; prepositions:</strong><br>
+            ab, abhi, tab, jab, phir, pehle, baad, upar, neeche, andar, bahar, saamne, peeche, yahan, wahan, idhar, udhar, saath<br><br>
+            <strong style="color: var(--text);">Common adjectives:</strong><br>
+            bahut, bohot, zyada, kam, acha, bura, bada, chhota, naya, purana, pura, sahi, galat<br><br>
+            <strong style="color: var(--text);">High-frequency nouns:</strong><br>
+            baat, kaam, din, raat, ghar, log, banda, cheez, taraf, jagah, waqt, baar
+          </div>
+        </details>
+      </td>
+    </tr>
+    <tr>
+      <td>G2</td>
+      <td><strong>Minimum edit distance</strong><br>Alias must differ from candidate by &ge;2 edits AND edit_similarity &le; 0.90</td>
+      <td>Near-identical variants like "AirNote" &rarr; "AirNote" or "airnote" &rarr; "AirNote" (too easy, no learning signal)</td>
+      <td>Training script: <code>build_examples()</code></td>
+      <td><span class="cross">&cross;</span></td>
+    </tr>
+    <tr>
+      <td>G3</td>
+      <td><strong>Cross-term collision check</strong><br>Alias must not be closer to a DIFFERENT vocab term than its target</td>
+      <td>"marcos" being a positive for "Macobs" when "Marcos" is also in vocab</td>
+      <td>Training script: <code>build_examples()</code></td>
+      <td><span class="cross">&cross;</span></td>
+    </tr>
+    <tr>
+      <td>G4</td>
+      <td><strong>Compound token guard</strong><br>Multi-word aliases are valid ONLY as edit-policy rules, never as ONNX training pairs</td>
+      <td>"air note" should not create a single-token ONNX positive</td>
+      <td>Training script: <code>build_examples()</code><br>Already filtered by <code>len(term.split()) == 1</code></td>
+      <td><span class="check">&check;</span></td>
+    </tr>
+    <tr>
+      <td>G5</td>
+      <td><strong>Empty/junk filter</strong><br>Alias must have &ge;3 alphanumeric chars, no pure whitespace, no single repeated char</td>
+      <td>"" &rarr; term, "aaa" &rarr; term, "  " &rarr; term</td>
+      <td>Training script + runtime stt_replacements::upsert</td>
+      <td><span class="check">&check;</span> Partial</td>
+    </tr>
+    <tr>
+      <td>G6</td>
+      <td><strong>Negative evidence veto</strong><br>If negative_count &ge; 2 for a mapping, exclude from positives entirely</td>
+      <td>User rejected "access" &rarr; "Macobs" twice. Stop training on it.</td>
+      <td>Training script: policy weight check</td>
+      <td><span class="check">&check;</span> Exists but weak</td>
+    </tr>
+    <tr>
+      <td>G7</td>
+      <td><strong>Blocked alias exclusion</strong><br>review_status='blocked' aliases excluded from training</td>
+      <td>User explicitly blocked an alias via revert</td>
+      <td>Training script</td>
+      <td><span class="check">&check;</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Compound Word Handling (the "air note" &rarr; "AirNote" problem)</h3>
+
+<div class="card">
+  <div class="card-title">Two separate mechanisms, not one</div>
+  <ul>
+    <li><strong>CamelCase splits &rarr; Edit-policy rules (multi-token)</strong>: "air note" as two tokens gets handled by
+      edit-policy bigram matching. When user corrects "air note" to "AirNote", we record a 2-token edit-policy rule
+      <code>(air, note) &rarr; AirNote</code>. This already works in Pass 2.</li>
+    <li><strong>Joined form &rarr; STT alias (single-token)</strong>: "airnote" as one smushed token goes through the ONNX scorer
+      as a valid alias for "AirNote". This is safe because "airnote" is NOT a real word.</li>
+    <li><strong>"air" alone &rarr; REJECTED</strong>: Never create a single-token alias "air" &rarr; "AirNote".
+      Gate G1 catches this. The word "air" exists in the dictionary.</li>
+    <li><strong>"note" alone &rarr; REJECTED</strong>: Same reason. "note" is a real English word.</li>
+  </ul>
+</div>
+
+
+<!-- ─── ALL SCENARIOS ─────────────────────────────────────────────── -->
+
+<h2>4. Every Scenario — Normal, Edge, and Dangerous</h2>
+
+<h3>A. Normal Dictation Scenarios</h3>
+
+<div class="scenario-grid">
+  <div class="scenario">
+    <span class="tag normal">NORMAL</span>
+    <div class="title">Known alias &mdash; exact match</div>
+    <div class="body">
+      User: "I'm working on <strong>airnote</strong>"<br>
+      STT: "I'm working on airnote"<br>
+      <span class="arrow">Pass 1 (exact alias)</span>: "airnote" &rarr; "AirNote"<br>
+      ONNX: <em>skipped, already corrected</em>
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag normal">NORMAL</span>
+    <div class="title">New distortion &mdash; ONNX kicks in</div>
+    <div class="body">
+      User: "I'm working on <strong>air knot</strong>"<br>
+      STT: "I'm working on air knot"<br>
+      Pass 1: no match for "knot"<br>
+      Pass 2: no edit-policy rule for "knot"<br>
+      <span class="arrow">Pass 4 (ONNX)</span>: score("knot", AirNote) = 0.91 &rarr; <strong class="ok-text">APPLY</strong><br>
+      <em>Phonetic similarity + alias evidence from "airnot", "airnote"</em>
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag normal">NORMAL</span>
+    <div class="title">Brand name first time</div>
+    <div class="body">
+      User: "Let me tell you about <strong>EMIAC</strong>"<br>
+      STT: "Let me tell you about amiac"<br>
+      No aliases yet, ONNX has no candidate &rarr; LLM handles it<br>
+      User corrects "amiac" &rarr; "EMIAC" &rarr; <strong>learns in 1 edit (K=1 brand)</strong><br>
+      Next time: "amiac" &rarr; exact alias &rarr; "EMIAC"
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag normal">NORMAL</span>
+    <div class="title">Common word in normal context</div>
+    <div class="body">
+      User: "The <strong>air</strong> quality is bad today"<br>
+      STT: "The air quality is bad today"<br>
+      Pass 1: no alias for "air" (G1 blocked it)<br>
+      <span class="arrow">Pass 4 (ONNX)</span>: "air" not in candidates (G1 filter)<br>
+      &rarr; <strong>No correction. Correct behavior.</strong>
+    </div>
+  </div>
+</div>
+
+<h3>B. Learning Scenarios &mdash; Every User Action</h3>
+
+<div class="loop-grid">
+  <div class="loop-card">
+    <div class="signal">&#x2705;</div>
+    <div class="action">User KEPT the output</div>
+    <div class="detail">
+      <strong>Signal:</strong> Positive for all Tier2 corrections applied<br>
+      <strong>Action:</strong> <code>tier2_policy::reward_mapping()</code> +0.5<br>
+      Exact alias gets <code>use_count++</code>, weight bump<br>
+      Edit-policy rule gets <code>positive_count++</code><br>
+      <strong>ONNX learn:</strong> Next retrain picks up higher policy_weight
+    </div>
+  </div>
+
+  <div class="loop-card">
+    <div class="signal">&#x270F;&#xFE0F;</div>
+    <div class="action">User REPLACED a word</div>
+    <div class="detail">
+      <strong>Single change:</strong> Classify route processes immediately<br>
+      <strong>Multi-change:</strong> Review card shown, user picks<br>
+      <strong>ONNX learn:</strong>
+      <ul>
+        <li>Replaced word becomes new alias (if not a dictionary word)</li>
+        <li>Replaced word &rarr; edit-policy rule with context</li>
+        <li>Proactive distortions generated (with dictionary gate)</li>
+        <li>Retrain fires after 5s debounce</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="loop-card">
+    <div class="signal">&#x1F44E;</div>
+    <div class="action">User REVERTED a correction</div>
+    <div class="detail">
+      <strong>Signal:</strong> Strong negative<br>
+      <strong>Action:</strong>
+      <ul>
+        <li><code>tier2_policy::penalize_mapping()</code> -0.75</li>
+        <li>Delete the specific wrong STT alias</li>
+        <li>DO NOT delete the vocabulary entry</li>
+        <li>Edit-policy rule gets <code>negative_count++</code></li>
+        <li>If negative_count &ge; 2 &rarr; rule blocked</li>
+      </ul>
+      <strong>ONNX learn:</strong> Next retrain sees negative policy weight &rarr; excluded from positives
+    </div>
+  </div>
+
+  <div class="loop-card">
+    <div class="signal">&#x1F6AB;</div>
+    <div class="action">User did NOTHING (no edit at all)</div>
+    <div class="detail">
+      <strong>Signal:</strong> Weak positive (user accepted output implicitly)<br>
+      <strong>Action:</strong>
+      <ul>
+        <li>Reward active tier2 decisions: <code>kept_unrewarded</code> &rarr; +0.15</li>
+        <li>Active vocab terms get <code>use_count++</code></li>
+      </ul>
+      <strong>ONNX learn:</strong> Gradual weight increase from usage, tiny policy boost
+    </div>
+  </div>
+
+  <div class="loop-card">
+    <div class="signal">&#x2795;</div>
+    <div class="action">User ADDED a new word (not in transcript)</div>
+    <div class="detail">
+      <strong>Detection:</strong> Word in user_kept but not in ai_output and not in transcript<br>
+      <strong>Question:</strong> Did Deepgram drop it?<br>
+      <strong>If yes (word is a known vocab term):</strong>
+      <ul>
+        <li>Star the term &rarr; add to Deepgram keyterm bias</li>
+        <li>User explicitly chose to type this word Deepgram missed</li>
+      </ul>
+      <strong>If no (completely new word):</strong> Not learnable from a single insertion; no context
+    </div>
+  </div>
+
+  <div class="loop-card">
+    <div class="signal">&#x1F504;</div>
+    <div class="action">Retrain fires (5s debounce)</div>
+    <div class="detail">
+      <strong>Trigger:</strong> Any learning event + no review card pending<br>
+      <strong>Mode:</strong> Micro (15 epochs, ~2s)<br>
+      <strong>What changes:</strong>
+      <ul>
+        <li>New aliases become positive examples</li>
+        <li>Negative policy weights become negative examples</li>
+        <li>Dictionary hard negatives regenerated (or cached &lt;1h)</li>
+        <li>ONNX artifact hot-reloaded on next dictation</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<h3>C. Edge Cases &mdash; Things That Can Go Wrong</h3>
+
+<div class="scenario-grid">
+  <div class="scenario">
+    <span class="tag edge">EDGE</span>
+    <div class="title">Deepgram returns empty response</div>
+    <div class="body">
+      User speaks but STT returns ""<br>
+      <strong>Gate:</strong> <code>len(token) &lt; 3</code> filter + <code>is_suspicious_token()</code> rejects empty/short tokens<br>
+      <strong>Training:</strong> No alias created for empty transcript_form (upsert rejects empty)<br>
+      <strong>Result:</strong> Safe. No corruption.
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag edge">EDGE</span>
+    <div class="title">Deepgram drops word entirely</div>
+    <div class="body">
+      User says "AirNote is great" &rarr; STT: "is great"<br>
+      <strong>ONNX can't help</strong> &mdash; there's no token to score against.<br>
+      <strong>Solution:</strong> If user adds "AirNote" back, and it's already in vocab, star it for Deepgram keyterm bias.
+      This is the only mechanism that helps with dropped words.
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag edge">EDGE</span>
+    <div class="title">"air" + "note" spelled as two words</div>
+    <div class="body">
+      STT: "let's open air note"<br>
+      <strong>ONNX (single-token)</strong>: "air" &rarr; skipped (dictionary word, not a candidate)<br>
+      <strong>Edit-policy (multi-token)</strong>: (air, note) bigram &rarr; "AirNote" <span class="check">&check;</span><br>
+      <strong>Key:</strong> Compound correction handled by Pass 2, not Pass 4. ONNX only does single tokens.
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag edge">EDGE</span>
+    <div class="title">AirNote pronounced as one word "airnote"</div>
+    <div class="body">
+      STT: "let's open airnote" (smushed together)<br>
+      <strong>Pass 1:</strong> Exact alias "airnote" &rarr; "AirNote" <span class="check">&check;</span><br>
+      <strong>If no alias yet, Pass 4 (ONNX):</strong> "airnote" vs AirNote &rarr; high edit_sim + phonetic_sim &rarr; APPLY<br>
+      <strong>Safe:</strong> "airnote" is not a real word, so no false positive risk
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag edge">EDGE</span>
+    <div class="title">Two similar vocab terms: "Macobs" vs "Marcos"</div>
+    <div class="body">
+      Token: "marcos"<br>
+      Score vs Macobs: 0.72 (edit_sim moderate)<br>
+      Score vs Marcos: 0.95 (near-exact)<br>
+      <strong>Margin = 0.23 &ge; 0.18</strong> &rarr; Marcos wins clearly<br>
+      <strong>Safe:</strong> Margin threshold prevents ambiguous corrections
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag edge">EDGE</span>
+    <div class="title">Proactive distortion "spint" from "Sprint"</div>
+    <div class="body">
+      <code>char_deletions("Sprint")</code> &rarr; "Spint", "Srint", "Sprit", "Sprnt", "Sprin"<br>
+      <strong>Gate G1:</strong> Is "sprit" a dictionary word? Yes &rarr; <strong>REJECTED</strong><br>
+      Is "spint" a dictionary word? No &rarr; <strong>KEPT as valid distortion</strong><br>
+      <strong>Safe:</strong> Dictionary filter catches the dangerous ones
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag danger">DANGER</span>
+    <div class="title">Model replaces a real word with vocab term</div>
+    <div class="body">
+      User says "I want to <strong>sprint</strong> to the finish"<br>
+      If "Sprint" (brand) is in vocab, could model replace "sprint" &rarr; "Sprint"?<br><br>
+      <strong>Protection layers:</strong>
+      <ol>
+        <li><code>is_suspicious_token("sprint")</code> &rarr; false (it's a known English word) &rarr; <strong>SKIPPED</strong></li>
+        <li>Even if checked: "sprint" IS a dictionary word, gets is_dictionary_word=1.0 feature &rarr; model penalizes</li>
+        <li>Score threshold 0.86 + margin 0.18 &rarr; unlikely to pass for a common word</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag danger">DANGER</span>
+    <div class="title">Hindi word sounds like a brand</div>
+    <div class="body">
+      User says "yeh <strong>amaze</strong> kar diya" (this amazed me)<br>
+      "EMIAC" is in vocab. Phonetic sim("amaze", "emiac") = moderate<br><br>
+      <strong>Protection:</strong>
+      <ol>
+        <li>"amaze" is a dictionary word &rarr; <code>is_suspicious_token()</code> returns false &rarr; <strong>SKIPPED</strong></li>
+        <li>Edit sim only 0.4 &rarr; well below 0.86 threshold</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag danger">DANGER</span>
+    <div class="title">Common Hindi verb matches a vocab distortion</div>
+    <div class="body">
+      User says "mujhe <strong>bol</strong> diya usne" (he told me)<br>
+      "Bolt" is in vocab. edit_sim("bol", "bolt") = 0.75, phonetic_sim = 0.80<br><br>
+      <strong>Without Hindi gate:</strong> "bol" is NOT in <code>/usr/share/dict/words</code> (English dict).
+      <code>is_suspicious_token("bol")</code> returns true. Model might score "bol" &rarr; "Bolt" at 0.87 &rarr; <strong class="err-text">FALSE POSITIVE</strong><br><br>
+      <strong>With Hindi gate (G1):</strong> "bol" is in <code>HINDI_COMMON_WORDS</code> &rarr;
+      <code>is_common_any_language("bol")</code> = true &rarr; <code>is_suspicious_token()</code> returns false &rarr; <strong class="ok-text">SKIPPED</strong><br><br>
+      <em>This is exactly why the English dictionary alone is not enough. Hindi common words are invisible to
+      <code>/usr/share/dict/words</code> but appear constantly in Hinglish dictation.</em>
+    </div>
+  </div>
+
+  <div class="scenario">
+    <span class="tag normal">NORMAL</span>
+    <div class="title">Rare Hindi word IS a valid alias</div>
+    <div class="body">
+      Vocab term: "Vimarsh" (a brand/product name)<br>
+      STT distortion: "vimarash" &rarr; alias for "Vimarsh"<br><br>
+      "vimarash" is NOT in English dict, NOT in Hindi common words (it's a rare literary word).<br>
+      <code>is_common_any_language("vimarash")</code> = false &rarr; <strong class="ok-text">ALLOWED as training positive</strong><br><br>
+      <em>Rare Hindi words are safe because they almost never appear in casual speech.
+      If Deepgram emits "vimarash", it's very likely the user meant "Vimarsh".</em>
+    </div>
+  </div>
+</div>
+
+
+<!-- ─── THE ACTUAL CHANGES ────────────────────────────────────────── -->
+
+<h2>5. Implementation Plan &mdash; What Changes Where</h2>
+
+<div class="phase-timeline">
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-title">Phase 1: Harden Training Data <span class="badge required">REQUIRED</span></div>
+      <div class="phase-desc">Fix the quality gates BEFORE enabling the model.</div>
+      <br>
+      <table class="gate-table">
+        <tr>
+          <th>File</th>
+          <th>Change</th>
+        </tr>
+        <tr>
+          <td><code>train_correction_model.py</code></td>
+          <td>
+            <strong>Unified common word filter (English + Hindi):</strong><br>
+            &bull; <strong>English:</strong> Use <code>/usr/share/dict/words</code> (already loaded!) as a full negative gate.
+            Any alias that IS a dictionary word &rarr; skip as positive, add as negative instead.<br>
+            &bull; <strong>Hindi/Hinglish (~120 words):</strong> Add a <code>HINDI_COMMON_WORDS</code> set covering
+            everyday conversational romanized Hindi. These are words Deepgram routinely emits in Hinglish mode.
+            Rare/literary Hindi is fine as aliases &mdash; only high-frequency words are blocked.<br>
+            &bull; Combined into one <code>is_common_any_language(token)</code> function used everywhere.<br><br>
+            <strong>Cross-term collision gate:</strong> Before adding a positive, check if the alias is closer
+            (by edit_similarity) to a DIFFERENT vocab term than its target. If yes &rarr; skip.<br><br>
+            <strong>Minimum edit distance:</strong> Positive alias must have edit_similarity &le; 0.90 with its target
+            (too-easy pairs add no learning signal) AND &ge; 0.30 (too-far pairs are noise).
+          </td>
+        </tr>
+        <tr>
+          <td><code>stt_replacements.rs</code></td>
+          <td>
+            <strong>Upgrade <code>is_safe_distortion()</code>:</strong> Use the same unified
+            <code>is_common_any_language()</code> check &mdash; English dictionary + Hindi common words.
+            Reject any proactive distortion that is a real word in either language.
+          </td>
+        </tr>
+        <tr>
+          <td><code>stt_replacements.rs</code></td>
+          <td>
+            <strong>Alias insertion guard:</strong> In <code>upsert()</code>, reject if <code>transcript_form</code>
+            (after normalization) is a common word in any language (English dict OR Hindi common)
+            AND the correct_form is not the same word (case-insensitive).
+            This prevents "air" &rarr; "AirNote" and "bol" &rarr; "Bolt" from ever entering the table.
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-title">Phase 2: Strengthen Runtime Safety <span class="badge required">REQUIRED</span></div>
+      <div class="phase-desc">Make the scoring engine conservative enough for live corrections.</div>
+      <br>
+      <table class="gate-table">
+        <tr>
+          <th>File</th>
+          <th>Change</th>
+        </tr>
+        <tr>
+          <td><code>tier2.rs</code></td>
+          <td>
+            <strong>Upgrade <code>is_suspicious_token()</code>:</strong> Currently checks if token is in a small
+            hardcoded list. Expand to use <code>is_common_any_language()</code> &mdash; English dictionary + Hindi common words.
+            Any token that IS a known word in either language should NOT be scored by the ONNX model.<br><br>
+            <em>This is the single most important runtime gate.</em> It prevents the model from touching "bol", "bas", "air",
+            "sprint" &mdash; words that are real in English or Hindi but might phonetically resemble a vocab term.<br><br>
+            <em>Exception:</em> If the token has an exact STT alias or active edit-policy rule, it gets
+            corrected by earlier passes (1-3) regardless. The ONNX model (Pass 4) only handles
+            tokens that aren't known words and weren't caught by earlier passes.
+          </td>
+        </tr>
+        <tr>
+          <td><code>tier2.rs</code></td>
+          <td>
+            <strong>Confidence logging:</strong> When ONNX applies a correction, log it distinctly:
+            <code>[tier2] ONNX-LIVE: "knot" → "AirNote" score=0.91 margin=0.23</code><br>
+            This makes it easy to audit what the model is doing in production.
+          </td>
+        </tr>
+        <tr>
+          <td><code>tier2.rs</code></td>
+          <td>
+            <strong>Max replacements per recording:</strong> Already capped at 3. Keep this.
+            With ONNX live, the cap becomes a safety net &mdash; even if 4 tokens score high,
+            only 3 get replaced. Protects against catastrophic model failure.
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-title">Phase 3: Flip the Switch <span class="badge important">THE CHANGE</span></div>
+      <div class="phase-desc">Enable live corrections from the ONNX model.</div>
+      <br>
+      <div class="flow"><span class="cm">// tier2.rs — fuzzy_shadow_only_skipping()</span>
+<span class="cm">// Currently:</span>
+apply_tier2(transcript, &candidates, Some(&model), protected_tokens, &self.policy_weights, <span class="err">false</span>)
+
+<span class="cm">// After:</span>
+apply_tier2(transcript, &candidates, Some(&model), protected_tokens, &self.policy_weights, <span class="ok">true</span>)
+
+<span class="cm">// Also rename the function:</span>
+<span class="err">fn fuzzy_shadow_only_skipping</span>  →  <span class="ok">fn fuzzy_scoring_pass</span></div>
+      <p>That's it. One boolean. But only safe because Phase 1 and 2 are in place.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-title">Phase 4: Close the Feedback Loop <span class="badge nice">LEARNING</span></div>
+      <div class="phase-desc">ONNX corrections participate in the same feedback system as all other corrections.</div>
+      <br>
+      <table class="gate-table">
+        <tr>
+          <th>User Action</th>
+          <th>What Happens to ONNX Correction</th>
+        </tr>
+        <tr>
+          <td>User keeps the text (no edit)</td>
+          <td><code>tier2_decision_events.reward_outcome = 'kept_unrewarded'</code> &rarr; +0.15 policy boost<br>
+          Next retrain: this mapping gets slightly higher weight</td>
+        </tr>
+        <tr>
+          <td>User edits something else (didn't touch ONNX correction)</td>
+          <td>Same as "kept" for the ONNX-corrected word. It survived the edit.</td>
+        </tr>
+        <tr>
+          <td>User reverts the ONNX correction</td>
+          <td>
+            <code>run_alias_revert_pass()</code> detects the revert<br>
+            &rarr; <code>penalize_mapping()</code> -0.75<br>
+            &rarr; Delete the specific wrong alias<br>
+            &rarr; If the ONNX correction was wrong (e.g., "knot" &rarr; "AirNote" but user wanted "knot"),
+            next retrain sees the negative &rarr; model learns to avoid this mapping
+          </td>
+        </tr>
+        <tr>
+          <td>User corrects to a DIFFERENT term</td>
+          <td>
+            Original ONNX mapping penalized<br>
+            New correction creates new alias + edit-policy rule<br>
+            Both feed into next retrain
+          </td>
+        </tr>
+      </table>
+      <br>
+      <div class="card">
+        <div class="card-title">The key insight</div>
+        <p>The feedback loop already exists. Every correction (from any pass) goes through
+        <code>classify.rs</code> when the user edits. The revert detection, policy rewards/penalties,
+        and retrain scheduling all work pass-agnostic. ONNX corrections just need <code>applied=true</code>
+        in the decision_events table to participate.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-title">Phase 5: Compound &amp; Dropped Word Handling <span class="badge nice">ENHANCEMENT</span></div>
+      <div class="phase-desc">Handle cases the ONNX model structurally can't &mdash; multi-token and missing tokens.</div>
+      <br>
+      <h3>5a. Compound words ("air note" &rarr; "AirNote")</h3>
+      <p>Already handled by edit-policy bigram rules (Pass 2). The <code>camel_case_splits()</code>
+      function in proactive distortions generates the joined form ("airnote") as an STT alias
+      and the split form ("air note") as individual tokens for edit-policy.</p>
+      <p><strong>Enhancement:</strong> When a CamelCase term is promoted, automatically create an edit-policy
+      rule for its space-split form. Currently this only happens if the user manually edits the split form first.</p>
+
+      <h3>5b. Deepgram drops word entirely</h3>
+      <p>ONNX can't help here &mdash; no token to score. Only Deepgram keyterm biasing can fix this.</p>
+      <p><strong>Current:</strong> Only starred terms get biased.</p>
+      <p><strong>Enhancement:</strong> Track "drop rate" per vocab term. If a term is in vocab but Deepgram
+      fails to recognize it in &ge;3 consecutive dictations where the user adds it back, auto-star it
+      for keyterm biasing. This closes the loop without biasing everything.</p>
+    </div>
+  </div>
+
+</div>
+
+
+<!-- ─── DECISION FLOW DIAGRAM ─────────────────────────────────────── -->
+
+<h2>6. Complete Decision Flow (After Activation)</h2>
+
+<div class="flow"><span class="kw">STT transcript arrives</span>
+  │
+  ├─ <span class="fn">Pass 1: apply_exact_safe()</span>
+  │    For each token, check stt_replacements table (exact match)
+  │    ├─ Match found → REPLACE, add to protected_tokens set
+  │    └─ No match → pass through
+  │
+  ├─ <span class="fn">Pass 2: apply_edit_policy()</span>
+  │    Check trigrams, bigrams, then single tokens against tier2_edit_policy_rules
+  │    ├─ Multi-token match (e.g., "air note" → "AirNote") → REPLACE
+  │    ├─ Single token + context match → REPLACE
+  │    ├─ Single token + dictionary word but no context → <span class="warn">SKIP (needs context)</span>
+  │    └─ No match → pass through
+  │
+  ├─ <span class="fn">Pass 3: cluster_fuzzy_pass()</span>
+  │    For non-protected tokens, fuzzy match against edit-policy target terms
+  │    ├─ edit_sim ≥ 0.78 OR phonetic_sim ≥ 0.78 → REPLACE
+  │    └─ Below threshold → pass through
+  │
+  └─ <span class="fn">Pass 4: fuzzy_scoring_pass()</span>  <span class="ok">← NOW LIVE</span>
+       For each remaining non-protected, non-dictionary, suspicious token:
+       │
+       ├─ <span class="warn">Gate: is_suspicious_token()?  (uses is_common_any_language)</span>
+       │    ├─ Token in English dictionary → <span class="err">SKIP (real English word)</span>
+       │    ├─ Token in Hindi common words → <span class="err">SKIP (real Hindi word, e.g. "bol", "bas")</span>
+       │    ├─ Token < 3 chars → <span class="err">SKIP (too short)</span>
+       │    ├─ Token is pure digits → <span class="err">SKIP</span>
+       │    └─ Token looks like gibberish/unknown → <span class="ok">PROCEED (likely STT distortion)</span>
+       │
+       ├─ <span class="fn">choose_candidate(token, candidates)</span>
+       │    For each vocab term:
+       │    ├─ <span class="warn">candidate_can_match_token()?</span>
+       │    │    Has aliases? → yes → proceed
+       │    │    No aliases but close enough? → proceed
+       │    │    Too far? → skip candidate
+       │    │
+       │    ├─ deterministic_score = max(edit_sim, phonetic_sim) + boosts
+       │    ├─ onnx_score = model.score(token, candidate, features)
+       │    ├─ blended = max(det, onnx * 0.65 + det * 0.35)
+       │    └─ policy_boost applied if tier2_policy_weights has entry
+       │
+       ├─ Sort candidates by score
+       │    best_score = 0.91, second_score = 0.68
+       │    margin = 0.23
+       │
+       └─ <span class="kw">Decision gate:</span>
+            ├─ score ≥ <span class="ok">0.86</span> AND margin ≥ <span class="ok">0.18</span>?
+            │    YES → <span class="ok">APPLY correction</span> (max 3 per recording)
+            │    └─ Record in tier2_decision_events with applied=1
+            │
+            └─ score ≥ <span class="warn">0.74</span> (trace floor)?
+                 YES → <span class="warn">LOG only</span> (near miss, for debugging)
+                 NO  → <span class="err">DISCARD silently</span></div>
+
+
+<!-- ─── TRAINING DATA FLOW ────────────────────────────────────────── -->
+
+<h2>7. Training Data Flow (After Quality Gates)</h2>
+
+<div class="flow"><span class="kw">build_examples(vocab, rules, policy)</span>
+  │
+  ├─ <span class="fn">Positives from STT aliases (stt_replacements table)</span>
+  │    For each alias: (transcript_form → correct_form)
+  │    ├─ <span class="warn">Gate G1:</span> is_common_any_language(transcript_form)? → <span class="err">SKIP + add as NEGATIVE</span>
+  │    │    (English dictionary OR Hindi common word — "air", "bol", "bas", etc.)
+  │    ├─ <span class="warn">Gate G3:</span> is transcript_form closer to a different vocab term? → <span class="err">SKIP</span>
+  │    ├─ <span class="warn">Gate G5:</span> len < 3 or junk? → <span class="err">SKIP</span>
+  │    ├─ <span class="warn">Gate G7:</span> review_status = blocked? → <span class="err">SKIP</span>
+  │    └─ <span class="ok">PASS</span> → add as positive + generate variants
+  │
+  ├─ <span class="fn">Positives from policy weights (tier2_policy_weights)</span>
+  │    For each mapping: (token_norm → correct_form)
+  │    ├─ Same gates G1, G3, G5 apply
+  │    ├─ <span class="warn">Gate G6:</span> negative_count ≥ 2? → <span class="err">SKIP (add as NEGATIVE instead)</span>
+  │    ├─ net = positive_count - negative_count * 1.5
+  │    │    net ≤ 0? → <span class="err">SKIP or NEGATIVE</span>
+  │    └─ <span class="ok">PASS</span> → add as positive + generate variants
+  │
+  ├─ <span class="fn">Canonical near-spelling positives</span>
+  │    For each vocab term, generate 12 spelling variants
+  │    ├─ <span class="warn">Gate G1:</span> is_common_any_language(variant)? → <span class="err">SKIP</span>
+  │    ├─ <span class="warn">Gate G2:</span> edit_similarity > 0.90? → <span class="err">SKIP (too easy)</span>
+  │    └─ <span class="ok">PASS</span> → add as positive
+  │
+  ├─ <span class="fn">Negatives from common words</span> (COMMON_WORDS × random vocab terms)
+  │
+  ├─ <span class="fn">Negatives from cross-term confusion</span> (similar vocab terms paired wrong)
+  │
+  ├─ <span class="fn">Negatives from positive alternatives</span> (each positive paired with wrong candidates)
+  │
+  └─ <span class="fn">Hard negatives from dictionary</span> (mine_hard_negatives_from_dictionary)
+       Dictionary words with high edit_similarity to a vocab term → strong negatives
+       <span class="cm">// This is critical: teaches the model "sprint" ≠ "Sprint", "dock" ≠ "Dock"</span></div>
+
+
+<!-- ─── BEFORE vs AFTER ───────────────────────────────────────────── -->
+
+<h2>8. Before vs After Comparison</h2>
+
+<div class="compare-row">
+  <div class="compare-box before">
+    <div class="label">Before (Shadow Only)</div>
+    <ul>
+      <li>4 passes, but only 3 apply corrections</li>
+      <li>ONNX scores everything, applies nothing</li>
+      <li>New Deepgram distortion of known word? <strong>No correction until user edits again</strong></li>
+      <li>User must teach every single distortion via edit</li>
+      <li>Neural model trained but never used &mdash; wasted compute</li>
+      <li>All learning goes only to alias table and edit-policy</li>
+    </ul>
+  </div>
+  <div class="compare-box after">
+    <div class="label">After (Live + Quality Gates)</div>
+    <ul>
+      <li>4 passes, all 4 apply corrections</li>
+      <li>ONNX generalizes from known aliases to handle new distortions</li>
+      <li>New distortion? <strong>Model scores it, corrects if confident</strong></li>
+      <li>User teaches once &rarr; model handles future variants</li>
+      <li>Continuous learning: every edit improves the model</li>
+      <li>3 safety layers: dictionary filter, threshold, margin</li>
+    </ul>
+  </div>
+</div>
+
+<h3>Concrete Example: The "AirNote" Journey</h3>
+
+<div class="card">
+  <div class="card-title">Day 1 &mdash; First mention</div>
+  <p>User says "AirNote" &rarr; STT: "air note" &rarr; LLM doesn't know it &rarr; outputs "air note"</p>
+  <p>User corrects to "AirNote" &rarr; <strong>K=1 brand, auto-learns</strong></p>
+  <p>System creates:</p>
+  <ul>
+    <li>Vocabulary entry: "AirNote" (source=auto, weight=1.0)</li>
+    <li>STT alias: "air note" &rarr; "AirNote" (multi-token edit-policy rule)</li>
+    <li>STT alias: "airnote" &rarr; "AirNote" (joined form, single-token)</li>
+    <li>Proactive distortions: "airnot", "airnoe", "arnote", "irnote", etc. (8-12 aliases at weight 0.6)</li>
+    <li>Retrain fires in 5s &rarr; model learns all these mappings</li>
+  </ul>
+</div>
+
+<div class="card">
+  <div class="card-title">Day 1, second mention</div>
+  <p>User says "AirNote" &rarr; STT: "airknot" (new distortion!)</p>
+  <p><strong>Before:</strong> No alias for "airknot". Passes 1-3 miss. ONNX logs score=0.89 but doesn't apply. LLM might or might not get it.</p>
+  <p><strong>After:</strong> Passes 1-3 miss. <span class="ok-text">Pass 4 ONNX</span>: score("airknot", AirNote) = 0.89, margin = 0.31 &rarr; <strong>APPLY</strong>. Correct on first sight.</p>
+</div>
+
+<div class="card">
+  <div class="card-title">Day 2 &mdash; Variety</div>
+  <p>Each new distortion Deepgram produces gets caught by either:</p>
+  <ul>
+    <li>Exact alias (if proactive distortions predicted it)</li>
+    <li>Edit-policy rule (if it's a multi-token variant)</li>
+    <li>ONNX model (if it's a new single-token distortion with enough similarity)</li>
+  </ul>
+  <p>User rarely needs to correct again. When they do, the correction feeds back into the model.</p>
+</div>
+
+
+<!-- ─── RISK ASSESSMENT ───────────────────────────────────────────── -->
+
+<h2>9. Risk Assessment</h2>
+
+<table class="gate-table">
+  <thead>
+    <tr>
+      <th>Risk</th>
+      <th>Severity</th>
+      <th>Likelihood (with gates)</th>
+      <th>Mitigation</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Model replaces a real word with a vocab term</td>
+      <td><span class="err-text">HIGH</span></td>
+      <td><span class="ok-text">VERY LOW</span></td>
+      <td>3 layers: <code>is_suspicious_token()</code> skips dictionary words,
+          <code>is_dictionary_word</code> feature penalizes in scoring,
+          score threshold 0.86 + margin 0.18</td>
+    </tr>
+    <tr>
+      <td>Model confuses two similar vocab terms</td>
+      <td><span class="warn-text">MEDIUM</span></td>
+      <td><span class="ok-text">LOW</span></td>
+      <td>Margin threshold 0.18 requires clear winner.
+          Cross-term collision gate in training.</td>
+    </tr>
+    <tr>
+      <td>Model makes a wrong correction user doesn't notice</td>
+      <td><span class="warn-text">MEDIUM</span></td>
+      <td><span class="warn-text">MEDIUM</span></td>
+      <td>Max 3 replacements per recording. Only non-dictionary suspicious tokens.
+          Edit watch detects if user reverts later.</td>
+    </tr>
+    <tr>
+      <td>Feedback loop amplifies a bad mapping</td>
+      <td><span class="warn-text">MEDIUM</span></td>
+      <td><span class="ok-text">LOW</span></td>
+      <td>Negative weight is 1.5x positive. 2 rejections blocks a rule.
+          Revert deletes the alias entirely.</td>
+    </tr>
+    <tr>
+      <td>Training data gets corrupted by junk aliases</td>
+      <td><span class="err-text">HIGH</span></td>
+      <td><span class="ok-text">VERY LOW (with G1-G8)</span></td>
+      <td>8 quality gates filter every positive example.
+          Dictionary check at insertion time AND training time.</td>
+    </tr>
+  </tbody>
+</table>
+
+
+<!-- ─── SUMMARY ───────────────────────────────────────────────────── -->
+
+<h2>10. Summary: What We Build</h2>
+
+<div class="card" style="border-color: var(--accent);">
+  <div class="card-title" style="color: var(--accent); font-size: 1.1em;">The 5-phase plan</div>
+  <table class="gate-table" style="margin-top: 12px;">
+    <tr>
+      <th>Phase</th>
+      <th>What</th>
+      <th>Files</th>
+      <th>Risk if skipped</th>
+    </tr>
+    <tr>
+      <td><strong>1. Harden training data</strong></td>
+      <td>Unified <code>is_common_any_language()</code> gate (English dict + ~120 Hindi commons) + cross-term collision + edit_sim bounds</td>
+      <td><code>train_correction_model.py</code><br><code>stt_replacements.rs</code></td>
+      <td><span class="err-text">False positives everywhere</span></td>
+    </tr>
+    <tr>
+      <td><strong>2. Runtime safety</strong></td>
+      <td><code>is_suspicious_token()</code> uses <code>is_common_any_language()</code> (English + Hindi), enhanced logging</td>
+      <td><code>tier2.rs</code></td>
+      <td><span class="err-text">Model replaces real words</span></td>
+    </tr>
+    <tr>
+      <td><strong>3. Flip the switch</strong></td>
+      <td><code>allow_apply: true</code>, rename function</td>
+      <td><code>tier2.rs</code></td>
+      <td><span class="warn-text">N/A (this IS the feature)</span></td>
+    </tr>
+    <tr>
+      <td><strong>4. Feedback loop</strong></td>
+      <td>ONNX corrections participate in revert/reward cycle (already works, just needs <code>applied=true</code>)</td>
+      <td><code>tier2.rs</code> (already done via scoring_trace)</td>
+      <td><span class="warn-text">Model doesn't learn from mistakes</span></td>
+    </tr>
+    <tr>
+      <td><strong>5. Compound &amp; drop handling</strong></td>
+      <td>Auto edit-policy for CamelCase splits, auto-star for frequently-dropped terms</td>
+      <td><code>stt_replacements.rs</code><br><code>classify.rs</code></td>
+      <td><span class="ok-text">Nice to have, not blocking</span></td>
+    </tr>
+  </table>
+</div>
+
+<div class="divider"></div>
+
+<p style="color: var(--text-dim); text-align: center; padding: 20px 0;">
+  Said v2.2 ONNX Activation Plan &mdash; May 2026
+</p>
+
+</div>
+</body>
+</html>

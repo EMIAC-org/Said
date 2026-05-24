@@ -27,13 +27,41 @@ use rusqlite::params;
 use tracing::info;
 
 use super::{DbPool, now_ms};
-use crate::llm::phonetics;
+use crate::llm::{phonetics, promotion_gate};
+use crate::store::vocabulary;
 
 /// Default k.  Lower = faster learning + more false positives.  Higher =
 /// slower learning + fewer false positives.  Raised from 2 to 3 after user
 /// reports of repeated typos getting promoted (two identical typos shouldn't
 /// be enough to learn a term).
 pub const DEFAULT_K: i64 = 3;
+
+/// Compute an adaptive K threshold based on the term's type and the original
+/// STT form. Brand names, acronyms, and code identifiers are unambiguous and
+/// can be learned in a single correction. Proper nouns and phrases need one
+/// confirmation. Generic words keep the default K=3.
+///
+/// Safety: if the original STT form is a common Hindi/English word, we enforce
+/// K >= 2 to prevent catastrophic aliases (e.g. "main" → "Macobs").
+pub fn compute_adaptive_k(corrected: &str, original: &str) -> i64 {
+    let term_type = vocabulary::classify_term_type(corrected);
+    let jargon = phonetics::jargon_score(corrected);
+    let original_is_common = promotion_gate::is_common_word(original);
+
+    let base_k: i64 = match term_type {
+        "brand" | "acronym" | "code_identifier" => 1,
+        "proper_noun" | "phrase" => 2,
+        _ if jargon >= 0.3 => 2,
+        _ => DEFAULT_K,
+    };
+
+    let k = if original_is_common { base_k.max(2) } else { base_k };
+
+    info!(
+        "[adaptive-k] term={corrected:?} type={term_type} jargon={jargon:.2} orig_common={original_is_common} → K={k}",
+    );
+    k
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PromotionDecision {

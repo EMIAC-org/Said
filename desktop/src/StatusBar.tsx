@@ -88,7 +88,19 @@ type BarState =
   | { kind: "learned"; term: string; message: string }
   | { kind: "confirming"; term: string; original: string; context: string; recordingId: string }
   | { kind: "negative_confirm"; term: string; wrongReplacement: string }
-  | { kind: "retraining" };
+  | { kind: "wrong_fixed"; term: string; wrongReplacement: string }
+  | { kind: "queued"; term: string; remaining: number }
+  | { kind: "reviewing"; candidates: ReviewCandidate[]; selected: Set<number>; recordingId: string }
+  | { kind: "retraining" }
+  | { kind: "retrain_done"; durationS: number };
+
+type ReviewCandidate = {
+  original: string;
+  corrected: string;
+  term_type: string;
+  learnable: boolean;
+  tag: string;
+};
 
 type VoiceErrorPayload = {
   message: string;
@@ -100,22 +112,33 @@ type VoiceErrorPayload = {
 type PillKind = BarState["kind"];
 
 const BOTTOM_OFFSET = 64;
-const HUD_CANVAS_WIDTH = 300;
-const HUD_CANVAS_HEIGHT = 142;
+const HUD_CANVAS_MIN_WIDTH = 300;
 
 const LEVEL_SHAPE = [0.28, 0.38, 0.52, 0.68, 0.82, 1.0, 0.78, 0.62, 0.78, 1.0, 0.82, 0.68, 0.52, 0.38, 0.28];
 const BAR_DECAY = [0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.87, 0.86, 0.87, 0.88, 0.87, 0.86, 0.85, 0.84, 0.82];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function pillSize(kind: PillKind, hasTranscript = false, hovered = false): { width: number; height: number } {
+function textWidth(text: string): number {
+  return Math.ceil(text.length * 6.8);
+}
+
+function pillSize(kind: PillKind, hasTranscript = false, label = "", candidateCount = 0): { width: number; height: number } {
   if (hasTranscript) return { width: 280, height: 96 };
   if (kind === "confirming") return { width: 280, height: 142 };
   if (kind === "negative_confirm") return { width: 280, height: 142 };
-  if (kind === "retraining") return { width: 180, height: 36 };
-  if (kind === "learned") return { width: 220, height: 36 };
-  if (kind === "error") return { width: 220, height: 36 };
-  if (kind === "idle" && hovered) return { width: 160, height: 36 };
+  if (kind === "reviewing") {
+    const n = candidateCount;
+    const contentH = 120 + n * 44;
+    return { width: 300, height: Math.min(contentH, 350) };
+  }
+
+  if (label) {
+    const content = textWidth(label) + 8 + 18 + 18;
+    const padded = Math.ceil(content * 1.2);
+    return { width: Math.max(120, Math.min(padded, 340)), height: 36 };
+  }
+
   return { width: 140, height: 36 };
 }
 
@@ -135,7 +158,6 @@ function barHeight(barLevel: number, active: boolean): number {
 
 export default function StatusBar() {
   const [bar, setBar] = useState<BarState>({ kind: "idle" });
-  const [idleHovered, setIdleHovered] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
   const [audioLevel, setAudioLevel] = useState(0);
   const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -144,7 +166,50 @@ export default function StatusBar() {
   const [, forceFrame] = useState(0);
   const win = getCurrentWindow();
   const hasTranscript = bar.kind === "processing" && liveTranscript.trim().length > 0;
-  const innerSize = pillSize(bar.kind, hasTranscript, bar.kind === "idle" && idleHovered);
+  const isInteractive = bar.kind === "confirming" || bar.kind === "negative_confirm" || bar.kind === "reviewing";
+
+  const pillLabel = (() => {
+    switch (bar.kind) {
+      case "idle": return "AirNote";
+      case "recording": return "Recording";
+      case "processing": return bar.phase;
+      case "done": return "Done";
+      case "pasted": return "Pasted";
+      case "manual_paste": return "Pasted";
+      case "error": return bar.message;
+      case "learned": return bar.message;
+      case "queued": return `"${bar.term}" — ${bar.remaining === 1 ? "1 more edit to learn" : `${bar.remaining} more edits to learn`}`;
+      case "wrong_fixed": return `Got it — won’t type "${bar.wrongReplacement}" for "${bar.term}"`;
+      case "retraining": return "Improving model...";
+      case "retrain_done": return bar.durationS > 0 ? `Model updated (${bar.durationS.toFixed(1)}s)` : "Model updated";
+      default: return "";
+    }
+  })();
+
+  const candidateCount = bar.kind === "reviewing" ? bar.candidates.length : 0;
+  const innerSize = pillSize(bar.kind, hasTranscript, pillLabel, candidateCount);
+
+  useEffect(() => {
+    invoke("set_status_bar_interactive", { interactive: isInteractive }).catch(() => {});
+  }, [isInteractive]);
+
+  // Resize the native window to fit the current pill/card content.
+  useEffect(() => {
+    const w = Math.max(innerSize.width + 40, HUD_CANVAS_MIN_WIDTH);
+    const h = Math.max(innerSize.height + 40, 56);
+    primaryMonitor().then((monitor) => {
+      const scale = monitor?.scaleFactor ?? 1;
+      const sw = monitor ? monitor.size.width / scale : 1440;
+      const sh = monitor ? monitor.size.height / scale : 900;
+      const sx = monitor ? monitor.position.x / scale : 0;
+      const sy = monitor ? monitor.position.y / scale : 0;
+      const x = sx + sw / 2 - w / 2;
+      const y = sy + sh - h - BOTTOM_OFFSET;
+      win.setSize(new LogicalSize(w, h))
+        .then(() => win.setPosition(new LogicalPosition(x, y)))
+        .catch(() => {});
+    }).catch(() => {});
+  }, [innerSize.width, innerSize.height]);
 
   useEffect(() => {
     console.info("[status-bar] mounted", {
@@ -157,24 +222,7 @@ export default function StatusBar() {
 
   // VoiceInk uses a max-size native panel and expands the inner capsule inside it.
   // Keep our native Tauri window at the largest HUD size so hover panels are never clipped.
-  useEffect(() => {
-    console.info("[status-bar] state", bar);
-    primaryMonitor()
-      .then((monitor) => {
-        const scale = monitor?.scaleFactor ?? 1;
-        const sw = monitor ? monitor.size.width / scale : 1440;
-        const sh = monitor ? monitor.size.height / scale : 900;
-        const sx = monitor ? monitor.position.x / scale : 0;
-        const sy = monitor ? monitor.position.y / scale : 0;
-        const x = sx + sw / 2 - HUD_CANVAS_WIDTH / 2;
-        const y = sy + sh - HUD_CANVAS_HEIGHT - BOTTOM_OFFSET;
-        return win
-          .setSize(new LogicalSize(HUD_CANVAS_WIDTH, HUD_CANVAS_HEIGHT))
-          .then(() => win.setPosition(new LogicalPosition(x, y)));
-      })
-      .then(() => console.info("[status-bar] chrome sized", { width: HUD_CANVAS_WIDTH, height: HUD_CANVAS_HEIGHT }))
-      .catch((err) => console.warn("[status-bar] chrome size failed", err));
-  }, []);
+  // No fixed mount sizing — the content-driven resize effect handles everything.
 
   useEffect(() => {
     if (bar.kind !== "recording") return;
@@ -198,9 +246,14 @@ export default function StatusBar() {
     };
   }, [bar.kind]);
 
+
+  // Auto-hide the native window when returning to idle.
   useEffect(() => {
     if (bar.kind === "idle") {
-      setIdleHovered(false);
+      const t = setTimeout(() => {
+        invoke("dismiss_status_bar").catch(() => {});
+      }, 500);
+      return () => clearTimeout(t);
     }
   }, [bar.kind]);
 
@@ -341,6 +394,19 @@ export default function StatusBar() {
       subs.push(fn);
     }).catch(() => {});
 
+    // ── Queued term — show remaining edits needed ─────────────────────
+    listen<{ term: string; remaining: number }>("vocab-queued", (e) => {
+      if (!notifEnabled("queued")) return;
+      console.info("[status-bar] vocab-queued", e.payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      win.show().catch(() => {});
+      playSound("tick");
+      setBar({ kind: "queued", term: e.payload.term, remaining: e.payload.remaining });
+      doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 5000);
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch(() => {});
+
     // ── Ambiguous term — needs user confirmation ──────────────────────
     listen<{ term: string; original: string; context: string; recording_id: string }>("vocab-confirm", (e) => {
       if (!notifEnabled("confirm")) return;
@@ -349,12 +415,33 @@ export default function StatusBar() {
       win.show().catch(() => {});
       playSound("knock");
       setBar({ kind: "confirming", term: e.payload.term, original: e.payload.original, context: e.payload.context, recordingId: e.payload.recording_id });
-      doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 10000);
     }).then((fn) => {
       subs.push(fn);
     }).catch(() => {});
 
-    // ── Wrong correction detected ────────────────────────────────────
+    // ── Review card — multi-change edit review ────────────────────────
+    listen<{ candidates: ReviewCandidate[]; recording_id: string }>("vocab-review", (e) => {
+      if (!notifEnabled("learned")) return;
+      console.info("[status-bar] vocab-review", e.payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      win.show().catch(() => {});
+      playSound("knock");
+      const learnable = e.payload.candidates.filter(c => c.learnable);
+      const selected = new Set<number>(learnable.map((_, i) => {
+        const idx = e.payload.candidates.indexOf(learnable[i]);
+        return idx;
+      }));
+      setBar({
+        kind: "reviewing",
+        candidates: e.payload.candidates,
+        selected,
+        recordingId: e.payload.recording_id,
+      });
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch(() => {});
+
+    // ── Wrong correction detected (manual block request) ──────────────
     listen<{ term: string; wrong_replacement: string }>("vocab-negative", (e) => {
       if (!notifEnabled("negative")) return;
       console.info("[status-bar] vocab-negative", e.payload);
@@ -362,13 +449,25 @@ export default function StatusBar() {
       win.show().catch(() => {});
       playSound("alert");
       setBar({ kind: "negative_confirm", term: e.payload.term, wrongReplacement: e.payload.wrong_replacement });
-      doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 10000);
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch(() => {});
+
+    // ── Wrong correction auto-fixed ─────────────────────────────────
+    listen<{ term: string; wrong_replacement: string }>("vocab-wrong-fixed", (e) => {
+      if (!notifEnabled("negative")) return;
+      console.info("[status-bar] vocab-wrong-fixed", e.payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      win.show().catch(() => {});
+      playSound("chimeDown");
+      setBar({ kind: "wrong_fixed", term: e.payload.term, wrongReplacement: e.payload.wrong_replacement });
+      doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 4000);
     }).then((fn) => {
       subs.push(fn);
     }).catch(() => {});
 
     // ── Retrain progress ─────────────────────────────────────────────
-    listen<{ phase: string; duration_s?: number }>("retrain-status", (e) => {
+    listen<{ phase: string; duration_s?: number; success?: boolean }>("retrain-status", (e) => {
       if (!notifEnabled("retrain")) return;
       console.info("[status-bar] retrain-status", e.payload);
       if (e.payload.phase === "started") {
@@ -377,9 +476,10 @@ export default function StatusBar() {
         setBar({ kind: "retraining" });
       } else if (e.payload.phase === "done") {
         playSound("shimmer");
-        setBar({ kind: "done" });
+        const dur = e.payload.duration_s ?? 0;
+        setBar({ kind: "retrain_done", durationS: dur });
         if (doneTimer.current) clearTimeout(doneTimer.current);
-        doneTimer.current = setTimeout(() => setBar({ kind: "idle" }), 2000);
+        doneTimer.current = setTimeout(() => setBar({ kind: "idle" }), 10000);
       }
     }).then((fn) => {
       subs.push(fn);
@@ -456,6 +556,72 @@ export default function StatusBar() {
     );
   }
 
+  if (bar.kind === "reviewing") {
+    const sel = bar.selected;
+    const selCount = sel.size;
+    const toggleIdx = (idx: number) => {
+      if (!bar.candidates[idx]?.learnable) return;
+      setBar((prev) => {
+        if (prev.kind !== "reviewing") return prev;
+        const next = new Set(prev.selected);
+        if (next.has(idx)) next.delete(idx); else next.add(idx);
+        return { ...prev, selected: next };
+      });
+    };
+    const handleLearn = async () => {
+      const items = bar.candidates
+        .filter((_, i) => sel.has(i))
+        .map((c) => ({ original: c.original, corrected: c.corrected }));
+      if (items.length === 0) return;
+      try {
+        const n = await invoke<number>("confirm_batch", { items, recordingId: bar.recordingId });
+        playSound("levelUp");
+        setBar({ kind: "learned", term: `${n} correction${n > 1 ? "s" : ""}`, message: `Learned ${n} correction${n > 1 ? "s" : ""}` });
+        if (doneTimer.current) clearTimeout(doneTimer.current);
+        doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 3000);
+      } catch (e) { console.error("[review] confirm_batch failed", e); }
+    };
+    const handleSkip = () => {
+      setBar({ kind: "idle" });
+      invoke("dismiss_status_bar").catch(() => {});
+    };
+    return (
+      <div className="sb-review-card sb-shell--interactive" style={{ width: innerSize.width, height: innerSize.height }}>
+        <div className="sb-review-header">
+          <span className="sb-toast-dot sb-toast-dot-yellow" />
+          <div>
+            <div className="sb-review-title">Which corrections should AirNote learn?</div>
+            <div className="sb-review-sub">Tap the ones you want remembered</div>
+          </div>
+        </div>
+        <div className="sb-review-changes">
+          {bar.candidates.slice(0, 4).map((c, i) => (
+            <div
+              key={i}
+              className={`sb-review-row${sel.has(i) ? " selected" : ""}${!c.learnable ? " disabled" : ""}`}
+              onClick={() => toggleIdx(i)}
+            >
+              <div className="sb-review-check">{sel.has(i) ? "✓" : ""}</div>
+              <div className="sb-review-text">
+                <span className="sb-review-from">{c.learnable ? c.original || "(empty)" : "(not in audio)"}</span>
+                <span className="sb-review-arrow">&rarr;</span>
+                <span className="sb-review-to">{c.corrected}</span>
+              </div>
+              <span className={`sb-review-tag${c.tag === "added" ? " sb-review-tag-added" : ""}`}>{c.tag}</span>
+            </div>
+          ))}
+        </div>
+        <div className="sb-review-footer">
+          <button className="sb-review-skip" onClick={handleSkip}>Skip all</button>
+          <span className="sb-review-hint">{selCount > 0 ? `${selCount} selected` : "none"}</span>
+          <button className="sb-review-learn" onClick={handleLearn} disabled={selCount === 0}>
+            {selCount > 0 ? `Learn ${selCount}` : "Learn"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (bar.kind === "negative_confirm") {
     return (
       <div
@@ -484,31 +650,47 @@ export default function StatusBar() {
     );
   }
 
+  if (bar.kind === "wrong_fixed") {
+    return (
+      <div className="sb-shell sb-shell--info" style={{ width: innerSize.width, height: innerSize.height }}>
+        <span className="sb-toast-dot sb-toast-dot-red" />
+        <span className="sb-retrain-label">{pillLabel}</span>
+      </div>
+    );
+  }
+
+  if (bar.kind === "queued") {
+    return (
+      <div className="sb-shell sb-shell--info" style={{ width: innerSize.width, height: innerSize.height }}>
+        <span className="sb-toast-dot sb-toast-dot-yellow" />
+        <span className="sb-retrain-label">{pillLabel}</span>
+      </div>
+    );
+  }
+
   if (bar.kind === "retraining") {
     return (
-      <div
-        className="sb-shell sb-shell--retraining"
-        style={{ width: innerSize.width, height: innerSize.height }}
-        aria-label="AirNote retraining"
-      >
+      <div className="sb-shell sb-shell--info" style={{ width: innerSize.width, height: innerSize.height }}>
         <span className="sb-toast-dot sb-toast-dot-blue" />
-        <span className="sb-retrain-label">Improving model...</span>
+        <span className="sb-retrain-label">{pillLabel}</span>
+      </div>
+    );
+  }
+
+  if (bar.kind === "retrain_done") {
+    return (
+      <div className="sb-shell sb-shell--info" style={{ width: innerSize.width, height: innerSize.height }}>
+        <span className="sb-toast-dot sb-toast-dot-green" />
+        <span className="sb-retrain-label">{pillLabel}</span>
       </div>
     );
   }
 
   return (
     <div
-      className={`sb-shell sb-shell--${bar.kind}${hasTranscript ? " sb-shell--expanded" : ""}${bar.kind === "idle" && idleHovered ? " sb-shell--hovered" : ""}`}
+      className={`sb-shell sb-shell--${bar.kind}${hasTranscript ? " sb-shell--expanded" : ""}${isInteractive ? " sb-shell--interactive" : ""}`}
       style={{ width: innerSize.width, height: innerSize.height }}
       aria-label={`AirNote ${bar.kind}`}
-      title={`AirNote ${bar.kind}`}
-      onMouseEnter={() => {
-        if (bar.kind === "idle") setIdleHovered(true);
-      }}
-      onMouseLeave={() => {
-        setIdleHovered(false);
-      }}
     >
       {hasTranscript && (
         <div className="sb-transcript">

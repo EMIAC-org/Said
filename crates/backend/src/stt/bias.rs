@@ -173,28 +173,13 @@ pub fn build_bias_package(
     transcription_language: &str,
     output_language: &str,
 ) -> BiasPackage {
-    // v4: Selective biasing — only high-weight, high-confidence terms.
-    // The learning pipeline guards what enters the DB (classifier rejects
-    // common Hindi words like "maine", "mac"). What survives into the DB
-    // with high weight is safe to bias Deepgram with.
-    //
-    // Only top terms (weight ≥ 2.0, use_count ≥ 3) get exported as keyterms.
-    // This prevents low-confidence one-off corrections from biasing STT.
+    // v5: Starred-only biasing. Sending all vocab as keyterms degrades STT
+    // accuracy — too many keywords confuse Deepgram's model. Only terms the
+    // user explicitly starred get biased. Everything else is handled by the
+    // post-STT correction pipeline (alias table, edit-policy, ONNX scorer).
     let stt_mode = resolve_stt_mode(transcription_language);
 
-    let vocab = vocabulary::top_terms(pool, user_id, 50);
-    let keyterms: Vec<String> = vocab
-        .iter()
-        .filter(|v| {
-            v.weight >= 2.0
-                && v.use_count >= 3
-                && matches!(
-                    v.term_type.as_deref(),
-                    Some("brand" | "acronym" | "proper_noun" | "code_identifier")
-                )
-        })
-        .map(|v| v.term.clone())
-        .collect();
+    let keyterms = vocabulary::starred_term_strings(pool, user_id);
 
     if !keyterms.is_empty() {
         tracing::info!(
