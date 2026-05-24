@@ -179,6 +179,27 @@ pub struct AppState {
     pub watchdog: Arc<watchdog::WatchdogState>,
 }
 
+fn spawn_cold_start_onnx_train(state: AppState) {
+    tokio::spawn(async move {
+        let uid = state.default_user_id.to_string();
+        let vocab_count = store::vocabulary::count(&state.pool, &uid);
+        if vocab_count <= 0 {
+            return;
+        }
+        let has_model = store::tier2_model::get(&state.pool, &uid)
+            .map(|m| std::path::Path::new(&m.artifact_path).is_file())
+            .unwrap_or(false);
+        if has_model {
+            return;
+        }
+        tracing::info!(
+            "[cold-start] {vocab_count} vocab terms found but no ONNX model — training initial model"
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        routes::classify::schedule_retrain_public(state);
+    });
+}
+
 // ── Router factory ────────────────────────────────────────────────────────────
 
 pub fn router_with_state(state: AppState) -> Router {
@@ -357,6 +378,7 @@ pub fn router() -> Router {
         watchdog: wd.clone(),
     };
     routes::vocabulary::spawn_prompt_artifact_repair(state.clone());
+    spawn_cold_start_onnx_train(state.clone());
 
     watchdog::spawn_watchdog(pool, wd, tokio::runtime::Handle::current());
 
