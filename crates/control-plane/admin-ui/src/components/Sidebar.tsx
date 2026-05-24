@@ -28,7 +28,7 @@ export function Sidebar() {
           <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor" />
           <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor" />
         </svg>
-        <span className="text-[13px] font-semibold tracking-tight text-fg">Said Enterprise</span>
+        <span className="text-[13px] font-semibold tracking-tight text-fg">AirNote Enterprise</span>
       </div>
 
       {/* User greeting */}

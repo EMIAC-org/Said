@@ -1,4 +1,4 @@
-//! Integration tests for Said Enterprise meeting system.
+//! Integration tests for AirNote Enterprise meeting system.
 //!
 //! Requires a running Postgres instance. Set DATABASE_URL env var or .env file.
 //! Each test uses unique UUIDs in emails/slugs for isolation.

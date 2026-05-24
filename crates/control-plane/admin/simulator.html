@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Said — Meeting Simulator</title>
+<title>AirNote — Meeting Simulator</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -214,7 +214,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--fg); min-he
     <div class="sim-input-area">
       <h4>Voice</h4>
       <div class="speaking-as">Speaking as: <span id="speaking-as-name">—</span></div>
-      <div class="dg-key-label">Said Backend URL</div>
+      <div class="dg-key-label">AirNote Backend URL</div>
       <div class="dg-key-row">
         <input type="text" class="dg-key-input" id="backend-url" value="http://127.0.0.1:50818" style="font-family: var(--mono);" />
       </div>
@@ -561,7 +561,7 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// ── Mic capture + Said backend voice pipeline ───────────────────────
+// ── Mic capture + AirNote backend voice pipeline ────────────────────
 
 const micBtn = document.getElementById('mic-btn');
 const micInterim = document.getElementById('mic-interim');
@@ -588,7 +588,7 @@ async function startRecording() {
 
       const blob = new Blob(audioChunks, { type: 'audio/webm' });
       micInterim.textContent = 'Processing...';
-      await sendToSaidBackend(blob);
+      await sendToAirNoteBackend(blob);
     };
 
     mediaRecorder.start(250);
@@ -613,7 +613,7 @@ function stopRecording() {
     Hold to Speak`;
 }
 
-async function sendToSaidBackend(audioBlob) {
+async function sendToAirNoteBackend(audioBlob) {
   const backendUrl = document.getElementById('backend-url').value.replace(/\/+$/, '');
   const secret = document.getElementById('backend-secret').value.trim();
   const formData = new FormData();

@@ -34,7 +34,7 @@ export function LoginPage() {
             <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor" />
             <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor" />
           </svg>
-          <span className="text-[16px] font-bold tracking-tight">Said Enterprise</span>
+          <span className="text-[16px] font-bold tracking-tight">AirNote Enterprise</span>
         </div>
 
         <h1 className="text-lg font-semibold text-center mb-1">Welcome back</h1>

@@ -91,7 +91,7 @@ export function NewMeetingPage() {
       </Link>
 
       <h1 className="text-xl font-semibold tracking-tight mb-1">Create a meeting</h1>
-      <p className="text-[12px] text-fg-4 mb-6">Participants will see it in their Said app and can join when ready.</p>
+      <p className="text-[12px] text-fg-4 mb-6">Participants will see it in their AirNote app and can join when ready.</p>
 
       <div className="grid grid-cols-[2fr_1fr] gap-4">
         {/* Left — form */}

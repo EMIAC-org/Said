@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Said Guest Meeting</title>
+  <title>AirNote Guest Meeting</title>
   <style>
     :root {
       --bg: hsl(240 6% 6%);
@@ -188,7 +188,7 @@
 </head>
 <body>
   <script>
-    window.__SAID_GUEST = __SAID_GUEST_DATA__;
+    window.__AIRNOTE_GUEST = __AIRNOTE_GUEST_DATA__;
   </script>
 
   <main id="joinScreen" class="screen join-screen active">
@@ -196,14 +196,14 @@
       <div class="brand">
         <div class="mark">S</div>
         <div>
-          <h1>Join with Said</h1>
+          <h1>Join with AirNote</h1>
           <p class="meeting-name"><span id="meetingTitle"></span><br><span class="muted">Hosted by <span id="hostName"></span></span></p>
         </div>
       </div>
       <label for="displayName">Your name</label>
       <input id="displayName" autocomplete="name" placeholder="Sarah Chen">
       <button id="joinBtn" class="primary">Start Capturing</button>
-      <p class="hint">Your microphone audio is streamed to Said for live transcription in this meeting.</p>
+      <p class="hint">Your microphone audio is streamed to AirNote for live transcription in this meeting.</p>
       <div id="joinError" class="error"></div>
     </section>
   </main>
@@ -250,12 +250,12 @@
           <p id="postSummary" class="summary">Summary was not available yet.</p>
         </div>
       </div>
-      <div class="cta">Get Said for your own meetings and capture polished notes from your desktop.</div>
+      <div class="cta">Get AirNote for your own meetings and capture polished notes from your desktop.</div>
     </section>
   </main>
 
   <script>
-    const meta = window.__SAID_GUEST || {};
+    const meta = window.__AIRNOTE_GUEST || {};
     const state = {
       ws: null,
       wsToken: '',
@@ -269,11 +269,11 @@
     };
 
     const $ = (id) => document.getElementById(id);
-    $('meetingTitle').textContent = meta.meetingTitle || 'Said meeting';
+    $('meetingTitle').textContent = meta.meetingTitle || 'AirNote meeting';
     $('hostName').textContent = meta.hostName || 'your host';
-    $('liveTitle').textContent = meta.meetingTitle || 'Said meeting';
+    $('liveTitle').textContent = meta.meetingTitle || 'AirNote meeting';
 
-    class SaidAudioCapture {
+    class AirNoteAudioCapture {
       async start(ws) {
         this.muted = false;
         this.stream = await navigator.mediaDevices.getUserMedia({
@@ -282,7 +282,7 @@
         this.audioContext = new AudioContext({ sampleRate: 16000 });
         const source = this.audioContext.createMediaStreamSource(this.stream);
         const workletCode = `
-          class SaidProcessor extends AudioWorkletProcessor {
+          class AirNoteProcessor extends AudioWorkletProcessor {
             constructor() {
               super();
               this.buffer = [];
@@ -306,13 +306,13 @@
               return true;
             }
           }
-          registerProcessor('said-processor', SaidProcessor);
+          registerProcessor('airnote-processor', AirNoteProcessor);
         `;
         const blob = new Blob([workletCode], { type: 'application/javascript' });
         const url = URL.createObjectURL(blob);
         await this.audioContext.audioWorklet.addModule(url);
         URL.revokeObjectURL(url);
-        this.worklet = new AudioWorkletNode(this.audioContext, 'said-processor');
+        this.worklet = new AudioWorkletNode(this.audioContext, 'airnote-processor');
         this.worklet.port.onmessage = (event) => {
           if (!this.muted && ws.readyState === WebSocket.OPEN) ws.send(event.data);
         };
@@ -349,7 +349,7 @@
         state.wsToken = authJson.ws_token;
         state.guestId = authJson.guest_id;
         await connectGuestWs();
-        state.capture = new SaidAudioCapture();
+        state.capture = new AirNoteAudioCapture();
         await state.capture.start(state.ws);
         show('liveScreen');
         startTimer();
@@ -455,7 +455,7 @@
         const minutes = Math.floor(seconds / 60);
         const rest = seconds % 60;
         $('timer').textContent = `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
-        document.title = `Said | ${minutes} min captured`;
+        document.title = `AirNote | ${minutes} min captured`;
       }, 1000);
     }
 

@@ -1,15 +1,33 @@
-/* ── Said Enterprise Admin ────────────────────────────────────────────────
+/* ── AirNote Enterprise Admin ─────────────────────────────────────────────
  *  Veselity-style dashboard with Cursor aesthetics. Light + dark mode.
  *  Vanilla JS SPA — no build step.
  * ──────────────────────────────────────────────────────────────────────── */
 'use strict';
 
 const API = '';
+const THEME_KEY = 'airnote:theme';
+const LEGACY_THEME_KEY = 'said:theme';
+const AUTH_TOKEN_KEY = 'airnote:admin:token';
+const LEGACY_AUTH_TOKEN_KEY = 'said:admin:token';
 
 // ── Theme ───────────────────────────────────────────────────────────────
 
-function getTheme() { return localStorage.getItem('said:theme') || 'light'; }
-function setTheme(t) { localStorage.setItem('said:theme', t); document.documentElement.setAttribute('data-theme', t); }
+function getTheme() {
+  const theme = localStorage.getItem(THEME_KEY);
+  if (theme) return theme;
+  const legacyTheme = localStorage.getItem(LEGACY_THEME_KEY);
+  if (legacyTheme) {
+    localStorage.setItem(THEME_KEY, legacyTheme);
+    localStorage.removeItem(LEGACY_THEME_KEY);
+    return legacyTheme;
+  }
+  return 'light';
+}
+function setTheme(t) {
+  localStorage.setItem(THEME_KEY, t);
+  localStorage.removeItem(LEGACY_THEME_KEY);
+  document.documentElement.setAttribute('data-theme', t);
+}
 function toggleTheme() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); updateThemeIcon(); }
 function initTheme() { setTheme(getTheme()); }
 function updateThemeIcon() {
@@ -19,9 +37,24 @@ function updateThemeIcon() {
 
 // ── Auth ────────────────────────────────────────────────────────────────
 
-function getToken() { return localStorage.getItem('said:admin:token'); }
-function setToken(t) { localStorage.setItem('said:admin:token', t); }
-function clearToken() { localStorage.removeItem('said:admin:token'); }
+function getToken() {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  if (token) return token;
+  const legacyToken = localStorage.getItem(LEGACY_AUTH_TOKEN_KEY);
+  if (legacyToken) {
+    localStorage.setItem(AUTH_TOKEN_KEY, legacyToken);
+    localStorage.removeItem(LEGACY_AUTH_TOKEN_KEY);
+  }
+  return legacyToken;
+}
+function setToken(t) {
+  localStorage.setItem(AUTH_TOKEN_KEY, t);
+  localStorage.removeItem(LEGACY_AUTH_TOKEN_KEY);
+}
+function clearToken() {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(LEGACY_AUTH_TOKEN_KEY);
+}
 function logout() { const t = getToken(); if (t) api('/v1/auth/logout', { method: 'POST' }).catch(() => {}); clearToken(); cachedUser = null; cachedOrg = null; render(); }
 
 // ── API ─────────────────────────────────────────────────────────────────
@@ -157,7 +190,7 @@ function renderShell(route) {
     <aside class="sidebar">
       <div class="s-brand">
         <div class="s-brand-icon">${icon('brand',14)}</div>
-        <div><div class="s-brand-text">Said</div><div class="s-brand-sub">Enterprise</div></div>
+        <div><div class="s-brand-text">AirNote</div><div class="s-brand-sub">Enterprise</div></div>
       </div>
       <div class="s-section">Main menu</div>
       <nav class="s-nav">
@@ -210,7 +243,7 @@ function bindShell() {
 
 function renderLogin() {
   return `<div class="login-page"><div class="login-card">
-    <div class="login-brand"><span style="display:inline-flex;width:22px;height:22px">${I.brand}</span><span class="login-brand-text">Said Enterprise</span></div>
+    <div class="login-brand"><span style="display:inline-flex;width:22px;height:22px">${I.brand}</span><span class="login-brand-text">AirNote Enterprise</span></div>
     <h1>Welcome back</h1><p class="login-sub">Sign in to your admin dashboard</p>
     <div id="login-error" style="display:none"></div>
     <form id="login-form">

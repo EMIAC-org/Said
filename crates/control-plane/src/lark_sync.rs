@@ -127,15 +127,15 @@ fn build_calendar_event_body(
 ) -> serde_json::Value {
     let end_at = scheduled_at + Duration::minutes(i64::from(duration_minutes.max(1)));
     let participant_line = if participant_names.is_empty() {
-        "Participants: Said meeting participants".to_string()
+        "Participants: AirNote meeting participants".to_string()
     } else {
         format!("Participants: {}", participant_names.join(", "))
     };
     let description = if agenda.trim().is_empty() {
-        format!("{participant_line}\n\nOpen Said to join.")
+        format!("{participant_line}\n\nOpen AirNote to join.")
     } else {
         format!(
-            "Agenda:\n{}\n\n{participant_line}\n\nOpen Said to join.",
+            "Agenda:\n{}\n\n{participant_line}\n\nOpen AirNote to join.",
             agenda.trim()
         )
     };
@@ -848,15 +848,15 @@ pub fn build_meeting_card(
         MeetingCardKind::Created => (
             "blue",
             "Meeting scheduled",
-            "A Said meeting has been scheduled.",
+            "An AirNote meeting has been scheduled.",
         ),
         MeetingCardKind::StartingSoon => {
-            ("blue", "Starting soon", "This Said meeting starts soon.")
+            ("blue", "Starting soon", "This AirNote meeting starts soon.")
         }
         MeetingCardKind::UrgentJoin => (
             "red",
             "Meeting is live",
-            "This Said meeting is live and you have not joined yet.",
+            "This AirNote meeting is live and you have not joined yet.",
         ),
     };
 
@@ -908,7 +908,7 @@ pub fn build_meeting_card(
         "tag": "note",
         "elements": [{
             "tag": "plain_text",
-            "content": "Open Said to join the meeting"
+            "content": "Open AirNote to join the meeting"
         }]
     }));
 
@@ -1286,7 +1286,7 @@ mod tests {
             body["description"]
                 .as_str()
                 .unwrap()
-                .contains("Open Said to join")
+                .contains("Open AirNote to join")
         );
     }
 

@@ -108,7 +108,7 @@ export function PostgresLogo({ size = 20, className }: LogoProps) {
   )
 }
 
-export function SaidLogo({ size = 20, className }: LogoProps) {
+export function AirNoteLogo({ size = 20, className }: LogoProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
       <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor" />
