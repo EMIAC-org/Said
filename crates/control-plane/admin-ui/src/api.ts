@@ -1,15 +1,27 @@
 const API = ''
+const AUTH_TOKEN_KEY = 'airnote:admin:token'
+const LEGACY_AUTH_TOKEN_KEY = 'said:admin:token'
 
-function getToken(): string | null {
-  return localStorage.getItem('said:admin:token')
+export function getToken(): string | null {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY)
+  if (token) return token
+
+  const legacyToken = localStorage.getItem(LEGACY_AUTH_TOKEN_KEY)
+  if (legacyToken) {
+    localStorage.setItem(AUTH_TOKEN_KEY, legacyToken)
+    localStorage.removeItem(LEGACY_AUTH_TOKEN_KEY)
+  }
+  return legacyToken
 }
 
 export function setToken(t: string) {
-  localStorage.setItem('said:admin:token', t)
+  localStorage.setItem(AUTH_TOKEN_KEY, t)
+  localStorage.removeItem(LEGACY_AUTH_TOKEN_KEY)
 }
 
 export function clearToken() {
-  localStorage.removeItem('said:admin:token')
+  localStorage.removeItem(AUTH_TOKEN_KEY)
+  localStorage.removeItem(LEGACY_AUTH_TOKEN_KEY)
 }
 
 export function isAuthenticated(): boolean {

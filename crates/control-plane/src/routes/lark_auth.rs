@@ -93,7 +93,7 @@ pub async fn callback(
         })?;
 
     // ── Find or create account ──────────────────────────────────────────────
-    // Admin OAuth starts from an authenticated Said account, so bind Lark to
+    // Admin OAuth starts from an authenticated AirNote account, so bind Lark to
     // that account. Desktop OAuth has no existing session and still uses the
     // Lark email to create/find an account, then shows the copy-token bridge.
     let lark_email = lark_user
@@ -315,7 +315,7 @@ pub async fn callback(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Said Enterprise — Connected</title>
+<title>AirNote Enterprise — Connected</title>
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box }}
   body {{ font-family:'Inter',system-ui,sans-serif; background:#080b16; color:#e8eaf0; min-height:100vh; display:flex; align-items:center; justify-content:center }}
@@ -330,6 +330,7 @@ pub async fn callback(
   .copy-btn:hover {{ background:#5a7ae8 }}
   .hint {{ font-size:11px; color:#4a5070 }}
   .copied {{ color:#4ade80; font-size:12px; font-weight:500; margin-top:8px }}
+  .copied.error {{ color:#fbbf24 }}
 </style>
 </head>
 <body>
@@ -343,18 +344,62 @@ pub async fn callback(
     </svg>
   </div>
   <h1>Welcome, {lark_name}!</h1>
-  <p class="sub">You're now connected to Said Enterprise.<br/>Copy the token below and paste it in the Said desktop app.</p>
+  <p class="sub">You're now connected to AirNote Enterprise.<br/>Copy the token below and paste it in the AirNote desktop app.</p>
   <div class="token-box" id="token" onclick="copyToken()">{session_token}</div>
   <button class="copy-btn" onclick="copyToken()">Copy Token</button>
-  <p class="hint">Go to Said → Settings → Enterprise → Paste this token</p>
+  <p class="hint">Go to AirNote → Settings → Enterprise → Paste this token</p>
   <p class="copied" id="copied" style="display:none">✓ Copied to clipboard</p>
 </div>
 <script>
-function copyToken() {{
-  navigator.clipboard.writeText('{session_token}').then(function() {{
-    document.getElementById('copied').style.display = 'block';
-    setTimeout(function() {{ document.getElementById('copied').style.display = 'none' }}, 2000);
-  }});
+function showCopyStatus(message, isError) {{
+  var el = document.getElementById('copied');
+  el.textContent = message;
+  el.className = isError ? 'copied error' : 'copied';
+  el.style.display = 'block';
+  setTimeout(function() {{ el.style.display = 'none' }}, 2400);
+}}
+
+function selectToken() {{
+  var tokenBox = document.getElementById('token');
+  var range = document.createRange();
+  range.selectNodeContents(tokenBox);
+  var selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+}}
+
+async function copyToken() {{
+  var token = document.getElementById('token').textContent.trim();
+
+  if (navigator.clipboard && window.isSecureContext) {{
+    try {{
+      await navigator.clipboard.writeText(token);
+      showCopyStatus('Copied to clipboard', false);
+      return;
+    }} catch (_) {{}}
+  }}
+
+  var textarea = document.createElement('textarea');
+  textarea.value = token;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+
+  try {{
+    var copied = document.execCommand('copy');
+    if (textarea.parentNode) textarea.parentNode.removeChild(textarea);
+    if (!copied) throw new Error('copy command failed');
+    showCopyStatus('Copied to clipboard', false);
+  }} catch (_) {{
+    if (textarea.parentNode) textarea.parentNode.removeChild(textarea);
+    selectToken();
+    showCopyStatus('Press Cmd+C to copy selected token', true);
+  }}
 }}
 </script>
 </body>
@@ -433,7 +478,11 @@ fn decode_admin_oauth_state(
 
 fn admin_oauth_bridge(session_token: Option<Uuid>, destination: &str, title: &str) -> Response {
     let token_script = session_token
-        .map(|token| format!("localStorage.setItem('said:admin:token', '{token}');"))
+        .map(|token| {
+            format!(
+                "localStorage.setItem('airnote:admin:token', '{token}');localStorage.removeItem('said:admin:token');"
+            )
+        })
         .unwrap_or_default();
 
     axum::response::Html(format!(
@@ -442,7 +491,7 @@ fn admin_oauth_bridge(session_token: Option<Uuid>, destination: &str, title: &st
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Said Enterprise — {title}</title>
+<title>AirNote Enterprise — {title}</title>
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box }}
   body {{ font-family:'Inter',system-ui,sans-serif; background:#080b16; color:#e8eaf0; min-height:100vh; display:flex; align-items:center; justify-content:center }}
@@ -458,7 +507,7 @@ fn admin_oauth_bridge(session_token: Option<Uuid>, destination: &str, title: &st
 <div class="card">
   <div class="spinner"></div>
   <h1>{title}</h1>
-  <p>Returning to Said admin...</p>
+  <p>Returning to AirNote admin...</p>
   <p style="margin-top:14px"><a href="{destination}">Continue</a></p>
 </div>
 <script>

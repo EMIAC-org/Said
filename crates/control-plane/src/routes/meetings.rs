@@ -366,7 +366,7 @@ pub async fn detail(
     };
 
     // Fetch participants with resolved display names.
-    // Guest accounts have said.guest emails — strip the trailing -{uuid32} suffix.
+    // Guest accounts have app-owned emails — strip the trailing -{uuid32} suffix.
     let participants: Vec<(
         Uuid,
         Uuid,
@@ -378,7 +378,7 @@ pub async fn detail(
     )> = sqlx::query_as(
         "SELECT mp.id, mp.account_id, mp.status, mp.joined_at, mp.left_at,
                 mp.disconnect_count,
-                CASE WHEN a.email LIKE '%@said.guest'
+                CASE WHEN a.email LIKE '%@airnote.guest' OR a.email LIKE '%@said.guest'
                      THEN regexp_replace(split_part(a.email, '@', 1), '-[0-9a-f]{32}$', '')
                      ELSE COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1))
                 END
@@ -466,10 +466,10 @@ pub async fn detail(
         .collect();
 
     // Fetch transcript with speaker names.
-    // Guest accounts use said.guest emails — strip the trailing -{uuid32} suffix.
+    // Guest accounts use app-owned emails — strip the trailing -{uuid32} suffix.
     let transcript: Vec<(String, Option<String>, String, i64, i32)> = sqlx::query_as(
         "SELECT tc.speaker_id::text,
-                CASE WHEN a.email LIKE '%@said.guest'
+                CASE WHEN a.email LIKE '%@airnote.guest' OR a.email LIKE '%@said.guest'
                      THEN regexp_replace(split_part(a.email, '@', 1), '-[0-9a-f]{32}$', '')
                      ELSE COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1))
                 END,

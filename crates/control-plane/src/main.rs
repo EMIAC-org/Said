@@ -47,7 +47,11 @@ struct Cli {
     lark_redirect_uri: String,
 
     /// JWT signing secret for session tokens
-    #[arg(long, env = "JWT_SECRET", default_value = "said-enterprise-dev-secret")]
+    #[arg(
+        long,
+        env = "JWT_SECRET",
+        default_value = "airnote-enterprise-dev-secret"
+    )]
     jwt_secret: String,
 
     /// Deepgram API key for guest browser STT relay

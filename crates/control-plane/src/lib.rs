@@ -1,4 +1,4 @@
-//! Said Enterprise — Control Plane library.
+//! AirNote Enterprise — Control Plane library.
 //!
 //! Re-exports the building blocks so integration tests (and the binary)
 //! can construct and test the full Axum application.
@@ -200,7 +200,7 @@ fn not_found_page() -> impl IntoResponse {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Said Enterprise - Not Found</title>
+  <title>AirNote Enterprise - Not Found</title>
   <style>
     body{margin:0;min-height:100vh;display:grid;place-items:center;background:#080b16;color:#e8eaf0;font-family:Inter,ui-sans-serif,system-ui,sans-serif}
     main{width:min(420px,calc(100vw - 32px));padding:28px;border:1px solid #1a2038;border-radius:18px;background:#0e1225}
@@ -208,7 +208,7 @@ fn not_found_page() -> impl IntoResponse {
     a{display:inline-flex;padding:10px 14px;border-radius:12px;background:#7591ef;color:white;text-decoration:none;font-size:13px;font-weight:700}
   </style>
 </head>
-<body><main><h1>Page not found</h1><p>The Said admin page you requested does not exist.</p><a href="/admin/">Open admin</a></main></body>
+<body><main><h1>Page not found</h1><p>The AirNote admin page you requested does not exist.</p><a href="/admin/">Open admin</a></main></body>
 </html>"#,
     )
 }

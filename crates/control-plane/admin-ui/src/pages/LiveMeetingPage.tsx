@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, Link } from 'react-router'
 import { ArrowLeft, Mic, CheckSquare, Sparkles, Send, Check, Clock } from 'lucide-react'
-import { apiJson } from '../api'
+import { apiJson, getToken } from '../api'
 import { useAuth } from '../hooks/useAuth'
 import { useWebSocket, type WsMessage, type TranscriptChunk, type WsTask, type WsParticipant } from '../hooks/useWebSocket'
 import { Avatar } from '../components/Avatar'
@@ -31,7 +31,7 @@ interface TaskItem extends WsTask {
 export function LiveMeetingPage() {
   const { id } = useParams<{ id: string }>()
   const { user } = useAuth()
-  const token = localStorage.getItem('said:admin:token') || ''
+  const token = getToken() || ''
 
   const [meetingTitle, setMeetingTitle] = useState('')
   const [meetingStatus, setMeetingStatus] = useState('')

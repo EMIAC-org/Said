@@ -520,6 +520,42 @@ pub fn delete_by_correct_form(pool: &DbPool, user_id: &str, correct_form: &str) 
     n
 }
 
+/// Delete aliases where the transcript_form matches `from` and correct_form
+/// matches `to`. Used when the user reverts a wrong replacement — e.g. system
+/// typed "Macobs" but user wanted "access", so we delete any alias that maps
+/// "access" → "Macobs".
+pub fn delete_alias_pair(
+    pool: &DbPool,
+    user_id: &str,
+    transcript_form: &str,
+    correct_form: &str,
+) -> usize {
+    let Ok(conn) = pool.get() else {
+        return 0;
+    };
+    let from = transcript_form.trim();
+    let to = correct_form.trim();
+    if from.is_empty() || to.is_empty() {
+        return 0;
+    }
+    let n = conn
+        .execute(
+            "DELETE FROM stt_replacements
+              WHERE user_id = ?1
+                AND lower(transcript_form) = lower(?2)
+                AND lower(correct_form) = lower(?3)",
+            params![user_id, from, to],
+        )
+        .unwrap_or(0);
+    if n > 0 {
+        info!(
+            "[stt-repl] deleted {n} alias(es) for pair {:?} → {:?}",
+            from, to
+        );
+    }
+    n
+}
+
 /// Load all replacements for a user.  Always small (tens of rows); we apply
 /// them in a single linear pass over the transcript.
 pub fn load_all(pool: &DbPool, user_id: &str) -> Vec<SttReplacement> {
@@ -1067,6 +1103,219 @@ fn split_punct_trailing(chunk: &str) -> (&str, &str) {
         .map(|i| i + chunk[i..].chars().next().unwrap().len_utf8())
         .unwrap_or(0);
     (&chunk[..split], &chunk[split..])
+}
+
+// ── Proactive distortion generation ─────────────────────────────────────
+
+/// Pre-seed likely STT distortions as aliases when a word gets promoted to
+/// vocabulary.  This creates 8–12 synthetic aliases at weight 0.6 (lower than
+/// organic aliases at 1.0) so the replacement engine can catch common
+/// mis-hearings on the very first encounter.
+pub fn generate_proactive_distortions(
+    pool: &DbPool,
+    user_id: &str,
+    correct_form: &str,
+    observed_transcript: &str,
+    language: &str,
+) -> usize {
+    use std::collections::HashSet;
+
+    let base = correct_form.trim().to_ascii_lowercase();
+    if base.len() < 2 {
+        return 0;
+    }
+
+    let mut candidates: HashSet<String> = HashSet::new();
+
+    // Gather from all five strategies
+    for d in char_deletions(&base) {
+        candidates.insert(d);
+    }
+    for d in vowel_substitutions(&base) {
+        candidates.insert(d);
+    }
+    for d in adjacent_swaps(&base) {
+        candidates.insert(d);
+    }
+    for d in consonant_softening(&base) {
+        candidates.insert(d);
+    }
+    for d in camel_case_splits(correct_form.trim()) {
+        candidates.insert(d);
+    }
+
+    // Also insert the observed transcript (lowercased) and its joined-no-spaces form
+    let obs = observed_transcript.trim().to_ascii_lowercase();
+    if !obs.is_empty() {
+        candidates.insert(obs.clone());
+        let joined: String = obs.split_whitespace().collect();
+        if joined != obs {
+            candidates.insert(joined);
+        }
+    }
+
+    // Filter and cap
+    let lang = if language.trim().is_empty() {
+        None
+    } else {
+        Some(language)
+    };
+
+    let mut count = 0usize;
+    for distortion in candidates
+        .iter()
+        .filter(|d| is_safe_distortion(d, correct_form.trim()))
+        .take(12)
+    {
+        if upsert_inner(pool, user_id, distortion, correct_form.trim(), 0.6, lang) {
+            count += 1;
+        }
+    }
+
+    enforce_alias_cap(pool, user_id, correct_form.trim());
+
+    info!(
+        "[stt-proactive] seeded {count} distortion(s) for {:?}",
+        correct_form.trim()
+    );
+    count
+}
+
+/// Produce all single-character deletions of `base` that are >= 3 chars.
+fn char_deletions(base: &str) -> Vec<String> {
+    let chars: Vec<char> = base.chars().collect();
+    let mut results = Vec::new();
+    for i in 0..chars.len() {
+        let s: String = chars[..i].iter().chain(chars[i + 1..].iter()).collect();
+        if s.chars().count() >= 3 {
+            results.push(s);
+        }
+    }
+    results
+}
+
+/// For each vowel position, substitute with other vowels (a, e, i, o, u).
+fn vowel_substitutions(base: &str) -> Vec<String> {
+    const VOWELS: &[char] = &['a', 'e', 'i', 'o', 'u'];
+    let chars: Vec<char> = base.chars().collect();
+    let mut results = Vec::new();
+    for (i, &ch) in chars.iter().enumerate() {
+        if VOWELS.contains(&ch.to_ascii_lowercase()) {
+            for &v in VOWELS {
+                if v != ch.to_ascii_lowercase() {
+                    let mut s: Vec<char> = chars.clone();
+                    s[i] = v;
+                    let out: String = s.into_iter().collect();
+                    if out.chars().count() >= 3 {
+                        results.push(out);
+                    }
+                }
+            }
+        }
+    }
+    results
+}
+
+/// Swap each pair of adjacent characters.
+fn adjacent_swaps(base: &str) -> Vec<String> {
+    let chars: Vec<char> = base.chars().collect();
+    let mut results = Vec::new();
+    for i in 0..chars.len().saturating_sub(1) {
+        let mut s = chars.clone();
+        s.swap(i, i + 1);
+        let out: String = s.into_iter().collect();
+        if out.chars().count() >= 3 {
+            results.push(out);
+        }
+    }
+    results
+}
+
+/// Apply consonant-softening substitution pairs at each position:
+/// b<->p, d<->t, g<->k, v<->f, s<->z
+fn consonant_softening(base: &str) -> Vec<String> {
+    const PAIRS: &[(char, char)] = &[('b', 'p'), ('d', 't'), ('g', 'k'), ('v', 'f'), ('s', 'z')];
+    let chars: Vec<char> = base.chars().collect();
+    let mut results = Vec::new();
+    for (i, &ch) in chars.iter().enumerate() {
+        let lower = ch.to_ascii_lowercase();
+        for &(a, b) in PAIRS {
+            let replacement = if lower == a {
+                Some(b)
+            } else if lower == b {
+                Some(a)
+            } else {
+                None
+            };
+            if let Some(r) = replacement {
+                let mut s = chars.clone();
+                s[i] = r;
+                let out: String = s.into_iter().collect();
+                if out.chars().count() >= 3 {
+                    results.push(out);
+                }
+            }
+        }
+    }
+    results
+}
+
+/// Split at uppercase-lowercase boundaries ("AirNote" -> "air note") and
+/// produce the fully-joined lowercase ("airnote").
+fn camel_case_splits(term: &str) -> Vec<String> {
+    let chars: Vec<char> = term.chars().collect();
+    let mut results = Vec::new();
+
+    // Find split points at uppercase-lowercase boundaries
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for (i, &ch) in chars.iter().enumerate() {
+        if i > 0 && ch.is_uppercase() && !chars[i - 1].is_uppercase() {
+            if !current.is_empty() {
+                parts.push(current.to_ascii_lowercase());
+                current = String::new();
+            }
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        parts.push(current.to_ascii_lowercase());
+    }
+
+    // Only produce results if we actually found splits
+    if parts.len() > 1 {
+        // "AirNote" -> "air note"
+        let spaced = parts.join(" ");
+        results.push(spaced);
+        // "AirNote" -> "airnote"
+        let joined = parts.join("");
+        results.push(joined);
+    }
+
+    results
+}
+
+/// Reject distortions that are common words, too short, equal to the
+/// correct form, or degenerate (single repeated character).
+fn is_safe_distortion(distortion: &str, correct_form: &str) -> bool {
+    if distortion.chars().count() < 3 {
+        return false;
+    }
+    if distortion.eq_ignore_ascii_case(correct_form) {
+        return false;
+    }
+    // Reject single-char repeats like "aaa"
+    let mut chars_iter = distortion.chars();
+    if let Some(first) = chars_iter.next() {
+        if chars_iter.all(|c| c == first) {
+            return false;
+        }
+    }
+    // Full dictionary + Hindi common word check
+    if crate::tier2::is_in_dictionary(distortion) {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]

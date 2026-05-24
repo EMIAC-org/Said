@@ -142,7 +142,7 @@ pub async fn guest_page(
         )
     })?;
 
-    let html = GUEST_JOIN_HTML.replace("__SAID_GUEST_DATA__", &metadata_json);
+    let html = GUEST_JOIN_HTML.replace("__AIRNOTE_GUEST_DATA__", &metadata_json);
     Ok(Html(html))
 }
 
@@ -186,7 +186,7 @@ pub async fn guest_auth(
            JOIN meeting_participants mp ON mp.account_id = a.id
           WHERE mp.meeting_id = $1
             AND a.is_guest = true
-            AND a.email LIKE $2 || '-%@said.guest'
+            AND (a.email LIKE $2 || '-%@airnote.guest' OR a.email LIKE $2 || '-%@said.guest')
           LIMIT 1",
     )
     .bind(invite.meeting_id)
@@ -365,7 +365,7 @@ fn guest_local_name(display_name: &str) -> String {
 
 fn guest_email(display_name: &str, guest_id: Uuid) -> String {
     format!(
-        "{}-{}@said.guest",
+        "{}-{}@airnote.guest",
         guest_local_name(display_name),
         guest_id.simple()
     )

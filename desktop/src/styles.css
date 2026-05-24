@@ -711,7 +711,7 @@ body.statusbar-mode {
   padding: 0;
   background: transparent !important;
   background-color: transparent !important;
-  overflow: hidden;
+  overflow: visible;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -726,9 +726,9 @@ body.statusbar-mode #app {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-end;
-  width: 100vw;
-  height: 100vh;
+  justify-content: center;
+  width: 100%;
+  min-height: 100vh;
   background: transparent !important;
   background-color: transparent !important;
 }
@@ -971,27 +971,25 @@ body.statusbar-mode #app {
 .sb-shell {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   box-sizing: border-box;
-  background: rgba(8, 8, 12, 0.92);
+  background: rgba(8, 8, 12, 0.88);
   backdrop-filter: blur(24px) saturate(1.4);
   -webkit-backdrop-filter: blur(24px) saturate(1.4);
   color: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 100px;
-  box-shadow:
-    0 12px 32px rgba(0, 0, 0, 0.45),
-    0 0 0 0.5px rgba(255, 255, 255, 0.06) inset;
+  box-shadow: none;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   letter-spacing: 0;
   cursor: default;
+  pointer-events: none;
   animation: sb-hud-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1);
   transition:
     width 0.32s cubic-bezier(0.2, 0.9, 0.2, 1),
     height 0.32s cubic-bezier(0.2, 0.9, 0.2, 1),
     border-radius 0.25s ease,
     border-color 0.2s ease,
-    box-shadow 0.2s ease,
     background 0.2s ease;
 }
 
@@ -999,12 +997,9 @@ body.statusbar-mode #app {
   border-radius: 16px;
 }
 
-.sb-shell--hovered {
-  border-color: rgba(255, 255, 255, 0.18);
-  box-shadow:
-    0 14px 36px rgba(0, 0, 0, 0.5),
-    0 0 0 0.5px rgba(255, 255, 255, 0.08) inset,
-    0 0 20px rgba(100, 210, 255, 0.06);
+.sb-shell--interactive {
+  pointer-events: auto;
+  cursor: default;
 }
 
 .sb-controlbar {
@@ -1462,15 +1457,232 @@ body.statusbar-mode #app {
   box-shadow: 0 0 8px rgba(88, 166, 255, 0.4);
 }
 
-/* Retraining pill */
-.sb-shell--retraining {
-  display: flex;
+.sb-toast-dot-green {
+  background: #4ade80;
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.4);
+}
+
+/* Status bar window — content drives size, no clipping */
+
+/* Info pill — single class for all non-interactive status messages */
+.sb-shell--info {
+  flex-direction: row;
   align-items: center;
   gap: 8px;
-  padding: 8px 18px;
+  padding: 8px 14px;
+  border-radius: 14px;
 }
 
 .sb-retrain-label {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+}
+
+/* ── Edit Review card ──────────────────────────────────────────────────────── */
+.sb-review-card {
+  background: rgba(8, 8, 12, 0.94);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  color: rgba(255, 255, 255, 0.92);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  padding: 14px;
+  pointer-events: auto;
+  animation: sb-hud-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+}
+
+.sb-review-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sb-review-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.sb-review-sub {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.3);
+  margin-top: 1px;
+}
+
+.sb-review-changes {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 12px;
+  flex: 1;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.sb-review-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.sb-review-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.10);
+}
+
+.sb-review-row.selected {
+  background: rgba(74, 222, 128, 0.07);
+  border-color: rgba(74, 222, 128, 0.22);
+}
+
+.sb-review-row.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.sb-review-check {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1.5px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 10px;
+  transition: all 0.15s ease;
+}
+
+.sb-review-row.selected .sb-review-check {
+  background: #4ade80;
+  border-color: #4ade80;
+  color: #000;
+}
+
+.sb-review-text {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  min-width: 0;
+}
+
+.sb-review-from {
+  color: rgba(255, 255, 255, 0.35);
+  text-decoration: line-through;
+  text-decoration-color: rgba(248, 113, 113, 0.4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-review-row.disabled .sb-review-from {
+  text-decoration: none;
+  color: rgba(255, 255, 255, 0.2);
+}
+
+.sb-review-arrow {
+  color: rgba(255, 255, 255, 0.15);
+  flex-shrink: 0;
+  font-size: 10px;
+}
+
+.sb-review-to {
+  color: #4ade80;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-review-row.disabled .sb-review-to {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.sb-review-tag {
+  font-size: 8px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.25);
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-weight: 600;
+}
+
+.sb-review-tag-added {
+  background: rgba(88, 166, 255, 0.10);
+  color: rgba(88, 166, 255, 0.5);
+}
+
+.sb-review-row.selected .sb-review-tag {
+  background: rgba(74, 222, 128, 0.10);
+  color: rgba(74, 222, 128, 0.6);
+}
+
+.sb-review-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sb-review-hint {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.2);
+  flex: 1;
+  text-align: center;
+}
+
+.sb-review-learn {
+  background: #4ade80;
+  color: #000;
+  border: none;
+  border-radius: 7px;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+  -webkit-app-region: no-drag;
+}
+
+.sb-review-learn:hover {
+  background: #6ee7b7;
+}
+
+.sb-review-learn:disabled {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.2);
+  cursor: default;
+}
+
+.sb-review-skip {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.3);
+  border-radius: 7px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+  -webkit-app-region: no-drag;
 }

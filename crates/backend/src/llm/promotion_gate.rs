@@ -174,16 +174,19 @@ pub fn is_common_word(term: &str) -> bool {
         "humein", "yeh", "woh", "ye", "wo", "isko", "usko", "inko", "unko", "koi", "kisko",
         "kiske", "kiski", "jisko", "jiske", "jiski", "uska", "uski", "unka", "unki", "mera",
         "meri", "mere", "tera", "teri", "tere", "tumhara", "tumhari", "apna", "apni", "apne",
-        "khud", "sab", "sabko", "sabne", "sabse", // Verbs — common forms
+        "khud", "sab", "sabko", "sabne", "sabse",
+        // Verb stems — bare forms that Devanagari romanizes to (कर→kar, दे→de, etc.)
+        "kar", "de", "le", "ja", "aa", "ho", "lo", "do", "so", "ro", "pa",
+        // Verbs — common forms
         "hai", "hain", "tha", "thi", "the", "hoga", "hogi", "hoge", "karna", "karo", "karta",
         "karti", "karte", "karega", "karenge", "karegi", "dena", "dedo", "dedo", "deta", "deti",
         "dete", "dunga", "denge", "lena", "leta", "leti", "lete", "lenge", "lunga", "aana", "aata",
         "aati", "aate", "aayega", "aayenge", "jaana", "jaata", "jaati", "jaate", "jaayega",
         "jayenge", "raha", "rahi", "rahe", "rehna", "rehta", "rehti", "bola", "boli", "bole",
-        "bolo", "bolna", "bolte", "dekho", "dekh", "dekhna", "dekhta", "dekhti", "dekhte",
-        "dekhlena", "suno", "sunna", "sunlo", "sunta", "sunti", "batao", "batana", "batata",
-        "batati", "bata", "hona", "hota", "hoti", "hote", "wala", "wali", "wale",
-        // Question words
+        "bolo", "bolna", "bolte", "bol", "dekho", "dekh", "dekhna", "dekhta", "dekhti", "dekhte",
+        "dekhlena", "suno", "sunna", "sunlo", "sunta", "sunti", "sun", "batao", "batana", "batata",
+        "batati", "bata", "hona", "hota", "hoti", "hote", "wala", "wali", "wale", "chal", "mil",
+        "rakh", "ban", "baith", "uth", "khol", "rok", // Question words
         "kya", "kaise", "kab", "kahan", "kyun", "kaun", "kitna", "kitne", "kitni",
         // Connectors / particles
         "aur", "lekin", "par", "magar", "toh", "bhi", "hi", "na", "nahi", "nhi", "haan", "mat",
@@ -193,6 +196,10 @@ pub fn is_common_word(term: &str) -> bool {
         "abhi", "accha", "achha", "theek", "sahi", "galat", "pehle", "baad", "bahut", "thoda",
         "zyada", "kam", "bada", "badi", "chhota", "chhoti", "naya", "purana", "dono", "dusra",
         "dusri", "teesra", "yaar", "bhai", "zara", "please",
+        // Common nouns + time words (appear in nearly every conversation)
+        "din", "raat", "ghar", "log", "banda", "cheez", "jagah", "waqt", "baar", "baat", "kaam",
+        "aaj", "kal", "aajkal", "parso", "subah", "shaam", "dopahar", "hamesha", "kabhi", "tarah",
+        "saath", "andar", "bahar", "upar", "neeche", "peeche", "saamne",
     ];
     // Common English words that shouldn't be vocab
     const ENGLISH_COMMON: &[&str] = &[

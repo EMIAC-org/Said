@@ -118,7 +118,7 @@ fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
         );
         let _: Result<(), _> = ns_window.send_message(Sel::register("setCanHide:"), (false,));
         let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setIgnoresMouseEvents:"), (false,));
+            ns_window.send_message(Sel::register("setIgnoresMouseEvents:"), (true,));
         for (selector_name, value) in [
             ("setHidesOnDeactivate:", false),
             ("setFloatingPanel:", true),
@@ -956,7 +956,7 @@ fn create_status_bar(app: &tauri::AppHandle) {
         .visible_on_all_workspaces(true)
         .skip_taskbar(true)
         .focused(false)
-        .resizable(false)
+        .resizable(true)
         .shadow(false)
         .transparent(true)
         .visible(false)
@@ -968,6 +968,7 @@ fn create_status_bar(app: &tauri::AppHandle) {
                 Ok(url) => tracing::info!("[status-bar] resolved url={url}"),
                 Err(e) => tracing::warn!("[status-bar] could not read window url: {e}"),
             }
+            let _ = win.set_ignore_cursor_events(true);
             #[cfg(target_os = "macos")]
             schedule_status_bar_macos_tune(&win);
             sync_status_bar(app, "idle");
@@ -1244,6 +1245,29 @@ fn dismiss_status_bar(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("status-bar") {
         win.hide()
             .map_err(|e| format!("hide status bar failed: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_status_bar_interactive(app: tauri::AppHandle, interactive: bool) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("status-bar") {
+        let _ = win.set_ignore_cursor_events(!interactive);
+        #[cfg(target_os = "macos")]
+        {
+            use objc::Message;
+            use objc::runtime::{Object, Sel};
+            if let Ok(ns_window) = win.ns_window() {
+                if !ns_window.is_null() {
+                    unsafe {
+                        let ns_window = &*(ns_window as *mut Object);
+                        let _: Result<(), _> = ns_window
+                            .send_message(Sel::register("setIgnoresMouseEvents:"), (!interactive,));
+                    }
+                }
+            }
+        }
+        tracing::debug!("[status-bar] interactive={interactive}");
     }
     Ok(())
 }
@@ -3273,6 +3297,32 @@ async fn confirm_term(
 }
 
 #[tauri::command]
+async fn confirm_batch(
+    app: tauri::AppHandle,
+    backend: State<'_, BackendState>,
+    items: Vec<serde_json::Value>,
+    recording_id: Option<String>,
+) -> Result<usize, String> {
+    let ep = get_endpoint(&backend)?;
+    let pairs: Vec<(String, String)> = items
+        .iter()
+        .filter_map(|v| {
+            let orig = v.get("original")?.as_str()?.to_string();
+            let corr = v.get("corrected")?.as_str()?.to_string();
+            Some((orig, corr))
+        })
+        .collect();
+    let result = api::confirm_batch(&ep, &pairs, recording_id.as_deref()).await?;
+    let _ = app.emit("vocabulary-changed", ());
+    tracing::info!(
+        "[confirm-batch] user confirmed {} term(s): {:?}",
+        result.learned_count,
+        result.learned_terms,
+    );
+    Ok(result.learned_count)
+}
+
+#[tauri::command]
 async fn block_correction(
     app: tauri::AppHandle,
     backend: State<'_, BackendState>,
@@ -3845,11 +3895,22 @@ fn get_performance_snapshot(
 
 // ── Edit watcher ──────────────────────────────────────────────────────────────
 
-const EDIT_WATCH_IDLE_TIMEOUT: Duration = Duration::from_secs(12);
-const EDIT_WATCH_MAX_DURATION: Duration = Duration::from_secs(30);
+const EDIT_WATCH_IDLE_TIMEOUT: Duration = Duration::from_secs(6);
+const EDIT_WATCH_MAX_DURATION: Duration = Duration::from_secs(15);
 const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(50);
 const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Seconds of stable (unchanged) edit region before we fire classify.
+/// This is the KEY improvement: instead of waiting for full idle,
+/// we detect when the user's edit has stabilised even while they
+/// keep typing new text.
+const EDIT_STABLE_SETTLE_SECS: u64 = 3;
+
+/// Faster settle for single high-jargon word replacements.
+/// If the user replaced exactly one word and it has brand/acronym
+/// characteristics, fire classify after just 1.5 seconds of stability.
+const EDIT_QUICK_SETTLE_MS: u64 = 1500;
 
 async fn blocking_ax_option<T, F>(label: &'static str, f: F) -> Option<T>
 where
@@ -4033,6 +4094,8 @@ async fn watch_for_edit(
     let mut last_change_at = Instant::now();
     let mut current_interval = EDIT_WATCH_FAST_INTERVAL;
     let mut last_pid = initial_pid;
+    let mut edit_stable_since: Option<Instant> = None;
+    let mut last_edit_snapshot: Option<String> = None;
     // Capture-error metadata, hoisted so we can ship it to the backend's
     // CAPTURE_ERROR pre-filter alongside the edit text.
     let mut app_switched_during_capture: bool = false;
@@ -4134,9 +4197,27 @@ async fn watch_for_edit(
             if shares_word_overlap(&now_val, &polished) {
                 best_candidate = now_val.clone();
             }
+            last_edit_snapshot = Some(now_val.clone());
+            edit_stable_since = None; // edit is active, not stable yet
             last_val = now_val;
         } else if last_change_at.elapsed() > Duration::from_secs(2) {
             current_interval = EDIT_WATCH_SLOW_INTERVAL;
+            // Track stable-edit: field stopped changing after an edit was seen
+            if last_edit_snapshot.is_some() && edit_stable_since.is_none() {
+                edit_stable_since = Some(Instant::now());
+            }
+        }
+
+        // NEW: stable edit detection — fire early if edit region stopped changing
+        if let Some(stable_since) = edit_stable_since {
+            if stable_since.elapsed().as_secs() >= EDIT_STABLE_SETTLE_SECS {
+                tracing::info!(
+                    "[edit-watch] edit stabilised for {}s — firing classify (total {}ms)",
+                    EDIT_STABLE_SETTLE_SECS,
+                    started.elapsed().as_millis(),
+                );
+                break;
+            }
         }
 
         let done = idle_at.elapsed() > EDIT_WATCH_IDLE_TIMEOUT
@@ -4322,22 +4403,62 @@ async fn watch_for_edit(
                     );
                 }
 
-                // Surface queued (k-event sighting recorded but not yet promoted)
-                // so the user knows the system noticed their correction. Without
-                // this the silent k-event behavior looks broken — the classifier
-                // ran, found a real STT error, and "did nothing" from the user's
-                // POV. Soft toast only; no OS banner.
-                if let Some(term) = resp.queued_terms.first() {
-                    if !term.trim().is_empty() {
+                // Surface queued terms in the status bar pill so the user knows
+                // the system noticed and how many more edits are needed.
+                if let Some(qt) = resp.queued_terms.first() {
+                    if !qt.term.trim().is_empty() {
+                        let remaining = qt.k - qt.sighting_count;
+                        if let Some(w) = app.get_webview_window("status-bar") {
+                            let _ = w.show();
+                        }
                         let _ = app.emit(
-                            "vocab-toast",
+                            "vocab-queued",
                             serde_json::json!({
-                                "kind":   "queued",
-                                "term":   term,
-                                "source": "auto",
+                                "term": qt.term,
+                                "remaining": remaining,
+                                "sighting_count": qt.sighting_count,
+                                "k": qt.k,
                             }),
                         );
+                        tracing::info!(
+                            "[edit-watch] queued {:?} — {}/{} sightings, {} more to learn",
+                            qt.term,
+                            qt.sighting_count,
+                            qt.k,
+                            remaining,
+                        );
                     }
+                }
+
+                // Review candidates — show interactive picker
+                if !resp.review_candidates.is_empty() {
+                    if let Some(w) = app.get_webview_window("status-bar") {
+                        let _ = w.show();
+                    }
+                    let candidates: Vec<serde_json::Value> = resp
+                        .review_candidates
+                        .iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "original": c.original,
+                                "corrected": c.corrected,
+                                "term_type": c.term_type,
+                                "learnable": c.learnable,
+                                "tag": c.tag,
+                            })
+                        })
+                        .collect();
+                    let _ = app.emit(
+                        "vocab-review",
+                        serde_json::json!({
+                            "candidates": candidates,
+                            "recording_id": recording_id,
+                        }),
+                    );
+                    tracing::info!(
+                        "[edit-watch] review card: {} candidate(s)",
+                        resp.review_candidates.len(),
+                    );
                 }
 
                 // Ambiguous terms — show confirmation toast in status bar
@@ -4361,28 +4482,79 @@ async fn watch_for_edit(
                     );
                 }
 
-                // Negative corrections — show blocking toast
+                // Wrong corrections auto-fixed — show acknowledgement pill
                 for neg in &resp.negative_terms {
                     if let Some(w) = app.get_webview_window("status-bar") {
                         let _ = w.show();
                     }
                     let _ = app.emit(
-                        "vocab-negative",
+                        "vocab-wrong-fixed",
                         serde_json::json!({
                             "term": neg.term,
                             "wrong_replacement": neg.wrong_replacement,
                         }),
                     );
                     tracing::info!(
-                        "[edit-watch] wrong correction: {:?} → {:?} ({}x)",
-                        neg.term,
+                        "[edit-watch] wrong correction fixed: {:?} → {:?} — alias deleted, retraining",
                         neg.wrong_replacement,
-                        neg.correction_count,
+                        neg.term,
                     );
                 }
 
                 if resp.learned || resp.pending_id.is_some() {
                     let _ = app.emit("pending-edits-changed", ());
+                }
+
+                // Poll the backend for retrain lifecycle and emit real events.
+                if resp.learned {
+                    let app_retrain = app.clone();
+                    let ep_retrain = ep.clone();
+                    tokio::spawn(async move {
+                        let baseline_finished = api::get_retrain_status(&ep_retrain)
+                            .await
+                            .map(|s| s.finished_at)
+                            .unwrap_or(0);
+
+                        let mut started_emitted = false;
+                        for _ in 0..30 {
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            let Ok(status) = api::get_retrain_status(&ep_retrain).await else {
+                                continue;
+                            };
+
+                            if status.running && !started_emitted {
+                                started_emitted = true;
+                                if let Some(w) = app_retrain.get_webview_window("status-bar") {
+                                    let _ = w.show();
+                                }
+                                let _ = app_retrain.emit(
+                                    "retrain-status",
+                                    serde_json::json!({ "phase": "started" }),
+                                );
+                                tracing::info!("[retrain-poll] training started — notified UI");
+                            }
+
+                            if status.finished_at > baseline_finished {
+                                let dur = status.duration_ms as f64 / 1000.0;
+                                if let Some(w) = app_retrain.get_webview_window("status-bar") {
+                                    let _ = w.show();
+                                }
+                                let _ = app_retrain.emit(
+                                    "retrain-status",
+                                    serde_json::json!({
+                                        "phase": "done",
+                                        "duration_s": dur,
+                                        "success": status.success,
+                                    }),
+                                );
+                                tracing::info!(
+                                    "[retrain-poll] training finished in {dur:.1}s success={} — notified UI",
+                                    status.success,
+                                );
+                                break;
+                            }
+                        }
+                    });
                 }
 
                 // If vocabulary was updated, refresh the hot-path cache now so
@@ -5211,6 +5383,7 @@ fn main() {
             bootstrap,
             get_snapshot,
             dismiss_status_bar,
+            set_status_bar_interactive,
             get_backend_endpoint,
             get_preferences,
             get_voice_prompt,
@@ -5255,6 +5428,7 @@ fn main() {
             add_vocabulary_term,
             delete_vocabulary_term,
             confirm_term,
+            confirm_batch,
             block_correction,
             reset_all_vocabulary,
             star_vocabulary_term,

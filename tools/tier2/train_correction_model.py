@@ -67,6 +67,25 @@ COMMON_WORDS = {
     "ka",
     "ki",
     "ke",
+    # Hindi common words
+    "yeh", "woh", "ye", "wo", "toh", "nahi", "nhi", "kya", "abhi", "bas", "aur", "bhi",
+    "kuch", "sab", "haan", "accha", "achha", "bahut", "jab", "tab", "phir", "suno",
+    "dekho", "bolo", "chalo", "theek", "kaise", "kahan", "kaun", "kyun", "lekin",
+    "magar", "agar", "isliye", "sirf", "bilkul", "zaroor", "pehle", "baad", "upar",
+    "neeche", "andar", "bahar", "saamne", "peeche", "hota", "hoti", "hote", "karo",
+    "karta", "karti", "karte", "bola", "boli", "bole", "dekh", "dekhna", "sun",
+    "sunna", "bol", "bolna", "chal", "chalna", "rakh", "rakhna", "mil", "milna",
+    "ban", "baith", "uth", "khol", "rok", "raha", "rahi", "rahe", "rehna",
+    "wala", "wali", "wale", "dono", "dusra", "teesra", "yaar", "bhai",
+    "din", "raat", "ghar", "log", "banda", "cheez", "taraf", "jagah", "waqt",
+    "baar", "baat", "kaam", "tu", "tum", "aap", "hum", "mujhe", "tumhe",
+    "apna", "apni", "apne", "mera", "meri", "mere", "tera", "teri", "tere",
+    "uska", "uski", "unka", "unki", "isko", "usko", "sabko", "sabne",
+    "tha", "thi", "the", "hoga", "hogi", "karega", "karenge", "dena", "lena",
+    "jaana", "aana", "hona", "batao", "batana", "mat", "shayad",
+    "ko", "se", "pe", "par", "ne", "ho", "ja", "le", "de", "aa",
+    "kyunki", "warna", "zyada", "kam", "thoda", "bada", "badi", "chhota", "chhoti",
+    "naya", "purana", "sahi", "galat", "please", "zara",
 }
 
 DICTIONARY_WORDS: set[str] = set()
@@ -92,6 +111,21 @@ def load_dictionary() -> None:
         "nest", "angular", "corps", "capital", "course", "prayer", "house",
         "sent", "table", "tell", "next", "rest", "google",
     })
+    # Hindi common words — must also be in dictionary for hard negative mining
+    HINDI_COMMON = {
+        "yeh", "woh", "ye", "wo", "toh", "nahi", "nhi", "kya", "abhi", "bas", "aur", "bhi",
+        "kuch", "sab", "haan", "accha", "achha", "bahut", "jab", "tab", "phir", "dekho",
+        "bolo", "chalo", "theek", "kaise", "kahan", "kaun", "kyun", "lekin", "magar", "agar",
+        "hota", "hoti", "hote", "karo", "karta", "karti", "bola", "boli", "bole", "dekh",
+        "dekhna", "sun", "sunna", "bol", "bolna", "chal", "chalna", "rakh", "mil", "milna",
+        "ban", "baith", "uth", "khol", "rok", "raha", "rahi", "rahe", "rehna", "wala", "wali",
+        "wale", "dono", "dusra", "yaar", "bhai", "din", "raat", "ghar", "log", "banda",
+        "cheez", "jagah", "waqt", "baar", "baat", "kaam", "mujhe", "tumhe", "apna", "apni",
+        "mera", "meri", "uska", "uski", "unka", "sabko", "tha", "thi", "hoga", "karega",
+        "dena", "lena", "jaana", "aana", "hona", "batao", "mat", "shayad", "kyunki", "warna",
+        "zyada", "thoda", "bada", "chhota", "naya", "purana", "sahi", "galat", "zara",
+    }
+    DICTIONARY_WORDS.update(HINDI_COMMON)
 
 
 def is_dictionary_word(token: str) -> bool:
@@ -192,15 +226,17 @@ class TinyCorrectionModel(nn.Module):
     def __init__(self, vocab_size: int, feature_count: int) -> None:
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, 32, padding_idx=0)
-        self.mlp = nn.Sequential(
+        self.trunk = nn.Sequential(
             nn.Linear(32 * 4 + feature_count, 96),
             nn.ReLU(),
-            nn.Dropout(0.08),
+            nn.Dropout(0.30),
             nn.Linear(96, 32),
             nn.ReLU(),
-            nn.Linear(32, 1),
-            nn.Sigmoid(),
+            nn.Dropout(0.15),
         )
+        self.head = nn.Linear(32, 1)
+        self.skip = nn.Linear(feature_count, 1)
+        self.det_gate_idx = FEATURE_NAMES.index("deterministic_score")
 
     def _pool(self, ids: torch.Tensor) -> torch.Tensor:
         emb = self.embedding(ids)
@@ -220,7 +256,10 @@ class TinyCorrectionModel(nn.Module):
             [token, candidate, torch.abs(token - candidate), token * candidate, features],
             dim=1,
         )
-        return self.mlp(joined)
+        logit = self.head(self.trunk(joined)) + self.skip(features)
+        det_score = features[:, self.det_gate_idx : self.det_gate_idx + 1]
+        gate = torch.sigmoid(det_score * 10.0 - 5.0)
+        return torch.sigmoid(logit) * gate
 
 
 def normalize(text: str) -> str:
@@ -341,12 +380,24 @@ def features(token: str, candidate: VocabTerm, alias_count: int) -> list[float]:
     ]
 
 
+ASR_CONFUSIONS: dict[str, list[str]] = {
+    "b": ["p", "v"], "p": ["b", "f"], "d": ["t", "th"], "t": ["d", "th"],
+    "g": ["k", "gh"], "k": ["g", "c", "q"], "v": ["f", "b", "w"], "f": ["v", "ph"],
+    "s": ["z", "sh", "c"], "z": ["s", "j"], "sh": ["s", "ch"], "ch": ["sh", "j"],
+    "j": ["z", "g", "ch"], "th": ["t", "d"], "ph": ["f", "p"],
+    "c": ["k", "s"], "q": ["k"], "w": ["v"],
+    "n": ["m", "ng"], "m": ["n"],
+}
+
+
 def variants(text: str) -> Iterable[str]:
     base = normalize(text)
     if len(base) < 3:
         return []
     vowels = "aeiou"
     out = {base}
+
+    # Original generators
     for idx in range(len(base)):
         out.add(base[:idx] + base[idx + 1 :])
         if base[idx] in vowels:
@@ -354,11 +405,39 @@ def variants(text: str) -> Iterable[str]:
                 out.add(base[:idx] + vowel + base[idx + 1 :])
     for idx in range(len(base) - 1):
         out.add(base[:idx] + base[idx + 1] + base[idx] + base[idx + 2 :])
-    if base.endswith("c"):
-        out.add(base[:-1] + "h")
-    if base.endswith("s"):
-        out.add(base[:-1] + "z")
-    return [item for item in out if len(item) >= 3]
+
+    # ASR confusion substitutions (voiced↔unvoiced, aspirated, etc.)
+    for idx in range(len(base)):
+        ch = base[idx]
+        for replacement in ASR_CONFUSIONS.get(ch, []):
+            out.add(base[:idx] + replacement + base[idx + 1 :])
+        # Digraph confusions: check 2-char windows
+        if idx + 1 < len(base):
+            digraph = base[idx : idx + 2]
+            for replacement in ASR_CONFUSIONS.get(digraph, []):
+                out.add(base[:idx] + replacement + base[idx + 2 :])
+
+    # Gemination: double/undouble consonants
+    for idx in range(len(base)):
+        ch = base[idx]
+        if ch not in vowels:
+            out.add(base[:idx] + ch + ch + base[idx + 1 :])
+            if idx + 1 < len(base) and base[idx + 1] == ch:
+                out.add(base[:idx] + ch + base[idx + 2 :])
+
+    # Schwa insertion/deletion between consonant clusters
+    for idx in range(len(base) - 1):
+        if base[idx] not in vowels and base[idx + 1] not in vowels:
+            out.add(base[: idx + 1] + "a" + base[idx + 1 :])
+
+    # Trailing vowel add/drop
+    if base[-1] in vowels:
+        out.add(base[:-1])
+    else:
+        for v in "aei":
+            out.add(base + v)
+
+    return [item for item in out if len(item) >= 3 and item != base]
 
 
 def load_data(
@@ -437,6 +516,7 @@ def build_examples(
     policy: list[PolicyWeight],
     *,
     cache_dir: Path | None = None,
+    micro: bool = False,
 ) -> tuple[list[Example], dict[str, int]]:
     protected = [term for term in vocab if is_protected(term) and len(term.term.split()) == 1]
     by_norm = {normalize(term.term): term for term in protected}
@@ -449,9 +529,25 @@ def build_examples(
             continue
         token = normalize(rule.transcript_form)
         correct = normalize(rule.correct_form)
-        if len(token) < 3 or token in COMMON_WORDS or correct not in by_norm:
+        if len(token) < 3 or correct not in by_norm:
+            continue
+        if is_dictionary_word(token):
+            # Dictionary words become strong negatives — teaches model not to replace them
+            candidate = by_norm[correct]
+            negatives.append(Example(token, candidate, 0.0))
             continue
         candidate = by_norm[correct]
+        # G3: Cross-term collision — skip if alias is closer to a different vocab term
+        collision = False
+        token_sim = edit_similarity(token, correct)
+        for other_norm, other_term in by_norm.items():
+            if other_norm == correct:
+                continue
+            if edit_similarity(token, other_norm) > token_sim:
+                collision = True
+                break
+        if collision:
+            continue
         alias_count[correct] = alias_count.get(correct, 0) + 1
         for variant in variants(token):
             positives.append(Example(variant, candidate, 1.0))
@@ -459,9 +555,25 @@ def build_examples(
     for weight in policy:
         token = normalize(weight.token_norm)
         correct = normalize(weight.correct_form_norm)
-        if len(token) < 3 or token in COMMON_WORDS or correct not in by_norm:
+        if len(token) < 3 or correct not in by_norm:
+            continue
+        if is_dictionary_word(token):
+            # Dictionary words become strong negatives — teaches model not to replace them
+            candidate = by_norm[correct]
+            negatives.append(Example(token, candidate, 0.0))
             continue
         candidate = by_norm[correct]
+        # G3: Cross-term collision — skip if alias is closer to a different vocab term
+        collision = False
+        token_sim = edit_similarity(token, correct)
+        for other_norm, other_term in by_norm.items():
+            if other_norm == correct:
+                continue
+            if edit_similarity(token, other_norm) > token_sim:
+                collision = True
+                break
+        if collision:
+            continue
         net = weight.positive_count - int(weight.negative_count * 1.5)
         if net > 0 and weight.learned_weight > 0:
             alias_count[correct] = alias_count.get(correct, 0) + max(1, weight.positive_count)
@@ -471,20 +583,34 @@ def build_examples(
         elif weight.negative_count > 0:
             negatives.append(Example(token, candidate, 0.0))
 
-    # Canonical near-spelling positives let the model recover "mecobs" -> "Macobs"
-    # even before an exact observed alias exists.
+    # Canonical near-spelling positives — expanded from 12 to 30 variants per term
+    # with ASR confusion patterns for realistic STT distortions.
     for term in protected:
-        for variant in list(variants(term.term))[:12]:
-            if normalize(variant) != normalize(term.term):
-                positives.append(Example(variant, term, 1.0))
+        term_norm = normalize(term.term)
+        for variant in list(variants(term.term))[:30]:
+            var_norm = normalize(variant)
+            if var_norm == term_norm:
+                continue
+            if is_dictionary_word(variant):
+                negatives.append(Example(variant, term, 0.0))
+                continue
+            sim = edit_similarity(var_norm, term_norm)
+            if sim > 0.90 or sim < 0.30:
+                continue
+            positives.append(Example(variant, term, 1.0))
 
+    # Common words → negatives for every candidate
     for word in COMMON_WORDS:
         for candidate in random.sample(protected, min(len(protected), 4)):
             negatives.append(Example(word, candidate, 0.0))
+
+    # Cross-candidate negatives: each positive paired with 5 wrong candidates
     for positive in positives:
         alternatives = [term for term in protected if normalize(term.term) != normalize(positive.candidate.term)]
-        for candidate in random.sample(alternatives, min(len(alternatives), 3)):
+        for candidate in random.sample(alternatives, min(len(alternatives), 5)):
             negatives.append(Example(positive.token, candidate, 0.0))
+
+    # Cross-term confusion negatives
     for lhs in protected:
         for rhs in protected:
             if lhs is rhs:
@@ -492,9 +618,51 @@ def build_examples(
             if edit_similarity(normalize(lhs.term), normalize(rhs.term)) >= 0.55:
                 negatives.append(Example(lhs.term, rhs, 0.0))
 
+    # Length-mismatch negatives: short random tokens paired with long candidates.
+    # Teaches the model that "ipo" (3 chars) should never match "Macobs" (6 chars).
+    short_tokens = ["ipo", "api", "sdk", "url", "npm", "git", "dev", "ops",
+                    "run", "pod", "log", "tab", "tag", "bug", "fix", "hub"]
+    for tok in short_tokens:
+        for candidate in protected:
+            if len(normalize(candidate.term)) >= 5:
+                negatives.append(Example(tok, candidate, 0.0))
+
+    # Random substring negatives: take 3-4 char slices of candidate terms
+    for term in protected:
+        term_norm = normalize(term.term)
+        if len(term_norm) < 5:
+            continue
+        for _ in range(5):
+            start = random.randint(0, len(term_norm) - 3)
+            length = random.randint(3, min(4, len(term_norm) - start))
+            fragment = term_norm[start : start + length]
+            if not is_dictionary_word(fragment):
+                for other in random.sample(protected, min(len(protected), 3)):
+                    if normalize(other.term) != term_norm:
+                        negatives.append(Example(fragment, other, 0.0))
+
     neg_cache = cache_dir / "neg_cache.json" if cache_dir else None
-    dictionary_negatives = mine_hard_negatives_from_dictionary(protected, neg_cache)
-    negatives.extend(dictionary_negatives)
+    skip_neg_regen = False
+    if micro and neg_cache and neg_cache.exists():
+        cache_age = time.time() - neg_cache.stat().st_mtime
+        if cache_age < 3600:  # 1 hour — reuse cached negatives in micro mode
+            skip_neg_regen = True
+    if skip_neg_regen:
+        # Micro mode: load cached negatives without regenerating from dictionary
+        by_norm = {normalize(t.term): t for t in protected}
+        try:
+            cached = json.loads(neg_cache.read_text())
+            for pair in cached.get("pairs", []):
+                cand = by_norm.get(pair["term"])
+                if cand:
+                    negatives.append(Example(pair["word"], cand, 0.0))
+        except Exception:
+            # Cache unreadable — fall back to full generation
+            dictionary_negatives = mine_hard_negatives_from_dictionary(protected, neg_cache)
+            negatives.extend(dictionary_negatives)
+    else:
+        dictionary_negatives = mine_hard_negatives_from_dictionary(protected, neg_cache)
+        negatives.extend(dictionary_negatives)
 
     examples = positives + negatives
     random.shuffle(examples)
@@ -617,42 +785,130 @@ def write_metadata(
     conn.commit()
 
 
-def train(args: argparse.Namespace) -> None:
-    random.seed(SEED)
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
+def train_xgboost(
+    examples: list[Example],
+    alias_count: dict[str, int],
+    artifact_path: Path,
+) -> dict[str, float]:
+    """Train an XGBoost classifier on the 14 hand-crafted features."""
+    import xgboost as xgb
+    from onnxmltools import convert_xgboost
+    from onnxmltools.convert.common.data_types import FloatTensorType
 
-    db_path = Path(args.db).expanduser().resolve()
-    conn = sqlite3.connect(db_path)
-    vocab, rules, policy = load_data(conn, args.user_id)
+    X = np.array([
+        features(ex.token, ex.candidate, alias_count.get(normalize(ex.candidate.term), 0))
+        for ex in examples
+    ], dtype=np.float32)
+    y = np.array([ex.label for ex in examples], dtype=np.float32)
 
-    out_dir = Path(args.out_dir).expanduser().resolve() if args.out_dir else db_path.parent / "tier2" / args.user_id
-    out_dir.mkdir(parents=True, exist_ok=True)
+    pos_count = float(y.sum())
+    neg_count = float(len(y) - pos_count)
+    scale = neg_count / max(pos_count, 1.0)
 
-    examples, alias_count = build_examples(vocab, rules, policy, cache_dir=out_dir)
-    if len(examples) < 20 or not any(example.label == 1.0 for example in examples):
-        raise SystemExit("not enough Tier 2 examples; add more approved local corrections first")
-    artifact_path = out_dir / "correction_model.onnx"
-    vocab_index_path = out_dir / "vocab_index.json"
-    metadata_path = out_dir / "model_metadata.json"
+    model = xgb.XGBClassifier(
+        n_estimators=200,
+        max_depth=4,
+        learning_rate=0.1,
+        min_child_weight=5,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        scale_pos_weight=scale,
+        eval_metric="logloss",
+        random_state=SEED,
+        use_label_encoder=False,
+    )
+    model.fit(X, y, verbose=False)
 
+    probs = model.predict_proba(X)[:, 1]
+    pred_labels = (probs >= 0.5).astype(float)
+    accuracy = float((pred_labels == y).mean())
+    avg_positive = float(probs[y == 1].mean()) if pos_count > 0 else 0.0
+    avg_negative = float(probs[y == 0].mean()) if neg_count > 0 else 0.0
+
+    initial_type = [("features", FloatTensorType([None, len(FEATURE_NAMES)]))]
+    onnx_model = convert_xgboost(model, initial_types=initial_type, target_opset=15)
+    with open(artifact_path, "wb") as f:
+        f.write(onnx_model.SerializeToString())
+
+    print(f"  XGBoost: acc={accuracy:.4f} avg_pos={avg_positive:.3f} avg_neg={avg_negative:.3f}")
+    return {
+        "train_accuracy": accuracy,
+        "avg_positive_score": avg_positive,
+        "avg_negative_score": avg_negative,
+    }
+
+
+def focal_bce(pred: torch.Tensor, target: torch.Tensor, gamma: float = 2.0, alpha: float = 0.25) -> torch.Tensor:
+    bce = torch.nn.functional.binary_cross_entropy(pred, target, reduction="none")
+    pt = target * pred + (1 - target) * (1 - pred)
+    return (alpha * (1 - pt) ** gamma * bce).mean()
+
+
+def train_mlp(
+    examples: list[Example],
+    alias_count: dict[str, int],
+    artifact_path: Path,
+    epochs: int,
+    batch_size: int,
+    lr: float,
+) -> tuple[dict[str, int], dict[str, float]]:
+    """Train the MLP with focal loss, label smoothing, deterministic gate, and early stopping."""
     char_to_id = build_char_vocab(examples)
     token_ids, candidate_ids, feature_rows, labels = tensorize(examples, char_to_id, alias_count)
-    dataset = TensorDataset(token_ids, candidate_ids, feature_rows, labels)
-    loader = DataLoader(dataset, batch_size=min(args.batch_size, len(dataset)), shuffle=True)
 
-    epochs = 40 if args.incremental else args.epochs
+    # 80/20 train/val split for early stopping
+    n = len(examples)
+    indices = list(range(n))
+    random.shuffle(indices)
+    val_size = max(int(n * 0.2), 1)
+    val_idx = indices[:val_size]
+    train_idx = indices[val_size:]
+
+    train_dataset = TensorDataset(
+        token_ids[train_idx], candidate_ids[train_idx],
+        feature_rows[train_idx], labels[train_idx],
+    )
+    val_tok, val_cand = token_ids[val_idx], candidate_ids[val_idx]
+    val_feat, val_lbl = feature_rows[val_idx], labels[val_idx]
+    loader = DataLoader(train_dataset, batch_size=min(batch_size, len(train_dataset)), shuffle=True)
+
     model = TinyCorrectionModel(len(char_to_id), len(FEATURE_NAMES))
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
-    loss_fn = nn.BCELoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+
+    best_val_loss = float("inf")
+    patience = 0
+    best_state = None
+
     model.train()
-    for _ in range(epochs):
+    for epoch in range(epochs):
         for batch_token, batch_candidate, batch_features, batch_labels in loader:
             optimizer.zero_grad()
             pred = model(batch_token, batch_candidate, batch_features)
-            loss = loss_fn(pred, batch_labels)
+            smoothed = batch_labels * 0.9 + 0.05
+            loss = focal_bce(pred, smoothed)
             loss.backward()
             optimizer.step()
+
+        # Validation check for early stopping
+        model.eval()
+        with torch.no_grad():
+            val_pred = model(val_tok, val_cand, val_feat)
+            val_loss = float(focal_bce(val_pred, val_lbl * 0.9 + 0.05).item())
+        model.train()
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience = 0
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+        else:
+            patience += 1
+
+        if patience >= 10 and epoch >= 20:
+            print(f"  Early stop at epoch {epoch + 1} (val_loss={val_loss:.4f}, best={best_val_loss:.4f})")
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     model.eval()
     with torch.no_grad():
@@ -661,6 +917,7 @@ def train(args: argparse.Namespace) -> None:
         accuracy = float((pred_labels == labels).float().mean().item())
         avg_positive = float(predictions[labels.squeeze(1) == 1].mean().item())
         avg_negative = float(predictions[labels.squeeze(1) == 0].mean().item())
+        max_negative = float(predictions[labels.squeeze(1) == 0].max().item())
 
     dummy_token = torch.zeros((1, MAX_LEN), dtype=torch.long)
     dummy_candidate = torch.zeros((1, MAX_LEN), dtype=torch.long)
@@ -679,12 +936,52 @@ def train(args: argparse.Namespace) -> None:
         },
         opset_version=17,
     )
+    metrics = {
+        "train_accuracy": accuracy,
+        "avg_positive_score": avg_positive,
+        "avg_negative_score": avg_negative,
+        "max_negative_score": max_negative,
+    }
+    print(f"  MLP: acc={accuracy:.4f} avg_pos={avg_positive:.3f} avg_neg={avg_negative:.3f}")
+    return char_to_id, metrics
+
+
+def train(args: argparse.Namespace) -> None:
+    random.seed(SEED)
+    np.random.seed(SEED)
+
+    db_path = Path(args.db).expanduser().resolve()
+    conn = sqlite3.connect(db_path)
+    vocab, rules, policy = load_data(conn, args.user_id)
+
+    out_dir = Path(args.out_dir).expanduser().resolve() if args.out_dir else db_path.parent / "tier2" / args.user_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    examples, alias_count = build_examples(vocab, rules, policy, cache_dir=out_dir, micro=args.micro)
+    if len(examples) < 20 or not any(example.label == 1.0 for example in examples):
+        raise SystemExit("not enough Tier 2 examples; add more approved local corrections first")
+    artifact_path = out_dir / "correction_model.onnx"
+    vocab_index_path = out_dir / "vocab_index.json"
+    metadata_path = out_dir / "model_metadata.json"
+
+    use_xgboost = args.xgboost
+    mode = "xgboost" if use_xgboost else "mlp"
+    pos = sum(1 for e in examples if e.label > 0.5)
+    neg = len(examples) - pos
+    print(f"Training: {mode} — {len(examples)} examples ({pos} pos / {neg} neg)")
+
+    char_to_id: dict[str, int] = {}
+    if use_xgboost:
+        metrics = train_xgboost(examples, alias_count, artifact_path)
+    else:
+        torch.manual_seed(SEED)
+        epochs = 15 if args.micro else (40 if args.incremental else args.epochs)
+        char_to_id, metrics = train_mlp(examples, alias_count, artifact_path, epochs, args.batch_size, args.lr)
 
     protected_vocab = [term for term in vocab if is_protected(term) and len(term.term.split()) == 1]
-    vocab_index = {
-        "version": 1,
-        "max_len": MAX_LEN,
-        "char_to_id": char_to_id,
+    vocab_index: dict = {
+        "version": 2,
+        "model_type": mode,
         "feature_names": FEATURE_NAMES,
         "candidates": [
             {
@@ -698,18 +995,17 @@ def train(args: argparse.Namespace) -> None:
             for term in protected_vocab
         ],
     }
+    if not use_xgboost:
+        vocab_index["max_len"] = MAX_LEN
+        vocab_index["char_to_id"] = char_to_id
+
     vocab_index_path.write_text(json.dumps(vocab_index, indent=2, sort_keys=True), encoding="utf-8")
 
     trained_at = int(time.time() * 1000)
     data_fingerprint = fingerprint(vocab, rules, policy)
-    metrics = {
-        "train_accuracy": accuracy,
-        "avg_positive_score": avg_positive,
-        "avg_negative_score": avg_negative,
-        "example_count": float(len(examples)),
-        "positive_count": float(sum(1 for example in examples if example.label == 1.0)),
-        "negative_count": float(sum(1 for example in examples if example.label == 0.0)),
-    }
+    metrics["example_count"] = float(len(examples))
+    metrics["positive_count"] = float(pos)
+    metrics["negative_count"] = float(neg)
     metadata = {
         "user_id": args.user_id,
         "artifact_path": str(artifact_path),
@@ -749,6 +1045,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=2e-3)
     parser.add_argument("--no-db-metadata", action="store_true", help="Do not upsert tier2_model_metadata")
     parser.add_argument("--incremental", action="store_true", help="Fast retrain: 80 epochs, uses cached negatives")
+    parser.add_argument("--micro", action="store_true",
+                        help="Ultra-fast retrain for single-term additions (15 epochs)")
+    parser.add_argument("--xgboost", action="store_true",
+                        help="Use XGBoost instead of MLP neural model (default: MLP)")
     return parser.parse_args()
 
 

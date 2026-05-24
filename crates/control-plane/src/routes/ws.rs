@@ -124,10 +124,10 @@ pub async fn handler(
             .flatten();
 
             // All chunks for this meeting, newest sessions last.
-            // Guest speaker names: strip the trailing -{uuid32} suffix from said.guest emails.
+            // Guest speaker names: strip the trailing -{uuid32} suffix from app-owned emails.
             let chunks: Vec<(String, String, String, i64, i32)> = sqlx::query_as(
                 "SELECT tc.speaker_id::text,
-                        CASE WHEN a.email LIKE '%@said.guest'
+                        CASE WHEN a.email LIKE '%@airnote.guest' OR a.email LIKE '%@said.guest'
                              THEN regexp_replace(split_part(a.email, '@', 1), '-[0-9a-f]{32}$', '')
                              ELSE COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1))
                         END,

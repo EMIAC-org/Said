@@ -213,6 +213,7 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/v1/text/refine-last", post(routes::text::refine_last))
         .route("/v1/edit-feedback", post(routes::feedback::submit))
         .route("/v1/classify-edit", post(routes::classify::classify))
+        .route("/v1/retrain-status", get(routes::classify::retrain_status))
         .route("/v1/pending-edits", post(routes::pending_edits::create))
         .route("/v1/pending-edits", get(routes::pending_edits::list))
         .route(
@@ -299,6 +300,7 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         // Confirm / block term corrections
         .route("/v1/confirm-term", post(routes::confirm::confirm_term))
+        .route("/v1/confirm-batch", post(routes::confirm::confirm_batch))
         .route(
             "/v1/block-correction",
             post(routes::confirm::block_correction),

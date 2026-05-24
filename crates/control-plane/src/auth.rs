@@ -124,7 +124,7 @@ pub async fn resolve_ws_token(token_str: &str, state: &AppState) -> Option<(Uuid
     resolve_token(token_str, state).await
 }
 
-/// Resolve a WebSocket token that may be either a normal Said session/JWT or a
+/// Resolve a WebSocket token that may be either a normal AirNote session/JWT or a
 /// guest JWT issued by `/join/:token/auth`.
 ///
 /// Returns `(account_id, display_name, meeting_id)`. `meeting_id` is `None`

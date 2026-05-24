@@ -232,7 +232,7 @@ export function MeetingDetailPage() {
                 </div>
                 <div className="flex-1">
                   <div className="text-[12px] font-semibold">Guest Browser Link</div>
-                  <div className="text-[10px] text-fg-4">Share with guests who do not have Said installed</div>
+                  <div className="text-[10px] text-fg-4">Share with guests who do not have AirNote installed</div>
                 </div>
               </div>
               {!guestLink ? (

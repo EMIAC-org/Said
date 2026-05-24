@@ -38,6 +38,7 @@ use crate::{
 const MIN_TOKEN_LEN: usize = 3;
 const SCORE_THRESHOLD: f64 = 0.86;
 const MARGIN_THRESHOLD: f64 = 0.18;
+const DETERMINISTIC_FLOOR: f64 = 0.68;
 const TRACE_REJECTED_SCORE_FLOOR: f64 = 0.74;
 const MAX_REPLACEMENTS_PER_RECORDING: usize = 3;
 const DEFAULT_MAX_LEN: usize = 32;
@@ -219,8 +220,8 @@ impl<'a> CorrectionEngine<'a> {
             .collect();
         result = combine_results(result, cluster_fuzzy);
 
-        let shadow = self.fuzzy_shadow_only_skipping(&result.text, &corrected_outputs);
-        for t in &shadow.traces {
+        let fuzzy = self.fuzzy_scoring_pass(&result.text, &corrected_outputs);
+        for t in &fuzzy.traces {
             let label = if t.applied { "APPLY" } else { "shadow" };
             let scorer = match t.kind {
                 MatchKind::Tier2Onnx => "onnx",
@@ -240,7 +241,7 @@ impl<'a> CorrectionEngine<'a> {
                 t.margin,
             );
         }
-        result.traces.extend(shadow.traces);
+        result = combine_results(result, fuzzy);
         if !result.matches.is_empty() {
             info!(
                 "[tier2] final: {} correction(s) applied, output: {:?}",
@@ -278,8 +279,8 @@ impl<'a> CorrectionEngine<'a> {
             )
             .collect();
         result = combine_results(result, cluster_fuzzy);
-        let shadow = self.fuzzy_shadow_only_skipping(&result.text, &corrected);
-        result.traces.extend(shadow.traces);
+        let fuzzy = self.fuzzy_scoring_pass(&result.text, &corrected);
+        result = combine_results(result, fuzzy);
         result
     }
 
@@ -296,7 +297,7 @@ impl<'a> CorrectionEngine<'a> {
         )
     }
 
-    fn fuzzy_shadow_only_skipping(
+    fn fuzzy_scoring_pass(
         &self,
         transcript: &str,
         protected_tokens: &HashSet<String>,
@@ -335,7 +336,7 @@ impl<'a> CorrectionEngine<'a> {
                 Some(&model),
                 protected_tokens,
                 &self.policy_weights,
-                false,
+                true,
             ) {
                 Ok(result) => result,
                 Err(err) => {
@@ -346,7 +347,7 @@ impl<'a> CorrectionEngine<'a> {
                         None,
                         protected_tokens,
                         &self.policy_weights,
-                        false,
+                        true,
                     )
                     .unwrap_or_else(|_| ApplyResult {
                         text: transcript.to_string(),
@@ -362,7 +363,7 @@ impl<'a> CorrectionEngine<'a> {
                 None,
                 protected_tokens,
                 &self.policy_weights,
-                false,
+                true,
             )
             .unwrap_or_else(|_| ApplyResult {
                 text: transcript.to_string(),
@@ -608,7 +609,11 @@ fn apply_edit_policy(
 
             let best_rule = active_rules
                 .iter()
-                .filter(|r| r.variant_norm == merged_norm)
+                .filter(|r| {
+                    r.variant_norm == merged_norm
+                        || (r.variant_norm.len() >= 6
+                            && edit_similarity(&r.variant_norm, &merged_norm) >= 0.90)
+                })
                 .max_by_key(|r| r.positive_count - (r.negative_count * 2));
             let Some(rule) = best_rule else {
                 continue;
@@ -683,7 +688,11 @@ fn apply_edit_policy(
                     .collect();
                 let best_rule = active_rules
                     .iter()
-                    .filter(|r| r.variant_norm == merged_norm)
+                    .filter(|r| {
+                        r.variant_norm == merged_norm
+                            || (r.variant_norm.len() >= 6
+                                && edit_similarity(&r.variant_norm, &merged_norm) >= 0.90)
+                    })
                     .max_by_key(|r| r.positive_count - (r.negative_count * 2));
                 if let Some(rule) = best_rule {
                     let (lead, _) = split_punct(chunks[start]);
@@ -1140,7 +1149,14 @@ fn choose_candidate(
         }
         let deterministic_score = deterministic_score(&token_norm, candidate);
         let onnx_score = if let Some(model) = onnx_model {
-            Some(model.score(&token_norm, candidate, deterministic_score)?)
+            let raw = model.score(&token_norm, candidate, deterministic_score)?;
+            let edit_sim = edit_similarity(&token_norm, &candidate.term_lower);
+            let phon_sim = phonetics::similarity(&token_norm, &candidate.term_lower);
+            if raw > 0.8 && (edit_sim < 0.45 || phon_sim < 0.35) {
+                Some(0.0)
+            } else {
+                Some(raw)
+            }
         } else {
             None
         };
@@ -1185,7 +1201,9 @@ fn choose_candidate(
         best,
         second,
         margin,
-        applied: margin >= MARGIN_THRESHOLD && scored[0].score >= SCORE_THRESHOLD,
+        applied: margin >= MARGIN_THRESHOLD
+            && scored[0].score >= SCORE_THRESHOLD
+            && scored[0].deterministic_score >= DETERMINISTIC_FLOOR,
     }))
 }
 
@@ -1283,7 +1301,7 @@ fn is_suspicious_token(core: &str) -> bool {
     if norm.chars().count() < MIN_TOKEN_LEN {
         return false;
     }
-    if promotion_gate::is_common_word(&norm) {
+    if is_in_dictionary(&norm) {
         return false;
     }
     if norm.chars().all(|c| c.is_ascii_digit()) {
@@ -1295,7 +1313,35 @@ fn is_suspicious_token(core: &str) -> bool {
 
 fn normalize_core(text: &str) -> String {
     let core = word_core(text);
-    core.to_ascii_lowercase()
+    if crate::llm::script::contains_devanagari(core) {
+        let romanized = crate::llm::script::romanize_devanagari(core);
+        collapse_long_vowels(&romanized.to_ascii_lowercase())
+    } else {
+        core.to_ascii_lowercase()
+    }
+}
+
+/// Collapse doubled vowels from Devanagari romanization into Hinglish short
+/// forms so "kaa" matches "ka", "kee" matches "ki", "koo" matches "ku".
+fn collapse_long_vowels(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        if i + 1 < bytes.len() && bytes[i + 1] == bytes[i] && b"aeiou".contains(&bytes[i]) {
+            match ch {
+                'e' => out.push('i'),
+                'o' => out.push('u'),
+                _ => out.push(ch),
+            }
+            i += 2;
+        } else {
+            out.push(ch);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn first_char(text: &str) -> Option<char> {
@@ -1427,6 +1473,16 @@ struct VocabIndex {
     char_to_id: HashMap<String, i64>,
     #[serde(default = "default_feature_names")]
     feature_names: Vec<String>,
+    #[serde(default)]
+    model_type: Option<String>,
+}
+
+impl VocabIndex {
+    fn is_tree_model(&self) -> bool {
+        self.model_type
+            .as_deref()
+            .is_some_and(|t| t == "xgboost" || t == "tree")
+    }
 }
 
 static ONNX_CACHE: Lazy<Mutex<Option<OnnxCacheEntry>>> = Lazy::new(|| Mutex::new(None));
@@ -1446,6 +1502,16 @@ static DICTIONARY: Lazy<HashSet<String>> = Lazy::new(|| {
         "prism", "meaning", "react", "swift", "rust", "dart", "flask", "spring", "nest", "corps",
         "main", "time", "return", "course", "prayer", "house", "table", "next", "rest", "google",
         "accounts",
+    ] {
+        words.insert(w.to_string());
+    }
+    // Hindi common words — base forms that promotion_gate may miss
+    for w in &[
+        "kar", "de", "le", "ja", "aa", "ho", "lo", "do", "so", "ro", "pa", "bol", "sun", "chal",
+        "mil", "rakh", "ban", "baith", "uth", "khol", "rok", "din", "raat", "ghar", "log", "banda",
+        "cheez", "jagah", "waqt", "baar", "baat", "kaam", "aaj", "kal", "aajkal", "ajkal", "parso",
+        "subah", "shaam", "dopahar", "hamesha", "kabhi", "tarah", "saath", "andar", "bahar",
+        "upar", "neeche", "peeche", "saamne",
     ] {
         words.insert(w.to_string());
     }
@@ -1553,6 +1619,50 @@ fn mtime_ms(path: &Path) -> Result<u128, String> {
 
 impl OnnxModel {
     fn score(
+        &self,
+        token_norm: &str,
+        candidate: &Candidate,
+        deterministic_score: f64,
+    ) -> Result<f64, String> {
+        if self.vocab_index.is_tree_model() {
+            return self.score_tree(token_norm, candidate, deterministic_score);
+        }
+        self.score_mlp(token_norm, candidate, deterministic_score)
+    }
+
+    fn score_tree(
+        &self,
+        token_norm: &str,
+        candidate: &Candidate,
+        deterministic_score: f64,
+    ) -> Result<f64, String> {
+        let features = self.features(token_norm, candidate, deterministic_score);
+        let feature_tensor =
+            ort::value::Tensor::from_array(([1usize, features.len()], features.into_boxed_slice()))
+                .map_err(|e| format!("feature tensor failed: {e}"))?;
+
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| "onnx session lock poisoned".to_string())?;
+        let outputs = session
+            .run(ort::inputs! {
+                "features" => feature_tensor,
+            })
+            .map_err(|e| format!("onnx inference failed: {e}"))?;
+        let output = outputs
+            .get("probabilities")
+            .ok_or_else(|| "onnx output 'probabilities' missing".to_string())?;
+        let (_, values) = output
+            .try_extract_tensor::<f32>()
+            .map_err(|e| format!("onnx output extract failed: {e}"))?;
+        values
+            .get(1)
+            .map(|v| (*v as f64).clamp(0.0, 1.0))
+            .ok_or_else(|| "onnx probabilities empty".to_string())
+    }
+
+    fn score_mlp(
         &self,
         token_norm: &str,
         candidate: &Candidate,
@@ -1744,13 +1854,16 @@ mod tests {
         let vocab = vec![vocab("EMIAC", "acronym", "auto")];
         let result = CorrectionEngine::new(&rules, &vocab, None).correct("meah mein kaam hai");
 
-        assert_eq!(result.text, "meah mein kaam hai");
-        assert!(result.matches.is_empty());
+        // With ONNX activation, the fuzzy scoring pass now applies corrections.
+        // "meah" scores ~0.96 against alias "meac" for EMIAC (acronym boost).
+        assert_eq!(result.text, "EMIAC mein kaam hai");
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].correct_form, "EMIAC");
         assert!(
             result
                 .traces
                 .iter()
-                .any(|trace| trace.kind == MatchKind::Tier2Deterministic && !trace.applied)
+                .any(|trace| trace.kind == MatchKind::Tier2Deterministic && trace.applied)
         );
     }
 
@@ -1760,14 +1873,11 @@ mod tests {
         let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
         let result = CorrectionEngine::new(&rules, &vocab, None).correct("mecobs ka IPO hai");
 
-        assert_eq!(result.text, "mecobs ka IPO hai");
-        assert!(result.matches.is_empty());
-        assert!(
-            result
-                .traces
-                .iter()
-                .any(|trace| trace.kind == MatchKind::Tier2Deterministic && !trace.applied)
-        );
+        // With ONNX activation, close vocab terms are now applied when
+        // score and margin thresholds are met.
+        assert_eq!(result.text, "Macobs ka IPO hai");
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].correct_form, "Macobs");
     }
 
     #[test]
@@ -1838,30 +1948,45 @@ mod tests {
         let result =
             CorrectionEngine::new(&rules, &vocab, Some(metadata)).correct("meah mein kaam hai");
 
-        assert_eq!(result.text, "meah mein kaam hai");
-        assert!(result.matches.is_empty());
+        // ONNX is missing, falls back to deterministic which now applies.
+        assert_eq!(result.text, "EMIAC mein kaam hai");
+        assert_eq!(result.matches.len(), 1);
         assert!(
             result
                 .traces
                 .iter()
-                .any(|trace| trace.kind == MatchKind::Tier2Deterministic && !trace.applied)
+                .any(|trace| trace.kind == MatchKind::Tier2Deterministic && trace.applied)
         );
     }
 
     #[test]
-    fn sqlite_policy_reward_is_shadow_only() {
+    fn sqlite_policy_reward_now_applies() {
         let rules = vec![];
         let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
+        // "macops" is close enough to "macobs" (det >= 0.68) for the floor gate
+        let policy = policy_weight("macops", "Macobs", 1, 0, 1.0);
+        let result = CorrectionEngine::new_with_policy(&rules, &vocab, None, policy, vec![])
+            .correct("macops ka IPO hai");
+
+        assert_eq!(result.text, "Macobs ka IPO hai");
+        assert_eq!(result.matches.len(), 1);
+        assert!(!result.traces.is_empty());
+        assert!(result.traces[0].applied);
+    }
+
+    #[test]
+    fn deterministic_floor_blocks_dissimilar_policy_boost() {
+        let rules = vec![];
+        let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
+        // "bimmicop" is too dissimilar to "macobs" — policy can't override
         let policy = policy_weight("bimmicop", "Macobs", 1, 0, 1.0);
         let result = CorrectionEngine::new_with_policy(&rules, &vocab, None, policy, vec![])
             .correct("bimmicop ka IPO hai");
 
         assert_eq!(result.text, "bimmicop ka IPO hai");
         assert!(result.matches.is_empty());
-        assert_eq!(result.traces.len(), 1);
-        assert_eq!(result.traces[0].kind, MatchKind::Tier2Policy);
+        assert!(!result.traces.is_empty());
         assert!(!result.traces[0].applied);
-        assert!(result.traces[0].policy_score.unwrap_or(0.0) >= SCORE_THRESHOLD);
     }
 
     #[test]
@@ -2014,6 +2139,35 @@ mod tests {
     }
 
     #[test]
+    fn devanagari_context_enables_corps_correction() {
+        let rules = vec![];
+        let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
+        let edit_rules = vec![edit_rule(
+            "corps",
+            "Macobs",
+            vec![],
+            vec!["ka", "batana", "ipo"],
+        )];
+        let engine =
+            CorrectionEngine::new_with_policy(&rules, &vocab, None, HashMap::new(), edit_rules);
+
+        // Devanagari "का" should romanize to "kaa" which matches particle "ka" context
+        let result = engine.correct("मैं corps का बताना");
+        assert_eq!(
+            result.text, "मैं Macobs का बताना",
+            "Devanagari का should provide Hinglish particle context for corps→Macobs"
+        );
+        assert_eq!(result.matches[0].kind, MatchKind::Tier2EditPolicy);
+
+        // Devanagari "की" → "kee", still close enough to "ki" particle
+        let result2 = engine.correct("मैं corps की website");
+        assert!(
+            !result2.matches.is_empty() || result2.text.contains("Macobs"),
+            "Devanagari की should also work as context"
+        );
+    }
+
+    #[test]
     fn cluster_fuzzy_catches_new_distortions_of_known_target() {
         let rules = vec![rule("mecobs", "Macobs")];
         let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
@@ -2081,7 +2235,7 @@ mod tests {
         let engine = CorrectionEngine::new(&rules, &vocab, None);
 
         let result = engine.correct("mecorbs ka data bhejo");
-        assert_eq!(result.text, "mecorbs ka data bhejo");
+        // Cluster-fuzzy specifically should not fire without edit rules.
         assert!(
             result
                 .matches
@@ -2089,6 +2243,11 @@ mod tests {
                 .all(|m| m.kind != MatchKind::Tier2ClusterFuzzy),
             "cluster fuzzy should not apply without active edit policy rules"
         );
+        // However, the fuzzy scoring pass (now active) catches the close
+        // match via the "mecobs" alias for Macobs.
+        assert_eq!(result.text, "Macobs ka data bhejo");
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].kind, MatchKind::Tier2Deterministic);
     }
 
     #[test]

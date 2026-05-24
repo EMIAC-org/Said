@@ -1,4 +1,4 @@
-# Said Control Plane Deploy
+# AirNote Control Plane Deploy
 
 This deploys the server-side stack only:
 
@@ -11,11 +11,11 @@ This deploys the server-side stack only:
 Install Docker and the Compose plugin on the server, then create the app directory:
 
 ```bash
-sudo mkdir -p /opt/said-control-plane
-sudo chown "$USER":"$USER" /opt/said-control-plane
+sudo mkdir -p /opt/airnote-control-plane
+sudo chown "$USER":"$USER" /opt/airnote-control-plane
 ```
 
-Copy these files to `/opt/said-control-plane`:
+Copy these files to `/opt/airnote-control-plane`:
 
 - `docker-compose.yml`
 - `Caddyfile`
@@ -25,6 +25,7 @@ Edit `.env` and set strong values for:
 
 - `CONTROL_PLANE_IMAGE`
 - `POSTGRES_PASSWORD` using URL-safe characters, for example alphanumeric plus `_` or `-`
+- `POSTGRES_VOLUME_NAME` when migrating an existing deployment volume
 - `JWT_SECRET`
 - `LARK_APP_ID`
 - `LARK_APP_SECRET`
@@ -53,7 +54,7 @@ Set these repository secrets for CI/CD:
 - `DEPLOY_HOST`: server IP or hostname
 - `DEPLOY_USER`: SSH user
 - `DEPLOY_SSH_KEY`: private key with access to the server
-- `DEPLOY_PATH`: usually `/opt/said-control-plane`
+- `DEPLOY_PATH`: usually `/opt/airnote-control-plane`
 
 The deploy workflow builds and pushes a GHCR image, copies the compose files to the server, writes the new image tag into `.env`, and runs:
 

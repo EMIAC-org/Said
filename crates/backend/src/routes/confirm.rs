@@ -8,7 +8,7 @@ use tracing::info;
 
 use crate::{
     AppState,
-    store::{prefs::get_prefs, stt_replacements, tier2_edit_policy, vocabulary},
+    store::{prefs::get_prefs, stt_replacements, tier2_edit_policy, vocab_fts, vocabulary},
 };
 
 // ── POST /v1/confirm-term ────────────────────────────────────────────────────
@@ -80,8 +80,35 @@ pub async fn confirm_term(
             );
         }
 
+        // ── Proactive distortion seeding ────────────────────────────────────
+        let proactive = stt_replacements::generate_proactive_distortions(
+            &state.pool,
+            user_id,
+            &body.term,
+            &body.original,
+            &language,
+        );
+        if proactive > 0 {
+            info!(
+                "[confirm] seeded {proactive} proactive distortion(s) for {:?}",
+                body.term
+            );
+        }
+
+        // ── Auto-activate edit-policy rules ─────────────────────────────────
+        let activated = tier2_edit_policy::activate_all_for_term(&state.pool, user_id, &body.term);
+        if activated > 0 {
+            info!(
+                "[confirm] auto-activated {activated} edit-policy rule(s) for {:?}",
+                body.term
+            );
+        }
+
         // ── Invalidate lexicon cache ─────────────────────────────────────────
         crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
+
+        // ── Trigger retrain ─────────────────────────────────────────────────
+        crate::routes::classify::schedule_retrain_public(state.clone());
 
         info!(
             "[confirm] user confirmed {:?} — promoted to vocabulary",
@@ -187,4 +214,121 @@ pub async fn block_correction(
     );
 
     (StatusCode::OK, Json(BlockResponse { blocked: true }))
+}
+
+// ── POST /v1/confirm-batch ──────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ConfirmBatchBody {
+    pub items: Vec<ConfirmBatchItem>,
+    pub recording_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ConfirmBatchItem {
+    pub original: String,
+    pub corrected: String,
+}
+
+#[derive(Serialize)]
+pub struct ConfirmBatchResponse {
+    pub learned_count: usize,
+    pub learned_terms: Vec<String>,
+}
+
+pub async fn confirm_batch(
+    State(state): State<AppState>,
+    Json(body): Json<ConfirmBatchBody>,
+) -> (StatusCode, Json<ConfirmBatchResponse>) {
+    let user_id = state.default_user_id.as_str();
+    let language = get_prefs(&state.pool, user_id)
+        .map(|p| p.output_language)
+        .unwrap_or_else(|| "hinglish".into());
+
+    let mut learned_count = 0_usize;
+    let mut learned_terms = Vec::new();
+
+    for item in &body.items {
+        let corrected = item.corrected.trim();
+        let original = item.original.trim();
+        if corrected.is_empty() {
+            continue;
+        }
+
+        // Promote to vocabulary
+        if vocabulary::upsert_for_language_with_context(
+            &state.pool,
+            user_id,
+            corrected,
+            1.0,
+            "confirmed",
+            &language,
+            None,
+        ) {
+            learned_count += 1;
+            learned_terms.push(corrected.to_string());
+
+            vocab_fts::upsert(&state.pool, user_id, corrected, None);
+
+            // Record edit-policy rule
+            tier2_edit_policy::record_explicit_edit(
+                &state.pool,
+                user_id,
+                original,
+                corrected,
+                "replace",
+                &[],
+                &[],
+                body.recording_id.as_deref(),
+            );
+
+            // Auto-activate all candidate rules
+            tier2_edit_policy::activate_all_for_term(&state.pool, user_id, corrected);
+
+            // STT alias (skip if original is common)
+            if !original.is_empty() && !crate::llm::promotion_gate::is_common_word(original) {
+                stt_replacements::upsert_aliases_for_language(
+                    &state.pool,
+                    user_id,
+                    original,
+                    original,
+                    corrected,
+                    1.0,
+                    &language,
+                );
+            }
+
+            // Proactive distortions
+            stt_replacements::generate_proactive_distortions(
+                &state.pool,
+                user_id,
+                corrected,
+                original,
+                &language,
+            );
+
+            info!(
+                "[confirm-batch] learned {:?} from {:?}",
+                corrected, original
+            );
+        }
+    }
+
+    if learned_count > 0 {
+        crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
+        crate::routes::classify::schedule_retrain_public(state.clone());
+    }
+
+    info!(
+        "[confirm-batch] learned {learned_count}/{} terms",
+        body.items.len(),
+    );
+
+    (
+        StatusCode::OK,
+        Json(ConfirmBatchResponse {
+            learned_count,
+            learned_terms,
+        }),
+    )
 }

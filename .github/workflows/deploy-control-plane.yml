@@ -33,7 +33,7 @@ jobs:
         shell: bash
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
-          image="ghcr.io/${owner}/said-control-plane"
+          image="ghcr.io/${owner}/airnote-control-plane"
           sha_tag="${image}:sha-${GITHUB_SHA::12}"
           {
             echo "image=${image}"
@@ -94,11 +94,11 @@ jobs:
       - name: Upload compose files
         shell: bash
         run: |
-          tar -C deploy/control-plane -czf /tmp/said-control-plane-deploy.tgz \
+          tar -C deploy/control-plane -czf /tmp/airnote-control-plane-deploy.tgz \
             docker-compose.yml Caddyfile README.md .env.example
           ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
             "mkdir -p '${{ secrets.DEPLOY_PATH }}'"
-          scp /tmp/said-control-plane-deploy.tgz \
+          scp /tmp/airnote-control-plane-deploy.tgz \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/deploy.tgz"
 
       - name: Pull image and restart stack

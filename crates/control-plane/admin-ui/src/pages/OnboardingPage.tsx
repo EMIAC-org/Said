@@ -93,13 +93,13 @@ export function OnboardingPage() {
             </div>
             <h1 className="text-[26px] font-semibold tracking-tight leading-tight">Set up your workspace</h1>
             <p className="text-[13px] text-fg-3 leading-relaxed mt-3 max-w-[460px]">
-              Create the Said organization that will own meetings, members, Lark sync, summaries, and task handoff.
+              Create the AirNote organization that will own meetings, members, Lark sync, summaries, and task handoff.
             </p>
           </div>
 
           <div className="space-y-3 mt-8">
             {[
-              'Create your Said organization',
+              'Create your AirNote organization',
               'Connect Lark with the server app credentials',
               'Invite members and start meetings',
             ].map((item, idx) => (
@@ -174,7 +174,7 @@ export function OnboardingPage() {
           )}
 
           <p className="text-[10px] text-fg-5 mt-6 leading-relaxed">
-            The server already has the Lark app ID and secret. This step only creates your Said organization and authorizes your Lark workspace/user.
+            The server already has the Lark app ID and secret. This step only creates your AirNote organization and authorizes your Lark workspace/user.
           </p>
         </section>
       </div>
