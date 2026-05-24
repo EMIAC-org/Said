@@ -301,6 +301,19 @@ jobs:
           AARCH64_SIG=$(read_sig "${PRODUCT_NAME}_${VERSION}_aarch64.app.tar.gz.sig")
           WINDOWS_SIG=$(read_sig "${PRODUCT_NAME}_${VERSION}_x64-setup.nsis.zip.sig")
           WINDOWS_FILE="${PRODUCT_NAME}_${VERSION}_x64-setup.nsis.zip"
+          WINDOWS_PLATFORM_JSON=""
+          if [ -f "$WINDOWS_FILE" ]; then
+            WINDOWS_PLATFORM_JSON=$(cat <<EOF
+              ,
+              "windows-x86_64": {
+                "signature": "${WINDOWS_SIG}",
+                "url": "${BASE_URL}/${WINDOWS_FILE}"
+              }
+          EOF
+            )
+          else
+            echo "No Windows updater bundle found; omitting windows-x86_64 from updater manifest."
+          fi
 
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -315,11 +328,8 @@ jobs:
               "darwin-aarch64": {
                 "signature": "${AARCH64_SIG}",
                 "url": "${BASE_URL}/${PRODUCT_NAME}_${VERSION}_aarch64.app.tar.gz"
-              },
-              "windows-x86_64": {
-                "signature": "${WINDOWS_SIG}",
-                "url": "${BASE_URL}/${WINDOWS_FILE}"
               }
+          ${WINDOWS_PLATFORM_JSON}
             }
           }
           EOF
