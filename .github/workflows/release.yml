@@ -37,10 +37,6 @@ jobs:
             arch_short: aarch64
             runs_on: macos-latest
             platform: darwin
-          - target: x86_64-apple-darwin
-            arch_short: x86_64
-            runs_on: macos-latest
-            platform: darwin
           - target: x86_64-pc-windows-msvc
             arch_short: x86_64
             runs_on: windows-latest
@@ -95,6 +91,24 @@ jobs:
       - name: Install desktop deps
         working-directory: desktop
         run: npm ci
+
+      # ── macOS: import signing certificate into CI keychain ────────────────
+      - name: Import Apple codesign certificate
+        if: matrix.platform == 'darwin'
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          echo -n "$CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
       # ── macOS: CLI binary + Said.app + DMG via build-dmg.sh ────────────────
       - name: Build CLI binary (Mac)
@@ -277,16 +291,11 @@ jobs:
           }
 
           AARCH64_SIG=$(read_sig "Said_${VERSION}_aarch64.app.tar.gz.sig")
-          X86_64_SIG=$(read_sig "Said_${VERSION}_x86_64.app.tar.gz.sig")
           WINDOWS_SIG=$(read_sig "Said_${VERSION}_x64-setup.nsis.zip.sig")
           WINDOWS_FILE="Said_${VERSION}_x64-setup.nsis.zip"
 
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-          # Single body shape across both channels; only the filename differs.
-          # Stable tags own `latest.json` (legacy endpoint baked into every
-          # shipped client). Beta tags emit `beta.json` attached to that
-          # prerelease; beta auto-discovery via a manifests branch is a follow-up.
           write_manifest() {
             local FILE="$1"
             cat > "$FILE" <<EOF
@@ -298,10 +307,6 @@ jobs:
               "darwin-aarch64": {
                 "signature": "${AARCH64_SIG}",
                 "url": "${BASE_URL}/Said_${VERSION}_aarch64.app.tar.gz"
-              },
-              "darwin-x86_64": {
-                "signature": "${X86_64_SIG}",
-                "url": "${BASE_URL}/Said_${VERSION}_x86_64.app.tar.gz"
               },
               "windows-x86_64": {
                 "signature": "${WINDOWS_SIG}",
