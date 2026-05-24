@@ -1507,11 +1507,11 @@ static DICTIONARY: Lazy<HashSet<String>> = Lazy::new(|| {
     }
     // Hindi common words — base forms that promotion_gate may miss
     for w in &[
-        "kar", "de", "le", "ja", "aa", "ho", "lo", "do", "so", "ro", "pa",
-        "bol", "sun", "chal", "mil", "rakh", "ban", "baith", "uth", "khol", "rok",
-        "din", "raat", "ghar", "log", "banda", "cheez", "jagah", "waqt", "baar", "baat", "kaam",
-        "aaj", "kal", "aajkal", "ajkal", "parso", "subah", "shaam", "dopahar", "hamesha", "kabhi",
-        "tarah", "saath", "andar", "bahar", "upar", "neeche", "peeche", "saamne",
+        "kar", "de", "le", "ja", "aa", "ho", "lo", "do", "so", "ro", "pa", "bol", "sun", "chal",
+        "mil", "rakh", "ban", "baith", "uth", "khol", "rok", "din", "raat", "ghar", "log", "banda",
+        "cheez", "jagah", "waqt", "baar", "baat", "kaam", "aaj", "kal", "aajkal", "ajkal", "parso",
+        "subah", "shaam", "dopahar", "hamesha", "kabhi", "tarah", "saath", "andar", "bahar",
+        "upar", "neeche", "peeche", "saamne",
     ] {
         words.insert(w.to_string());
     }

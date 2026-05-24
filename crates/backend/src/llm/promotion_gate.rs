@@ -185,9 +185,8 @@ pub fn is_common_word(term: &str) -> bool {
         "jayenge", "raha", "rahi", "rahe", "rehna", "rehta", "rehti", "bola", "boli", "bole",
         "bolo", "bolna", "bolte", "bol", "dekho", "dekh", "dekhna", "dekhta", "dekhti", "dekhte",
         "dekhlena", "suno", "sunna", "sunlo", "sunta", "sunti", "sun", "batao", "batana", "batata",
-        "batati", "bata", "hona", "hota", "hoti", "hote", "wala", "wali", "wale",
-        "chal", "mil", "rakh", "ban", "baith", "uth", "khol", "rok",
-        // Question words
+        "batati", "bata", "hona", "hota", "hoti", "hote", "wala", "wali", "wale", "chal", "mil",
+        "rakh", "ban", "baith", "uth", "khol", "rok", // Question words
         "kya", "kaise", "kab", "kahan", "kyun", "kaun", "kitna", "kitne", "kitni",
         // Connectors / particles
         "aur", "lekin", "par", "magar", "toh", "bhi", "hi", "na", "nahi", "nhi", "haan", "mat",
@@ -199,8 +198,8 @@ pub fn is_common_word(term: &str) -> bool {
         "dusri", "teesra", "yaar", "bhai", "zara", "please",
         // Common nouns + time words (appear in nearly every conversation)
         "din", "raat", "ghar", "log", "banda", "cheez", "jagah", "waqt", "baar", "baat", "kaam",
-        "aaj", "kal", "aajkal", "parso", "subah", "shaam", "dopahar", "hamesha", "kabhi",
-        "tarah", "saath", "andar", "bahar", "upar", "neeche", "peeche", "saamne",
+        "aaj", "kal", "aajkal", "parso", "subah", "shaam", "dopahar", "hamesha", "kabhi", "tarah",
+        "saath", "andar", "bahar", "upar", "neeche", "peeche", "saamne",
     ];
     // Common English words that shouldn't be vocab
     const ENGLISH_COMMON: &[&str] = &[

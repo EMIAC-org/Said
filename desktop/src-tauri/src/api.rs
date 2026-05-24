@@ -1063,9 +1063,7 @@ pub async fn confirm_batch(
     let url = format!("{}/v1/confirm-batch", ep.url);
     let items_json: Vec<serde_json::Value> = items
         .iter()
-        .map(|(orig, corr)| {
-            serde_json::json!({ "original": orig, "corrected": corr })
-        })
+        .map(|(orig, corr)| serde_json::json!({ "original": orig, "corrected": corr }))
         .collect();
     let body = serde_json::json!({
         "items": items_json,

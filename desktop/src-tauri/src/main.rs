@@ -1261,10 +1261,8 @@ fn set_status_bar_interactive(app: tauri::AppHandle, interactive: bool) -> Resul
                 if !ns_window.is_null() {
                     unsafe {
                         let ns_window = &*(ns_window as *mut Object);
-                        let _: Result<(), _> = ns_window.send_message(
-                            Sel::register("setIgnoresMouseEvents:"),
-                            (!interactive,),
-                        );
+                        let _: Result<(), _> = ns_window
+                            .send_message(Sel::register("setIgnoresMouseEvents:"), (!interactive,));
                     }
                 }
             }
@@ -4424,7 +4422,10 @@ async fn watch_for_edit(
                         );
                         tracing::info!(
                             "[edit-watch] queued {:?} — {}/{} sightings, {} more to learn",
-                            qt.term, qt.sighting_count, qt.k, remaining,
+                            qt.term,
+                            qt.sighting_count,
+                            qt.k,
+                            remaining,
                         );
                     }
                 }
