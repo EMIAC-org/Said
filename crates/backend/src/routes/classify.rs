@@ -265,7 +265,10 @@ pub async fn classify(
     let reverted = run_alias_revert_pass(&state, &body.ai_output, &body.user_kept);
     let mut negative_terms: Vec<NegativeTerm> = Vec::new();
     if !reverted.is_empty() {
-        info!("[classify] reverted {} wrong alias(es) on this edit", reverted.len());
+        info!(
+            "[classify] reverted {} wrong alias(es) on this edit",
+            reverted.len()
+        );
         for r in &reverted {
             negative_terms.push(NegativeTerm {
                 term: r.replaced_with.clone(),
@@ -568,7 +571,11 @@ pub async fn classify(
                 // Only a single unambiguous K=1 change with no other STT
                 // changes bypasses the review card.
                 if stt_change_count >= 2 {
-                    let tag = if existing_term.is_some() { "stt" } else { "stt" };
+                    let tag = if existing_term.is_some() {
+                        "stt"
+                    } else {
+                        "stt"
+                    };
                     review_candidates.push(ReviewCandidate {
                         original: original.to_string(),
                         corrected: corrected.to_string(),
@@ -578,7 +585,10 @@ pub async fn classify(
                     });
                     info!(
                         "[classify] review candidate ({} total): {:?} → {:?} (type={term_type}, in_vocab={})",
-                        stt_change_count, original, corrected, existing_term.is_some(),
+                        stt_change_count,
+                        original,
+                        corrected,
+                        existing_term.is_some(),
                     );
                     continue;
                 }
@@ -866,8 +876,8 @@ fn run_alias_revert_pass(state: &AppState, polish: &str, user_kept: &str) -> Vec
             continue;
         }
 
-        let replaced_with = find_replacement_at_position(polish, user_kept, &v.term)
-            .unwrap_or_default();
+        let replaced_with =
+            find_replacement_at_position(polish, user_kept, &v.term).unwrap_or_default();
 
         if replaced_with.is_empty() {
             continue;
@@ -903,14 +913,14 @@ fn find_replacement_at_position(polish: &str, user_kept: &str, term: &str) -> Op
     let term_lower = term.to_ascii_lowercase();
 
     for (i, pt) in p_tokens.iter().enumerate() {
-        if pt.trim_matches(|c: char| !c.is_alphanumeric())
-            .to_ascii_lowercase() == term_lower
+        if pt
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_ascii_lowercase()
+            == term_lower
         {
             if let Some(kt) = k_tokens.get(i) {
                 let cleaned = kt.trim_matches(|c: char| !c.is_alphanumeric());
-                if !cleaned.is_empty()
-                    && cleaned.to_ascii_lowercase() != term_lower
-                {
+                if !cleaned.is_empty() && cleaned.to_ascii_lowercase() != term_lower {
                     return Some(cleaned.to_string());
                 }
             }

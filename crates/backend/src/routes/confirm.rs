@@ -89,17 +89,19 @@ pub async fn confirm_term(
             &language,
         );
         if proactive > 0 {
-            info!("[confirm] seeded {proactive} proactive distortion(s) for {:?}", body.term);
+            info!(
+                "[confirm] seeded {proactive} proactive distortion(s) for {:?}",
+                body.term
+            );
         }
 
         // ── Auto-activate edit-policy rules ─────────────────────────────────
-        let activated = tier2_edit_policy::activate_all_for_term(
-            &state.pool,
-            user_id,
-            &body.term,
-        );
+        let activated = tier2_edit_policy::activate_all_for_term(&state.pool, user_id, &body.term);
         if activated > 0 {
-            info!("[confirm] auto-activated {activated} edit-policy rule(s) for {:?}", body.term);
+            info!(
+                "[confirm] auto-activated {activated} edit-policy rule(s) for {:?}",
+                body.term
+            );
         }
 
         // ── Invalidate lexicon cache ─────────────────────────────────────────
@@ -305,7 +307,10 @@ pub async fn confirm_batch(
                 &language,
             );
 
-            info!("[confirm-batch] learned {:?} from {:?}", corrected, original);
+            info!(
+                "[confirm-batch] learned {:?} from {:?}",
+                corrected, original
+            );
         }
     }
 

@@ -55,7 +55,11 @@ pub fn compute_adaptive_k(corrected: &str, original: &str) -> i64 {
         _ => DEFAULT_K,
     };
 
-    let k = if original_is_common { base_k.max(2) } else { base_k };
+    let k = if original_is_common {
+        base_k.max(2)
+    } else {
+        base_k
+    };
 
     info!(
         "[adaptive-k] term={corrected:?} type={term_type} jargon={jargon:.2} orig_common={original_is_common} → K={k}",

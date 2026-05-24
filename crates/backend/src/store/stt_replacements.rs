@@ -548,7 +548,10 @@ pub fn delete_alias_pair(
         )
         .unwrap_or(0);
     if n > 0 {
-        info!("[stt-repl] deleted {n} alias(es) for pair {:?} → {:?}", from, to);
+        info!(
+            "[stt-repl] deleted {n} alias(es) for pair {:?} → {:?}",
+            from, to
+        );
     }
     n
 }
