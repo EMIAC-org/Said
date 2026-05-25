@@ -60,13 +60,15 @@ interface Props {
   onMicrophone:       () => void;
   performanceMonitorEnabled?: boolean;
   onPerformanceMonitorChange?: (enabled: boolean) => void;
+  onEnterpriseDisconnect?: () => void;
   /** Optional initial section to land on. Defaults to "writing". */
   initialSection?:    SettingsSection;
 }
 
 export function SettingsModal({
   open, onClose, snapshot, onAccessibility, onInputMonitoring,
-  onMicrophone, performanceMonitorEnabled, onPerformanceMonitorChange, initialSection,
+  onMicrophone, performanceMonitorEnabled, onPerformanceMonitorChange,
+  onEnterpriseDisconnect, initialSection,
 }: Props) {
   const [activeSection, setActiveSection] = useState<SettingsSection>(
     initialSection ?? "writing"
@@ -278,6 +280,7 @@ export function SettingsModal({
               onMicrophone={onMicrophone}
               performanceMonitorEnabled={performanceMonitorEnabled}
               onPerformanceMonitorChange={onPerformanceMonitorChange}
+              onEnterpriseDisconnect={onEnterpriseDisconnect}
               activeSection={activeSection}
               hideHeader
               embedded

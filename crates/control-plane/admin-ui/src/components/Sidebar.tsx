@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router'
-import { LayoutDashboard, Video, Users, Settings, LogOut } from 'lucide-react'
+import { LayoutDashboard, Video, Users, Monitor, Settings, LogOut } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { Avatar } from './Avatar'
 
@@ -7,6 +7,7 @@ const nav = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/meetings', icon: Video, label: 'Meetings' },
   { to: '/team', icon: Users, label: 'Team' },
+  { to: '/desktop', icon: Monitor, label: 'Desktop' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
 

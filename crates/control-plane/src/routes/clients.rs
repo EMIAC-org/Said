@@ -1,0 +1,402 @@
+//! Desktop client registration + heartbeat + admin listing.
+
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+use crate::{AppState, auth::AuthUser};
+
+#[derive(Deserialize)]
+pub struct ClientBody {
+    pub device_id: String,
+    pub platform: String,
+    pub app_version: String,
+    pub hostname: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ClientRow {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub device_id: String,
+    pub platform: String,
+    pub app_version: String,
+    pub hostname: Option<String>,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    pub email: Option<String>,
+    pub lark_name: Option<String>,
+    pub lark_avatar_url: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ClientUsage {
+    pub polish_count: i64,
+    pub word_count: i64,
+}
+
+async fn resolve_org(
+    state: &AppState,
+    account_id: Uuid,
+) -> Result<Uuid, (StatusCode, Json<Value>)> {
+    let row: Option<Uuid> =
+        sqlx::query_scalar("SELECT org_id FROM org_members WHERE account_id = $1 LIMIT 1")
+            .bind(account_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(db_err)?;
+
+    row.ok_or_else(|| {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "you must belong to an org"})),
+        )
+    })
+}
+
+async fn resolve_org_role(
+    state: &AppState,
+    account_id: Uuid,
+) -> Result<(Uuid, String), (StatusCode, Json<Value>)> {
+    let row: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT org_id, role FROM org_members WHERE account_id = $1 LIMIT 1")
+            .bind(account_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(db_err)?;
+
+    row.ok_or_else(|| {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "you must belong to an org"})),
+        )
+    })
+}
+
+fn require_viewer(role: &str) -> Result<(), (StatusCode, Json<Value>)> {
+    if role.eq_ignore_ascii_case("admin")
+        || role.eq_ignore_ascii_case("COMPANY_ADMIN")
+        || role.eq_ignore_ascii_case("MANAGER")
+        || role.eq_ignore_ascii_case("member")
+        || role.eq_ignore_ascii_case("MEMBER")
+    {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "insufficient permissions"})),
+        ))
+    }
+}
+
+/// POST /v1/clients/register — upsert desktop install on connect.
+pub async fn register(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(body): Json<ClientBody>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    let org_id = resolve_org(&state, user.account_id).await?;
+    let device_id = body.device_id.trim();
+    if device_id.is_empty() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "device_id required"})),
+        ));
+    }
+
+    sqlx::query(
+        "INSERT INTO desktop_clients (org_id, account_id, device_id, platform, app_version, hostname)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (org_id, device_id) DO UPDATE
+           SET account_id  = EXCLUDED.account_id,
+               platform    = EXCLUDED.platform,
+               app_version = EXCLUDED.app_version,
+               hostname    = EXCLUDED.hostname,
+               last_seen_at = now()",
+    )
+    .bind(org_id)
+    .bind(user.account_id)
+    .bind(device_id)
+    .bind(body.platform.trim())
+    .bind(body.app_version.trim())
+    .bind(body.hostname.as_deref())
+    .execute(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /v1/clients/heartbeat — refresh last_seen_at.
+pub async fn heartbeat(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(body): Json<ClientBody>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    let org_id = resolve_org(&state, user.account_id).await?;
+    let device_id = body.device_id.trim();
+    if device_id.is_empty() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "device_id required"})),
+        ));
+    }
+
+    let updated = sqlx::query(
+        "UPDATE desktop_clients
+            SET last_seen_at = now(),
+                app_version  = COALESCE(NULLIF($4, ''), app_version),
+                platform     = COALESCE(NULLIF($5, ''), platform)
+          WHERE org_id = $1 AND device_id = $2 AND account_id = $3",
+    )
+    .bind(org_id)
+    .bind(device_id)
+    .bind(user.account_id)
+    .bind(body.app_version.trim())
+    .bind(body.platform.trim())
+    .execute(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    if updated.rows_affected() == 0 {
+        // Client row missing — re-register
+        return register(State(state), user, Json(body)).await;
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// GET /v1/orgs/:org_id/clients — list org desktop installs.
+pub async fn list_org_clients(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(org_id): Path<Uuid>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let (member_org, role) = resolve_org_role(&state, user.account_id).await?;
+    if member_org != org_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "not a member of this org"})),
+        ));
+    }
+    require_viewer(&role)?;
+
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Uuid,
+            String,
+            String,
+            String,
+            Option<String>,
+            DateTime<Utc>,
+            DateTime<Utc>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT dc.id, dc.account_id, dc.device_id, dc.platform, dc.app_version,
+                dc.hostname, dc.first_seen_at, dc.last_seen_at,
+                a.email, om.lark_name, om.lark_avatar_url
+           FROM desktop_clients dc
+           JOIN accounts a ON a.id = dc.account_id
+           LEFT JOIN org_members om ON om.account_id = dc.account_id AND om.org_id = dc.org_id
+          WHERE dc.org_id = $1
+          ORDER BY dc.last_seen_at DESC",
+    )
+    .bind(org_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    let clients: Vec<ClientRow> = rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                account_id,
+                device_id,
+                platform,
+                app_version,
+                hostname,
+                first_seen_at,
+                last_seen_at,
+                email,
+                lark_name,
+                lark_avatar_url,
+            )| {
+                ClientRow {
+                    id,
+                    account_id,
+                    device_id,
+                    platform,
+                    app_version,
+                    hostname,
+                    first_seen_at,
+                    last_seen_at,
+                    email,
+                    lark_name,
+                    lark_avatar_url,
+                }
+            },
+        )
+        .collect();
+
+    Ok(Json(json!({ "clients": clients })))
+}
+
+/// GET /v1/orgs/:org_id/clients/:account_id/usage — 7-day usage for one user.
+pub async fn client_usage(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((org_id, account_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let (member_org, role) = resolve_org_role(&state, user.account_id).await?;
+    if member_org != org_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "not a member of this org"})),
+        ));
+    }
+    require_viewer(&role)?;
+
+    let row: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT COALESCE(SUM(polish_count), 0), COALESCE(SUM(word_count), 0)
+           FROM usage_events
+          WHERE account_id = $1
+            AND event_date >= (CURRENT_DATE - INTERVAL '7 days')",
+    )
+    .bind(account_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    let (polish_count, word_count) = row.unwrap_or((0, 0));
+
+    Ok(Json(json!({
+        "usage": ClientUsage { polish_count, word_count },
+    })))
+}
+
+/// GET /v1/orgs/:org_id/stats — dashboard aggregates.
+pub async fn org_stats(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(org_id): Path<Uuid>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let (member_org, role) = resolve_org_role(&state, user.account_id).await?;
+    if member_org != org_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "not a member of this org"})),
+        ));
+    }
+    require_viewer(&role)?;
+
+    let active_desktops: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM desktop_clients
+          WHERE org_id = $1 AND last_seen_at > now() - INTERVAL '15 minutes'",
+    )
+    .bind(org_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    let total_word_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(ue.word_count), 0)
+           FROM usage_events ue
+           JOIN org_members om ON om.account_id = ue.account_id
+          WHERE om.org_id = $1
+            AND ue.event_date >= (CURRENT_DATE - INTERVAL '30 days')",
+    )
+    .bind(org_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    let recent: Vec<ClientRow> = {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                Uuid,
+                String,
+                String,
+                String,
+                Option<String>,
+                DateTime<Utc>,
+                DateTime<Utc>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ),
+        >(
+            "SELECT dc.id, dc.account_id, dc.device_id, dc.platform, dc.app_version,
+                    dc.hostname, dc.first_seen_at, dc.last_seen_at,
+                    a.email, om.lark_name, om.lark_avatar_url
+               FROM desktop_clients dc
+               JOIN accounts a ON a.id = dc.account_id
+               LEFT JOIN org_members om ON om.account_id = dc.account_id AND om.org_id = dc.org_id
+              WHERE dc.org_id = $1
+              ORDER BY dc.last_seen_at DESC
+              LIMIT 5",
+        )
+        .bind(org_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(db_err)?;
+
+        rows.into_iter()
+            .map(
+                |(
+                    id,
+                    account_id,
+                    device_id,
+                    platform,
+                    app_version,
+                    hostname,
+                    first_seen_at,
+                    last_seen_at,
+                    email,
+                    lark_name,
+                    lark_avatar_url,
+                )| {
+                    ClientRow {
+                        id,
+                        account_id,
+                        device_id,
+                        platform,
+                        app_version,
+                        hostname,
+                        first_seen_at,
+                        last_seen_at,
+                        email,
+                        lark_name,
+                        lark_avatar_url,
+                    }
+                },
+            )
+            .collect()
+    };
+
+    Ok(Json(json!({
+        "active_desktops": active_desktops,
+        "total_word_count_30d": total_word_count,
+        "recent_clients": recent,
+    })))
+}
+
+fn db_err(_e: sqlx::Error) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error": "database error"})),
+    )
+}

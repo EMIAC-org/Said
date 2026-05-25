@@ -68,9 +68,10 @@ COMMON_WORDS = {
     "ki",
     "ke",
     # Hindi common words
-    "yeh", "woh", "ye", "wo", "toh", "nahi", "nhi", "kya", "abhi", "bas", "aur", "bhi",
+    "yeh", "woh", "ye", "wo", "toh", "nahi", "nhi", "kya", "kaisa", "kaisi", "kaise",
+    "aisa", "aisi", "aise", "laga", "lagi", "lage", "lagta", "lagti", "abhi", "bas", "aur", "bhi",
     "kuch", "sab", "haan", "accha", "achha", "bahut", "jab", "tab", "phir", "suno",
-    "dekho", "bolo", "chalo", "theek", "kaise", "kahan", "kaun", "kyun", "lekin",
+    "dekho", "bolo", "chalo", "theek", "kahan", "kaun", "kyun", "lekin",
     "magar", "agar", "isliye", "sirf", "bilkul", "zaroor", "pehle", "baad", "upar",
     "neeche", "andar", "bahar", "saamne", "peeche", "hota", "hoti", "hote", "karo",
     "karta", "karti", "karte", "bola", "boli", "bole", "dekh", "dekhna", "sun",
@@ -113,9 +114,10 @@ def load_dictionary() -> None:
     })
     # Hindi common words — must also be in dictionary for hard negative mining
     HINDI_COMMON = {
-        "yeh", "woh", "ye", "wo", "toh", "nahi", "nhi", "kya", "abhi", "bas", "aur", "bhi",
+        "yeh", "woh", "ye", "wo", "toh", "nahi", "nhi", "kya", "kaisa", "kaisi", "kaise",
+        "aisa", "aisi", "aise", "laga", "lagi", "lage", "lagta", "lagti", "abhi", "bas", "aur", "bhi",
         "kuch", "sab", "haan", "accha", "achha", "bahut", "jab", "tab", "phir", "dekho",
-        "bolo", "chalo", "theek", "kaise", "kahan", "kaun", "kyun", "lekin", "magar", "agar",
+        "bolo", "chalo", "theek", "kahan", "kaun", "kyun", "lekin", "magar", "agar",
         "hota", "hoti", "hote", "karo", "karta", "karti", "bola", "boli", "bole", "dekh",
         "dekhna", "sun", "sunna", "bol", "bolna", "chal", "chalna", "rakh", "mil", "milna",
         "ban", "baith", "uth", "khol", "rok", "raha", "rahi", "rahe", "rehna", "wala", "wali",
@@ -131,6 +133,15 @@ def load_dictionary() -> None:
 def is_dictionary_word(token: str) -> bool:
     load_dictionary()
     return normalize(token) in DICTIONARY_WORDS
+
+
+def is_common_alias_source(text: str) -> bool:
+    load_dictionary()
+    tokens = [normalize(part) for part in text.strip().split() if normalize(part)]
+    if not tokens:
+        return False
+    joined = "".join(tokens)
+    return joined in COMMON_WORDS or all(token in COMMON_WORDS or token in DICTIONARY_WORDS for token in tokens)
 
 
 def mine_hard_negatives_from_dictionary(
@@ -525,13 +536,13 @@ def build_examples(
     negatives: list[Example] = []
 
     for rule in rules:
-        if rule.review_status == "blocked":
+        if rule.review_status != "approved":
             continue
         token = normalize(rule.transcript_form)
         correct = normalize(rule.correct_form)
         if len(token) < 3 or correct not in by_norm:
             continue
-        if is_dictionary_word(token):
+        if is_dictionary_word(token) or is_common_alias_source(rule.transcript_form):
             # Dictionary words become strong negatives — teaches model not to replace them
             candidate = by_norm[correct]
             negatives.append(Example(token, candidate, 0.0))
@@ -557,7 +568,7 @@ def build_examples(
         correct = normalize(weight.correct_form_norm)
         if len(token) < 3 or correct not in by_norm:
             continue
-        if is_dictionary_word(token):
+        if is_dictionary_word(token) or is_common_alias_source(weight.token_norm):
             # Dictionary words become strong negatives — teaches model not to replace them
             candidate = by_norm[correct]
             negatives.append(Example(token, candidate, 0.0))

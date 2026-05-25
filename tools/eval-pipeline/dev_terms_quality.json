@@ -6,7 +6,7 @@
       "meaning": "Local protected company name used in Said tests.",
       "context": "Macobs company report deployment status",
       "positive_template": "please check {variant} company status today",
-      "distortions": ["mecobs", "mcorbs", "mecorbs", "macops", "mccorps", "micorbs", "corps"]
+      "distortions": ["mecobs", "mcorbs", "mecorbs", "macops", "mccorps", "micorbs", "macobz"]
     },
     {
       "term": "EMIAC",
@@ -22,7 +22,7 @@
       "meaning": "Container orchestration platform.",
       "context": "Kubernetes cluster deployment pod rollout",
       "positive_template": "please check {variant} cluster status today",
-      "distortions": ["cubernetes", "kubernates", "kuberneties", "cuberneties", "kuberntes", "kubernetees", "kubernetis"]
+      "distortions": ["cubernetes", "kubernates", "kuberneties", "cuberneties", "kuberntes", "kubernetees", "kubernetez"]
     },
     {
       "term": "kubectl",
@@ -94,7 +94,7 @@
       "meaning": "Authorization protocol.",
       "context": "OAuth token redirect callback",
       "positive_template": "please debug {variant} token flow today",
-      "distortions": ["oath", "owauth", "ohath", "oaut", "oauthh", "ooth", "ohoth"]
+      "distortions": ["owath", "owauth", "ohath", "oaut", "oauthh", "owthh", "ohoth"]
     },
     {
       "term": "JWT",
@@ -102,7 +102,7 @@
       "meaning": "JSON web token.",
       "context": "JWT auth token claims",
       "positive_template": "please inspect {variant} auth token today",
-      "distortions": ["jot", "jwd", "jvt", "jaywt", "jdoublet", "jwty", "jwet"]
+      "distortions": ["jaywut", "jwd", "jvt", "jaywt", "jdoublet", "jwty", "jwet"]
     },
     {
       "term": "GitHub",
@@ -126,7 +126,7 @@
       "meaning": "Frontend deployment platform.",
       "context": "Vercel deployment preview domain",
       "positive_template": "please check {variant} deployment today",
-      "distortions": ["vercell", "versal", "versel", "vercil", "varsell", "wersel", "vercelapp"]
+      "distortions": ["vercell", "verzal", "versel", "vercil", "varsell", "wersel", "vercelapp"]
     },
     {
       "term": "Supabase",
@@ -134,7 +134,7 @@
       "meaning": "Backend platform built on Postgres.",
       "context": "Supabase auth storage edge function",
       "positive_template": "please check {variant} auth today",
-      "distortions": ["superbase", "supabse", "supabas", "supabaze", "superbace", "soopabase", "supaabase"]
+      "distortions": ["superbase", "supabse", "supabas", "supabaze", "superbace", "supbayse", "subabase"]
     },
     {
       "term": "Prisma",
@@ -142,7 +142,7 @@
       "meaning": "Database ORM.",
       "context": "Prisma schema migration client",
       "positive_template": "please check {variant} schema today",
-      "distortions": ["prizma", "presma", "prismma", "prismuh", "prezma", "prismaa", "prism"]
+      "distortions": ["prizma", "presma", "prismma", "prismuh", "prezma", "prismah", "prysma"]
     },
     {
       "term": "Tauri",
@@ -158,7 +158,7 @@
       "meaning": "Frontend build tool.",
       "context": "Vite dev server bundle",
       "positive_template": "please restart {variant} dev server today",
-      "distortions": ["veet", "vait", "vitey", "vit", "veit", "wite", "white"]
+      "distortions": ["viyt", "vait", "vitey", "vit", "veit", "vyte", "viteh"]
     },
     {
       "term": "SQLite",

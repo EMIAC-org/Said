@@ -14,16 +14,63 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailRecovery {
+    pub observed: String,
+    pub canonical: String,
+}
+
 /// Apply all recovery passes. Idempotent. Safe to call on any string.
 pub fn recover(text: &str) -> String {
     let s = recover_protocol_mishears(text);
-    let s = recover_spoken_emails(&s);
-    let s = compact_local_before_at(&s);
+    let s = recover_emails(&s);
     let s = recover_spoken_urls(&s);
     let s = recover_spoken_file_paths(&s);
     let s = recover_standalone_slash(&s);
     let s = recover_spoken_identifiers(&s);
     recover_spoken_env_vars(&s)
+}
+
+/// Email-only recovery. Safe for the live voice path because it does not fold
+/// URLs, paths, env vars, or other structured tokens.
+pub fn recover_emails(text: &str) -> String {
+    let s = recover_spoken_emails(text);
+    compact_local_before_at(&s)
+}
+
+pub fn recover_emails_with_candidates(
+    text: &str,
+    canonical_candidates: &[String],
+) -> (String, Vec<EmailRecovery>) {
+    let mut result = recover_emails(text);
+    let mut recoveries = Vec::new();
+    if canonical_candidates.is_empty() {
+        return (result, recoveries);
+    }
+
+    let spans = email_spans(&result);
+    for (start, end, observed) in spans.into_iter().rev() {
+        let Some(best) = best_email_candidate(&observed, canonical_candidates) else {
+            continue;
+        };
+        if best == observed {
+            continue;
+        }
+        result.replace_range(start..end, &best);
+        recoveries.push(EmailRecovery {
+            observed,
+            canonical: best,
+        });
+    }
+    recoveries.reverse();
+    (result, recoveries)
+}
+
+pub fn extract_emails(text: &str) -> Vec<String> {
+    email_spans(text)
+        .into_iter()
+        .map(|(_, _, email)| email)
+        .collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,11 +116,18 @@ static EMAIL_SEP: Lazy<Regex> = Lazy::new(|| {
           | \b at \s+
         )
         (?P<domain>
-            [A-Za-z0-9]+
-            (?: \s* (?: \. | \b dot \b ) \s* [A-Za-z0-9]+ )*
-            \s* (?: \. | \b dot \b ) \s*
-            (?: {tld} )
-            (?: \s* (?: \. | \b dot \b ) \s* (?: {tld} ) )?
+            (?:
+                (?: g \s* mail | gee \s* mail | gmail | google \s* mail | yahoo | outlook | hotmail | icloud )
+                \s* (?: \. | \b dot \b ) \s* (?: com )?
+            )
+          |
+            (?:
+                [A-Za-z0-9]+
+                (?: \s* (?: \. | \b dot \b ) \s* [A-Za-z0-9]+ )*
+                \s* (?: \. | \b dot \b ) \s*
+                (?: {tld} )
+                (?: \s* (?: \. | \b dot \b ) \s* (?: {tld} ) )?
+            )
         )
         \b
         "
@@ -126,7 +180,67 @@ fn is_email_stop_word(word: &str) -> bool {
     )
 }
 
-const MAX_LOCAL_TOKENS: usize = 5;
+const MAX_LOCAL_TOKENS: usize = 8;
+
+fn email_digit_word(word: &str) -> Option<&'static str> {
+    match word.to_ascii_lowercase().as_str() {
+        "zero" | "shunya" => Some("0"),
+        "one" | "ek" => Some("1"),
+        "two" | "do" => Some("2"),
+        "three" | "teen" => Some("3"),
+        "four" | "char" | "chaar" => Some("4"),
+        "five" | "paanch" | "panch" => Some("5"),
+        "six" | "chheh" | "chah" | "cheh" | "chhe" | "che" => Some("6"),
+        "seven" | "saat" => Some("7"),
+        "eight" | "aath" => Some("8"),
+        "nine" | "nau" => Some("9"),
+        _ => None,
+    }
+}
+
+fn fold_email_local_tokens(tokens: &[&str]) -> String {
+    let mut out = String::new();
+    for token in tokens {
+        let stripped = token.trim_matches(|c: char| !c.is_alphanumeric());
+        if stripped.is_empty() {
+            continue;
+        }
+        let lower = stripped.to_ascii_lowercase();
+        match lower.as_str() {
+            "dot" => {
+                if !out.is_empty() && !out.ends_with('.') {
+                    out.push('.');
+                }
+            }
+            "underscore" => {
+                if !out.is_empty() && !out.ends_with('_') {
+                    out.push('_');
+                }
+            }
+            "hyphen" | "dash" => {
+                if !out.is_empty() && !out.ends_with('-') {
+                    out.push('-');
+                }
+            }
+            _ => {
+                if let Some(digit) = email_digit_word(stripped) {
+                    out.push_str(digit);
+                } else {
+                    out.extend(
+                        stripped
+                            .chars()
+                            .filter(|c| c.is_alphanumeric())
+                            .flat_map(|c| c.to_lowercase()),
+                    );
+                }
+            }
+        }
+    }
+    while out.contains("..") {
+        out = out.replace("..", ".");
+    }
+    out.trim_matches('.').to_string()
+}
 
 fn recover_spoken_emails(text: &str) -> String {
     let mut result = text.to_string();
@@ -134,8 +248,6 @@ fn recover_spoken_emails(text: &str) -> String {
     let matches: Vec<_> = EMAIL_SEP.find_iter(text).collect();
     for m in matches.into_iter().rev() {
         let sep_start = m.start();
-        let match_end = m.end();
-
         let domain_raw = EMAIL_SEP
             .captures(&result[sep_start..])
             .and_then(|c| c.name("domain"))
@@ -174,44 +286,18 @@ fn recover_spoken_emails(text: &str) -> String {
 
         local_tokens.reverse();
 
-        let local = {
-            let joined: String = local_tokens
-                .iter()
-                .flat_map(|w| {
-                    w.chars()
-                        .filter(|c| c.is_alphanumeric())
-                        .flat_map(|c| c.to_lowercase())
-                })
-                .collect();
-            // Remove "dot" as word but keep everything else
-            joined.replace("dot", "")
-        };
-        // If after removing "dot" tokens there's nothing left, skip
-        let local_clean: String = local_tokens
-            .iter()
-            .filter(|w| !w.eq_ignore_ascii_case("dot"))
-            .flat_map(|w| {
-                w.chars()
-                    .filter(|c| c.is_alphanumeric())
-                    .flat_map(|c| c.to_lowercase())
-            })
-            .collect();
+        let local_clean = fold_email_local_tokens(&local_tokens);
         if local_clean.is_empty() {
             continue;
         }
 
-        // Find the actual start position of the first local token in `before`
-        let first_local = local_tokens[0];
-        let local_start = before.rfind(first_local).unwrap_or(sep_start);
-        // Walk back to find the true start (could be preceded by space)
-        let local_byte_start = {
-            let candidate = before[..local_start].trim_end().len();
-            if candidate < local_start {
-                candidate + 1
-            } else {
-                local_start
-            }
-        };
+        // Find the actual start position of the full local-token phrase.
+        // Searching for only the first token is unsafe for initials like
+        // "V abhi dot Verma": a plain rfind("V") lands inside "Verma".
+        let local_phrase = local_tokens.join(" ");
+        let local_byte_start = before
+            .rfind(&local_phrase)
+            .unwrap_or_else(|| before.rfind(local_tokens[0]).unwrap_or(sep_start));
 
         let prefix = &result[..local_byte_start];
         let suffix = &result[sep_start..][m.as_str().len()..];
@@ -238,7 +324,123 @@ fn compact_domain(raw: &str) -> String {
     while out.contains("..") {
         out = out.replace("..", ".");
     }
-    out.trim_matches('.').to_string()
+    let out = out.trim_matches('.').to_string();
+    match out.as_str() {
+        "gmail" | "gmailcom" | "gemail" | "gmaildot" | "googlemail" => "gmail.com".to_string(),
+        "yahoo" => "yahoo.com".to_string(),
+        "outlook" => "outlook.com".to_string(),
+        "hotmail" => "hotmail.com".to_string(),
+        "icloud" => "icloud.com".to_string(),
+        _ => out,
+    }
+}
+
+static EMAIL_ADDR: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}").unwrap());
+
+fn email_spans(text: &str) -> Vec<(usize, usize, String)> {
+    EMAIL_ADDR
+        .find_iter(text)
+        .map(|m| {
+            let mut end = m.end();
+            while end > m.start()
+                && text[..end]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| matches!(c, '.' | ',' | ';' | ':' | ')' | ']' | '}'))
+            {
+                end -= text[..end].chars().next_back().unwrap().len_utf8();
+            }
+            (m.start(), end, text[m.start()..end].to_string())
+        })
+        .collect()
+}
+
+fn best_email_candidate(observed: &str, candidates: &[String]) -> Option<String> {
+    let observed_norm = compact_email(observed)?;
+    let (observed_local, observed_domain) = split_email(observed)?;
+    let mut best: Option<(String, f64)> = None;
+    for candidate in candidates {
+        let Some(candidate_norm) = compact_email(candidate) else {
+            continue;
+        };
+        let Some((candidate_local, candidate_domain)) = split_email(candidate) else {
+            continue;
+        };
+        let all_score = edit_similarity(&observed_norm, &candidate_norm);
+        let local_score = edit_similarity(
+            &compact_token(observed_local),
+            &compact_token(candidate_local),
+        );
+        let domain_score = if observed_domain.eq_ignore_ascii_case(candidate_domain) {
+            1.0
+        } else {
+            edit_similarity(
+                &compact_token(observed_domain),
+                &compact_token(candidate_domain),
+            )
+        };
+        let score = (all_score * 0.45) + (local_score * 0.35) + (domain_score * 0.20);
+        let strong_same_domain = domain_score >= 0.98 && local_score >= 0.86;
+        let strong_overall = score >= 0.90;
+        if !strong_same_domain && !strong_overall {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|(_, best_score)| score > *best_score)
+        {
+            best = Some((candidate.clone(), score));
+        }
+    }
+    best.map(|(candidate, _)| candidate)
+}
+
+fn split_email(email: &str) -> Option<(&str, &str)> {
+    let (local, domain) = email.split_once('@')?;
+    if local.is_empty() || domain.is_empty() {
+        return None;
+    }
+    Some((local, domain))
+}
+
+fn compact_email(email: &str) -> Option<String> {
+    split_email(email)?;
+    Some(compact_token(email))
+}
+
+fn compact_token(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+fn edit_similarity(a: &str, b: &str) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    if a == b {
+        return 1.0;
+    }
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let d = levenshtein_chars(&a_chars, &b_chars) as f64;
+    1.0 - d / (a_chars.len().max(b_chars.len()) as f64)
+}
+
+fn levenshtein_chars(a: &[char], b: &[char]) -> usize {
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            curr[j + 1] = (curr[j] + 1).min(prev[j + 1] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -295,21 +497,8 @@ fn compact_local_before_at(text: &str) -> String {
             continue;
         }
 
-        let local: String = {
-            let mut out = String::new();
-            for &(_, frag) in &fragments {
-                if frag.eq_ignore_ascii_case("dot") {
-                    out.push('.');
-                } else {
-                    out.extend(
-                        frag.chars()
-                            .filter(|c| c.is_alphanumeric())
-                            .flat_map(|c| c.to_lowercase()),
-                    );
-                }
-            }
-            out
-        };
+        let local_fragments: Vec<&str> = fragments.iter().map(|(_, frag)| *frag).collect();
+        let local = fold_email_local_tokens(&local_fragments);
         if local.chars().all(|c| c == '.') || local.is_empty() {
             continue;
         }
@@ -626,6 +815,27 @@ mod tests {
             !out.contains("at the rate"),
             "'at the rate' must be replaced, got: {out}"
         );
+    }
+
+    #[test]
+    fn email_missing_gmail_com_tld_defaults_to_gmail() {
+        assert_eq!(
+            recover_emails(
+                "Mera jo email hai, voh hai V abhi dot Verma two six seven eight at the rate gmail dot."
+            ),
+            "Mera jo email hai, voh hai vabhi.verma2678@gmail.com."
+        );
+    }
+
+    #[test]
+    fn email_memory_canonicalizes_close_user_email() {
+        let (out, recoveries) = recover_emails_with_candidates(
+            "Mera email vabhi.verma2678@gmail.com hai.",
+            &["v.abhi.verma2678@gmail.com".to_string()],
+        );
+        assert_eq!(out, "Mera email v.abhi.verma2678@gmail.com hai.");
+        assert_eq!(recoveries.len(), 1);
+        assert_eq!(recoveries[0].canonical, "v.abhi.verma2678@gmail.com");
     }
 
     #[test]

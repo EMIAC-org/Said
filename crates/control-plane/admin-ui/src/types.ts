@@ -62,6 +62,21 @@ export interface OrgMember {
   lark_department?: string
   role: string
   joined_at?: string
+  desktop_active?: boolean
+}
+
+export interface DesktopClient {
+  id: string
+  account_id: string
+  device_id: string
+  platform: string
+  app_version: string
+  hostname?: string | null
+  first_seen_at: string
+  last_seen_at: string
+  email?: string | null
+  lark_name?: string | null
+  lark_avatar_url?: string | null
 }
 
 export interface User {

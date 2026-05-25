@@ -213,6 +213,10 @@ fn upsert_inner(
     if from.is_ascii() && to.is_ascii() && from == to.to_ascii_lowercase() {
         return false;
     }
+    if crate::llm::alias_safety::is_common_alias_source(&from) {
+        tracing::info!("[stt-replace] rejected common alias source: {from:?} → {to:?}");
+        return false;
+    }
     if !is_plausible_alias(&from, &to) {
         tracing::info!("[stt-replace] rejected implausible alias: {from:?} → {to:?}");
         return false;
@@ -856,7 +860,9 @@ pub fn apply_exact_safe(transcript: &str, rules: &[SttReplacement]) -> ApplyResu
             if r.transcript_form.trim().len() < 2 {
                 return false;
             }
-            if crate::llm::promotion_gate::is_common_word(&r.transcript_form) {
+            if crate::llm::alias_safety::is_common_alias_source(&r.transcript_form)
+                || crate::llm::promotion_gate::is_common_word(&r.transcript_form)
+            {
                 return false;
             }
             if r.review_status != ReviewStatus::Approved {
@@ -1304,6 +1310,9 @@ fn is_safe_distortion(distortion: &str, correct_form: &str) -> bool {
     if distortion.eq_ignore_ascii_case(correct_form) {
         return false;
     }
+    if crate::llm::alias_safety::is_common_alias_source(distortion) {
+        return false;
+    }
     // Reject single-char repeats like "aaa"
     let mut chars_iter = distortion.chars();
     if let Some(first) = chars_iter.next() {
@@ -1440,26 +1449,31 @@ mod tests {
         assert_eq!(out, "I use n8n for automation");
     }
 
+    #[test]
+    fn common_hindi_alias_sources_are_never_written() {
+        let pool = mem_pool();
+        assert!(!super::upsert(&pool, "u1", "kaisa", "Macobs", 1.0));
+        assert!(!super::upsert(&pool, "u1", "कैसा", "Macobs", 1.0));
+        assert!(!super::upsert(&pool, "u1", "laga", "Macobs", 1.0));
+        assert!(super::load_all(&pool, "u1").is_empty());
+    }
+
     // ── Foundational learning + apply behavior ─────────────────────────────
 
     #[test]
     fn upsert_aliases_stores_both_polish_and_transcript_spans() {
-        // Foundational case: STT emitted "मैं Corps" (raw transcript span),
-        // polish rendered it as "Main corps", user fixed to "MACOBS".
+        // Foundational case: raw STT and polish saw two different rare
+        // distortions for the same protected term.
         // BOTH spans should land as aliases so we match either shape later.
         let pool = mem_pool();
         let n = super::upsert_aliases(
-            &pool,
-            "u1",
-            /* transcript_window */ "मैं Corps",
-            /* polish_window     */ "Main corps",
-            /* correct_form      */ "MACOBS",
-            1.0,
+            &pool, "u1", /* transcript_window */ "mecorbs",
+            /* polish_window     */ "macorbs", /* correct_form      */ "Macobs", 1.0,
         );
         assert_eq!(n, 2, "expected both spans stored");
         let rules = super::load_all(&pool, "u1");
-        assert!(rules.iter().any(|r| r.transcript_form == "main corps"));
-        assert!(rules.iter().any(|r| r.transcript_form == "मैं corps"));
+        assert!(rules.iter().any(|r| r.transcript_form == "macorbs"));
+        assert!(rules.iter().any(|r| r.transcript_form == "mecorbs"));
     }
 
     #[test]
@@ -1467,7 +1481,7 @@ mod tests {
         // Diff couldn't positionally align — transcript_window is empty.
         // We still store the polish span as an alias.
         let pool = mem_pool();
-        let n = super::upsert_aliases(&pool, "u1", "", "Main corps", "MACOBS", 1.0);
+        let n = super::upsert_aliases(&pool, "u1", "", "mecorbs", "Macobs", 1.0);
         assert_eq!(n, 1);
     }
 
@@ -1476,7 +1490,7 @@ mod tests {
         // STT and polish were identical (no polish rewrite for this region).
         // Don't double-count — store once.
         let pool = mem_pool();
-        let n = super::upsert_aliases(&pool, "u1", "Main corps", "Main corps", "MACOBS", 1.0);
+        let n = super::upsert_aliases(&pool, "u1", "mecorbs", "mecorbs", "Macobs", 1.0);
         assert_eq!(n, 1);
         let rules = super::load_all(&pool, "u1");
         assert_eq!(rules.len(), 1);
@@ -1528,11 +1542,11 @@ mod tests {
     fn delete_by_correct_form_clears_all_aliases_pointing_at_it() {
         // Regression: when a user deletes a vocab term, EVERY alias that
         // would otherwise rewrite raw STT into that canonical must die too.
-        // Without this, the pre-polish layer keeps mapping "main corps" →
-        // "MACOBS" even after MACOBS was explicitly removed from vocab.
+        // Without this, the pre-polish layer keeps mapping learned STT
+        // distortions into the canonical after the term was deleted.
         let pool = mem_pool();
-        super::upsert_aliases(&pool, "u1", "मैं Corps", "Main corps", "MACOBS", 1.0);
-        super::upsert(&pool, "u1", "main corp", "MACOBS", 1.0);
+        super::upsert_aliases(&pool, "u1", "mecorbs", "macorbs", "MACOBS", 1.0);
+        super::upsert(&pool, "u1", "micobs", "MACOBS", 1.0);
         // Unrelated alias for a different canonical — must survive.
         super::upsert(&pool, "u1", "Written", "n8n", 1.0);
         assert_eq!(super::load_all(&pool, "u1").len(), 4);

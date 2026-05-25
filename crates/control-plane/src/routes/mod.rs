@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod clients;
 pub mod guest;
 pub mod guest_ws;
 pub mod health;

@@ -35,9 +35,17 @@ pub async fn confirm_term(
 
     if body.action == "learn" {
         // ── Resolve output language from preferences ─────────────────────────
-        let language = get_prefs(&state.pool, user_id)
-            .map(|p| p.output_language)
+        let prefs = get_prefs(&state.pool, user_id);
+        let language = prefs
+            .as_ref()
+            .map(|p| p.output_language.clone())
             .unwrap_or_else(|| "hinglish".into());
+        let groq_key = prefs
+            .as_ref()
+            .and_then(|p| p.groq_api_key.clone())
+            .or_else(|| std::env::var("GROQ_API_KEY").ok())
+            .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
+            .unwrap_or_default();
 
         // ── Promote to vocabulary ────────────────────────────────────────────
         vocabulary::upsert_for_language_with_context(
@@ -50,20 +58,36 @@ pub async fn confirm_term(
             None,
         );
 
-        // ── Record edit-policy rule ──────────────────────────────────────────
-        tier2_edit_policy::record_explicit_edit(
-            &state.pool,
-            user_id,
-            &body.original,
-            &body.term,
-            "replace",
-            &[],
-            &[],
-            body.recording_id.as_deref(),
-        );
+        let alias_safe = if body.original.trim().is_empty() {
+            false
+        } else {
+            crate::llm::alias_safety::judge_alias_source(
+                &state.http_client,
+                &state.pool,
+                user_id,
+                &groq_key,
+                &body.original,
+                &body.term,
+                None,
+            )
+            .await
+            .allows_learning()
+        };
 
-        // ── Create STT alias (skip if original is a common word) ────────────
-        if !crate::llm::promotion_gate::is_common_word(&body.original) {
+        if alias_safe {
+            // ── Record edit-policy rule ──────────────────────────────────────
+            tier2_edit_policy::record_explicit_edit(
+                &state.pool,
+                user_id,
+                &body.original,
+                &body.term,
+                "replace",
+                &[],
+                &[],
+                body.recording_id.as_deref(),
+            );
+
+            // ── Create STT alias ────────────────────────────────────────────
             stt_replacements::upsert_aliases_for_language(
                 &state.pool,
                 user_id,
@@ -73,25 +97,25 @@ pub async fn confirm_term(
                 1.0,
                 &language,
             );
-        } else {
-            info!(
-                "[confirm] skipped STT alias {:?} → {:?} — original is a common word",
-                body.original, body.term,
-            );
-        }
 
-        // ── Proactive distortion seeding ────────────────────────────────────
-        let proactive = stt_replacements::generate_proactive_distortions(
-            &state.pool,
-            user_id,
-            &body.term,
-            &body.original,
-            &language,
-        );
-        if proactive > 0 {
+            // ── Proactive distortion seeding ────────────────────────────────
+            let proactive = stt_replacements::generate_proactive_distortions(
+                &state.pool,
+                user_id,
+                &body.term,
+                &body.original,
+                &language,
+            );
+            if proactive > 0 {
+                info!(
+                    "[confirm] seeded {proactive} proactive distortion(s) for {:?}",
+                    body.term
+                );
+            }
+        } else if !body.original.trim().is_empty() {
             info!(
-                "[confirm] seeded {proactive} proactive distortion(s) for {:?}",
-                body.term
+                "[confirm] skipped alias learning {:?} → {:?} — alias safety blocked source",
+                body.original, body.term,
             );
         }
 
@@ -241,9 +265,17 @@ pub async fn confirm_batch(
     Json(body): Json<ConfirmBatchBody>,
 ) -> (StatusCode, Json<ConfirmBatchResponse>) {
     let user_id = state.default_user_id.as_str();
-    let language = get_prefs(&state.pool, user_id)
-        .map(|p| p.output_language)
+    let prefs = get_prefs(&state.pool, user_id);
+    let language = prefs
+        .as_ref()
+        .map(|p| p.output_language.clone())
         .unwrap_or_else(|| "hinglish".into());
+    let groq_key = prefs
+        .as_ref()
+        .and_then(|p| p.groq_api_key.clone())
+        .or_else(|| std::env::var("GROQ_API_KEY").ok())
+        .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
+        .unwrap_or_default();
 
     let mut learned_count = 0_usize;
     let mut learned_terms = Vec::new();
@@ -270,23 +302,36 @@ pub async fn confirm_batch(
 
             vocab_fts::upsert(&state.pool, user_id, corrected, None);
 
-            // Record edit-policy rule
-            tier2_edit_policy::record_explicit_edit(
-                &state.pool,
-                user_id,
-                original,
-                corrected,
-                "replace",
-                &[],
-                &[],
-                body.recording_id.as_deref(),
-            );
+            let alias_safe = if original.is_empty() {
+                false
+            } else {
+                crate::llm::alias_safety::judge_alias_source(
+                    &state.http_client,
+                    &state.pool,
+                    user_id,
+                    &groq_key,
+                    original,
+                    corrected,
+                    None,
+                )
+                .await
+                .allows_learning()
+            };
 
-            // Auto-activate all candidate rules
-            tier2_edit_policy::activate_all_for_term(&state.pool, user_id, corrected);
+            if alias_safe {
+                // Record edit-policy rule
+                tier2_edit_policy::record_explicit_edit(
+                    &state.pool,
+                    user_id,
+                    original,
+                    corrected,
+                    "replace",
+                    &[],
+                    &[],
+                    body.recording_id.as_deref(),
+                );
 
-            // STT alias (skip if original is common)
-            if !original.is_empty() && !crate::llm::promotion_gate::is_common_word(original) {
+                // STT alias
                 stt_replacements::upsert_aliases_for_language(
                     &state.pool,
                     user_id,
@@ -296,16 +341,21 @@ pub async fn confirm_batch(
                     1.0,
                     &language,
                 );
-            }
 
-            // Proactive distortions
-            stt_replacements::generate_proactive_distortions(
-                &state.pool,
-                user_id,
-                corrected,
-                original,
-                &language,
-            );
+                // Proactive distortions
+                stt_replacements::generate_proactive_distortions(
+                    &state.pool,
+                    user_id,
+                    corrected,
+                    original,
+                    &language,
+                );
+            } else if !original.is_empty() {
+                info!(
+                    "[confirm-batch] alias safety blocked {:?} -> {:?}",
+                    original, corrected
+                );
+            }
 
             info!(
                 "[confirm-batch] learned {:?} from {:?}",

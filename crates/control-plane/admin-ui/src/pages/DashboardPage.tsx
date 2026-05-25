@@ -7,21 +7,36 @@ import { StatusPill } from '../components/StatusPill'
 import { Avatar } from '../components/Avatar'
 import { ErrorBox, Loading } from '../components/States'
 import { formatDate, duration } from '../utils'
-import type { Meeting } from '../types'
+import type { Meeting, DesktopClient } from '../types'
+
+interface OrgStats {
+  active_desktops: number
+  total_word_count_30d: number
+  recent_clients: DesktopClient[]
+}
 
 export function DashboardPage() {
   const { org } = useAuth()
   const navigate = useNavigate()
   const [meetings, setMeetings] = useState<Meeting[]>([])
+  const [stats, setStats] = useState<OrgStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    apiJson<{ meetings: Meeting[] }>('/v1/meetings')
-      .then(d => setMeetings(d.meetings || []))
+    Promise.all([
+      apiJson<{ meetings: Meeting[] }>('/v1/meetings'),
+      org?.org?.id
+        ? apiJson<OrgStats>(`/v1/orgs/${org.org.id}/stats`)
+        : Promise.resolve(null),
+    ])
+      .then(([meetingsRes, statsRes]) => {
+        setMeetings(meetingsRes.meetings || [])
+        setStats(statsRes)
+      })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
-  }, [])
+  }, [org])
 
   if (loading) return <Loading />
   if (error) return <ErrorBox title="Failed to load" message={error} />
@@ -212,12 +227,33 @@ export function DashboardPage() {
               <Mic size={13} className="text-fg-4" />
               <span className="text-[11px] font-medium text-fg-3">Transcription</span>
             </div>
-            <div className="text-[22px] font-semibold tracking-tighter mb-1">--</div>
-            <div className="text-[11px] text-fg-4">Words transcribed</div>
-            <svg viewBox="0 0 200 40" preserveAspectRatio="none" className="w-full mt-3" style={{ height: 36 }}>
-              <polyline points="0,30 25,25 50,20 75,24 100,16 125,12 150,18 175,8 200,5" fill="none" stroke="var(--color-accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              <circle cx="200" cy="5" r="2.5" fill="var(--color-accent)" />
-            </svg>
+            <div className="text-[22px] font-semibold tracking-tighter mb-1">
+              {stats?.total_word_count_30d?.toLocaleString() ?? '0'}
+            </div>
+            <div className="text-[11px] text-fg-4">Words polished (30d)</div>
+            <div className="mt-3 pt-3 border-t border-border-light">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[11px] font-medium text-fg-3">Active desktops</span>
+                <span className="text-[18px] font-semibold tabular-nums">{stats?.active_desktops ?? 0}</span>
+              </div>
+              {(stats?.recent_clients?.length ?? 0) > 0 && (
+                <div className="space-y-2 mt-2">
+                  {stats!.recent_clients.slice(0, 3).map(c => (
+                    <div key={c.id} className="flex items-center gap-2 text-[11px] text-fg-3">
+                      <Avatar name={c.lark_name || c.email || '?'} size="sm" />
+                      <span className="truncate flex-1">{c.lark_name || c.email}</span>
+                      <span className="text-fg-5 capitalize">{c.platform}</span>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => navigate('/desktop')}
+                    className="text-[10px] text-fg-4 hover:text-fg-3 transition-colors"
+                  >
+                    View all desktop installs →
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

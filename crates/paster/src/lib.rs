@@ -20,6 +20,7 @@ mod imp {
     const KEY_V: u16 = 9;
     const KEY_A: u16 = 0; // kVK_ANSI_A
     const KEY_C: u16 = 8; // kVK_ANSI_C
+    const KEY_DELETE: u16 = 51; // kVK_Delete (backspace)
     const KEY_CMD: u16 = 55;
 
     const K_CG_HID_EVENT_TAP: u32 = 0;
@@ -1347,6 +1348,40 @@ mod imp {
     /// failed or got reset by a draft-then-final LLM stream).
     pub fn paste_replacing(text: &str) -> Result<(), String> {
         paste_inner(text, /* select_all_first = */ true)
+    }
+
+    /// Replace only the suffix that Said typed during the current recording.
+    /// This avoids Cmd+A in normal voice fallback paths, so existing user text
+    /// in the field is not selected or overwritten.
+    pub fn replace_typed_suffix(typed_text: &str, replacement: &str) -> Result<(), String> {
+        let chars_to_delete = typed_text.chars().count();
+        if chars_to_delete == 0 {
+            return paste(replacement);
+        }
+        let ax_ok = unsafe { ffi::AXIsProcessTrusted() };
+        tracing::info!(
+            "[paste] replacing current typed suffix — delete_chars={} replacement_len={}",
+            chars_to_delete,
+            replacement.len()
+        );
+        if !ax_ok {
+            return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable Said".into());
+        }
+
+        unsafe {
+            let source = ffi::CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_COMBINED_SESSION);
+            for _ in 0..chars_to_delete {
+                post_key(source, KEY_DELETE, true, 0);
+                thread::sleep(Duration::from_millis(2));
+                post_key(source, KEY_DELETE, false, 0);
+                thread::sleep(Duration::from_millis(2));
+            }
+            if !source.is_null() {
+                ffi::CFRelease(source);
+            }
+        }
+        thread::sleep(Duration::from_millis(40));
+        paste(replacement)
     }
 
     fn paste_inner(text: &str, select_all_first: bool) -> Result<(), String> {

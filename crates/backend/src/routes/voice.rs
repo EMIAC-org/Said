@@ -112,6 +112,7 @@ use crate::{
         vocab_resolver,
     },
     store::{
+        email_memory,
         history::{InsertRecording, insert_recording},
         openai_oauth, prompt_templates, stt_replacements,
         vectors::retrieve_similar,
@@ -166,6 +167,14 @@ pub struct VoiceRepairRequest {
 }
 
 pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> impl IntoResponse {
+    if !crate::store::users::has_enterprise_auth(&state.pool, &state.default_user_id) {
+        return (
+            StatusCode::FORBIDDEN,
+            json!({"error": "workspace connection required — sign in to your organization in AirNote"}).to_string(),
+        )
+            .into_response();
+    }
+
     // ── Extract multipart fields ───────────────────────────────────────────────
     let mut wav_data: Vec<u8> = Vec::new();
     let mut target_app: Option<String> = None;
@@ -230,6 +239,14 @@ pub async fn polish_transcript(
     State(state): State<AppState>,
     Json(req): Json<TranscriptPolishRequest>,
 ) -> impl IntoResponse {
+    if !crate::store::users::has_enterprise_auth(&state.pool, &state.default_user_id) {
+        return (
+            StatusCode::FORBIDDEN,
+            json!({"error": "workspace connection required — sign in to your organization in AirNote"}).to_string(),
+        )
+            .into_response();
+    }
+
     let transcript = req.transcript.trim().to_string();
     if transcript.is_empty() {
         warn!("[voice] received empty transcript-only polish request");
@@ -254,6 +271,14 @@ pub async fn repair_transcript(
     State(state): State<AppState>,
     Json(req): Json<VoiceRepairRequest>,
 ) -> impl IntoResponse {
+    if !crate::store::users::has_enterprise_auth(&state.pool, &state.default_user_id) {
+        return (
+            StatusCode::FORBIDDEN,
+            json!({"error": "workspace connection required — sign in to your organization in AirNote"}).to_string(),
+        )
+            .into_response();
+    }
+
     let transcript = req.transcript.trim().to_string();
     let previous_output = req.previous_output.trim().to_string();
     if transcript.is_empty() || previous_output.is_empty() {
@@ -785,43 +810,53 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             }
         };
 
-        // Pre-LLM local correction: exact safe aliases first, then Tier 2
-        // candidate scoring for the remaining suspicious single tokens.
-        // This keeps user-specific repairs local before embedding lookup,
-        // vocab selection, and LLM polish.
-        let (stt_transcript, enriched_for_hints, alias_result) = {
+        // Pre-LLM local pass: deterministic number normalization plus
+        // protected-term evidence collection. Tier 2 no longer mutates the
+        // transcript here; final protected-term replacement happens after the
+        // grammar-only LLM polish, using this raw evidence.
+        let (stt_transcript, enriched_for_hints, tier2_evidence, alias_result) = {
             let pool_t = pool.clone();
             let uid_t = user_id.clone();
-            let raw_t = stt_transcript_raw.clone();
+            let numeric_t = crate::number_format::apply(&stt_transcript_raw);
+            let numeric_for_evidence = numeric_t.clone();
             let rules_t = stt_replacement_rules.clone();
             let vocab_t = vocab_full.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                crate::tier2::correct_with_store(
+            if numeric_t != stt_transcript_raw {
+                info!(
+                    "[voice] deterministic number format before LLM: {:?} → {:?}",
+                    stt_transcript_raw, numeric_t
+                );
+            }
+            let evidence = tokio::task::spawn_blocking(move || {
+                crate::tier2::collect_evidence_with_store(
                     &pool_t,
                     &uid_t,
-                    &raw_t,
+                    &numeric_for_evidence,
                     &rules_t,
                     &vocab_t,
                 )
             }).await.unwrap_or_else(|e| {
-                warn!("[voice] tier2 correction task failed, using exact aliases only: {e}");
-                stt_replacements::apply_exact_safe(
-                    &stt_transcript_raw,
-                    &stt_replacement_rules,
-                )
+                warn!("[voice] tier2 evidence collection failed: {e}");
+                crate::tier2::EvidenceResult {
+                    source_text: numeric_t.clone(),
+                    evidence: vec![],
+                    matches: vec![],
+                    traces: vec![],
+                }
             });
-            if !result.matches.is_empty() {
+            if !evidence.matches.is_empty() {
                 info!(
-                    "[voice] pre-LLM local correction: {} replacement(s): {}",
-                    result.matches.len(),
-                    result.matches
+                    "[voice] protected-term evidence before LLM: {} signal(s): {}",
+                    evidence.matches.len(),
+                    evidence.matches
                         .iter()
                         .map(|m| format!("{:?}→{} ({:?})", m.transcript_form, m.correct_form, m.kind))
                         .collect::<Vec<_>>()
                         .join(", "),
                 );
             }
-            (result.text.clone(), enriched_raw.clone(), result)
+            let apply_result = evidence.as_apply_result();
+            (evidence.source_text.clone(), enriched_raw.clone(), evidence, apply_result)
         };
 
         let status_payload = json!({"phase": "polishing", "transcript": &stt_transcript}).to_string();
@@ -870,8 +905,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 )
             }).await.unwrap_or_default();
             // Load safe STT aliases for prompt rendering. These are displayed
-            // only for terms the resolver admits below; Tier 2 has already
-            // applied high-confidence corrections before the LLM sees text.
+            // only for terms the resolver admits below; Tier 2 now carries
+            // protected-term evidence through polish and mutates only at the end.
             let alias_map: std::collections::HashMap<String, Vec<(String, i64)>> = {
                 let conn = pool.get().ok();
                 if let Some(c) = conn {
@@ -1226,6 +1261,73 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             llm_result.polished = cleaned;
         }
 
+        let pre_final_local = llm_result.polished.clone();
+        let numeric_final = crate::number_format::apply(&llm_result.polished);
+        if numeric_final != llm_result.polished {
+            info!(
+                "[voice] deterministic number format after LLM: {:?} → {:?}",
+                llm_result.polished, numeric_final
+            );
+            llm_result.polished = numeric_final;
+        }
+
+        let email_candidates = email_memory::load_candidates(&pool, &user_id);
+        let (email_final, email_recoveries) =
+            crate::llm::format_recover::recover_emails_with_candidates(
+                &llm_result.polished,
+                &email_candidates,
+            );
+        if email_final != llm_result.polished {
+            info!(
+                "[voice] deterministic email format after LLM: {} recovery/replacement(s)",
+                email_recoveries.len()
+            );
+            llm_result.polished = email_final;
+        }
+
+        let final_alias_result = {
+            let pool_t = pool.clone();
+            let uid_t = user_id.clone();
+            let polished_t = llm_result.polished.clone();
+            let polished_fallback = polished_t.clone();
+            let evidence_t = tier2_evidence.clone();
+            let source_t = stt_transcript.clone();
+            let rules_t = stt_replacement_rules.clone();
+            let vocab_t = vocab_full.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::tier2::final_resolve_with_store(
+                    &pool_t,
+                    &uid_t,
+                    &polished_t,
+                    &evidence_t,
+                    &source_t,
+                    &rules_t,
+                    &vocab_t,
+                )
+            })
+            .await
+            .unwrap_or_else(|e| {
+                warn!("[voice] final protected-term resolve failed: {e}");
+                crate::store::stt_replacements::ApplyResult {
+                    text: polished_fallback,
+                    matches: vec![],
+                    traces: vec![],
+                }
+            })
+        };
+        if final_alias_result.text != llm_result.polished {
+            info!(
+                "[voice] final protected-term resolve: {} replacement(s)",
+                final_alias_result.matches.len()
+            );
+            llm_result.polished = final_alias_result.text.clone();
+        }
+
+        if llm_result.polished != pre_final_local && !saw_script_rewrite {
+            yield Ok(Event::default().event("token")
+                .data(json!({"token": STREAM_RESET_SENTINEL}).to_string()));
+        }
+
         let word_count = llm_result.polished.split_whitespace().count() as i64;
         info!("[timing] LLM={}ms (TTFT inside) | total={}ms ← STT={}ms embed={}ms rag={}ms llm={}ms",
             llm_ms, total_ms, transcribe_ms, embed_ms, rag_ms, llm_ms);
@@ -1249,7 +1351,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let aid2    = saved_audio_id.clone();
             let enr2    = enriched_raw.clone();
             let raw2    = stt_transcript_raw.clone();
-            let local2  = resolved_transcript.clone();
+            let local2  = llm_result.polished.clone();
             let inserted = tokio::task::spawn_blocking(move || {
                 insert_recording(&pool2, InsertRecording {
                     id: &id2, user_id: &uid2,
@@ -1272,11 +1374,11 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             if !inserted {
                 warn!("[voice] failed to insert recording history row");
             }
-            if inserted && !alias_result.traces.is_empty() {
+            if inserted && !final_alias_result.traces.is_empty() {
                 let pool_policy = pool.clone();
                 let uid_policy = user_id.clone();
                 let recording_policy = recording_id.clone();
-                let result_policy = alias_result.clone();
+                let result_policy = final_alias_result.clone();
                 tokio::task::spawn_blocking(move || {
                     let n = crate::store::tier2_policy::record_decisions(
                         &pool_policy,
@@ -1294,11 +1396,11 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             // Record decision events for exact STT alias matches so that
             // mark_removed_feedback can penalise the alias when the user
             // reverts a wrong replacement.
-            if inserted && !alias_result.matches.is_empty() {
+            if inserted && !final_alias_result.matches.is_empty() {
                 let pool_alias = pool.clone();
                 let uid_alias = user_id.clone();
                 let recording_alias = recording_id.clone();
-                let result_alias = alias_result.clone();
+                let result_alias = final_alias_result.clone();
                 tokio::task::spawn_blocking(move || {
                     let n = crate::store::tier2_policy::record_applied_matches(
                         &pool_alias,

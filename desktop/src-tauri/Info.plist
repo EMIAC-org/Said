@@ -14,5 +14,17 @@
     <key>NSAppleEventsUsageDescription</key>
     <string>Said uses Apple Events to paste text into other apps.</string>
 
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.emiac.airnote.desktop</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>airnote</string>
+            </array>
+        </dict>
+    </array>
+
 </dict>
 </plist>

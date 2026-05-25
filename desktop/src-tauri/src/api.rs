@@ -793,6 +793,15 @@ pub struct CloudStatus {
     pub email: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnterpriseStatus {
+    pub connected: bool,
+    pub license_tier: String,
+    pub email: Option<String>,
+    pub server_url: Option<String>,
+    pub org_name: Option<String>,
+}
+
 /// POST /v1/auth/signup on the cloud control plane.
 pub async fn cloud_signup(
     cloud_url: &str,
@@ -873,9 +882,17 @@ pub async fn store_enterprise_token(
     token: &str,
     tier: &str,
     email: &str,
+    server_url: &str,
+    org_name: Option<&str>,
 ) -> Result<(), String> {
     let url = format!("{}/v1/cloud/token", ep.url);
-    let body = serde_json::json!({ "token": token, "license_tier": tier, "email": email });
+    let body = serde_json::json!({
+        "token": token,
+        "license_tier": tier,
+        "email": email,
+        "server_url": server_url,
+        "org_name": org_name,
+    });
     let status = Client::new()
         .put(&url)
         .header("Authorization", ep.bearer())
@@ -922,6 +939,20 @@ pub async fn get_cloud_status(ep: &BackendEndpoint) -> Result<CloudStatus, Strin
         .json::<CloudStatus>()
         .await
         .map_err(|e| format!("parse cloud status: {e}"))
+}
+
+/// GET /v1/enterprise/status — read workspace connection from local backend.
+pub async fn get_enterprise_status(ep: &BackendEndpoint) -> Result<EnterpriseStatus, String> {
+    let url = format!("{}/v1/enterprise/status", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("enterprise status failed: {e}"))?
+        .json::<EnterpriseStatus>()
+        .await
+        .map_err(|e| format!("parse enterprise status: {e}"))
 }
 
 fn extract_error(body: &str) -> String {
@@ -1002,6 +1033,9 @@ pub struct ClassifyEditResponse {
     /// Driven by the toast event the desktop emits to the frontend.
     #[serde(default)]
     pub promoted_terms: Vec<String>,
+    /// Email addresses saved to local deterministic email memory.
+    #[serde(default)]
+    pub learned_emails: Vec<String>,
     /// Terms recorded into the pending-promotions queue but not yet promoted
     /// (k-threshold not met). The desktop surfaces these as a soft "noticed"
     /// toast so the user knows the system saw the correction.

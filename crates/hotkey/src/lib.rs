@@ -19,6 +19,13 @@ pub enum RecordHotkey {
     Function,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HudShortcutAction {
+    PlacementMode,
+    ResetPosition,
+    FinishPlacement,
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
     use core_foundation::runloop::kCFRunLoopCommonModes;
@@ -71,6 +78,10 @@ mod imp {
         pub const KC_5: i64 = 23;
 
         // macOS virtual key codes for special keys
+        pub const KC_F: i64 = 3;
+        pub const KC_SLASH: i64 = 44;
+        pub const KC_PERIOD: i64 = 47;
+        pub const KC_SPACE: i64 = 49;
         pub const KC_BACKSPACE: i64 = 51;
         pub const KC_DELETE: i64 = 117;
         pub const KC_LEFT: i64 = 123;
@@ -163,7 +174,7 @@ mod imp {
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
     use std::sync::{Mutex, OnceLock};
 
-    use crate::RecordHotkey;
+    use crate::{HudShortcutAction, RecordHotkey};
 
     /// Timestamped key event stored in the ring buffer.
     pub struct TimedKeyEvt {
@@ -188,6 +199,9 @@ mod imp {
     // ── Option+1..5 tone shortcuts ────────────────────────────────────────────
 
     static SHORTCUT_CB: OnceLock<Arc<dyn Fn(u8) + Send + Sync>> = OnceLock::new();
+    static LONG_DICTATION_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+    static HUD_SHORTCUT_CB: OnceLock<Arc<dyn Fn(HudShortcutAction) + Send + Sync>> =
+        OnceLock::new();
     static RECORD_HOTKEY: AtomicU8 = AtomicU8::new(0);
 
     fn current_record_hotkey() -> RecordHotkey {
@@ -212,6 +226,76 @@ mod imp {
     /// The callback receives the digit (1–5). Must be called before the tap starts.
     pub fn register_shortcut_callback(cb: Arc<dyn Fn(u8) + Send + Sync>) {
         let _ = SHORTCUT_CB.set(cb);
+    }
+
+    /// Register a callback invoked when the Function record hotkey is held and
+    /// Space is pressed. Desktop uses this to lock long dictation mode.
+    pub fn register_long_dictation_callback(cb: Arc<dyn Fn() + Send + Sync>) {
+        let _ = LONG_DICTATION_CB.set(cb);
+    }
+
+    /// Register callbacks for global HUD placement shortcuts.
+    pub fn register_hud_shortcut_callback(cb: Arc<dyn Fn(HudShortcutAction) + Send + Sync>) {
+        let _ = HUD_SHORTCUT_CB.set(cb);
+    }
+
+    /// Cmd+Shift+/ opens draggable placement mode. Cmd+Shift+. resets the
+    /// saved placement to the centered default.
+    unsafe fn check_and_fire_hud_shortcut(event: ffi::CGEventRef) -> bool {
+        let flags = unsafe { ffi::CGEventGetFlags(event) };
+        let keycode =
+            unsafe { ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE) };
+        let cmd = (flags & ffi::K_CG_FLAG_COMMAND) != 0;
+        let shift = (flags & ffi::K_CG_FLAG_SHIFT) != 0;
+        let alt = (flags & ffi::K_CG_FLAG_ALT) != 0;
+        let ctrl = (flags & ffi::K_CG_FLAG_CONTROL) != 0;
+
+        if !cmd || !shift || alt || ctrl {
+            return false;
+        }
+
+        let action = match keycode {
+            ffi::KC_SLASH => HudShortcutAction::PlacementMode,
+            ffi::KC_PERIOD => HudShortcutAction::ResetPosition,
+            ffi::KC_F => HudShortcutAction::FinishPlacement,
+            _ => return false,
+        };
+
+        tracing::info!("[hotkey] HUD shortcut detected — {action:?}");
+        if let Some(cb) = HUD_SHORTCUT_CB.get() {
+            cb(action);
+        } else {
+            tracing::warn!("[hotkey] HUD shortcut fired but HUD_SHORTCUT_CB not registered!");
+        }
+        true
+    }
+
+    /// Called inside a kCGEventKeyDown handler. Returns `true` if the event was
+    /// Fn+Space for the Function record hotkey.
+    unsafe fn check_and_fire_long_dictation(event: ffi::CGEventRef) -> bool {
+        if !matches!(current_record_hotkey(), RecordHotkey::Function) {
+            return false;
+        }
+        let flags = unsafe { ffi::CGEventGetFlags(event) };
+        let keycode =
+            unsafe { ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE) };
+        let fn_on = (flags & ffi::K_CG_FLAG_SECONDARY_FN) != 0;
+        let cmd = (flags & ffi::K_CG_FLAG_COMMAND) != 0;
+        let alt = (flags & ffi::K_CG_FLAG_ALT) != 0;
+        let shift = (flags & ffi::K_CG_FLAG_SHIFT) != 0;
+        let ctrl = (flags & ffi::K_CG_FLAG_CONTROL) != 0;
+
+        if !fn_on || keycode != ffi::KC_SPACE || cmd || alt || shift || ctrl {
+            return false;
+        }
+
+        tracing::info!("[hotkey] Fn+Space detected — locking long dictation");
+        if let Some(cb) = LONG_DICTATION_CB.get() {
+            cb();
+        } else {
+            tracing::warn!("[hotkey] Fn+Space fired but LONG_DICTATION_CB not registered!");
+        }
+        true
     }
 
     /// Called inside a kCGEventKeyDown handler. Returns `true` if the event was
@@ -502,8 +586,14 @@ mod imp {
                 if check_and_fire_paste(event) {
                     return std::ptr::null_mut(); // suppress Ctrl+Cmd+V system action
                 }
+                if check_and_fire_hud_shortcut(event) {
+                    return std::ptr::null_mut(); // suppress placement shortcut keystroke
+                }
                 if check_and_fire_shortcut(event) {
                     return std::ptr::null_mut(); // suppress Option+N so it doesn't type a character
+                }
+                if check_and_fire_long_dictation(event) {
+                    return std::ptr::null_mut(); // suppress the Space used to lock dictation
                 }
                 handle_key_down(event);
                 return event;
@@ -694,3 +784,12 @@ pub fn register_shortcut_callback(_cb: std::sync::Arc<dyn Fn(u8) + Send + Sync>)
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn register_paste_callback(_cb: std::sync::Arc<dyn Fn() + Send + Sync>) {}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn register_long_dictation_callback(_cb: std::sync::Arc<dyn Fn() + Send + Sync>) {}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn register_hud_shortcut_callback(
+    _cb: std::sync::Arc<dyn Fn(HudShortcutAction) + Send + Sync>,
+) {
+}

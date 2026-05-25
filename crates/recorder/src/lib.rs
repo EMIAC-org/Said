@@ -2,12 +2,14 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::io::Cursor;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 // ── Recording constants ───────────────────────────────────────────────────────
 
 pub const SAMPLE_RATE: u32 = 16_000;
 pub const CHANNELS: u16 = 1;
 pub const MIN_DURATION_S: f32 = 0.5;
+const STOP_REPLY_TIMEOUT: Duration = Duration::from_secs(3);
 
 // ── Internal command ──────────────────────────────────────────────────────────
 
@@ -315,12 +317,25 @@ impl AudioRecorder {
         Some(reply_rx)
     }
 
-    pub fn collect_wav(reply_rx: StopReceiver) -> Option<Vec<u8>> {
-        let (samples_f32, native_rate) = reply_rx.recv().ok()?;
+    pub fn collect_wav_result(reply_rx: StopReceiver) -> Result<Vec<u8>, String> {
+        let (samples_f32, native_rate) = match reply_rx.recv_timeout(STOP_REPLY_TIMEOUT) {
+            Ok(reply) => reply,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let msg = format!(
+                    "recorder stop timed out after {}ms",
+                    STOP_REPLY_TIMEOUT.as_millis()
+                );
+                eprintln!("[rec] {msg}");
+                return Err(msg);
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("recording thread disconnected while stopping".to_string());
+            }
+        };
 
         if samples_f32.is_empty() {
             println!("[rec] no audio captured");
-            return None;
+            return Err("no audio captured".to_string());
         }
 
         let duration = samples_f32.len() as f32 / native_rate as f32;
@@ -330,12 +345,12 @@ impl AudioRecorder {
         if max_amp < 0.0001 {
             eprintln!("[rec] audio is silence — microphone permission not granted?");
             eprintln!("[rec]   System Settings → Privacy & Security → Microphone");
-            return None;
+            return Err("audio is silence".to_string());
         }
 
         if duration < MIN_DURATION_S {
             println!("[rec] too short — ignored");
-            return None;
+            return Err("recording too short".to_string());
         }
 
         // ── P1: Resample to 16 kHz (2.75× smaller WAV → faster Deepgram upload) ──
@@ -349,14 +364,23 @@ impl AudioRecorder {
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
-        let mut writer = hound::WavWriter::new(&mut buf, spec).ok()?;
+        let mut writer =
+            hound::WavWriter::new(&mut buf, spec).map_err(|e| format!("wav writer: {e}"))?;
         for &sample in &resampled {
             let clamped = sample.clamp(-1.0, 1.0);
-            writer.write_sample((clamped * 32767.0) as i16).ok()?;
+            writer
+                .write_sample((clamped * 32767.0) as i16)
+                .map_err(|e| format!("wav sample: {e}"))?;
         }
-        writer.finalize().ok()?;
+        writer
+            .finalize()
+            .map_err(|e| format!("wav finalize: {e}"))?;
 
-        Some(buf.into_inner())
+        Ok(buf.into_inner())
+    }
+
+    pub fn collect_wav(reply_rx: StopReceiver) -> Option<Vec<u8>> {
+        Self::collect_wav_result(reply_rx).ok()
     }
 
     pub fn stop(&mut self) -> Option<Vec<u8>> {

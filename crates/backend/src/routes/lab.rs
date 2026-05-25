@@ -6,8 +6,8 @@
 //! These endpoints are PUBLIC (no shared-secret auth) because they're only
 //! used from the dev-only learning-lab frontend on localhost.
 
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use serde::Serialize;
+use axum::{Json, extract::State, http::StatusCode, response::Html, response::IntoResponse};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Instant;
 use tracing::info;
@@ -25,6 +25,136 @@ use crate::{
     store::{stt_replacements, vectors::retrieve_similar, vocab_embeddings, vocabulary},
     stt::bias as stt_bias,
 };
+
+#[derive(Debug, Deserialize)]
+pub struct NumberFormatRequest {
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub cases: Vec<NumberFormatCaseInput>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NumberFormatCaseInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub raw: String,
+    #[serde(default)]
+    pub expected: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NumberFormatResponse {
+    pub case_count: usize,
+    pub changed_count: usize,
+    pub pass_count: usize,
+    pub fail_count: usize,
+    pub cases: Vec<NumberFormatCaseOutput>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NumberFormatCaseOutput {
+    pub id: String,
+    pub raw: String,
+    pub formatted: String,
+    pub expected: Option<String>,
+    pub note: Option<String>,
+    pub changed: bool,
+    pub passed: Option<bool>,
+}
+
+/// GET /v1/lab/number-format or /v1/lab/formatting
+/// Serves the local formatter lab. The page exercises Rust formatter code only.
+pub async fn number_format_page() -> impl IntoResponse {
+    Html(include_str!("../../../../docs/number-format-lab.html"))
+}
+
+/// POST /v1/lab/number-format
+/// Runs the deterministic number/unit formatter over raw Hinglish cases.
+pub async fn number_format(Json(body): Json<NumberFormatRequest>) -> impl IntoResponse {
+    run_format_cases(body, crate::formatting::apply_number_units)
+}
+
+/// POST /v1/lab/formatting
+/// Runs the full deterministic local formatter over raw Hinglish cases.
+pub async fn local_formatting(Json(body): Json<NumberFormatRequest>) -> impl IntoResponse {
+    run_format_cases(body, crate::formatting::apply_all)
+}
+
+fn run_format_cases(
+    body: NumberFormatRequest,
+    formatter: fn(&str) -> String,
+) -> axum::response::Response {
+    let mut cases = body.cases;
+    if cases.is_empty() {
+        if let Some(text) = body.text {
+            cases = text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .enumerate()
+                .map(|(idx, raw)| NumberFormatCaseInput {
+                    id: Some(format!("line-{}", idx + 1)),
+                    raw: raw.to_string(),
+                    expected: None,
+                    note: None,
+                })
+                .collect();
+        }
+    }
+
+    if cases.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "provide text or cases"})),
+        )
+            .into_response();
+    }
+
+    let mut changed_count = 0usize;
+    let mut pass_count = 0usize;
+    let mut fail_count = 0usize;
+    let outputs: Vec<NumberFormatCaseOutput> = cases
+        .into_iter()
+        .enumerate()
+        .map(|(idx, case)| {
+            let formatted = formatter(&case.raw);
+            let changed = formatted != case.raw;
+            if changed {
+                changed_count += 1;
+            }
+            let passed = case
+                .expected
+                .as_ref()
+                .map(|expected| formatted == *expected);
+            match passed {
+                Some(true) => pass_count += 1,
+                Some(false) => fail_count += 1,
+                None => {}
+            }
+            NumberFormatCaseOutput {
+                id: case.id.unwrap_or_else(|| format!("case-{}", idx + 1)),
+                raw: case.raw,
+                formatted,
+                expected: case.expected,
+                note: case.note,
+                changed,
+                passed,
+            }
+        })
+        .collect();
+
+    Json(NumberFormatResponse {
+        case_count: outputs.len(),
+        changed_count,
+        pass_count,
+        fail_count,
+        cases: outputs,
+    })
+    .into_response()
+}
 
 #[derive(Serialize)]
 pub struct SttReplacementTrace {

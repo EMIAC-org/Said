@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AirNote — Dictionary Expansion Research</title>
+<style>
+  :root {
+    --bg: hsl(240 6% 6%); --fg: hsl(240 6% 92%);
+    --surface-3: hsl(240 5% 7.5%); --surface-4: hsl(240 5% 13%);
+    --surface-1: hsl(240 5% 3%);
+    --primary: hsl(226 80% 78%); --primary-fg: hsl(240 8% 8%);
+    --muted-fg: hsl(240 5% 60%); --border: hsl(240 5% 16%);
+    --green: hsl(142 70% 65%); --red: hsl(354 85% 75%);
+    --amber: hsl(38 90% 72%); --purple: hsl(280 70% 75%);
+    --teal: hsl(180 60% 65%);
+    --glass-bg: hsla(240 5% 10% / 0.62); --glass-stroke: hsla(0 0% 100% / 0.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; }
+  body { background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif; font-size: 13px; line-height: 1.55; }
+  body { background: radial-gradient(circle at 50% -10%, hsla(226 80% 78% / 0.08) 0%, transparent 55%), var(--bg); }
+  .container { max-width: 1100px; margin: 0 auto; padding: 48px 32px 80px; }
+  h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 8px; }
+  h1 .accent { color: var(--primary); }
+  .subtitle { font-size: 14px; color: var(--muted-fg); margin-bottom: 40px; max-width: 720px; }
+  h2 { font-size: 18px; font-weight: 700; margin: 48px 0 16px; display: flex; align-items: center; gap: 10px; }
+  h2 .num { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; background: var(--primary); color: var(--primary-fg); border-radius: 8px; font-size: 11px; font-weight: 800; }
+  h3 { font-size: 14px; font-weight: 600; margin: 20px 0 10px; }
+  p { margin: 8px 0; }
+  code { background: var(--surface-1); padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", monospace; font-size: 0.92em; color: var(--primary); }
+  .card { background: var(--surface-3); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 12px 0; box-shadow: inset 0 1px 0 hsla(0 0% 100% / 0.04); }
+  .card-title { font-weight: 600; margin-bottom: 8px; font-size: 14px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+  .pill.green { background: hsla(142 70% 65% / 0.15); color: var(--green); }
+  .pill.red { background: hsla(354 85% 75% / 0.15); color: var(--red); }
+  .pill.amber { background: hsla(38 90% 72% / 0.15); color: var(--amber); }
+  .pill.primary { background: hsla(226 80% 78% / 0.15); color: var(--primary); }
+  .pill.teal { background: hsla(180 60% 65% / 0.15); color: var(--teal); }
+  .pill-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  .roadmap { width: 100%; border-collapse: separate; border-spacing: 0; margin: 12px 0; font-size: 12.5px; }
+  .roadmap th, .roadmap td { padding: 12px 14px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+  .roadmap thead th { background: var(--surface-1); color: var(--primary); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .roadmap thead th:first-child { border-radius: 10px 0 0 0; }
+  .roadmap thead th:last-child { border-radius: 0 10px 0 0; }
+  .roadmap tbody tr { background: var(--surface-3); }
+  .roadmap tbody tr:hover { background: hsl(240 5% 11%); }
+
+  .flow-box { background: var(--glass-bg); backdrop-filter: blur(30px) saturate(180%); border: 1px solid var(--glass-stroke); border-radius: 16px; padding: 24px; margin: 16px 0; font-family: "JetBrains Mono", monospace; font-size: 12px; line-height: 1.8; white-space: pre; overflow-x: auto; }
+  .flow-box .cm { color: var(--muted-fg); }
+  .flow-box .ok { color: var(--green); }
+  .flow-box .err { color: var(--red); }
+  .flow-box .warn { color: var(--amber); }
+  .flow-box .fn { color: var(--primary); }
+
+  .gap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
+  @media (max-width: 900px) { .gap-grid { grid-template-columns: 1fr; } }
+  .gap-card { background: var(--surface-3); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
+  .gap-card:hover { border-color: hsla(226 80% 78% / 0.3); }
+  .gap-card .gap-title { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+  .gap-card .gap-body { font-size: 12px; color: var(--muted-fg); line-height: 1.55; }
+  .gap-card .gap-body strong { color: var(--fg); }
+
+  .analogy { background: hsla(226 80% 78% / 0.06); border: 1px solid hsla(226 80% 78% / 0.18); border-left: 3px solid var(--primary); border-radius: 8px; padding: 14px 18px; margin: 16px 0; font-size: 12.5px; line-height: 1.6; }
+  .analogy .analogy-label { color: var(--primary); font-weight: 700; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+  .divider { height: 1px; background: var(--border); margin: 40px 0; }
+  .footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); text-align: center; color: var(--muted-fg); font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Why "agent" became <span class="accent">"AirNote"</span></h1>
+<p class="subtitle">
+  How AirNote's dictionary gating works, where the gap is, and how to expand the word list so real English words never get falsely corrected.
+</p>
+
+<!-- ═══════ 1 · THE BUG ═══════ -->
+<h2><span class="num">1</span> The bug</h2>
+
+<p>User said <strong>"agent"</strong>. AirNote typed <strong>"AirNote"</strong>. "agent" is a real English word — it should never be touched by the correction engine.</p>
+
+<div class="analogy">
+  <div class="analogy-label">Root cause — found</div>
+  There are <strong>two separate word-filter functions</strong> in the codebase. The ONNX model (Pass 4) uses the full one. But the cluster-fuzzy pass (Pass 3) uses the small one. "agent" exists in the full dictionary but the small filter doesn't know about it.
+</div>
+
+<!-- ═══════ 2 · THE FLOW ═══════ -->
+<h2><span class="num">2</span> How the dictionary flow works today</h2>
+
+<h3>Two filter functions, different coverage</h3>
+
+<table class="roadmap">
+  <thead>
+    <tr>
+      <th style="width: 24%;">Function</th>
+      <th style="width: 14%;">Word count</th>
+      <th>Source</th>
+      <th>Used by</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>is_common_word()</code></td>
+      <td><span class="pill red"><span class="pill-dot"></span>~250</span></td>
+      <td>Hardcoded list in <code>promotion_gate.rs</code>. Hindi pronouns, verbs, particles + ~50 English words.</td>
+      <td>Pass 2 (edit-policy), Pass 3 (cluster-fuzzy), build_candidates, alias filtering</td>
+    </tr>
+    <tr>
+      <td><code>is_in_dictionary()</code></td>
+      <td><span class="pill green"><span class="pill-dot"></span>~236K</span></td>
+      <td><code>/usr/share/dict/words</code> (macOS system dictionary) + hardcoded tech words + <code>is_common_word()</code></td>
+      <td>Pass 4 (ONNX) only, training data gates</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>What each correction pass checks before scoring</h3>
+
+<div class="flow-box"><span class="fn">Pass 1 — Exact Alias</span>
+  Filter: <span class="ok">is_common_word()</span> on transcript_form   <span class="cm">// 250 words</span>
+  "agent" check: <span class="err">MISS — not in 250-word list → alias lookup proceeds</span>
+
+<span class="fn">Pass 2 — Edit-Policy Rules</span>
+  Filter: <span class="ok">is_common_word()</span> on token core          <span class="cm">// 250 words</span>
+  "agent" check: <span class="err">MISS — not in 250-word list → rule matching proceeds</span>
+
+<span class="fn">Pass 3 — Cluster-Fuzzy</span>
+  Filter: <span class="ok">is_common_word()</span> on token core          <span class="cm">// 250 words</span>
+  "agent" check: <span class="err">MISS — not in 250-word list → fuzzy scoring proceeds</span>
+  edit_similarity("agent", "airnote") ≈ 0.50
+  fuzzy score with boosts → <span class="err">0.80 → ABOVE 0.78 threshold → APPLIED ✗</span>
+
+<span class="fn">Pass 4 — ONNX Neural</span>
+  Filter: <span class="ok">is_in_dictionary()</span> on token core         <span class="cm">// 236K words</span>
+  "agent" check: <span class="ok">HIT — in /usr/share/dict/words → SKIPPED ✓</span>
+  <span class="cm">// But Pass 3 already replaced it — Pass 4 never gets to see "agent"</span></div>
+
+<div class="analogy">
+  <div class="analogy-label">The problem in one sentence</div>
+  Pass 4 (ONNX) has the big dictionary. Passes 1–3 only have the 250-word list. "agent" gets through Pass 3 before Pass 4 can protect it.
+</div>
+
+<!-- ═══════ 3 · IMMEDIATE FIX ═══════ -->
+<h2><span class="num">3</span> Immediate fix: unify the filter</h2>
+
+<p>Replace <code>promotion_gate::is_common_word()</code> with <code>is_in_dictionary()</code> in Passes 1–3. One-line change per pass. All passes then use the full 236K dictionary.</p>
+
+<div class="flow-box"><span class="cm">// tier2.rs — cluster_fuzzy_pass (line ~1199)</span>
+<span class="cm">// BEFORE:</span>
+<span class="err">|| promotion_gate::is_common_word(&core_norm)</span>
+
+<span class="cm">// AFTER:</span>
+<span class="ok">|| is_in_dictionary(&core_norm)</span>
+
+<span class="cm">// Same change in: apply_edit_policy, build_candidates, apply_exact_safe</span></div>
+
+<!-- ═══════ 4 · THE BIGGER PROBLEM ═══════ -->
+<h2><span class="num">4</span> The bigger problem: /usr/share/dict/words is not enough</h2>
+
+<p>Even with the full system dictionary, there are gaps:</p>
+
+<table class="roadmap">
+  <thead>
+    <tr><th>Word</th><th>In /usr/share/dict/words?</th><th>Consequence</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>agent</td><td><span class="pill green"><span class="pill-dot"></span>YES</span></td><td>Fixed by unifying filter</td></tr>
+    <tr><td>database</td><td><span class="pill red"><span class="pill-dot"></span>NO</span></td><td>Could be "corrected" to a similar vocab term</td></tr>
+    <tr><td>queueing</td><td><span class="pill red"><span class="pill-dot"></span>NO</span></td><td>Was corrected to "Kafka" (reported earlier)</td></tr>
+    <tr><td>terraform</td><td><span class="pill red"><span class="pill-dot"></span>NO</span></td><td>If "Terraform" is in vocab, lowercase version gets corrected</td></tr>
+    <tr><td>webpack</td><td><span class="pill red"><span class="pill-dot"></span>NO</span></td><td>Could match a brand</td></tr>
+    <tr><td>kubernetes</td><td><span class="pill red"><span class="pill-dot"></span>NO</span></td><td>Already in vocab — fine, but a different user might not have it</td></tr>
+    <tr><td>prettier</td><td><span class="pill red"><span class="pill-dot"></span>NO</span></td><td>Could be corrected to something</td></tr>
+    <tr><td>nginx</td><td><span class="pill red"><span class="pill-dot"></span>NO</span></td><td>Brand name — already in user vocab typically</td></tr>
+  </tbody>
+</table>
+
+<p>The macOS <code>/usr/share/dict/words</code> is a <strong>1963 Unix dictionary</strong>. It has 236K words but misses anything invented after ~2000. No "database", no "kubernetes", no "webpack". On Windows, the file <strong>doesn't exist at all</strong>.</p>
+
+<!-- ═══════ 5 · EXPANSION OPTIONS ═══════ -->
+<h2><span class="num">5</span> How to expand: the options</h2>
+
+<div class="gap-grid">
+  <div class="gap-card" style="border-color: hsla(142 70% 65% / 0.3);">
+    <div class="gap-title" style="color: var(--green);">Option A — Bundle a static word list</div>
+    <div class="gap-body">
+      Ship a <code>.txt</code> file with the app containing a comprehensive English word list. Load it at startup like we load <code>/usr/share/dict/words</code>.
+      <br><br>
+      <strong>Best source:</strong> <a href="https://github.com/dwyl/english-words" style="color: var(--primary);">dwyl/english-words</a> on GitHub — <strong>479K words</strong>, MIT licensed, one JSON file. Includes modern words like "database", "cryptocurrency", "startup". Already used by dozens of spell-checkers and word games.
+      <br><br>
+      <strong>Size:</strong> ~4MB uncompressed, ~1.2MB gzipped. Trivial for a desktop app.
+      <br><br>
+      <strong>Rust integration:</strong> Embed as <code>include_str!</code> at compile time. Zero file I/O. Available on all platforms.
+      <br><br>
+      <span class="pill green"><span class="pill-dot"></span>RECOMMENDED</span> — simplest, most reliable, cross-platform.
+    </div>
+  </div>
+
+  <div class="gap-card">
+    <div class="gap-title">Option B — aspell/hunspell dictionaries</div>
+    <div class="gap-body">
+      The spell-checker dictionaries from LibreOffice/Firefox. Available for 90+ languages. English (en_US) has ~120K root words + affix rules that expand to 500K+ forms.
+      <br><br>
+      <strong>Rust crate:</strong> <code>hunspell-rs</code> exists but is a binding to C library. Heavy dependency for just word lookup.
+      <br><br>
+      <strong>Simpler:</strong> Extract the <code>.dic</code> file and ship it as a word list (same as Option A but from a different source).
+      <br><br>
+      <span class="pill amber"><span class="pill-dot"></span>GOOD</span> — more linguistically complete, but the C binding is heavyweight.
+    </div>
+  </div>
+
+  <div class="gap-card">
+    <div class="gap-title">Option C — NLTK / WordNet corpus</div>
+    <div class="gap-body">
+      Python's NLTK ships a <code>words</code> corpus with ~236K words (similar to Unix dict) and WordNet with ~155K words + definitions. Can export as a flat text file.
+      <br><br>
+      <strong>Limitation:</strong> Still misses modern tech terms. Same era as /usr/share/dict/words.
+      <br><br>
+      <span class="pill amber"><span class="pill-dot"></span>OK</span> — not much better than what we have.
+    </div>
+  </div>
+
+  <div class="gap-card">
+    <div class="gap-title">Option D — HuggingFace tokenizer vocabulary</div>
+    <div class="gap-body">
+      Large language model tokenizers (BERT, GPT-2, Llama) have vocabularies of 30K-128K tokens. These include common words, subwords, and modern terms.
+      <br><br>
+      <strong>Problem:</strong> Subword tokenization. "database" might be split as "data" + "base". Can't directly use as a "is this a word" lookup.
+      <br><br>
+      <strong>Workaround:</strong> Filter to tokens that are full words (no ## prefix, no Ġ prefix). GPT-2 yields ~28K usable full words. Includes "database", "kubernetes", "tensorflow".
+      <br><br>
+      <span class="pill amber"><span class="pill-dot"></span>INTERESTING</span> — modern vocabulary, but requires filtering.
+    </div>
+  </div>
+
+  <div class="gap-card">
+    <div class="gap-title">Option E — Wiktionary dump</div>
+    <div class="gap-body">
+      Wiktionary has ~1M English entries. Available as XML or JSON dumps. Includes every word any contributor has ever documented, including modern tech terms, brand names, and slang.
+      <br><br>
+      <strong>Size:</strong> ~80MB uncompressed for just headwords. Too large to embed.
+      <br><br>
+      <strong>Better:</strong> Pre-filter to words with frequency &gt; 1 in a corpus (e.g., Google Books Ngrams). Gives ~350K high-confidence words.
+      <br><br>
+      <span class="pill primary"><span class="pill-dot"></span>POWERFUL</span> — most comprehensive, but needs preprocessing.
+    </div>
+  </div>
+
+  <div class="gap-card">
+    <div class="gap-title">Option F — Google 10K + tech supplement</div>
+    <div class="gap-body">
+      Google's 10K most common English words + a hand-curated list of ~2K tech/brand terms (docker, kubernetes, webpack, nginx, redis, postgres, etc.).
+      <br><br>
+      <strong>Size:</strong> ~120KB. Tiny.
+      <br><br>
+      <strong>Limitation:</strong> Only covers common words. Misses obscure but real words like "ameliorate" or "penurious" — these would still get scored by the ONNX model.
+      <br><br>
+      <span class="pill amber"><span class="pill-dot"></span>LIGHTWEIGHT</span> — smallest footprint, but gaps remain.
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ 6 · RECOMMENDATION ═══════ -->
+<h2><span class="num">6</span> Recommendation</h2>
+
+<div class="card" style="border-color: hsla(142 70% 65% / 0.3);">
+  <div class="card-title" style="color: var(--green);">Option A + tech supplement = best tradeoff</div>
+  <p style="font-size: 12.5px;">
+    Bundle <strong>dwyl/english-words</strong> (479K words, MIT licensed) as a compile-time <code>include_str!</code> resource. Add a hand-curated <strong>tech-terms supplement</strong> (~500 terms: docker, kubernetes, webpack, nginx, redis, postgres, graphql, terraform, vercel, supabase, etc.).
+  </p>
+  <p style="font-size: 12.5px; margin-top: 8px;">
+    <strong>Why:</strong>
+  </p>
+  <ul style="font-size: 12.5px; margin-left: 18px;">
+    <li><strong>Cross-platform</strong> — works on macOS, Windows, Linux (no /usr/share/dict dependency)</li>
+    <li><strong>Modern vocabulary</strong> — includes "database", "startup", "cryptocurrency", "algorithm"</li>
+    <li><strong>Small</strong> — ~1.2MB compressed, embedded at compile time, zero file I/O</li>
+    <li><strong>MIT licensed</strong> — no legal risk</li>
+    <li><strong>Easy to update</strong> — just re-download the JSON and rebuild</li>
+  </ul>
+  <p style="font-size: 12.5px; margin-top: 8px;">
+    For <strong>Hindi</strong>: keep the existing <code>HINDI_COMMON</code> list (250+ words). Expand to ~500 via Hindi Wiktionary frequency list. No good Rust crate exists for Hindi spell-check — the curated list is the right approach for now.
+  </p>
+</div>
+
+<h3>Implementation sketch (Rust)</h3>
+
+<div class="flow-box"><span class="cm">// crates/backend/src/tier2.rs — replace DICTIONARY lazy static</span>
+
+<span class="cm">// Embed the word list at compile time (zero file I/O)</span>
+<span class="fn">static</span> BUNDLED_WORDS: &str = <span class="ok">include_str!("../data/english-words.txt")</span>;
+
+<span class="fn">static</span> DICTIONARY: Lazy&lt;HashSet&lt;String&gt;&gt; = Lazy::new(|| {
+    <span class="fn">let</span> mut words: HashSet&lt;String&gt; = BUNDLED_WORDS
+        .lines()
+        .map(|l| l.trim().to_ascii_lowercase())
+        .filter(|w| w.len() &gt;= 3 &amp;&amp; w.len() &lt;= 20)
+        .collect();
+
+    <span class="cm">// Tech supplement — modern terms the 479K list may still miss</span>
+    <span class="fn">for</span> w <span class="fn">in</span> &amp;[
+        <span class="ok">"docker"</span>, <span class="ok">"kubernetes"</span>, <span class="ok">"webpack"</span>, <span class="ok">"nginx"</span>, <span class="ok">"redis"</span>,
+        <span class="ok">"postgres"</span>, <span class="ok">"graphql"</span>, <span class="ok">"terraform"</span>, <span class="ok">"vercel"</span>, <span class="ok">"supabase"</span>,
+        <span class="ok">"kibana"</span>, <span class="ok">"elasticsearch"</span>, <span class="ok">"mongodb"</span>, <span class="ok">"firebase"</span>, <span class="ok">"heroku"</span>,
+        <span class="ok">"kubernetes"</span>, <span class="ok">"queueing"</span>, <span class="ok">"npm"</span>, <span class="ok">"webpack"</span>, <span class="ok">"prettier"</span>,
+        <span class="cm">// ... ~500 tech terms</span>
+    ] {
+        words.insert(w.to_string());
+    }
+
+    <span class="cm">// Hindi common words from promotion_gate::HINDI_COMMON</span>
+    <span class="cm">// (already covered by is_in_dictionary calling is_common_word)</span>
+
+    words
+});
+
+<span class="cm">// Then: upgrade ALL passes to use is_in_dictionary() instead of is_common_word()</span></div>
+
+<!-- ═══════ 7 · PLATFORM MATRIX ═══════ -->
+<h2><span class="num">7</span> Platform coverage comparison</h2>
+
+<table class="roadmap">
+  <thead>
+    <tr>
+      <th>Platform</th>
+      <th>Current (v2.2.0)</th>
+      <th>After fix (v2.2.1+)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>macOS (Apple Silicon)</td>
+      <td>236K words from <code>/usr/share/dict/words</code> + 250 Hindi. Only Pass 4 uses full dict.</td>
+      <td>479K bundled + tech supplement + Hindi. All 4 passes use it.</td>
+    </tr>
+    <tr>
+      <td>macOS (Intel)</td>
+      <td>Same as above</td>
+      <td>Same — bundled, no platform dependency</td>
+    </tr>
+    <tr>
+      <td>Windows</td>
+      <td><span class="pill red"><span class="pill-dot"></span>0 words</span> — /usr/share/dict/words doesn't exist</td>
+      <td>479K bundled — identical coverage to macOS</td>
+    </tr>
+    <tr>
+      <td>Linux</td>
+      <td>Varies by distro (~100K-236K)</td>
+      <td>479K bundled — consistent everywhere</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="analogy">
+  <div class="analogy-label">Key insight</div>
+  Windows has been shipping with <strong>zero dictionary words</strong> this whole time. On Windows, every single token reaches the ONNX model and cluster-fuzzy unchecked. The bundled dictionary fixes this for all platforms simultaneously.
+</div>
+
+<div class="divider"></div>
+<div class="footer">AirNote · Dictionary Expansion Research · 25 May 2026</div>
+
+</div>
+</body>
+</html>

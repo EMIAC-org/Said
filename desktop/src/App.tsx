@@ -1,7 +1,6 @@
-import React, { useEffect, useState, useCallback } from "react";
-import { X, AlertCircle, Loader2, ArrowRight } from "lucide-react";
+import { useEffect, useState, useCallback } from "react";
+import { X } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
-import { BrandMark } from "@/components/BrandMark";
 import { InviteTeamModal } from "@/components/InviteTeamModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { OnboardingFlow } from "@/components/OnboardingFlow";
@@ -26,8 +25,6 @@ import {
   getPendingEdits,
   resolvePendingEdit,
   sendNotification,
-  cloudLogin,
-  cloudSignup,
   requestInputMonitoring,
   requestMicrophone,
   submitEditFeedback,
@@ -38,6 +35,13 @@ import {
   type NotifPermission,
   type VocabToastPayload,
 } from "@/lib/invoke";
+import {
+  checkConnection,
+  getConnection,
+  isConnected,
+  ensureDesktopRegistered,
+  type EnterpriseConnection,
+} from "@/lib/enterprise";
 import { useTheme } from "@/lib/useTheme";
 import { useBackendHeartbeat } from "@/lib/useBackendHeartbeat";
 import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
@@ -140,14 +144,11 @@ export default function App() {
   // ── History refresh key — incremented after each dictation to trigger reload
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
 
-  // ── Cloud auth gate ────────────────────────────────────────────────────────
-  // null = still checking, false = signed in, true = needs sign-in
-  const [needsAuth,   setNeedsAuth]   = useState<boolean | null>(null);
-  const [authMode,    setAuthMode]    = useState<"login" | "signup">("login");
-  const [authEmail,   setAuthEmail]   = useState("");
-  const [authPass,    setAuthPass]    = useState("");
-  const [authBusy,    setAuthBusy]    = useState(false);
-  const [authError,   setAuthError]   = useState("");
+  // ── Enterprise workspace gate ───────────────────────────────────────────────
+  type EnterpriseGateState = "required" | "connected";
+  const [enterpriseGate, setEnterpriseGate] = useState<EnterpriseGateState>(() =>
+    isConnected() ? "connected" : "required",
+  );
 
   const [_notifPerm,      setNotifPerm]       = useState<NotifPermission>("unknown"); // eslint-disable-line @typescript-eslint/no-unused-vars
 
@@ -188,19 +189,60 @@ export default function App() {
     }
   }, [refreshSnapshot]);
 
-  // ── Bootstrap + auth check ─────────────────────────────────────────────────
+  // ── Bootstrap + enterprise check ───────────────────────────────────────────
   useEffect(() => {
     invoke("bootstrap")
       .then((snap) => {
         setSnapshot(snap as AppSnapshot);
-        setNeedsAuth(false);
       })
       .catch((err: unknown) => {
         setErrorBanner(err instanceof Error ? err.message : String(err));
-        setNeedsAuth(false);
       });
     refreshHistory();
   }, [refreshHistory]);
+
+  useEffect(() => {
+    if (!isConnected()) return;
+    let alive = true;
+    (async () => {
+      const status = await checkConnection();
+      if (!alive) return;
+      if (status === "connected") {
+        setEnterpriseGate("connected");
+        const conn = getConnection();
+        if (conn) void ensureDesktopRegistered(conn.serverUrl, conn.jwt);
+      } else {
+        setEnterpriseGate("required");
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // ── Enterprise heartbeat (every 5 min while connected) ────────────────────
+  useEffect(() => {
+    if (enterpriseGate !== "connected") return;
+
+    const tick = () => {
+      const conn = getConnection();
+      if (!conn?.serverUrl || !conn.jwt) return;
+      void ensureDesktopRegistered(conn.serverUrl, conn.jwt);
+    };
+    tick();
+    const interval = setInterval(tick, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [enterpriseGate]);
+
+  const handleEnterpriseConnected = useCallback((conn: EnterpriseConnection) => {
+    setEnterpriseGate("connected");
+    void ensureDesktopRegistered(conn.serverUrl, conn.jwt);
+  }, []);
+
+  const handleEnterpriseDisconnect = useCallback(() => {
+    setSettingsOpen(false);
+    setEnterpriseGate("required");
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -216,26 +258,6 @@ export default function App() {
   const handleDownloadSuccess = useCallback((path: string) => {
     setDownloadToast({ path });
   }, []);
-
-  // ── Auth submit ────────────────────────────────────────────────────────────
-  const handleAuthSubmit = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthBusy(true);
-    setAuthError("");
-    try {
-      if (authMode === "login") {
-        await cloudLogin(authEmail, authPass);
-      } else {
-        await cloudSignup(authEmail, authPass);
-      }
-      setNeedsAuth(false);
-      refreshHistory();
-    } catch (err: unknown) {
-      setAuthError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAuthBusy(false);
-    }
-  }, [authMode, authEmail, authPass, refreshHistory]);
 
   // ── Real-time Tauri event subscriptions ────────────────────────────────────
   useEffect(() => {
@@ -480,170 +502,22 @@ export default function App() {
     !!snapshot?.accessibility_granted &&
     !!snapshot?.input_monitoring_granted;
 
-  /* ── Auth gate ──────────────────────────────────────────────────────────── */
-  if (needsAuth === null) {
-    // Still checking — bare loading splash with the same brand as the auth screens
-    return (
-      <div
-        data-tauri-drag-region
-        className="flex h-screen w-screen items-center justify-center"
-        style={{ background: "hsl(var(--background))" }}
-      >
-        <div className="flex flex-col items-center gap-3">
-          <BrandMark size={36} idSuffix="loading" className="opacity-70" />
-          <span className="text-[12px] text-muted-foreground">Starting AirNote…</span>
-        </div>
-      </div>
-    );
-  }
+  const needsEnterprise = enterpriseGate === "required";
+  const needsSetup = !corePermissionsReady || !onboardingComplete;
+  const workspaceOnly = needsEnterprise && onboardingComplete && corePermissionsReady;
 
-  if (!corePermissionsReady || !onboardingComplete) {
+  if (needsEnterprise || needsSetup) {
     return (
       <OnboardingFlow
         snapshot={snapshotWithHistory}
+        workspaceOnly={workspaceOnly}
+        enterpriseRequired={needsEnterprise}
+        onEnterpriseConnected={handleEnterpriseConnected}
         onMicrophone={handleMicrophone}
         onAccessibility={handleAccessibility}
         onInputMonitoring={handleInputMonitoring}
         onFinish={handleOnboardingFinish}
       />
-    );
-  }
-
-  if (needsAuth) {
-    return (
-      <div
-        className="flex h-screen w-screen items-center justify-center relative overflow-hidden"
-        style={{ background: "hsl(var(--background))" }}
-      >
-        <div aria-hidden data-tauri-drag-region className="absolute inset-x-0 top-0 h-12 drag-region" />
-
-        {/* Mint hero glow — same wash used on the dashboard + invite modal */}
-        <div
-          aria-hidden
-          className="absolute pointer-events-none"
-          style={{
-            top: "-15%", left: "50%", transform: "translateX(-50%)",
-            width: 640, height: 640, borderRadius: "50%",
-            background: "radial-gradient(circle, hsl(var(--primary) / 0.10) 0%, transparent 65%)",
-          }}
-        />
-
-        <div
-          className="relative w-full max-w-[340px] flex flex-col p-7 rounded-[18px]"
-          style={{
-            background: "hsl(var(--surface-2))",
-            boxShadow: "var(--shadow-glass)",
-          }}
-        >
-
-          {/* Brand — tight stack */}
-          <div className="flex flex-col items-center gap-2.5 mb-5">
-            <BrandMark size={40} idSuffix="auth-login" />
-            <div className="text-center">
-              <h1
-                className="text-[18px] font-extrabold tracking-tight"
-                style={{ color: "hsl(var(--foreground))", letterSpacing: "-0.02em" }}
-              >
-                {authMode === "login" ? "Welcome back" : "Welcome to AirNote"}
-              </h1>
-              <p className="text-[11.5px] text-muted-foreground mt-1">
-                {authMode === "login"
-                  ? "Sign in to sync your vocabulary."
-                  : "Free while we're early."}
-              </p>
-            </div>
-          </div>
-
-          {/* Mode toggle — same pill pattern, tighter */}
-          <div
-            className="flex gap-1 p-0.5 rounded-lg mb-3.5"
-            style={{ background: "hsl(var(--surface-1))" }}
-          >
-            {(["login", "signup"] as const).map((m) => {
-              const isActive = authMode === m;
-              return (
-                <button
-                  key={m}
-                  onClick={() => { setAuthMode(m); setAuthError(""); }}
-                  className="flex-1 py-1 text-[11.5px] font-semibold rounded-md transition-all"
-                  style={{
-                    background: isActive ? "hsl(var(--pill-active-bg))" : "transparent",
-                    color:      isActive ? "hsl(var(--pill-active-fg))" : "hsl(var(--muted-foreground))",
-                  }}
-                >
-                  {m === "login" ? "Sign in" : "Create account"}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Form — shared .input class, tighter spacing */}
-          <form onSubmit={handleAuthSubmit} className="flex flex-col gap-2">
-            <input
-              type="email"
-              placeholder="you@example.com"
-              autoComplete="email"
-              value={authEmail}
-              onChange={(e) => setAuthEmail(e.target.value)}
-              required
-              className="input"
-              style={{ fontSize: 13 }}
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              autoComplete={authMode === "login" ? "current-password" : "new-password"}
-              value={authPass}
-              onChange={(e) => setAuthPass(e.target.value)}
-              required
-              className="input"
-              style={{ fontSize: 13 }}
-            />
-
-            {authError && (
-              <div
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md mt-0.5"
-                style={{
-                  background: "hsl(354 78% 60% / 0.10)",
-                  color:      "hsl(354 78% 75%)",
-                  boxShadow:  "inset 0 0 0 1px hsl(354 78% 60% / 0.25)",
-                }}
-              >
-                <AlertCircle size={12} className="flex-shrink-0" />
-                <span className="text-[11.5px] font-medium">{authError}</span>
-              </div>
-            )}
-
-            {/* Primary CTA — same .btn-primary, tighter padding */}
-            <button
-              type="submit"
-              disabled={authBusy || !authEmail || !authPass}
-              className="btn-primary mt-2 w-full justify-center py-2 rounded-lg"
-              style={{ fontSize: 12.5 }}
-            >
-              {authBusy ? (
-                <>
-                  <Loader2 size={13} className="animate-spin" />
-                  {authMode === "login" ? "Signing in…" : "Creating account…"}
-                </>
-              ) : (
-                <>
-                  {authMode === "login" ? "Sign in" : "Create account"}
-                  <ArrowRight size={12} />
-                </>
-              )}
-            </button>
-          </form>
-
-          {/* Offline escape — quiet, single line */}
-          <button
-            onClick={() => setNeedsAuth(false)}
-            className="text-[11px] text-muted-foreground hover:text-foreground text-center transition-colors mt-4"
-          >
-            Continue without an account
-          </button>
-        </div>
-      </div>
     );
   }
 
@@ -674,7 +548,7 @@ export default function App() {
         onMicrophone={handleMicrophone}
         performanceMonitorEnabled={performanceMonitorEnabled}
         onPerformanceMonitorChange={setPerformanceMonitor}
-
+        onEnterpriseDisconnect={handleEnterpriseDisconnect}
         initialSection={settingsSection}
       />
 
@@ -685,7 +559,7 @@ export default function App() {
           snapshot={snapshotWithHistory}
           theme={theme}
           toggleTheme={toggleTheme}
-          onLoginClick={() => setNeedsAuth(true)}
+          onEnterpriseDisconnect={handleEnterpriseDisconnect}
         />
 
         {/* ── The "mat" — elevated content surface ───────

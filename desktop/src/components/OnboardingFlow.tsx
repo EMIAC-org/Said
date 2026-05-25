@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  ArrowLeft,
   ArrowRight,
   Check,
   ExternalLink,
@@ -9,12 +8,18 @@ import {
   Mic,
   Shield,
   Keyboard,
+  Link,
+  Wifi,
+  LogOut,
 } from "lucide-react";
-import { BrandMark } from "@/components/BrandMark";
+import { OnboardingShell } from "@/components/OnboardingShell";
+import { EnterpriseConnectForm } from "@/components/EnterpriseConnectForm";
+import type { EnterpriseConnection } from "@/lib/enterprise";
+import { getConnection } from "@/lib/enterprise";
 import type { AppSnapshot, Preferences } from "@/types";
 import { getPreferences, patchPreferences, openExternal } from "@/lib/invoke";
 
-type Step = "welcome" | "permissions" | "keys" | "hotkey";
+type Step = "welcome" | "workspace" | "permissions" | "keys" | "hotkey";
 
 interface Props {
   snapshot: AppSnapshot | null;
@@ -22,188 +27,19 @@ interface Props {
   onAccessibility: () => void;
   onInputMonitoring: () => void;
   onFinish: () => void;
+  /** When true, user must connect workspace before continuing setup. */
+  enterpriseRequired?: boolean;
+  /** Called when workspace OAuth completes. */
+  onEnterpriseConnected?: (conn: EnterpriseConnection) => void;
+  /** Reconnect-only mode — skip welcome/permissions/keys/hotkey. */
+  workspaceOnly?: boolean;
 }
 
-const STEPS: Step[] = ["welcome", "permissions", "keys", "hotkey"];
+const STEPS: Step[] = ["welcome", "workspace", "permissions", "keys", "hotkey"];
+const TOTAL_STEPS = STEPS.length;
 
-// ── Layout primitive: the 50/50 split with brand canvas + form ──────────────
-
-function SplitShell({
-  step,
-  eyebrow,
-  title,
-  subtitle,
-  brandTagline,
-  brandKicker,
-  brandQuote,
-  topRight,
-  bottomNote,
-  onBack,
-  children,
-}: {
-  step: number;
-  eyebrow: string;
-  title: string;
-  subtitle: string;
-  brandTagline: string;
-  brandKicker: string;
-  brandQuote: string;
-  topRight?: React.ReactNode;
-  bottomNote?: React.ReactNode;
-  onBack?: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div
-      className="onb-split relative"
-      style={{ background: "hsl(var(--background))" }}
-    >
-      {/* Drag region — top strip across the whole window */}
-      <div
-        aria-hidden
-        data-tauri-drag-region
-        className="absolute inset-x-0 top-0 h-7 drag-region z-10"
-      />
-
-      {/* ── LEFT: brand canvas ─────────────────────────────────────────── */}
-      <div className="onb-brand">
-        <div className="relative z-10 flex items-center gap-2 text-[12.5px] font-medium" style={{ color: "hsl(var(--foreground))" }}>
-          <span style={{ width: 18, height: 18, display: "inline-grid", placeItems: "center", color: "hsl(var(--foreground))" }}>
-            <BrandMark size={18} />
-          </span>
-          AirNote
-        </div>
-
-        <div className="relative z-10 flex-1 flex flex-col items-center justify-center gap-6 text-center">
-          <span className="onb-brand-mark">
-            <BrandMark size={64} />
-          </span>
-          <div>
-            <div
-              style={{
-                fontSize: 44,
-                fontWeight: 500,
-                letterSpacing: "-0.035em",
-                lineHeight: 1,
-                color: "hsl(var(--foreground))",
-              }}
-            >
-              AirNote
-            </div>
-            <p
-              style={{
-                fontSize: 13.5,
-                color: "hsl(var(--muted-foreground))",
-                lineHeight: 1.55,
-                maxWidth: 280,
-                margin: "12px auto 0",
-              }}
-            >
-              {brandTagline}
-            </p>
-          </div>
-        </div>
-
-        <div
-          className="relative z-10 pt-4"
-          style={{
-            borderTop: "1px solid hsl(var(--border))",
-            color: "hsl(var(--muted-foreground) / 0.85)",
-          }}
-        >
-          <span
-            className="block text-[10.5px] font-semibold uppercase tracking-[0.14em] mb-1.5"
-            style={{ color: "hsl(var(--muted-foreground))" }}
-          >
-            {brandKicker}
-          </span>
-          <p
-            className="text-[12.5px] italic leading-relaxed"
-            style={{ color: "hsl(var(--foreground) / 0.85)" }}
-          >
-            “{brandQuote}”
-          </p>
-        </div>
-      </div>
-
-      {/* ── RIGHT: form canvas ─────────────────────────────────────────── */}
-      <div className="onb-form">
-        <div className="flex items-center justify-between flex-shrink-0" style={{ minHeight: 36 }}>
-          {onBack ? (
-            <button
-              onClick={onBack}
-              className="no-drag flex items-center justify-center transition-colors"
-              style={{
-                width: 30,
-                height: 30,
-                borderRadius: 8,
-                color: "hsl(var(--muted-foreground))",
-                border: "1px solid transparent",
-                background: "transparent",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = "hsl(var(--foreground))";
-                e.currentTarget.style.background = "hsl(0 0% 100% / 0.04)";
-                e.currentTarget.style.borderColor = "hsl(var(--glass-stroke-strong))";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = "hsl(var(--muted-foreground))";
-                e.currentTarget.style.background = "transparent";
-                e.currentTarget.style.borderColor = "transparent";
-              }}
-              aria-label="Back"
-            >
-              <ArrowLeft size={14} />
-            </button>
-          ) : (
-            <span />
-          )}
-          <div className="text-[11.5px]" style={{ color: "hsl(var(--muted-foreground) / 0.7)" }}>
-            {topRight ?? null}
-          </div>
-        </div>
-
-        <div className="flex-1 flex flex-col justify-center" style={{ maxWidth: 440, width: "100%", margin: "0 auto", padding: "24px 0" }}>
-          <p
-            className="text-[10.5px] font-semibold uppercase tracking-[0.16em] mb-3"
-            style={{ color: "hsl(var(--primary))" }}
-          >
-            {eyebrow}
-          </p>
-          <h1
-            className="m-0"
-            style={{
-              fontSize: 28,
-              fontWeight: 600,
-              letterSpacing: "-0.025em",
-              lineHeight: 1.18,
-              color: "hsl(var(--foreground))",
-            }}
-          >
-            {title}
-          </h1>
-          <p
-            className="mt-3 mb-0"
-            style={{
-              fontSize: 13.5,
-              color: "hsl(var(--muted-foreground))",
-              lineHeight: 1.6,
-            }}
-          >
-            {subtitle}
-          </p>
-
-          {children}
-        </div>
-
-        <div className="flex items-center justify-end flex-shrink-0" style={{ minHeight: 24 }}>
-          <span className="text-[11px]" style={{ color: "hsl(var(--muted-foreground) / 0.6)" }}>
-            {bottomNote ?? `Step ${step + 1} of ${STEPS.length}`}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
+function stepLabel(step: Step): string {
+  return `${STEPS.indexOf(step) + 1} of ${TOTAL_STEPS}`;
 }
 
 // ── Password-style input with show/hide ─────────────────────────────────────
@@ -241,16 +77,6 @@ function KeyInput({
   );
 }
 
-// ── Step picker — what step does the user land on? ─────────────────────────
-
-function computeStartStep(
-  mic: boolean, acc: boolean, im: boolean, hasKeys: boolean,
-): Step {
-  if (!mic || !acc || !im) return "permissions";
-  if (!hasKeys) return "keys";
-  return "hotkey";
-}
-
 // ── Main component ─────────────────────────────────────────────────────────
 
 export function OnboardingFlow({
@@ -259,13 +85,16 @@ export function OnboardingFlow({
   onAccessibility,
   onInputMonitoring,
   onFinish,
+  enterpriseRequired = false,
+  onEnterpriseConnected,
+  workspaceOnly = false,
 }: Props) {
   const [prefs, setPrefs] = useState<Preferences | null>(null);
-  const [prefsLoaded, setPrefsLoaded] = useState(false);
   const [groqKey, setGroqKey] = useState("");
   const [deepgramKey, setDeepgramKey] = useState("");
   const [keySaving, setKeySaving] = useState(false);
   const [keyError, setKeyError] = useState("");
+  const [workspacePreview, setWorkspacePreview] = useState<EnterpriseConnection | null>(null);
 
   const micGranted = snapshot?.microphone_granted ?? false;
   const accGranted = snapshot?.accessibility_granted ?? false;
@@ -279,36 +108,36 @@ export function OnboardingFlow({
         if (p.groq_api_key) setGroqKey(p.groq_api_key);
         if (p.deepgram_api_key) setDeepgramKey(p.deepgram_api_key);
       }
-      setPrefsLoaded(true);
     });
   }, []);
 
   const hasKeys = !!(prefs?.groq_api_key && prefs?.deepgram_api_key);
-  const startStep = prefsLoaded
-    ? computeStartStep(micGranted, accGranted, imGranted, hasKeys)
-    : "welcome";
 
-  const [step, setStep] = useState<Step>("welcome");
-  const [initialized, setInitialized] = useState(false);
-
-  useEffect(() => {
-    if (prefsLoaded && !initialized) {
-      setStep(startStep);
-      setInitialized(true);
-    }
-  }, [prefsLoaded, initialized, startStep]);
+  const [step, setStep] = useState<Step>(() => (workspaceOnly ? "workspace" : "welcome"));
 
   const stepIndex = STEPS.indexOf(step);
 
   const goNext = useCallback(() => {
     const idx = STEPS.indexOf(step);
-    if (idx < STEPS.length - 1) setStep(STEPS[idx + 1]);
-  }, [step]);
+    if (idx >= STEPS.length - 1) return;
+    let next = STEPS[idx + 1];
+    if (next === "workspace" && !enterpriseRequired && getConnection()) {
+      next = STEPS[idx + 2] ?? next;
+    }
+    setStep(next);
+  }, [step, enterpriseRequired]);
 
   const goBack = useCallback(() => {
     const idx = STEPS.indexOf(step);
     if (idx > 0) setStep(STEPS[idx - 1]);
   }, [step]);
+
+  const handleWorkspaceContinue = useCallback(() => {
+    if (!workspacePreview) return;
+    onEnterpriseConnected?.(workspacePreview);
+    if (workspaceOnly) return;
+    goNext();
+  }, [workspacePreview, onEnterpriseConnected, workspaceOnly, goNext]);
 
   // Auto-advance the permissions step once all three are granted (delay so
   // the user sees the green check before the screen swaps).
@@ -353,11 +182,12 @@ export function OnboardingFlow({
   // ── Step 1: Welcome ──────────────────────────────────────────────────────
   if (step === "welcome") {
     return (
-      <SplitShell
+      <OnboardingShell
         step={stepIndex}
+        totalSteps={TOTAL_STEPS}
         eyebrow="Get started"
         title="Welcome to AirNote."
-        subtitle="A two-minute setup. Three permissions, two free API keys, one hold-key. Then you’ll never type by hand again."
+        subtitle="A two-minute setup. Connect your workspace, grant three permissions, add two free API keys, pick a hold-key — then you’ll never type by hand again."
         brandTagline="Voice polish for Mac. Hold a key, speak, release — AirNote types polished text into any app."
         brandKicker="Built for macOS"
         brandQuote="It’s like typing, except your brain is the keyboard."
@@ -369,23 +199,110 @@ export function OnboardingFlow({
             <ArrowRight size={14} />
           </button>
         </div>
-      </SplitShell>
+      </OnboardingShell>
     );
   }
 
-  // ── Step 2: Permissions ──────────────────────────────────────────────────
+  // ── Step 2: Workspace connect ─────────────────────────────────────────────
+  if (step === "workspace") {
+    return (
+      <OnboardingShell
+        step={stepIndex}
+        totalSteps={TOTAL_STEPS}
+        eyebrow="Workspace"
+        title={workspacePreview ? "You're connected." : "Connect your workspace."}
+        subtitle={
+          workspacePreview
+            ? "Signed in to your organization. Continue setup on the next step."
+            : "Enter your organization's server URL and sign in with Lark. This links AirNote to your team."
+        }
+        brandTagline="Enterprise AirNote runs on your organization's server — your data stays in your workspace."
+        brandKicker="Sign in with Lark"
+        brandQuote="One workspace login, then every device knows who you are."
+        topRight={<span>{stepLabel(step)}</span>}
+        bottomNote={
+          workspaceOnly
+            ? <span>Reconnect to continue using AirNote</span>
+            : <span>Managed by your organization</span>
+        }
+        onBack={workspaceOnly ? undefined : goBack}
+      >
+        {workspacePreview ? (
+          <div className="mt-7 flex flex-col gap-4">
+            <div className="panel overflow-hidden">
+              <div className="flex items-center gap-4 px-5 py-4">
+                <div
+                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 overflow-hidden"
+                  style={{
+                    background: "hsl(var(--surface-4))",
+                    color: "hsl(var(--accent-violet))",
+                  }}
+                >
+                  {workspacePreview.larkAvatarUrl ? (
+                    <img src={workspacePreview.larkAvatarUrl} alt="" className="w-full h-full object-cover" />
+                  ) : (
+                    <Link size={16} />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-medium text-foreground truncate">
+                    {workspacePreview.orgName ?? "Enterprise"}
+                  </p>
+                  <p className="text-[12px] text-muted-foreground mt-0.5 truncate">
+                    {workspacePreview.larkName
+                      ? `${workspacePreview.larkName} · ${workspacePreview.email}`
+                      : workspacePreview.email}
+                  </p>
+                </div>
+              </div>
+              <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+              <div className="flex items-center gap-3 px-5 py-3.5">
+                <Wifi size={14} className="text-muted-foreground shrink-0" />
+                <p className="text-[11px] text-muted-foreground truncate">{workspacePreview.serverUrl}</p>
+              </div>
+            </div>
+
+            <button onClick={handleWorkspaceContinue} className="btn-primary btn-lg w-full">
+              {workspaceOnly ? "Continue to AirNote" : "Continue setup"}
+              <ArrowRight size={14} />
+            </button>
+
+            <button
+              onClick={() => setWorkspacePreview(null)}
+              className="text-[11px] text-muted-foreground hover:text-foreground text-center transition-colors flex items-center justify-center gap-1"
+            >
+              <LogOut size={11} />
+              Use a different account
+            </button>
+          </div>
+        ) : (
+          <div className="mt-7">
+            <EnterpriseConnectForm
+              compact
+              variant="onboarding"
+              onConnected={setWorkspacePreview}
+              onCancel={workspaceOnly ? undefined : goBack}
+            />
+          </div>
+        )}
+      </OnboardingShell>
+    );
+  }
+
+  // ── Step 3: Permissions ──────────────────────────────────────────────────
   if (step === "permissions") {
     const allGranted = micGranted && accGranted && imGranted;
     return (
-      <SplitShell
+      <OnboardingShell
         step={stepIndex}
+        totalSteps={TOTAL_STEPS}
         eyebrow="Permissions"
         title="A few system grants."
         subtitle="Three macOS permissions — one click each. AirNote detects each grant automatically."
         brandTagline="macOS will ask you once for each permission. AirNote detects each grant the moment it happens."
         brandKicker="Privacy"
         brandQuote="Audio never leaves the path between your mic and Deepgram. Nothing is stored on our servers."
-        topRight={<span>2 of 4</span>}
+        topRight={<span>{stepLabel(step)}</span>}
         bottomNote={<span>Change any time in Settings → Permissions</span>}
         onBack={goBack}
       >
@@ -423,22 +340,23 @@ export function OnboardingFlow({
             {allGranted && <ArrowRight size={14} />}
           </button>
         </div>
-      </SplitShell>
+      </OnboardingShell>
     );
   }
 
-  // ── Step 3: API keys ─────────────────────────────────────────────────────
+  // ── Step 4: API keys ─────────────────────────────────────────────────────
   if (step === "keys") {
     return (
-      <SplitShell
+      <OnboardingShell
         step={stepIndex}
+        totalSteps={TOTAL_STEPS}
         eyebrow="Voice engine"
         title="Connect your voice."
         subtitle="Two free API keys do all the work. Both take under a minute."
         brandTagline="Two free keys. Speech-to-text and LLM polish — both on free tiers that cover daily use."
         brandKicker="Stored locally"
         brandQuote="Your keys never leave this Mac except directly to Groq and Deepgram."
-        topRight={<span>3 of 4</span>}
+        topRight={<span>{stepLabel(step)}</span>}
         bottomNote={<span>Optional services (e.g. Gemini) live in Settings</span>}
         onBack={goBack}
       >
@@ -479,11 +397,11 @@ export function OnboardingFlow({
             {!keySaving && <ArrowRight size={14} />}
           </button>
         </div>
-      </SplitShell>
+      </OnboardingShell>
     );
   }
 
-  // ── Step 4: Hotkey ───────────────────────────────────────────────────────
+  // ── Step 5: Hotkey ───────────────────────────────────────────────────────
   const currentHotkey = prefs?.record_hotkey ?? "caps_lock";
   const options: { key: string; glyph: string; label: string; desc: string }[] = [
     { key: "caps_lock",    glyph: "⇪",  label: "Caps Lock",     desc: "Single key, easy to hold." },
@@ -494,15 +412,16 @@ export function OnboardingFlow({
   ];
 
   return (
-    <SplitShell
+    <OnboardingShell
       step={stepIndex}
+      totalSteps={TOTAL_STEPS}
       eyebrow="Hotkey"
       title="Pick a hold-key."
       subtitle="Hold this key to record, release to send. You can change it any time."
       brandTagline="Hold to record, release to send. Your thumb learns it in a day."
       brandKicker="Pro tip"
       brandQuote="Most users settle on Caps Lock — it’s already a hold-key for nothing useful."
-      topRight={<span>4 of 4</span>}
+      topRight={<span>{stepLabel(step)}</span>}
       bottomNote={<span>Press Caps Lock anywhere to dictate, once setup is done</span>}
       onBack={goBack}
     >
@@ -547,7 +466,7 @@ export function OnboardingFlow({
           <ArrowRight size={14} />
         </button>
       </div>
-    </SplitShell>
+    </OnboardingShell>
   );
 }
 

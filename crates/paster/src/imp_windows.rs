@@ -18,7 +18,7 @@ use windows::Win32::System::Memory::{
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_CONTROL, VK_V,
+    KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_BACK, VK_CONTROL, VK_V,
 };
 
 use crate::win_paster::{
@@ -324,6 +324,19 @@ pub fn paste(text: &str) -> Result<(), String> {
 
 pub fn paste_replacing(text: &str) -> Result<(), String> {
     paste_via_clipboard(text, true)
+}
+
+pub fn replace_typed_suffix(typed_text: &str, replacement: &str) -> Result<(), String> {
+    let chars_to_delete = typed_text.chars().count();
+    if chars_to_delete == 0 {
+        return paste(replacement);
+    }
+    for _ in 0..chars_to_delete {
+        send_vk(VK_BACK, true);
+        send_vk(VK_BACK, false);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    paste(replacement)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

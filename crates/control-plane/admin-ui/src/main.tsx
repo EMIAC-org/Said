@@ -9,6 +9,7 @@ import { MeetingsPage } from './pages/MeetingsPage'
 import { MeetingDetailPage } from './pages/MeetingDetailPage'
 import { NewMeetingPage } from './pages/NewMeetingPage'
 import { TeamPage } from './pages/TeamPage'
+import { DesktopPage } from './pages/DesktopPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { LiveMeetingPage } from './pages/LiveMeetingPage'
 import { OnboardingPage } from './pages/OnboardingPage'
@@ -29,6 +30,7 @@ createRoot(document.getElementById('app')!).render(
             <Route path="meetings/:id" element={<MeetingDetailPage />} />
             <Route path="meetings/:id/live" element={<LiveMeetingPage />} />
             <Route path="team" element={<TeamPage />} />
+            <Route path="desktop" element={<DesktopPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>

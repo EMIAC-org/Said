@@ -149,10 +149,12 @@ impl DesktopApp {
     }
 
     pub fn finish_stop(stop_rx: StopReceiver, was_too_short: bool) -> Result<Vec<u8>, String> {
-        match AudioRecorder::collect_wav(stop_rx) {
-            Some(wav) => Ok(wav),
-            None if was_too_short => Err(RECORDING_TOO_SHORT_ERROR.to_string()),
-            None => Err("no audio captured".to_string()),
+        match AudioRecorder::collect_wav_result(stop_rx) {
+            Ok(wav) => Ok(wav),
+            Err(e) if was_too_short || e == RECORDING_TOO_SHORT_ERROR => {
+                Err(RECORDING_TOO_SHORT_ERROR.to_string())
+            }
+            Err(e) => Err(e),
         }
     }
 

@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Said — Core Pipeline Audit</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --font-display: 'Space Grotesk', system-ui, sans-serif;
+      --font-body: 'Plus Jakarta Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+      --fs-xs: 0.75rem; --fs-sm: 0.875rem; --fs-base: 1rem; --fs-lg: 1.125rem;
+      --fs-xl: 1.375rem; --fs-2xl: 1.75rem; --fs-3xl: 2.25rem; --fs-4xl: 3rem;
+      --lh-tight: 1.15; --lh-snug: 1.35; --lh-normal: 1.55; --lh-relaxed: 1.75;
+      --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 700;
+      --bg-primary: #0a0a0f; --bg-secondary: #11111a; --bg-card: #16161f; --bg-elevated: #1d1d28;
+      --text-primary: #f4f4f8; --text-secondary: #b4b4c2; --text-muted: #6f6f80;
+      --accent-primary: #7c5cff; --accent-secondary: #22d3ee; --accent-success: #34d399;
+      --accent-warning: #fbbf24; --accent-danger: #f87171;
+      --border-subtle: rgba(255,255,255,0.06); --border-soft: rgba(255,255,255,0.10);
+      --radius-sm: 6px; --radius-md: 12px; --radius-lg: 20px; --radius-full: 9999px;
+      --shadow-md: 0 8px 24px rgba(0,0,0,0.35);
+      --space-sm: 0.5rem; --space-md: 1rem; --space-lg: 1.5rem; --space-xl: 2.5rem; --space-2xl: 4rem;
+      --container-lg: 1120px;
+      --stage-desktop: #7c5cff; --stage-stt: #22d3ee; --stage-tier2: #34d399;
+      --stage-llm: #fbbf24; --stage-paste: #f472b6; --stage-learn: #a78bfa;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; background: var(--bg-primary); color: var(--text-primary);
+      font-family: var(--font-body); font-size: var(--fs-base); line-height: var(--lh-normal);
+      -webkit-font-smoothing: antialiased;
+    }
+    h1, h2, h3, h4 { font-family: var(--font-display); font-weight: var(--fw-semibold); line-height: var(--lh-tight); letter-spacing: -0.02em; margin: 0 0 var(--space-md); }
+    a { color: var(--accent-secondary); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code { font-family: var(--font-mono); font-size: 0.9em; background: var(--bg-elevated); padding: 0.1em 0.35em; border-radius: 4px; }
+    .progress { position: fixed; top: 0; left: 0; height: 3px; background: var(--accent-primary); width: 0; z-index: 100; transition: width 0.1s; }
+    .layout { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+    .sidebar {
+      position: sticky; top: 0; height: 100vh; overflow-y: auto;
+      background: var(--bg-secondary); border-right: 1px solid var(--border-subtle);
+      padding: var(--space-lg) var(--space-md);
+    }
+    .sidebar h2 { font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: var(--space-md); }
+    .nav-link {
+      display: block; padding: 0.45rem 0.65rem; border-radius: var(--radius-sm);
+      color: var(--text-secondary); font-size: var(--fs-sm); margin-bottom: 2px;
+    }
+    .nav-link:hover, .nav-link.active { background: var(--bg-elevated); color: var(--text-primary); text-decoration: none; }
+    .nav-link .num { color: var(--text-muted); margin-right: 0.4rem; font-family: var(--font-mono); font-size: 0.8em; }
+    main { padding: var(--space-2xl) var(--space-xl); max-width: var(--container-lg); }
+    .hero { margin-bottom: var(--space-2xl); padding-bottom: var(--space-xl); border-bottom: 1px solid var(--border-subtle); }
+    .hero h1 { font-size: var(--fs-4xl); margin-bottom: var(--space-sm); }
+    .hero p { color: var(--text-secondary); font-size: var(--fs-lg); max-width: 52ch; margin: 0 0 var(--space-lg); }
+    .meta { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+    .pill {
+      font-size: var(--fs-xs); font-family: var(--font-mono); padding: 0.35rem 0.7rem;
+      border-radius: var(--radius-full); border: 1px solid var(--border-soft); color: var(--text-secondary);
+    }
+    .pill.live { border-color: rgba(52,211,153,0.4); color: var(--accent-success); }
+    .pill.wip { border-color: rgba(251,191,36,0.4); color: var(--accent-warning); }
+    section { margin-bottom: var(--space-2xl); scroll-margin-top: var(--space-lg); opacity: 0; transform: translateY(16px); transition: opacity 0.5s, transform 0.5s; }
+    section.visible { opacity: 1; transform: none; }
+    .stage-header { display: flex; align-items: center; gap: var(--space-md); margin-bottom: var(--space-lg); }
+    .stage-badge {
+      width: 42px; height: 42px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center;
+      font-family: var(--font-mono); font-weight: var(--fw-bold); font-size: var(--fs-sm); flex-shrink: 0;
+    }
+    .card {
+      background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+      padding: var(--space-lg); margin-bottom: var(--space-md); box-shadow: var(--shadow-md);
+    }
+    .card h3 { font-size: var(--fs-lg); margin-bottom: var(--space-sm); }
+    .card p, .card li { color: var(--text-secondary); }
+    .card ul { margin: 0; padding-left: 1.2rem; }
+    .card li { margin-bottom: 0.35rem; }
+    pre.pseudo {
+      font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-relaxed);
+      background: #0d0d14; border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+      padding: var(--space-lg); overflow-x: auto; margin: var(--space-md) 0 0; color: #c8cad8;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    pre.pseudo .kw { color: #c792ea; }
+    pre.pseudo .fn { color: #82aaff; }
+    pre.pseudo .cm { color: #546e7a; font-style: italic; }
+    pre.pseudo .gate { color: #ffcb6b; }
+    pre.pseudo .io { color: #89ddff; }
+    pre.pseudo .path { color: #34d399; }
+    table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); margin-top: var(--space-md); }
+    th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--border-subtle); }
+    th { color: var(--text-muted); font-weight: var(--fw-medium); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.06em; }
+    td code { font-size: 0.85em; }
+    .flow {
+      font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.6;
+      background: linear-gradient(135deg, #12121c 0%, #0f1018 100%);
+      border: 1px solid var(--border-soft); border-radius: var(--radius-lg);
+      padding: var(--space-lg); overflow-x: auto; color: var(--text-secondary);
+    }
+    .flow .arrow { color: var(--accent-primary); }
+    .flow .label { color: var(--accent-secondary); }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-md); }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--border-subtle); }
+      main { padding: var(--space-lg); }
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+    details { margin-top: var(--space-md); }
+    summary { cursor: pointer; color: var(--accent-warning); font-weight: var(--fw-medium); }
+    .dead { opacity: 0.85; }
+    .dead td:first-child { color: var(--accent-danger); }
+    .quality-note {
+      border-left: 3px solid var(--accent-primary); padding-left: var(--space-md);
+      color: var(--text-secondary); font-size: var(--fs-sm); margin-top: var(--space-md);
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" id="progress"></div>
+  <div class="layout">
+    <nav class="sidebar">
+      <h2>Pipeline</h2>
+      <a class="nav-link" href="#overview"><span class="num">↳</span>Overview</a>
+      <a class="nav-link" href="#s0"><span class="num">0</span>App boot</a>
+      <a class="nav-link" href="#s1"><span class="num">1</span>Hotkey hold</a>
+      <a class="nav-link" href="#s2"><span class="num">2</span>Start recording</a>
+      <a class="nav-link" href="#s3"><span class="num">3</span>Deepgram WS</a>
+      <a class="nav-link" href="#s4"><span class="num">4</span>Finish + SSE</a>
+      <a class="nav-link" href="#s5"><span class="num">5</span>Backend polish</a>
+      <a class="nav-link" href="#s6"><span class="num">6</span>Tier 2 (4-pass)</a>
+      <a class="nav-link" href="#s7"><span class="num">7</span>LLM + guards</a>
+      <a class="nav-link" href="#s8"><span class="num">8</span>Paste + watcher</a>
+      <a class="nav-link" href="#s9"><span class="num">9</span>Classify / learn</a>
+      <a class="nav-link" href="#s10"><span class="num">10</span>Confirm UI</a>
+      <a class="nav-link" href="#secondary"><span class="num">·</span>Secondary paths</a>
+      <a class="nav-link" href="#dead"><span class="num">✕</span>Not in hot path</a>
+      <a class="nav-link" href="#quality"><span class="num">?</span>Quality levers</a>
+    </nav>
+
+    <main>
+      <header class="hero">
+        <h1>Said Core Pipeline</h1>
+        <p>End-to-end audit of the <strong>actually wired</strong> dictation → polish → paste → learn loop. Pseudocode traced from real call sites — not wiki docs, not dead branches.</p>
+        <div class="meta">
+          <span class="pill live">Wired &amp; running</span>
+          <span class="pill wip">Branch: lahore-v10 (uncommitted alias_safety)</span>
+          <span class="pill">Audited: 25 May 2026</span>
+        </div>
+      </header>
+
+      <section id="overview">
+        <h2>Overview — happy path</h2>
+        <div class="flow">
+<span class="label">DESKTOP (Tauri)</span>
+  Caps Lock <span class="arrow">↓</span> hotkey::start_hold_listener
+  <span class="arrow">↓</span> do_start_recording → cpal 16kHz + dg_stream WS
+  Caps Lock release <span class="arrow">↓</span> do_finish_recording → WAV + transcript
+  <span class="arrow">↓</span> run_voice_polish_sse → POST /v1/voice/polish (SSE)
+  <span class="arrow">↓</span> paster::type_text (live) or paste (fallback)
+  <span class="arrow">↓</span> watch_for_edit (30s AX poll) → POST /v1/classify-edit
+
+<span class="label">BACKEND (said-backend Axum)</span>
+  polish_with_input:
+    STT (WS pre-transcript or Deepgram HTTP)
+    <span class="arrow">→</span> tier2::correct_with_store (4 passes)
+    <span class="arrow">→</span> embed cache + vocab RAG + prompt build
+    <span class="arrow">→</span> Groq/Gateway LLM stream + Hinglish guards
+    <span class="arrow">→</span> insert_recording + tier2_policy::record_decisions
+
+  classify:
+    alias revert + tier2 feedback penalize
+    <span class="arrow">→</span> edit_diff + deterministic classify
+    <span class="arrow">→</span> promotion gates + alias_safety judge
+    <span class="arrow">→</span> vocabulary + stt_replacements + edit_policy upsert
+        </div>
+      </section>
+
+      <!-- STAGE 0 -->
+      <section id="s0">
+        <div class="stage-header">
+          <div class="stage-badge" style="background:rgba(124,92,255,0.2);color:var(--stage-desktop)">0</div>
+          <div><h2>App boot</h2><p style="color:var(--text-muted);margin:0">desktop/src-tauri/src/main.rs setup</p></div>
+        </div>
+        <div class="card">
+          <pre class="pseudo"><span class="cm">// Once at launch</span>
+<span class="fn">DeepgramSession::spawn</span>()           <span class="cm">→ persistent WS actor (dg_stream.rs)</span>
+<span class="fn">BackendHandle::spawn</span>()             <span class="cm">→ said-backend sidecar, poll /v1/health</span>
+<span class="fn">hotkey::start_hold_listener</span>(on_press, on_release)
+  <span class="cm">macOS: CGEventTap (Input Monitoring perm)</span>
+  <span class="cm">Windows: WH_KEYBOARD_LL hook</span>
+<span class="io">OUT:</span> DeepgramSessionState, BackendEndpoint, hotkey tap running</pre>
+        </div>
+      </section>
+
+      <!-- STAGE 1 -->
+      <section id="s1">
+        <div class="stage-header">
+          <div class="stage-badge" style="background:rgba(124,92,255,0.2);color:var(--stage-desktop)">1</div>
+          <div><h2>Hotkey hold / release</h2><p style="color:var(--text-muted);margin:0">crates/hotkey/src/lib.rs</p></div>
+        </div>
+        <div class="card">
+          <pre class="pseudo"><span class="kw">ON</span> Caps Lock press:
+  <span class="gate">IF</span> debounce &lt; 300ms <span class="kw">OR</span> RECORDING_STARTING → ignore
+  <span class="fn">do_start_recording</span>(shared, app)
+
+<span class="kw">ON</span> Caps Lock release:
+  <span class="fn">do_finish_recording</span>(shared, app, backend)
+
+<span class="cm">// Side paths in same tap (also wired):</span>
+  Ctrl+Cmd+V → paster::paste(latest_result)     <span class="cm">re-paste last dictation</span>
+  Option+1..5 → tone polish shortcut</pre>
+        </div>
+      </section>
+
+      <!-- STAGE 2 -->
+      <section id="s2">
+        <div class="stage-header">
+          <div class="stage-badge" style="background:rgba(124,92,255,0.2);color:var(--stage-desktop)">2</div>
+          <div><h2>Start recording</h2><p style="color:var(--text-muted);margin:0">main.rs :: do_start_recording (~L1560)</p></div>
+        </div>
+        <div class="card">
+          <pre class="pseudo"><span class="fn">cancel_edit_watcher</span>()                    <span class="cm">cancel prior 30s edit watch</span>
+
+<span class="cm">// macOS only — lock target app for edit watch later</span>
+<span class="fn">paster::lock_frontmost_app_now</span>()           <span class="io">→ target PID</span>
+<span class="fn">paster::read_focused_value_fast_for_pid</span>()  <span class="io">→ screen_context (≤500 chars)</span>
+
+<span class="fn">DesktopApp::start_recording</span>()              <span class="cm">crates/recorder — cpal 16kHz PCM</span>
+  <span class="io">OUT:</span> ChunkReceiver, LevelReceiver, StopReceiver
+
+<span class="fn">DeepgramSession::StartRecording</span>          <span class="cm">send to dg_stream actor</span>
+<span class="fn">spawn_audio_bridge</span>(chunk_recv → WS)        <span class="cm">PCM flows while key held</span>
+
+<span class="fn">emit</span>("app-state") + voice-level HUD at 30fps</pre>
+        </div>
+      </section>
+
+      <!-- STAGE 3 -->
+      <section id="s3">
+        <div class="stage-header">
+          <div class="stage-badge" style="background:rgba(34,211,238,0.15);color:var(--stage-stt)">3</div>
+          <div><h2>Deepgram streaming STT</h2><p style="color:var(--text-muted);margin:0">desktop/src-tauri/src/dg_stream.rs</p></div>
+        </div>
+        <div class="card">
+          <table>
+            <tr><th>Threshold</th><th>Value</th><th>Effect</th></tr>
+            <tr><td>LOW_CONFIDENCE</td><td>0.85</td><td>Words below → annotated <code>[word?XX%]</code> in transcript</td></tr>
+            <tr><td>MAX_STREAM_DURATION</td><td>45s</td><td>Hard ceiling on WS stream</td></tr>
+            <tr><td>Finalize timeout</td><td>900–1500ms</td><td>Wait for final transcript parts</td></tr>
+            <tr><td>Keep-alive</td><td>4s</td><td>Idle WS primer to stay warm</td></tr>
+          </table>
+          <pre class="pseudo"><span class="kw">WHILE</span> recording:
+  Audio chunks → resample 16kHz → Deepgram nova-3 WS
+  <span class="kw">ON</span> is_final transcript part → append to parts[]
+
+<span class="kw">ON</span> Finalize:
+  join(parts) → StreamingTranscript { transcript, meta }
+  fire-and-forget POST /v1/pre-embed          <span class="cm">background embed warmup</span>
+  send result via oneshot → do_finish_recording</pre>
+        </div>
+      </section>
+
+      <!-- STAGE 4 -->
+      <section id="s4">
+        <div class="stage-header">
+          <div class="stage-badge" style="background:rgba(124,92,255,0.2);color:var(--stage-desktop)">4</div>
+          <div><h2>Finish recording → voice SSE</h2><p style="color:var(--text-muted);margin:0">main.rs :: do_finish_recording + run_voice_polish_sse</p></div>
+        </div>
+        <div class="card">
+          <pre class="pseudo"><span class="fn">DesktopApp::begin_stop</span>() → stop cpal
+<span class="gate">IF</span> was_too_short (&lt;0.5s) → voice-error, STOP
+
+<span class="fn">finish_stop</span>() → encode WAV (16-bit mono 16kHz)
+
+<span class="cm">// WS transcript quality gate</span>
+await transcript_rx <span class="kw">with</span> timeout 2500ms
+<span class="gate">IF</span> word_count ≥ max(1, duration_seconds) → use pre_transcript
+<span class="kw">ELSE</span> → None (backend falls back to HTTP Deepgram batch)
+
+<span class="fn">run_voice_polish_sse</span>(wav, pre_transcript, screen_context):
+  multipart POST → <span class="path">/v1/voice/polish</span>
+  consume SSE:
+    Token  → LiveTypingGuard → paster::type_text(token)   <span class="cm">6ms+6ms+6ms sacred</span>
+    Status → UI voice-status event
+    Done   → cache LatestResult
+  post-stream:
+    <span class="gate">IF</span> live typing failed → paster::paste_replacing(polished)
+    <span class="kw">ELSE IF</span> no tokens typed → paster::paste(polished)
+  <span class="fn">start_edit_watcher</span>(recording_id, polished, target_pid)   <span class="cm">normal mode only</span></pre>
+        </div>
+      </section>
+
+      <!-- STAGE 5 -->
+      <section id="s5">
+        <div class="stage-header">
+          <div class="stage-badge" style="background:rgba(251,191,36,0.15);color:var(--stage-llm)">5</div>
+          <div><h2>Backend polish stream</h2><p style="color:var(--text-muted);margin:0">crates/backend/src/routes/voice.rs :: polish_with_input</p></div>
+        </div>
+        <div class="card">
+          <h3>Pre-stream (parallel cache reads)</h3>
+          <ul>
+            <li><code>vocabulary::top_terms(user, 100)</code></li>
+            <li><code>get_prefs_cached</code> (30s TTL) + <code>get_lexicon_cached</code> (60s TTL)</li>
+            <li><code>key_guard::missing_voice_api_keys</code> → 400 if Deepgram/Gateway missing</li>
+          </ul>
+          <pre class="pseudo"><span class="cm">── STEP 1: STT ──</span>
+<span class="gate">IF</span> pre_transcript present:
+  strip [word?XX%] markers
+  maybe_rescue_transcript(WS candidate)     <span class="cm">rescue if quality gate fails</span>
+<span class="kw">ELSE</span>:
+  deepgram::transcribe(wav, bias_package)   <span class="cm">HTTP batch, 30s timeout</span>
+stt_bias::build_bias_package → keyterms + replace from vocab (starred-only biasing)
+
+<span class="cm">── STEP 2: Tier 2 correction (see stage 6) ──</span>
+alias_result = tier2::correct_with_store(pool, user, raw_transcript, stt_rules, vocab)
+emit SSE status { phase: "polishing", transcript: corrected }
+
+<span class="cm">── STEP 3: Embedding (cache-only, no network in hot path) ──</span>
+emb = gemini::cached(pool, corrected_transcript)   <span class="cm">256-d SQLite cache</span>
+
+<span class="cm">── STEP 4: RAG + vocab for prompt ──</span>
+<span class="gate">IF</span> emb hit: vectors::retrieve_similar(k=5, threshold=0.65)
+vocab_embeddings::select_for_prompt(capped 25 terms)
+vocab_resolver::resolve_for_prompt(transcript, aliases)
+
+<span class="cm">── STEP 5: Prompt ──</span>
+render_voice_system_prompt_template(prefs, rag, corrections, vocab)
+build_user_message_with_hints(corrected_transcript, low_conf_markers)
+
+<span class="cm">── STEP 6: LLM stream (see stage 7) ──</span>
+<span class="cm">── STEP 7: Persist ──</span>
+insert_recording(...)
+tier2_policy::record_decisions(recording_id, alias_result.traces)
+tier2_policy::record_applied_matches(exact aliases)
+vocab_embeddings::bump_last_used(surfaced terms)</pre>
+        </div>
+      </section>
+
+      <!-- STAGE 6 -->
+      <section id="s6">
+        <div class="stage-header">
+          <div class="stage-badge" style="background:rgba(52,211,153,0.15);color:var(--stage-tier2)">6</div>
+          <div><h2>Tier 2 — 4-pass local correction</h2><p style="color:var(--text-muted);margin:0">crates/backend/src/tier2.rs :: CorrectionEngine::correct</p></div>
+        </div>
+        <div class="card">
+          <table>
+            <tr><th>Pass</th><th>Function</th><th>Applies?</th><th>Key gates</th></tr>
+            <tr>
+              <td><strong>1</strong> Exact alias</td>
+              <td><code>stt_replacements::apply_exact_safe</code></td>
+              <td style="color:var(--accent-success)">Yes — live</td>
+              <td>review_status=<code>approved</code>, not common word, plausible alias, word-boundary match</td>
+            </tr>
+            <tr>
+              <td><strong>2</strong> Edit policy</td>
+              <td><code>apply_edit_policy</code></td>
+              <td style="color:var(--accent-success)">Yes — active rules</td>
+              <td>status=<code>active</code>, context bigrams, common-word veto (alias_safety WIP)</td>
+            </tr>
+            <tr>
+              <td><strong>3</strong> Cluster fuzzy</td>
+              <td><code>cluster_fuzzy_pass</code></td>
+              <td style="color:var(--accent-success)">Yes — if targets exist</td>
+              <td>Requires active edit-policy target; score ≥ <code>0.78</code>; max 3/recording</td>
+            </tr>
+            <tr>
+              <td><strong>4</strong> ONNX / deterministic</td>
+              <td><code>fuzzy_scoring_pass</code></td>
+              <td style="color:var(--accent-warning)">Shadow-only*</td>
+              <td>score ≥0.86, margin ≥0.18, det_floor ≥0.68 — <em>only applies with direct policy evidence*</em></td>
+            </tr>
+          </table>
+          <p class="quality-note">* <strong>WIP on lahore-v10:</strong> Pass 4 scores always run (ONNX if model on disk, else deterministic phonetics) but <code>applied</code> requires <code>has_direct_policy_evidence</code> — prevents fuzzy auto-apply like <code>kaisa→Macobs</code>. Committed v2.2.0 applied pass 4 more aggressively.</p>
+          <pre class="pseudo"><span class="fn">correct</span>(transcript):
+  exact = apply_exact_safe(transcript, approved_stt_rules)
+  edit  = apply_edit_policy(exact.text, skip_already_corrected)
+  cluster = cluster_fuzzy_pass(text, active_edit_targets_only)
+  fuzzy = fuzzy_scoring_pass(text, protected_tokens)
+    build_candidates(approved_aliases + vocab)
+    <span class="gate">FOR EACH</span> token:
+      skip IF common_word OR alias_safety blocked OR in dictionary
+      score = max(deterministic, onnx_blend)
+      boost from tier2_policy weights if learned
+    <span class="gate">APPLY IF</span> policy_score present AND margin≥0.18 AND score≥0.86 AND det≥0.68
+  <span class="io">OUT:</span> { text, matches[], traces[] } → recorded to tier2_decision_events</pre>
+        </div>
+      </section>
+
+      <!-- STAGE 7 -->
+      <section id="s7">
+        <div class="stage-header">
+          <div class="stage-badge" style="background:rgba(251,191,36,0.15);color:var(--stage-llm)">7</div>
+          <div><h2>LLM polish + output guards</h2><p style="color:var(--text-muted);margin:0">voice.rs stream + llm/script.rs + llm/prompt.rs</p></div>
+        </div>
+        <div class="card">
+          <pre class="pseudo"><span class="cm">// Provider routing (prefs.stt_provider / llm prefs)</span>
+default: Gateway → Groq llama-3.3-70b
+fallbacks: groq direct, gemini_direct, openai_codex (OAuth), cerebras
+
+<span class="kw">STREAM</span> tokens:
+  StreamSafetyFilter.wrap(token)           <span class="cm">detect prompt regurgitation</span>
+  <span class="gate">IF</span> hinglish mode AND token has Devanagari:
+    script::enforce_roman_hinglish(token)
+    emit STREAM_RESET_SENTINEL → desktop disables live typing
+
+<span class="cm">// Post-stream guards (in order)</span>
+1. strip_confidence_markers(polished)
+2. scrub_polished_output(polished)         <span class="cm">remove leaked system prompt</span>
+3. <span class="gate">IF</span> Devanagari still present → devanagari_recovery LLM romanize
+   <span class="kw">ELSE</span> mechanical script::enforce_roman_hinglish
+4. content_guard: <span class="gate">IF</span> polished_words &lt; transcript_words/2 AND transcript&gt;4w
+     → fallback to cleaned transcript (anti-hallucination shrink)</pre>
+        </div>
+      </section>
+
+      <!-- STAGE 8 -->
+      <section id="s8">
+        <div class="stage-header">
+          <div class="stage-badge" style="background:rgba(244,114,182,0.15);color:var(--stage-paste)">8</div>
+          <div><h2>Paste + 30s edit watcher</h2><p style="color:var(--text-muted);margin:0">crates/paster + main.rs :: watch_for_edit (~L4008)</p></div>
+        </div>
+        <div class="card">
+          <div class="grid-2">
+            <div>
+              <h3>Live typing (macOS)</h3>
+              <ul>
+                <li><code>paster::type_text</code> — CGEventKeyboardSetUnicodeString</li>
+                <li>6ms keydown→keyup, 6ms post-keyup (sacred)</li>
+                <li>Windows: SendInput KEYEVENTF_UNICODE</li>
+              </ul>
+            </div>
+            <div>
+              <h3>Fallback paste</h3>
+              <ul>
+                <li><code>pbcopy</code> + Cmd+V via synthesized events</li>
+                <li>Used when live typing fails or reset sentinel fired</li>
+              </ul>
+            </div>
+          </div>
+          <pre class="pseudo"><span class="fn">watch_for_edit</span>(recording_id, polished, target_pid, pre_paste_text):
+  sleep 400ms                               <span class="cm">paste animation settle</span>
+  poll <span class="fn">paster::read_focused_value_for_pid</span>(target_pid)
+    interval: 50ms fast → 300ms slow after 2s idle
+    max duration: 30s
+
+  <span class="gate">IF</span> AX returns empty (Chrome/Lark contenteditable) → <span class="kw">RETURN</span> (no learning)
+  <span class="gate">IF</span> field == polished → no edit, RETURN
+  <span class="gate">IF</span> !is_meaningful_edit(polished, user_kept) → RETURN
+  <span class="gate">IF</span> !shares_word_overlap AND !format_transform → garbage, RETURN
+
+  extract_kept(polished, post_paste, effective_val, pre_paste)
+  POST <span class="path">/v1/classify-edit</span> { recording_id, ai_output, user_kept, capture_method:"ax" }</pre>
+        </div>
+      </section>
+
+      <!-- STAGE 9 -->
+      <section id="s9">
+        <div class="stage-header">
+          <div class="stage-badge" style="background:rgba(167,139,250,0.15);color:var(--stage-learn)">9</div>
+          <div><h2>Classify / learning pipeline</h2><p style="color:var(--text-muted);margin:0">crates/backend/src/routes/classify.rs :: classify</p></div>
+        </div>
+        <div class="card">
+          <pre class="pseudo"><span class="cm">── Early gates ──</span>
+<span class="gate">IF</span> !learning_enabled → no_edit
+<span class="gate">IF</span> time_since_paste &gt; 30s → stale
+<span class="gate">IF</span> user_kept empty → full_deletion
+<span class="gate">IF</span> ai_output == user_kept → no_edit (+ reward_active_terms +0.1)
+
+<span class="cm">── Negative signal (demotion principles) ──</span>
+<span class="fn">run_alias_revert_pass</span>(polish, user_kept)
+  <span class="cm">vocab term in polish but user replaced it → delete STT alias only (vocab kept)</span>
+<span class="fn">tier2_edit_policy::mark_removed_feedback</span>(recording_id, user_kept)
+  <span class="gate">FOR EACH</span> applied tier2_decision_event where chosen_form NOT in user_kept:
+    stt_alias → stt_replacements::demote(weight -1.5, delete at ≤0)
+    other scorers → penalize_rule + tier2_policy::penalize_mapping
+    <span class="cm">WIP: also covers deterministic/onnx/policy scorers</span>
+    <span class="cm">WIP: insert BLOCKED rule if no rule existed</span>
+  → penalized_pairs → negative_terms → status bar pill + ONNX retrain
+
+<span class="cm">── Positive learning ──</span>
+hunks = edit_diff::diff(transcript, ai_output, user_kept)
+changes = deterministic_classify_hunks(hunks)   <span class="cm">no LLM classifier in hot path</span>
+
+<span class="gate">FOR EACH</span> SttError change:
+  skip IF common_word(corrected) OR numeric_junk
+  skip IF !appears_in_user_kept(corrected)
+  skip IF script mismatch (Devanagari in hinglish mode)
+  alias_safety::judge_alias_source(original→corrected)   <span class="cm">Groq 8b, cached</span>
+  <span class="gate">IF</span> stt_change_count ≥ 2 → review card (no auto-learn)
+  <span class="gate">IF</span> single + (brand|acronym|code_identifier) → auto-learn
+  <span class="kw">ELSE</span> → review card
+
+<span class="kw">ON</span> auto-learn:
+  vocabulary::upsert_for_language_with_context
+  stt_replacements::upsert_aliases_for_language (both transcript + polish spans)
+  tier2_edit_policy::record_explicit_edit (needs 2 positives to activate)
+  spawn_vocab_embedding (background Gemini)
+  schedule_onnx_retrain (debounced 5s)
+
+<span class="io">RESPONSE → desktop:</span>
+  vocab-toast | vocab-queued | vocab-review | vocab-confirm events</pre>
+        </div>
+      </section>
+
+      <!-- STAGE 10 -->
+      <section id="s10">
+        <div class="stage-header">
+          <div class="stage-badge" style="background:rgba(167,139,250,0.15);color:var(--stage-learn)">10</div>
+          <div><h2>User confirm (status bar)</h2><p style="color:var(--text-muted);margin:0">routes/confirm.rs + desktop StatusBar</p></div>
+        </div>
+        <div class="card">
+          <pre class="pseudo"><span class="cm">User taps Learn on review toast → POST /v1/confirm-term</span>
+<span class="gate">IF</span> action == "learn":
+  vocabulary::upsert_for_language_with_context
+  alias_safety::judge_alias_source (re-check)
+  <span class="gate">IF</span> safe:
+    tier2_edit_policy::record_explicit_edit
+    stt_replacements::upsert_aliases_for_language
+    generate_proactive_distortions (seed likely ASR variants)
+  invalidate_lexicon_cache
+
+<span class="cm">User taps Block → POST /v1/block-correction</span>
+  tier2_edit_policy::block_rule + delete offending alias
+
+<span class="cm">Batch confirm → POST /v1/confirm-batch (multi-change review card)</span></pre>
+        </div>
+      </section>
+
+      <!-- SECONDARY -->
+      <section id="secondary">
+        <h2>Secondary paths (wired, not main hot path)</h2>
+        <div class="card">
+          <table>
+            <tr><th>Route</th><th>Trigger</th><th>What it does</th></tr>
+            <tr>
+              <td><code>POST /v1/edit-feedback</code></td>
+              <td>History UI manual submit</td>
+              <td>Updates final_text, stores word corrections, embeds edit_event — <strong>does NOT</strong> run full classify/promotion gates</td>
+            </tr>
+            <tr>
+              <td><code>POST /v1/voice/repair</code></td>
+              <td>Smart repair tray button</td>
+              <td>Re-polish with preserve_recall mode — separate from normal dictation</td>
+            </tr>
+            <tr>
+              <td><code>POST /v1/text/polish</code></td>
+              <td>Text-only polish (no STT)</td>
+              <td>Same tier2 + LLM path, skips recorder/Deepgram</td>
+            </tr>
+            <tr>
+              <td>Meeting mode</td>
+              <td>is_meeting=true</td>
+              <td>Skips paste + edit watcher; emits meeting-transcript event</td>
+            </tr>
+            <tr>
+              <td><code>pending_promotions</code></td>
+              <td>Legacy k-threshold</td>
+              <td>Mostly superseded by direct auto-learn + review cards; still used for delete on promote</td>
+            </tr>
+          </table>
+        </div>
+      </section>
+
+      <!-- DEAD -->
+      <section id="dead">
+        <h2>Not in hot path</h2>
+        <div class="card dead">
+          <p>These exist in the codebase but are <strong>not invoked</strong> during normal Caps Lock dictation:</p>
+          <details open>
+            <summary>Show dead / unwired branches</summary>
+            <table>
+              <tr><th>Path</th><th>Why skipped</th></tr>
+              <tr><td><code>whisper_local</code> STT</td><td>Feature gate <code>local-stt</code> — not in standard builds</td></tr>
+              <tr><td><code>groq_whisper</code> STT provider</td><td>Only if user sets pref — default is Deepgram</td></tr>
+              <tr><td>Keystroke-only capture</td><td>AX empty → watcher returns before keystroke path</td></tr>
+              <tr><td>Clipboard capture in edit watcher</td><td>Intentionally removed (ax_unreadable → skip learning)</td></tr>
+              <tr><td>LLM 4-way classifier</td><td>Replaced by deterministic_classify_hunks in classify hot path</td></tr>
+              <tr><td><code>run_demotion_pass</code> (vocab weight demote)</td><td>Removed v2.2.0 → replaced by alias revert + tier2 feedback</td></tr>
+              <tr><td>RAG examples</td><td>Only when embed cache hits — miss = empty RAG, prompt still works</td></tr>
+              <tr><td>ONNX Pass 4</td><td>Only if <code>tier2_model</code> row + .onnx file on disk; else deterministic scorer only</td></tr>
+              <tr><td>OpenAI Codex LLM</td><td>Requires OAuth token in DB</td></tr>
+              <tr><td>Windows edit learning</td><td>Edit watcher is macOS AX-only; Windows = paste only today</td></tr>
+            </table>
+          </details>
+        </div>
+      </section>
+
+      <!-- QUALITY -->
+      <section id="quality">
+        <h2>Quality levers — for our next review</h2>
+        <div class="card">
+          <p>Once you've read the pipeline above, these are the highest-impact knobs to reason about:</p>
+          <table>
+            <tr><th>Lever</th><th>Where</th><th>Tradeoff</th></tr>
+            <tr><td>Pass 4 apply vs shadow</td><td>tier2.rs choose_candidate</td><td>More apply = catches real jargon; shadow = fewer false replacements</td></tr>
+            <tr><td>Common-word veto breadth</td><td>alias_safety.rs</td><td>Too wide blocks legit aliases; too narrow → kaisa→Macobs class</td></tr>
+            <tr><td>Edit-policy activation (k=2)</td><td>tier2_edit_policy.rs</td><td>Lower = faster learning; higher = safer</td></tr>
+            <tr><td>Feedback scorer coverage</td><td>mark_removed_feedback</td><td>Must penalize every scorer that can auto-apply</td></tr>
+            <tr><td>Cluster fuzzy threshold 0.78</td><td>tier2.rs</td><td>Only fires for targets with active edit rules</td></tr>
+            <tr><td>LLM content guard (50% word floor)</td><td>voice.rs</td><td>Prevents over-editing; may block legitimate summarization</td></tr>
+            <tr><td>AX-blind skip</td><td>watch_for_edit</td><td>Safe but zero learning in Chrome/Lark — biggest coverage gap</td></tr>
+            <tr><td>Auto-learn vs review card</td><td>classify.rs</td><td>Single STT change + brand/acronym/code → auto; multi-change → review</td></tr>
+          </table>
+          <p class="quality-note">Open the file locally: <code>docs/said-pipeline-audit.html</code> — scroll sections or use the sidebar. Ready to walk stage-by-stage and mark what to tighten for 2.2.1.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const progress = document.getElementById('progress');
+    const sections = document.querySelectorAll('section');
+    const navLinks = document.querySelectorAll('.nav-link');
+
+    window.addEventListener('scroll', () => {
+      const h = document.documentElement;
+      const pct = (h.scrollTop / (h.scrollHeight - h.clientHeight)) * 100;
+      progress.style.width = pct + '%';
+
+      let current = '';
+      sections.forEach(s => {
+        if (window.scrollY >= s.offsetTop - 120) current = s.id;
+      });
+      navLinks.forEach(a => {
+        a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+      });
+    });
+
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+    }, { threshold: 0.08 });
+    sections.forEach(s => observer.observe(s));
+  </script>
+</body>
+</html>

@@ -1,4 +1,103 @@
 const STORAGE_KEY = "said:enterprise";
+const PENDING_SERVER_URL_KEY = "said:enterprise-pending-url";
+const RECENT_WORKSPACES_KEY = "said:enterprise-recent-urls";
+const DEVICE_ID_FALLBACK_KEY = "said:enterprise-device-id";
+const MAX_RECENT_WORKSPACES = 5;
+
+function fallbackDeviceId(): string {
+  try {
+    const existing = localStorage.getItem(DEVICE_ID_FALLBACK_KEY);
+    if (existing?.trim()) return existing.trim();
+    const id = crypto.randomUUID();
+    localStorage.setItem(DEVICE_ID_FALLBACK_KEY, id);
+    return id;
+  } catch {
+    return "unknown-device";
+  }
+}
+
+async function clientPayload(): Promise<{
+  device_id: string;
+  platform: string;
+  app_version: string;
+  hostname?: string;
+}> {
+  const platform =
+    typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent)
+      ? "windows"
+      : "macos";
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { getVersion } = await import("@tauri-apps/api/app");
+    const deviceId = await invoke<string>("get_device_id");
+    const appVersion = await getVersion();
+    try {
+      localStorage.setItem(DEVICE_ID_FALLBACK_KEY, deviceId);
+    } catch {
+      // ignore
+    }
+    let hostname: string | undefined;
+    try {
+      hostname = await invoke<string>("get_hostname");
+    } catch {
+      hostname = undefined;
+    }
+    return { device_id: deviceId, platform, app_version: appVersion, hostname };
+  } catch (err) {
+    console.warn("[enterprise] clientPayload fallback", err);
+    return {
+      device_id: fallbackDeviceId(),
+      platform,
+      app_version: "unknown",
+    };
+  }
+}
+
+function normalizeServerUrl(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+/** Recently used workspace server URLs (newest first). */
+export function getRecentWorkspaceUrls(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_WORKSPACES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((u): u is string => typeof u === "string" && u.trim().length > 0)
+      .map(normalizeServerUrl);
+  } catch {
+    return [];
+  }
+}
+
+/** Save a workspace URL to recents after successful validation or connect. */
+export function rememberWorkspaceUrl(url: string): void {
+  const normalized = normalizeServerUrl(url);
+  if (!normalized) return;
+  try {
+    const next = [
+      normalized,
+      ...getRecentWorkspaceUrls().filter((u) => u !== normalized),
+    ].slice(0, MAX_RECENT_WORKSPACES);
+    localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+}
+
+/** Remove one URL from recents (optional clear in UI). */
+export function forgetWorkspaceUrl(url: string): void {
+  const normalized = normalizeServerUrl(url);
+  try {
+    const next = getRecentWorkspaceUrls().filter((u) => u !== normalized);
+    localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+}
 
 export interface EnterpriseConnection {
   serverUrl: string;
@@ -9,6 +108,8 @@ export interface EnterpriseConnection {
   larkName?: string;
   larkAvatarUrl?: string;
 }
+
+export type ConnectionStatus = "connected" | "missing" | "expired";
 
 /** Check if connected to an enterprise server */
 export function isConnected(): boolean {
@@ -34,6 +135,12 @@ export function getConnection(): EnterpriseConnection | null {
 /** Save connection info after successful OAuth */
 export function saveConnection(conn: EnterpriseConnection): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(conn));
+  rememberWorkspaceUrl(conn.serverUrl);
+  try {
+    localStorage.removeItem(PENDING_SERVER_URL_KEY);
+  } catch {
+    // ignore
+  }
 }
 
 /** Clear connection (disconnect) */
@@ -41,32 +148,154 @@ export function disconnect(): void {
   localStorage.removeItem(STORAGE_KEY);
 }
 
+/** Remember server URL across OAuth round-trip */
+export function setPendingServerUrl(url: string): void {
+  try {
+    localStorage.setItem(PENDING_SERVER_URL_KEY, url);
+  } catch {
+    // ignore
+  }
+}
+
+export function getPendingServerUrl(): string | null {
+  try {
+    return localStorage.getItem(PENDING_SERVER_URL_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Validate stored session against the server; clear on expiry. */
+export async function checkConnection(): Promise<ConnectionStatus> {
+  const conn = getConnection();
+  if (!conn?.jwt || !conn.serverUrl) return "missing";
+
+  try {
+    const url = conn.serverUrl.replace(/\/+$/, "");
+    const res = await fetch(`${url}/v1/auth/me`, {
+      headers: { Authorization: `Bearer ${conn.jwt}` },
+    });
+    if (res.ok) return "connected";
+    if (res.status === 401 || res.status === 403) {
+      disconnect();
+      return "expired";
+    }
+    // Network/server errors — trust local cache for offline grace
+    return "connected";
+  } catch {
+    return "connected";
+  }
+}
+
 /** Validate server URL by hitting its health endpoint */
 export async function validateServer(serverUrl: string): Promise<boolean> {
   try {
     const url = serverUrl.replace(/\/+$/, "");
+    setPendingServerUrl(url);
     const res = await fetch(`${url}/v1/health`);
     if (!res.ok) return false;
     const data = await res.json();
-    return data.ok === true;
+    if (data.ok === true) {
+      rememberWorkspaceUrl(url);
+      return true;
+    }
+    return false;
   } catch {
     return false;
   }
 }
 
-/** Complete enterprise auth by validating a session token from the Lark OAuth callback.
- *  Fetches user identity + org info and saves the connection. */
-export async function completeAuth(serverUrl: string, sessionToken: string): Promise<EnterpriseConnection> {
+/** Register this desktop install with the enterprise server. */
+export async function registerClient(serverUrl: string, jwt: string): Promise<void> {
+  const url = serverUrl.replace(/\/+$/, "");
+  const body = await clientPayload();
+  const res = await fetch(`${url}/v1/clients/register`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok && res.status !== 204) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(
+      `Failed to register desktop client (${res.status})${detail ? `: ${detail}` : ""}`,
+    );
+  }
+}
+
+/** Heartbeat — refresh last_seen_at on the server. */
+export async function sendHeartbeat(serverUrl: string, jwt: string): Promise<void> {
+  const url = serverUrl.replace(/\/+$/, "");
+  const body = await clientPayload();
+  const res = await fetch(`${url}/v1/clients/heartbeat`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok && res.status !== 204) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(
+      `Failed to send desktop heartbeat (${res.status})${detail ? `: ${detail}` : ""}`,
+    );
+  }
+}
+
+/** Register on connect; fall back to heartbeat upsert if register fails. */
+export async function ensureDesktopRegistered(
+  serverUrl: string,
+  jwt: string,
+): Promise<boolean> {
+  if (!serverUrl.trim() || !jwt.trim()) return false;
+  try {
+    await registerClient(serverUrl, jwt);
+    console.info("[enterprise] desktop registered with server");
+    return true;
+  } catch (err) {
+    console.warn("[enterprise] register failed, trying heartbeat", err);
+  }
+  try {
+    await sendHeartbeat(serverUrl, jwt);
+    console.info("[enterprise] desktop heartbeat sent");
+    return true;
+  } catch (err) {
+    console.error("[enterprise] heartbeat failed", err);
+    return false;
+  }
+}
+
+/** Verify org license is active before proceeding. */
+export async function checkLicense(serverUrl: string, jwt: string): Promise<boolean> {
+  try {
+    const url = serverUrl.replace(/\/+$/, "");
+    const res = await fetch(`${url}/v1/license/check`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data.active !== false;
+  } catch {
+    return true;
+  }
+}
+
+/** Complete enterprise auth by validating a session token from the Lark OAuth callback. */
+export async function completeAuth(
+  serverUrl: string,
+  sessionToken: string,
+): Promise<EnterpriseConnection> {
   const url = serverUrl.replace(/\/+$/, "");
 
-  // Validate token by fetching user identity
   const meRes = await fetch(`${url}/v1/auth/me`, {
     headers: { Authorization: `Bearer ${sessionToken}` },
   });
   if (!meRes.ok) throw new Error("Invalid or expired token");
   const me = await meRes.json();
 
-  // Fetch org info
   const orgRes = await fetch(`${url}/v1/orgs/me`, {
     headers: { Authorization: `Bearer ${sessionToken}` },
   });
@@ -80,18 +309,9 @@ export async function completeAuth(serverUrl: string, sessionToken: string): Pro
     larkAvatarUrl = orgData.org?.lark_avatar_url;
   }
 
-  // Fetch lark profile from org members
-  if (orgName) {
-    try {
-      const membersRes = await fetch(`${url}/v1/orgs/me`, {
-        headers: { Authorization: `Bearer ${sessionToken}` },
-      });
-      if (membersRes.ok) {
-        const md = await membersRes.json();
-        if (md.org?.lark_name) larkName = md.org.lark_name;
-        if (md.org?.lark_avatar_url) larkAvatarUrl = md.org.lark_avatar_url;
-      }
-    } catch {}
+  const licenseOk = await checkLicense(url, sessionToken);
+  if (!licenseOk) {
+    throw new Error("Your workspace license is inactive. Contact your administrator.");
   }
 
   const conn: EnterpriseConnection = {
@@ -106,17 +326,43 @@ export async function completeAuth(serverUrl: string, sessionToken: string): Pro
 
   saveConnection(conn);
 
-  // Store in local said-backend so the app profile shows signed-in state
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("store_enterprise_auth", { token: sessionToken, email: me.account.email });
-  } catch {}
+    await invoke("store_enterprise_auth", {
+      token: sessionToken,
+      email: me.account.email,
+      serverUrl: url,
+      orgName: orgName ?? null,
+    });
+  } catch {
+    // Non-fatal for UI; backend gate may fail until retried
+  }
+
+  try {
+    await ensureDesktopRegistered(url, sessionToken);
+  } catch (err) {
+    console.warn("[enterprise] desktop registration deferred until next heartbeat", err);
+  }
 
   return conn;
 }
 
+/** Full disconnect — local storage + backend token. */
+export async function disconnectEnterprise(): Promise<void> {
+  disconnect();
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("clear_enterprise_auth");
+  } catch {
+    // ignore
+  }
+}
+
 /** Get user's org info */
-export async function getMyOrg(serverUrl: string, jwt: string): Promise<{ id: string; name: string; slug: string; role: string } | null> {
+export async function getMyOrg(
+  serverUrl: string,
+  jwt: string,
+): Promise<{ id: string; name: string; slug: string; role: string } | null> {
   try {
     const url = serverUrl.replace(/\/+$/, "");
     const res = await fetch(`${url}/v1/orgs/me`, {
@@ -131,7 +377,11 @@ export async function getMyOrg(serverUrl: string, jwt: string): Promise<{ id: st
 }
 
 /** List meetings for the user's org */
-export async function listMeetings(serverUrl: string, jwt: string, status?: string): Promise<any[]> {
+export async function listMeetings(
+  serverUrl: string,
+  jwt: string,
+  status?: string,
+): Promise<any[]> {
   try {
     const url = serverUrl.replace(/\/+$/, "");
     const qs = status ? `?status=${status}` : "";
@@ -172,7 +422,11 @@ export async function getOpenAIStatus(): Promise<OpenAIStatus | null> {
 }
 
 /** Initiate OpenAI PKCE OAuth — returns auth_url, code_verifier, state */
-export async function initiateOpenAIConnect(): Promise<{ auth_url: string; code_verifier: string; state: string } | null> {
+export async function initiateOpenAIConnect(): Promise<{
+  auth_url: string;
+  code_verifier: string;
+  state: string;
+} | null> {
   try {
     const conn = getConnection();
     if (!conn) return null;

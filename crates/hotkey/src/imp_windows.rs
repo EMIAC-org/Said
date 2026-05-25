@@ -19,6 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     TranslateMessage, WH_KEYBOARD_LL,
 };
 
+use crate::HudShortcutAction;
 use crate::RecordHotkey;
 use crate::win_hotkey::{HookAction, classify, target_vk, wparam_to_kind};
 
@@ -153,4 +154,14 @@ pub fn register_shortcut_callback(_cb: Arc<dyn Fn(u8) + Send + Sync>) {
 
 pub fn register_paste_callback(_cb: Arc<dyn Fn() + Send + Sync>) {
     tracing::debug!("[hotkey] register_paste_callback called on Windows — not yet wired");
+}
+
+pub fn register_long_dictation_callback(_cb: Arc<dyn Fn() + Send + Sync>) {
+    tracing::debug!(
+        "[hotkey] register_long_dictation_callback called on Windows — no Fn key analog"
+    );
+}
+
+pub fn register_hud_shortcut_callback(_cb: Arc<dyn Fn(HudShortcutAction) + Send + Sync>) {
+    tracing::debug!("[hotkey] register_hud_shortcut_callback called on Windows — not yet wired");
 }

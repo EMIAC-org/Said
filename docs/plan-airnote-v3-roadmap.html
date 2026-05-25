@@ -1,0 +1,1222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AirNote v3 Roadmap — How it works · What's next</title>
+<style>
+  :root {
+    --bg: hsl(240 6% 6%);
+    --fg: hsl(240 6% 92%);
+    --surface-1: hsl(240 5% 3%);
+    --surface-2: hsl(240 5% 4.5%);
+    --surface-3: hsl(240 5% 7.5%);
+    --surface-4: hsl(240 5% 13%);
+    --surface-hover: hsl(240 5% 11%);
+    --primary: hsl(226 80% 78%);
+    --primary-fg: hsl(240 8% 8%);
+    --secondary: hsl(240 5% 16%);
+    --muted: hsl(240 5% 12%);
+    --muted-fg: hsl(240 5% 60%);
+    --green: hsl(142 70% 65%);
+    --green-strong: hsl(142 70% 55%);
+    --red: hsl(354 85% 75%);
+    --amber: hsl(38 90% 72%);
+    --blue: hsl(210 80% 70%);
+    --purple: hsl(280 70% 75%);
+    --teal: hsl(180 60% 65%);
+    --border: hsl(240 5% 16%);
+    --glass-bg: hsla(240 5% 10% / 0.62);
+    --glass-stroke: hsla(0 0% 100% / 0.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; }
+  html, body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+    letter-spacing: -0.005em;
+    line-height: 1.55;
+    font-size: 13px;
+  }
+  body {
+    background:
+      radial-gradient(circle at 50% -10%, hsla(226 80% 78% / 0.08) 0%, transparent 55%),
+      var(--bg);
+    min-height: 100vh;
+  }
+  .container { max-width: 1200px; margin: 0 auto; padding: 56px 32px 80px; }
+
+  .brand-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .brand-mark {
+    width: 32px; height: 32px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--surface-3); border-radius: 8px; border: 1px solid var(--border);
+  }
+  .brand-mark svg rect { fill: var(--primary); }
+  .brand-name { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: var(--muted-fg); text-transform: uppercase; }
+
+  h1 { font-size: 32px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 8px; line-height: 1.15; }
+  h1 .accent { color: var(--primary); }
+  .subtitle { font-size: 14px; color: var(--muted-fg); margin-bottom: 40px; max-width: 760px; }
+  h2 {
+    font-size: 20px; font-weight: 700; letter-spacing: -0.015em;
+    margin: 56px 0 16px; color: var(--fg);
+    display: flex; align-items: center; gap: 12px;
+  }
+  h2 .num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px;
+    background: var(--primary); color: var(--primary-fg);
+    border-radius: 8px; font-size: 12px; font-weight: 800;
+  }
+  h3 { font-size: 15px; font-weight: 600; margin: 24px 0 12px; letter-spacing: -0.01em; }
+  p { margin: 8px 0; color: var(--fg); }
+  ul { margin: 8px 0 12px 18px; }
+  li { margin: 4px 0; }
+
+  .status-banner {
+    background: var(--glass-bg); backdrop-filter: blur(30px) saturate(180%);
+    border: 1px solid var(--glass-stroke); border-radius: 16px;
+    padding: 24px 28px; margin-bottom: 16px;
+    display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 24px;
+  }
+  .status-cell .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-fg); font-weight: 600; margin-bottom: 6px; }
+  .status-cell .value { font-size: 22px; font-weight: 800; letter-spacing: -0.015em; }
+  .status-cell .value.green { color: var(--green); }
+  .status-cell .value.primary { color: var(--primary); }
+  .status-cell .value.amber { color: var(--amber); }
+  .status-cell .delta { font-size: 11px; color: var(--muted-fg); margin-top: 4px; }
+
+  .card {
+    background: var(--surface-3); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; margin: 12px 0;
+    box-shadow: inset 0 1px 0 hsla(0 0% 100% / 0.04);
+  }
+  .card-title { font-weight: 600; margin-bottom: 8px; font-size: 14px; letter-spacing: -0.01em; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 999px;
+    font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .pill.primary { background: hsla(226 80% 78% / 0.15); color: var(--primary); }
+  .pill.green { background: hsla(142 70% 65% / 0.15); color: var(--green); }
+  .pill.amber { background: hsla(38 90% 72% / 0.15); color: var(--amber); }
+  .pill.red { background: hsla(354 85% 75% / 0.15); color: var(--red); }
+  .pill.purple { background: hsla(280 70% 75% / 0.15); color: var(--purple); }
+  .pill.teal { background: hsla(180 60% 65% / 0.15); color: var(--teal); }
+  .pill.muted { background: var(--surface-4); color: var(--muted-fg); }
+  .pill-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  /* ── Teaching: Voice journey diagram ─────────────────────────── */
+  .voice-journey {
+    background: var(--glass-bg); backdrop-filter: blur(30px) saturate(180%);
+    border: 1px solid var(--glass-stroke); border-radius: 16px;
+    padding: 28px; margin: 16px 0;
+  }
+  .vj-row {
+    display: grid; grid-template-columns: 200px 1fr; gap: 16px; align-items: center;
+    padding: 14px 0;
+  }
+  .vj-row + .vj-row { border-top: 1px solid var(--border); }
+  .vj-row .vj-label {
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted-fg);
+  }
+  .vj-row .vj-text {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 13px; padding: 8px 12px; border-radius: 8px;
+    background: var(--surface-1);
+  }
+  .vj-text.heard { color: var(--amber); border: 1px solid hsla(38 90% 72% / 0.25); }
+  .vj-text.fixed { color: var(--green); border: 1px solid hsla(142 70% 65% / 0.25); }
+  .vj-text.polished { color: var(--primary); border: 1px solid hsla(226 80% 78% / 0.25); }
+  .vj-text del { color: var(--red); text-decoration: line-through; opacity: 0.6; }
+  .vj-text ins { color: var(--green); text-decoration: none; font-weight: 600; }
+
+  /* Pipeline diagram */
+  .pipeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin: 16px 0; }
+  .stage {
+    background: var(--surface-3); border: 1px solid var(--border);
+    padding: 16px 16px 18px; position: relative;
+  }
+  .stage:first-child { border-radius: 12px 0 0 12px; }
+  .stage:last-child { border-radius: 0 12px 12px 0; }
+  .stage + .stage { border-left: none; }
+  .stage::after {
+    content: ''; position: absolute; right: -7px; top: 50%;
+    transform: translateY(-50%) rotate(45deg);
+    width: 12px; height: 12px; background: var(--surface-3);
+    border-top: 1px solid var(--border); border-right: 1px solid var(--border); z-index: 2;
+  }
+  .stage:last-child::after { display: none; }
+  .stage .stage-num { font-size: 9.5px; font-weight: 700; color: var(--muted-fg); letter-spacing: 0.08em; text-transform: uppercase; }
+  .stage .stage-name { font-size: 13.5px; font-weight: 700; margin-top: 4px; margin-bottom: 6px; letter-spacing: -0.01em; }
+  .stage .stage-desc { font-size: 11.5px; color: var(--muted-fg); line-height: 1.45; }
+  .stage.live { border-color: hsla(142 70% 65% / 0.4); }
+  .stage.live .stage-name { color: var(--green); }
+  .stage .stage-example {
+    margin-top: 10px; padding: 6px 8px;
+    background: var(--surface-1); border-radius: 6px;
+    font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: var(--fg);
+    border: 1px solid var(--border);
+  }
+
+  /* Bucket diagram */
+  .buckets {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0;
+  }
+  .bucket {
+    background: var(--surface-3); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px 24px; position: relative; overflow: hidden;
+  }
+  .bucket.personal { border-color: hsla(226 80% 78% / 0.3); }
+  .bucket.shared { border-color: hsla(180 60% 65% / 0.3); }
+  .bucket::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  }
+  .bucket.personal::before { background: var(--primary); }
+  .bucket.shared::before { background: var(--teal); }
+  .bucket .bucket-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-fg); font-weight: 600;
+  }
+  .bucket .bucket-title {
+    font-size: 18px; font-weight: 700; margin: 6px 0 4px; letter-spacing: -0.01em;
+  }
+  .bucket.personal .bucket-title { color: var(--primary); }
+  .bucket.shared .bucket-title { color: var(--teal); }
+  .bucket .bucket-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 6px;
+    background: var(--surface-1); font-size: 10px; color: var(--muted-fg);
+    margin-bottom: 12px; font-family: "JetBrains Mono", monospace;
+  }
+  .bucket .bucket-list {
+    margin-top: 10px; padding: 12px 14px;
+    background: var(--surface-1); border-radius: 8px;
+    font-family: "JetBrains Mono", monospace; font-size: 12px;
+    line-height: 1.8;
+  }
+  .bucket .bucket-list .term { color: var(--fg); }
+  .bucket .bucket-list .alias { color: var(--muted-fg); font-size: 11px; padding-left: 12px; }
+
+  /* Shared learning flow */
+  .share-flow {
+    display: grid; grid-template-columns: 1fr 60px 1fr; gap: 0; align-items: center;
+    margin: 20px 0;
+  }
+  .share-person {
+    background: var(--surface-3); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px;
+    text-align: center;
+  }
+  .share-person .avatar {
+    width: 40px; height: 40px; border-radius: 50%;
+    background: var(--primary); color: var(--primary-fg);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 14px;
+    margin: 0 auto 8px;
+  }
+  .share-person .avatar.b { background: var(--green); }
+  .share-person .name { font-weight: 600; font-size: 13px; }
+  .share-person .action { font-size: 11px; color: var(--muted-fg); margin-top: 4px; }
+  .share-arrow {
+    text-align: center; color: var(--teal); font-size: 24px; font-weight: 700;
+  }
+
+  /* Gaps */
+  .gap-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0;
+  }
+  @media (max-width: 900px) { .gap-grid { grid-template-columns: 1fr; } }
+  .gap-card {
+    background: var(--surface-3); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 20px;
+    box-shadow: inset 0 1px 0 hsla(0 0% 100% / 0.04);
+    transition: border-color 150ms ease;
+  }
+  .gap-card:hover { border-color: hsla(226 80% 78% / 0.3); }
+  .gap-card .gap-num {
+    display: inline-block; font-size: 10px; font-weight: 700;
+    color: var(--muted-fg); letter-spacing: 0.1em; margin-bottom: 8px;
+  }
+  .gap-card .gap-title { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 6px; }
+  .gap-card .gap-body { font-size: 12px; color: var(--muted-fg); line-height: 1.55; }
+  .gap-card .gap-body strong { color: var(--fg); font-weight: 600; }
+  .gap-card .gap-body code {
+    background: var(--surface-1); padding: 1px 6px; border-radius: 4px;
+    font-size: 0.92em; font-family: "JetBrains Mono", monospace; color: var(--primary);
+  }
+  .gap-card .gap-example {
+    margin-top: 10px; padding: 8px 10px; background: var(--surface-1);
+    border-radius: 6px; font-family: "JetBrains Mono", monospace;
+    font-size: 11px; color: var(--fg);
+  }
+
+  /* Roadmap table */
+  .roadmap { width: 100%; border-collapse: separate; border-spacing: 0; margin: 12px 0; font-size: 12.5px; }
+  .roadmap th, .roadmap td { padding: 12px 14px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+  .roadmap thead th {
+    background: var(--surface-2); color: var(--primary);
+    font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--border);
+  }
+  .roadmap thead th:first-child { border-radius: 10px 0 0 0; }
+  .roadmap thead th:last-child { border-radius: 0 10px 0 0; }
+  .roadmap tbody tr { background: var(--surface-3); }
+  .roadmap tbody tr:hover { background: var(--surface-hover); }
+  .roadmap tbody tr:last-child td:first-child { border-radius: 0 0 0 10px; }
+  .roadmap tbody tr:last-child td:last-child { border-radius: 0 0 10px 0; }
+  .roadmap code {
+    background: var(--surface-1); padding: 1px 6px; border-radius: 4px;
+    font-size: 0.92em; font-family: "JetBrains Mono", monospace; color: var(--primary);
+  }
+
+  /* Phase track */
+  .phases { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin: 16px 0; }
+  @media (max-width: 900px) { .phases { grid-template-columns: 1fr; } }
+  .phase {
+    background: var(--surface-3); border: 1px solid var(--border);
+    border-radius: 14px; padding: 20px 22px; position: relative; overflow: hidden;
+  }
+  .phase::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--primary); }
+  .phase.q2::before { background: var(--green); }
+  .phase.q3::before { background: var(--amber); }
+  .phase .phase-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-fg); font-weight: 600; }
+  .phase .phase-title { font-size: 17px; font-weight: 700; margin: 6px 0 12px; letter-spacing: -0.01em; }
+  .phase ul { margin: 8px 0 0 16px; padding-left: 0; }
+  .phase li { font-size: 12px; color: var(--fg); margin: 6px 0; line-height: 1.45; }
+
+  /* Code block */
+  .code {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+    font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    font-size: 11.5px; line-height: 1.6; color: var(--fg);
+    overflow-x: auto; margin: 12px 0; white-space: pre;
+  }
+  .code .cm { color: var(--muted-fg); }
+  .code .kw { color: var(--purple); font-weight: 600; }
+  .code .ok { color: var(--green); }
+  .code .warn { color: var(--amber); }
+  .code .err { color: var(--red); }
+  .code .fn { color: var(--primary); }
+
+  .scorecard { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 12px 0 20px; }
+  .metric {
+    background: var(--surface-3); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px 18px;
+    box-shadow: inset 0 1px 0 hsla(0 0% 100% / 0.04);
+  }
+  .metric .metric-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-fg); font-weight: 600; }
+  .metric .metric-value { font-size: 22px; font-weight: 800; margin-top: 6px; letter-spacing: -0.015em; }
+  .metric .metric-sub { font-size: 11px; color: var(--muted-fg); margin-top: 2px; }
+  .metric .metric-value.green { color: var(--green); }
+  .metric .metric-value.primary { color: var(--primary); }
+  .metric .metric-value.amber { color: var(--amber); }
+  .metric .metric-value.teal { color: var(--teal); }
+
+  .divider { height: 1px; background: var(--border); margin: 48px 0; }
+  .accent { color: var(--primary); }
+  .dim { color: var(--muted-fg); }
+  .strong { color: var(--fg); font-weight: 600; }
+
+  /* Analogy box */
+  .analogy {
+    background: hsla(226 80% 78% / 0.06);
+    border: 1px solid hsla(226 80% 78% / 0.18);
+    border-left: 3px solid var(--primary);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 16px 0;
+    font-size: 12.5px;
+    line-height: 1.6;
+  }
+  .analogy .analogy-label {
+    color: var(--primary); font-weight: 700;
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
+    margin-bottom: 4px;
+  }
+
+  .footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border); text-align: center; color: var(--muted-fg); font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="brand-row">
+    <div class="brand-mark">
+      <svg width="20" height="20" viewBox="0 0 24 24">
+        <rect x="3" y="8.5" width="3" height="7" rx="1.5"/>
+        <rect x="8" y="4.5" width="3" height="15" rx="1.5"/>
+        <rect x="13" y="2.5" width="3" height="19" rx="1.5"/>
+        <rect x="18" y="6.5" width="3" height="11" rx="1.5"/>
+      </svg>
+    </div>
+    <span class="brand-name">AirNote · v3 Roadmap</span>
+  </div>
+
+  <h1>How AirNote <span class="accent">learns your voice</span>,<br>and where it goes next.</h1>
+  <p class="subtitle">
+    A walkthrough of how AirNote corrects mishearings today, the architecture we've built, and the 6-week plan to take it from "works for me" to "works for every user, every team, every language."
+  </p>
+
+  <div class="status-banner">
+    <div class="status-cell">
+      <div class="label">Current Version</div>
+      <div class="value primary">v2.2.0</div>
+      <div class="delta">Neural correction · live</div>
+    </div>
+    <div class="status-cell">
+      <div class="label">Correction Layers</div>
+      <div class="value green">4</div>
+      <div class="delta">Exact · Edit-policy · Fuzzy · Neural</div>
+    </div>
+    <div class="status-cell">
+      <div class="label">Training Examples</div>
+      <div class="value green">21,544</div>
+      <div class="delta">From 12 vocab terms</div>
+    </div>
+    <div class="status-cell">
+      <div class="label">Known Gaps</div>
+      <div class="value amber">10</div>
+      <div class="delta">Mapped in §5</div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- 1 · THE PROBLEM                                                  -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <h2><span class="num">1</span> What problem are we solving?</h2>
+
+  <p>
+    Speech-to-text (STT) services like Deepgram are great at common English. But they fail predictably on proper nouns, technical terms, brand names, and anything domain-specific. When you say <strong>"Kubernetes"</strong>, Deepgram might output <strong>"cubinatis"</strong> or <strong>"cooper natives"</strong>. When you say <strong>"GitHub"</strong>, it might write <strong>"get hub"</strong>.
+  </p>
+
+  <h3>Watch what happens with the word "Kubernetes":</h3>
+
+  <div class="voice-journey">
+    <div class="vj-row">
+      <div class="vj-label">You speak</div>
+      <div class="vj-text">"Deploy Kubernetes to production"</div>
+    </div>
+    <div class="vj-row">
+      <div class="vj-label">Deepgram hears</div>
+      <div class="vj-text heard">"Deploy <del>cubinatis</del> to production"</div>
+    </div>
+    <div class="vj-row">
+      <div class="vj-label">AirNote corrects</div>
+      <div class="vj-text fixed">"Deploy <ins>Kubernetes</ins> to production"</div>
+    </div>
+    <div class="vj-row">
+      <div class="vj-label">LLM polishes</div>
+      <div class="vj-text polished">"Deploy Kubernetes to production."</div>
+    </div>
+  </div>
+
+  <div class="analogy">
+    <div class="analogy-label">Think of it like this</div>
+    AirNote sits between Deepgram and your screen as a <strong>spell-checker tuned to your vocabulary</strong>. Like how Microsoft Word remembers technical words you add to its dictionary, AirNote remembers the words YOU say. The difference: AirNote learns by watching you fix mistakes, not by you adding words manually.
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- 2 · HOW IT LEARNS                                                -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <h2><span class="num">2</span> How AirNote learns — the simple version</h2>
+
+  <p>
+    Three actors interact every time you dictate. Understanding their roles is the foundation for everything else in this document.
+  </p>
+
+  <div class="gap-grid">
+    <div class="gap-card" style="border-color: hsla(38 90% 72% / 0.3);">
+      <span class="gap-num" style="color: var(--amber);">ACTOR 1</span>
+      <div class="gap-title">Deepgram (the ear)</div>
+      <div class="gap-body">
+        Cloud STT service. Converts your audio to text. Great at common English, weak at brand names and jargon. Cannot be trained on your voice — it's a black box.
+        <div class="gap-example">audio → "I love using <span style="color: var(--red);">git hub</span>"</div>
+      </div>
+    </div>
+
+    <div class="gap-card" style="border-color: hsla(142 70% 65% / 0.3);">
+      <span class="gap-num" style="color: var(--green);">ACTOR 2</span>
+      <div class="gap-title">AirNote (the brain)</div>
+      <div class="gap-body">
+        Runs locally on your Mac. Watches what Deepgram outputs, what the LLM polishes, and what you keep. Learns from every edit you make. Stores your vocabulary in a local SQLite database.
+        <div class="gap-example">Deepgram output → <span style="color: var(--green);">AirNote fixes</span> → your screen</div>
+      </div>
+    </div>
+
+    <div class="gap-card" style="border-color: hsla(226 80% 78% / 0.3);">
+      <span class="gap-num" style="color: var(--primary);">ACTOR 3</span>
+      <div class="gap-title">Groq LLM (the writer)</div>
+      <div class="gap-body">
+        Polishes the corrected transcript. Fixes filler words, stutters, punctuation. Sees your vocabulary as hints. Lives in the cloud but treats every recording as standalone — no memory.
+        <div class="gap-example">"i i i need github" → "I need GitHub."</div>
+      </div>
+    </div>
+
+    <div class="gap-card" style="border-color: var(--border);">
+      <span class="gap-num" style="color: var(--muted-fg);">YOUR ROLE</span>
+      <div class="gap-title">The teacher</div>
+      <div class="gap-body">
+        When AirNote gets something wrong, you fix it. Every fix becomes training data. After 1-3 fixes (depending on word type), AirNote learns the pattern permanently and applies it automatically going forward.
+        <div class="gap-example">You type "Kubernetes" → AirNote remembers forever</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>The learning loop, step by step:</h3>
+
+  <div class="voice-journey">
+    <div class="vj-row">
+      <div class="vj-label">Step 1 · First time</div>
+      <div class="vj-text">You say "GitHub" → typed as "get hub" → you fix it to "GitHub"</div>
+    </div>
+    <div class="vj-row">
+      <div class="vj-label">Step 2 · AirNote records</div>
+      <div class="vj-text fixed">Stores alias: <strong>"get hub" → "GitHub"</strong> in local database</div>
+    </div>
+    <div class="vj-row">
+      <div class="vj-label">Step 3 · Neural training</div>
+      <div class="vj-text">Generates 30 likely variations ("git hub", "githab", "get-hub"...) and trains a tiny model on them in 3 seconds</div>
+    </div>
+    <div class="vj-row">
+      <div class="vj-label">Step 4 · Next time</div>
+      <div class="vj-text polished">You say "GitHub" → Deepgram outputs "git hub" → AirNote auto-corrects → "GitHub" on screen ✓</div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- 3 · FOUR-LAYER PIPELINE                                          -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <h2><span class="num">3</span> The four correction layers</h2>
+
+  <p>
+    AirNote doesn't run one big algorithm — it runs four specialized ones in sequence. Each catches a different kind of mistake. The neural model (Layer 4) is the newest addition; it shipped this week.
+  </p>
+
+  <div class="pipeline">
+    <div class="stage live">
+      <div class="stage-num">Layer 1</div>
+      <div class="stage-name">Exact Memory</div>
+      <div class="stage-desc">"Have I seen this exact misheard word before?" Lookup table.</div>
+      <div class="stage-example">"cubinatis" → "Kubernetes"</div>
+    </div>
+    <div class="stage live">
+      <div class="stage-num">Layer 2</div>
+      <div class="stage-name">Context Rules</div>
+      <div class="stage-desc">"The word 'corps' near 'ka' or 'ki' means the company name." Bigram patterns.</div>
+      <div class="stage-example">"corps ka launch" → "Datadog ka launch"</div>
+    </div>
+    <div class="stage live">
+      <div class="stage-num">Layer 3</div>
+      <div class="stage-name">Fuzzy Match</div>
+      <div class="stage-desc">"This token looks similar to something I know." Edit-distance check.</div>
+      <div class="stage-example">"docker file" stays "docker file" — too different</div>
+    </div>
+    <div class="stage live">
+      <div class="stage-num">Layer 4</div>
+      <div class="stage-name">Neural Model</div>
+      <div class="stage-desc">"Even though I've never seen this exact word, my model thinks it's close to a known term." MLP scoring.</div>
+      <div class="stage-example">"cooper natives" → "Kubernetes" (new variant)</div>
+    </div>
+  </div>
+
+  <div class="analogy">
+    <div class="analogy-label">Real-world analogy</div>
+    Imagine a librarian with four tools: a <strong>card index</strong> (Layer 1: exact lookup), a <strong>topic catalogue</strong> (Layer 2: context patterns), a <strong>fuzzy spelling checker</strong> (Layer 3: similar words), and a <strong>brain</strong> (Layer 4: judgment about new books). Each tool kicks in only if the previous ones didn't find an answer. The brain is the most powerful but also the most cautious — multiple safety nets prevent it from being wrong.
+  </div>
+
+  <h3>Why four layers, not one?</h3>
+
+  <table class="roadmap">
+    <thead>
+      <tr>
+        <th style="width: 18%;">Layer</th>
+        <th style="width: 24%;">When it wins</th>
+        <th style="width: 24%;">When it fails</th>
+        <th>Why we keep it</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="pill green"><span class="pill-dot"></span>Exact</span></td>
+        <td>Same garble repeats</td>
+        <td>Deepgram invents a new garble</td>
+        <td>Fastest, zero false-positive risk</td>
+      </tr>
+      <tr>
+        <td><span class="pill green"><span class="pill-dot"></span>Context</span></td>
+        <td>Real English word is meant as brand ("corps" → company)</td>
+        <td>No surrounding context clues</td>
+        <td>Distinguishes "Spring framework" from "spring season"</td>
+      </tr>
+      <tr>
+        <td><span class="pill green"><span class="pill-dot"></span>Fuzzy</span></td>
+        <td>Small typo of an active rule's target</td>
+        <td>Token is very different from anything known</td>
+        <td>Conservative — only fires on high-confidence matches</td>
+      </tr>
+      <tr>
+        <td><span class="pill primary"><span class="pill-dot"></span>Neural</span></td>
+        <td>Never-seen-before garble of a known term</td>
+        <td>Common English/Hindi word that sounds vaguely like vocab</td>
+        <td>Generalization. Catches what the other 3 can't.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- 4 · NEW IN V3: BUCKETS                                           -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <h2><span class="num">4</span> The big v3 feature: shared vocabulary buckets</h2>
+
+  <p>
+    Right now every user has one vocabulary list, private to them. If five teammates all say <strong>"Kubernetes"</strong>, each one has to teach AirNote independently. This is the biggest UX cost we have.
+  </p>
+
+  <p>
+    v3 introduces <strong>two vocabulary buckets</strong>: a private one (your own learnings) and a shared one (your team's collective knowledge). When one teammate corrects a brand name, everyone benefits.
+  </p>
+
+  <div class="buckets">
+    <div class="bucket personal">
+      <div class="bucket-label">BUCKET A</div>
+      <div class="bucket-title">Personal</div>
+      <span class="bucket-tag">user_id = abhi@emiac.tech</span>
+      <div class="gap-body" style="font-size: 12px;">
+        Private to you. Stores names of your friends, your personal apps, your nicknames, anything domain-specific to your daily life. Never leaves your Mac unless explicitly synced.
+      </div>
+      <div class="bucket-list">
+        <div class="term">Abhishek</div>
+        <div class="alias">"abishek" · "abhisek" · "abhishak"</div>
+        <div class="term">Anish</div>
+        <div class="alias">"aniss" · "annish"</div>
+        <div class="term">my-portfolio-site</div>
+        <div class="alias">"my portfolio site"</div>
+      </div>
+    </div>
+
+    <div class="bucket shared">
+      <div class="bucket-label">BUCKET B</div>
+      <div class="bucket-title">Company / Shared</div>
+      <span class="bucket-tag">org_id = emiac-tech</span>
+      <div class="gap-body" style="font-size: 12px;">
+        Shared across your team. Curated by an admin or auto-promoted from frequent corrections by 3+ teammates. Synced via the control-plane backend you already have.
+      </div>
+      <div class="bucket-list">
+        <div class="term">Kubernetes</div>
+        <div class="alias">"cubinatis" · "cooper natives" · "k8s"</div>
+        <div class="term">Kafka</div>
+        <div class="alias">"cafka" · "kavka" · "kefka"</div>
+        <div class="term">GitHub</div>
+        <div class="alias">"git hub" · "githab"</div>
+        <div class="term">Grafana</div>
+        <div class="alias">"grafanna" · "graphana"</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Why this matters — the team-onboarding scenario:</h3>
+
+  <div class="share-flow">
+    <div class="share-person">
+      <div class="avatar">A</div>
+      <div class="name">Abhishek</div>
+      <div class="action">Corrects "Kubernetes" once</div>
+    </div>
+    <div class="share-arrow">→</div>
+    <div class="share-person">
+      <div class="avatar b">R</div>
+      <div class="name">Rahul (new joiner)</div>
+      <div class="action">Auto-works on day 1</div>
+    </div>
+  </div>
+
+  <p>
+    Rahul joins the team on Monday. He installs AirNote at 10am. By 10:05am, his copy of AirNote has already pulled <strong>"Kubernetes"</strong>, <strong>"Kafka"</strong>, <strong>"GitHub"</strong>, and 50 other team terms from the shared bucket. When he says any of them, AirNote gets it right on the first try. Zero teaching required.
+  </p>
+
+  <h3>How the lookup priority works:</h3>
+
+  <table class="roadmap">
+    <thead>
+      <tr>
+        <th>Priority</th>
+        <th>Source</th>
+        <th>Why</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="pill primary"><span class="pill-dot"></span>1st</span></td>
+        <td>Personal bucket (your aliases, your edits)</td>
+        <td>You know your own vocabulary best. Your "Anish" wins over team's "Anish".</td>
+      </tr>
+      <tr>
+        <td><span class="pill teal"><span class="pill-dot"></span>2nd</span></td>
+        <td>Shared bucket (company terms)</td>
+        <td>Team consensus. Used when personal bucket doesn't have a match.</td>
+      </tr>
+      <tr>
+        <td><span class="pill muted"><span class="pill-dot"></span>3rd</span></td>
+        <td>Global / built-in (English dictionary)</td>
+        <td>Fallback. Catches "the", "and", etc.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>The neural model sees both buckets</h3>
+
+  <p>
+    When AirNote retrains the neural model after a user edit, it pulls from <strong>personal + shared</strong> as the candidate pool. The model learns to score against both. The shared bucket dramatically improves cold-start quality — a new user gets ~50 high-quality candidates instead of starting from zero.
+  </p>
+
+  <div class="card">
+    <div class="card-title">How auto-promotion to shared bucket works</div>
+    <p style="font-size: 12.5px;">
+      A term graduates from "personal" to "shared" when <strong>3+ teammates independently correct the same word</strong>. If Abhishek, Rahul, and Anish all teach AirNote that <strong>"emiac"</strong> means <strong>"EMIAC"</strong>, the term enters the shared bucket automatically. No admin involvement needed for organic team vocabulary.
+    </p>
+    <p style="font-size: 12.5px; margin-top: 8px;">
+      An admin can also seed the shared bucket directly (CSV import or web admin panel) for known terms — useful at onboarding time.
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- 5 · GAPS                                                         -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <h2><span class="num">5</span> The 10 gaps to close in v3</h2>
+  <p class="dim">Ranked by user-impact. Each has a concrete fix with a measurable success criterion.</p>
+
+  <div class="gap-grid">
+    <div class="gap-card">
+      <span class="gap-num">GAP 1 · CRITICAL</span>
+      <div class="gap-title">No shared vocabulary across team</div>
+      <div class="gap-body">
+        Every user teaches their AirNote from scratch. Painful at company scale.
+        <div class="gap-example">5 engineers × 50 brand terms × 3 corrections each = 750 wasted edits</div>
+        <strong>Fix:</strong> Two-bucket architecture (personal + shared) with auto-promotion at 3+ teammate confirmations. See §4.
+      </div>
+    </div>
+
+    <div class="gap-card">
+      <span class="gap-num">GAP 2 · CRITICAL</span>
+      <div class="gap-title">Deepgram drops words entirely</div>
+      <div class="gap-body">
+        When Deepgram outputs <em>nothing</em> for a word, no correction layer can recover it. User has to manually star the term to get keyterm biasing.
+        <div class="gap-example">User says "Anthropic" → Deepgram outputs "" → AirNote can't help</div>
+        <strong>Fix:</strong> Auto-star after 3 consecutive add-backs. Tells Deepgram "listen for this word" automatically.
+      </div>
+    </div>
+
+    <div class="gap-card">
+      <span class="gap-num">GAP 3 · HIGH</span>
+      <div class="gap-title">Cold-start quality with &lt; 10 vocab terms</div>
+      <div class="gap-body">
+        Fresh users see degraded corrections for 1-2 weeks because the neural model has too few positives vs negatives.
+        <div class="gap-example">3 vocab terms → 60 positives, 6000 negatives → model too conservative</div>
+        <strong>Fix:</strong> Cap dictionary negatives at 10× positives. Plus shared bucket from §4 gives ~50 candidates day 1.
+      </div>
+    </div>
+
+    <div class="gap-card">
+      <span class="gap-num">GAP 4 · HIGH</span>
+      <div class="gap-title">No regression tests for the correction engine</div>
+      <div class="gap-body">
+        Every model change is a flying-blind deployment. We have no way to detect that a tweak made things worse.
+        <div class="gap-example">Last week: tightened the safety net, broke 3 valid corrections silently</div>
+        <strong>Fix:</strong> 100-case golden dataset in CI. Block PRs that regress accuracy &gt; 2%.
+      </div>
+    </div>
+
+    <div class="gap-card">
+      <span class="gap-num">GAP 5 · HIGH</span>
+      <div class="gap-title">No production quality telemetry</div>
+      <div class="gap-body">
+        We track vocabulary count but not correction <em>quality</em>. False positive rate? Unknown. False negative rate? Unknown.
+        <div class="gap-example">User reverts 5% of corrections → we never find out</div>
+        <strong>Fix:</strong> Emit correction decisions + user outcomes to an analytics endpoint (opt-in). Compute weekly P/R/F1.
+      </div>
+    </div>
+
+    <div class="gap-card">
+      <span class="gap-num">GAP 6 · MEDIUM</span>
+      <div class="gap-title">Multi-token corrections (phrases)</div>
+      <div class="gap-body">
+        Tier 2 only handles single-word terms. "New York" or "San Francisco" never become vocabulary entries.
+        <div class="gap-example">"san francisco" stays "san francisco" — but should become "San Francisco"</div>
+        <strong>Fix:</strong> Bigram scorer. Either separate ONNX model for 2-token candidates or token-merge before scoring.
+      </div>
+    </div>
+
+    <div class="gap-card">
+      <span class="gap-num">GAP 7 · MEDIUM</span>
+      <div class="gap-title">Only English / Hindi / Hinglish supported</div>
+      <div class="gap-body">
+        No Spanish, French, Portuguese, Japanese, Chinese support. International expansion blocked.
+        <div class="gap-example">Spanish user says "buenos días" → no phonetic rules to help correct it</div>
+        <strong>Fix:</strong> Pluggable language module. Ship Spanish + French in v3 as proof of architecture.
+      </div>
+    </div>
+
+    <div class="gap-card">
+      <span class="gap-num">GAP 8 · MEDIUM</span>
+      <div class="gap-title">ASR confusions are English-centric</div>
+      <div class="gap-body">
+        Our augmentation pairs (b↔p, d↔t) are English-grounded. Misses Hindi retroflex confusions (ड↔ठ).
+        <div class="gap-example">"वडापाव" misheard as "वठापाव" — we don't generate this variant in training</div>
+        <strong>Fix:</strong> Mine ASR confusion matrix from real user data instead of hardcoding.
+      </div>
+    </div>
+
+    <div class="gap-card">
+      <span class="gap-num">GAP 9 · LOW</span>
+      <div class="gap-title">Per-context vocabulary</div>
+      <div class="gap-body">
+        Coding terms (kubectl, npm) and meeting terms (client names) share one global vocab. Cross-pollution at scale.
+        <div class="gap-example">"react" the verb gets corrected to "React" the framework in a casual chat</div>
+        <strong>Fix:</strong> Optional context labels per recording. Filter active vocab by tag.
+      </div>
+    </div>
+
+    <div class="gap-card">
+      <span class="gap-num">GAP 10 · LOW</span>
+      <div class="gap-title">Retrain time at scale</div>
+      <div class="gap-body">
+        5s with 12 vocab terms. Projected 20s at 200 terms. The micro-retrain re-builds the entire training set instead of patching it.
+        <div class="gap-example">200 vocab × 5 ASR confusions × 30 variants = ~30K examples per retrain</div>
+        <strong>Fix:</strong> Example cache keyed by term hash. Only invalidate the changed term.
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- 6 · ROADMAP                                                      -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <h2><span class="num">6</span> The 6-week execution plan</h2>
+  <p class="dim">Three phases. Each phase ships independently. Phase 1 unblocks Phase 2 unblocks Phase 3.</p>
+
+  <div class="phases">
+    <div class="phase">
+      <div class="phase-label">Weeks 1–2 · Foundation</div>
+      <div class="phase-title">Buckets &amp; Telemetry</div>
+      <p class="dim" style="font-size: 12px;">The unblock. Two-bucket architecture + measurement infrastructure.</p>
+      <ul>
+        <li><strong>Personal + Shared bucket schema:</strong> add <code>org_id</code> and <code>scope</code> columns to vocabulary table. Migration is backward-compatible.</li>
+        <li><strong>Shared sync API:</strong> control-plane endpoints to push/pull team vocabulary. Reuses existing auth.</li>
+        <li><strong>Auto-promotion rule:</strong> term enters shared bucket after 3+ teammate confirmations.</li>
+        <li><strong>Golden test dataset:</strong> 100 real STT-error pairs in CI.</li>
+        <li><strong>Decision-event telemetry:</strong> emit corrections + outcomes to analytics (opt-in).</li>
+      </ul>
+    </div>
+
+    <div class="phase q2">
+      <div class="phase-label">Weeks 3–4 · Coverage</div>
+      <div class="phase-title">Edge Cases &amp; Quality</div>
+      <p class="dim" style="font-size: 12px;">Close the 5 high-impact gaps. Measurable accuracy lift.</p>
+      <ul>
+        <li><strong>Auto-star on drop:</strong> after 3 add-backs of a known term, star it for Deepgram biasing.</li>
+        <li><strong>Adaptive negative sampling:</strong> cap dictionary negatives at 10× positives. Fixes cold-start.</li>
+        <li><strong>Real ASR confusion mining:</strong> derive augmentation matrix from actual user aliases, not hardcoded rules.</li>
+        <li><strong>Bigram scorer:</strong> separate ONNX model for "New York"-style 2-token corrections.</li>
+        <li><strong>Wider Hindi commons list:</strong> ~200 more regional Hinglish words.</li>
+      </ul>
+    </div>
+
+    <div class="phase q3">
+      <div class="phase-label">Weeks 5–6 · Scale</div>
+      <div class="phase-title">International &amp; Performance</div>
+      <p class="dim" style="font-size: 12px;">Make AirNote work outside Hinglish. Sub-second retraining.</p>
+      <ul>
+        <li><strong>Pluggable language module:</strong> per-language romanizer + phonetic key + common-words. Ship Spanish + French.</li>
+        <li><strong>Per-context vocabulary tags:</strong> "code", "meeting", "personal". Filter active vocab by context.</li>
+        <li><strong>Incremental retraining:</strong> example cache keyed by term hash. Sub-second retrain at any vocab size.</li>
+        <li><strong>Model staleness watchdog:</strong> nightly drift detection, triggers retrain on degradation.</li>
+        <li><strong>Public quality dashboard:</strong> internal page showing weekly correction accuracy per cohort.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- 7 · DAY-ONE INSANE QUALITY                                       -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <h2><span class="num">7</span> Day-one insane quality</h2>
+
+  <p>
+    Right now AirNote gets <em>better</em> over time. The first week is rough — the user has to teach it dozens of corrections before it really shines. <strong>That's our biggest UX problem.</strong> By v3, day-one should already feel magical.
+  </p>
+
+  <div class="analogy">
+    <div class="analogy-label">The current problem</div>
+    A new user installs AirNote, dictates "Kubernetes" five times on day one. AirNote misspells it five times. They give up before the model has enough data to learn. <strong>The first impression decides whether they stay or churn.</strong>
+  </div>
+
+  <h3>Four levers to make day-one excellent</h3>
+
+  <div class="gap-grid">
+    <div class="gap-card" style="border-color: hsla(226 80% 78% / 0.3);">
+      <span class="gap-num" style="color: var(--primary);">LEVER 1</span>
+      <div class="gap-title">Ship a pre-trained baseline model</div>
+      <div class="gap-body">
+        Bundle a tiny ONNX model trained on <strong>500+ common tech, brand, and proper-noun terms</strong> (Kubernetes, GitHub, ChatGPT, Anthropic, Vercel, FastAPI, etc.). The app already corrects these from minute one, even with zero personal data.
+        <div class="gap-example">First time you say "Kubernetes" → it just works. No teaching needed.</div>
+      </div>
+    </div>
+
+    <div class="gap-card" style="border-color: hsla(180 60% 65% / 0.3);">
+      <span class="gap-num" style="color: var(--teal);">LEVER 2</span>
+      <div class="gap-title">Industry-specific starter buckets</div>
+      <div class="gap-body">
+        At install time, the user picks their industry (Tech, Finance, Health, Legal, Design). We pre-seed their shared bucket with ~50 high-frequency terms for that industry. Their AirNote knows the vocabulary of their domain before they speak a word.
+        <div class="gap-example">Tech user gets: Docker, Kubernetes, Terraform, Grafana, Anthropic... Finance user gets: IRR, EBITDA, IPO, NPV, AUM...</div>
+      </div>
+    </div>
+
+    <div class="gap-card" style="border-color: hsla(142 70% 65% / 0.3);">
+      <span class="gap-num" style="color: var(--green);">LEVER 3</span>
+      <div class="gap-title">5-question onboarding flow</div>
+      <div class="gap-body">
+        Five quick questions at first launch: <em>your name, your team's name, your top 3 product names, brands you mention daily, languages you mix</em>. Each answer pre-populates the personal bucket. Takes 30 seconds. Saves weeks of teaching.
+        <div class="gap-example">Name: Abhishek → "Abhi", "abhishek", "abishek" auto-aliased.</div>
+      </div>
+    </div>
+
+    <div class="gap-card" style="border-color: hsla(38 90% 72% / 0.3);">
+      <span class="gap-num" style="color: var(--amber);">LEVER 4</span>
+      <div class="gap-title">Synthetic warm-up training</div>
+      <div class="gap-body">
+        After onboarding, generate ~200 synthetic ASR distortions per term using our existing variant generator and train the neural model in the background before the user's first recording. By the time they speak, the model already knows their vocabulary inside out.
+      </div>
+    </div>
+  </div>
+
+  <h3>The day-one experience, before and after</h3>
+
+  <div class="voice-journey">
+    <div class="vj-row">
+      <div class="vj-label">v2.2 (today)</div>
+      <div class="vj-text heard">Day 1: 50% accuracy on brands. User corrects 30 times. Day 7: 90% accuracy.</div>
+    </div>
+    <div class="vj-row">
+      <div class="vj-label">v3 (target)</div>
+      <div class="vj-text fixed">Day 1: 90% accuracy on brands. User corrects 3 times. Day 7: 99% accuracy.</div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- 8 · EDGE CASES                                                   -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <h2><span class="num">8</span> The edge case mountain</h2>
+
+  <p>
+    AirNote's correction engine works beautifully on the happy path. But there's a long tail of edge cases that cost user trust when they fail. We've mapped <strong>~30 categories</strong> of edge cases. Here are the ones that need attention in v3, grouped by impact.
+  </p>
+
+  <h3>High-impact edge cases (must fix in v3)</h3>
+
+  <div class="gap-grid">
+    <div class="gap-card" style="border-color: hsla(354 85% 75% / 0.3);">
+      <span class="gap-num" style="color: var(--red);">EDGE 1</span>
+      <div class="gap-title">Numbers in mixed contexts</div>
+      <div class="gap-body">
+        "Twelve thousand five hundred" → "12,500" works. But "twelve thousand IPO at fifty crore" should preserve "IPO" while converting the numbers. Today this is brittle.
+        <div class="gap-example">"dus baje meeting hai" → "10 baje meeting hai" ✓<br>"twenty five percent of 12 lakh" → currently mangles</div>
+      </div>
+    </div>
+
+    <div class="gap-card" style="border-color: hsla(354 85% 75% / 0.3);">
+      <span class="gap-num" style="color: var(--red);">EDGE 2</span>
+      <div class="gap-title">Structured tokens (emails, URLs, paths)</div>
+      <div class="gap-body">
+        "anish at the rate gmail dot com" should become "anish@gmail.com". Works in tray-polish mode, weaker in voice mode. URLs and file paths have similar gaps.
+        <div class="gap-example">"check localhost colon three thousand slash api" → "check localhost:3000/api"</div>
+      </div>
+    </div>
+
+    <div class="gap-card" style="border-color: hsla(354 85% 75% / 0.3);">
+      <span class="gap-num" style="color: var(--red);">EDGE 3</span>
+      <div class="gap-title">Code identifiers in casual speech</div>
+      <div class="gap-body">
+        "Set the snake case variable max underscore retries to ten" — should preserve "max_retries" as a code token. Currently inconsistent.
+        <div class="gap-example">"camelCase the function name as getUserData" → output should keep "getUserData"</div>
+      </div>
+    </div>
+
+    <div class="gap-card" style="border-color: hsla(354 85% 75% / 0.3);">
+      <span class="gap-num" style="color: var(--red);">EDGE 4</span>
+      <div class="gap-title">Heavy code-switching mid-sentence</div>
+      <div class="gap-body">
+        "Yaar this Kubernetes pod ka memory limit zyada hai kya?" — three language switches in one sentence. Currently the LLM sometimes flattens to one language.
+        <div class="gap-example">Need to preserve the natural mix exactly as spoken</div>
+      </div>
+    </div>
+
+    <div class="gap-card" style="border-color: hsla(354 85% 75% / 0.3);">
+      <span class="gap-num" style="color: var(--red);">EDGE 5</span>
+      <div class="gap-title">Background noise / partial words</div>
+      <div class="gap-body">
+        When Deepgram is uncertain, it emits low-confidence tokens. We sometimes confidently "correct" these into vocab terms when really the audio was unclear.
+        <div class="gap-example">User mumbled something near "Kafka" → we emit "Kafka" when we shouldn't have</div>
+      </div>
+    </div>
+
+    <div class="gap-card" style="border-color: hsla(354 85% 75% / 0.3);">
+      <span class="gap-num" style="color: var(--red);">EDGE 6</span>
+      <div class="gap-title">Same-vocab homophones</div>
+      <div class="gap-body">
+        User has both "Anish" (name) and "Anit" (different person) in vocab. Deepgram outputs something in between. Which one do we pick? Currently it's basically a coin flip.
+        <div class="gap-example">Need user-specific phonetic distinguishers + context</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Medium-impact edge cases (best-effort fix)</h3>
+
+  <table class="roadmap">
+    <thead>
+      <tr>
+        <th>Category</th>
+        <th>Example</th>
+        <th>Plan</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Currencies + units</td>
+        <td>"₹5 lakh" / "$500K" / "fifty cents"</td>
+        <td>Unit-aware token recognizer in polish prompt</td>
+      </tr>
+      <tr>
+        <td>Time + date formats</td>
+        <td>"day after tomorrow" / "next Friday" / "saat baje"</td>
+        <td>Date-NER + locale-aware formatting</td>
+      </tr>
+      <tr>
+        <td>Acronyms vs words</td>
+        <td>"API" vs "happy" / "SDK" vs "stuck"</td>
+        <td>Use term_type=acronym + casing memory</td>
+      </tr>
+      <tr>
+        <td>Punctuation by speech</td>
+        <td>"comma", "question mark", "new line"</td>
+        <td>Spoken-punctuation mode toggle in settings</td>
+      </tr>
+      <tr>
+        <td>Quotes / parens</td>
+        <td>"quote unquote", "in brackets"</td>
+        <td>Pattern recognition in polish prompt</td>
+      </tr>
+      <tr>
+        <td>Stuttering speech</td>
+        <td>"I I I want want to"</td>
+        <td>Already handled in v2.2 polish prompt ✓</td>
+      </tr>
+      <tr>
+        <td>Mid-sentence restarts</td>
+        <td>"I was going to the, I went to the store"</td>
+        <td>Already handled in v2.2 polish prompt ✓</td>
+      </tr>
+      <tr>
+        <td>Regional Hindi variants</td>
+        <td>Punjabi-tinted, Marathi-tinted, Bengali-tinted</td>
+        <td>Expand Hindi commons list per region</td>
+      </tr>
+      <tr>
+        <td>Voice quality (whisper/loud)</td>
+        <td>Speech with breath / against wind</td>
+        <td>STT-level — needs Deepgram tuning or local model</td>
+      </tr>
+      <tr>
+        <td>Long pauses → run-on</td>
+        <td>"...and then. I went..." </td>
+        <td>Sentence-boundary smoothing in polish</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Why we can fix these systematically (not case-by-case)</h3>
+
+  <p>
+    Each edge case looks unique, but most fit into 4 buckets: <strong>token-classification</strong> (number? code? brand? acronym?), <strong>context-awareness</strong> (which homophone in this sentence?), <strong>confidence-thresholding</strong> (was Deepgram unsure?), and <strong>format-normalization</strong> (URLs/emails/paths). Once we build the token classifier in v3, dozens of these collapse into one fix.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- 9 · TRAINING AT SCALE                                            -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <h2><span class="num">9</span> Training time at 200+ vocab terms</h2>
+
+  <p>
+    Today's training pipeline works great at 12 vocab terms (5 seconds). At 200 vocab terms it projects to <strong>~30 seconds</strong> — which is too slow because we retrain after every user edit. We need this to stay sub-2-seconds at any vocab size.
+  </p>
+
+  <h3>Why training time grows</h3>
+
+  <table class="roadmap">
+    <thead>
+      <tr>
+        <th>Vocab size</th>
+        <th>Positive examples</th>
+        <th>Negative examples</th>
+        <th>Total examples</th>
+        <th>Train time</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>12 terms (today)</td>
+        <td>~3,000</td>
+        <td>~18,000</td>
+        <td>~21,000</td>
+        <td><span class="pill green"><span class="pill-dot"></span>5 sec</span></td>
+      </tr>
+      <tr>
+        <td>50 terms</td>
+        <td>~12,000</td>
+        <td>~80,000</td>
+        <td>~92,000</td>
+        <td><span class="pill amber"><span class="pill-dot"></span>~12 sec</span></td>
+      </tr>
+      <tr>
+        <td>100 terms</td>
+        <td>~25,000</td>
+        <td>~170,000</td>
+        <td>~195,000</td>
+        <td><span class="pill amber"><span class="pill-dot"></span>~22 sec</span></td>
+      </tr>
+      <tr>
+        <td>200 terms</td>
+        <td>~50,000</td>
+        <td>~340,000</td>
+        <td>~390,000</td>
+        <td><span class="pill red"><span class="pill-dot"></span>~35 sec</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Four optimizations to keep training sub-2-seconds</h3>
+
+  <div class="gap-grid">
+    <div class="gap-card">
+      <span class="gap-num">OPT 1</span>
+      <div class="gap-title">Per-term example cache</div>
+      <div class="gap-body">
+        Cache the generated ASR variants for each term, keyed by term hash. When the user corrects only one term, only invalidate that term's variants. The other 199 terms keep their cached examples.
+        <div class="gap-example">200 terms with 1 changed → regenerate variants for 1 term, reuse 199 from cache</div>
+      </div>
+    </div>
+
+    <div class="gap-card">
+      <span class="gap-num">OPT 2</span>
+      <div class="gap-title">Adaptive variant count</div>
+      <div class="gap-body">
+        At 12 terms we generate 30 variants per term. At 200 terms we don't need that. Scale variants per term inversely with vocab size: at 200 terms, 10 variants is enough.
+        <div class="gap-example">v2.2: fixed 30 variants × 200 = 6000 variants<br>v3: 10 variants × 200 = 2000 variants (still plenty)</div>
+      </div>
+    </div>
+
+    <div class="gap-card">
+      <span class="gap-num">OPT 3</span>
+      <div class="gap-title">Negative example reservoir</div>
+      <div class="gap-body">
+        Hard negatives from /usr/share/dict/words don't depend on the user's vocabulary. Build them ONCE per app version, ship them as a static asset. Skip dictionary mining entirely at retrain time.
+        <div class="gap-example">Saves ~3-5 seconds of dictionary scanning on every retrain</div>
+      </div>
+    </div>
+
+    <div class="gap-card">
+      <span class="gap-num">OPT 4</span>
+      <div class="gap-title">Background incremental retraining</div>
+      <div class="gap-body">
+        After a single edit, run a 1-second "micro retrain" that updates the model with just the new term's examples (warm start from previous weights). Once a week, run a full "deep retrain" overnight that regenerates everything from scratch.
+        <div class="gap-example">Micro: 1s after every edit. Deep: 30s once a week, when user isn't actively using.</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>The target after all four optimizations</h3>
+
+  <div class="scorecard">
+    <div class="metric">
+      <div class="metric-label">12 vocab terms</div>
+      <div class="metric-value green">0.5s</div>
+      <div class="metric-sub">currently 5s</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">50 vocab terms</div>
+      <div class="metric-value green">0.8s</div>
+      <div class="metric-sub">currently ~12s</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">100 vocab terms</div>
+      <div class="metric-value green">1.2s</div>
+      <div class="metric-sub">currently ~22s</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">200 vocab terms</div>
+      <div class="metric-value green">1.8s</div>
+      <div class="metric-sub">currently ~35s</div>
+    </div>
+  </div>
+
+  <div class="analogy">
+    <div class="analogy-label">Why this matters</div>
+    Retraining isn't a one-time operation — it fires every time the user makes a correction. At 200 vocab, a 30-second training freeze after each edit would be unusable. With the optimizations above, the user never notices retraining is happening. <strong>The neural model becomes invisible infrastructure.</strong>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- 8 · SUCCESS                                                      -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <h2><span class="num">8</span> What "v3 shipped" looks like</h2>
+
+  <div class="scorecard">
+    <div class="metric">
+      <div class="metric-label">Buckets Live</div>
+      <div class="metric-value teal">2</div>
+      <div class="metric-sub">Personal + Shared</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Languages</div>
+      <div class="metric-value primary">5</div>
+      <div class="metric-sub">EN · HI · Hinglish · ES · FR</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Cold-start Quality</div>
+      <div class="metric-value green">+30%</div>
+      <div class="metric-sub">F1 vs current</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">False Positive Rate</div>
+      <div class="metric-value green">&lt;1%</div>
+      <div class="metric-sub">measurable target</div>
+    </div>
+  </div>
+
+  <div class="card" style="border-color: hsla(226 80% 78% / 0.4); background: var(--glass-bg); backdrop-filter: blur(30px) saturate(180%);">
+    <div class="card-title" style="color: var(--primary); font-size: 15px;">The end state</div>
+    <p style="font-size: 13px;">
+      Rahul joins EMIAC on a Monday. By Tuesday lunch, his AirNote correctly transcribes <strong>"Kubernetes"</strong>, <strong>"Macobs"</strong>, <strong>"Grafana"</strong>, every internal product name, and every teammate's name — without him manually teaching any of it. The shared bucket pulled them in at install time.
+    </p>
+    <p style="font-size: 13px; margin-top: 12px;">
+      Meanwhile a user in São Paulo dictates Portuguese, AirNote adapts in 2 weeks, and their false-positive rate stays under 1%. When a model retrain regresses anything, CI catches it before deploy. The neural model has become invisible — it just works.
+    </p>
+    <p style="font-size: 13px; margin-top: 12px;">
+      <strong>v2.2 closed the neural-engine gap. v3 closes the team gap and the operations gap.</strong>
+    </p>
+  </div>
+
+  <div class="divider"></div>
+  <div class="footer">AirNote · v3 Roadmap · Drafted by Abhi · Internal review</div>
+
+</div>
+</body>
+</html>

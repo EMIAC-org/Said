@@ -38,11 +38,7 @@ pub struct Tier2PolicyStatus {
 }
 
 pub fn normalize_token(text: &str) -> String {
-    text.trim()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-        .flat_map(|c| c.to_lowercase())
-        .collect()
+    crate::llm::alias_safety::compact_norm(text)
 }
 
 pub fn reward_mapping(
@@ -98,7 +94,9 @@ fn update_mapping(
     if token_norm.is_empty() || correct_form_norm.is_empty() || token_norm == correct_form_norm {
         return false;
     }
-    if crate::llm::promotion_gate::is_common_word(token)
+    if crate::llm::alias_safety::is_common_alias_source(token)
+        || crate::llm::alias_safety::is_common_alias_source(&token_norm)
+        || crate::llm::promotion_gate::is_common_word(token)
         || crate::llm::promotion_gate::is_common_word(&token_norm)
     {
         return false;

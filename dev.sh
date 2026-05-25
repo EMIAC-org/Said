@@ -6,7 +6,8 @@ set -e
 cd "$(dirname "$0")"
 
 echo "▶ building said-backend..."
-touch crates/backend/src/main.rs   # bust Cargo fingerprint cache
+touch crates/backend/src/main.rs
+unset CARGO_TARGET_DIR
 cargo build -p said-backend
 
 echo "▶ syncing binary to Tauri externalBin..."
