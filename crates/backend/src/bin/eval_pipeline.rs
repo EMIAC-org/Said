@@ -761,7 +761,7 @@ fn run_dev_quality_suite(
 
     let learned_pool = setup_db(&seeds);
     let mut failed_rule_writes = 0usize;
-    let mut first_rule_failure = String::new();
+    let mut rule_failures = Vec::new();
     for term in &suite.terms {
         let (left_context, right_context) = template_context(&term.positive_template);
         for variant in &term.distortions {
@@ -787,8 +787,8 @@ fn run_dev_quality_suite(
             );
             if !(first && second) {
                 failed_rule_writes += 1;
-                if first_rule_failure.is_empty() {
-                    first_rule_failure = format!("{variant} -> {}", term.term);
+                if rule_failures.len() < 10 {
+                    rule_failures.push(format!("{variant} -> {}", term.term));
                 }
             }
         }
@@ -802,7 +802,9 @@ fn run_dev_quality_suite(
         failed_rule_writes == 0 && status.active_rule_count as usize == total_distortions,
         &format!(
             "failed_writes={failed_rule_writes}, active_rules={}, expected={}, first={}",
-            status.active_rule_count, total_distortions, first_rule_failure
+            status.active_rule_count,
+            total_distortions,
+            rule_failures.join(", ")
         ),
     );
 
@@ -881,7 +883,7 @@ fn duplicate_distortions(suite: &DevQualitySuite) -> Vec<String> {
     let mut conflicts = Vec::new();
     for term in &suite.terms {
         for variant in &term.distortions {
-            let norm = normalize_eval_token(variant);
+            let norm = tier2_edit_policy::normalize_token(variant);
             if norm.is_empty() {
                 continue;
             }

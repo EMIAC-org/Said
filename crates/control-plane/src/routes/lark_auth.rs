@@ -34,6 +34,13 @@ struct LarkOAuthState {
     mode: String,
     sub: String,
     exp: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    redirect_uri: Option<String>,
+}
+
+enum OAuthFlow {
+    Admin(Uuid),
+    Desktop { redirect_uri: Option<String> },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -41,6 +48,46 @@ struct Claims {
     sub: String, // account_id
     email: String,
     exp: usize, // expiry timestamp
+}
+
+// ── GET /auth/lark (desktop browser entry — public) ─────────────────────────
+
+#[derive(Deserialize)]
+pub struct DesktopStartQuery {
+    pub callback_port: Option<u16>,
+    pub redirect_uri: Option<String>,
+}
+
+pub async fn desktop_start(
+    State(state): State<AppState>,
+    Query(query): Query<DesktopStartQuery>,
+) -> Result<axum::response::Redirect, (StatusCode, Json<Value>)> {
+    let redirect_uri = resolve_desktop_redirect_uri(query.redirect_uri, query.callback_port);
+    let oauth_state = encode_desktop_oauth_state(&state, redirect_uri)?;
+
+    let url = crate::lark_client::build_oauth_url(
+        &state.lark.app_id,
+        &state.lark.redirect_uri,
+        &oauth_state,
+    );
+
+    Ok(axum::response::Redirect::temporary(&url))
+}
+
+fn resolve_desktop_redirect_uri(
+    redirect_uri: Option<String>,
+    callback_port: Option<u16>,
+) -> Option<String> {
+    if let Some(uri) = redirect_uri {
+        if is_allowed_local_redirect(&uri) {
+            return Some(uri);
+        }
+    }
+    callback_port.map(|port| format!("http://127.0.0.1:{port}/callback"))
+}
+
+fn is_allowed_local_redirect(uri: &str) -> bool {
+    uri.starts_with("http://127.0.0.1:") || uri.starts_with("http://localhost:")
 }
 
 // ── GET /v1/auth/lark/start ─────────────────────────────────────────────────
@@ -69,7 +116,7 @@ pub async fn callback(
     State(state): State<AppState>,
     Query(params): Query<CallbackQuery>,
 ) -> Result<Response, (StatusCode, Json<Value>)> {
-    let admin_account_id = decode_admin_oauth_state(&state, &params.state)?;
+    let oauth_state = decode_oauth_state(&state, &params.state)?;
 
     // Exchange auth code for tokens
     let tokens =
@@ -101,61 +148,64 @@ pub async fn callback(
         .clone()
         .unwrap_or_else(|| format!("{}@lark.user", lark_user.open_id));
 
-    let (account_id, email) = if let Some(account_id) = admin_account_id {
-        sqlx::query_as("SELECT id, email FROM accounts WHERE id = $1")
-            .bind(account_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(db_err)?
-            .ok_or_else(|| {
-                (
-                    StatusCode::UNAUTHORIZED,
-                    Json(json!({"error": "admin OAuth account no longer exists"})),
-                )
-            })?
-    } else {
-        let existing: Option<(Uuid, String)> =
-            sqlx::query_as("SELECT id, email FROM accounts WHERE email = $1")
-                .bind(&lark_email)
+    let (account_id, email) = match &oauth_state {
+        OAuthFlow::Admin(account_id) => {
+            sqlx::query_as("SELECT id, email FROM accounts WHERE id = $1")
+                .bind(account_id)
                 .fetch_optional(&state.db)
+                .await
+                .map_err(db_err)?
+                .ok_or_else(|| {
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({"error": "admin OAuth account no longer exists"})),
+                    )
+                })?
+        }
+        OAuthFlow::Desktop { .. } => {
+            let existing: Option<(Uuid, String)> =
+                sqlx::query_as("SELECT id, email FROM accounts WHERE email = $1")
+                    .bind(&lark_email)
+                    .fetch_optional(&state.db)
+                    .await
+                    .map_err(db_err)?;
+
+            if let Some(row) = existing {
+                row
+            } else {
+                // Create account with a random password hash (user authenticates via Lark)
+                let salt = SaltString::generate(&mut OsRng);
+                let random_pw = Uuid::new_v4().to_string();
+                let hash = Argon2::default()
+                    .hash_password(random_pw.as_bytes(), &salt)
+                    .map_err(|_| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({"error": "hash failed"})),
+                        )
+                    })?
+                    .to_string();
+
+                let id: Uuid = sqlx::query_scalar(
+                    "INSERT INTO accounts (email, password_hash) VALUES ($1, $2) RETURNING id",
+                )
+                .bind(&lark_email)
+                .bind(&hash)
+                .fetch_one(&state.db)
                 .await
                 .map_err(db_err)?;
 
-        if let Some(row) = existing {
-            row
-        } else {
-            // Create account with a random password hash (user authenticates via Lark)
-            let salt = SaltString::generate(&mut OsRng);
-            let random_pw = Uuid::new_v4().to_string();
-            let hash = Argon2::default()
-                .hash_password(random_pw.as_bytes(), &salt)
-                .map_err(|_| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": "hash failed"})),
-                    )
-                })?
-                .to_string();
+                // Create free license key
+                sqlx::query(
+                    "INSERT INTO license_keys (account_id, tier, active) VALUES ($1, 'free', true)",
+                )
+                .bind(id)
+                .execute(&state.db)
+                .await
+                .map_err(db_err)?;
 
-            let id: Uuid = sqlx::query_scalar(
-                "INSERT INTO accounts (email, password_hash) VALUES ($1, $2) RETURNING id",
-            )
-            .bind(&lark_email)
-            .bind(&hash)
-            .fetch_one(&state.db)
-            .await
-            .map_err(db_err)?;
-
-            // Create free license key
-            sqlx::query(
-                "INSERT INTO license_keys (account_id, tier, active) VALUES ($1, 'free', true)",
-            )
-            .bind(id)
-            .execute(&state.db)
-            .await
-            .map_err(db_err)?;
-
-            (id, lark_email.clone())
+                (id, lark_email.clone())
+            }
         }
     };
 
@@ -169,7 +219,7 @@ pub async fn callback(
 
     let (member_id, org_id) = if let Some(row) = org_row {
         row
-    } else if admin_account_id.is_some() {
+    } else if matches!(oauth_state, OAuthFlow::Admin(_)) {
         return Ok(admin_oauth_bridge(
             None,
             "/admin/onboarding?lark=needs_org",
@@ -302,7 +352,7 @@ pub async fn callback(
         &lark_user.name
     };
 
-    if admin_account_id.is_some() {
+    if matches!(oauth_state, OAuthFlow::Admin(_)) {
         return Ok(admin_oauth_bridge(
             Some(session_token),
             "/admin/settings?lark=connected",
@@ -310,67 +360,134 @@ pub async fn callback(
         ));
     }
 
-    Ok(axum::response::Html(format!(r#"<!DOCTYPE html>
+    let desktop_redirect_uri = match oauth_state {
+        OAuthFlow::Desktop { redirect_uri } => redirect_uri,
+        OAuthFlow::Admin(_) => None,
+    };
+
+    Ok(desktop_oauth_bridge(
+        session_token,
+        lark_name,
+        &desktop_redirect_uri,
+    ))
+}
+
+fn desktop_oauth_bridge(
+    session_token: Uuid,
+    lark_name: &str,
+    localhost_redirect: &Option<String>,
+) -> Response {
+    let deep_link = format!("airnote://auth/callback?token={session_token}");
+    let localhost_url = localhost_redirect
+        .as_ref()
+        .map(|base| format!("{base}?token={session_token}"));
+    let localhost_json = localhost_url
+        .as_ref()
+        .map(|u| serde_json::to_string(u).unwrap_or_else(|_| "null".to_string()))
+        .unwrap_or_else(|| "null".to_string());
+
+    axum::response::Html(format!(r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AirNote Enterprise — Connected</title>
+<title>AirNote — Opening app</title>
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box }}
-  body {{ font-family:'Inter',system-ui,sans-serif; background:#080b16; color:#e8eaf0; min-height:100vh; display:flex; align-items:center; justify-content:center }}
-  .card {{ background:#0e1225; border:1px solid #1a2038; border-radius:20px; padding:40px; max-width:420px; width:100%; text-align:center }}
-  .icon {{ width:48px; height:48px; background:rgba(117,145,239,0.15); border-radius:14px; display:flex; align-items:center; justify-content:center; margin:0 auto 20px }}
-  .icon svg {{ color:#9aaef3 }}
+  body {{ font-family:Inter,system-ui,sans-serif; background:hsl(240 6% 6%); color:hsl(240 6% 92%); min-height:100vh; display:flex; align-items:center; justify-content:center }}
+  .card {{ background:hsl(240 5% 10%); border:1px solid hsl(240 5% 18%); border-radius:20px; padding:40px; max-width:420px; width:calc(100vw - 32px); text-align:center }}
+  .spinner {{ width:32px; height:32px; border:3px solid hsl(240 5% 18%); border-top-color:hsl(226 80% 78%); border-radius:999px; margin:0 auto 18px; animation:spin .8s linear infinite }}
+  .icon {{ width:48px; height:48px; background:hsl(226 80% 78% / 0.14); border-radius:14px; display:none; align-items:center; justify-content:center; margin:0 auto 20px; color:hsl(226 80% 78%) }}
   h1 {{ font-size:20px; font-weight:600; margin-bottom:6px }}
-  .sub {{ font-size:13px; color:#7a80a0; margin-bottom:24px }}
-  .token-box {{ background:#080b16; border:1px solid #1a2038; border-radius:12px; padding:12px 16px; font-family:'SF Mono',monospace; font-size:11px; color:#9aaef3; word-break:break-all; margin-bottom:16px; cursor:pointer; position:relative }}
-  .token-box:hover {{ border-color:#9aaef3 }}
-  .copy-btn {{ background:#7591ef; color:#fff; border:none; padding:10px 24px; border-radius:12px; font-size:13px; font-weight:600; cursor:pointer; width:100%; margin-bottom:12px }}
-  .copy-btn:hover {{ background:#5a7ae8 }}
-  .hint {{ font-size:11px; color:#4a5070 }}
-  .copied {{ color:#4ade80; font-size:12px; font-weight:500; margin-top:8px }}
-  .copied.error {{ color:#fbbf24 }}
+  .sub {{ font-size:13px; color:hsl(240 4% 58%); margin-bottom:20px; line-height:1.5 }}
+  .open-btn {{ background:hsl(226 80% 78%); color:hsl(240 8% 8%); border:none; padding:12px 24px; border-radius:12px; font-size:13px; font-weight:600; cursor:pointer; width:100%; margin-bottom:12px; text-decoration:none; display:block }}
+  .open-btn:hover {{ filter:brightness(0.95) }}
+  .fallback {{ margin-top:20px; padding-top:20px; border-top:1px solid hsl(240 5% 18%); text-align:left }}
+  .fallback summary {{ font-size:12px; color:hsl(240 4% 58%); cursor:pointer; list-style:none }}
+  .fallback summary::-webkit-details-marker {{ display:none }}
+  .token-box {{ background:hsl(240 6% 6%); border:1px solid hsl(240 5% 18%); border-radius:12px; padding:12px 16px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; color:hsl(226 80% 78%); word-break:break-all; margin:12px 0; cursor:pointer }}
+  .copy-btn {{ background:hsl(240 5% 16%); color:hsl(226 80% 78%); border:1px solid hsl(240 5% 18%); padding:10px 24px; border-radius:12px; font-size:13px; font-weight:600; cursor:pointer; width:100% }}
+  .hint {{ font-size:11px; color:hsl(240 4% 46%); margin-top:8px }}
+  .copied {{ color:hsl(145 70% 60%); font-size:12px; font-weight:500; margin-top:8px; display:none }}
+  .copied.error {{ color:hsl(38 90% 62%) }}
+  @keyframes spin {{ to {{ transform:rotate(360deg) }} }}
 </style>
 </head>
 <body>
 <div class="card">
-  <div class="icon">
-    <svg viewBox="0 0 24 24" fill="none" width="22" height="22">
-      <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/>
-      <rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/>
-      <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/>
-      <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/>
-    </svg>
-  </div>
-  <h1>Welcome, {lark_name}!</h1>
-  <p class="sub">You're now connected to AirNote Enterprise.<br/>Copy the token below and paste it in the AirNote desktop app.</p>
-  <div class="token-box" id="token" onclick="copyToken()">{session_token}</div>
-  <button class="copy-btn" onclick="copyToken()">Copy Token</button>
-  <p class="hint">Go to AirNote → Settings → Enterprise → Paste this token</p>
-  <p class="copied" id="copied" style="display:none">✓ Copied to clipboard</p>
+  <div class="spinner" id="spinner"></div>
+  <div class="icon" id="icon">✓</div>
+  <h1 id="title">Opening AirNote…</h1>
+  <p class="sub" id="subtitle">Welcome, {lark_name}! You can close this tab once AirNote opens.</p>
+  <a class="open-btn" id="open-app" href="{deep_link}">Open AirNote</a>
+  <details class="fallback" id="fallback">
+    <summary>AirNote didn&apos;t open? Show manual options</summary>
+    <div class="token-box" id="token" onclick="copyToken()">{session_token}</div>
+    <button class="copy-btn" onclick="copyToken()">Copy token</button>
+    <p class="hint">Paste this token in AirNote if the app did not connect automatically.</p>
+    <p class="copied" id="copied"></p>
+  </details>
 </div>
 <script>
+var deepLink = {deep_link_json};
+var localhostRedirect = {localhost_json};
+function openApp() {{
+  try {{ window.location.href = deepLink; }} catch (_) {{}}
+  try {{
+    var a = document.createElement('a');
+    a.href = deepLink;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }} catch (_) {{}}
+}}
+function hitLocalhostCallback() {{
+  if (!localhostRedirect) return;
+  try {{
+    var iframe = document.createElement('iframe');
+    iframe.src = localhostRedirect;
+    iframe.width = '1';
+    iframe.height = '1';
+    iframe.style.position = 'fixed';
+    iframe.style.left = '-9999px';
+    iframe.style.top = '-9999px';
+    iframe.style.opacity = '0';
+    iframe.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(iframe);
+    setTimeout(function() {{
+      try {{ iframe.remove(); }} catch (_) {{}}
+    }}, 8000);
+  }} catch (_) {{}}
+}}
+function showFallback() {{
+  document.getElementById('spinner').style.display = 'none';
+  document.getElementById('icon').style.display = 'flex';
+  document.getElementById('title').textContent = 'Welcome, {lark_name}!';
+  document.getElementById('subtitle').textContent = 'AirNote did not open automatically. Click Open AirNote or copy the token below.';
+  document.getElementById('fallback').open = true;
+}}
+hitLocalhostCallback();
+openApp();
+setTimeout(hitLocalhostCallback, 350);
+setTimeout(openApp, 700);
+setTimeout(hitLocalhostCallback, 1200);
+setTimeout(showFallback, 4000);
+document.getElementById('open-app').addEventListener('click', function(e) {{
+  e.preventDefault();
+  hitLocalhostCallback();
+  openApp();
+  setTimeout(showFallback, 2500);
+}});
 function showCopyStatus(message, isError) {{
   var el = document.getElementById('copied');
   el.textContent = message;
   el.className = isError ? 'copied error' : 'copied';
   el.style.display = 'block';
-  setTimeout(function() {{ el.style.display = 'none' }}, 2400);
+  setTimeout(function() {{ el.style.display = 'none'; }}, 2400);
 }}
-
-function selectToken() {{
-  var tokenBox = document.getElementById('token');
-  var range = document.createRange();
-  range.selectNodeContents(tokenBox);
-  var selection = window.getSelection();
-  selection.removeAllRanges();
-  selection.addRange(range);
-}}
-
 async function copyToken() {{
   var token = document.getElementById('token').textContent.trim();
-
   if (navigator.clipboard && window.isSecureContext) {{
     try {{
       await navigator.clipboard.writeText(token);
@@ -378,26 +495,20 @@ async function copyToken() {{
       return;
     }} catch (_) {{}}
   }}
-
   var textarea = document.createElement('textarea');
   textarea.value = token;
   textarea.setAttribute('readonly', '');
   textarea.style.position = 'fixed';
   textarea.style.left = '-9999px';
-  textarea.style.top = '0';
   document.body.appendChild(textarea);
-  textarea.focus();
   textarea.select();
-  textarea.setSelectionRange(0, textarea.value.length);
-
   try {{
     var copied = document.execCommand('copy');
-    if (textarea.parentNode) textarea.parentNode.removeChild(textarea);
-    if (!copied) throw new Error('copy command failed');
+    textarea.remove();
+    if (!copied) throw new Error('copy failed');
     showCopyStatus('Copied to clipboard', false);
   }} catch (_) {{
-    if (textarea.parentNode) textarea.parentNode.removeChild(textarea);
-    selectToken();
+    textarea.remove();
     showCopyStatus('Press Cmd+C to copy selected token', true);
   }}
 }}
@@ -406,7 +517,39 @@ async function copyToken() {{
 </html>"#,
         lark_name = lark_name,
         session_token = session_token,
-    )).into_response())
+        deep_link = deep_link,
+        deep_link_json = serde_json::to_string(&deep_link)
+            .unwrap_or_else(|_| format!("\"{deep_link}\"")),
+        localhost_json = localhost_json,
+    ))
+    .into_response()
+}
+
+fn encode_desktop_oauth_state(
+    state: &AppState,
+    redirect_uri: Option<String>,
+) -> Result<String, (StatusCode, Json<Value>)> {
+    let exp = (Utc::now() + Duration::minutes(10)).timestamp() as usize;
+    let claims = LarkOAuthState {
+        mode: "desktop".to_string(),
+        sub: Uuid::new_v4().to_string(),
+        exp,
+        redirect_uri,
+    };
+
+    let jwt = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(state.lark.jwt_secret.as_bytes()),
+    )
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "failed to sign OAuth state"})),
+        )
+    })?;
+
+    Ok(format!("desktop.{jwt}"))
 }
 
 fn encode_admin_oauth_state(
@@ -418,6 +561,7 @@ fn encode_admin_oauth_state(
         mode: "admin".to_string(),
         sub: account_id.to_string(),
         exp,
+        redirect_uri: None,
     };
 
     let jwt = encode(
@@ -435,45 +579,76 @@ fn encode_admin_oauth_state(
     Ok(format!("admin.{jwt}"))
 }
 
-fn decode_admin_oauth_state(
+fn decode_oauth_state(
     state: &AppState,
     oauth_state: &str,
-) -> Result<Option<Uuid>, (StatusCode, Json<Value>)> {
-    let Some(jwt) = oauth_state.strip_prefix("admin.") else {
-        Uuid::parse_str(oauth_state).map_err(|_| {
+) -> Result<OAuthFlow, (StatusCode, Json<Value>)> {
+    if let Some(jwt) = oauth_state.strip_prefix("admin.") {
+        let data = decode::<LarkOAuthState>(
+            jwt,
+            &DecodingKey::from_secret(state.lark.jwt_secret.as_bytes()),
+            &Validation::default(),
+        )
+        .map_err(|_| {
             (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "invalid state parameter"})),
+                Json(json!({"error": "invalid or expired OAuth state"})),
             )
         })?;
-        return Ok(None);
-    };
 
-    let data = decode::<LarkOAuthState>(
-        jwt,
-        &DecodingKey::from_secret(state.lark.jwt_secret.as_bytes()),
-        &Validation::default(),
-    )
-    .map_err(|_| {
+        if data.claims.mode != "admin" {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid OAuth state mode"})),
+            ));
+        }
+
+        let account_id = Uuid::parse_str(&data.claims.sub).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid OAuth state account"})),
+            )
+        })?;
+
+        return Ok(OAuthFlow::Admin(account_id));
+    }
+
+    if let Some(jwt) = oauth_state.strip_prefix("desktop.") {
+        let data = decode::<LarkOAuthState>(
+            jwt,
+            &DecodingKey::from_secret(state.lark.jwt_secret.as_bytes()),
+            &Validation::default(),
+        )
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid or expired OAuth state"})),
+            )
+        })?;
+
+        if data.claims.mode != "desktop" {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid OAuth state mode"})),
+            ));
+        }
+
+        let redirect_uri = data
+            .claims
+            .redirect_uri
+            .filter(|uri| is_allowed_local_redirect(uri));
+
+        return Ok(OAuthFlow::Desktop { redirect_uri });
+    }
+
+    Uuid::parse_str(oauth_state).map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "invalid or expired OAuth state"})),
+            Json(json!({"error": "invalid state parameter"})),
         )
     })?;
 
-    if data.claims.mode != "admin" {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "invalid OAuth state mode"})),
-        ));
-    }
-
-    Uuid::parse_str(&data.claims.sub).map(Some).map_err(|_| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "invalid OAuth state account"})),
-        )
-    })
+    Ok(OAuthFlow::Desktop { redirect_uri: None })
 }
 
 fn admin_oauth_bridge(session_token: Option<Uuid>, destination: &str, title: &str) -> Response {

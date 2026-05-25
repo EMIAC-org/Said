@@ -1,13 +1,11 @@
 //! Tier 2 local learning correction pipeline.
 //!
-//! Runtime order is intentionally narrow:
-//! 1. Apply exact, safe STT aliases.
-//! 2. Score only the remaining suspicious single tokens.
-//! 3. Replace only when a protected local vocabulary term wins by a wide margin.
+//! Voice runtime order:
+//! 1. `collect_evidence` — scan raw/numeric transcript, no mutation.
+//! 2. LLM grammar polish.
+//! 3. `final_resolve` — apply high-trust protected-term replacements on polished text.
 //!
-//! The deterministic scorer is always available. If a local ONNX artifact is
-//! present and loadable, it scores the same candidate pairs behind the same
-//! gates; otherwise the engine falls back to deterministic scoring.
+//! Legacy `correct()` / `correct_with_store()` remain for eval/lab paths.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -93,6 +91,34 @@ struct AliasEvidence {
     use_count: i64,
 }
 
+/// One protected-term signal collected from raw STT before LLM polish.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtectedTermEvidence {
+    pub transcript_form: String,
+    pub correct_form: String,
+    pub kind: MatchKind,
+    pub raw_token_index: Option<usize>,
+}
+
+/// Evidence collected from raw/numeric transcript without mutating it.
+#[derive(Debug, Clone)]
+pub struct EvidenceResult {
+    pub source_text: String,
+    pub evidence: Vec<ProtectedTermEvidence>,
+    pub matches: Vec<AppliedMatch>,
+    pub traces: Vec<ScoringTrace>,
+}
+
+impl EvidenceResult {
+    pub fn as_apply_result(&self) -> ApplyResult {
+        ApplyResult {
+            text: self.source_text.clone(),
+            matches: self.matches.clone(),
+            traces: self.traces.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CandidateScore {
     candidate: Candidate,
@@ -153,7 +179,6 @@ impl<'a> CorrectionEngine<'a> {
 
     /// Full correction pass: exact safe aliases first, then Tier 2 scoring.
     pub fn correct(&self, transcript: &str) -> ApplyResult {
-        info!("[tier2] input: {:?}", truncate_utf8_safe(transcript, 200));
         let exact =
             crate::store::stt_replacements::apply_exact_safe(transcript, self.stt_replacements);
         for m in &exact.matches {
@@ -372,6 +397,229 @@ impl<'a> CorrectionEngine<'a> {
             })
         }
     }
+
+    /// Scan transcript for protected-term evidence without mutating text.
+    pub fn collect_evidence(&self, transcript: &str) -> EvidenceResult {
+        info!(
+            "[tier2] collect_evidence: {:?}",
+            truncate_utf8_safe(transcript, 200)
+        );
+        let exact =
+            crate::store::stt_replacements::apply_exact_safe(transcript, self.stt_replacements);
+        let exact_outputs: HashSet<String> = exact
+            .matches
+            .iter()
+            .map(|m| normalize_core(&m.correct_form))
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let edit_policy = apply_edit_policy(
+            transcript,
+            &self.edit_policy_rules,
+            &exact_outputs,
+            self.vocabulary,
+        );
+
+        let corrected_outputs: HashSet<String> = exact_outputs
+            .into_iter()
+            .chain(
+                edit_policy
+                    .matches
+                    .iter()
+                    .map(|m| normalize_core(&m.correct_form))
+                    .filter(|s| !s.is_empty()),
+            )
+            .collect();
+
+        let cluster_fuzzy = cluster_fuzzy_pass(
+            transcript,
+            &self.edit_policy_rules,
+            &corrected_outputs,
+            self.vocabulary,
+            self.stt_replacements,
+        );
+
+        let fuzzy = self.fuzzy_scoring_pass(transcript, &corrected_outputs);
+
+        let mut matches = exact.matches;
+        matches.extend(edit_policy.matches);
+        matches.extend(cluster_fuzzy.matches);
+
+        let mut traces = edit_policy.traces;
+        traces.extend(cluster_fuzzy.traces);
+        traces.extend(fuzzy.traces);
+
+        let evidence = matches
+            .iter()
+            .map(|m| ProtectedTermEvidence {
+                transcript_form: m.transcript_form.clone(),
+                correct_form: m.correct_form.clone(),
+                kind: m.kind,
+                raw_token_index: token_index_of(transcript, &m.transcript_form),
+            })
+            .collect();
+
+        EvidenceResult {
+            source_text: transcript.to_string(),
+            evidence,
+            matches,
+            traces,
+        }
+    }
+
+    /// Apply high-trust protected-term replacements to polished text using raw evidence.
+    pub fn final_resolve(
+        &self,
+        polished: &str,
+        evidence: &EvidenceResult,
+        raw_source: &str,
+    ) -> ApplyResult {
+        info!(
+            "[tier2] final_resolve: polished={:?} evidence={} traces={}",
+            truncate_utf8_safe(polished, 120),
+            evidence.matches.len(),
+            evidence.traces.len()
+        );
+
+        let mut text = polished.to_string();
+        let mut matches = Vec::new();
+        let mut traces = Vec::new();
+        let mut replacement_count = 0usize;
+        let mut applied_forms: HashSet<String> = HashSet::new();
+
+        let mut candidates: Vec<AppliedMatch> = evidence.matches.clone();
+        candidates.sort_by_key(|m| match_priority(m.kind));
+
+        for candidate in candidates {
+            if replacement_count >= MAX_REPLACEMENTS_PER_RECORDING {
+                break;
+            }
+            if !final_apply_kind(candidate.kind) {
+                continue;
+            }
+            let key = normalize_core(&candidate.transcript_form);
+            if key.is_empty() || applied_forms.contains(&key) {
+                continue;
+            }
+            if let Some(next) =
+                replace_surface_in_text(&text, &candidate.transcript_form, &candidate.correct_form)
+            {
+                if next != text {
+                    info!(
+                        "[tier2] final: {:?} → {:?} ({:?})",
+                        candidate.transcript_form, candidate.correct_form, candidate.kind
+                    );
+                    text = next;
+                    applied_forms.insert(key);
+                    if let Some(trace) = trace_for_match(evidence, &candidate) {
+                        traces.push(trace);
+                    }
+                    matches.push(candidate);
+                    replacement_count += 1;
+                    continue;
+                }
+            }
+            if let Some(next) = position_aligned_replace(
+                &text,
+                raw_source,
+                &candidate.transcript_form,
+                &candidate.correct_form,
+            ) {
+                if next != text {
+                    info!(
+                        "[tier2] final aligned: {:?} → {:?} ({:?})",
+                        candidate.transcript_form, candidate.correct_form, candidate.kind
+                    );
+                    text = next;
+                    applied_forms.insert(key);
+                    if let Some(trace) = trace_for_match(evidence, &candidate) {
+                        traces.push(trace);
+                    }
+                    matches.push(candidate);
+                    replacement_count += 1;
+                }
+            }
+        }
+
+        for trace in &evidence.traces {
+            if replacement_count >= MAX_REPLACEMENTS_PER_RECORDING {
+                break;
+            }
+            if !trace.applied || trace.policy_score.is_none() {
+                continue;
+            }
+            let key = normalize_core(&trace.token);
+            if key.is_empty() || applied_forms.contains(&key) {
+                continue;
+            }
+            let candidate = AppliedMatch {
+                transcript_form: trace.token.clone(),
+                correct_form: trace.candidate.clone(),
+                kind: trace.kind,
+            };
+            if let Some(next) =
+                replace_surface_in_text(&text, &candidate.transcript_form, &candidate.correct_form)
+            {
+                if next != text {
+                    text = next;
+                    applied_forms.insert(key);
+                    matches.push(candidate);
+                    traces.push(trace.clone());
+                    replacement_count += 1;
+                }
+            }
+        }
+
+        ApplyResult {
+            text,
+            matches,
+            traces,
+        }
+    }
+}
+
+pub fn collect_evidence_with_store(
+    pool: &DbPool,
+    user_id: &str,
+    transcript: &str,
+    stt_replacements: &[SttReplacement],
+    vocabulary: &[VocabTerm],
+) -> EvidenceResult {
+    let metadata = crate::store::tier2_model::get(pool, user_id);
+    let policy_weights = crate::store::tier2_policy::load_weights(pool, user_id);
+    let edit_policy_rules =
+        crate::store::tier2_edit_policy::load_active_replace_rules(pool, user_id);
+    CorrectionEngine::new_with_policy(
+        stt_replacements,
+        vocabulary,
+        metadata,
+        policy_weights,
+        edit_policy_rules,
+    )
+    .collect_evidence(transcript)
+}
+
+pub fn final_resolve_with_store(
+    pool: &DbPool,
+    user_id: &str,
+    polished: &str,
+    evidence: &EvidenceResult,
+    raw_source: &str,
+    stt_replacements: &[SttReplacement],
+    vocabulary: &[VocabTerm],
+) -> ApplyResult {
+    let metadata = crate::store::tier2_model::get(pool, user_id);
+    let policy_weights = crate::store::tier2_policy::load_weights(pool, user_id);
+    let edit_policy_rules =
+        crate::store::tier2_edit_policy::load_active_replace_rules(pool, user_id);
+    CorrectionEngine::new_with_policy(
+        stt_replacements,
+        vocabulary,
+        metadata,
+        policy_weights,
+        edit_policy_rules,
+    )
+    .final_resolve(polished, evidence, raw_source)
 }
 
 pub fn correct_with_store(
@@ -509,10 +757,12 @@ fn build_candidates(
     }
 
     for rule in stt_replacements {
-        if rule.review_status == ReviewStatus::Blocked {
+        if rule.review_status != ReviewStatus::Approved {
             continue;
         }
-        if promotion_gate::is_common_word(&rule.transcript_form) {
+        if crate::llm::alias_safety::is_common_alias_source(&rule.transcript_form)
+            || promotion_gate::is_common_word(&rule.transcript_form)
+        {
             continue;
         }
         let key = normalize_core(&rule.correct_form);
@@ -607,6 +857,13 @@ fn apply_edit_policy(
                 continue;
             }
 
+            let span_norm = cores[start..start + window_size].join(" ");
+            if crate::llm::alias_safety::is_common_alias_source_norm(&span_norm)
+                || promotion_gate::is_common_word(&span_norm)
+            {
+                continue;
+            }
+
             let best_rule = active_rules
                 .iter()
                 .filter(|r| {
@@ -627,13 +884,6 @@ fn apply_edit_policy(
                 "[tier2] multi-token edit-policy: {:?} ({} tokens) → {:?}",
                 span_label, window_size, rule.correct_form,
             );
-
-            // Emit the leading punctuation from the first chunk, the replacement,
-            // and the trailing punctuation from the last chunk.
-            let (lead, _) = split_punct(chunks[start]);
-            let last_chunk = chunks[start + window_size - 1];
-            let (_, trail) = split_punct(last_chunk);
-            let (_, trail2) = split_punct_trailing(trail);
 
             // Mark intermediate chunks as consumed (they'll be skipped)
             for i in start..start + window_size {
@@ -686,6 +936,13 @@ fn apply_edit_policy(
                     .iter()
                     .flat_map(|s| s.chars())
                     .collect();
+                let span_norm = cores[start..start + window_size].join(" ");
+                if crate::llm::alias_safety::is_common_alias_source_norm(&span_norm)
+                    || promotion_gate::is_common_word(&span_norm)
+                {
+                    continue;
+                }
+
                 let best_rule = active_rules
                     .iter()
                     .filter(|r| {
@@ -736,6 +993,7 @@ fn apply_edit_policy(
         if core_norm.is_empty()
             || protected_tokens.contains(core_norm)
             || known_terms.contains(core_norm)
+            || crate::llm::alias_safety::is_common_alias_source(core_norm)
             || promotion_gate::is_common_word(core_norm)
         {
             out.push_str(chunk);
@@ -947,6 +1205,7 @@ fn cluster_fuzzy_pass(
             || core_norm.chars().count() < MIN_TOKEN_LEN
             || protected_tokens.contains(&core_norm)
             || known_vocab.contains(&core_norm)
+            || crate::llm::alias_safety::is_common_alias_source(&core_norm)
             || promotion_gate::is_common_word(&core_norm)
             || edit_policy_context_word(&core_norm)
         {
@@ -1160,6 +1419,13 @@ fn choose_candidate(
         } else {
             None
         };
+        if onnx_score.is_some_and(|score| {
+            score < 0.35
+                && (crate::llm::alias_safety::is_common_alias_source(token)
+                    || is_in_dictionary(&token_norm))
+        }) {
+            continue;
+        }
         let mut score = onnx_score
             .map(|onnx| deterministic_score.max((onnx * 0.65) + (deterministic_score * 0.35)))
             .unwrap_or(deterministic_score);
@@ -1172,9 +1438,9 @@ fn choose_candidate(
         let policy_score = policy.and_then(tier2_policy::policy_score);
         let mut policy_boost = 0.0;
         if let Some(policy_score_value) = policy_score {
-            if policy_score_value > score {
+            if policy_score_value > 0.0 {
                 policy_boost = (policy_score_value - deterministic_score).max(0.0);
-                score = policy_score_value;
+                score = score.max(policy_score_value);
                 kind = MatchKind::Tier2Policy;
             }
         }
@@ -1197,11 +1463,13 @@ fn choose_candidate(
     let second = scored.get(1).cloned();
     let second_score = second.as_ref().map(|s| s.score).unwrap_or(0.0);
     let margin = best.score - second_score;
+    let has_direct_policy_evidence = best.policy_score.is_some();
     Ok(Some(ScoringDecision {
         best,
         second,
         margin,
-        applied: margin >= MARGIN_THRESHOLD
+        applied: has_direct_policy_evidence
+            && margin >= MARGIN_THRESHOLD
             && scored[0].score >= SCORE_THRESHOLD
             && scored[0].deterministic_score >= DETERMINISTIC_FLOOR,
     }))
@@ -1301,6 +1569,11 @@ fn is_suspicious_token(core: &str) -> bool {
     if norm.chars().count() < MIN_TOKEN_LEN {
         return false;
     }
+    if crate::llm::alias_safety::is_common_alias_source(core)
+        || crate::llm::alias_safety::is_common_alias_source(&norm)
+    {
+        return false;
+    }
     if is_in_dictionary(&norm) {
         return false;
     }
@@ -1309,6 +1582,171 @@ fn is_suspicious_token(core: &str) -> bool {
     }
     norm.chars()
         .any(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn token_index_of(text: &str, form: &str) -> Option<usize> {
+    let target = normalize_core(form);
+    if target.is_empty() {
+        return None;
+    }
+    let chunks = split_chunks(text);
+    let cores: Vec<String> = chunks.iter().map(|chunk| normalize_core(chunk)).collect();
+    for (idx, core) in cores.iter().enumerate() {
+        if *core == target {
+            return Some(idx);
+        }
+    }
+    let form_word_count = form.split_whitespace().count();
+    if form_word_count >= 2 {
+        for window in 2..=form_word_count.min(4) {
+            if cores.len() < window {
+                continue;
+            }
+            for start in 0..=(cores.len() - window) {
+                let merged = cores[start..start + window].join(" ");
+                let compact: String = cores[start..start + window]
+                    .iter()
+                    .flat_map(|s| s.chars())
+                    .collect();
+                if merged == target || compact == target {
+                    return Some(start);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn match_priority(kind: MatchKind) -> usize {
+    match kind {
+        MatchKind::Exact => 0,
+        MatchKind::Tier2EditPolicy => 1,
+        MatchKind::Tier2ClusterFuzzy => 2,
+        MatchKind::Tier2Policy => 3,
+        MatchKind::Phonetic => 4,
+        MatchKind::Tier2Onnx | MatchKind::Tier2Deterministic => 9,
+    }
+}
+
+fn final_apply_kind(kind: MatchKind) -> bool {
+    matches!(
+        kind,
+        MatchKind::Exact
+            | MatchKind::Tier2EditPolicy
+            | MatchKind::Tier2ClusterFuzzy
+            | MatchKind::Tier2Policy
+    )
+}
+
+fn trace_for_match(evidence: &EvidenceResult, candidate: &AppliedMatch) -> Option<ScoringTrace> {
+    evidence
+        .traces
+        .iter()
+        .find(|trace| {
+            trace.kind == candidate.kind
+                && normalize_core(&trace.token) == normalize_core(&candidate.transcript_form)
+                && normalize_core(&trace.candidate) == normalize_core(&candidate.correct_form)
+        })
+        .cloned()
+        .or_else(|| {
+            if candidate.kind == MatchKind::Exact {
+                None
+            } else {
+                Some(ScoringTrace {
+                    token: candidate.transcript_form.clone(),
+                    candidate: candidate.correct_form.clone(),
+                    second_candidate: None,
+                    kind: candidate.kind,
+                    score: 1.0,
+                    second_score: 0.0,
+                    margin: 1.0,
+                    deterministic_score: 1.0,
+                    onnx_score: None,
+                    policy_score: Some(1.0),
+                    policy_boost: 1.0,
+                    applied: true,
+                })
+            }
+        })
+}
+
+fn replace_surface_in_text(text: &str, from: &str, to: &str) -> Option<String> {
+    let from = from.trim();
+    let to = to.trim();
+    if from.is_empty() || to.is_empty() || normalize_core(from) == normalize_core(to) {
+        return None;
+    }
+    let lower_text = text.to_ascii_lowercase();
+    let lower_from = from.to_ascii_lowercase();
+    let mut search_start = 0usize;
+    while let Some(rel) = lower_text[search_start..].find(&lower_from) {
+        let start = search_start + rel;
+        let end = start + lower_from.len();
+        if start > text.len()
+            || end > text.len()
+            || !text.is_char_boundary(start)
+            || !text.is_char_boundary(end)
+        {
+            search_start = end.min(text.len());
+            continue;
+        }
+        if is_word_boundary(text, start, end) {
+            let mut out = String::with_capacity(text.len() + to.len());
+            out.push_str(&text[..start]);
+            out.push_str(to);
+            out.push_str(&text[end..]);
+            return Some(out);
+        }
+        search_start = end.min(text.len());
+    }
+    None
+}
+
+fn position_aligned_replace(text: &str, raw_source: &str, from: &str, to: &str) -> Option<String> {
+    let raw_idx = token_index_of(raw_source, from)?;
+    let raw_chunks = split_chunks(raw_source);
+    let out_chunks = split_chunks(text);
+    if raw_chunks.is_empty()
+        || out_chunks.is_empty()
+        || raw_chunks.len().abs_diff(out_chunks.len()) > 1
+        || raw_idx >= out_chunks.len()
+    {
+        return None;
+    }
+    let target = normalize_core(from);
+    let out_core = normalize_core(out_chunks[raw_idx]);
+    if out_core.is_empty()
+        || crate::llm::alias_safety::is_common_alias_source(&out_core)
+        || promotion_gate::is_common_word(&out_core)
+    {
+        return None;
+    }
+    if out_core != target && edit_similarity(&out_core, &target) < 0.92 {
+        return None;
+    }
+    let mut out = String::new();
+    for (idx, chunk) in out_chunks.iter().enumerate() {
+        if idx == raw_idx {
+            let (lead, trail) = split_punct(chunk);
+            let (_, trail2) = split_punct_trailing(trail);
+            out.push_str(lead);
+            out.push_str(to);
+            out.push_str(trail2);
+        } else {
+            out.push_str(chunk);
+        }
+    }
+    if out == text { None } else { Some(out) }
+}
+
+fn is_word_boundary(text: &str, start: usize, end: usize) -> bool {
+    let before = text[..start].chars().next_back();
+    let after = text[end..].chars().next();
+    !before.map(is_word_char).unwrap_or(false) && !after.map(is_word_char).unwrap_or(false)
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-'
 }
 
 fn normalize_core(text: &str) -> String {
@@ -1525,7 +1963,9 @@ pub fn is_in_dictionary(token: &str) -> bool {
         .filter(|c| c.is_ascii_alphanumeric())
         .flat_map(|c| c.to_lowercase())
         .collect::<String>();
-    DICTIONARY.contains(&norm) || promotion_gate::is_common_word(&norm)
+    crate::llm::alias_safety::is_common_alias_source(&norm)
+        || DICTIONARY.contains(&norm)
+        || promotion_gate::is_common_word(&norm)
 }
 
 fn default_max_len() -> usize {
@@ -1849,35 +2289,39 @@ mod tests {
     }
 
     #[test]
-    fn tier2_deterministic_fixes_near_alias() {
+    fn tier2_deterministic_scores_near_alias_as_shadow_only() {
         let rules = vec![rule("meac", "EMIAC")];
         let vocab = vec![vocab("EMIAC", "acronym", "auto")];
         let result = CorrectionEngine::new(&rules, &vocab, None).correct("meah mein kaam hai");
 
-        // With ONNX activation, the fuzzy scoring pass now applies corrections.
-        // "meah" scores ~0.96 against alias "meac" for EMIAC (acronym boost).
-        assert_eq!(result.text, "EMIAC mein kaam hai");
-        assert_eq!(result.matches.len(), 1);
-        assert_eq!(result.matches[0].correct_form, "EMIAC");
+        assert_eq!(result.text, "meah mein kaam hai");
+        assert!(result.matches.is_empty());
         assert!(
             result
                 .traces
                 .iter()
-                .any(|trace| trace.kind == MatchKind::Tier2Deterministic && trace.applied)
+                .any(|trace| trace.kind == MatchKind::Tier2Deterministic
+                    && !trace.applied
+                    && trace.candidate == "EMIAC")
         );
     }
 
     #[test]
-    fn tier2_deterministic_fixes_close_vocab_term() {
+    fn tier2_deterministic_scores_close_vocab_term_as_shadow_only() {
         let rules = vec![];
         let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
         let result = CorrectionEngine::new(&rules, &vocab, None).correct("mecobs ka IPO hai");
 
-        // With ONNX activation, close vocab terms are now applied when
-        // score and margin thresholds are met.
-        assert_eq!(result.text, "Macobs ka IPO hai");
-        assert_eq!(result.matches.len(), 1);
-        assert_eq!(result.matches[0].correct_form, "Macobs");
+        assert_eq!(result.text, "mecobs ka IPO hai");
+        assert!(result.matches.is_empty());
+        assert!(
+            result
+                .traces
+                .iter()
+                .any(|trace| trace.kind == MatchKind::Tier2Deterministic
+                    && !trace.applied
+                    && trace.candidate == "Macobs")
+        );
     }
 
     #[test]
@@ -1948,14 +2392,16 @@ mod tests {
         let result =
             CorrectionEngine::new(&rules, &vocab, Some(metadata)).correct("meah mein kaam hai");
 
-        // ONNX is missing, falls back to deterministic which now applies.
-        assert_eq!(result.text, "EMIAC mein kaam hai");
-        assert_eq!(result.matches.len(), 1);
+        // ONNX is missing, so deterministic scoring stays shadow-only.
+        assert_eq!(result.text, "meah mein kaam hai");
+        assert!(result.matches.is_empty());
         assert!(
             result
                 .traces
                 .iter()
-                .any(|trace| trace.kind == MatchKind::Tier2Deterministic && trace.applied)
+                .any(|trace| trace.kind == MatchKind::Tier2Deterministic
+                    && !trace.applied
+                    && trace.candidate == "EMIAC")
         );
     }
 
@@ -2001,6 +2447,91 @@ mod tests {
         assert_eq!(result.text, "Macobs ka IPO hai");
         assert_eq!(result.matches.len(), 1);
         assert_eq!(result.matches[0].kind, MatchKind::Tier2EditPolicy);
+    }
+
+    #[test]
+    fn collect_evidence_preserves_raw_text_then_final_resolves_exact_alias() {
+        let rules = vec![rule("macops", "Macobs")];
+        let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
+        let engine = CorrectionEngine::new(&rules, &vocab, None);
+
+        let raw = "macops ka 50% growth hai";
+        let evidence = engine.collect_evidence(raw);
+        assert_eq!(evidence.source_text, raw);
+        assert_eq!(evidence.as_apply_result().text, raw);
+        assert_eq!(evidence.matches.len(), 1);
+        assert_eq!(evidence.matches[0].kind, MatchKind::Exact);
+
+        let final_result = engine.final_resolve("macops ka 50% growth hai", &evidence, raw);
+        assert_eq!(final_result.text, "Macobs ka 50% growth hai");
+        assert_eq!(final_result.matches.len(), 1);
+        assert_eq!(final_result.matches[0].kind, MatchKind::Exact);
+    }
+
+    #[test]
+    fn final_resolve_applies_active_edit_policy_after_polish() {
+        let rules = vec![];
+        let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
+        let edit_rules = vec![edit_rule("macops", "Macobs", vec![], vec![])];
+        let engine =
+            CorrectionEngine::new_with_policy(&rules, &vocab, None, HashMap::new(), edit_rules);
+
+        let raw = "macops ka 50% growth hai";
+        let evidence = engine.collect_evidence(raw);
+        assert_eq!(evidence.source_text, raw);
+        assert_eq!(evidence.as_apply_result().text, raw);
+
+        let final_result = engine.final_resolve("macops ka 50% growth hai", &evidence, raw);
+        assert_eq!(final_result.text, "Macobs ka 50% growth hai");
+        assert_eq!(final_result.matches.len(), 1);
+        assert_eq!(final_result.matches[0].kind, MatchKind::Tier2EditPolicy);
+    }
+
+    #[test]
+    fn final_resolve_applies_sqlite_policy_evidence_after_polish() {
+        let rules = vec![];
+        let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
+        let policy = policy_weight("macops", "Macobs", 2, 0, 1.2);
+        let engine = CorrectionEngine::new_with_policy(&rules, &vocab, None, policy, vec![]);
+
+        let raw = "macops ka IPO hai";
+        let evidence = engine.collect_evidence(raw);
+        assert_eq!(evidence.source_text, raw);
+        assert!(evidence.matches.is_empty());
+        assert!(
+            evidence.traces.iter().any(|trace| {
+                trace.kind == MatchKind::Tier2Policy
+                    && trace.applied
+                    && trace.policy_score.is_some()
+            }),
+            "policy evidence should be collected without mutating source"
+        );
+
+        let final_result = engine.final_resolve("macops ka IPO hai", &evidence, raw);
+        assert_eq!(final_result.text, "Macobs ka IPO hai");
+        assert_eq!(final_result.matches.len(), 1);
+        assert_eq!(final_result.matches[0].kind, MatchKind::Tier2Policy);
+    }
+
+    #[test]
+    fn final_resolve_keeps_deterministic_fuzzy_shadow_only() {
+        let rules = vec![rule("meac", "EMIAC")];
+        let vocab = vec![vocab("EMIAC", "acronym", "auto")];
+        let engine = CorrectionEngine::new(&rules, &vocab, None);
+
+        let raw = "meah ka status bhejo";
+        let evidence = engine.collect_evidence(raw);
+        assert!(evidence.matches.is_empty());
+        assert!(
+            evidence
+                .traces
+                .iter()
+                .any(|trace| trace.kind == MatchKind::Tier2Deterministic && !trace.applied)
+        );
+
+        let final_result = engine.final_resolve("meah ka status bhejo", &evidence, raw);
+        assert_eq!(final_result.text, "meah ka status bhejo");
+        assert!(final_result.matches.is_empty());
     }
 
     #[test]
@@ -2097,7 +2628,24 @@ mod tests {
     }
 
     #[test]
-    fn dictionary_like_edit_policy_variant_requires_context() {
+    fn hindi_common_words_do_not_become_macobs_with_existing_aliases() {
+        let rules = vec![
+            rule("macos", "Macobs"),
+            rule("micobs", "Macobs"),
+            rule("mecobs", "Macobs"),
+        ];
+        let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
+        let engine = CorrectionEngine::new(&rules, &vocab, None);
+        for sample in ["ye kaisa laga", "kaisi lagi", "यह कैसा चल रहा है", "कैसा"]
+        {
+            let result = engine.correct(sample);
+            assert_eq!(result.text, sample, "{sample:?} should not be rewritten");
+            assert!(result.matches.is_empty());
+        }
+    }
+
+    #[test]
+    fn dictionary_like_edit_policy_variant_is_hard_blocked() {
         let rules = vec![];
         let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
         let edit_rules = vec![edit_rule("corps", "Macobs", vec![], vec!["ki"])];
@@ -2109,12 +2657,12 @@ mod tests {
         assert!(unrelated.matches.is_empty());
 
         let contextual = engine.correct("corps ki website kholo");
-        assert_eq!(contextual.text, "Macobs ki website kholo");
-        assert_eq!(contextual.matches[0].kind, MatchKind::Tier2EditPolicy);
+        assert_eq!(contextual.text, "corps ki website kholo");
+        assert!(contextual.matches.is_empty());
     }
 
     #[test]
-    fn hinglish_particle_context_matches_corps() {
+    fn hinglish_particle_context_does_not_enable_common_variant() {
         let rules = vec![];
         let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
         let edit_rules = vec![edit_rule(
@@ -2127,11 +2675,11 @@ mod tests {
             CorrectionEngine::new_with_policy(&rules, &vocab, None, HashMap::new(), edit_rules);
 
         let result = engine.correct("corps ka kaam ho gaya");
-        assert_eq!(result.text, "Macobs ka kaam ho gaya");
-        assert_eq!(result.matches[0].kind, MatchKind::Tier2EditPolicy);
+        assert_eq!(result.text, "corps ka kaam ho gaya");
+        assert!(result.matches.is_empty());
 
         let result2 = engine.correct("mein corps ko bolta hun");
-        assert_eq!(result2.text, "mein Macobs ko bolta hun");
+        assert_eq!(result2.text, "mein corps ko bolta hun");
 
         let english = engine.correct("army corps marched forward");
         assert_eq!(english.text, "army corps marched forward");
@@ -2139,11 +2687,11 @@ mod tests {
     }
 
     #[test]
-    fn devanagari_context_enables_corps_correction() {
+    fn devanagari_context_enables_safe_non_common_variant() {
         let rules = vec![];
         let vocab = vec![vocab("Macobs", "proper_noun", "auto")];
         let edit_rules = vec![edit_rule(
-            "corps",
+            "mccorps",
             "Macobs",
             vec![],
             vec!["ka", "batana", "ipo"],
@@ -2152,15 +2700,15 @@ mod tests {
             CorrectionEngine::new_with_policy(&rules, &vocab, None, HashMap::new(), edit_rules);
 
         // Devanagari "का" should romanize to "kaa" which matches particle "ka" context
-        let result = engine.correct("मैं corps का बताना");
+        let result = engine.correct("मैं mccorps का बताना");
         assert_eq!(
             result.text, "मैं Macobs का बताना",
-            "Devanagari का should provide Hinglish particle context for corps→Macobs"
+            "Devanagari का should provide Hinglish particle context for mccorps→Macobs"
         );
         assert_eq!(result.matches[0].kind, MatchKind::Tier2EditPolicy);
 
         // Devanagari "की" → "kee", still close enough to "ki" particle
-        let result2 = engine.correct("मैं corps की website");
+        let result2 = engine.correct("मैं mccorps की website");
         assert!(
             !result2.matches.is_empty() || result2.text.contains("Macobs"),
             "Devanagari की should also work as context"
@@ -2243,11 +2791,9 @@ mod tests {
                 .all(|m| m.kind != MatchKind::Tier2ClusterFuzzy),
             "cluster fuzzy should not apply without active edit policy rules"
         );
-        // However, the fuzzy scoring pass (now active) catches the close
-        // match via the "mecobs" alias for Macobs.
-        assert_eq!(result.text, "Macobs ka data bhejo");
-        assert_eq!(result.matches.len(), 1);
-        assert_eq!(result.matches[0].kind, MatchKind::Tier2Deterministic);
+        // The global fuzzy scorer is shadow-only unless explicit policy evidence exists.
+        assert_eq!(result.text, "mecorbs ka data bhejo");
+        assert!(result.matches.is_empty());
     }
 
     #[test]

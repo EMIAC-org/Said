@@ -24,8 +24,8 @@ echo ""
 
 echo "[1/5] Checking control-plane on :3100..."
 if ! curl -s "$API/v1/health" > /dev/null 2>&1; then
-  echo "  Starting control-plane (building if needed)..."
-  cd "$DIR" && cargo run &
+  echo "  Starting control-plane (building first)..."
+  bash "$DIR/../../scripts/run-control-plane.sh" &
   CP_PID=$!
   # Wait up to 30 seconds for the server to be ready
   for i in $(seq 1 30); do

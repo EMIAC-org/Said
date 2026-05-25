@@ -5,7 +5,11 @@ import { Avatar } from '../components/Avatar'
 import { RolePill } from '../components/StatusPill'
 import { Loading, Empty, ErrorBox } from '../components/States'
 import { formatDate } from '../utils'
-import type { OrgMember } from '../types'
+import type { OrgMember, DesktopClient } from '../types'
+
+function isActive(lastSeen: string): boolean {
+  return Date.now() - new Date(lastSeen).getTime() < 15 * 60 * 1000
+}
 
 export function TeamPage() {
   const { org } = useAuth()
@@ -15,8 +19,26 @@ export function TeamPage() {
 
   useEffect(() => {
     if (!org?.org?.id) { setLoading(false); return }
-    apiJson<{ members: OrgMember[] }>(`/v1/orgs/${org.org.id}/members`)
-      .then(d => setMembers(d.members || []))
+    Promise.all([
+      apiJson<{ members: OrgMember[] }>(`/v1/orgs/${org.org.id}/members`),
+      apiJson<{ clients: DesktopClient[] }>(`/v1/orgs/${org.org.id}/clients`),
+    ])
+      .then(([membersRes, clientsRes]) => {
+        const clientByAccount = new Map<string, DesktopClient>()
+        for (const c of clientsRes.clients || []) {
+          const existing = clientByAccount.get(c.account_id)
+          if (!existing || new Date(c.last_seen_at) > new Date(existing.last_seen_at)) {
+            clientByAccount.set(c.account_id, c)
+          }
+        }
+        setMembers(
+          (membersRes.members || []).map(m => ({
+            ...m,
+            desktop_active: clientByAccount.has(m.account_id)
+              && isActive(clientByAccount.get(m.account_id)!.last_seen_at),
+          })),
+        )
+      })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
   }, [org])
@@ -38,7 +60,7 @@ export function TeamPage() {
           <table className="w-full">
             <thead>
               <tr>
-                {['Name', 'Department', 'Role', 'Joined'].map(h => (
+                {['Name', 'Department', 'Role', 'Desktop', 'Joined'].map(h => (
                   <th key={h} className="text-[10px] font-medium text-fg-4 text-left px-5 py-3 border-b border-border uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
@@ -56,6 +78,16 @@ export function TeamPage() {
                     </td>
                     <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{m.lark_department || '--'}</td>
                     <td className="px-5 py-3.5 border-b border-border-light"><RolePill role={m.role} /></td>
+                    <td className="px-5 py-3.5 border-b border-border-light">
+                      <span
+                        className="inline-block w-2 h-2 rounded-full"
+                        style={{
+                          background: m.desktop_active ? 'hsl(145 70% 50%)' : 'hsl(var(--border))',
+                          boxShadow: m.desktop_active ? '0 0 6px hsl(145 70% 50% / 0.5)' : undefined,
+                        }}
+                        title={m.desktop_active ? 'Desktop active' : 'Desktop offline'}
+                      />
+                    </td>
                     <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{formatDate(m.joined_at)}</td>
                   </tr>
                 )

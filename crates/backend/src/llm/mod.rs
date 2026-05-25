@@ -1,4 +1,5 @@
 pub mod alias_review;
+pub mod alias_safety;
 pub mod analyzer;
 pub mod cerebras;
 pub mod classifier;

@@ -164,6 +164,9 @@ pub fn is_common_word(term: &str) -> bool {
     if t.is_empty() {
         return false;
     }
+    if super::alias_safety::is_common_alias_source(&t) {
+        return true;
+    }
     // Common Hindi/Hinglish words that must NEVER be learned as STT
     // replacement sources or vocab terms. These appear in nearly every
     // Hinglish sentence — learning "maine" → "Emiac" is catastrophic.

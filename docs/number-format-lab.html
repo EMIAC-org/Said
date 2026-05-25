@@ -1,0 +1,1125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AirNote Local Formatter Lab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    :root {
+      --font-display: 'Space Grotesk', 'General Sans', 'Satoshi', system-ui, sans-serif;
+      --font-body: 'Plus Jakarta Sans', 'Satoshi', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+      --fs-xs: 0.75rem;
+      --fs-sm: 0.875rem;
+      --fs-base: 1rem;
+      --fs-lg: 1.125rem;
+      --fs-xl: 1.375rem;
+      --fs-2xl: 1.75rem;
+      --lh-tight: 1.15;
+      --lh-normal: 1.55;
+      --fw-medium: 500;
+      --fw-semibold: 600;
+      --fw-bold: 700;
+      --bg-primary: #0a0a0f;
+      --bg-secondary: #11111a;
+      --bg-card: #16161f;
+      --bg-elevated: #1d1d28;
+      --text-primary: #f4f4f8;
+      --text-secondary: #b4b4c2;
+      --text-muted: #6f6f80;
+      --accent-primary: #7c5cff;
+      --accent-secondary: #22d3ee;
+      --accent-success: #34d399;
+      --accent-warning: #fbbf24;
+      --accent-danger: #f87171;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-soft: rgba(255, 255, 255, 0.10);
+      --border-strong: rgba(255, 255, 255, 0.18);
+      --space-xs: 0.25rem;
+      --space-sm: 0.5rem;
+      --space-md: 1rem;
+      --space-lg: 1.5rem;
+      --space-xl: 2.5rem;
+      --radius-sm: 6px;
+      --radius-md: 12px;
+      --radius-lg: 20px;
+      --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
+      --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+      --dur-fast: 150ms;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-size: var(--fs-base);
+      line-height: var(--lh-normal);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    h1, h2, h3 {
+      font-family: var(--font-display);
+      font-weight: var(--fw-semibold);
+      line-height: var(--lh-tight);
+      letter-spacing: 0;
+      margin: 0;
+    }
+
+    button, input, textarea {
+      font: inherit;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-md);
+      padding: 14px 18px;
+      background: rgba(10, 10, 15, 0.92);
+      border-bottom: 1px solid var(--border-soft);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      backdrop-filter: blur(18px);
+    }
+
+    .title-wrap {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      min-width: 250px;
+    }
+
+    h1 {
+      font-size: var(--fs-xl);
+      white-space: nowrap;
+    }
+
+    .status {
+      color: var(--text-muted);
+      font-size: var(--fs-sm);
+      white-space: nowrap;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .backend-input {
+      width: min(360px, 38vw);
+      background: var(--bg-card);
+      border: 1px solid var(--border-soft);
+      color: var(--text-primary);
+      border-radius: var(--radius-sm);
+      padding: 9px 10px;
+      font-family: var(--font-mono);
+      font-size: var(--fs-sm);
+    }
+
+    .btn {
+      border: 1px solid var(--border-soft);
+      background: var(--bg-card);
+      color: var(--text-primary);
+      border-radius: var(--radius-sm);
+      padding: 9px 12px;
+      cursor: pointer;
+      transition: border-color var(--dur-fast) var(--ease-default),
+        background var(--dur-fast) var(--ease-default);
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      border-color: var(--border-strong);
+      background: var(--bg-elevated);
+    }
+
+    .btn.primary {
+      background: var(--accent-primary);
+      border-color: transparent;
+      color: white;
+      font-weight: var(--fw-semibold);
+    }
+
+    .btn.danger {
+      color: var(--accent-danger);
+    }
+
+    .btn.mini {
+      padding: 5px 8px;
+      font-size: var(--fs-xs);
+      border-radius: var(--radius-sm);
+    }
+
+    .main {
+      display: grid;
+      grid-template-columns: minmax(380px, 0.92fr) minmax(480px, 1.08fr);
+      gap: 14px;
+      padding: 14px;
+      height: calc(100vh - 66px);
+    }
+
+    .panel {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      box-shadow: var(--shadow-md);
+    }
+
+    .panel-head {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .panel-head h2 {
+      font-size: var(--fs-lg);
+    }
+
+    .head-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+      min-width: min(560px, 55vw);
+    }
+
+    .muted {
+      color: var(--text-muted);
+      font-size: var(--fs-sm);
+    }
+
+    .editor-shell {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 1fr auto;
+    }
+
+    textarea {
+      width: 100%;
+      height: 100%;
+      min-height: 320px;
+      resize: none;
+      background: transparent;
+      color: var(--text-primary);
+      border: 0;
+      outline: 0;
+      padding: 16px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.6;
+      tab-size: 2;
+    }
+
+    .input-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-top: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.015);
+    }
+
+    .results {
+      overflow: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .case-card {
+      border: 1px solid var(--border-soft);
+      background: var(--bg-card);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+    }
+
+    .case-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      font-size: var(--fs-xs);
+      font-family: var(--font-mono);
+    }
+
+    .case-tools {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      padding: 8px 10px;
+      border-top: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.015);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      border: 1px solid var(--border-soft);
+      padding: 2px 8px;
+      color: var(--text-secondary);
+      font-family: var(--font-body);
+      font-size: var(--fs-xs);
+    }
+
+    .badge.pass { color: var(--accent-success); border-color: rgba(52, 211, 153, 0.35); }
+    .badge.fail { color: var(--accent-danger); border-color: rgba(248, 113, 113, 0.35); }
+    .badge.changed { color: var(--accent-secondary); border-color: rgba(34, 211, 238, 0.35); }
+    .badge.error { color: var(--accent-danger); border-color: rgba(248, 113, 113, 0.35); }
+
+    .case-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--border-subtle);
+    }
+
+    .cell {
+      background: var(--bg-card);
+      padding: 10px;
+      min-width: 0;
+    }
+
+    .label {
+      color: var(--text-muted);
+      font-size: var(--fs-xs);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 6px;
+    }
+
+    .mono {
+      font-family: var(--font-mono);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 13px;
+    }
+
+    .expected-row {
+      border-top: 1px solid var(--border-subtle);
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.015);
+    }
+
+    .search {
+      background: var(--bg-card);
+      border: 1px solid var(--border-soft);
+      color: var(--text-primary);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      width: min(240px, 100%);
+    }
+
+    .toast {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      color: var(--text-primary);
+      box-shadow: var(--shadow-md);
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity var(--dur-fast) var(--ease-default),
+        transform var(--dur-fast) var(--ease-default);
+      pointer-events: none;
+      z-index: 20;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      place-items: center;
+      background: rgba(0, 0, 0, 0.55);
+      z-index: 30;
+    }
+
+    .overlay.show {
+      display: grid;
+    }
+
+    .help-card {
+      width: min(560px, calc(100vw - 32px));
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      padding: 18px;
+      box-shadow: var(--shadow-md);
+    }
+
+    .help-card h2 {
+      margin-bottom: 12px;
+    }
+
+    .help-card dl {
+      display: grid;
+      grid-template-columns: 150px 1fr;
+      gap: 8px 14px;
+      margin: 0;
+    }
+
+    .help-card dt {
+      font-family: var(--font-mono);
+      color: var(--accent-secondary);
+    }
+
+    .help-card dd {
+      margin: 0;
+      color: var(--text-secondary);
+    }
+
+    @media (max-width: 980px) {
+      .topbar {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .toolbar {
+        justify-content: flex-start;
+      }
+      .backend-input {
+        width: 100%;
+      }
+      .main {
+        height: auto;
+        grid-template-columns: 1fr;
+      }
+      .panel {
+        min-height: 460px;
+      }
+      .case-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="title-wrap">
+        <h1>Local Formatter Lab</h1>
+        <span class="status" id="saveStatus">saved</span>
+      </div>
+      <div class="toolbar">
+        <input id="backendUrl" class="backend-input" aria-label="Backend URL" placeholder="http://127.0.0.1:PORT" />
+        <button class="btn" id="useCurrentPortBtn">Use page backend</button>
+        <button class="btn" id="loadSamplesBtn">Load starter cases</button>
+        <button class="btn" id="loadHardEmailBtn">Load hard emails</button>
+        <button class="btn primary" id="runBtn">Run formatter</button>
+        <button class="btn" id="exportBtn">Export</button>
+        <button class="btn" id="helpBtn">?</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Paste Cases</h2>
+          <span class="muted">Use one line per case. Optional: raw =&gt; expected</span>
+        </div>
+        <div class="editor-shell">
+          <textarea id="caseInput" spellcheck="false"></textarea>
+          <div class="input-actions">
+            <span class="muted" id="caseCount">0 cases</span>
+            <div>
+              <button class="btn" id="copySamplesBtn">Copy starter corpus</button>
+              <button class="btn" id="copyHardEmailBtn">Copy hard emails</button>
+              <button class="btn danger" id="resetBtn">Reset</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Output</h2>
+            <div class="muted" id="summary">No run yet</div>
+          </div>
+          <div class="head-actions">
+            <button class="btn mini" id="copyVisibleOutputsBtn">Copy outputs</button>
+            <button class="btn mini" id="copyFailedCasesBtn">Copy fails</button>
+            <button class="btn mini" id="copyResultJsonBtn">Copy JSON</button>
+            <input class="search" id="searchInput" placeholder="Filter results" />
+          </div>
+        </div>
+        <div class="results" id="results"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <div class="overlay" id="helpOverlay" role="dialog" aria-modal="true">
+    <div class="help-card">
+      <h2>Shortcuts</h2>
+      <dl>
+        <dt>Cmd/Ctrl + Enter</dt><dd>Run formatter</dd>
+        <dt>Cmd/Ctrl + S</dt><dd>Export latest results</dd>
+        <dt>Cmd/Ctrl + Z</dt><dd>Undo case text</dd>
+        <dt>Cmd/Ctrl + Shift + Z</dt><dd>Redo case text</dd>
+        <dt>?</dt><dd>Toggle this overlay</dd>
+        <dt>Esc</dt><dd>Close overlay</dd>
+      </dl>
+    </div>
+  </div>
+
+  <script>
+    const STORAGE_KEY = "airnote-number-format-lab-v1";
+    const starterCases = [
+      "pachas percent growth hai => 50% growth hai",
+      "pachaas percent growth hai => 50% growth hai",
+      "bees percent off hai => 20% off hai",
+      "twenty percent off hai => 20% off hai",
+      "ninety nine percent uptime hai => 99% uptime hai",
+      "ninty nine percent uptime hai => 99% uptime hai",
+      "one hundred percent complete hai => 100% complete hai",
+      "one hundred and ten percent effort hai => 110% effort hai",
+      "zero point five percent churn hai => 0.5% churn hai",
+      "one point five percent fee hai => 1.5% fee hai",
+      "20 percent off ho jayega => 20% off ho jayega",
+      "one million dollars ka deal hai => $1000000 ka deal hai",
+      "1 million dollars ka deal hai => $1000000 ka deal hai",
+      "two billion dollars valuation hai => $2000000000 valuation hai",
+      "2 billion dollars valuation hai => $2000000000 valuation hai",
+      "one point five million dollars raise hai => $1500000 raise hai",
+      "one point two billion dollars valuation hai => $1200000000 valuation hai",
+      "zero point five million dollars budget hai => $500000 budget hai",
+      "two point five lakh rupees pending hain => ₹250000 pending hain",
+      "one point five crore rupees ka revenue hai => ₹15000000 ka revenue hai",
+      "five hundred dollars ka invoice hai => $500 ka invoice hai",
+      "five hundred rupees ka bill hai => ₹500 ka bill hai",
+      "twenty dollar ka plan hai => $20 ka plan hai",
+      "thirty one thousand dollars pending hai => $31000 pending hai",
+      "one million and five hundred thousand dollars pending hai => $1500000 pending hai",
+      "one hundred and twenty eight dollars charge hua => $128 charge hua",
+      "thirty one thousand users ka target hai => 31000 users ka target hai",
+      "one thousand two hundred thirty four users aaye => 1234 users aaye",
+      "one hundred and twenty eight users active hain => 128 users active hain",
+      "one lakh pachaas hazaar users ka target hai => 150000 users ka target hai",
+      "ek lakh pachaas hazaar users ka target hai => 150000 users ka target hai",
+      "Aaj maine char hazar crore ki property di hai. => Aaj maine 4000 crore ki property di hai.",
+      "Aaj maine chaar hazaar crore ki property di hai. => Aaj maine 4000 crore ki property di hai.",
+      "four thousand crore ki property hai => 4000 crore ki property hai",
+      "one lakh crore ka market size hai => 1 lakh crore ka market size hai",
+      "one crore pachaas lakh ka revenue hai => 1.5 crore ka revenue hai",
+      "forty k users aaye => 40k users aaye",
+      "40 k users aaye => 40k users aaye",
+      "two million users onboard ho gaye => 2000000 users onboard ho gaye",
+      "one billion requests process hue => 1000000000 requests process hue",
+      "2 million requests process hue => 2000000 requests process hue",
+      "thrite one thousand users ka target hai => 31000 users ka target hai",
+      "fourty two users active hain => 42 users active hain",
+      "one twenty eight GB RAM wala laptop hai => 128 GB RAM wala laptop hai",
+      "one hundred and twenty eight GB storage hai => 128 GB storage hai",
+      "five hundred twelve GB SSD hai => 512 GB SSD hai",
+      "two TB backup chahiye => 2 TB backup chahiye",
+      "sixteen GB RAM hai => 16 GB RAM hai",
+      "1 TB drive hai => 1 TB drive hai",
+      "baarah mahine ka contract hai => 12 mahine ka contract hai",
+      "twenty four months ka plan hai => 24 months ka plan hai",
+      "one hundred and twenty days ka window hai => 120 days ka window hai",
+      "teen mahine ka runway hai => 3 mahine ka runway hai",
+      "do this for me => do this for me",
+      "one thing batao => one thing batao",
+      "ek baar check karna => ek baar check karna",
+      "char log meeting mein aaye => char log meeting mein aaye",
+      "teen baar try karna => teen baar try karna",
+      "do baar mat bolna => do baar mat bolna",
+      "one on one meeting hai => one on one meeting hai",
+      "one to one sync hai => one to one sync hai",
+      "one and one meeting hai => one and one meeting hai",
+      "version one point release ready hai => version one point release ready hai",
+      "point of contact bhejo => point of contact bhejo",
+      "thirty and five weird phrase hai => thirty and five weird phrase hai",
+      "one hundred and something users honge => one hundred and something users honge",
+      "do options hain => do options hain",
+      "do log aaye => do log aaye",
+      "teen log aaye => teen log aaye",
+      "paanch log aaye => paanch log aaye",
+      "five people joined => five people joined",
+      "one file kholo => one file kholo",
+      "two files open karo => two files open karo",
+      "macobs one point release hai => macobs one point release hai",
+      "Anish Suman 2305 at the rate gmail dot com => anishsuman2305@gmail.com",
+      "anish suman two three zero five at the rate gmail dot com => anishsuman2305@gmail.com",
+      "Mail anish at gmail dot com. => Mail anish@gmail.com.",
+      "V abhi dot verma two six seven eight at the rate Gmail dot com. => vabhi.verma2678@gmail.com.",
+      "rahul dot kumar at the rate yahoo dot com => rahul.kumar@yahoo.com",
+      "support at emiac dot app => support@emiac.app",
+      "team at airnote dot app ko mail bhejo => team@airnote.app ko mail bhejo",
+      "Open localhost colon 3000 slash api slash health. => Open localhost:3000/api/health.",
+      "Open localhost colon three thousand slash api slash health. => Open localhost:3000/api/health.",
+      "Check emiac dot app slash login slash callback. => Check emiac.app/login/callback.",
+      "Run dot slash script slash dev dot sh please. => Run ./script/dev.sh please.",
+      "Edit dot slash config slash said dot json file. => Edit ./config/said.json file.",
+      "Set DEEPGRAM underscore API underscore KEY equals abc123. => Set DEEPGRAM_API_KEY=abc123.",
+      "Check the slash api slash health endpoint. => Check the /api/health endpoint.",
+      "Mail anish suman two three zero five at the rate gmail dot com aur twenty percent discount bhejo. => Mail anishsuman2305@gmail.com aur 20% discount bhejo.",
+      "Invoice five hundred dollars ka hai aur mail finance at emiac dot app ko bhejo. => Invoice $500 ka hai aur mail finance@emiac.app ko bhejo.",
+      "Growing at the rate of 10% every year. => Growing at the rate of 10% every year.",
+      "Add a slash at the end of the sentence. => Add a slash at the end of the sentence.",
+      "She used an underscore in her name. => She used an underscore in her name."
+    ];
+
+    const hardEmailCases = [
+      "anish suman two three zero five at rate gmail dot com => anishsuman2305@gmail.com",
+      "anish suman two three zero five add the rate gmail dot com => anishsuman2305@gmail.com",
+      "anish suman two three zero five at the red gmail dot com => anishsuman2305@gmail.com",
+      "anish suman two three zero five attherate gmail dot com => anishsuman2305@gmail.com",
+      "anish suman two three zero five at the rate gee mail dot com => anishsuman2305@gmail.com",
+      "anish suman two three zero five at the rate g mail dot com => anishsuman2305@gmail.com",
+      "anish suman two three zero five at the rate gmail dark com => anishsuman2305@gmail.com",
+      "anish suman two three zero five at the rate gmail dock com => anishsuman2305@gmail.com",
+      "anish dot suman two three zero five at the rate gmail dot com => anish.suman2305@gmail.com",
+      "anish underscore suman two three zero five at the rate gmail dot com => anish_suman2305@gmail.com",
+      "anish dash suman two three zero five at the rate gmail dot com => anish-suman2305@gmail.com",
+      "anish hyphen suman two three zero five at the rate gmail dot com => anish-suman2305@gmail.com",
+      "a n i s h two three zero five at the rate gmail dot com => anish2305@gmail.com",
+      "a n i s h dot s u m a n at the rate gmail dot com => anish.suman@gmail.com",
+      "v abhi dot verma two six seven eight at rate gmail dot com => vabhi.verma2678@gmail.com",
+      "v abhi dot verma two six seven eight add the rate gmail dot com => vabhi.verma2678@gmail.com",
+      "v abhi dot verma two six seven eight at the red gmail dot com => vabhi.verma2678@gmail.com",
+      "v abhi dot verma two six seven eight at the rate gee mail dot com => vabhi.verma2678@gmail.com",
+      "v abhi dot verma two six seven eight at the rate g mail dot com => vabhi.verma2678@gmail.com",
+      "v abhi dot verma two six seven eight at the rate gmail dot in => vabhi.verma2678@gmail.in",
+      "rahul dot kumar at rate yahoo dot com => rahul.kumar@yahoo.com",
+      "rahul dot kumar add the rate yahoo dot com => rahul.kumar@yahoo.com",
+      "rahul dot kumar at the red yahoo dot com => rahul.kumar@yahoo.com",
+      "rahul dot kumar at the rate ya hoo dot com => rahul.kumar@yahoo.com",
+      "rahul dot kumar at the rate yahoo dark com => rahul.kumar@yahoo.com",
+      "support at rate emiac dot app => support@emiac.app",
+      "support add the rate emiac dot app => support@emiac.app",
+      "support at the red emiac dot app => support@emiac.app",
+      "support at the rate e m i a c dot app => support@emiac.app",
+      "team at the rate air note dot app => team@airnote.app",
+      "team at the rate airnote dock app => team@airnote.app",
+      "finance plus invoices at the rate emiac dot app => finance+invoices@emiac.app",
+      "billing plus two thousand twenty six at the rate airnote dot app => billing+2026@airnote.app",
+      "dev dash ops at the rate emiac dot app => dev-ops@emiac.app",
+      "dev underscore ops at the rate emiac dot app => dev_ops@emiac.app",
+      "first dot last plus invoices at the rate gmail dot com => first.last+invoices@gmail.com",
+      "hello anish suman two three zero five at the rate gmail dot com ko invoice bhejo => hello anishsuman2305@gmail.com ko invoice bhejo",
+      "mail v abhi dot verma two six seven eight at the rate gmail dot com aur twenty percent discount bhejo => mail vabhi.verma2678@gmail.com aur 20% discount bhejo",
+      "send to rahul dot kumar at the rate yahoo dot com and cc support at the rate emiac dot app => send to rahul.kumar@yahoo.com and cc support@emiac.app",
+      "email team at the rate airnote dot app slash nahi bas email hai => email team@airnote.app slash nahi bas email hai",
+      "Anish Suman 2305 gmail dot com => Anish Suman 2305 gmail dot com",
+      "Meet me at home tomorrow dot com nahi bol raha => Meet me at home tomorrow dot com nahi bol raha",
+      "Growing at the rate of ten percent every month => Growing at the rate of 10% every month",
+      "Price at the rate of five dollars mat convert email mein => Price at the rate of $5 mat convert email mein",
+      "add the rate card in proposal => add the rate card in proposal",
+      "gmail dot com website kholo email nahi => gmail.com website kholo email nahi",
+      "anish at gmail without dot com => anish at gmail without dot com",
+      "anish at the rate gmail without tld => anish at the rate gmail without tld",
+      "support at the rate emiac dot app dot => support@emiac.app.",
+      "mail anish dot at the rate gmail dot com => mail anish@gmail.com",
+      "mail dot anish at the rate gmail dot com => mail anish@gmail.com",
+      "a b c one two three at the rate outlook dot com => abc123@outlook.com",
+      "abc one two three at the rate out look dot com => abc123@outlook.com",
+      "abc one two three at the rate hot mail dot com => abc123@hotmail.com",
+      "abc one two three at the rate proton mail dot com => abc123@protonmail.com",
+      "a b h i at the rate i cloud dot com => abhi@icloud.com",
+      "abhi at the rate me dot com => abhi@me.com",
+      "long name dot surname plus dev dash test at the rate company dot co dot in => longname.surname+dev-test@company.co.in",
+      "john dot doe at the rate example dot co dot uk => john.doe@example.co.uk",
+      "sales at the rate company dot io => sales@company.io",
+      "founder at the rate startup dot ai => founder@startup.ai"
+    ];
+
+    const els = {
+      backendUrl: document.getElementById("backendUrl"),
+      input: document.getElementById("caseInput"),
+      results: document.getElementById("results"),
+      summary: document.getElementById("summary"),
+      caseCount: document.getElementById("caseCount"),
+      saveStatus: document.getElementById("saveStatus"),
+      search: document.getElementById("searchInput"),
+      toast: document.getElementById("toast"),
+      helpOverlay: document.getElementById("helpOverlay")
+    };
+
+    let state = {
+      backendUrl: defaultBackendUrl(),
+      text: starterCases.join("\n"),
+      lastResult: null
+    };
+    let undoStack = [];
+    let redoStack = [];
+    let saveTimer = null;
+    let toastTimer = null;
+
+    function pageBackendUrl() {
+      if (location.protocol === "http:" || location.protocol === "https:") {
+        return location.origin;
+      }
+      return "";
+    }
+
+    function defaultBackendUrl() {
+      const pageUrl = pageBackendUrl();
+      if (pageUrl) return pageUrl;
+      const saved = localStorage.getItem(STORAGE_KEY + ":backend");
+      if (saved && !saved.endsWith(":PORT")) return saved;
+      return "http://127.0.0.1:64994";
+    }
+
+    function loadState() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+        if (saved && typeof saved === "object") {
+          state = { ...state, ...saved };
+        }
+      } catch (_) {}
+      const pageUrl = pageBackendUrl();
+      if (pageUrl) {
+        state.backendUrl = pageUrl;
+      }
+      els.backendUrl.value = state.backendUrl;
+      els.input.value = state.text;
+      updateCount();
+      renderResults();
+    }
+
+    function saveState() {
+      state.backendUrl = els.backendUrl.value.trim();
+      state.text = els.input.value;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(STORAGE_KEY + ":backend", state.backendUrl);
+      els.saveStatus.textContent = "saved";
+    }
+
+    function scheduleSave() {
+      els.saveStatus.textContent = "saving...";
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(saveState, 250);
+    }
+
+    function snapshot() {
+      undoStack.push(els.input.value);
+      if (undoStack.length > 50) undoStack.shift();
+      redoStack = [];
+    }
+
+    function parseCases(text) {
+      return text
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map((line, idx) => {
+          const arrow = line.indexOf("=>");
+          if (arrow >= 0) {
+            return {
+              id: `case-${idx + 1}`,
+              raw: line.slice(0, arrow).trim(),
+              expected: line.slice(arrow + 2).trim() || null
+            };
+          }
+          return { id: `case-${idx + 1}`, raw: line, expected: null };
+        });
+    }
+
+    function endpoint() {
+      const base = els.backendUrl.value.trim();
+      if (!base || base.endsWith(":PORT")) {
+        return "/v1/lab/formatting";
+      }
+      return base.replace(/\/+$/, "") + "/v1/lab/formatting";
+    }
+
+    async function runFormatter() {
+      const cases = parseCases(els.input.value);
+      updateCount();
+      if (!cases.length) {
+        showToast("No cases to run");
+        return;
+      }
+      document.getElementById("runBtn").disabled = true;
+      els.summary.textContent = "Running...";
+      try {
+        const res = await fetch(endpoint(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cases })
+        });
+        const rawBody = await res.text();
+        let payload = null;
+        if (rawBody.trim()) {
+          try {
+            payload = JSON.parse(rawBody);
+          } catch (_) {
+            throw new Error(`Backend returned non-JSON HTTP ${res.status}: ${rawBody.slice(0, 180)}`);
+          }
+        }
+        if (!res.ok) {
+          const detail = payload && payload.error ? payload.error : explainHttpFailure(res.status);
+          throw new Error(detail);
+        }
+        if (!payload) throw new Error("Backend returned an empty response");
+        state.lastResult = payload;
+        saveState();
+        renderResults();
+        showToast(`Ran ${payload.case_count} cases`);
+      } catch (err) {
+        state.lastResult = backendErrorResult(cases, err);
+        saveState();
+        renderResults();
+        showToast("Backend run failed");
+      } finally {
+        document.getElementById("runBtn").disabled = false;
+      }
+    }
+
+    function explainHttpFailure(status) {
+      if (status === 401) {
+        return "HTTP 401: this running backend does not expose the public formatter lab route. Restart ./dev.sh after the latest build.";
+      }
+      if (status === 404) {
+        return "HTTP 404: formatter lab route is missing in the running backend. Restart ./dev.sh after the latest build.";
+      }
+      return `HTTP ${status}`;
+    }
+
+    function backendErrorResult(cases, error) {
+      return {
+        case_count: cases.length,
+        changed_count: 0,
+        pass_count: 0,
+        fail_count: 0,
+        backend_error: error.message || String(error),
+        cases: cases.map((c, idx) => ({
+          id: c.id || `case-${idx + 1}`,
+          raw: c.raw,
+          formatted: "",
+          expected: c.expected,
+          note: `Backend error. Nothing was formatted: ${error.message || String(error)}`,
+          changed: false,
+          passed: null,
+          error: true
+        }))
+      };
+    }
+
+    function renderResults() {
+      const result = state.lastResult;
+      const filter = els.search.value.trim().toLowerCase();
+      els.results.innerHTML = "";
+      if (!result) {
+        els.summary.textContent = "No run yet";
+        els.results.innerHTML = `<div class="case-card"><div class="cell mono">Paste cases on the left, then run the formatter.</div></div>`;
+        return;
+      }
+      const cases = result.cases.filter(c => {
+        if (!filter) return true;
+        return [c.raw, c.formatted, c.expected || "", c.note || ""]
+          .join(" ")
+          .toLowerCase()
+          .includes(filter);
+      });
+      const mode = result.backend_error ? "backend error · " : "rust backend · ";
+      els.summary.textContent = `${mode}${cases.length}/${result.case_count} shown · ${result.changed_count} changed · ${result.pass_count} pass · ${result.fail_count} fail`;
+      for (const c of cases) {
+        const card = document.createElement("article");
+        card.className = "case-card";
+        const passed = c.passed === null || c.passed === undefined ? "" :
+          `<span class="badge ${c.passed ? "pass" : "fail"}">${c.passed ? "pass" : "fail"}</span>`;
+        card.innerHTML = `
+          <div class="case-meta">
+            <span>${escapeHtml(c.id)}</span>
+            <span>
+              ${c.error ? `<span class="badge error">backend error</span>` : ""}
+              ${c.changed ? `<span class="badge changed">changed</span>` : `<span class="badge">same</span>`}
+              ${passed}
+            </span>
+          </div>
+          <div class="case-grid">
+            <div class="cell">
+              <div class="label">Raw</div>
+              <div class="mono">${escapeHtml(c.raw)}</div>
+            </div>
+            <div class="cell">
+              <div class="label">Formatter Output</div>
+              <div class="mono">${escapeHtml(c.formatted || (c.error ? "No backend result" : ""))}</div>
+            </div>
+          </div>
+          ${c.expected ? `<div class="expected-row"><div class="label">Expected</div><div class="mono">${escapeHtml(c.expected)}</div></div>` : ""}
+          ${c.note ? `<div class="expected-row"><div class="label">Note</div><div class="mono">${escapeHtml(c.note)}</div></div>` : ""}
+          <div class="case-tools">
+            <button class="btn mini" data-copy-kind="raw" data-case-id="${escapeHtml(c.id)}">Copy raw</button>
+            <button class="btn mini" data-copy-kind="output" data-case-id="${escapeHtml(c.id)}">Copy output</button>
+            <button class="btn mini" data-copy-kind="expected" data-case-id="${escapeHtml(c.id)}">Copy expected</button>
+            <button class="btn mini" data-copy-kind="line" data-case-id="${escapeHtml(c.id)}">Copy raw =&gt; output</button>
+            <button class="btn mini" data-copy-kind="block" data-case-id="${escapeHtml(c.id)}">Copy block</button>
+          </div>
+        `;
+        els.results.appendChild(card);
+      }
+    }
+
+    function updateCount() {
+      const count = parseCases(els.input.value).length;
+      els.caseCount.textContent = `${count} case${count === 1 ? "" : "s"}`;
+    }
+
+    function exportResults() {
+      const data = {
+        exported_at: new Date().toISOString(),
+        backend_url: els.backendUrl.value.trim(),
+        cases: parseCases(els.input.value),
+        result: state.lastResult
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `airnote-number-format-lab-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast("Exported JSON");
+    }
+
+    function filteredResultCases() {
+      const result = state.lastResult;
+      if (!result) return [];
+      const filter = els.search.value.trim().toLowerCase();
+      return result.cases.filter(c => {
+        if (!filter) return true;
+        return [c.raw, c.formatted, c.expected || "", c.note || ""]
+          .join(" ")
+          .toLowerCase()
+          .includes(filter);
+      });
+    }
+
+    function findResultCase(id) {
+      return state.lastResult?.cases?.find(c => c.id === id) || null;
+    }
+
+    function caseLine(c, useExpected = false) {
+      const right = useExpected && c.expected ? c.expected : c.formatted;
+      return `${c.raw} => ${right}`;
+    }
+
+    function caseBlock(c) {
+      return [
+        c.id,
+        `Raw: ${c.raw}`,
+        `Output: ${c.formatted}`,
+        c.expected ? `Expected: ${c.expected}` : null,
+        c.passed === undefined || c.passed === null ? null : `Status: ${c.passed ? "pass" : "fail"}`,
+        c.note ? `Note: ${c.note}` : null
+      ].filter(Boolean).join("\n");
+    }
+
+    async function copyText(text, label) {
+      if (!text) {
+        showToast("Nothing to copy");
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (_) {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      showToast(`${label} copied`);
+    }
+
+    function copyCasePart(kind, id) {
+      const c = findResultCase(id);
+      if (!c) {
+        showToast("Case not found");
+        return;
+      }
+      if (kind === "raw") return copyText(c.raw, "Raw");
+      if (kind === "output") return copyText(c.formatted, "Output");
+      if (kind === "expected") return copyText(c.expected || c.formatted, "Expected");
+      if (kind === "line") return copyText(caseLine(c, false), "Case line");
+      if (kind === "block") return copyText(caseBlock(c), "Case block");
+    }
+
+    function copyVisibleOutputs() {
+      const lines = filteredResultCases().map(c => c.formatted);
+      copyText(lines.join("\n"), "Visible outputs");
+    }
+
+    function copyFailedCases() {
+      const failed = (state.lastResult?.cases || [])
+        .filter(c => c.passed === false)
+        .map(c => caseLine(c, true));
+      copyText(failed.join("\n"), "Failed cases");
+    }
+
+    function copyResultJson() {
+      copyText(JSON.stringify(state.lastResult || {}, null, 2), "Result JSON");
+    }
+
+    async function copyStarterCorpus() {
+      await copyText(starterCases.join("\n"), "Starter corpus");
+    }
+
+    async function copyHardEmailCorpus() {
+      await copyText(hardEmailCases.join("\n"), "Hard email corpus");
+    }
+
+    function showToast(message) {
+      els.toast.textContent = message;
+      els.toast.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => els.toast.classList.remove("show"), 1800);
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    document.getElementById("runBtn").addEventListener("click", runFormatter);
+    document.getElementById("exportBtn").addEventListener("click", exportResults);
+    document.getElementById("copyVisibleOutputsBtn").addEventListener("click", copyVisibleOutputs);
+    document.getElementById("copyFailedCasesBtn").addEventListener("click", copyFailedCases);
+    document.getElementById("copyResultJsonBtn").addEventListener("click", copyResultJson);
+    document.getElementById("useCurrentPortBtn").addEventListener("click", () => {
+      const pageUrl = pageBackendUrl();
+      if (!pageUrl) {
+        showToast("Open this page from the backend URL to auto-use its port");
+        return;
+      }
+      els.backendUrl.value = pageUrl;
+      saveState();
+      showToast("Using this page backend");
+    });
+    document.getElementById("loadSamplesBtn").addEventListener("click", () => {
+      snapshot();
+      els.input.value = starterCases.join("\n");
+      updateCount();
+      scheduleSave();
+      showToast("Starter cases loaded");
+    });
+    document.getElementById("loadHardEmailBtn").addEventListener("click", () => {
+      snapshot();
+      els.input.value = hardEmailCases.join("\n");
+      updateCount();
+      scheduleSave();
+      showToast("Hard email cases loaded");
+    });
+    document.getElementById("copySamplesBtn").addEventListener("click", copyStarterCorpus);
+    document.getElementById("copyHardEmailBtn").addEventListener("click", copyHardEmailCorpus);
+    document.getElementById("resetBtn").addEventListener("click", () => {
+      if (!confirm("Reset this lab state?")) return;
+      localStorage.removeItem(STORAGE_KEY);
+      state.lastResult = null;
+      els.input.value = starterCases.join("\n");
+      updateCount();
+      saveState();
+      renderResults();
+      showToast("Reset");
+    });
+    document.getElementById("helpBtn").addEventListener("click", () => {
+      els.helpOverlay.classList.toggle("show");
+    });
+    els.helpOverlay.addEventListener("click", (event) => {
+      if (event.target === els.helpOverlay) els.helpOverlay.classList.remove("show");
+    });
+    els.input.addEventListener("input", () => {
+      updateCount();
+      scheduleSave();
+    });
+    els.input.addEventListener("beforeinput", () => {
+      if (undoStack[undoStack.length - 1] !== els.input.value) snapshot();
+    });
+    els.backendUrl.addEventListener("input", scheduleSave);
+    els.search.addEventListener("input", renderResults);
+    els.results.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-copy-kind]");
+      if (!button) return;
+      copyCasePart(button.dataset.copyKind, button.dataset.caseId);
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const mod = event.metaKey || event.ctrlKey;
+      if (event.key === "?" && !mod) {
+        event.preventDefault();
+        els.helpOverlay.classList.toggle("show");
+      }
+      if (event.key === "Escape") {
+        els.helpOverlay.classList.remove("show");
+      }
+      if (mod && event.key === "Enter") {
+        event.preventDefault();
+        runFormatter();
+      }
+      if (mod && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        exportResults();
+      }
+      if (mod && event.key.toLowerCase() === "z" && !event.shiftKey) {
+        if (undoStack.length) {
+          event.preventDefault();
+          redoStack.push(els.input.value);
+          els.input.value = undoStack.pop();
+          updateCount();
+          scheduleSave();
+        }
+      }
+      if (mod && event.shiftKey && event.key.toLowerCase() === "z") {
+        if (redoStack.length) {
+          event.preventDefault();
+          undoStack.push(els.input.value);
+          els.input.value = redoStack.pop();
+          updateCount();
+          scheduleSave();
+        }
+      }
+    });
+
+    loadState();
+  </script>
+</body>
+</html>

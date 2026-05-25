@@ -17,11 +17,12 @@ use tracing::{info, warn};
 use crate::{
     AppState,
     llm::{
+        alias_safety::{self, AliasSafetyVerdict},
         analyzer::{self, AnalyzedChange, ChangeReason},
         edit_diff, promotion_gate,
     },
     store::{
-        corrections, history, pending_promotions, prefs::get_prefs, stt_replacements,
+        corrections, email_memory, history, pending_promotions, prefs::get_prefs, stt_replacements,
         tier2_edit_policy, vectors, vocab_embeddings, vocab_fts, vocabulary,
     },
 };
@@ -82,6 +83,8 @@ pub struct ClassifyResponse {
     pub promoted_count: usize,
     pub is_repeat: bool,
     pub promoted_terms: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub learned_emails: Vec<String>,
     pub queued_terms: Vec<QueuedTerm>,
     /// Pass-through from the analyzer — each change the LLM identified.
     pub changes: Vec<AnalyzedChange>,
@@ -163,6 +166,12 @@ pub async fn classify(
         .as_ref()
         .map(|p| p.output_language.clone())
         .unwrap_or_else(|| "hinglish".into());
+    let groq_key = prefs
+        .as_ref()
+        .and_then(|p| p.groq_api_key.clone())
+        .or_else(|| std::env::var("GROQ_API_KEY").ok())
+        .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
+        .unwrap_or_default();
 
     // ── Capture-error gate ───────────────────────────────────────────────────
     // Reject obviously bad signals before spending LLM budget.
@@ -257,6 +266,19 @@ pub async fn classify(
             body.recording_id
         );
     }
+    let learned_emails = email_memory::upsert_many_from_text(
+        &state.pool,
+        &state.default_user_id,
+        &body.user_kept,
+        Some(&body.user_kept),
+    );
+    if !learned_emails.is_empty() {
+        info!(
+            "[classify] learned {} local email memory item(s) for {}",
+            learned_emails.len(),
+            body.recording_id,
+        );
+    }
 
     // ── Step 3: Revert wrong aliases (unconditional on every edit) ────────────
     // Detects vocab terms in the polish output that the user replaced with a
@@ -283,6 +305,25 @@ pub async fn classify(
         &body.recording_id,
         &body.user_kept,
     );
+    // Surface cluster-fuzzy / ONNX reverts as negative_terms so the desktop
+    // shows the "wrong correction fixed" pill and retrain fires.
+    for (replaced_with, term) in &policy_feedback.penalized_pairs {
+        if negative_terms
+            .iter()
+            .any(|n| n.term == *term && n.wrong_replacement == *replaced_with)
+        {
+            continue;
+        }
+        info!(
+            "[classify] policy-revert: {:?} → {:?} blocked from future corrections",
+            replaced_with, term,
+        );
+        negative_terms.push(NegativeTerm {
+            term: term.clone(),
+            wrong_replacement: replaced_with.clone(),
+            correction_count: 1,
+        });
+    }
     let mut policy_touched = policy_feedback.marked_kept > 0 || policy_feedback.penalized > 0;
     if policy_touched {
         info!(
@@ -389,7 +430,7 @@ pub async fn classify(
 
     let mut promoted_count = 0_usize;
     let mut promoted_terms: Vec<String> = Vec::new();
-    let mut queued_terms: Vec<QueuedTerm> = Vec::new();
+    let queued_terms: Vec<QueuedTerm> = Vec::new();
     let mut review_candidates: Vec<ReviewCandidate> = Vec::new();
     let mut has_repeat = false;
     let mut learned = false;
@@ -536,31 +577,42 @@ pub async fn classify(
                     );
                     continue;
                 }
+                if !original.trim().is_empty() {
+                    let safety = alias_safety::judge_alias_source(
+                        &state.http_client,
+                        &state.pool,
+                        &state.default_user_id,
+                        &groq_key,
+                        original,
+                        canonical_for_policy,
+                        Some(&body.user_kept),
+                    )
+                    .await;
+                    if !safety.allows_learning() {
+                        info!(
+                            "[classify] STT_ERROR alias blocked by safety gate: {:?} -> {:?} verdict={} reason={}",
+                            original,
+                            canonical_for_policy,
+                            safety.verdict.as_str(),
+                            safety.reason
+                        );
+                        if safety.verdict != AliasSafetyVerdict::CommonBlock {
+                            review_candidates.push(ReviewCandidate {
+                                original: original.to_string(),
+                                corrected: corrected.to_string(),
+                                term_type: term_type.to_string(),
+                                learnable: true,
+                                tag: "alias_safety".to_string(),
+                            });
+                        }
+                        continue;
+                    }
+                }
                 if let Some(reason) =
                     unsafe_stt_source_reason(&state.pool, &state.default_user_id, original)
                 {
                     info!("[classify] STT_ERROR skipped — unsafe source {original:?}: {reason}");
                     continue;
-                }
-
-                // Record edit-policy rule (bookkeeping, does not count as "learned")
-                if let Some(pair) = deterministic_pair.as_ref() {
-                    if tier2_edit_policy::record_explicit_edit(
-                        &state.pool,
-                        &state.default_user_id,
-                        &pair.variant_form,
-                        canonical_for_policy,
-                        pair.edit_type.as_str(),
-                        &pair.left_context,
-                        &pair.right_context,
-                        Some(&body.recording_id),
-                    ) {
-                        policy_touched = true;
-                        info!(
-                            "[classify] recorded tier2 edit-policy {} rule: {:?} -> {:?}",
-                            pair.edit_type, pair.variant_form, canonical_for_policy
-                        );
-                    }
                 }
 
                 // ── Route decision: auto-learn vs review card ───────────
@@ -646,6 +698,28 @@ pub async fn classify(
                 } else {
                     (corrected.to_string(), 1.0)
                 };
+
+                // Record edit-policy rule only after this change is accepted
+                // for learning. Review-bound/blocked candidates must not
+                // create active or candidate rewrite rules.
+                if let Some(pair) = deterministic_pair.as_ref() {
+                    if tier2_edit_policy::record_explicit_edit(
+                        &state.pool,
+                        &state.default_user_id,
+                        &pair.variant_form,
+                        &canonical_term,
+                        pair.edit_type.as_str(),
+                        &pair.left_context,
+                        &pair.right_context,
+                        Some(&body.recording_id),
+                    ) {
+                        policy_touched = true;
+                        info!(
+                            "[classify] recorded tier2 edit-policy {} rule: {:?} -> {:?}",
+                            pair.edit_type, pair.variant_form, canonical_term
+                        );
+                    }
+                }
 
                 let ctx = change
                     .context_example
@@ -756,7 +830,15 @@ pub async fn classify(
             ChangeReason::PolishError => {
                 // Store as a correction rule: wrong → right
                 let wrong = original.to_ascii_lowercase();
-                if !wrong.is_empty() && wrong != corrected.to_ascii_lowercase() {
+                if !wrong.is_empty()
+                    && wrong != corrected.to_ascii_lowercase()
+                    && !unsafe_prompt_correction_source(
+                        &state.pool,
+                        &state.default_user_id,
+                        &wrong,
+                        corrected,
+                    )
+                {
                     corrections::upsert(
                         &state.pool,
                         &state.default_user_id,
@@ -772,7 +854,15 @@ pub async fn classify(
                 // Store as a correction rule so the polish prompt picks it up.
                 // e.g. "8am" → "8:00 AM"
                 let wrong = original.to_ascii_lowercase();
-                if !wrong.is_empty() && wrong != corrected.to_ascii_lowercase() {
+                if !wrong.is_empty()
+                    && wrong != corrected.to_ascii_lowercase()
+                    && !unsafe_prompt_correction_source(
+                        &state.pool,
+                        &state.default_user_id,
+                        &wrong,
+                        corrected,
+                    )
+                {
                     corrections::upsert(
                         &state.pool,
                         &state.default_user_id,
@@ -806,7 +896,7 @@ pub async fn classify(
     let has_review = !review_candidates.is_empty();
 
     // Invalidate after any corrections, stt_replacements, or Tier 2 policy writes.
-    if learned || policy_touched || has_negatives {
+    if learned || policy_touched || has_negatives || !learned_emails.is_empty() {
         crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
     }
 
@@ -816,7 +906,10 @@ pub async fn classify(
         schedule_onnx_retrain(state.clone());
     }
 
-    let notify = learned && (promoted_count > 0 || policy_touched);
+    if !learned_emails.is_empty() {
+        learned = true;
+    }
+    let notify = (learned && (promoted_count > 0 || policy_touched)) || !learned_emails.is_empty();
 
     info!(
         "[classify] {} overall={} changes={} promoted={} notify={} learned={} negatives={} review={}",
@@ -844,6 +937,7 @@ pub async fn classify(
             promoted_count,
             is_repeat: has_repeat,
             promoted_terms,
+            learned_emails,
             queued_terms,
             changes: analyzer_output.changes,
             ambiguous_terms,
@@ -1883,11 +1977,27 @@ fn unsafe_stt_source_reason(
     if source.is_empty() {
         return None;
     }
-    if promotion_gate::is_common_word(source) {
+    if alias_safety::is_common_alias_source(source) || promotion_gate::is_common_word(source) {
         return Some("source is a common word".to_string());
     }
     existing_protected_term_in_text(pool, user_id, source)
         .map(|term| format!("source already contains protected term {term:?}"))
+}
+
+fn unsafe_prompt_correction_source(
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    source: &str,
+    corrected: &str,
+) -> bool {
+    if !alias_safety::is_common_alias_source(source) && !promotion_gate::is_common_word(source) {
+        return false;
+    }
+    protected_vocab_lookup(pool, user_id, corrected).is_some()
+        || matches!(
+            vocabulary::classify_term_type(corrected),
+            "brand" | "acronym" | "proper_noun" | "code_identifier"
+        )
 }
 
 fn existing_protected_term_in_text(
@@ -1939,6 +2049,7 @@ fn empty_response(class: &str, reason: &str) -> ClassifyResponse {
         promoted_count: 0,
         is_repeat: false,
         promoted_terms: vec![],
+        learned_emails: vec![],
         queued_terms: vec![],
         changes: vec![],
         ambiguous_terms: vec![],

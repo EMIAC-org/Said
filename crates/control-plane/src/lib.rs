@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use axum::{
     Router,
-    extract::{Path, State},
+    extract::Path,
     http::{Method, StatusCode, Uri, header},
     response::{Html, IntoResponse, Redirect},
     routing::{delete, get, post},
@@ -76,6 +76,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/auth/lark/refresh", post(routes::lark_auth::refresh))
         .route("/v1/license/check", get(routes::license::check))
         .route("/v1/metering/report", post(routes::metering::report))
+        // Enterprise — Desktop clients
+        .route("/v1/clients/register", post(routes::clients::register))
+        .route("/v1/clients/heartbeat", post(routes::clients::heartbeat))
+        .route(
+            "/v1/orgs/:org_id/clients",
+            get(routes::clients::list_org_clients),
+        )
+        .route(
+            "/v1/orgs/:org_id/clients/:account_id/usage",
+            get(routes::clients::client_usage),
+        )
+        .route("/v1/orgs/:org_id/stats", get(routes::clients::org_stats))
         // Enterprise — Orgs
         .route("/v1/orgs", post(routes::orgs::create))
         .route("/v1/orgs/me", get(routes::orgs::me))
@@ -113,7 +125,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/openai/status", get(routes::openai::status))
         .route("/v1/openai/disconnect", delete(routes::openai::disconnect))
         // Public OAuth redirect (browser flow — desktop app opens this URL)
-        .route("/auth/lark", get(lark_auth_redirect))
+        .route("/auth/lark", get(routes::lark_auth::desktop_start))
         // Admin dashboard (React SPA) — static assets first, then catch-all
         .route("/admin/assets/app.css", get(admin_css))
         .route("/admin/assets/app.js", get(admin_js))
@@ -172,16 +184,6 @@ async fn admin_simulator() -> Html<&'static str> {
 
 async fn preview_floors() -> Html<&'static str> {
     Html(PREVIEW_FLOORS)
-}
-
-async fn lark_auth_redirect(State(state): State<AppState>) -> Redirect {
-    let oauth_state = uuid::Uuid::new_v4().to_string();
-    let url = crate::lark_client::build_oauth_url(
-        &state.lark.app_id,
-        &state.lark.redirect_uri,
-        &oauth_state,
-    );
-    Redirect::temporary(&url)
 }
 
 async fn not_found_or_admin_typo(uri: Uri) -> axum::response::Response {

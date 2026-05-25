@@ -257,6 +257,13 @@ async fn send_metering_report(
         return;
     };
 
+    let report_base = user
+        .enterprise_server_url
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| cloud_url.to_string());
+
     // Aggregate from recordings over the last 7 days (matches history retention)
     let events: Vec<serde_json::Value> = {
         let conn = match pool.get() {
@@ -299,7 +306,7 @@ async fn send_metering_report(
         return;
     }
 
-    let url = format!("{}/v1/metering/report", cloud_url.trim_end_matches('/'));
+    let url = format!("{}/v1/metering/report", report_base.trim_end_matches('/'));
     let payload = serde_json::json!({ "events": events });
 
     match http
@@ -310,7 +317,11 @@ async fn send_metering_report(
         .await
     {
         Ok(resp) if resp.status().is_success() => {
-            info!("[metering] reported {} event rows to cloud", events.len());
+            info!(
+                "[metering] reported {} event rows to {}",
+                events.len(),
+                report_base
+            );
         }
         Ok(resp) => {
             warn!("[metering] cloud returned {}", resp.status());

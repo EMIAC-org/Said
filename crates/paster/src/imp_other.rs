@@ -84,3 +84,7 @@ pub fn paste(_text: &str) -> Result<(), String> {
 pub fn paste_replacing(_text: &str) -> Result<(), String> {
     Err("paste_replacing not implemented on this platform".into())
 }
+
+pub fn replace_typed_suffix(_typed_text: &str, _replacement: &str) -> Result<(), String> {
+    Err("replace_typed_suffix not implemented on this platform".into())
+}

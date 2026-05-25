@@ -4,7 +4,9 @@ use rusqlite::params;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
+pub mod alias_safety;
 pub mod corrections;
+pub mod email_memory;
 pub mod history;
 pub mod openai_oauth;
 pub mod pending_edits;
@@ -53,6 +55,9 @@ const MIGRATION_027: &str = include_str!("migrations/027_tier2_model_metadata.sq
 const MIGRATION_028: &str = include_str!("migrations/028_tier2_policy_learning.sql");
 const MIGRATION_029: &str = include_str!("migrations/029_tier2_edit_policy.sql");
 const MIGRATION_030: &str = include_str!("migrations/030_stt_provider.sql");
+const MIGRATION_031: &str = include_str!("migrations/031_alias_safety_judgments.sql");
+const MIGRATION_032: &str = include_str!("migrations/032_enterprise_server_url.sql");
+const MIGRATION_033: &str = include_str!("migrations/033_email_memory.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -343,6 +348,30 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 30")
             .expect("failed to set user_version to 30");
     }
+
+    if version < 31 {
+        info!("running migration 031_alias_safety_judgments");
+        conn.execute_batch(MIGRATION_031)
+            .expect("migration 031 failed");
+        conn.execute_batch("PRAGMA user_version = 31")
+            .expect("failed to set user_version to 31");
+    }
+
+    if version < 32 {
+        info!("running migration 032_enterprise_server_url");
+        conn.execute_batch(MIGRATION_032)
+            .expect("migration 032 failed");
+        conn.execute_batch("PRAGMA user_version = 32")
+            .expect("failed to set user_version to 32");
+    }
+
+    if version < 33 {
+        info!("running migration 033_email_memory");
+        conn.execute_batch(MIGRATION_033)
+            .expect("migration 033 failed");
+        conn.execute_batch("PRAGMA user_version = 33")
+            .expect("failed to set user_version to 33");
+    }
 }
 
 /// Return the default database path. Delegates to `paths::default_db_path()`
@@ -472,7 +501,7 @@ mod tests {
     use r2d2_sqlite::SqliteConnectionManager;
 
     #[test]
-    fn migration_029_creates_tier2_edit_policy_tables() {
+    fn latest_migrations_create_tier2_and_alias_safety_tables() {
         let manager = SqliteConnectionManager::memory();
         let pool = Pool::builder().max_size(1).build(manager).unwrap();
         run_migrations(&pool);
@@ -481,12 +510,14 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 30);
+        assert_eq!(version, 33);
 
         for table in [
             "tier2_policy_weights",
             "tier2_decision_events",
             "tier2_edit_policy_rules",
+            "alias_safety_judgments",
+            "email_memories",
         ] {
             let exists: i64 = conn
                 .query_row(
@@ -495,7 +526,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(exists, 1, "{table} should exist after migration 029");
+            assert_eq!(exists, 1, "{table} should exist after latest migrations");
         }
 
         for column in [

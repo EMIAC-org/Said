@@ -14,7 +14,9 @@ use tower_http::cors::{Any, CorsLayer};
 
 pub mod auth;
 pub mod embedder;
+pub mod formatting;
 pub mod llm;
+pub mod number_format;
 pub mod routes;
 pub mod store;
 pub mod stt;
@@ -209,6 +211,14 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/v1/health/ping", get(routes::health::ping))
         .route("/v1/lab/trace", post(routes::lab::trace))
         .route(
+            "/v1/lab/number-format",
+            get(routes::lab::number_format_page).post(routes::lab::number_format),
+        )
+        .route(
+            "/v1/lab/formatting",
+            get(routes::lab::number_format_page).post(routes::lab::local_formatting),
+        )
+        .route(
             "/v1/lab/chaos/tokio-starve",
             post(routes::lab::chaos_tokio_starve),
         )
@@ -309,6 +319,10 @@ pub fn router_with_state(state: AppState) -> Router {
             axum::routing::delete(routes::cloud::clear_token),
         )
         .route("/v1/cloud/status", get(routes::cloud::status))
+        .route(
+            "/v1/enterprise/status",
+            get(routes::cloud::enterprise_status),
+        )
         // OpenAI Codex OAuth
         .route(
             "/v1/openai-oauth/initiate",

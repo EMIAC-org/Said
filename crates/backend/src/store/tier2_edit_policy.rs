@@ -30,18 +30,17 @@ pub struct Tier2EditPolicyStatus {
     pub fuzzy_shadow_count: i64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FeedbackMarkResult {
     pub penalized: usize,
     pub marked_kept: usize,
+    /// Pairs that were penalized, surfaced to the desktop for status-bar notification.
+    /// Each tuple: (token_text the user actually wrote, chosen_form the system wrongly emitted).
+    pub penalized_pairs: Vec<(String, String)>,
 }
 
 pub fn normalize_token(text: &str) -> String {
-    text.trim()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-        .flat_map(|c| c.to_lowercase())
-        .collect()
+    crate::llm::alias_safety::compact_norm(text)
 }
 
 pub fn record_explicit_edit(
@@ -66,7 +65,9 @@ pub fn record_explicit_edit(
         return false;
     }
     if edit_type == "replace"
-        && (crate::llm::promotion_gate::is_common_word(variant_form)
+        && (crate::llm::alias_safety::is_common_alias_source(variant_form)
+            || crate::llm::alias_safety::is_common_alias_source(&variant_norm)
+            || crate::llm::promotion_gate::is_common_word(variant_form)
             || crate::llm::promotion_gate::is_common_word(&variant_norm))
     {
         return false;
@@ -92,15 +93,7 @@ pub fn record_explicit_edit(
         .flatten();
     let positive_count = existing.map(|(pos, _)| pos).unwrap_or(0) + 1;
     let negative_count = existing.map(|(_, neg)| neg).unwrap_or(0);
-    let status = if positive_count < ACTIVATION_POSITIVES
-        && negative_count < BLOCK_NEGATIVES
-        && !crate::llm::promotion_gate::is_common_word(&variant_norm)
-        && target_has_active_rule(&conn, user_id, &correct_form_norm, &variant_norm)
-    {
-        "active"
-    } else {
-        status_for_counts(positive_count, negative_count)
-    };
+    let status = status_for_counts(positive_count, negative_count);
     let left_json = context_json(left_context);
     let right_json = context_json(right_context);
 
@@ -149,7 +142,7 @@ pub fn penalize_rule(pool: &DbPool, user_id: &str, variant_form: &str, correct_f
     let Ok(conn) = pool.get() else {
         return false;
     };
-    let Some((positive_count, negative_count)) = conn
+    let existing = conn
         .query_row(
             "SELECT positive_count, negative_count
                FROM tier2_edit_policy_rules
@@ -160,9 +153,29 @@ pub fn penalize_rule(pool: &DbPool, user_id: &str, variant_form: &str, correct_f
         )
         .optional()
         .ok()
-        .flatten()
-    else {
-        return false;
+        .flatten();
+    let Some((positive_count, negative_count)) = existing else {
+        // No existing rule — this revert came from a cluster-fuzzy or ONNX
+        // correction with no stored rule. Insert a BLOCKED rule so the same
+        // wrong mapping cannot fire again.
+        let now = now_ms();
+        let inserted = conn
+            .execute(
+                "INSERT OR IGNORE INTO tier2_edit_policy_rules
+                    (user_id, variant_form, variant_norm, correct_form, correct_form_norm,
+                     edit_type, positive_count, negative_count, status, first_seen, last_seen)
+                  VALUES (?1, ?2, ?3, ?4, ?5, 'replace', 0, 2, 'blocked', ?6, ?6)",
+                params![
+                    user_id,
+                    variant_form,
+                    variant_norm,
+                    correct_form,
+                    correct_form_norm,
+                    now
+                ],
+            )
+            .unwrap_or(0);
+        return inserted > 0;
     };
     let next_negative = negative_count + 1;
     let status = status_for_counts(positive_count, next_negative);
@@ -236,8 +249,9 @@ pub fn activate_all_for_term(pool: &DbPool, user_id: &str, correct_form: &str) -
           WHERE user_id = ?1
             AND correct_form_norm = ?2
             AND status = 'candidate'
-            AND edit_type = 'replace'",
-        rusqlite::params![user_id, norm],
+            AND edit_type = 'replace'
+            AND positive_count >= ?3",
+        rusqlite::params![user_id, norm, ACTIVATION_POSITIVES],
     )
     .unwrap_or(0)
 }
@@ -259,7 +273,14 @@ pub fn mark_removed_feedback(
                 AND recording_id = ?2
                 AND applied = 1
                 AND reward_outcome IS NULL
-                AND scorer_kind IN ('tier2_edit_policy', 'tier2_cluster_fuzzy', 'stt_alias')
+                AND scorer_kind IN (
+                    'tier2_edit_policy',
+                    'tier2_cluster_fuzzy',
+                    'tier2_deterministic',
+                    'tier2_onnx',
+                    'tier2_policy',
+                    'stt_alias'
+                )
                 AND chosen_form IS NOT NULL",
         ) else {
             return FeedbackMarkResult::default();
@@ -290,10 +311,22 @@ pub fn mark_removed_feedback(
                 // is deleted automatically, preventing future false positives.
                 super::stt_replacements::demote(pool, user_id, &token_text, &chosen_form, 1.5)
             } else {
-                penalize_rule(pool, user_id, &token_text, &chosen_form)
+                let policy_penalized = super::tier2_policy::penalize_mapping(
+                    pool,
+                    user_id,
+                    &token_text,
+                    &chosen_form,
+                    1.0,
+                    "feedback_removed",
+                );
+                let rule_penalized = penalize_rule(pool, user_id, &token_text, &chosen_form);
+                policy_penalized || rule_penalized
             };
             if penalized {
                 result.penalized += 1;
+                result
+                    .penalized_pairs
+                    .push((token_text.clone(), chosen_form.clone()));
                 "negative"
             } else {
                 "negative_unapplied"
@@ -351,27 +384,6 @@ pub fn status(pool: &DbPool, user_id: &str) -> Tier2EditPolicyStatus {
         )
         .unwrap_or(0);
     status
-}
-
-fn target_has_active_rule(
-    conn: &rusqlite::Connection,
-    user_id: &str,
-    correct_form_norm: &str,
-    exclude_variant_norm: &str,
-) -> bool {
-    conn.query_row(
-        "SELECT COUNT(*)
-           FROM tier2_edit_policy_rules
-          WHERE user_id = ?1
-            AND correct_form_norm = ?2
-            AND variant_norm != ?3
-            AND status = 'active'
-            AND edit_type = 'replace'",
-        params![user_id, correct_form_norm, exclude_variant_norm],
-        |row| row.get::<_, i64>(0),
-    )
-    .unwrap_or(0)
-        > 0
 }
 
 fn normalize_edit_type(edit_type: &str) -> &'static str {
@@ -715,6 +727,194 @@ mod tests {
         assert!(
             (weight - 2.0).abs() < 0.01,
             "alias weight should be unchanged"
+        );
+    }
+
+    #[test]
+    fn cluster_fuzzy_revert_inserts_blocked_rule() {
+        let pool = mem_pool_with_stt();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO tier2_decision_events
+                 (id, user_id, recording_id, timestamp_ms, token_text, token_norm,
+                  chosen_form, chosen_form_norm, scorer_kind, score, margin,
+                  deterministic_score, policy_boost, applied)
+             VALUES ('evt_cf', 'u1', 'r1', 0, 'nahi', 'nahi', 'n8n', 'n8n',
+                     'tier2_cluster_fuzzy', 0.80, 0.80, 0.80, 0.0, 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let feedback = mark_removed_feedback(&pool, "u1", "r1", "nahi bol raha hun");
+
+        assert_eq!(
+            feedback.penalized, 1,
+            "cluster-fuzzy revert should penalize"
+        );
+        assert_eq!(
+            feedback.penalized_pairs.len(),
+            1,
+            "should surface the penalized pair"
+        );
+        assert_eq!(feedback.penalized_pairs[0].0, "nahi");
+        assert_eq!(feedback.penalized_pairs[0].1, "n8n");
+
+        let conn = pool.get().unwrap();
+        let (neg_count, rule_status): (i64, String) = conn
+            .query_row(
+                "SELECT negative_count, status FROM tier2_edit_policy_rules
+                  WHERE user_id = 'u1' AND variant_norm = 'nahi' AND correct_form_norm = 'n8n'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rule_status, "blocked", "new rule should be blocked");
+        assert!(neg_count >= 2, "negative count should be >= 2");
+    }
+
+    #[test]
+    fn onnx_revert_inserts_blocked_rule() {
+        let pool = mem_pool_with_stt();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO tier2_decision_events
+                 (id, user_id, recording_id, timestamp_ms, token_text, token_norm,
+                  chosen_form, chosen_form_norm, scorer_kind, score, margin,
+                  deterministic_score, policy_boost, applied)
+             VALUES ('evt_onnx', 'u1', 'r1', 0, 'agent', 'agent', 'AirNote', 'airnote',
+                     'tier2_cluster_fuzzy', 0.82, 0.82, 0.82, 0.0, 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let feedback =
+            mark_removed_feedback(&pool, "u1", "r1", "agent is working on the deployment");
+
+        assert_eq!(feedback.penalized, 1);
+        assert_eq!(feedback.penalized_pairs[0].0, "agent");
+        assert_eq!(feedback.penalized_pairs[0].1, "AirNote");
+
+        let conn = pool.get().unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM tier2_edit_policy_rules
+                  WHERE user_id = 'u1' AND correct_form_norm = 'airnote'
+                    AND variant_norm = 'agent'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "blocked");
+    }
+
+    #[test]
+    fn multiple_reverts_in_one_recording() {
+        let pool = mem_pool_with_stt();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO tier2_decision_events
+                 (id, user_id, recording_id, timestamp_ms, token_text, token_norm,
+                  chosen_form, chosen_form_norm, scorer_kind, score, margin,
+                  deterministic_score, policy_boost, applied)
+             VALUES ('evt_a', 'u1', 'r1', 0, 'nahi', 'nahi', 'n8n', 'n8n',
+                     'tier2_cluster_fuzzy', 0.80, 0.80, 0.80, 0.0, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tier2_decision_events
+                 (id, user_id, recording_id, timestamp_ms, token_text, token_norm,
+                  chosen_form, chosen_form_norm, scorer_kind, score, margin,
+                  deterministic_score, policy_boost, applied)
+             VALUES ('evt_b', 'u1', 'r1', 0, 'aajkal', 'aajkal', 'Kafka', 'kafka',
+                     'tier2_cluster_fuzzy', 0.82, 0.82, 0.82, 0.0, 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let feedback =
+            mark_removed_feedback(&pool, "u1", "r1", "nahi aajkal yeh sab chal raha hai");
+
+        assert_eq!(
+            feedback.penalized, 2,
+            "both wrong corrections should be penalized"
+        );
+        assert_eq!(feedback.penalized_pairs.len(), 2);
+
+        let conn = pool.get().unwrap();
+        let blocked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tier2_edit_policy_rules
+                  WHERE user_id = 'u1' AND status = 'blocked'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(blocked, 2, "both mappings should be blocked");
+    }
+
+    #[test]
+    fn kept_correction_is_not_penalized() {
+        let pool = mem_pool_with_stt();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO tier2_decision_events
+                 (id, user_id, recording_id, timestamp_ms, token_text, token_norm,
+                  chosen_form, chosen_form_norm, scorer_kind, score, margin,
+                  deterministic_score, policy_boost, applied)
+             VALUES ('evt_ok', 'u1', 'r1', 0, 'mecobs', 'mecobs', 'Macobs', 'macobs',
+                     'tier2_cluster_fuzzy', 0.90, 0.90, 0.90, 0.0, 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let feedback = mark_removed_feedback(&pool, "u1", "r1", "Macobs ka kaam ho gaya hai");
+
+        assert_eq!(
+            feedback.penalized, 0,
+            "correct correction should not be penalized"
+        );
+        assert_eq!(feedback.marked_kept, 1, "should be marked as kept");
+        assert!(feedback.penalized_pairs.is_empty());
+    }
+
+    #[test]
+    fn penalize_existing_active_rule_blocks_it() {
+        let pool = mem_pool();
+        record_explicit_edit(
+            &pool,
+            "u1",
+            "mecorbs",
+            "Macobs",
+            "replace",
+            &[],
+            &["ka".to_string()],
+            Some("r1"),
+        );
+        record_explicit_edit(
+            &pool,
+            "u1",
+            "mecorbs",
+            "Macobs",
+            "replace",
+            &[],
+            &["ki".to_string()],
+            Some("r1"),
+        );
+        let s = status(&pool, "u1");
+        assert_eq!(s.active_rule_count, 1, "rule should be active");
+
+        assert!(penalize_rule(&pool, "u1", "mecorbs", "Macobs"));
+        assert!(penalize_rule(&pool, "u1", "mecorbs", "Macobs"));
+        let s = status(&pool, "u1");
+        assert_eq!(s.active_rule_count, 0);
+        assert_eq!(
+            s.blocked_rule_count, 1,
+            "rule should be blocked after 2 penalties"
         );
     }
 }

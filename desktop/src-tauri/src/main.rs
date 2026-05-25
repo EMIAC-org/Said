@@ -5,6 +5,7 @@ mod backend;
 mod backend_guard;
 mod desktop;
 mod dg_stream; // P5: Deepgram WebSocket live streaming
+mod enterprise_oauth;
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
 
@@ -75,6 +76,66 @@ fn emit_short_recording_error(app: &tauri::AppHandle) {
 use said_hotkey as hotkey;
 
 #[cfg(target_os = "macos")]
+use tauri_nspanel::{
+    CollectionBehavior, ManagerExt as PanelManagerExt, PanelBuilder, PanelLevel, StyleMask,
+    tauri_panel,
+};
+
+#[cfg(target_os = "macos")]
+tauri_panel! {
+    panel!(StatusBarPanel {
+        config: {
+            can_become_key_window: false,
+            can_become_main_window: false,
+            is_floating_panel: true,
+            hides_on_deactivate: false,
+            works_when_modal: true
+        }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn status_bar_collection_behavior() -> CollectionBehavior {
+    CollectionBehavior::new()
+        .can_join_all_spaces()
+        .stationary()
+        .ignores_cycle()
+        .full_screen_auxiliary()
+}
+
+#[cfg(target_os = "macos")]
+fn tune_status_bar_panel(app: &tauri::AppHandle) {
+    let Ok(panel) = app.get_webview_panel("status-bar") else {
+        return;
+    };
+    panel.set_level(PanelLevel::Custom(28).value());
+    panel.set_floating_panel(true);
+    panel.set_hides_on_deactivate(false);
+    panel.set_works_when_modal(true);
+    panel.set_ignores_mouse_events(true);
+    panel.set_collection_behavior(status_bar_collection_behavior().into());
+    panel.set_style_mask(StyleMask::empty().borderless().nonactivating_panel().into());
+    panel.set_transparent(true);
+    panel.set_has_shadow(false);
+}
+
+#[cfg(target_os = "macos")]
+fn show_status_bar_panel(app: &tauri::AppHandle) -> bool {
+    match app.get_webview_panel("status-bar") {
+        Ok(panel) => {
+            tune_status_bar_panel(app);
+            panel.show();
+            panel.order_front_regardless();
+            true
+        }
+        Err(_) => {
+            tracing::warn!("[status-bar] panel handle missing; falling back to webview window");
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
     use objc::Message;
     use objc::runtime::{Object, Sel};
@@ -138,13 +199,176 @@ fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
     }
 }
 
+const STATUS_BAR_WIDTH: f64 = 300.0;
+const STATUS_BAR_HEIGHT: f64 = 142.0;
+const STATUS_BAR_BOTTOM_OFFSET: f64 = 64.0;
+
+/// Bottom-center anchor — size-independent so resize keeps the bar grounded.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+struct StatusBarAnchor {
+    center_x: f64,
+    bottom_y: f64,
+}
+
+/// Legacy top-left format from older builds.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+struct StatusBarPositionLegacy {
+    x: f64,
+    y: f64,
+}
+
+fn status_bar_position_path() -> std::path::PathBuf {
+    said_core::paths::data_dir().join("status_bar_position.json")
+}
+
+fn load_status_bar_anchor() -> Option<StatusBarAnchor> {
+    let text = std::fs::read_to_string(status_bar_position_path()).ok()?;
+    if let Ok(anchor) = serde_json::from_str::<StatusBarAnchor>(&text) {
+        return Some(anchor);
+    }
+    let legacy = serde_json::from_str::<StatusBarPositionLegacy>(&text).ok()?;
+    Some(StatusBarAnchor {
+        center_x: legacy.x + STATUS_BAR_WIDTH / 2.0,
+        bottom_y: legacy.y + STATUS_BAR_HEIGHT,
+    })
+}
+
+fn save_status_bar_anchor(anchor: StatusBarAnchor) -> Result<(), String> {
+    let path = status_bar_position_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create data dir: {e}"))?;
+    }
+    let text =
+        serde_json::to_string_pretty(&anchor).map_err(|e| format!("serialize position: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).map_err(|e| format!("write position: {e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("commit position: {e}"))?;
+    Ok(())
+}
+
+fn clear_status_bar_position() -> Result<(), String> {
+    let path = status_bar_position_path();
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("remove position: {e}"))?;
+    }
+    Ok(())
+}
+
+fn status_bar_origin_from_anchor(anchor: StatusBarAnchor, width: f64, height: f64) -> (f64, f64) {
+    (anchor.center_x - width / 2.0, anchor.bottom_y - height)
+}
+
+fn status_bar_target_origin(app: &tauri::AppHandle, width: f64, height: f64) -> (f64, f64) {
+    if let Some(anchor) = load_status_bar_anchor() {
+        return status_bar_origin_from_anchor(anchor, width, height);
+    }
+    status_bar_origin_for_cursor(app, width, height)
+}
+
+fn apply_status_bar_position(
+    app: &tauri::AppHandle,
+    win: &tauri::WebviewWindow,
+) -> Result<(), String> {
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let size = win.inner_size().unwrap_or(tauri::PhysicalSize::new(
+        (STATUS_BAR_WIDTH * scale) as u32,
+        (STATUS_BAR_HEIGHT * scale) as u32,
+    ));
+    let w = size.width as f64 / scale;
+    let h = size.height as f64 / scale;
+    let (x, y) = status_bar_target_origin(app, w, h);
+    win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+        .map_err(|e| format!("set position failed: {e}"))
+}
+
+/// Keep the floating status bar visible at idle only when `SAID_STATUS_BAR_PIN=1`.
+fn status_bar_pinned() -> bool {
+    matches!(
+        std::env::var("SAID_STATUS_BAR_PIN").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
+/// Bottom-center origin for the status-bar window on the monitor that contains
+/// the cursor (falls back to primary / first monitor).
+fn status_bar_origin_for_cursor(app: &tauri::AppHandle, width: f64, height: f64) -> (f64, f64) {
+    let origin_for_monitor = |m: &tauri::Monitor| -> (f64, f64) {
+        let sf = m.scale_factor();
+        let mx = m.position().x as f64 / sf;
+        let my = m.position().y as f64 / sf;
+        let sw = m.size().width as f64 / sf;
+        let sh = m.size().height as f64 / sf;
+        (
+            mx + sw / 2.0 - width / 2.0,
+            my + sh - height - STATUS_BAR_BOTTOM_OFFSET,
+        )
+    };
+
+    let Ok(monitors) = app.available_monitors() else {
+        return (560.0, 860.0);
+    };
+    let Some(primary) = monitors.first() else {
+        return (560.0, 860.0);
+    };
+
+    let Ok(cursor) = app.cursor_position() else {
+        return origin_for_monitor(primary);
+    };
+
+    let cx = cursor.x;
+    let cy = cursor.y;
+    let chosen = monitors.iter().find(|m| {
+        let p = m.position();
+        let s = m.size();
+        let left = p.x as f64;
+        let top = p.y as f64;
+        cx >= left && cx < left + s.width as f64 && cy >= top && cy < top + s.height as f64
+    });
+
+    origin_for_monitor(chosen.unwrap_or(primary))
+}
+
+fn reposition_status_bar(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
+    match apply_status_bar_position(app, win) {
+        Ok(_) => tracing::debug!("[status-bar] repositioned"),
+        Err(e) => tracing::warn!("[status-bar] reposition failed: {e}"),
+    }
+}
+
+/// Must run on the AppKit main thread (never from the CGEventTap hotkey thread).
 #[cfg(target_os = "macos")]
-fn schedule_status_bar_macos_tune(win: &tauri::WebviewWindow) {
-    let win_for_main = win.clone();
-    if let Err(e) = win.run_on_main_thread(move || {
-        configure_status_bar_macos(&win_for_main);
+fn present_status_bar_macos_on_main(
+    app: &tauri::AppHandle,
+    win: &tauri::WebviewWindow,
+    state: &str,
+) {
+    reposition_status_bar(app, win);
+    configure_status_bar_macos(win);
+    if let Err(e) = win.set_always_on_top(true) {
+        tracing::warn!("[status-bar] set_always_on_top failed: {e}");
+    }
+    match win.show() {
+        Ok(_) => tracing::debug!("[status-bar] show ok for state={state}"),
+        Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
+    }
+    configure_status_bar_macos(win);
+    let _ = show_status_bar_panel(app);
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_present_status_bar_macos(
+    app: &tauri::AppHandle,
+    win: &tauri::WebviewWindow,
+    state: &str,
+) {
+    let app_for_main = app.clone();
+    let app_in_closure = app_for_main.clone();
+    let win = win.clone();
+    let state = state.to_string();
+    if let Err(e) = app_for_main.run_on_main_thread(move || {
+        present_status_bar_macos_on_main(&app_in_closure, &win, &state);
     }) {
-        tracing::warn!("[status-bar] could not schedule macOS tune on main thread: {e}");
+        tracing::warn!("[status-bar] schedule present on main thread failed: {e}");
     }
 }
 
@@ -421,6 +645,28 @@ enum RecordingRoute {
 }
 
 struct RecordingRouteState(Mutex<Option<RecordingRoute>>);
+
+struct LongDictationState {
+    locked: Arc<AtomicBool>,
+    pending_lock: Arc<AtomicBool>,
+    stop_consumed: Arc<AtomicBool>,
+}
+
+impl LongDictationState {
+    fn new() -> Self {
+        Self {
+            locked: Arc::new(AtomicBool::new(false)),
+            pending_lock: Arc::new(AtomicBool::new(false)),
+            stop_consumed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn reset(&self) {
+        self.locked.store(false, Ordering::SeqCst);
+        self.pending_lock.store(false, Ordering::SeqCst);
+        self.stop_consumed.store(false, Ordering::SeqCst);
+    }
+}
 
 #[derive(Clone, Serialize)]
 struct MeetingSttStatus {
@@ -823,6 +1069,18 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
 
     tracing::debug!("[status-bar] sync state={state}");
     if state == "idle" {
+        if status_bar_pinned() {
+            tracing::debug!("[status-bar] idle state — pinned, keeping visible");
+            #[cfg(target_os = "macos")]
+            schedule_present_status_bar_macos(handle, &win, state);
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = win.set_always_on_top(true);
+                let _ = win.set_visible_on_all_workspaces(true);
+                let _ = win.show();
+            }
+            return;
+        }
         tracing::debug!("[status-bar] idle state — scheduling native hide");
         let my_gen = handle
             .try_state::<StatusBarHideGen>()
@@ -874,20 +1132,26 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
         counter.fetch_add(1, Ordering::Relaxed);
     }
 
-    match win.set_always_on_top(true) {
-        Ok(_) => tracing::debug!("[status-bar] set_always_on_top ok"),
-        Err(e) => tracing::warn!("[status-bar] set_always_on_top failed: {e}"),
-    }
-    match win.set_visible_on_all_workspaces(true) {
-        Ok(_) => tracing::debug!("[status-bar] set_visible_on_all_workspaces ok"),
-        Err(e) => tracing::warn!("[status-bar] set_visible_on_all_workspaces failed: {e}"),
-    }
-    match win.show() {
-        Ok(_) => tracing::debug!("[status-bar] show ok for state={state}"),
-        Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
-    }
     #[cfg(target_os = "macos")]
-    schedule_status_bar_macos_tune(&win);
+    {
+        schedule_present_status_bar_macos(handle, &win, state);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        match win.set_always_on_top(true) {
+            Ok(_) => tracing::debug!("[status-bar] set_always_on_top ok"),
+            Err(e) => tracing::warn!("[status-bar] set_always_on_top failed: {e}"),
+        }
+        match win.set_visible_on_all_workspaces(true) {
+            Ok(_) => tracing::debug!("[status-bar] set_visible_on_all_workspaces ok"),
+            Err(e) => tracing::warn!("[status-bar] set_visible_on_all_workspaces failed: {e}"),
+        }
+        match win.show() {
+            Ok(_) => tracing::debug!("[status-bar] show ok for state={state}"),
+            Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
+        }
+    }
 }
 
 /// Re-render the tray icon title + menu from the cached prefs (no async needed).
@@ -925,28 +1189,72 @@ fn create_status_bar(app: &tauri::AppHandle) {
 
     // Position: bottom-center, low above the dock. Match VoiceInk's panel model:
     // keep a max-size transparent native canvas and expand the inner HUD inside it.
-    let idle_w = 300.0;
-    let idle_h = 142.0;
-    let bottom_offset = 64.0;
-    let (x, y) = if let Ok(Some(m)) = app.primary_monitor() {
-        let sf = m.scale_factor();
-        let sw = m.size().width as f64 / sf;
-        let sh = m.size().height as f64 / sf;
-        let mx = m.position().x as f64 / sf;
-        let my = m.position().y as f64 / sf;
-        (
-            mx + sw / 2.0 - idle_w / 2.0,
-            my + sh - idle_h - bottom_offset,
-        )
-    } else {
-        (560.0, 860.0)
-    };
+    let idle_w = STATUS_BAR_WIDTH;
+    let idle_h = STATUS_BAR_HEIGHT;
+    let (x, y) = status_bar_target_origin(app, idle_w, idle_h);
 
     let url = "index.html?view=statusbar#statusbar";
     tracing::info!(
         "[status-bar] creating window url={url} x={x:.0} y={y:.0} size={idle_w:.0}x{idle_h:.0} visible=false"
     );
 
+    #[cfg(target_os = "macos")]
+    {
+        match PanelBuilder::<_, StatusBarPanel>::new(app, "status-bar")
+            .url(tauri::WebviewUrl::App(url.into()))
+            .title("AirNote")
+            .size(tauri::Size::Logical(tauri::LogicalSize::new(
+                idle_w, idle_h,
+            )))
+            .position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+            .level(PanelLevel::Custom(28))
+            .floating(true)
+            .hides_on_deactivate(false)
+            .works_when_modal(true)
+            .ignores_mouse_events(true)
+            .has_shadow(false)
+            .transparent(true)
+            .style_mask(StyleMask::empty().borderless().nonactivating_panel())
+            .collection_behavior(status_bar_collection_behavior())
+            .no_activate(true)
+            .with_window(|window| {
+                window
+                    .decorations(false)
+                    .always_on_top(true)
+                    .visible_on_all_workspaces(true)
+                    .skip_taskbar(true)
+                    .focused(false)
+                    .resizable(true)
+                    .shadow(false)
+                    .transparent(true)
+                    .visible(false)
+            })
+            .build()
+        {
+            Ok(panel) => {
+                tracing::info!("[status-bar] NSPanel created label={}", panel.label());
+                tune_status_bar_panel(app);
+                if status_bar_pinned() {
+                    tracing::info!("[status-bar] dev pin active — showing at idle");
+                } else {
+                    panel.hide();
+                }
+                if let Some(win) = app.get_webview_window("status-bar") {
+                    match win.url() {
+                        Ok(url) => tracing::info!("[status-bar] resolved url={url}"),
+                        Err(e) => tracing::warn!("[status-bar] could not read window url: {e}"),
+                    }
+                    let _ = win.set_ignore_cursor_events(true);
+                    configure_status_bar_macos(&win);
+                }
+                sync_status_bar(app, "idle");
+            }
+            Err(e) => tracing::warn!("[status-bar] could not create NSPanel: {e}"),
+        }
+        return;
+    }
+
+    #[cfg(not(target_os = "macos"))]
     match tauri::WebviewWindowBuilder::new(app, "status-bar", tauri::WebviewUrl::App(url.into()))
         .title("AirNote")
         .inner_size(idle_w, idle_h)
@@ -969,8 +1277,6 @@ fn create_status_bar(app: &tauri::AppHandle) {
                 Err(e) => tracing::warn!("[status-bar] could not read window url: {e}"),
             }
             let _ = win.set_ignore_cursor_events(true);
-            #[cfg(target_os = "macos")]
-            schedule_status_bar_macos_tune(&win);
             sync_status_bar(app, "idle");
         }
         Err(e) => tracing::warn!("[status-bar] could not create window: {e}"),
@@ -994,6 +1300,47 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
+    }
+}
+
+fn activate_long_dictation_lock(app: &tauri::AppHandle) {
+    let Some(long) = app.try_state::<LongDictationState>() else {
+        return;
+    };
+    long.pending_lock.store(false, Ordering::SeqCst);
+    if !long.locked.swap(true, Ordering::SeqCst) {
+        tracing::info!("[hotkey] long dictation locked");
+        let _ = app.emit("long-dictation-locked", serde_json::json!({}));
+    }
+}
+
+fn reset_long_dictation_lock(app: &tauri::AppHandle) {
+    if let Some(long) = app.try_state::<LongDictationState>() {
+        long.reset();
+    }
+}
+
+fn show_status_bar_placement_mode(app: &tauri::AppHandle, message: &'static str) {
+    if app.get_webview_window("status-bar").is_none() {
+        create_status_bar(app);
+    }
+    sync_status_bar(app, "placement");
+    let _ = app.emit(
+        "status-bar-placement-mode",
+        serde_json::json!({ "message": message }),
+    );
+}
+
+fn reset_status_bar_to_default(app: &tauri::AppHandle) {
+    if let Err(e) = reset_status_bar_position(app.clone()) {
+        tracing::warn!("[status-bar] reset shortcut failed: {e}");
+    }
+}
+
+fn finish_status_bar_placement_mode(app: &tauri::AppHandle) {
+    let _ = app.emit("status-bar-placement-finish", serde_json::json!({}));
+    if let Err(e) = dismiss_status_bar(app.clone()) {
+        tracing::warn!("[status-bar] finish placement hide failed: {e}");
     }
 }
 
@@ -1242,9 +1589,105 @@ fn get_snapshot(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
 
 #[tauri::command]
 fn dismiss_status_bar(app: tauri::AppHandle) -> Result<(), String> {
+    if status_bar_pinned() {
+        return Ok(());
+    }
+    let is_active = app
+        .try_state::<SharedApp>()
+        .and_then(|shared| {
+            shared
+                .0
+                .lock()
+                .ok()
+                .map(|d| d.state != desktop::AppState::Idle)
+        })
+        .unwrap_or(false);
+    if is_active {
+        tracing::debug!("[status-bar] dismiss skipped — app state is active");
+        return Ok(());
+    }
     if let Some(win) = app.get_webview_window("status-bar") {
         win.hide()
             .map_err(|e| format!("hide status bar failed: {e}"))?;
+    }
+    Ok(())
+}
+
+fn read_window_bottom_anchor(win: &tauri::WebviewWindow) -> Option<(f64, f64)> {
+    let scale = win.scale_factor().ok()?;
+    let pos = win.outer_position().ok()?;
+    let size = win.inner_size().ok()?;
+    let w = size.width as f64 / scale;
+    let h = size.height as f64 / scale;
+    if w < 1.0 || h < 1.0 {
+        return None;
+    }
+    let x = pos.x as f64 / scale;
+    let y = pos.y as f64 / scale;
+    Some((x + w / 2.0, y + h))
+}
+
+fn origin_from_bottom_anchor(center_x: f64, bottom_y: f64, width: f64, height: f64) -> (f64, f64) {
+    (center_x - width / 2.0, bottom_y - height)
+}
+
+#[tauri::command]
+fn resize_status_bar(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+    let win = app
+        .get_webview_window("status-bar")
+        .ok_or_else(|| "status-bar window not found".to_string())?;
+    let (center_x, bottom_y) = read_window_bottom_anchor(&win).unwrap_or_else(|| {
+        let (x, y) = status_bar_target_origin(&app, width, height);
+        (x + width / 2.0, y + height)
+    });
+    win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)))
+        .map_err(|e| format!("resize status bar failed: {e}"))?;
+    let (x, y) = origin_from_bottom_anchor(center_x, bottom_y, width, height);
+    win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+        .map_err(|e| format!("post-resize position failed: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_status_bar_position(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
+    let Some(anchor) = load_status_bar_anchor() else {
+        return Ok(None);
+    };
+    let Some(win) = app.get_webview_window("status-bar") else {
+        return Ok(None);
+    };
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let size = win.inner_size().map_err(|e| format!("inner_size: {e}"))?;
+    let w = size.width as f64 / scale;
+    let h = size.height as f64 / scale;
+    let (x, y) = status_bar_origin_from_anchor(anchor, w, h);
+    Ok(Some(serde_json::json!({ "x": x, "y": y })))
+}
+
+#[tauri::command]
+fn set_status_bar_position(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
+    let win = app
+        .get_webview_window("status-bar")
+        .ok_or_else(|| "status-bar window not found".to_string())?;
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let size = win.inner_size().map_err(|e| format!("inner_size: {e}"))?;
+    let w = size.width as f64 / scale;
+    let h = size.height as f64 / scale;
+    let anchor = StatusBarAnchor {
+        center_x: x + w / 2.0,
+        bottom_y: y + h,
+    };
+    save_status_bar_anchor(anchor)?;
+    win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+        .map_err(|e| format!("set position failed: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn reset_status_bar_position(app: tauri::AppHandle) -> Result<(), String> {
+    clear_status_bar_position()?;
+    if let Some(win) = app.get_webview_window("status-bar") {
+        apply_status_bar_position(&app, &win)?;
     }
     Ok(())
 }
@@ -1543,6 +1986,8 @@ fn toggle_recording(
 /// The start→finish pair is allowed through (finish clears the flag),
 /// but a second START while the first hasn't finished is rejected.
 static RECORDING_STARTING: AtomicBool = AtomicBool::new(false);
+static HOTKEY_START_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static FINISH_AFTER_START: AtomicBool = AtomicBool::new(false);
 
 /// Minimum time between consecutive finish→start cycles (ms).
 /// Prevents rapid Caps Lock taps from flooding the recording pipeline.
@@ -1554,6 +1999,20 @@ fn now_ms_desktop() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn hotkey_current_state(shared: &Arc<Mutex<DesktopApp>>, label: &str) -> Option<desktop::AppState> {
+    for attempt in 0..10 {
+        if let Ok(d) = shared.try_lock() {
+            return Some(d.state);
+        }
+        if attempt == 0 {
+            tracing::debug!("[hotkey] {label} waiting for shared app lock");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    tracing::warn!("[hotkey] {label} skipped — shared app lock busy for 200ms");
+    None
 }
 
 /// Start recording. Called when user presses Caps Lock (or taps the button).
@@ -1573,6 +2032,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             now.saturating_sub(last_finish),
             MIN_CYCLE_GAP_MS,
         );
+        FINISH_AFTER_START.store(false, Ordering::SeqCst);
         RECORDING_STARTING.store(false, Ordering::SeqCst);
         return;
     }
@@ -1655,9 +2115,17 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             tracing::info!("[record] started — state={}", snap.state);
             sync_tray(app, &snap);
             let _ = app.emit("app-state", &snap);
+            if app
+                .try_state::<LongDictationState>()
+                .map(|s| s.pending_lock.swap(false, Ordering::SeqCst))
+                .unwrap_or(false)
+            {
+                activate_long_dictation_lock(app);
+            }
             emit_meeting_stt_status(app);
         }
         Err(e) => {
+            FINISH_AFTER_START.store(false, Ordering::SeqCst);
             let _ = app.emit(
                 "voice-error",
                 serde_json::json!({
@@ -1731,11 +2199,8 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                         && now.duration_since(started_at)
                             >= std::time::Duration::from_millis(MEETING_MIN_CHUNK_MS)
                     {
-                        let still_recording = shared
-                            .lock()
-                            .ok()
-                            .map(|d| d.state == desktop::AppState::Recording)
-                            .unwrap_or(false);
+                        let still_recording = hotkey_current_state(shared, "meeting pause")
+                            == Some(desktop::AppState::Recording);
                         if still_recording {
                             tracing::info!("[meeting_mode] pause detected — finishing chunk");
                             finish_for_pause = true;
@@ -1771,11 +2236,9 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                     && !muted.load(Ordering::SeqCst)
                     && generation.load(Ordering::SeqCst) == expected_gen
                 {
-                    let still_recording = shared_timer
-                        .lock()
-                        .ok()
-                        .map(|d| d.state == desktop::AppState::Recording)
-                        .unwrap_or(false);
+                    let still_recording =
+                        hotkey_current_state(&shared_timer, "meeting time ceiling")
+                            == Some(desktop::AppState::Recording);
                     if still_recording {
                         tracing::info!(
                             "[meeting_mode] time ceiling ({}s) — finishing chunk",
@@ -1816,11 +2279,8 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                     && !muted.load(Ordering::SeqCst)
                     && generation.load(Ordering::SeqCst) == expected_generation
                 {
-                    let still_recording = shared
-                        .lock()
-                        .ok()
-                        .map(|d| d.state == desktop::AppState::Recording)
-                        .unwrap_or(false);
+                    let still_recording = hotkey_current_state(&shared, "meeting utterance end")
+                        == Some(desktop::AppState::Recording);
                     if still_recording {
                         tracing::info!("[meeting_mode] Deepgram utterance end — finishing chunk");
                         do_finish_recording(shared, app, backend);
@@ -1866,6 +2326,7 @@ fn do_cancel_recording(
     reason: &'static str,
 ) {
     LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
+    reset_long_dictation_lock(&app);
 
     if let Ok(mut route) = app.state::<RecordingRouteState>().0.lock() {
         *route = None;
@@ -1878,7 +2339,7 @@ fn do_cancel_recording(
         .ok()
         .and_then(|mut g| g.take());
 
-    let stop_rx = {
+    let (stop_rx, snap) = {
         let mut d = match shared.lock() {
             Ok(g) => g,
             Err(_) => return,
@@ -1895,11 +2356,12 @@ fn do_cancel_recording(
         };
         let snap = d.finish_cancelled();
         tracing::info!("[meeting_mode] recording cancelled — reason={reason}");
-        sync_tray(&app, &snap);
-        let _ = app.emit("app-state", &snap);
-        emit_meeting_stt_status(&app);
-        stop_rx
+        (stop_rx, snap)
     };
+
+    sync_tray(&app, &snap);
+    let _ = app.emit("app-state", &snap);
+    emit_meeting_stt_status(&app);
 
     if let Some(stop_rx) = stop_rx {
         std::thread::spawn(move || {
@@ -1917,6 +2379,7 @@ fn do_finish_recording(
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
 ) {
     LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
+    reset_long_dictation_lock(&app);
 
     let edit_target_pid = app
         .state::<EditTargetState>()
@@ -1925,9 +2388,15 @@ fn do_finish_recording(
         .ok()
         .and_then(|mut target| target.take());
 
+    enum BeginStopError {
+        Short(AppSnapshot),
+        Failed(AppSnapshot),
+    }
+
     // Signal the recorder to stop while holding the app mutex, then wait for
-    // samples and encode WAV after releasing it.
-    let (stop_rx, was_too_short) = {
+    // samples and encode WAV after releasing it. Keep all UI/AppKit work outside
+    // this mutex; tray/menu calls can block on macOS and must not freeze hotkeys.
+    let begin_stop = {
         let mut d = match shared.lock() {
             Ok(g) => g,
             Err(_) => return,
@@ -1936,28 +2405,44 @@ fn do_finish_recording(
             Ok((stop_rx, was_too_short)) => {
                 let snap = d.snapshot();
                 tracing::info!("[record] stop initiated — state={}", snap.state);
-                sync_tray(&app, &snap);
-                let _ = app.emit("app-state", &snap);
-                (stop_rx, was_too_short)
+                Ok((stop_rx, was_too_short, snap))
             }
             Err(e) => {
                 if is_short_recording_cancel(&e) {
                     tracing::info!("[record] short Option tap — cancelled recording");
                     let snap = d.finish_cancelled();
-                    sync_tray(&app, &snap);
-                    emit_short_recording_error(&app);
-                    let _ = app.emit("app-state", &snap);
-                    return;
+                    Err(BeginStopError::Short(snap))
+                } else {
+                    let snap = d.finish_err(e);
+                    Err(BeginStopError::Failed(snap))
                 }
-                let snap = d.finish_err(e);
-                sync_tray(&app, &snap);
-                let _ = app.emit("voice-error", serde_json::json!({
+            }
+        }
+    };
+
+    let (stop_rx, was_too_short) = match begin_stop {
+        Ok((stop_rx, was_too_short, snap)) => {
+            sync_tray(&app, &snap);
+            let _ = app.emit("app-state", &snap);
+            (stop_rx, was_too_short)
+        }
+        Err(BeginStopError::Short(snap)) => {
+            sync_tray(&app, &snap);
+            emit_short_recording_error(&app);
+            let _ = app.emit("app-state", &snap);
+            return;
+        }
+        Err(BeginStopError::Failed(snap)) => {
+            sync_tray(&app, &snap);
+            let _ = app.emit(
+                "voice-error",
+                serde_json::json!({
                     "message": snap.last_error.clone().unwrap_or_else(|| "Recording failed".to_string()),
                     "audio_id": null,
-                }));
-                let _ = app.emit("app-state", &snap);
-                return;
-            }
+                }),
+            );
+            let _ = app.emit("app-state", &snap);
+            return;
         }
     };
 
@@ -1980,28 +2465,31 @@ fn do_finish_recording(
     let wav = match desktop::DesktopApp::finish_stop(stop_rx, was_too_short) {
         Ok(wav) => wav,
         Err(e) => {
-            let mut d = match shared.lock() {
-                Ok(g) => g,
-                Err(_) => return,
+            let is_short = is_short_recording_cancel(&e);
+            let snap = {
+                let mut d = match shared.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                if is_short {
+                    tracing::info!("[record] short Option tap — cancelled recording");
+                    d.finish_cancelled()
+                } else {
+                    d.finish_err(e)
+                }
             };
-            if is_short_recording_cancel(&e) {
-                tracing::info!("[record] short Option tap — cancelled recording");
-                let snap = d.finish_cancelled();
-                sync_tray(&app, &snap);
-                emit_short_recording_error(&app);
-                let _ = app.emit("app-state", &snap);
-                emit_meeting_stt_status(&app);
-                return;
-            }
-            let snap = d.finish_err(e);
             sync_tray(&app, &snap);
-            let _ = app.emit(
-                "voice-error",
-                serde_json::json!({
-                    "message": snap.last_error.clone().unwrap_or_else(|| "Recording failed".to_string()),
-                    "audio_id": null,
-                }),
-            );
+            if is_short {
+                emit_short_recording_error(&app);
+            } else {
+                let _ = app.emit(
+                    "voice-error",
+                    serde_json::json!({
+                        "message": snap.last_error.clone().unwrap_or_else(|| "Recording failed".to_string()),
+                        "audio_id": null,
+                    }),
+                );
+            }
             let _ = app.emit("app-state", &snap);
             emit_meeting_stt_status(&app);
             return;
@@ -2148,7 +2636,7 @@ fn do_finish_recording(
                 }
             }
 
-            {
+            let (snap, err_msg) = {
                 let mut d = match shared2.lock() {
                     Ok(g) => g,
                     Err(_) => {
@@ -2156,24 +2644,27 @@ fn do_finish_recording(
                         return;
                     }
                 };
-                let snap = match result {
-                    Ok(done) => d.finish_ok(ProcessSummary {
-                        transcript: done.transcript.clone(),
-                        polished: done.polished,
-                        model: done.model_used,
-                        confidence: done.confidence.unwrap_or(0.0),
-                        transcribe_ms: done.latency_ms.transcribe as u64,
-                        polish_ms: done.latency_ms.polish as u64,
-                    }),
-                    Err(ref e) => {
-                        emit_voice_error_quiet(&app2, e);
-                        d.finish_err(e.clone())
-                    }
-                };
-                sync_tray(&app2, &snap);
-                let _ = app2.emit("app-state", &snap);
-                emit_meeting_stt_status(&app2);
-            } // drop MutexGuard before await
+                match result {
+                    Ok(done) => (
+                        d.finish_ok(ProcessSummary {
+                            transcript: done.transcript.clone(),
+                            polished: done.polished,
+                            model: done.model_used,
+                            confidence: done.confidence.unwrap_or(0.0),
+                            transcribe_ms: done.latency_ms.transcribe as u64,
+                            polish_ms: done.latency_ms.polish as u64,
+                        }),
+                        None,
+                    ),
+                    Err(ref e) => (d.finish_err(e.clone()), Some(e.clone())),
+                }
+            };
+            if let Some(e) = err_msg {
+                emit_voice_error_quiet(&app2, &e);
+            }
+            sync_tray(&app2, &snap);
+            let _ = app2.emit("app-state", &snap);
+            emit_meeting_stt_status(&app2);
 
             // Auto-restart recording for continuous meeting capture
             let still_meeting = app2
@@ -2213,27 +2704,32 @@ fn do_finish_recording(
                 );
             }
 
-            let mut d = match shared2.lock() {
-                Ok(g) => g,
-                Err(_) => {
-                    emit_voice_error_quiet(&app2, "Recording interrupted");
-                    return;
+            let (snap, err_msg) = {
+                let mut d = match shared2.lock() {
+                    Ok(g) => g,
+                    Err(_) => {
+                        emit_voice_error_quiet(&app2, "Recording interrupted");
+                        return;
+                    }
+                };
+                match result {
+                    Ok(done) => (
+                        d.finish_ok(ProcessSummary {
+                            transcript: done.transcript.clone(),
+                            polished: done.polished,
+                            model: done.model_used,
+                            confidence: done.confidence.unwrap_or(0.0),
+                            transcribe_ms: done.latency_ms.transcribe as u64,
+                            polish_ms: done.latency_ms.polish as u64,
+                        }),
+                        None,
+                    ),
+                    Err(ref e) => (d.finish_err(e.clone()), Some(e.clone())),
                 }
             };
-            let snap = match result {
-                Ok(done) => d.finish_ok(ProcessSummary {
-                    transcript: done.transcript.clone(),
-                    polished: done.polished,
-                    model: done.model_used,
-                    confidence: done.confidence.unwrap_or(0.0),
-                    transcribe_ms: done.latency_ms.transcribe as u64,
-                    polish_ms: done.latency_ms.polish as u64,
-                }),
-                Err(ref e) => {
-                    emit_voice_error_quiet(&app2, e);
-                    d.finish_err(e.clone())
-                }
-            };
+            if let Some(e) = err_msg {
+                emit_voice_error_quiet(&app2, &e);
+            }
             sync_tray(&app2, &snap);
             let _ = app2.emit("app-state", &snap);
             emit_meeting_stt_status(&app2);
@@ -2270,6 +2766,8 @@ async fn run_voice_polish_sse(
     let fail_count2 = fail_count.clone();
     let live_guard = std::sync::Arc::new(std::sync::Mutex::new(LiveTypingGuard::default()));
     let live_guard2 = live_guard.clone();
+    let typed_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let typed_text2 = typed_text.clone();
 
     tracing::info!(
         "[pipeline] → sending to backend: wav={}KB pre_transcript={}",
@@ -2317,6 +2815,9 @@ async fn run_voice_polish_sse(
                 // Type word-by-word directly into focused app via AX
                 match paster::type_text(token) {
                     Ok(true) => {
+                        if let Ok(mut text) = typed_text2.lock() {
+                            text.push_str(token);
+                        }
                         let prev = typed_any2.swap(true, std::sync::atomic::Ordering::Relaxed);
                         let n = token_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         if !prev {
@@ -2424,18 +2925,17 @@ async fn run_voice_polish_sse(
         tracing::info!("[main] meeting mode — skipping paste for polished chunk");
     } else if typed_any.load(std::sync::atomic::Ordering::Relaxed) {
         if n_failed > 0 {
-            // Some tokens typed, some failed — AX partially worked (user switched app?).
-            // Do a full clipboard paste to ensure completeness.
+            // Some tokens typed, then the stream reset or a token failed. Replace
+            // only the suffix Said typed for this recording; never Cmd+A the field.
             tracing::warn!(
-                "[main] word-by-word partial: {n_typed} ok, {n_failed} failed — clipboard paste for safety"
+                "[main] word-by-word partial: {n_typed} ok, {n_failed} failed — replacing current typed suffix"
             );
             if !done.polished.is_empty() {
-                // Select-all and replace to avoid duplicating the partial text.
-                // Uses paster::paste_replacing which sends Cmd+A first, then Cmd+V.
-                // This is the key fix for the LLM-emits-duplicate bug AND for the
-                // case where word-by-word typing partially fails: the safety paste
-                // now actually REPLACES the partial output instead of appending.
-                match paster::paste_replacing(&done.polished) {
+                let typed_snapshot = typed_text
+                    .lock()
+                    .map(|text| text.clone())
+                    .unwrap_or_default();
+                match paster::replace_typed_suffix(&typed_snapshot, &done.polished) {
                     Ok(_) => {
                         output_pasted = true;
                     }
@@ -2818,20 +3318,22 @@ fn run_fast_voice_repair(app: tauri::AppHandle, action: LastVoiceAction) {
     let back_arc2 = Arc::clone(&backend.0);
     tauri::async_runtime::spawn(async move {
         let result = run_voice_repair_sse(&back_arc2, &action, &app2).await;
-        let mut d = match shared2.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        let snap = match result {
-            Ok(done) => d.finish_ok(ProcessSummary {
-                transcript: done.transcript.clone(),
-                polished: done.polished,
-                model: done.model_used,
-                confidence: done.confidence.unwrap_or(0.0),
-                transcribe_ms: done.latency_ms.transcribe as u64,
-                polish_ms: done.latency_ms.polish as u64,
-            }),
-            Err(e) => d.finish_err(e),
+        let snap = {
+            let mut d = match shared2.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            match result {
+                Ok(done) => d.finish_ok(ProcessSummary {
+                    transcript: done.transcript.clone(),
+                    polished: done.polished,
+                    model: done.model_used,
+                    confidence: done.confidence.unwrap_or(0.0),
+                    transcribe_ms: done.latency_ms.transcribe as u64,
+                    polish_ms: done.latency_ms.polish as u64,
+                }),
+                Err(e) => d.finish_err(e),
+            }
         };
         sync_tray(&app2, &snap);
         let _ = app2.emit("app-state", &snap);
@@ -2861,20 +3363,22 @@ fn run_refine_last_transform(app: tauri::AppHandle, action: LastTextTransformAct
     let back_arc2 = Arc::clone(&backend.0);
     tauri::async_runtime::spawn(async move {
         let result = run_text_refine_sse(&back_arc2, &action, &app2).await;
-        let mut d = match shared2.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        let snap = match result {
-            Ok(done) => d.finish_ok(ProcessSummary {
-                transcript: done.transcript.clone(),
-                polished: done.polished,
-                model: done.model_used,
-                confidence: done.confidence.unwrap_or(0.0),
-                transcribe_ms: done.latency_ms.transcribe as u64,
-                polish_ms: done.latency_ms.polish as u64,
-            }),
-            Err(e) => d.finish_err(e),
+        let snap = {
+            let mut d = match shared2.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            match result {
+                Ok(done) => d.finish_ok(ProcessSummary {
+                    transcript: done.transcript.clone(),
+                    polished: done.polished,
+                    model: done.model_used,
+                    confidence: done.confidence.unwrap_or(0.0),
+                    transcribe_ms: done.latency_ms.transcribe as u64,
+                    polish_ms: done.latency_ms.polish as u64,
+                }),
+                Err(e) => d.finish_err(e),
+            }
         };
         sync_tray(&app2, &snap);
         let _ = app2.emit("app-state", &snap);
@@ -3121,20 +3625,22 @@ fn retry_recording_spawn(
             );
         }
 
-        let mut d = match shared2.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        let snap = match result {
-            Ok(done) => d.finish_ok(ProcessSummary {
-                transcript: done.transcript.clone(),
-                polished: done.polished,
-                model: done.model_used,
-                confidence: done.confidence.unwrap_or(0.0),
-                transcribe_ms: done.latency_ms.transcribe as u64,
-                polish_ms: done.latency_ms.polish as u64,
-            }),
-            Err(e) => d.finish_err(e),
+        let snap = {
+            let mut d = match shared2.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            match result {
+                Ok(done) => d.finish_ok(ProcessSummary {
+                    transcript: done.transcript.clone(),
+                    polished: done.polished,
+                    model: done.model_used,
+                    confidence: done.confidence.unwrap_or(0.0),
+                    transcribe_ms: done.latency_ms.transcribe as u64,
+                    polish_ms: done.latency_ms.polish as u64,
+                }),
+                Err(e) => d.finish_err(e),
+            }
         };
         sync_tray(&app2, &snap);
         let _ = app2.emit("app-state", &snap);
@@ -3722,13 +4228,59 @@ async fn cloud_login(
 }
 
 #[tauri::command]
+async fn start_enterprise_oauth_listener(app: tauri::AppHandle) -> Result<u16, String> {
+    enterprise_oauth::start_listener(app).await
+}
+
+#[tauri::command]
+fn stop_enterprise_oauth_listener() {
+    enterprise_oauth::stop_listener();
+}
+
+#[tauri::command]
 async fn store_enterprise_auth(
     token: String,
     email: String,
+    server_url: String,
+    org_name: Option<String>,
     backend: State<'_, BackendState>,
 ) -> Result<(), String> {
     let ep = get_endpoint(&backend)?;
-    api::store_enterprise_token(&ep, &token, "enterprise", &email).await
+    api::store_enterprise_token(
+        &ep,
+        &token,
+        "enterprise",
+        &email,
+        &server_url,
+        org_name.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn clear_enterprise_auth(backend: State<'_, BackendState>) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    api::clear_cloud_token(&ep).await
+}
+
+#[tauri::command]
+async fn get_enterprise_status(
+    backend: State<'_, BackendState>,
+) -> Result<api::EnterpriseStatus, String> {
+    let ep = get_endpoint(&backend)?;
+    api::get_enterprise_status(&ep).await
+}
+
+#[tauri::command]
+fn get_device_id() -> String {
+    said_core::paths::device_id()
+}
+
+#[tauri::command]
+fn get_hostname() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "desktop".to_string())
 }
 
 #[tauri::command]
@@ -4359,7 +4911,22 @@ async fn watch_for_edit(
                     resp.pending_id
                 );
 
-                if resp.notify || resp.learned {
+                if let Some(email) = resp.learned_emails.first() {
+                    if !email.trim().is_empty() {
+                        if let Some(w) = app.get_webview_window("status-bar") {
+                            let _ = w.show();
+                        }
+                        let _ = app.emit(
+                            "email-learned",
+                            serde_json::json!({
+                                "email": email,
+                                "message": "Email saved for next time",
+                            }),
+                        );
+                    }
+                }
+
+                if (resp.notify || resp.learned) && resp.learned_emails.is_empty() {
                     let first_term = resp.promoted_terms.first().cloned();
                     if resp.notify {
                         if let Some(ref term) = first_term {
@@ -4905,6 +5472,35 @@ fn install_rustls_crypto_provider() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
+fn parse_enterprise_oauth_token(args: &[String]) -> Option<String> {
+    for arg in args {
+        let trimmed = arg.trim();
+        if !trimmed.starts_with("airnote://auth/callback") {
+            continue;
+        }
+        let query = trimmed.split('?').nth(1)?;
+        for part in query.split('&') {
+            if let Some(token) = part.strip_prefix("token=") {
+                let token = token.trim();
+                if !token.is_empty() {
+                    return Some(token.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn emit_enterprise_oauth_token(app: &tauri::AppHandle, token: &str) {
+    enterprise_oauth::emit_token(app, token);
+}
+
+fn handle_enterprise_oauth_urls(app: &tauri::AppHandle, urls: &[String]) {
+    if let Some(token) = parse_enterprise_oauth_token(urls) {
+        emit_enterprise_oauth_token(app, &token);
+    }
+}
+
 fn main() {
     install_rustls_crypto_provider();
 
@@ -4961,24 +5557,63 @@ fn main() {
     let shared_app = Arc::new(Mutex::new(DesktopApp::new()));
     let backend_arc = Arc::new(Mutex::new(None::<BackendEndpoint>));
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+
+    builder
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            handle_enterprise_oauth_urls(app, &argv);
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .setup({
             let shared   = Arc::clone(&shared_app);
             let back_arc = Arc::clone(&backend_arc);
             move |app| {
                 #[cfg(target_os = "macos")]
                 {
-                    // Accessory policy keeps the recorder HUD available across
-                    // macOS Spaces/fullscreen desktops. A regular foreground
-                    // app made the HUD Space-bound on this Tauri/WebKit stack.
-                    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                    tracing::info!("[main] macOS activation policy set to Accessory");
+                    // Keep the app foreground/regular so the Dock icon remains
+                    // visible. The recorder pill is a separate non-activating
+                    // NSPanel, so we no longer switch the whole app to Accessory.
+                    app.set_activation_policy(tauri::ActivationPolicy::Regular);
+                    tracing::info!("[main] macOS activation policy set to Regular (dock visible)");
+                }
+
+                {
+                    use tauri_plugin_deep_link::DeepLinkExt;
+                    let handle = app.handle().clone();
+                    app.deep_link().on_open_url(move |event| {
+                        let urls: Vec<String> =
+                            event.urls().iter().map(|u| u.to_string()).collect();
+                        handle_enterprise_oauth_urls(&handle, &urls);
+                    });
+
+                    if let Ok(Some(urls)) = app.deep_link().get_current() {
+                        let url_strings: Vec<String> =
+                            urls.iter().map(|u| u.to_string()).collect();
+                        if let Some(token) = parse_enterprise_oauth_token(&url_strings) {
+                            let handle = app.handle().clone();
+                            std::thread::spawn(move || {
+                                std::thread::sleep(std::time::Duration::from_millis(600));
+                                emit_enterprise_oauth_token(&handle, &token);
+                            });
+                        }
+                    } else if let Some(token) =
+                        parse_enterprise_oauth_token(&std::env::args().collect::<Vec<_>>())
+                    {
+                        let handle = app.handle().clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(600));
+                            emit_enterprise_oauth_token(&handle, &token);
+                        });
+                    }
+
+                    #[cfg(any(windows, target_os = "linux"))]
+                    {
+                        if let Err(e) = app.deep_link().register_all() {
+                            tracing::warn!("[deep-link] register_all failed: {e}");
+                        }
+                    }
                 }
 
                 // ── Request notification permission (macOS) ─────────────────
@@ -5258,7 +5893,15 @@ fn main() {
                 {
                     let shared_hold_press = Arc::clone(&app.state::<SharedApp>().0);
                     let shared_hold_release = Arc::clone(&app.state::<SharedApp>().0);
-                    let back_hold = Arc::clone(&app.state::<BackendState>().0);
+                    let back_hold_press = Arc::clone(&app.state::<BackendState>().0);
+                    let back_hold_release = Arc::clone(&app.state::<BackendState>().0);
+                    let long_locked_press = Arc::clone(&app.state::<LongDictationState>().locked);
+                    let long_locked_release =
+                        Arc::clone(&app.state::<LongDictationState>().locked);
+                    let long_stop_consumed_press =
+                        Arc::clone(&app.state::<LongDictationState>().stop_consumed);
+                    let long_stop_consumed_release =
+                        Arc::clone(&app.state::<LongDictationState>().stop_consumed);
                     let meeting_active_press = Arc::clone(&app.state::<MeetingModeState>().active);
                     let meeting_muted_press = Arc::clone(&app.state::<MeetingModeState>().muted);
                     let meeting_generation_press =
@@ -5279,17 +5922,47 @@ fn main() {
                                 meeting_generation_press.fetch_add(1, Ordering::SeqCst);
                                 emit_meeting_stt_status(&app_h);
                                 std::thread::spawn(move || {
-                                    let current = shared.try_lock().ok().map(|d| d.state);
+                                    let current = hotkey_current_state(&shared, "mute");
                                     if current == Some(desktop::AppState::Recording) {
                                         do_cancel_recording(shared, app_h, "hotkey mute");
-                                    } else if current.is_none() {
-                                        tracing::info!("[hotkey] mute skipped — shared lock busy");
                                     }
                                 });
                             } else {
-                                // Normal: press = start recording
+                                let back = Arc::clone(&back_hold_press);
+                                let long_locked = Arc::clone(&long_locked_press);
+                                let long_stop_consumed = Arc::clone(&long_stop_consumed_press);
+                                HOTKEY_START_IN_FLIGHT.store(true, Ordering::SeqCst);
                                 std::thread::spawn(move || {
-                                    do_start_recording(&shared, &app_h);
+                                    struct HotkeyStartGuard;
+                                    impl Drop for HotkeyStartGuard {
+                                        fn drop(&mut self) {
+                                            HOTKEY_START_IN_FLIGHT.store(false, Ordering::SeqCst);
+                                        }
+                                    }
+                                    let _guard = HotkeyStartGuard;
+                                    let current = hotkey_current_state(&shared, "start");
+                                    if long_locked.load(Ordering::SeqCst)
+                                        && current == Some(desktop::AppState::Recording)
+                                    {
+                                        tracing::info!(
+                                            "[hotkey] Fn pressed while long dictation locked → process"
+                                        );
+                                        long_locked.store(false, Ordering::SeqCst);
+                                        long_stop_consumed.store(true, Ordering::SeqCst);
+                                        do_finish_recording(shared, app_h, back);
+                                    } else if current == Some(desktop::AppState::Idle) {
+                                        do_start_recording(&shared, &app_h);
+                                        if FINISH_AFTER_START.swap(false, Ordering::SeqCst) {
+                                            tracing::info!(
+                                                "[hotkey] release arrived during start — finishing immediately"
+                                            );
+                                            if hotkey_current_state(&shared, "finish after start")
+                                                == Some(desktop::AppState::Recording)
+                                            {
+                                                do_finish_recording(shared, app_h, back);
+                                            }
+                                        }
+                                    }
                                 });
                             }
                         }),
@@ -5298,16 +5971,84 @@ fn main() {
                             let app_h = app_release.clone();
                             if hotkey_meeting_mute_release.swap(false, Ordering::SeqCst) {
                                 emit_meeting_stt_status(&app_h);
+                            } else if long_stop_consumed_release.swap(false, Ordering::SeqCst) {
+                                tracing::debug!("[hotkey] Fn release consumed after long dictation stop");
+                            } else if long_locked_release.load(Ordering::SeqCst) {
+                                tracing::info!(
+                                    "[hotkey] Fn released while long dictation locked — keep listening"
+                                );
                             } else {
                                 // Normal Said route. This also applies while the
                                 // meeting view is open but meeting capture is muted.
-                                let back = Arc::clone(&back_hold);
+                                let back = Arc::clone(&back_hold_release);
                                 std::thread::spawn(move || {
-                                    do_finish_recording(shared, app_h, back);
+                                    let current = hotkey_current_state(&shared, "finish");
+                                    if current == Some(desktop::AppState::Recording) {
+                                        do_finish_recording(shared, app_h, back);
+                                    } else if (current == Some(desktop::AppState::Idle)
+                                        || current.is_none())
+                                        && (HOTKEY_START_IN_FLIGHT.load(Ordering::SeqCst)
+                                            || RECORDING_STARTING.load(Ordering::SeqCst))
+                                    {
+                                        tracing::info!(
+                                            "[hotkey] release arrived before recording started — queue finish"
+                                        );
+                                        FINISH_AFTER_START.store(true, Ordering::SeqCst);
+                                    }
                                 });
                             }
                         }),
                     );
+
+                    let app_long = app.handle().clone();
+                    let shared_long = Arc::clone(&app.state::<SharedApp>().0);
+                    let long_pending = Arc::clone(&app.state::<LongDictationState>().pending_lock);
+                    let meeting_active_long = Arc::clone(&app.state::<MeetingModeState>().active);
+                    let meeting_muted_long = Arc::clone(&app.state::<MeetingModeState>().muted);
+                    hotkey::register_long_dictation_callback(Arc::new(move || {
+                        let app_h = app_long.clone();
+                        let shared = Arc::clone(&shared_long);
+                        let pending = Arc::clone(&long_pending);
+                        let meeting_capture = meeting_active_long.load(Ordering::SeqCst)
+                            && !meeting_muted_long.load(Ordering::SeqCst);
+                        if meeting_capture {
+                            tracing::info!(
+                                "[hotkey] Fn+Space ignored — meeting capture owns Fn"
+                            );
+                            return;
+                        }
+                        std::thread::spawn(move || {
+                            let current = hotkey_current_state(&shared, "long dictation");
+                            if current == Some(desktop::AppState::Recording) {
+                                activate_long_dictation_lock(&app_h);
+                            } else if current == Some(desktop::AppState::Idle) {
+                                pending.store(true, Ordering::SeqCst);
+                                tracing::info!(
+                                    "[hotkey] Fn+Space lock pending until recording starts"
+                                );
+                            }
+                        });
+                    }));
+
+                    let app_hud = app.handle().clone();
+                    hotkey::register_hud_shortcut_callback(Arc::new(move |action| {
+                        let app_h = app_hud.clone();
+                        std::thread::spawn(move || match action {
+                            hotkey::HudShortcutAction::PlacementMode => {
+                                tracing::info!("[hotkey] Cmd+Shift+/ → status bar placement mode");
+                                show_status_bar_placement_mode(&app_h, "Drag AirNote");
+                            }
+                            hotkey::HudShortcutAction::ResetPosition => {
+                                tracing::info!("[hotkey] Cmd+Shift+. → reset status bar position");
+                                reset_status_bar_to_default(&app_h);
+                                show_status_bar_placement_mode(&app_h, "Centered");
+                            }
+                            hotkey::HudShortcutAction::FinishPlacement => {
+                                tracing::info!("[hotkey] Cmd+Shift+F → finish status bar placement");
+                                finish_status_bar_placement_mode(&app_h);
+                            }
+                        });
+                    }));
 
                     // ── Option+1..5 tone shortcuts ─────────────────────────────
                     // Select text in any app, press Option+N to polish with a preset tone.
@@ -5379,10 +6120,15 @@ fn main() {
         .manage(HotPathCache(Arc::new(tokio::sync::RwLock::new(HotPathCacheInner::default()))))
         .manage(StatusBarHideGen(Arc::new(AtomicU64::new(0))))
         .manage(MeetingModeState::new())
+        .manage(LongDictationState::new())
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             get_snapshot,
             dismiss_status_bar,
+            resize_status_bar,
+            get_status_bar_position,
+            set_status_bar_position,
+            reset_status_bar_position,
             set_status_bar_interactive,
             get_backend_endpoint,
             get_preferences,
@@ -5403,6 +6149,12 @@ fn main() {
             // Cloud auth
             cloud_signup,
             store_enterprise_auth,
+            start_enterprise_oauth_listener,
+            stop_enterprise_oauth_listener,
+            clear_enterprise_auth,
+            get_enterprise_status,
+            get_device_id,
+            get_hostname,
             cloud_login,
             cloud_logout,
             get_cloud_status,
@@ -5454,6 +6206,10 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build Voice Polish desktop")
         .run(|app, event| match event {
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { has_visible_windows, .. } if !has_visible_windows => {
+                show_main_window(app);
+            }
             tauri::RunEvent::ExitRequested { code, api, .. } if code.is_none() => {
                 // Window closed / Cmd+Q — hide instead of quit for accessory-app UX.
                 api.prevent_exit();
