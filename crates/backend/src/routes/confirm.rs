@@ -119,6 +119,15 @@ pub async fn confirm_term(
             );
         }
 
+        // ── Auto-approve aliases (user explicitly confirmed) ────────────────
+        let approved = stt_replacements::approve_aliases_for_term(&state.pool, user_id, &body.term);
+        if approved > 0 {
+            info!(
+                "[confirm] auto-approved {approved} alias(es) for {:?}",
+                body.term
+            );
+        }
+
         // ── Auto-activate edit-policy rules ─────────────────────────────────
         let activated = tier2_edit_policy::activate_all_for_term(&state.pool, user_id, &body.term);
         if activated > 0 {
@@ -350,6 +359,9 @@ pub async fn confirm_batch(
                     original,
                     &language,
                 );
+
+                // Auto-approve (user explicitly confirmed via batch)
+                stt_replacements::approve_aliases_for_term(&state.pool, user_id, corrected);
             } else if !original.is_empty() {
                 info!(
                     "[confirm-batch] alias safety blocked {:?} -> {:?}",

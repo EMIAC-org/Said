@@ -21,9 +21,10 @@ pub enum RecordHotkey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HudShortcutAction {
+    /// ⇧⌘/ — toggle draggable placement mode on/off.
     PlacementMode,
+    /// ⇧⌘. — reset saved position to default, then enter placement mode.
     ResetPosition,
-    FinishPlacement,
 }
 
 #[cfg(target_os = "macos")]
@@ -239,8 +240,7 @@ mod imp {
         let _ = HUD_SHORTCUT_CB.set(cb);
     }
 
-    /// Cmd+Shift+/ opens draggable placement mode. Cmd+Shift+. resets the
-    /// saved placement to the centered default.
+    /// ⇧⌘/ toggles draggable placement mode. ⇧⌘. resets to the centered default.
     unsafe fn check_and_fire_hud_shortcut(event: ffi::CGEventRef) -> bool {
         let flags = unsafe { ffi::CGEventGetFlags(event) };
         let keycode =
@@ -257,7 +257,6 @@ mod imp {
         let action = match keycode {
             ffi::KC_SLASH => HudShortcutAction::PlacementMode,
             ffi::KC_PERIOD => HudShortcutAction::ResetPosition,
-            ffi::KC_F => HudShortcutAction::FinishPlacement,
             _ => return false,
         };
 

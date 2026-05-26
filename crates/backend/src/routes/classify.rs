@@ -526,8 +526,10 @@ pub async fn classify(
 
         match change.reason {
             ChangeReason::SttError => {
-                if promotion_gate::is_common_word(corrected) {
-                    info!("[classify] STT_ERROR skipped — common word: {corrected:?}");
+                if promotion_gate::is_common_word(corrected)
+                    || crate::tier2::is_in_dictionary(corrected)
+                {
+                    info!("[classify] STT_ERROR skipped — common/dictionary word: {corrected:?}");
                     continue;
                 }
                 if promotion_gate::is_numeric_junk(corrected) {
@@ -666,6 +668,7 @@ pub async fn classify(
                     }
                 } else if matches!(term_type, "brand" | "acronym" | "code_identifier")
                     && !promotion_gate::is_common_word(original)
+                    && !crate::tier2::is_in_dictionary(original)
                 {
                     info!(
                         "[classify] auto-learn K=1: {:?} → {:?} (type={term_type})",
@@ -796,6 +799,17 @@ pub async fn classify(
                 );
                 if aliases_written > 0 {
                     promoted_count += aliases_written;
+                }
+                // Approve immediately — this alias passed all safety gates
+                // (dictionary, plausibility, judge_alias_source LLM, term type).
+                // No need to wait 15min for background review.
+                let approved = stt_replacements::approve_aliases_for_term(
+                    &state.pool,
+                    &state.default_user_id,
+                    &canonical_term,
+                );
+                if approved > 0 {
+                    info!("[classify] auto-approved {approved} alias(es) for {canonical_term:?}");
                 }
 
                 // ── Proactive distortion seeding ────────────────────────
@@ -1508,8 +1522,9 @@ fn deterministic_classify_hunks(
 
             // Check if the corrected term is already in vocabulary
             let in_vocab = vocabulary::find_by_term_ci(pool, user_id, &corrected_surface).is_some();
-            // Check if original is a common word (Hindi/English)
-            let original_is_common = promotion_gate::is_common_word(&original_surface);
+            // Check if original is a real word (236K dictionary + Hindi)
+            let original_is_common = crate::tier2::is_in_dictionary(&original_surface)
+                || promotion_gate::is_common_word(&original_surface);
             // Check if corrected is a common/stop word — don't learn stop words
             let corrected_is_common = promotion_gate::is_common_word(&corrected_surface);
 
@@ -1631,7 +1646,8 @@ fn classify_single_token_change(
     }
 
     let in_vocab = vocabulary::find_by_term_ci(pool, user_id, &corrected).is_some();
-    let original_is_common = promotion_gate::is_common_word(&original);
+    let original_is_common =
+        crate::tier2::is_in_dictionary(&original) || promotion_gate::is_common_word(&original);
     let corrected_is_common = promotion_gate::is_common_word(&corrected);
 
     if corrected_is_common {
