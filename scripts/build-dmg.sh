@@ -171,6 +171,12 @@ rm -rf "$STAGING"
 [ -f "$DMG_OUT" ] || fail "hdiutil create did not produce $DMG_OUT"
 ok "DMG: $DMG_OUT ($(du -h "$DMG_OUT" | cut -f1 | xargs))"
 
+# Sign the disk image container itself. The .app inside is already signed, but
+# Gatekeeper assesses the downloaded DMG first; without this signature spctl
+# reports "source=no usable signature" even after notarization succeeds.
+codesign --force --sign "$SIGN_ID" "$DMG_OUT" 2>&1 | sed 's/^/  /'
+ok "DMG container signed"
+
 # Verify the DMG is openable end-to-end. We attach + detach to make sure
 # the volume mounts cleanly and the .app inside still satisfies its DR.
 step "Verify DMG mounts cleanly and signature still validates"
