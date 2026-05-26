@@ -195,6 +195,8 @@ jobs:
         if: matrix.platform == 'darwin'
         shell: bash
         timeout-minutes: 8
+        env:
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: EMIAC TECHNOLOGIES LIMITED (96ZQGP7L3B)"
         run: |
           set -euo pipefail
           APP_PATH="target/${{ matrix.target }}/release/bundle/macos/${PRODUCT_NAME}.app"
@@ -216,6 +218,12 @@ jobs:
 
           rm -rf "$STAGING"
           test -f "$DMG_OUT"
+
+          # Gatekeeper assesses the downloaded DMG before the .app inside it.
+          # Sign the disk image container as well as the app bundle; otherwise
+          # notarization can be accepted but spctl reports "no usable signature".
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG_OUT"
+          codesign -dv --verbose=2 "$DMG_OUT"
 
           ATTACH_OUT=$(hdiutil attach -nobrowse -readonly "$DMG_OUT")
           echo "$ATTACH_OUT"
