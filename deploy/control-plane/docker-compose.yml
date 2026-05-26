@@ -54,6 +54,7 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${RELEASES_PATH:-./releases}:/srv/airnote-releases:ro
       - caddy-data:/data
       - caddy-config:/config
 

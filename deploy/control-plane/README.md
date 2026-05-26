@@ -47,6 +47,29 @@ Start with built-in Caddy HTTPS:
 docker compose --profile caddy up -d
 ```
 
+## Static Release Hosting
+
+Caddy also serves local release artifacts for the desktop updater:
+
+- `https://airnote.103.180.163.41.sslip.io/updates/latest.json`
+- `https://airnote.103.180.163.41.sslip.io/releases/<version>/...`
+
+The release files live under `${RELEASES_PATH:-./releases}` on the server. The
+recommended path is `/opt/airnote-control-plane/releases` when running compose
+from `/opt/airnote-control-plane`.
+
+Use the repo helper from a Mac after the app is signed/notarized:
+
+```bash
+scripts/deploy-release-vm.sh
+```
+
+The script uploads the DMG for manual download plus the signed Tauri updater
+bundle (`.app.tar.gz` + `.sig`) and keeps only the latest three versions.
+It uses `ssh`/`scp`; set `REMOTE`, `REMOTE_RELEASE_ROOT`, or `PUBLIC_BASE_URL`
+to override defaults. If `SSHPASS` is present and `sshpass` is installed, the
+script can run non-interactively, but the password should never be committed.
+
 ## GitHub Actions Secrets
 
 Set these repository secrets for CI/CD:

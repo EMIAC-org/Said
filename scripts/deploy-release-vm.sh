@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Upload a locally built AirNote macOS release to the static updater host.
+#
+# This script intentionally does not build or notarize the app. Run
+# scripts/build-dmg.sh first on a Mac with the Developer ID certificate and
+# Apple notarization credentials available. This deploy step only packages the
+# Tauri updater archive, signs that updater archive, writes latest.json, uploads
+# everything to the VM, and prunes old versions.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+PRODUCT_NAME="${PRODUCT_NAME:-AirNote}"
+TARGET="${1:-aarch64-apple-darwin}"
+case "$TARGET" in
+  aarch64-apple-darwin) ARCH_SHORT="aarch64"; PLATFORM_KEY="darwin-aarch64" ;;
+  *) echo "unsupported target: $TARGET (currently only aarch64-apple-darwin is deployable)" >&2; exit 1 ;;
+esac
+
+VERSION=$(awk '
+  /^\[workspace\.package\]/ { in_section = 1; next }
+  /^\[/                     { in_section = 0 }
+  in_section && /^[[:space:]]*version[[:space:]]*=/ {
+    gsub(/.*=[[:space:]]*"/, "")
+    gsub(/".*/, "")
+    print
+    exit
+  }
+' Cargo.toml)
+[ -n "$VERSION" ] || { echo "could not parse workspace version" >&2; exit 1; }
+
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://airnote.103.180.163.41.sslip.io}"
+REMOTE="${REMOTE:-root@103.180.163.41}"
+REMOTE_RELEASE_ROOT="${REMOTE_RELEASE_ROOT:-/opt/airnote-control-plane/releases}"
+KEEP_RELEASES="${KEEP_RELEASES:-3}"
+
+SSH_CMD=(ssh -o StrictHostKeyChecking=accept-new)
+SCP_CMD=(scp -o StrictHostKeyChecking=accept-new)
+if [ -n "${SSHPASS:-}" ] && command -v sshpass >/dev/null 2>&1; then
+  SSH_CMD=(sshpass -e ssh -o StrictHostKeyChecking=accept-new)
+  SCP_CMD=(sshpass -e scp -o StrictHostKeyChecking=accept-new)
+fi
+
+APP_DIR="target/$TARGET/release/bundle/macos/$PRODUCT_NAME.app"
+DMG_PATH="target/$TARGET/release/bundle/dmg/${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.dmg"
+ARTIFACT_DIR=".context/release-artifacts/$VERSION"
+UPDATE_TAR="${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.app.tar.gz"
+UPDATE_TAR_PATH="$ARTIFACT_DIR/$UPDATE_TAR"
+UPDATE_SIG_PATH="$UPDATE_TAR_PATH.sig"
+MANIFEST_PATH="$ARTIFACT_DIR/latest.json"
+
+require_file() {
+  [ -f "$1" ] || { echo "missing required file: $1" >&2; exit 1; }
+}
+
+require_dir() {
+  [ -d "$1" ] || { echo "missing required directory: $1" >&2; exit 1; }
+}
+
+require_dir "$APP_DIR"
+require_file "$DMG_PATH"
+
+if [ "${SKIP_GATEKEEPER_VERIFY:-0}" != "1" ]; then
+  echo "Verifying notarized DMG with Gatekeeper..."
+  spctl --assess --type open --context context:primary-signature -v "$DMG_PATH"
+fi
+
+: "${TAURI_SIGNING_PRIVATE_KEY:?set TAURI_SIGNING_PRIVATE_KEY to sign the updater archive}"
+: "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:?set TAURI_SIGNING_PRIVATE_KEY_PASSWORD to sign the updater archive}"
+
+rm -rf "$ARTIFACT_DIR"
+mkdir -p "$ARTIFACT_DIR"
+
+echo "Creating updater archive: $UPDATE_TAR"
+(
+  cd "target/$TARGET/release/bundle/macos"
+  tar czf "$REPO_ROOT/$UPDATE_TAR_PATH" "$PRODUCT_NAME.app"
+)
+
+echo "Signing updater archive..."
+(
+  cd desktop
+  npx tauri signer sign \
+    "$REPO_ROOT/$UPDATE_TAR_PATH" \
+    --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+    --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+)
+
+require_file "$UPDATE_SIG_PATH"
+cp "$DMG_PATH" "$ARTIFACT_DIR/"
+
+PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SIGNATURE="$(cat "$UPDATE_SIG_PATH")"
+cat > "$MANIFEST_PATH" <<JSON
+{
+  "version": "$VERSION",
+  "notes": "AirNote $VERSION",
+  "pub_date": "$PUB_DATE",
+  "platforms": {
+    "$PLATFORM_KEY": {
+      "signature": "$SIGNATURE",
+      "url": "$PUBLIC_BASE_URL/releases/$VERSION/$UPDATE_TAR"
+    }
+  }
+}
+JSON
+
+(
+  cd "$ARTIFACT_DIR"
+  shasum -a 256 * | sort -k 2 > SHA256SUMS
+)
+
+echo "Uploading release $VERSION to $REMOTE:$REMOTE_RELEASE_ROOT"
+"${SSH_CMD[@]}" "$REMOTE" "mkdir -p '$REMOTE_RELEASE_ROOT/releases/$VERSION' '$REMOTE_RELEASE_ROOT/updates'"
+"${SCP_CMD[@]}" "$ARTIFACT_DIR/$UPDATE_TAR" "$ARTIFACT_DIR/$UPDATE_TAR.sig" "$ARTIFACT_DIR/$(basename "$DMG_PATH")" "$ARTIFACT_DIR/SHA256SUMS" \
+  "$REMOTE:$REMOTE_RELEASE_ROOT/releases/$VERSION/"
+"${SCP_CMD[@]}" "$MANIFEST_PATH" "$REMOTE:$REMOTE_RELEASE_ROOT/updates/latest.json"
+"${SCP_CMD[@]}" "$MANIFEST_PATH" "$REMOTE:$REMOTE_RELEASE_ROOT/releases/$VERSION/latest.json"
+
+"${SSH_CMD[@]}" "$REMOTE" "REMOTE_RELEASE_ROOT='$REMOTE_RELEASE_ROOT' KEEP_RELEASES='$KEEP_RELEASES' bash -s" <<'REMOTE_SCRIPT'
+set -euo pipefail
+cd "$REMOTE_RELEASE_ROOT/releases"
+mapfile -t versions < <(find . -mindepth 1 -maxdepth 1 -type d -print | sed 's#^\./##' | sort -V)
+remove_count=$((${#versions[@]} - KEEP_RELEASES))
+if [ "$remove_count" -gt 0 ]; then
+  for old in "${versions[@]:0:$remove_count}"; do
+    echo "Pruning old release: $old"
+    rm -rf -- "$old"
+  done
+fi
+REMOTE_SCRIPT
+
+echo "Release uploaded:"
+echo "  manifest: $PUBLIC_BASE_URL/updates/latest.json"
+echo "  manual DMG: $PUBLIC_BASE_URL/releases/$VERSION/$(basename "$DMG_PATH")"
+echo "  updater: $PUBLIC_BASE_URL/releases/$VERSION/$UPDATE_TAR"
