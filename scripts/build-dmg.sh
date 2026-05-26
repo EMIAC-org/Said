@@ -143,8 +143,8 @@ ok "embedded sidecar verified: $(codesign -dv "$EMBEDDED_BACKEND" 2>&1 | awk -F=
 # We don't use Tauri's DMG target because its bundle_dmg.sh shells out to
 # osascript to drive Finder for cosmetic icon layout, which fails
 # non-deterministically on recent macOS (tauri-apps/tauri#3055,
-# community#163491). A plain `hdiutil create -srcfolder` with an /Applications
-# symlink is what users actually need: drag-to-install, signature intact.
+# community#163491). CI defaults to a plain `hdiutil create -srcfolder` with an
+# /Applications symlink: drag-to-install, signature intact, no GUI dependency.
 step "Build DMG with hdiutil"
 
 STAGING="$BUNDLE_DIR/dmg-staging"
@@ -155,65 +155,17 @@ VOLNAME="AirNote"
 rm -rf "$STAGING" "$DMG_OUT"
 mkdir -p "$STAGING" "$BUNDLE_DIR/dmg"
 
-# Stage: .app + /Applications symlink + a .DS_Store that sets the window
-# size and icon positions so Finder opens a proper drag-to-install layout.
+# Stage: .app + /Applications symlink.
 cp -R "$APP_PATH" "$STAGING/AirNote.app"
 ln -s /Applications "$STAGING/Applications"
-
-# ── Inject window layout via a writable interim DMG ──────────────────────
-# We mount a temporary read-write image, use osascript to position the two
-# icons side-by-side (app on the left, Applications folder on the right),
-# then convert to the final read-only UDZO for distribution.
-RW_DMG="$BUNDLE_DIR/dmg/AirNote_rw.dmg"
-rm -f "$RW_DMG"
 
 hdiutil create \
   -volname "$VOLNAME" \
   -srcfolder "$STAGING" \
   -ov \
-  -format UDRW \
-  -fs HFS+ \
-  "$RW_DMG" >/dev/null
+  -format UDZO \
+  "$DMG_OUT" >/dev/null
 
-RW_VOL=$(hdiutil attach "$RW_DMG" -readwrite -nobrowse | awk '/\/Volumes\// {for(i=3;i<=NF;i++) printf "%s%s",$i,(i<NF?" ":""); print ""; exit}')
-ok "mounted rw volume at $RW_VOL"
-
-# Set icon positions: AirNote.app at (150,180), Applications at (410,180).
-# Window: 560×340, icon size 128px, no toolbar, no sidebar.
-osascript <<APPLESCRIPT >/dev/null 2>&1 || true
-tell application "Finder"
-  tell disk "$VOLNAME"
-    open
-    set current view of container window to icon view
-    set toolbar visible of container window to false
-    set statusbar visible of container window to false
-    set the bounds of container window to {400, 200, 960, 540}
-    set theViewOptions to the icon view options of container window
-    set arrangement of theViewOptions to not arranged
-    set icon size of theViewOptions to 128
-    set position of item "AirNote.app"    of container window to {150, 180}
-    set position of item "Applications" of container window to {410, 180}
-    close
-    open
-    update without registering applications
-    delay 2
-    close
-  end tell
-end tell
-APPLESCRIPT
-
-# Flush Finder's DS_Store writes to disk before we detach.
-sync
-# Retry detach — CI runners sometimes hold the volume briefly (Spotlight, fseventsd).
-for attempt in 1 2 3 4 5; do
-  hdiutil detach "$RW_VOL" -force >/dev/null 2>&1 && break
-  warn "detach attempt $attempt failed — retrying in 3s"
-  sleep 3
-done
-
-# Convert the laid-out rw image → final compressed read-only DMG.
-hdiutil convert "$RW_DMG" -format UDZO -o "$DMG_OUT" >/dev/null
-rm -f "$RW_DMG"
 rm -rf "$STAGING"
 
 [ -f "$DMG_OUT" ] || fail "hdiutil create did not produce $DMG_OUT"
@@ -238,10 +190,12 @@ APPLE_ASP="${APPLE_APP_SPECIFIC_PASSWORD:-}"
 
 if [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ]; then
   step "Notarize DMG with Apple"
+  NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-25m}"
   xcrun notarytool submit "$DMG_OUT" \
     --apple-id "$APPLE_ID_EMAIL" \
     --team-id "$TEAM_ID" \
     --password "$APPLE_ASP" \
+    --timeout "$NOTARY_TIMEOUT" \
     --wait 2>&1 | sed 's/^/  /'
   ok "notarization submitted"
 
