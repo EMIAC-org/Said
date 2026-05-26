@@ -762,6 +762,21 @@ struct HotPathCacheInner {
 /// Each idle sync increments this; a timer whose generation no longer matches is silently dropped.
 struct StatusBarHideGen(Arc<AtomicU64>);
 
+/// True while ⇧⌘/ placement mode is active (drag to reposition HUD).
+struct StatusBarPlacementActive(AtomicBool);
+
+fn placement_mode_active(app: &tauri::AppHandle) -> bool {
+    app.try_state::<StatusBarPlacementActive>()
+        .map(|s| s.0.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
+fn set_placement_mode_active(app: &tauri::AppHandle, active: bool) {
+    if let Some(s) = app.try_state::<StatusBarPlacementActive>() {
+        s.0.store(active, Ordering::Relaxed);
+    }
+}
+
 #[derive(serde::Serialize)]
 struct DebugLogs {
     desktop_path: String,
@@ -1324,6 +1339,7 @@ fn show_status_bar_placement_mode(app: &tauri::AppHandle, message: &'static str)
     if app.get_webview_window("status-bar").is_none() {
         create_status_bar(app);
     }
+    set_placement_mode_active(app, true);
     sync_status_bar(app, "placement");
     let _ = app.emit(
         "status-bar-placement-mode",
@@ -1338,9 +1354,20 @@ fn reset_status_bar_to_default(app: &tauri::AppHandle) {
 }
 
 fn finish_status_bar_placement_mode(app: &tauri::AppHandle) {
+    set_placement_mode_active(app, false);
     let _ = app.emit("status-bar-placement-finish", serde_json::json!({}));
     if let Err(e) = dismiss_status_bar(app.clone()) {
         tracing::warn!("[status-bar] finish placement hide failed: {e}");
+    }
+}
+
+fn toggle_status_bar_placement_mode(app: &tauri::AppHandle) {
+    if placement_mode_active(app) {
+        tracing::info!("[status-bar] ⇧⌘/ — finish placement mode");
+        finish_status_bar_placement_mode(app);
+    } else {
+        tracing::info!("[status-bar] ⇧⌘/ — enter placement mode");
+        show_status_bar_placement_mode(app, "Drag AirNote");
     }
 }
 
@@ -6035,17 +6062,12 @@ fn main() {
                         let app_h = app_hud.clone();
                         std::thread::spawn(move || match action {
                             hotkey::HudShortcutAction::PlacementMode => {
-                                tracing::info!("[hotkey] Cmd+Shift+/ → status bar placement mode");
-                                show_status_bar_placement_mode(&app_h, "Drag AirNote");
+                                toggle_status_bar_placement_mode(&app_h);
                             }
                             hotkey::HudShortcutAction::ResetPosition => {
-                                tracing::info!("[hotkey] Cmd+Shift+. → reset status bar position");
+                                tracing::info!("[hotkey] ⇧⌘. → reset status bar position");
                                 reset_status_bar_to_default(&app_h);
                                 show_status_bar_placement_mode(&app_h, "Centered");
-                            }
-                            hotkey::HudShortcutAction::FinishPlacement => {
-                                tracing::info!("[hotkey] Cmd+Shift+F → finish status bar placement");
-                                finish_status_bar_placement_mode(&app_h);
                             }
                         });
                     }));
@@ -6119,6 +6141,7 @@ fn main() {
         .manage(LastActionState(Mutex::new(None)))
         .manage(HotPathCache(Arc::new(tokio::sync::RwLock::new(HotPathCacheInner::default()))))
         .manage(StatusBarHideGen(Arc::new(AtomicU64::new(0))))
+        .manage(StatusBarPlacementActive(AtomicBool::new(false)))
         .manage(MeetingModeState::new())
         .manage(LongDictationState::new())
         .invoke_handler(tauri::generate_handler![

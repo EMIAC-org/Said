@@ -28,6 +28,8 @@ pub mod watchdog;
 pub use said_core::paths;
 
 #[cfg(test)]
+mod alpha_test_suite;
+#[cfg(test)]
 mod learning_flow_tests;
 
 // ── Preferences hot-cache (Gap 3) ─────────────────────────────────────────────

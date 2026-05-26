@@ -399,7 +399,7 @@ export default function StatusBar() {
     overlay.setAttribute("aria-hidden", "true");
     const hint = document.createElement("span");
     hint.className = "sb-drag-hint";
-    hint.textContent = "Drag to move · ⇧⌘F to finish";
+    hint.textContent = "Drag to move · ⇧⌘/ to finish";
     overlay.appendChild(hint);
     app.appendChild(overlay);
 
@@ -645,6 +645,11 @@ export default function StatusBar() {
       dragActiveRef.current = false;
       document.documentElement.classList.remove("sb-drag-unlocked", "sb-dragging");
       setDragUnlocked(false);
+      Promise.all([win.outerPosition(), win.scaleFactor()])
+        .then(([pos, scale]) =>
+          invoke("set_status_bar_position", { x: pos.x / scale, y: pos.y / scale }),
+        )
+        .catch(() => {});
       setBar({ kind: "idle" });
     }).then((fn) => {
       subs.push(fn);

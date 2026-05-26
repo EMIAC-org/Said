@@ -265,16 +265,35 @@ pub fn is_plausible_alias(transcript_form: &str, correct_form: &str) -> bool {
         return true;
     }
 
+    // Code identifiers with digits (n8n, k8s, s3) cannot be phonetically
+    // matched — STT produces completely unrelated words for these. Allow them.
+    let target_has_digit = to.chars().any(|c| c.is_ascii_digit());
+    if target_has_digit {
+        return true;
+    }
+
+    // Gibberish source words (not in any dictionary) are genuine STT
+    // distortions — Deepgram made up a nonsense word. Allow these
+    // regardless of phonetic similarity. The real gate for "mac" → "EMIAC"
+    // is `is_in_dictionary("mac")` in the caller, not phonetic similarity.
+    if from.is_ascii()
+        && !from.contains(' ')
+        && !crate::tier2::is_in_dictionary(&from)
+        && !crate::llm::alias_safety::is_common_alias_source(&from)
+    {
+        return true;
+    }
+
     let ascii_tokens = ascii_alias_tokens(&from);
     if from.is_ascii() && to.is_ascii() {
         if ascii_tokens.len() <= 1 && !from.contains(' ') && !to.contains(' ') {
             let phon_sim = phonetics::similarity(&from, &to);
             let first_match = from.chars().next().map(|f| f.to_ascii_lowercase())
                 == to.chars().next().map(|t| t.to_ascii_lowercase());
-            return phon_sim >= 0.30 || first_match;
+            return phon_sim >= 0.45 || (first_match && phon_sim >= 0.35);
         }
         let (best_sim, first_match) = alias_phrase_score(&ascii_tokens, &to_compact);
-        return best_sim >= 0.34 || (first_match && best_sim >= 0.24);
+        return best_sim >= 0.40 || (first_match && best_sim >= 0.30);
     }
 
     // Mixed-script aliases are common because Deepgram can emit Devanagari
@@ -723,6 +742,27 @@ pub fn update_export_metadata(
     )
     .map(|n| n > 0)
     .unwrap_or(false)
+}
+
+/// Approve all pending aliases for a term so they fire immediately in
+/// `apply_exact_safe()`.  Called after the alias passes all safety gates
+/// during the classify flow — no need to wait for the 15-min background
+/// review.
+pub fn approve_aliases_for_term(pool: &DbPool, user_id: &str, correct_form: &str) -> usize {
+    let Ok(conn) = pool.get() else {
+        return 0;
+    };
+    let now = now_ms();
+    conn.execute(
+        "UPDATE stt_replacements
+            SET review_status = 'approved',
+                last_reviewed_at = ?3
+          WHERE user_id = ?1
+            AND lower(correct_form) = lower(?2)
+            AND review_status = 'pending'",
+        params![user_id, correct_form.trim(), now],
+    )
+    .unwrap_or(0)
 }
 
 pub fn note_negative_signal(

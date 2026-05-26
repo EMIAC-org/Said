@@ -8,37 +8,6 @@ use crate::{
 
 use super::bias;
 
-pub fn spawn_alias_review(
-    state: AppState,
-    transcript_form: String,
-    correct_form: String,
-    output_language: String,
-) {
-    tokio::spawn(async move {
-        let _guard = crate::bg_task_guard();
-        if state.watchdog.is_shedding() {
-            debug!("[bg] alias-review {transcript_form:?} skipped — watchdog shedding load");
-            return;
-        }
-        info!(
-            "[bg] alias-review {transcript_form:?}→{correct_form:?} started (active={})",
-            crate::BG_TASK_COUNT.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        let t0 = std::time::Instant::now();
-        review_one_alias(
-            state,
-            transcript_form.clone(),
-            correct_form,
-            output_language,
-        )
-        .await;
-        info!(
-            "[bg] alias-review {transcript_form:?} done in {}ms",
-            t0.elapsed().as_millis()
-        );
-    });
-}
-
 pub async fn run_pending_alias_reviews(state: AppState, limit: usize) {
     let user_id = state.default_user_id.to_string();
     let candidates = stt_replacements::review_candidates(&state.pool, &user_id, limit);
