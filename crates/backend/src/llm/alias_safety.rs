@@ -168,7 +168,7 @@ pub async fn judge_alias_source(
             "empty alias source",
         );
     }
-    if is_common_alias_source_norm(&source_norm) {
+    if is_common_alias_source_norm(&source_norm) || crate::tier2::is_in_dictionary(&source_norm) {
         return cache_and_return(
             pool,
             user_id,
@@ -177,7 +177,7 @@ pub async fn judge_alias_source(
             1.0,
             "local",
             "",
-            "source is common Hindi/Hinglish/English",
+            "source is common/dictionary word",
         );
     }
     if let Some(cached) = cache::get(pool, user_id, &source_norm) {

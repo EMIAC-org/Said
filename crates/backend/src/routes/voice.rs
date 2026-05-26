@@ -814,11 +814,11 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         // protected-term evidence collection. Tier 2 no longer mutates the
         // transcript here; final protected-term replacement happens after the
         // grammar-only LLM polish, using this raw evidence.
-        let (stt_transcript, enriched_for_hints, tier2_evidence, alias_result) = {
+        let (stt_transcript, enriched_for_hints, alias_result) = {
             let pool_t = pool.clone();
             let uid_t = user_id.clone();
             let numeric_t = crate::number_format::apply(&stt_transcript_raw);
-            let numeric_for_evidence = numeric_t.clone();
+            let original_transcript = numeric_t.clone();
             let rules_t = stt_replacement_rules.clone();
             let vocab_t = vocab_full.clone();
             if numeric_t != stt_transcript_raw {
@@ -827,36 +827,34 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     stt_transcript_raw, numeric_t
                 );
             }
-            let evidence = tokio::task::spawn_blocking(move || {
-                crate::tier2::collect_evidence_with_store(
+            let apply_result = tokio::task::spawn_blocking(move || {
+                crate::tier2::correct_with_store(
                     &pool_t,
                     &uid_t,
-                    &numeric_for_evidence,
+                    &numeric_t,
                     &rules_t,
                     &vocab_t,
                 )
             }).await.unwrap_or_else(|e| {
-                warn!("[voice] tier2 evidence collection failed: {e}");
-                crate::tier2::EvidenceResult {
-                    source_text: numeric_t.clone(),
-                    evidence: vec![],
+                warn!("[voice] tier2 correction failed: {e}");
+                crate::store::stt_replacements::ApplyResult {
+                    text: original_transcript.clone(),
                     matches: vec![],
                     traces: vec![],
                 }
             });
-            if !evidence.matches.is_empty() {
+            if !apply_result.matches.is_empty() {
                 info!(
-                    "[voice] protected-term evidence before LLM: {} signal(s): {}",
-                    evidence.matches.len(),
-                    evidence.matches
+                    "[voice] tier2 corrections before LLM: {} correction(s): {}",
+                    apply_result.matches.len(),
+                    apply_result.matches
                         .iter()
                         .map(|m| format!("{:?}→{} ({:?})", m.transcript_form, m.correct_form, m.kind))
                         .collect::<Vec<_>>()
                         .join(", "),
                 );
             }
-            let apply_result = evidence.as_apply_result();
-            (evidence.source_text.clone(), enriched_raw.clone(), evidence, apply_result)
+            (original_transcript, enriched_raw.clone(), apply_result)
         };
 
         let status_payload = json!({"phase": "polishing", "transcript": &stt_transcript}).to_string();
@@ -1285,43 +1283,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             llm_result.polished = email_final;
         }
 
-        let final_alias_result = {
-            let pool_t = pool.clone();
-            let uid_t = user_id.clone();
-            let polished_t = llm_result.polished.clone();
-            let polished_fallback = polished_t.clone();
-            let evidence_t = tier2_evidence.clone();
-            let source_t = stt_transcript.clone();
-            let rules_t = stt_replacement_rules.clone();
-            let vocab_t = vocab_full.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::tier2::final_resolve_with_store(
-                    &pool_t,
-                    &uid_t,
-                    &polished_t,
-                    &evidence_t,
-                    &source_t,
-                    &rules_t,
-                    &vocab_t,
-                )
-            })
-            .await
-            .unwrap_or_else(|e| {
-                warn!("[voice] final protected-term resolve failed: {e}");
-                crate::store::stt_replacements::ApplyResult {
-                    text: polished_fallback,
-                    matches: vec![],
-                    traces: vec![],
-                }
-            })
-        };
-        if final_alias_result.text != llm_result.polished {
-            info!(
-                "[voice] final protected-term resolve: {} replacement(s)",
-                final_alias_result.matches.len()
-            );
-            llm_result.polished = final_alias_result.text.clone();
-        }
+        // Post-LLM tier2 correction removed — tier2 runs ONCE before the
+        // LLM (correct_with_store above). Number-format and email-recover
+        // are the only deterministic post-LLM passes.
 
         if llm_result.polished != pre_final_local && !saw_script_rewrite {
             yield Ok(Event::default().event("token")
@@ -1374,11 +1338,11 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             if !inserted {
                 warn!("[voice] failed to insert recording history row");
             }
-            if inserted && !final_alias_result.traces.is_empty() {
+            if inserted && !alias_result.traces.is_empty() {
                 let pool_policy = pool.clone();
                 let uid_policy = user_id.clone();
                 let recording_policy = recording_id.clone();
-                let result_policy = final_alias_result.clone();
+                let result_policy = alias_result.clone();
                 tokio::task::spawn_blocking(move || {
                     let n = crate::store::tier2_policy::record_decisions(
                         &pool_policy,
@@ -1396,11 +1360,11 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             // Record decision events for exact STT alias matches so that
             // mark_removed_feedback can penalise the alias when the user
             // reverts a wrong replacement.
-            if inserted && !final_alias_result.matches.is_empty() {
+            if inserted && !alias_result.matches.is_empty() {
                 let pool_alias = pool.clone();
                 let uid_alias = user_id.clone();
                 let recording_alias = recording_id.clone();
-                let result_alias = final_alias_result.clone();
+                let result_alias = alias_result.clone();
                 tokio::task::spawn_blocking(move || {
                     let n = crate::store::tier2_policy::record_applied_matches(
                         &pool_alias,
