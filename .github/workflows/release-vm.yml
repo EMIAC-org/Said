@@ -1,0 +1,334 @@
+name: Release to VM
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_releases:
+        description: "Number of VM-hosted versions to keep"
+        required: false
+        default: "3"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PRODUCT_NAME: AirNote
+  TARGET: aarch64-apple-darwin
+  ARCH_SHORT: aarch64
+  PUBLIC_BASE_URL: https://airnote.103.180.163.41.sslip.io
+  REMOTE_RELEASE_ROOT: /opt/airnote-control-plane/releases
+
+jobs:
+  release-vm:
+    name: Build, notarize, and upload macOS release
+    runs-on: macos-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read workspace version
+        id: ver
+        shell: bash
+        run: |
+          VERSION=$(awk '
+            /^\[workspace\.package\]/ { in_section = 1; next }
+            /^\[/                     { in_section = 0 }
+            in_section && /^[[:space:]]*version[[:space:]]*=/ {
+              gsub(/.*=[[:space:]]*"/, ""); gsub(/".*/, ""); print; exit
+            }
+          ' Cargo.toml)
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "workspace version: $VERSION"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-vm-${{ env.TARGET }}
+          cache-targets: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm ci
+
+      - name: Import Apple codesign certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${CERTIFICATE_BASE64:?CODESIGN_CERTIFICATE_BASE64 secret is required}"
+          : "${CERTIFICATE_PASSWORD:?CODESIGN_CERTIFICATE_PASSWORD secret is required}"
+
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          echo -n "$CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$CERTIFICATE_PASSWORD" -A -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s \
+            "$KEYCHAIN_PATH" \
+            /Library/Keychains/System.keychain \
+            /System/Library/Keychains/SystemRootCertificates.keychain
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Build CLI binary
+        timeout-minutes: 8
+        run: |
+          cargo build -p said --release --target "$TARGET"
+          cp "target/$TARGET/release/said" "said-$TARGET"
+          chmod +x "said-$TARGET"
+
+      - name: Build said-backend sidecar
+        timeout-minutes: 12
+        run: |
+          cargo build -p said-backend --release --target "$TARGET"
+          mkdir -p desktop/src-tauri/binaries
+          cp "target/$TARGET/release/said-backend" "desktop/src-tauri/binaries/said-backend-$TARGET"
+          chmod +x "desktop/src-tauri/binaries/said-backend-$TARGET"
+
+      - name: Build AirNote.app only
+        timeout-minutes: 20
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        working-directory: desktop
+        run: |
+          npm run tauri:build -- \
+            --target "$TARGET" \
+            --bundles app \
+            --ci \
+            --verbose \
+            --no-sign
+
+      - name: Sign and verify AirNote.app
+        timeout-minutes: 8
+        env:
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: EMIAC TECHNOLOGIES LIMITED (96ZQGP7L3B)"
+        run: |
+          set -euo pipefail
+          APP_PATH="target/$TARGET/release/bundle/macos/$PRODUCT_NAME.app"
+          EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/said-backend"
+          ENTITLEMENTS="desktop/src-tauri/AirNote.entitlements"
+          BUNDLE_ID="com.emiac.airnote.desktop"
+
+          test -d "$APP_PATH"
+          test -x "$EMBEDDED_BACKEND"
+
+          rm -f "$APP_PATH/Contents/MacOS/.env"
+          xattr -cr "$APP_PATH" 2>/dev/null || true
+
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --entitlements "$ENTITLEMENTS" \
+            "$EMBEDDED_BACKEND"
+
+          codesign --force --deep --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --entitlements "$ENTITLEMENTS" \
+            "$APP_PATH"
+
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign --verify --strict --verbose=2 "$EMBEDDED_BACKEND"
+
+          ACTUAL_ID=$(codesign -dv "$APP_PATH" 2>&1 | awk -F= '/^Identifier=/ {print $2}')
+          test "$ACTUAL_ID" = "$BUNDLE_ID"
+          echo "Signed app verified: $APP_PATH"
+
+      - name: Create and verify DMG
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          APP_PATH="target/$TARGET/release/bundle/macos/$PRODUCT_NAME.app"
+          BUNDLE_DIR="target/$TARGET/release/bundle"
+          STAGING="$BUNDLE_DIR/dmg-staging"
+          DMG_OUT="$BUNDLE_DIR/dmg/${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.dmg"
+
+          rm -rf "$STAGING" "$DMG_OUT"
+          mkdir -p "$STAGING" "$BUNDLE_DIR/dmg"
+          ditto "$APP_PATH" "$STAGING/$PRODUCT_NAME.app"
+          ln -s /Applications "$STAGING/Applications"
+
+          hdiutil create \
+            -volname "$PRODUCT_NAME" \
+            -srcfolder "$STAGING" \
+            -ov \
+            -format UDZO \
+            "$DMG_OUT"
+
+          rm -rf "$STAGING"
+          test -f "$DMG_OUT"
+
+          ATTACH_OUT=$(hdiutil attach -nobrowse -readonly "$DMG_OUT")
+          echo "$ATTACH_OUT"
+          DMG_DEV=$(echo "$ATTACH_OUT" | awk '/\/dev\/disk[0-9]+s[0-9]+/ && /\/Volumes\// {print $1; exit}')
+          DMG_VOL=$(echo "$ATTACH_OUT" | awk '/\/Volumes\// {for (i=3;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""; exit}')
+          codesign --verify --deep --strict --verbose=2 "$DMG_VOL/$PRODUCT_NAME.app"
+          hdiutil detach "$DMG_DEV" -force >/dev/null
+          echo "DMG verified: $DMG_OUT"
+
+      - name: Notarize, staple, and verify DMG
+        timeout-minutes: 30
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: 96ZQGP7L3B
+        run: |
+          set -euo pipefail
+          : "${APPLE_ID:?APPLE_ID secret is required for release notarization}"
+          : "${APPLE_APP_SPECIFIC_PASSWORD:?APPLE_APP_SPECIFIC_PASSWORD secret is required for release notarization}"
+
+          VERSION="${{ steps.ver.outputs.version }}"
+          DMG_OUT="target/$TARGET/release/bundle/dmg/${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.dmg"
+          test -f "$DMG_OUT"
+
+          defaults write com.apple.gke.notary.tool nt-upload-connection-timeout 300 || true
+
+          xcrun notarytool submit "$DMG_OUT" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --timeout 25m \
+            --wait \
+            --verbose
+
+          xcrun stapler staple "$DMG_OUT"
+          spctl --assess --type open --context context:primary-signature -v "$DMG_OUT"
+          echo "DMG is signed, notarized, stapled, and Gatekeeper-verified: $DMG_OUT"
+
+      - name: Create updater archive, manifest, and checksums
+        id: artifacts
+        timeout-minutes: 8
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          ARTIFACT_DIR="$RUNNER_TEMP/airnote-release-$VERSION"
+          UPDATE_TAR="${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.app.tar.gz"
+          DMG="${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.dmg"
+
+          mkdir -p "$ARTIFACT_DIR"
+          (
+            cd "target/$TARGET/release/bundle/macos"
+            tar czf "$ARTIFACT_DIR/$UPDATE_TAR" "$PRODUCT_NAME.app"
+          )
+
+          (
+            cd desktop
+            npx tauri signer sign \
+              "$ARTIFACT_DIR/$UPDATE_TAR" \
+              --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+              --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+          )
+
+          cp "target/$TARGET/release/bundle/dmg/$DMG" "$ARTIFACT_DIR/"
+          cp "said-$TARGET" "$ARTIFACT_DIR/"
+
+          SIGNATURE="$(cat "$ARTIFACT_DIR/$UPDATE_TAR.sig")"
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cat > "$ARTIFACT_DIR/latest.json" <<JSON
+          {
+            "version": "$VERSION",
+            "notes": "AirNote $VERSION",
+            "pub_date": "$PUB_DATE",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "$SIGNATURE",
+                "url": "$PUBLIC_BASE_URL/releases/$VERSION/$UPDATE_TAR"
+              }
+            }
+          }
+          JSON
+
+          (
+            cd "$ARTIFACT_DIR"
+            shasum -a 256 * | sort -k 2 > SHA256SUMS
+            ls -lh
+            cat SHA256SUMS
+          )
+
+          echo "artifact_dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
+          echo "dmg_url=$PUBLIC_BASE_URL/releases/$VERSION/$DMG" >> "$GITHUB_OUTPUT"
+          echo "manifest_url=$PUBLIC_BASE_URL/updates/latest.json" >> "$GITHUB_OUTPUT"
+
+      - name: Configure SSH
+        timeout-minutes: 3
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?DEPLOY_HOST secret is required}"
+          : "${DEPLOY_SSH_KEY:?DEPLOY_SSH_KEY secret is required}"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload release to VM
+        timeout-minutes: 8
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          KEEP_RELEASES: ${{ inputs.keep_releases }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_USER:?DEPLOY_USER secret is required}"
+          VERSION="${{ steps.ver.outputs.version }}"
+          ARTIFACT_DIR="${{ steps.artifacts.outputs.artifact_dir }}"
+
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$REMOTE_RELEASE_ROOT/releases/$VERSION' '$REMOTE_RELEASE_ROOT/updates'"
+          scp "$ARTIFACT_DIR"/* "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_RELEASE_ROOT/releases/$VERSION/"
+          scp "$ARTIFACT_DIR/latest.json" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_RELEASE_ROOT/updates/latest.json"
+
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_RELEASE_ROOT='$REMOTE_RELEASE_ROOT' KEEP_RELEASES='$KEEP_RELEASES' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$REMOTE_RELEASE_ROOT/releases"
+          mapfile -t versions < <(find . -mindepth 1 -maxdepth 1 -type d -print | sed 's#^\./##' | sort -V)
+          remove_count=$((${#versions[@]} - KEEP_RELEASES))
+          if [ "$remove_count" -gt 0 ]; then
+            for old in "${versions[@]:0:$remove_count}"; do
+              echo "Pruning old release: $old"
+              rm -rf -- "$old"
+            done
+          fi
+          REMOTE
+
+          echo "VM release uploaded."
+          echo "DMG: ${{ steps.artifacts.outputs.dmg_url }}"
+          echo "Manifest: ${{ steps.artifacts.outputs.manifest_url }}"
+
+      - name: Verify public VM URLs
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          curl -fsS "${{ steps.artifacts.outputs.manifest_url }}" | tee /tmp/latest.json
+          curl -fsSI "${{ steps.artifacts.outputs.dmg_url }}"
+          echo "Public DMG URL: ${{ steps.artifacts.outputs.dmg_url }}"
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: airnote-vm-release-${{ steps.ver.outputs.version }}
+          path: ${{ steps.artifacts.outputs.artifact_dir }}/
+          retention-days: 14
