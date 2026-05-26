@@ -82,6 +82,9 @@ jobs:
           test -n "${{ secrets.DEPLOY_USER }}" || (echo "DEPLOY_USER is missing" && exit 1)
           test -n "${{ secrets.DEPLOY_SSH_KEY }}" || (echo "DEPLOY_SSH_KEY is missing" && exit 1)
           test -n "${{ secrets.DEPLOY_PATH }}" || (echo "DEPLOY_PATH is missing" && exit 1)
+          test -n "${{ secrets.LARK_APP_ID }}" || (echo "LARK_APP_ID is missing" && exit 1)
+          test -n "${{ secrets.LARK_APP_SECRET }}" || (echo "LARK_APP_SECRET is missing" && exit 1)
+          test -n "${{ secrets.LARK_REDIRECT_URI }}" || (echo "LARK_REDIRECT_URI is missing" && exit 1)
 
       - name: Configure SSH
         shell: bash
@@ -93,13 +96,25 @@ jobs:
 
       - name: Upload compose files
         shell: bash
+        env:
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_REDIRECT_URI: ${{ secrets.LARK_REDIRECT_URI }}
         run: |
           tar -C deploy/control-plane -czf /tmp/airnote-control-plane-deploy.tgz \
             docker-compose.yml Caddyfile README.md .env.example
+          {
+            printf 'LARK_APP_ID=%s\n' "$LARK_APP_ID"
+            printf 'LARK_APP_SECRET=%s\n' "$LARK_APP_SECRET"
+            printf 'LARK_REDIRECT_URI=%s\n' "$LARK_REDIRECT_URI"
+          } > /tmp/airnote-control-plane-secrets.env
+          chmod 600 /tmp/airnote-control-plane-secrets.env
           ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
             "mkdir -p '${{ secrets.DEPLOY_PATH }}'"
           scp /tmp/airnote-control-plane-deploy.tgz \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/deploy.tgz"
+          scp /tmp/airnote-control-plane-secrets.env \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/deploy-secrets.env"
 
       - name: Pull image and restart stack
         shell: bash
@@ -121,15 +136,62 @@ jobs:
             exit 2
           fi
 
-          if grep -q '^CONTROL_PLANE_IMAGE=' .env; then
-            sed -i.bak "s|^CONTROL_PLANE_IMAGE=.*|CONTROL_PLANE_IMAGE=${IMAGE_TAG}|" .env
-          else
-            printf '\nCONTROL_PLANE_IMAGE=%s\n' "$IMAGE_TAG" >> .env
-          fi
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          env_path = Path(".env")
+          secret_path = Path("deploy-secrets.env")
+          updates = {
+              "CONTROL_PLANE_IMAGE": os.environ["IMAGE_TAG"],
+              "CONTROL_PLANE_BIND": "127.0.0.1",
+          }
+
+          for line in secret_path.read_text().splitlines():
+              if not line.strip() or line.lstrip().startswith("#") or "=" not in line:
+                  continue
+              key, value = line.split("=", 1)
+              updates[key] = value
+
+          lines = env_path.read_text().splitlines()
+          out = []
+          seen = set()
+          for line in lines:
+              if "=" in line and not line.lstrip().startswith("#"):
+                  key = line.split("=", 1)[0]
+                  if key in updates:
+                      out.append(f"{key}={updates[key]}")
+                      seen.add(key)
+                      continue
+              out.append(line)
+
+          for key, value in updates.items():
+              if key not in seen:
+                  out.append(f"{key}={value}")
+
+          env_path.write_text("\n".join(out) + "\n")
+          secret_path.unlink(missing_ok=True)
+          PY
 
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
           docker compose pull control-plane
-          docker compose up -d
+          docker compose up -d --force-recreate control-plane
+          CID=$(docker compose ps -q control-plane)
+          for key in LARK_APP_ID LARK_APP_SECRET LARK_REDIRECT_URI; do
+            docker inspect "$CID" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+              | grep -q "^${key}=." || (echo "$key was not propagated into the control-plane container" && exit 1)
+          done
           docker compose ps
           docker image prune -f
           REMOTE
+
+      - name: Verify Lark OAuth redirect
+        shell: bash
+        run: |
+          location="$(curl --resolve airnote.103.180.163.41.sslip.io:443:103.180.163.41 \
+            --retry 5 --retry-delay 3 --retry-all-errors \
+            -fsSI 'https://airnote.103.180.163.41.sslip.io/auth/lark?callback_port=55992' \
+            | tr -d '\r' | awk 'tolower($1)=="location:" {print $2}' | tail -n 1)"
+          test -n "$location" || (echo "OAuth redirect location missing" && exit 1)
+          echo "$location" | grep -q 'app_id=[^&]' || (echo "OAuth redirect has empty app_id" && exit 1)
+          echo "$location" | grep -q 'state=desktop\.' || (echo "OAuth redirect is not using desktop JWT state" && exit 1)

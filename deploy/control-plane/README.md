@@ -78,12 +78,15 @@ Set these repository secrets for CI/CD:
 - `DEPLOY_USER`: SSH user
 - `DEPLOY_SSH_KEY`: private key with access to the server
 - `DEPLOY_PATH`: usually `/opt/airnote-control-plane`
+- `LARK_APP_ID`: production Lark app ID
+- `LARK_APP_SECRET`: production Lark app secret
+- `LARK_REDIRECT_URI`: production callback URL, usually `https://airnote.103.180.163.41.sslip.io/v1/auth/lark/callback`
 
-The deploy workflow builds and pushes a GHCR image, copies the compose files to the server, writes the new image tag into `.env`, and runs:
+The deploy workflow builds and pushes a GHCR image, copies the compose files to the server, writes the new image tag and Lark OAuth secrets into `.env`, validates those values reached the running container, and runs:
 
 ```bash
 docker compose pull control-plane
-docker compose up -d
+docker compose up -d --force-recreate control-plane
 docker image prune -f
 ```
 
