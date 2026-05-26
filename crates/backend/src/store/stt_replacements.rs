@@ -486,9 +486,19 @@ pub fn demote(
         return false;
     }
 
+    // When weight drops to zero, block the alias permanently instead of
+    // deleting it.  A blocked row survives in the DB so apply_exact_safe
+    // (review_status != Approved) skips it and the classifier's
+    // `is_safe_distortion` check sees it too — preventing re-learning.
     let _ = conn.execute(
-        "DELETE FROM stt_replacements
-           WHERE user_id = ?1 AND transcript_form = ?2 AND correct_form = ?3 AND weight <= 0.0",
+        "UPDATE stt_replacements
+            SET review_status = 'blocked',
+                review_reason = 'demoted by user correction',
+                weight = 0.0
+          WHERE user_id = ?1
+            AND transcript_form = ?2
+            AND correct_form = ?3
+            AND weight <= 0.0",
         params![user_id, from, to],
     );
     info!("[stt-repl] demote {from:?} → {to:?} penalty={penalty}");
@@ -861,7 +871,7 @@ pub fn apply_exact_safe(transcript: &str, rules: &[SttReplacement]) -> ApplyResu
                 return false;
             }
             if crate::llm::alias_safety::is_common_alias_source(&r.transcript_form)
-                || crate::llm::promotion_gate::is_common_word(&r.transcript_form)
+                || crate::tier2::is_in_dictionary(&r.transcript_form)
             {
                 return false;
             }
@@ -1635,16 +1645,15 @@ mod tests {
     }
 
     #[test]
-    fn demote_until_evict() {
+    fn demote_until_blocked() {
         let pool = mem_pool();
         super::upsert(&pool, "u1", "writen", "n8n", 1.0);
         assert_eq!(super::load_all(&pool, "u1").len(), 1);
         super::demote(&pool, "u1", "writen", "n8n", 1.5);
-        assert_eq!(
-            super::load_all(&pool, "u1").len(),
-            0,
-            "rule must evict when weight ≤ 0",
-        );
+        let remaining = super::load_all(&pool, "u1");
+        assert_eq!(remaining.len(), 1, "blocked row must survive");
+        assert_eq!(remaining[0].review_status, ReviewStatus::Blocked);
+        assert!(remaining[0].weight <= 0.0);
     }
 
     // ── apply_exact_safe tests ──────────────────────────────────────────────

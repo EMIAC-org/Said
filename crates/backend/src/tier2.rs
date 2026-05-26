@@ -761,7 +761,7 @@ fn build_candidates(
             continue;
         }
         if crate::llm::alias_safety::is_common_alias_source(&rule.transcript_form)
-            || promotion_gate::is_common_word(&rule.transcript_form)
+            || is_in_dictionary(&rule.transcript_form)
         {
             continue;
         }
@@ -788,7 +788,7 @@ fn is_protected_term(term: &str, term_type: &str, source: &str) -> bool {
     if source == "manual" || source == "starred" {
         return true;
     }
-    if promotion_gate::is_common_word(term) {
+    if is_in_dictionary(term) {
         return false;
     }
     matches!(
@@ -859,7 +859,7 @@ fn apply_edit_policy(
 
             let span_norm = cores[start..start + window_size].join(" ");
             if crate::llm::alias_safety::is_common_alias_source_norm(&span_norm)
-                || promotion_gate::is_common_word(&span_norm)
+                || is_in_dictionary(&span_norm)
             {
                 continue;
             }
@@ -938,7 +938,7 @@ fn apply_edit_policy(
                     .collect();
                 let span_norm = cores[start..start + window_size].join(" ");
                 if crate::llm::alias_safety::is_common_alias_source_norm(&span_norm)
-                    || promotion_gate::is_common_word(&span_norm)
+                    || is_in_dictionary(&span_norm)
                 {
                     continue;
                 }
@@ -994,7 +994,7 @@ fn apply_edit_policy(
             || protected_tokens.contains(core_norm)
             || known_terms.contains(core_norm)
             || crate::llm::alias_safety::is_common_alias_source(core_norm)
-            || promotion_gate::is_common_word(core_norm)
+            || is_in_dictionary(core_norm)
         {
             out.push_str(chunk);
             idx += 1;
@@ -1206,7 +1206,7 @@ fn cluster_fuzzy_pass(
             || protected_tokens.contains(&core_norm)
             || known_vocab.contains(&core_norm)
             || crate::llm::alias_safety::is_common_alias_source(&core_norm)
-            || promotion_gate::is_common_word(&core_norm)
+            || is_in_dictionary(&core_norm)
             || edit_policy_context_word(&core_norm)
         {
             out.push_str(chunk);
@@ -1717,7 +1717,7 @@ fn position_aligned_replace(text: &str, raw_source: &str, from: &str, to: &str) 
     let out_core = normalize_core(out_chunks[raw_idx]);
     if out_core.is_empty()
         || crate::llm::alias_safety::is_common_alias_source(&out_core)
-        || promotion_gate::is_common_word(&out_core)
+        || is_in_dictionary(&out_core)
     {
         return None;
     }
@@ -1939,7 +1939,15 @@ static DICTIONARY: Lazy<HashSet<String>> = Lazy::new(|| {
         "base", "graph", "local", "red", "post", "type", "strip", "fire", "cell", "hub", "lab",
         "prism", "meaning", "react", "swift", "rust", "dart", "flask", "spring", "nest", "corps",
         "main", "time", "return", "course", "prayer", "house", "table", "next", "rest", "google",
-        "accounts",
+        "accounts", // Plurals / verb forms that /usr/share/dict/words may lack
+        "cubes", "nodes", "tests", "builds", "stacks", "queues", "routes", "hooks", "props",
+        "pipes", "shells", "caches", "agents", "proxies", "hosts", "ports",
+        // Dev-adjacent real English words the system dictionary includes but
+        // we list explicitly so bundled-dictionary builds (Windows) stay safe
+        "slack", "stripe", "sentry", "cursor", "notion", "oracle", "consul", "vault", "helm",
+        "drone", "spark", "hive", "celery", "rabbit", "harbor", "nomad", "beam", "arrow", "lance",
+        "slate", "mint", "asana", "mongo", "flak", "agent", "proxy", "route", "cache", "queue",
+        "stack", "heap", "pipe", "shell", "core", "flux", "hook", "arch", "brew",
     ] {
         words.insert(w.to_string());
     }
@@ -1950,6 +1958,8 @@ static DICTIONARY: Lazy<HashSet<String>> = Lazy::new(|| {
         "cheez", "jagah", "waqt", "baar", "baat", "kaam", "aaj", "kal", "aajkal", "ajkal", "parso",
         "subah", "shaam", "dopahar", "hamesha", "kabhi", "tarah", "saath", "andar", "bahar",
         "upar", "neeche", "peeche", "saamne",
+        // Hinglish adjectives/adverbs that Deepgram transcribes and are close to brand names
+        "kaafi", "kafi", "sahi", "galat", "accha", "pura", "poora",
     ] {
         words.insert(w.to_string());
     }
@@ -2829,5 +2839,987 @@ mod tests {
             "the dock worker checked the container manually"
         );
         assert!(result.matches.is_empty());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Dictionary-gated protection: real words must NEVER be corrected.
+    // Distortions of those words (not in any dictionary) MUST be corrected.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ── is_in_dictionary unit tests ──────────────────────────────────────────
+
+    #[test]
+    fn dictionary_rejects_gibberish() {
+        for token in &[
+            "macops",
+            "airnot",
+            "kafk",
+            "cubernatis",
+            "emiac",
+            "meac",
+            "mecobs",
+            "grahk",
+            "senshry",
+            "dockar",
+            "growk",
+            "linuks",
+        ] {
+            assert!(
+                !is_in_dictionary(token),
+                "{token:?} is gibberish — must NOT be in dictionary"
+            );
+        }
+    }
+
+    #[test]
+    fn dictionary_accepts_english_words() {
+        for token in &[
+            "mac", "agent", "server", "cloud", "host", "port", "build", "test", "node", "type",
+            "class", "table", "merge", "push", "pull", "branch", "version", "release", "spring",
+            "flask", "nest", "dart", "rust", "swift", "react", "hub", "lab", "dock", "tower",
+            "guard", "press", "fire", "cell", "graph", "base", "strip", "local", "post", "super",
+            "cool",
+        ] {
+            assert!(
+                is_in_dictionary(token),
+                "{token:?} is a real English word — must be in dictionary"
+            );
+        }
+    }
+
+    #[test]
+    fn dictionary_accepts_hindi_common_words() {
+        for token in &[
+            "kar", "bol", "sun", "de", "le", "ja", "aa", "ho", "hai", "hain", "tha", "nahi", "kya",
+            "kaise", "kab", "aaj", "kal", "aajkal", "din", "raat", "ghar", "subah", "shaam",
+            "baat", "kaam", "cheez", "mil", "chal", "rakh",
+        ] {
+            assert!(
+                is_in_dictionary(token),
+                "{token:?} is a common Hindi word — must be in dictionary"
+            );
+        }
+    }
+
+    #[test]
+    fn dictionary_is_case_insensitive() {
+        assert!(is_in_dictionary("Mac"));
+        assert!(is_in_dictionary("MAC"));
+        assert!(is_in_dictionary("Agent"));
+        assert!(is_in_dictionary("AGENT"));
+        assert!(is_in_dictionary("Hai"));
+        assert!(is_in_dictionary("KAR"));
+    }
+
+    #[test]
+    fn dictionary_strips_punctuation() {
+        assert!(is_in_dictionary("mac,"));
+        assert!(is_in_dictionary("agent."));
+        assert!(is_in_dictionary("server!"));
+        assert!(is_in_dictionary("(cloud)"));
+    }
+
+    // ── is_suspicious_token unit tests ───────────────────────────────────────
+
+    #[test]
+    fn suspicious_rejects_dictionary_words() {
+        for token in &["mac", "agent", "server", "cloud", "host", "port", "build"] {
+            assert!(
+                !is_suspicious_token(token),
+                "{token:?} is a real word — must NOT be suspicious"
+            );
+        }
+    }
+
+    #[test]
+    fn suspicious_accepts_gibberish() {
+        for token in &["macops", "airnot", "emiac", "mecobs", "cubernatis", "kafk"] {
+            assert!(
+                is_suspicious_token(token),
+                "{token:?} is gibberish — must be suspicious"
+            );
+        }
+    }
+
+    #[test]
+    fn suspicious_rejects_short_tokens() {
+        assert!(!is_suspicious_token("ab"));
+        assert!(!is_suspicious_token("a"));
+        assert!(!is_suspicious_token(""));
+    }
+
+    #[test]
+    fn suspicious_rejects_all_digits() {
+        assert!(!is_suspicious_token("12345"));
+        assert!(!is_suspicious_token("007"));
+    }
+
+    // ── Full pipeline: English words survive all 4 passes ────────────────────
+
+    fn engine_with_emiac() -> CorrectionEngine<'static> {
+        // Leaking is fine for tests — avoids lifetime gymnastics.
+        let rules: &'static [SttReplacement] =
+            Box::leak(Box::new([rule("meac", "EMIAC"), rule("emiak", "EMIAC")]));
+        let vocab: &'static [VocabTerm] = Box::leak(Box::new([vocab("EMIAC", "brand", "auto")]));
+        CorrectionEngine::new(rules, vocab, None)
+    }
+
+    fn engine_with_many_terms() -> CorrectionEngine<'static> {
+        let rules: &'static [SttReplacement] = Box::leak(Box::new([
+            rule("meac", "EMIAC"),
+            rule("emiak", "EMIAC"),
+            rule("macops", "Macobs"),
+            rule("airnot", "AirNote"),
+            rule("air not", "AirNote"),
+            rule("kafk", "Kafka"),
+            rule("cubernatis", "Kubernetes"),
+            rule("growk", "Groq"),
+            rule("groq", "Groq"),
+        ]));
+        let vocab: &'static [VocabTerm] = Box::leak(Box::new([
+            vocab("EMIAC", "brand", "auto"),
+            vocab("Macobs", "proper_noun", "auto"),
+            vocab("AirNote", "brand", "auto"),
+            vocab("Kafka", "brand", "auto"),
+            vocab("Kubernetes", "brand", "auto"),
+            vocab("Groq", "brand", "auto"),
+        ]));
+        CorrectionEngine::new(rules, vocab, None)
+    }
+
+    #[test]
+    fn mac_is_never_corrected_to_emiac() {
+        let engine = engine_with_emiac();
+        let result = engine.correct("open the mac settings");
+        assert_eq!(result.text, "open the mac settings");
+        assert!(result.matches.is_empty());
+    }
+
+    #[test]
+    fn agent_is_never_corrected_to_airnote() {
+        let engine = engine_with_many_terms();
+        let result = engine.correct("the agent will handle it");
+        assert_eq!(result.text, "the agent will handle it");
+        assert!(result.matches.is_empty());
+    }
+
+    #[test]
+    fn english_words_survive_full_pipeline() {
+        let engine = engine_with_many_terms();
+        let words = [
+            ("mac", "I bought a mac today"),
+            ("host", "the host is ready"),
+            ("cloud", "deploy to cloud"),
+            ("port", "check the port number"),
+            ("merge", "merge the branch"),
+            ("table", "drop the table"),
+            ("spring", "spring is here"),
+            ("flask", "the flask app"),
+            ("nest", "a bird nest"),
+            ("swift", "write in swift"),
+            ("cell", "the cell value"),
+            ("fire", "fire the event"),
+            ("press", "press the button"),
+            ("tower", "the tower of babel"),
+            ("guard", "the guard clause"),
+            ("base", "the base class"),
+            ("dock", "the dock area"),
+            ("rest", "the rest api"),
+            ("corps", "peace corps"),
+        ];
+        for (word, sentence) in &words {
+            let result = engine.correct(sentence);
+            assert_eq!(
+                &result.text, sentence,
+                "{word:?} was wrongly corrected in {sentence:?} → {:?}",
+                result.text
+            );
+            assert!(
+                result.matches.is_empty(),
+                "{word:?} produced matches: {:?}",
+                result.matches
+            );
+        }
+    }
+
+    #[test]
+    fn hindi_words_survive_full_pipeline() {
+        let engine = engine_with_many_terms();
+        let sentences = [
+            "aaj mein kaam kar raha hoon",
+            "kal subah meeting hai",
+            "aajkal bahut kaam hai",
+            "nahi yeh sahi nahi hai",
+            "ghar pe aana hai shaam ko",
+            "baat sun meri bol raha hoon",
+            "din raat kaam karta hai",
+            "cheez achhi hai bilkul",
+        ];
+        for sentence in &sentences {
+            let result = engine.correct(sentence);
+            assert_eq!(
+                &result.text, sentence,
+                "Hindi sentence was modified: {sentence:?} → {:?}",
+                result.text
+            );
+            assert!(
+                result.matches.is_empty(),
+                "Hindi sentence produced matches: {:?} in {sentence:?}",
+                result.matches
+            );
+        }
+    }
+
+    // ── Full pipeline: distortions ARE corrected ─────────────────────────────
+
+    #[test]
+    fn gibberish_distortions_are_corrected() {
+        let engine = engine_with_many_terms();
+
+        let result = engine.correct("meac ka kaam hai");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "EMIAC"),
+            "meac → EMIAC exact alias must fire"
+        );
+
+        let result = engine.correct("macops ka IPO hai");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "Macobs"),
+            "macops → Macobs exact alias must fire"
+        );
+
+        let result = engine.correct("airnot install karo");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "AirNote"),
+            "airnot → AirNote exact alias must fire"
+        );
+
+        let result = engine.correct("kafk cluster check karo");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "Kafka"),
+            "kafk → Kafka exact alias must fire"
+        );
+    }
+
+    #[test]
+    fn growk_exact_alias_becomes_groq() {
+        let engine = engine_with_many_terms();
+        let result = engine.correct("growk is fast");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "Groq"),
+            "growk → Groq exact alias must fire"
+        );
+    }
+
+    // ── Mixed sentences: only distortions corrected, real words untouched ────
+
+    #[test]
+    fn mixed_sentence_corrects_only_distortions() {
+        let engine = engine_with_many_terms();
+        let result = engine.correct("meac ka agent ready hai");
+        assert!(result.text.contains("EMIAC"), "meac should become EMIAC");
+        assert!(result.text.contains("agent"), "agent must stay untouched");
+        assert!(result.text.contains("hai"), "hai must stay untouched");
+    }
+
+    #[test]
+    fn mixed_hinglish_sentence_only_fixes_distortions() {
+        let engine = engine_with_many_terms();
+        let result = engine.correct("aaj macops ka release hai bhai");
+        assert!(
+            result.text.contains("Macobs"),
+            "macops should become Macobs"
+        );
+        assert!(result.text.contains("aaj"), "aaj must stay untouched");
+        assert!(result.text.contains("hai"), "hai must stay untouched");
+        assert!(result.text.contains("bhai"), "bhai must stay untouched");
+    }
+
+    // ── Edit-policy pass respects dictionary ─────────────────────────────────
+
+    #[test]
+    fn edit_policy_skips_dictionary_words() {
+        let rules = vec![];
+        let vocab = vec![vocab("EMIAC", "brand", "auto")];
+        let edit_rules = vec![edit_rule("mac", "EMIAC", vec!["the"], vec!["settings"])];
+        let engine =
+            CorrectionEngine::new_with_policy(&rules, &vocab, None, HashMap::new(), edit_rules);
+        let result = engine.correct("the mac settings are here");
+        assert_eq!(result.text, "the mac settings are here");
+        assert!(result.matches.is_empty());
+    }
+
+    #[test]
+    fn edit_policy_corrects_gibberish_variants() {
+        let rules = vec![];
+        let vocab = vec![vocab("EMIAC", "brand", "auto")];
+        let edit_rules = vec![edit_rule("meac", "EMIAC", vec!["the"], vec![])];
+        let engine =
+            CorrectionEngine::new_with_policy(&rules, &vocab, None, HashMap::new(), edit_rules);
+        let result = engine.correct("the meac product launch");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "EMIAC"),
+            "edit-policy should correct 'meac' → EMIAC"
+        );
+    }
+
+    // ── Cluster-fuzzy pass respects dictionary ───────────────────────────────
+
+    #[test]
+    fn cluster_fuzzy_skips_real_words_near_vocab() {
+        let rules = vec![];
+        let vocab = vec![
+            vocab("EMIAC", "brand", "auto"),
+            vocab("AirNote", "brand", "auto"),
+            vocab("Kafka", "brand", "auto"),
+        ];
+        let edit_rules = vec![
+            edit_rule("meac", "EMIAC", vec![], vec![]),
+            edit_rule("airnot", "AirNote", vec![], vec![]),
+            edit_rule("kafk", "Kafka", vec![], vec![]),
+        ];
+        let engine =
+            CorrectionEngine::new_with_policy(&rules, &vocab, None, HashMap::new(), edit_rules);
+        let result = engine.correct("the agent and host are on fire today");
+        assert_eq!(
+            result.text, "the agent and host are on fire today",
+            "all real words must survive cluster-fuzzy"
+        );
+        assert!(result.matches.is_empty());
+    }
+
+    // ── Exact alias pass: dictionary source words are filtered at load ───────
+
+    #[test]
+    fn exact_alias_from_dictionary_word_is_filtered() {
+        let rules = vec![rule("mac", "EMIAC"), rule("meac", "EMIAC")];
+        let vocab = vec![vocab("EMIAC", "brand", "auto")];
+        let engine = CorrectionEngine::new(&rules, &vocab, None);
+        let result = engine.correct("mac is great and meac is here");
+        assert!(
+            result.text.contains("mac"),
+            "mac must survive — {:?}",
+            result.text
+        );
+        assert!(
+            result.matches.iter().all(|m| m.transcript_form != "mac"),
+            "mac must not appear as a corrected transcript_form"
+        );
+        assert!(
+            result
+                .matches
+                .iter()
+                .any(|m| m.transcript_form == "meac" && m.correct_form == "EMIAC"),
+            "meac (gibberish) must still be corrected to EMIAC"
+        );
+    }
+
+    // ── Boundary: vocab terms that ARE real words ────────────────────────────
+
+    #[test]
+    fn vocab_term_that_is_a_real_word_is_not_self_corrected() {
+        let rules = vec![rule("rost", "Rust")];
+        let vocab = vec![vocab("Rust", "brand", "manual")];
+        let engine = CorrectionEngine::new(&rules, &vocab, None);
+        let result = engine.correct("I like rust and rost is close");
+        assert!(
+            result.text.contains("rust"),
+            "rust (lowercase, a real word) must not be touched"
+        );
+    }
+
+    // ── The exact false-positive cases from production ────────────────────────
+
+    #[test]
+    fn prod_false_positive_mac_to_emiac() {
+        let rules = vec![rule("meac", "EMIAC"), rule("emiak", "EMIAC")];
+        let vocab = vec![vocab("EMIAC", "brand", "auto")];
+        let edit_rules = vec![edit_rule("meac", "EMIAC", vec![], vec![])];
+        let engine =
+            CorrectionEngine::new_with_policy(&rules, &vocab, None, HashMap::new(), edit_rules);
+        let result = engine.correct("open mac settings and check");
+        assert_eq!(result.text, "open mac settings and check");
+        assert!(
+            result.matches.is_empty(),
+            "mac → EMIAC must NOT happen: {:?}",
+            result.matches
+        );
+    }
+
+    #[test]
+    fn prod_false_positive_agent_to_airnote() {
+        let rules = vec![rule("airnot", "AirNote"), rule("air not", "AirNote")];
+        let vocab = vec![vocab("AirNote", "brand", "auto")];
+        let engine = CorrectionEngine::new(&rules, &vocab, None);
+        let result = engine.correct("the agent responded quickly");
+        assert_eq!(result.text, "the agent responded quickly");
+        assert!(result.matches.is_empty());
+    }
+
+    #[test]
+    fn prod_false_positive_database_survives() {
+        let rules = vec![];
+        let vocab = vec![vocab("DataBricks", "brand", "auto")];
+        let edit_rules = vec![edit_rule("databrik", "DataBricks", vec![], vec![])];
+        let engine =
+            CorrectionEngine::new_with_policy(&rules, &vocab, None, HashMap::new(), edit_rules);
+        let result = engine.correct("the database migration ran successfully");
+        assert_eq!(result.text, "the database migration ran successfully");
+    }
+
+    #[test]
+    fn prod_false_positive_nahi_to_n8n() {
+        let rules = vec![rule("n8n", "n8n")];
+        let vocab = vec![vocab("n8n", "brand", "auto")];
+        let engine = CorrectionEngine::new(&rules, &vocab, None);
+        let result = engine.correct("nahi yeh sahi nahi hai");
+        assert_eq!(result.text, "nahi yeh sahi nahi hai");
+    }
+
+    #[test]
+    fn prod_false_positive_aajkal_survives() {
+        let rules = vec![rule("kafk", "Kafka")];
+        let vocab = vec![vocab("Kafka", "brand", "auto")];
+        let engine = CorrectionEngine::new(&rules, &vocab, None);
+        let result = engine.correct("aajkal bahut kaam ho raha hai");
+        assert_eq!(result.text, "aajkal bahut kaam ho raha hai");
+    }
+
+    // ── Distortions close to real words still get corrected ──────────────────
+
+    #[test]
+    fn close_distortion_airnot_becomes_airnote() {
+        let engine = engine_with_many_terms();
+        let result = engine.correct("download airnot from the store");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "AirNote"),
+            "airnot → AirNote must work — it's not a real word"
+        );
+    }
+
+    #[test]
+    fn close_distortion_meac_becomes_emiac() {
+        let engine = engine_with_many_terms();
+        let result = engine.correct("meac tech company hai");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "EMIAC"),
+            "meac → EMIAC must work — it's not a real word"
+        );
+    }
+
+    #[test]
+    fn close_distortion_emiak_becomes_emiac() {
+        let engine = engine_with_many_terms();
+        let result = engine.correct("emiak ka office kahan hai");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "EMIAC"),
+            "emiak → EMIAC must work — it's not a real word"
+        );
+    }
+
+    #[test]
+    fn close_distortion_growk_becomes_groq() {
+        let engine = engine_with_many_terms();
+        let result = engine.correct("growk api check karo");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "Groq"),
+            "growk → Groq must work — it's not a real word"
+        );
+    }
+
+    // ── Multi-token aliases ──────────────────────────────────────────────────
+
+    #[test]
+    fn multi_token_alias_air_not_becomes_airnote() {
+        let engine = engine_with_many_terms();
+        let result = engine.correct("download air not now");
+        let has_correction = result.matches.iter().any(|m| m.correct_form == "AirNote");
+        assert!(
+            has_correction || result.text.contains("AirNote"),
+            "multi-token 'air not' → AirNote must work"
+        );
+    }
+
+    // ── Stress test: batch of 20 real words in one sentence ──────────────────
+
+    #[test]
+    fn twenty_real_words_none_corrected() {
+        let engine = engine_with_many_terms();
+        let result = engine.correct(
+            "the agent will host a cloud server on port eight \
+             with a merge of the table and spring flask for the \
+             nest swift cell fire press tower guard",
+        );
+        assert!(
+            result.matches.is_empty(),
+            "no real word should be corrected — got: {:?}",
+            result
+                .matches
+                .iter()
+                .map(|m| format!("{:?}→{}", m.transcript_form, m.correct_form))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // ── Stress test: batch of distortions in one sentence ────────────────────
+
+    #[test]
+    fn multiple_distortions_all_corrected() {
+        let engine = engine_with_many_terms();
+        let result = engine.correct("meac aur macops dono acche hain");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "EMIAC"),
+            "meac → EMIAC must fire in multi-correction"
+        );
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "Macobs"),
+            "macops → Macobs must fire in multi-correction"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Adversarial close-pair tests: real English/Hindi word vs. its distortion.
+    // Each pair has a real word that must SURVIVE and a distortion that must be
+    // CORRECTED. These simulate the hardest production cases where a brand name
+    // differs from a common word by 1-2 characters.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    fn devtools_engine() -> CorrectionEngine<'static> {
+        let rules: &'static [SttReplacement] = Box::leak(Box::new([
+            // Kafka
+            rule("kafk", "Kafka"),
+            rule("kafkaa", "Kafka"),
+            // Kubernetes
+            rule("cubernatis", "Kubernetes"),
+            rule("kubernets", "Kubernetes"),
+            rule("kubr", "Kubernetes"),
+            // Macobs
+            rule("macops", "Macobs"),
+            rule("mecobs", "Macobs"),
+            // EMIAC
+            rule("meac", "EMIAC"),
+            rule("emiak", "EMIAC"),
+            // AirNote
+            rule("airnot", "AirNote"),
+            rule("ajent", "AirNote"),
+            // Groq
+            rule("growk", "Groq"),
+            rule("grok", "Groq"),
+            // Prisma
+            rule("prizm", "Prisma"),
+            rule("prizma", "Prisma"),
+            // Sentry
+            rule("sentri", "Sentry"),
+            rule("sentree", "Sentry"),
+            // MongoDB
+            rule("mongoo", "MongoDB"),
+            rule("mongdb", "MongoDB"),
+            // Docker
+            rule("dockar", "Docker"),
+            rule("dokker", "Docker"),
+            // Slack
+            rule("slak", "Slack"),
+            rule("slck", "Slack"),
+            // Stripe
+            rule("stryp", "Stripe"),
+            rule("stryep", "Stripe"),
+            // Cursor
+            rule("cursr", "Cursor"),
+            rule("kursor", "Cursor"),
+            // Notion
+            rule("noshun", "Notion"),
+            rule("noshon", "Notion"),
+            // Consul
+            rule("consl", "Consul"),
+            rule("konsul", "Consul"),
+            // Vault
+            rule("valt", "Vault"),
+            rule("vawlt", "Vault"),
+            // Helm
+            rule("helam", "Helm"),
+            rule("hlm", "Helm"),
+            // RabbitMQ
+            rule("rabit", "RabbitMQ"),
+            rule("rabitmq", "RabbitMQ"),
+            // Celery
+            rule("seleri", "Celery"),
+            rule("selery", "Celery"),
+            // Harbor
+            rule("harbr", "Harbor"),
+            rule("harbur", "Harbor"),
+            // Nomad
+            rule("nomeed", "Nomad"),
+            rule("nomaad", "Nomad"),
+            // Spark
+            rule("spak", "Spark"),
+            rule("sparrk", "Spark"),
+            // Hive
+            rule("hayv", "Hive"),
+            rule("hiv", "Hive"),
+            // Arrow
+            rule("arow", "Arrow"),
+            rule("aarro", "Arrow"),
+            // LanceDB
+            rule("lans", "LanceDB"),
+            rule("lansdb", "LanceDB"),
+            // Beam
+            rule("beem", "Beam"),
+            rule("beeam", "Beam"),
+            // Flask
+            rule("flsk", "Flask"),
+            rule("flaask", "Flask"),
+            // Redis
+            rule("redis", "Redis"),
+            rule("rediss", "Redis"),
+        ]));
+        let vocab: &'static [VocabTerm] = Box::leak(Box::new([
+            vocab("Kafka", "brand", "auto"),
+            vocab("Kubernetes", "brand", "auto"),
+            vocab("Macobs", "proper_noun", "auto"),
+            vocab("EMIAC", "brand", "auto"),
+            vocab("AirNote", "brand", "auto"),
+            vocab("Groq", "brand", "auto"),
+            vocab("Prisma", "brand", "auto"),
+            vocab("Sentry", "brand", "auto"),
+            vocab("MongoDB", "brand", "auto"),
+            vocab("Docker", "brand", "auto"),
+            vocab("Slack", "brand", "auto"),
+            vocab("Stripe", "brand", "auto"),
+            vocab("Cursor", "brand", "auto"),
+            vocab("Notion", "brand", "auto"),
+            vocab("Consul", "brand", "auto"),
+            vocab("Vault", "brand", "auto"),
+            vocab("Helm", "brand", "auto"),
+            vocab("RabbitMQ", "brand", "auto"),
+            vocab("Celery", "brand", "auto"),
+            vocab("Harbor", "brand", "auto"),
+            vocab("Nomad", "brand", "auto"),
+            vocab("Spark", "brand", "auto"),
+            vocab("Hive", "brand", "auto"),
+            vocab("Arrow", "brand", "auto"),
+            vocab("LanceDB", "brand", "auto"),
+            vocab("Beam", "brand", "auto"),
+            vocab("Flask", "brand", "auto"),
+            vocab("Redis", "brand", "auto"),
+        ]));
+        CorrectionEngine::new(rules, vocab, None)
+    }
+
+    // ── Real English words that sit 1-2 edits from a brand name ──────────────
+
+    #[test]
+    fn adversarial_english_words_never_corrected() {
+        let engine = devtools_engine();
+        let cases: &[(&str, &str, &str)] = &[
+            // (real word, sentence, brand it must NOT become)
+            ("slack", "give me some slack please", "Slack"),
+            ("stripe", "the stripe on the shirt is red", "Stripe"),
+            ("cursor", "move the cursor to the left", "Cursor"),
+            ("notion", "I have a notion about this", "Notion"),
+            ("consul", "the consul issued a visa", "Consul"),
+            ("vault", "the vault has gold inside", "Vault"),
+            ("helm", "he took the helm of the ship", "Helm"),
+            ("rabbit", "the rabbit ran across the field", "RabbitMQ"),
+            ("celery", "add celery to the soup", "Celery"),
+            ("harbor", "the ship entered the harbor", "Harbor"),
+            ("nomad", "he lived as a nomad for years", "Nomad"),
+            ("spark", "the spark lit the fire", "Spark"),
+            ("hive", "the bee hive is buzzing", "Hive"),
+            ("arrow", "the arrow hit the target", "Arrow"),
+            ("lance", "the knight carried a lance", "LanceDB"),
+            ("beam", "the beam of light was bright", "Beam"),
+            ("flask", "fill the flask with water", "Flask"),
+            ("prism", "light through a prism splits", "Prisma"),
+            ("sentry", "the sentry stood guard all night", "Sentry"),
+            ("drone", "the drone flew over the field", "Docker"),
+            ("mongo", "mongo the character was fun", "MongoDB"),
+            ("docker", "the docker loaded the ship", "Docker"),
+            ("mint", "the mint flavor ice cream", "Mint"),
+            ("agent", "the agent signed the deal", "AirNote"),
+            ("mac", "I love my mac", "Macobs"),
+            ("cube", "the ice cube melted fast", "Kubernetes"),
+            ("flak", "he took a lot of flak for it", "Flask"),
+        ];
+        for (word, sentence, forbidden_brand) in cases {
+            let result = engine.correct(sentence);
+            assert_eq!(
+                &result.text, sentence,
+                "{word:?} was wrongly corrected in: {sentence:?} → {:?}",
+                result.text
+            );
+            assert!(
+                result
+                    .matches
+                    .iter()
+                    .all(|m| m.correct_form != *forbidden_brand),
+                "{word:?} became {forbidden_brand}: {:?}",
+                result.matches
+            );
+        }
+    }
+
+    // ── Hindi words that sit close to brand names ────────────────────────────
+
+    #[test]
+    fn adversarial_hindi_words_never_corrected() {
+        let engine = devtools_engine();
+        let cases: &[(&str, &str, &str)] = &[
+            ("kaafi", "kaafi accha kaam kiya", "Kafka"),
+            ("kafi", "kafi zyada ho gaya", "Kafka"),
+            ("nahi", "nahi yeh nahi chalega", "Nomad"),
+            ("aaj", "aaj ka din achha tha", "AirNote"),
+            ("baat", "baat sun meri", "Beam"),
+            ("baar", "ek baar aur try karo", "Beam"),
+            ("hain", "sab log yahan hain", "Hive"),
+            ("hai", "bahut accha hai yeh", "Hive"),
+            ("kar", "kaam kar raha hoon", "Kafka"),
+            ("kal", "kal milte hain", "Kafka"),
+            ("din", "poora din kaam kiya", "Docker"),
+            ("ghar", "ghar pe aana hai", "Groq"),
+            ("log", "bahut log aaye the", "LanceDB"),
+            ("mil", "sabse mil liya", "MongoDB"),
+        ];
+        for (word, sentence, forbidden_brand) in cases {
+            let result = engine.correct(sentence);
+            assert_eq!(
+                &result.text, sentence,
+                "Hindi {word:?} was wrongly corrected in: {sentence:?} → {:?}",
+                result.text
+            );
+            assert!(
+                result
+                    .matches
+                    .iter()
+                    .all(|m| m.correct_form != *forbidden_brand),
+                "Hindi {word:?} became {forbidden_brand}: {:?}",
+                result.matches
+            );
+        }
+    }
+
+    // ── Distortions of the SAME brands that must still get corrected ─────────
+
+    #[test]
+    fn adversarial_distortions_still_corrected() {
+        let engine = devtools_engine();
+        let cases: &[(&str, &str, &str)] = &[
+            // (distortion, sentence, expected brand)
+            ("kafk", "kafk cluster check karo", "Kafka"),
+            ("cubernatis", "cubernatis deploy karo", "Kubernetes"),
+            ("macops", "macops ka IPO aaya", "Macobs"),
+            ("meac", "meac tech company", "EMIAC"),
+            ("airnot", "airnot download karo", "AirNote"),
+            ("growk", "growk api use karo", "Groq"),
+            ("prizm", "prizm schema check karo", "Prisma"),
+            ("sentri", "sentri alerts dekho", "Sentry"),
+            ("mongoo", "mongoo database setup karo", "MongoDB"),
+            ("dockar", "dockar container start karo", "Docker"),
+            ("slak", "slak pe message bhejo", "Slack"),
+            ("stryp", "stryp payment integrate karo", "Stripe"),
+            ("cursr", "cursr editor open karo", "Cursor"),
+            ("noshun", "noshun workspace create karo", "Notion"),
+            ("consl", "consl service register karo", "Consul"),
+            ("valt", "valt secrets manage karo", "Vault"),
+            ("helam", "helam chart install karo", "Helm"),
+            ("rabit", "rabit queue check karo", "RabbitMQ"),
+            ("seleri", "seleri task run karo", "Celery"),
+            ("harbr", "harbr registry push karo", "Harbor"),
+            ("beem", "beem pipeline deploy karo", "Beam"),
+            ("flsk", "flsk app run karo", "Flask"),
+        ];
+        for (distortion, sentence, expected_brand) in cases {
+            let result = engine.correct(sentence);
+            assert!(
+                result
+                    .matches
+                    .iter()
+                    .any(|m| m.correct_form == *expected_brand),
+                "{distortion:?} → {expected_brand} must fire in: {sentence:?}\n\
+                 got text: {:?}, matches: {:?}",
+                result.text,
+                result
+                    .matches
+                    .iter()
+                    .map(|m| format!("{:?}→{}", m.transcript_form, m.correct_form))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    // ── Same sentence, real word + distortion side by side ────────────────────
+
+    #[test]
+    fn side_by_side_real_word_untouched_distortion_fixed() {
+        let engine = devtools_engine();
+
+        let result = engine.correct("the slack channel has slak issues");
+        assert!(result.text.contains("slack"), "real 'slack' must stay");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "Slack"),
+            "distortion 'slak' must become Slack"
+        );
+
+        let result = engine.correct("move cursor to cursr editor");
+        assert!(result.text.contains("cursor"), "real 'cursor' must stay");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "Cursor"),
+            "distortion 'cursr' must become Cursor"
+        );
+
+        let result = engine.correct("kaafi achha hai kafk cluster");
+        assert!(result.text.contains("kaafi"), "hindi 'kaafi' must stay");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "Kafka"),
+            "distortion 'kafk' must become Kafka"
+        );
+
+        let result = engine.correct("the vault is secure but valt config is wrong");
+        assert!(result.text.contains("vault"), "real 'vault' must stay");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "Vault"),
+            "distortion 'valt' must become Vault"
+        );
+
+        let result = engine.correct("the agent said ajent is the app");
+        assert!(result.text.contains("agent"), "real 'agent' must stay");
+
+        let result = engine.correct("mac pe macops install karo");
+        assert!(result.text.contains("mac"), "real 'mac' must stay");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "Macobs"),
+            "distortion 'macops' must become Macobs"
+        );
+    }
+
+    // ── Plural and inflected forms of real words ─────────────────────────────
+
+    #[test]
+    fn plural_forms_of_real_words_survive() {
+        let engine = devtools_engine();
+        let sentences = [
+            "the cubes are stacked neatly",
+            "multiple agents were deployed",
+            "all the rabbits escaped the farm",
+            "the drones surveyed the area",
+            "both flasks were empty",
+            "the arrows pointed north",
+            "all sentries reported clear",
+            "the beams supported the roof",
+            "several harbors were closed",
+            "the sparks flew everywhere",
+        ];
+        for sentence in &sentences {
+            let result = engine.correct(sentence);
+            assert_eq!(
+                &result.text, sentence,
+                "plural form wrongly corrected: {sentence:?} → {:?}",
+                result.text
+            );
+        }
+    }
+
+    // ── Mixed Hinglish with devtools distortions ─────────────────────────────
+
+    #[test]
+    fn hinglish_devtools_mixed_sentence() {
+        let engine = devtools_engine();
+        let result = engine.correct("aaj kaafi kaam kiya macops pe aur sentri alerts bhi dekhe");
+        assert!(result.text.contains("aaj"), "aaj must survive");
+        assert!(result.text.contains("kaafi"), "kaafi must survive");
+        assert!(result.text.contains("kaam"), "kaam must survive");
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "Macobs"),
+            "macops → Macobs must fire"
+        );
+        assert!(
+            result.matches.iter().any(|m| m.correct_form == "Sentry"),
+            "sentri → Sentry must fire"
+        );
+    }
+
+    // ── Dictionary boundary: verify is_in_dictionary for new additions ───────
+
+    #[test]
+    fn dictionary_has_devtools_adjacent_words() {
+        for word in &[
+            "slack", "stripe", "cursor", "notion", "consul", "vault", "helm", "drone", "spark",
+            "hive", "celery", "rabbit", "harbor", "nomad", "beam", "arrow", "lance", "flask",
+            "prism", "sentry", "mongo", "docker", "mint", "flak", "agent", "cube", "cubes",
+        ] {
+            assert!(
+                is_in_dictionary(word),
+                "{word:?} must be in dictionary — it's a real English word"
+            );
+        }
+    }
+
+    #[test]
+    fn dictionary_has_hindi_additions() {
+        for word in &["kaafi", "kafi", "pura", "poora", "accha", "sahi", "galat"] {
+            assert!(
+                is_in_dictionary(word),
+                "Hindi {word:?} must be in dictionary"
+            );
+        }
+    }
+
+    #[test]
+    fn dictionary_rejects_all_distortions() {
+        for distortion in &[
+            "kafk",
+            "cubernatis",
+            "kubernets",
+            "macops",
+            "mecobs",
+            "meac",
+            "emiak",
+            "airnot",
+            "ajent",
+            "growk",
+            "prizm",
+            "prizma",
+            "sentri",
+            "sentree",
+            "mongoo",
+            "mongdb",
+            "dockar",
+            "dokker",
+            "slak",
+            "slck",
+            "stryp",
+            "stryep",
+            "cursr",
+            "kursor",
+            "noshun",
+            "noshon",
+            "consl",
+            "konsul",
+            "valt",
+            "vawlt",
+            "helam",
+            "hlm",
+            "rabit",
+            "rabitmq",
+            "seleri",
+            "selery",
+            "harbr",
+            "harbur",
+            "nomeed",
+            "nomaad",
+            "sparrk",
+            "hayv",
+            "aarro",
+            "lans",
+            "lansdb",
+            "beem",
+            "beeam",
+            "flsk",
+            "flaask",
+        ] {
+            assert!(
+                !is_in_dictionary(distortion),
+                "{distortion:?} is a distortion — must NOT be in dictionary"
+            );
+        }
     }
 }

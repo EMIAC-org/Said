@@ -669,20 +669,24 @@ mod tests {
         assert_eq!(feedback.penalized, 1, "stt_alias event should be penalized");
         assert_eq!(feedback.marked_kept, 0);
 
-        // Verify the alias was demoted — when weight drops to 0 or below,
-        // demote() deletes the row entirely, so the alias should be gone.
+        // Verify the alias was demoted — demote() now blocks instead of
+        // deleting, so the row survives with review_status = 'blocked'.
         let conn = pool.get().unwrap();
-        let remaining: i64 = conn
+        let (weight, status): (f64, String) = conn
             .query_row(
-                "SELECT COUNT(*) FROM stt_replacements
+                "SELECT weight, review_status FROM stt_replacements
                   WHERE user_id = 'u1' AND transcript_form = 'mac' AND correct_form = 'EMIAC'",
                 [],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
+        assert!(
+            weight <= 0.0,
+            "weight should be <= 0 after demotion, got {weight}"
+        );
         assert_eq!(
-            remaining, 0,
-            "alias should be deleted after demotion (weight 1.5 - 1.5 <= 0)"
+            status, "blocked",
+            "alias should be permanently blocked, not deleted"
         );
     }
 
