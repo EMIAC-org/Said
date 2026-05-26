@@ -330,8 +330,12 @@ jobs:
         timeout-minutes: 3
         run: |
           set -euo pipefail
-          curl -fsS "${{ steps.artifacts.outputs.manifest_url }}" | tee /tmp/latest.json
-          curl -fsSI "${{ steps.artifacts.outputs.dmg_url }}"
+          # GitHub macOS runners occasionally fail resolving sslip.io even
+          # though the VM and public URL are healthy. Resolve the release host
+          # directly to the VM IP and retry before marking the release failed.
+          CURL_RESOLVE=(--resolve airnote.103.180.163.41.sslip.io:443:103.180.163.41)
+          curl "${CURL_RESOLVE[@]}" --retry 5 --retry-delay 5 --retry-all-errors -fsS "${{ steps.artifacts.outputs.manifest_url }}" | tee /tmp/latest.json
+          curl "${CURL_RESOLVE[@]}" --retry 5 --retry-delay 5 --retry-all-errors -fsSI "${{ steps.artifacts.outputs.dmg_url }}"
           echo "Public DMG URL: ${{ steps.artifacts.outputs.dmg_url }}"
 
       - name: Upload backup artifact
