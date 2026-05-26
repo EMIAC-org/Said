@@ -117,7 +117,7 @@ jobs:
           security find-identity -v -p codesigning
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
-      # ── macOS: CLI binary + AirNote.app + DMG via build-dmg.sh ─────────────
+      # ── macOS: CLI binary + AirNote.app + DMG + notarization ───────────────
       - name: Build CLI binary (Mac)
         if: matrix.platform == 'darwin'
         shell: bash
@@ -126,16 +126,137 @@ jobs:
           cp target/${{ matrix.target }}/release/said said-${{ matrix.target }}
           chmod +x said-${{ matrix.target }}
 
-      - name: Build AirNote.app + DMG (Mac)
+      - name: Build said-backend sidecar (Mac)
         if: matrix.platform == 'darwin'
         shell: bash
-        timeout-minutes: 35
+        timeout-minutes: 10
+        run: |
+          cargo build -p said-backend --release --target ${{ matrix.target }}
+          mkdir -p desktop/src-tauri/binaries
+          cp "target/${{ matrix.target }}/release/said-backend" \
+            "desktop/src-tauri/binaries/said-backend-${{ matrix.target }}"
+          chmod +x "desktop/src-tauri/binaries/said-backend-${{ matrix.target }}"
+
+      - name: Build AirNote.app only (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
+        timeout-minutes: 20
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        working-directory: desktop
+        run: |
+          # Build only the .app bundle here. Signing, DMG creation, notarization,
+          # stapling, and Gatekeeper verification are separate visible steps below.
+          npm run tauri:build -- \
+            --target ${{ matrix.target }} \
+            --bundles app \
+            --ci \
+            --verbose \
+            --no-sign
+
+      - name: Sign and verify AirNote.app (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
+        timeout-minutes: 8
+        env:
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: EMIAC TECHNOLOGIES LIMITED (96ZQGP7L3B)"
+        run: |
+          set -euo pipefail
+          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/${PRODUCT_NAME}.app"
+          EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/said-backend"
+          ENTITLEMENTS="desktop/src-tauri/AirNote.entitlements"
+          BUNDLE_ID="com.emiac.airnote.desktop"
+
+          test -d "$APP_PATH"
+          test -x "$EMBEDDED_BACKEND"
+
+          rm -f "$APP_PATH/Contents/MacOS/.env"
+          xattr -cr "$APP_PATH" 2>/dev/null || true
+
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --entitlements "$ENTITLEMENTS" \
+            "$EMBEDDED_BACKEND"
+
+          codesign --force --deep --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --entitlements "$ENTITLEMENTS" \
+            "$APP_PATH"
+
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign --verify --strict --verbose=2 "$EMBEDDED_BACKEND"
+
+          ACTUAL_ID=$(codesign -dv "$APP_PATH" 2>&1 | awk -F= '/^Identifier=/ {print $2}')
+          test "$ACTUAL_ID" = "$BUNDLE_ID"
+          echo "Signed app verified: $APP_PATH"
+
+      - name: Create and verify DMG (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/${PRODUCT_NAME}.app"
+          BUNDLE_DIR="target/${{ matrix.target }}/release/bundle"
+          STAGING="$BUNDLE_DIR/dmg-staging"
+          DMG_OUT="$BUNDLE_DIR/dmg/${PRODUCT_NAME}_${{ steps.ver_mac.outputs.version }}_${{ matrix.arch_short }}.dmg"
+
+          rm -rf "$STAGING" "$DMG_OUT"
+          mkdir -p "$STAGING" "$BUNDLE_DIR/dmg"
+          ditto "$APP_PATH" "$STAGING/${PRODUCT_NAME}.app"
+          ln -s /Applications "$STAGING/Applications"
+
+          hdiutil create \
+            -volname "$PRODUCT_NAME" \
+            -srcfolder "$STAGING" \
+            -ov \
+            -format UDZO \
+            "$DMG_OUT"
+
+          rm -rf "$STAGING"
+          test -f "$DMG_OUT"
+
+          ATTACH_OUT=$(hdiutil attach -nobrowse -readonly "$DMG_OUT")
+          echo "$ATTACH_OUT"
+          DMG_DEV=$(echo "$ATTACH_OUT" | awk '/\/dev\/disk[0-9]+s[0-9]+/ && /\/Volumes\// {print $1; exit}')
+          DMG_VOL=$(echo "$ATTACH_OUT" | awk '/\/Volumes\// {for (i=3;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""; exit}')
+          codesign --verify --deep --strict --verbose=2 "$DMG_VOL/${PRODUCT_NAME}.app"
+          hdiutil detach "$DMG_DEV" -force >/dev/null
+          echo "DMG verified: $DMG_OUT"
+
+      - name: Notarize, staple, and verify DMG (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
+        timeout-minutes: 30
+        env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: ./scripts/build-dmg.sh ${{ matrix.target }}
+          APPLE_TEAM_ID: 96ZQGP7L3B
+        run: |
+          set -euo pipefail
+          : "${APPLE_ID:?APPLE_ID secret is required for release notarization}"
+          : "${APPLE_APP_SPECIFIC_PASSWORD:?APPLE_APP_SPECIFIC_PASSWORD secret is required for release notarization}"
+
+          DMG_OUT="target/${{ matrix.target }}/release/bundle/dmg/${PRODUCT_NAME}_${{ steps.ver_mac.outputs.version }}_${{ matrix.arch_short }}.dmg"
+          test -f "$DMG_OUT"
+
+          # Apple DTS recommends increasing the notary upload connection timeout
+          # for slow or flaky S3-backed uploads. This keeps CI bounded while
+          # avoiding the default 100s upload deadline.
+          defaults write com.apple.gke.notary.tool nt-upload-connection-timeout 300 || true
+
+          xcrun notarytool submit "$DMG_OUT" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --timeout 25m \
+            --wait \
+            --verbose
+
+          xcrun stapler staple "$DMG_OUT"
+          spctl --assess --type open --context context:primary-signature -v "$DMG_OUT"
+          echo "DMG is signed, notarized, stapled, and Gatekeeper-verified: $DMG_OUT"
 
       # ── Windows: said-backend sidecar + Tauri NSIS installer ───────────────
       #    The CLI binary (`said`) is skipped on Windows for v3.0 — only the
