@@ -243,6 +243,23 @@ pub fn enforce_roman_hinglish(text: &str) -> String {
     }
 }
 
+/// Strip characters from non-Latin scripts that the LLM sometimes hallucinates
+/// (Japanese katakana/hiragana, CJK, Arabic, Cyrillic, etc). Keeps only:
+///   - ASCII (Latin letters, digits, punctuation, whitespace)
+///   - Common Unicode punctuation (smart quotes, em dash, etc)
+/// Called as a post-LLM sanitizer for Hinglish mode.
+pub fn strip_non_latin_scripts(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            c.is_ascii()
+                || matches!(*c as u32,
+                    0x2000..=0x206F  // general punctuation (em dash, quotes, etc)
+                    | 0x00C0..=0x024F // Latin Extended (accented chars)
+                )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
