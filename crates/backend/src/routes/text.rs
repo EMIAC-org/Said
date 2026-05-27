@@ -30,7 +30,8 @@ use crate::{
             VocabEntry, build_refine_last_transform_prompt,
             build_refine_last_transform_user_message, build_system_prompt_with_vocab_entries,
             build_tray_format_system_prompt, build_tray_format_user_message,
-            build_tray_system_prompt, build_user_message, resolved_vocab_terms_to_entries,
+            build_tray_system_prompt, build_tray_user_message, build_user_message,
+            resolved_vocab_terms_to_entries,
         },
         script,
         stream_safety::{
@@ -210,6 +211,8 @@ pub async fn polish(
         };
         let user_message = if is_formatter {
             build_tray_format_user_message(&resolved_transcript)
+        } else if let Some(ref tone) = tone_override {
+            build_tray_user_message(&resolved_transcript, tone)
         } else {
             build_user_message(&resolved_transcript, &prefs.output_language)
         };
@@ -226,46 +229,29 @@ pub async fn polish(
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
             .unwrap_or_default();
 
-        // Resolve model + provider.
-        // Formatter (Option+1) uses the same Groq model as voice polish
-        // for consistent rate limits and latency.
-        let model = said_core::resolve_model(&prefs.selected_model).to_string();
+        // Resolve selected-text transforms through the quality lane. Option+N
+        // must never drop to the lightweight 8B path: use connected Codex
+        // mini, otherwise Groq 70B.
         let sys_p       = system_prompt.clone();
         let usr_m       = user_message.clone();
         let client_c    = http_client.clone();
 
-        let (llm_provider, model_for_llm, openai_token_opt) = if is_formatter {
-            // Formatter: prefer GPT-5.4-mini (Codex) for quality, fall back to Groq 70B
-            let codex_tok = openai_oauth::get_token(&pool, &user_id);
-            if let Some(tok) = codex_tok {
-                ("openai_codex".to_string(), openai_codex::MODEL_MINI.to_string(), Some(tok.access_token))
-            } else {
-                ("groq".to_string(), "llama-3.3-70b-versatile".to_string(), None)
-            }
+        let codex_tok = openai_oauth::get_token(&pool, &user_id);
+        let (llm_provider, model_for_llm, openai_token_opt) = if let Some(tok) = codex_tok {
+            (
+                "openai_codex".to_string(),
+                openai_codex::MODEL_MINI.to_string(),
+                Some(tok.access_token),
+            )
         } else {
-            let provider = prefs.llm_provider.clone();
-            let (m, tok) = if provider == "openai_codex" {
-                let tok = openai_oauth::get_token(&pool, &user_id);
-                let m = if prefs.selected_model == "mini" || prefs.selected_model == "fast" {
-                    openai_codex::MODEL_MINI.to_string()
-                } else {
-                    openai_codex::MODEL_SMART.to_string()
-                };
-                (m, tok.map(|t| t.access_token))
-            } else if provider == "gemini_direct" {
-                (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
-            } else if provider == "groq" {
-                (if prefs.selected_model == "smart" { groq::GROQ_MODEL_SMART } else { groq::GROQ_MODEL_FAST }.to_string(), None)
-            } else {
-                (model.clone(), None)
-            };
-            (provider, m, tok)
+            ("groq".to_string(), groq::GROQ_MODEL_70B.to_string(), None)
         };
         let llm_provider_for_task = llm_provider.clone();
 
         let groq_key_for_recovery = groq_key_text.clone();
 
         info!("[text] LLM provider={llm_provider:?} model={model_for_llm:?}");
+        let actual_model_used = model_for_llm.clone();
 
         let llm_task = tokio::spawn(async move {
             if llm_provider_for_task == "openai_codex" {
@@ -388,7 +374,7 @@ pub async fn polish(
             let t2     = resolved_transcript.clone();
             let p2     = llm_result.polished.clone();
             let ta2    = target_app.clone();
-            let model2 = model.clone(); // resolved string e.g. "gpt-5.4", not mode key "smart"
+            let model2 = actual_model_used.clone();
             let e_ms   = embed_ms;
             let p_ms   = llm_result.polish_ms as i64;
             tokio::spawn(async move {
@@ -419,7 +405,7 @@ pub async fn polish(
                 "recording_id": recording_id,
                 "transcript":   resolved_transcript,
                 "polished":     llm_result.polished,
-                "model_used":   model,  // resolved string e.g. "gpt-5.4"
+                "model_used":   actual_model_used,
                 "confidence":   null,
                 "audio_id":     null,
                 "source":       "text",
@@ -498,27 +484,21 @@ pub async fn refine_last(
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
             .unwrap_or_default();
 
-        let llm_provider = prefs.llm_provider.clone();
-        let llm_provider_for_task = llm_provider.clone();
-        let model = said_core::resolve_model(&prefs.selected_model).to_string();
         let sys_p = system_prompt.clone();
         let usr_m = user_message.clone();
         let client_c = http_client.clone();
-        let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
-            let tok = openai_oauth::get_token(&pool, &user_id);
-            let m = if prefs.selected_model == "mini" || prefs.selected_model == "fast" {
-                openai_codex::MODEL_MINI.to_string()
-            } else {
-                openai_codex::MODEL_SMART.to_string()
-            };
-            (m, tok.map(|t| t.access_token))
-        } else if llm_provider == "gemini_direct" {
-            (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
-        } else if llm_provider == "groq" {
-            (if prefs.selected_model == "smart" { groq::GROQ_MODEL_SMART } else { groq::GROQ_MODEL_FAST }.to_string(), None)
+        let codex_tok = openai_oauth::get_token(&pool, &user_id);
+        let (llm_provider, model_for_llm, openai_token_opt) = if let Some(tok) = codex_tok {
+            (
+                "openai_codex".to_string(),
+                openai_codex::MODEL_MINI.to_string(),
+                Some(tok.access_token),
+            )
         } else {
-            (model.clone(), None)
+            ("groq".to_string(), groq::GROQ_MODEL_70B.to_string(), None)
         };
+        let llm_provider_for_task = llm_provider.clone();
+        let actual_model_used = model_for_llm.clone();
 
         let llm_task = tokio::spawn(async move {
             if llm_provider_for_task == "openai_codex" {
@@ -576,7 +556,7 @@ pub async fn refine_last(
             let uid2   = user_id.clone();
             let t2     = source_text.clone();
             let p2     = llm_result.polished.clone();
-            let model2 = model.clone();
+            let model2 = actual_model_used.clone();
             let p_ms   = llm_result.polish_ms as i64;
             tokio::spawn(async move {
                 insert_recording(&pool2, InsertRecording {
@@ -604,7 +584,7 @@ pub async fn refine_last(
                 "recording_id": recording_id,
                 "transcript":   source_text,
                 "polished":     llm_result.polished,
-                "model_used":   model,
+                "model_used":   actual_model_used,
                 "confidence":   null,
                 "audio_id":     null,
                 "source":       "text_refine",

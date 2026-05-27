@@ -1397,6 +1397,20 @@ fn tray_toggle_recording(app: &tauri::AppHandle) {
     }
 }
 
+fn insert_text_prefer_direct(label: &str, text: &str) -> Result<(), String> {
+    match paster::type_text(text) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            tracing::warn!("[{label}] direct typing unavailable — falling back to clipboard paste");
+            paster::paste(text)
+        }
+        Err(e) => {
+            tracing::warn!("[{label}] direct typing failed: {e} — falling back to clipboard paste");
+            paster::paste(text)
+        }
+    }
+}
+
 /// Polish the currently selected text using the given tone preset.
 ///
 /// Flow: read selection → POST /v1/text/polish (SSE) with tone_override → paste result.
@@ -1465,7 +1479,9 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
                 );
                 // Emit tokens to the UI for live preview if the window is visible
                 let _ = app_clone.emit("voice-done", &done);
-                // Paste the polished text (replaces selection)
+                // Selected-text transform must reliably replace the active
+                // selection. Direct Unicode typing has no success signal from
+                // macOS, so this explicit command keeps the proven paste path.
                 if let Err(e) = paster::paste(&done.polished) {
                     tracing::warn!("[tray_polish] paste failed: {e}");
                 }
@@ -2976,18 +2992,20 @@ async fn run_voice_polish_sse(
             output_pasted = true;
         }
     } else {
-        // Live token typing did not produce output — paste the final result.
+        // Live token typing did not produce output. Insert the final result
+        // directly first so normal dictation does not touch the user's
+        // clipboard; fall back to Cmd+V only if direct typing fails.
         tracing::info!(
-            "[main] live typing produced no output — clipboard paste final result ({} chars)",
+            "[main] live typing produced no output — direct insert final result ({} chars)",
             done.polished.len()
         );
         if !done.polished.is_empty() {
-            match paster::paste(&done.polished) {
+            match insert_text_prefer_direct("main_final_insert", &done.polished) {
                 Ok(_) => {
                     output_pasted = true;
                 }
                 Err(e) => {
-                    tracing::warn!("[main] paste fallback failed: {e}");
+                    tracing::warn!("[main] final insert failed: {e}");
                 }
             }
         }
@@ -3259,7 +3277,8 @@ fn finalize_typed_or_pasted_output(
             output_pasted = true;
         }
     } else if !done.polished.is_empty() {
-        paster::paste(&done.polished).map_err(|e| format!("paste failed: {e}"))?;
+        insert_text_prefer_direct("transform_final_insert", &done.polished)
+            .map_err(|e| format!("paste failed: {e}"))?;
         output_pasted = true;
     }
 

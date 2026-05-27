@@ -1265,6 +1265,38 @@ mod imp {
         }
     }
 
+    fn post_unicode_chunk(source: *mut std::ffi::c_void, text: &str) -> Result<(), String> {
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        let len = utf16.len() as u64;
+        let ptr = utf16.as_ptr();
+
+        unsafe {
+            let dn = ffi::CGEventCreateKeyboardEvent(source, 0, true);
+            if dn.is_null() {
+                return Err("CGEventCreateKeyboardEvent keydown failed".into());
+            }
+            ffi::CGEventKeyboardSetUnicodeString(dn, len, ptr);
+            ffi::CGEventPost(K_CG_HID_EVENT_TAP, dn);
+            ffi::CFRelease(dn);
+
+            // Give the HID stack time to dispatch keydown before keyup.
+            thread::sleep(Duration::from_millis(6));
+
+            let up = ffi::CGEventCreateKeyboardEvent(source, 0, false);
+            if up.is_null() {
+                return Err("CGEventCreateKeyboardEvent keyup failed".into());
+            }
+            ffi::CGEventKeyboardSetUnicodeString(up, len, ptr);
+            ffi::CGEventPost(K_CG_HID_EVENT_TAP, up);
+            ffi::CFRelease(up);
+
+            // Pause after keyup so subsequent chunks cannot interleave.
+            thread::sleep(Duration::from_millis(12));
+        }
+
+        Ok(())
+    }
+
     fn pbcopy(text: &str) {
         if let Ok(mut child) = Command::new("pbcopy")
             .stdin(std::process::Stdio::piped())
@@ -1303,36 +1335,36 @@ mod imp {
                 return Ok(false);
             }
             let source = ffi::CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_COMBINED_SESSION);
-            // Encode the whole token as UTF-16 and send as a single synthetic key event.
-            // CGEventKeyboardSetUnicodeString handles multi-character strings natively.
-            let utf16: Vec<u16> = text.encode_utf16().collect();
-            let len = utf16.len() as u64;
-            let ptr = utf16.as_ptr();
+            if source.is_null() {
+                return Err("CGEventSourceCreate failed".into());
+            }
 
-            let dn = ffi::CGEventCreateKeyboardEvent(source, 0, true);
-            ffi::CGEventKeyboardSetUnicodeString(dn, len, ptr);
-            ffi::CGEventPost(K_CG_HID_EVENT_TAP, dn);
-            ffi::CFRelease(dn);
-
-            // Give the HID stack time to dispatch keydown before keyup.
-            // Without this, rapid token delivery floods the queue and the
-            // receiving app drops/merges characters (e.g. "bhi kaam" → "bhiam").
-            thread::sleep(Duration::from_millis(6));
-
-            let up = ffi::CGEventCreateKeyboardEvent(source, 0, false);
-            ffi::CGEventKeyboardSetUnicodeString(up, len, ptr);
-            ffi::CGEventPost(K_CG_HID_EVENT_TAP, up);
-            ffi::CFRelease(up);
-
-            // Pause after keyup so the next token's keydown doesn't arrive
-            // before this event pair is fully processed.  6ms was insufficient
-            // for multi-char tokens at streaming speed — "par bhai" became
-            // "parai bh".  12ms eliminates interleaving on all tested hardware.
-            thread::sleep(Duration::from_millis(12));
+            // CGEventKeyboardSetUnicodeString handles multi-character strings,
+            // but chunking avoids very large final dictation payloads getting
+            // dropped by the focused app while keeping the system clipboard clean.
+            const MAX_CHUNK_CHARS: usize = 96;
+            let mut start = 0;
+            let mut count = 0;
+            let mut result = Ok(());
+            for (idx, _) in text.char_indices() {
+                if count == MAX_CHUNK_CHARS {
+                    result = post_unicode_chunk(source, &text[start..idx]);
+                    if result.is_err() {
+                        break;
+                    }
+                    start = idx;
+                    count = 0;
+                }
+                count += 1;
+            }
+            if result.is_ok() && start < text.len() {
+                result = post_unicode_chunk(source, &text[start..]);
+            }
 
             if !source.is_null() {
                 ffi::CFRelease(source);
             }
+            result?;
         }
         Ok(true)
     }
@@ -1381,7 +1413,16 @@ mod imp {
             }
         }
         thread::sleep(Duration::from_millis(40));
-        paste(replacement)
+        match type_text(replacement) {
+            Ok(true) => Ok(()),
+            Ok(false) => paste(replacement),
+            Err(e) => {
+                tracing::warn!(
+                    "[paste] direct replacement typing failed ({e}) — falling back to clipboard paste"
+                );
+                paste(replacement)
+            }
+        }
     }
 
     fn paste_inner(text: &str, select_all_first: bool) -> Result<(), String> {

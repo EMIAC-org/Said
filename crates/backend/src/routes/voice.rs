@@ -334,14 +334,12 @@ pub async fn repair_transcript(
         let cerebras_key = prefs.cerebras_api_key.clone()
             .or_else(|| std::env::var("CEREBRAS_API_KEY").ok())
             .unwrap_or_default();
-        let llm_provider = prefs.llm_provider.clone();
-        let llm_provider_for_task = llm_provider.clone();
         let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
         let sys_p = system_prompt.clone();
         let usr_m = user_message.clone();
         let client_c = http_client.clone();
         let groq_key_for_recovery = groq_key.clone();
-        let model = said_core::resolve_model(&prefs.selected_model).to_string();
+        let llm_provider = prefs.llm_provider.clone();
         let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
             let pool_tok = pool.clone();
             let uid_tok = user_id.clone();
@@ -352,12 +350,22 @@ pub async fn repair_transcript(
         } else if llm_provider == "gemini_direct" {
             (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
         } else if llm_provider == "groq" {
-            (if prefs.selected_model == "smart" { groq::GROQ_MODEL_SMART } else { groq::GROQ_MODEL_FAST }.to_string(), None)
+            (
+                if prefs.selected_model == "smart" {
+                    groq::GROQ_MODEL_SMART
+                } else {
+                    groq::GROQ_MODEL_FAST
+                }
+                .to_string(),
+                None,
+            )
         } else if llm_provider == "cerebras" {
             (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
         } else {
-            (model.clone(), None)
+            (said_core::resolve_model(&prefs.selected_model).to_string(), None)
         };
+        let llm_provider_for_task = llm_provider.clone();
+        let actual_model_used = model_for_llm.clone();
 
         let llm_task = tokio::spawn(async move {
             if llm_provider_for_task == "openai_codex" {
@@ -465,7 +473,7 @@ pub async fn repair_transcript(
             let p2 = llm_result.polished.clone();
             let ta2 = req.target_app.clone();
             let aid2 = req.audio_id.clone();
-            let model2 = model.clone();
+            let model2 = actual_model_used.clone();
             let p_ms = llm_result.polish_ms as i64;
             let enr2 = req.enriched_transcript.clone();
             tokio::spawn(async move {
@@ -494,7 +502,7 @@ pub async fn repair_transcript(
                 "recording_id": recording_id,
                 "transcript": transcript,
                 "polished": llm_result.polished,
-                "model_used": model,
+                "model_used": actual_model_used,
                 "confidence": null,
                 "audio_id": req.audio_id,
                 "source": "voice_repair",
@@ -884,8 +892,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let embed_ms = embed_t0.elapsed().as_millis() as i64;
         info!("[timing] embed={}ms ({})", embed_ms, if embedding.is_some() { "cache-hit" } else { "cache-miss/nonblocking" });
 
-        let model = said_core::resolve_model(&prefs.selected_model).to_string();
-
         // ── STEP 3: RAG retrieval — k-NN over preference_vectors ──────────────────
         let rag_examples = match &embedding {
             Some(emb) => {
@@ -1100,12 +1106,12 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         };
 
         // ── STEP 5: LLM stream (single pass) ─────────────────────────────────────
-        let llm_provider = prefs.llm_provider.clone();
         let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
         let sys_p       = system_prompt.clone();
         let usr_m       = user_message.clone();
         let client_c    = http_client.clone();
 
+        let llm_provider = prefs.llm_provider.clone();
         let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
             let pool_tok = pool.clone();
             let uid_tok  = user_id.clone();
@@ -1116,11 +1122,19 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         } else if llm_provider == "gemini_direct" {
             (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
         } else if llm_provider == "groq" {
-            (if prefs.selected_model == "smart" { groq::GROQ_MODEL_SMART } else { groq::GROQ_MODEL_FAST }.to_string(), None)
+            (
+                if prefs.selected_model == "smart" {
+                    groq::GROQ_MODEL_SMART
+                } else {
+                    groq::GROQ_MODEL_FAST
+                }
+                .to_string(),
+                None,
+            )
         } else if llm_provider == "cerebras" {
             (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
         } else {
-            (model.clone(), None)
+            (said_core::resolve_model(&prefs.selected_model).to_string(), None)
         };
         let llm_provider_for_task = llm_provider.clone();
 
@@ -1132,6 +1146,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
 
         let llm_start = Instant::now();
         info!("[timing] LLM start — provider={llm_provider:?} model={model_for_llm:?}");
+        let actual_model_used = model_for_llm.clone();
 
         let llm_task = tokio::spawn(async move {
             if llm_provider_for_task == "openai_codex" {
@@ -1355,7 +1370,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let t2      = resolved_transcript.clone();
             let p2      = llm_result.polished.clone();
             let ta2     = target_app.clone();
-            let model2  = model.clone();
+            let model2  = actual_model_used.clone();
             let conf    = stt_confidence;
             let t_ms    = transcribe_ms;
             let e_ms    = embed_ms;
@@ -1452,7 +1467,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 "output_language": prefs.output_language,
                 "enriched_transcript": enriched_raw,
                 "polished":     llm_result.polished,
-                "model_used":   model,
+                "model_used":   actual_model_used,
                 "confidence":   stt_confidence,
                 "latency_ms": {
                     "transcribe": transcribe_ms,
