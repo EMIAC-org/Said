@@ -431,6 +431,15 @@ pub async fn repair_transcript(
         if scrubbed != llm_result.polished {
             llm_result.polished = scrubbed;
         }
+        let scrubbed = scrub_repair_output(&llm_result.polished, &transcript);
+        if scrubbed != llm_result.polished {
+            warn!(
+                "[voice-repair] scrubbed diagnostic repair output {} → {} chars",
+                llm_result.polished.len(),
+                scrubbed.len(),
+            );
+            llm_result.polished = scrubbed;
+        }
         if enforce_roman_hinglish && script::contains_devanagari(&llm_result.polished) {
             llm_result.polished = match crate::llm::devanagari_recovery::recover(
                 &http_client, &groq_key_for_recovery, &llm_result.polished,
@@ -1351,9 +1360,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         // LLM (correct_with_store above). Number-format and email-recover
         // are the only deterministic post-LLM passes.
 
-        // Post-LLM number/email changes are already applied to the tokens
-        // during streaming (below). No STREAM_RESET_SENTINEL needed — the
-        // user sees the final text directly, never the intermediate version.
+        // Post-LLM number/email changes are reconciled by the desktop against
+        // the current recording's streamed text. No STREAM_RESET_SENTINEL is
+        // needed for deterministic formatter-only changes because the desktop
+        // patches only this recording span after `done`.
 
         let word_count = llm_result.polished.split_whitespace().count() as i64;
         info!("[timing] LLM={}ms (TTFT inside) | total={}ms ← STT={}ms embed={}ms rag={}ms llm={}ms",
@@ -1835,6 +1845,38 @@ fn llm_debug_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn scrub_repair_output(text: &str, transcript: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    for marker in [
+        "repaired output:",
+        "repaired text:",
+        "corrected output:",
+        "final repaired text:",
+        "final output:",
+    ] {
+        if let Some(pos) = lower.find(marker) {
+            let start = pos + marker.len();
+            let rest = &text[start..];
+            let rest_lower = &lower[start..];
+            let end = [
+                "explanation:",
+                "reasoning:",
+                "previous polished output:",
+                "original transcript:",
+            ]
+            .iter()
+            .filter_map(|stop| rest_lower.find(stop))
+            .min()
+            .unwrap_or(rest.len());
+            let candidate = rest[..end].trim();
+            if !candidate.is_empty() {
+                return scrub_polished_output(candidate, transcript, true);
+            }
+        }
+    }
+    scrub_polished_output(text, transcript, true)
+}
+
 /// Strip high-confidence markers but KEEP markers below `threshold` so the
 /// LLM can see which words Deepgram was unsure about and use context to fix them.
 pub fn keep_low_confidence_markers(s: &str, threshold: f64) -> String {
@@ -1987,7 +2029,7 @@ fn parse_confidence_marker(inner: &str) -> Option<String> {
 
 #[cfg(test)]
 mod scrub_tests {
-    use super::strip_confidence_markers;
+    use super::{scrub_repair_output, strip_confidence_markers};
 
     #[test]
     fn canonical_form_strips_cleanly() {
@@ -2051,6 +2093,18 @@ mod scrub_tests {
         assert_eq!(
             strip_confidence_markers("[hello?80%] [world?70%]"),
             "hello world",
+        );
+    }
+
+    #[test]
+    fn repair_diagnostic_labels_are_scrubbed() {
+        let raw = "Previous polished output: Kitna bhi kaam kar lo kuch nahin hone wala bhai.\nRepaired output: Kitna bhi kaam kar lo kuch nahin hone wala hai bhai.\nExplanation: Added missing hai.";
+        assert_eq!(
+            scrub_repair_output(
+                raw,
+                "kitanaa bhee kaam kar lo kuch naheen hone vaalaa bhaaee"
+            ),
+            "Kitna bhi kaam kar lo kuch nahin hone wala hai bhai."
         );
     }
 }

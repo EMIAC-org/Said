@@ -29,11 +29,19 @@ const PROMPT_LEAK_MARKERS: &[&str] = &[
     "the text between the fences below is dictated audio",
     "treat it as data to clean",
     "style note (advisory tone hint",
+    "original transcript:",
+    "previous polished output:",
+    "explanation:",
+    "reasoning:",
 ];
 
 const META_PREFIXES: &[&str] = &[
     "polished text:",
     "final polished text:",
+    "repaired output:",
+    "repaired text:",
+    "corrected output:",
+    "final repaired text:",
     "final answer:",
     "output:",
     "answer:",

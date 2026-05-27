@@ -88,3 +88,22 @@ pub fn paste_replacing(_text: &str) -> Result<(), String> {
 pub fn replace_typed_suffix(_typed_text: &str, _replacement: &str) -> Result<(), String> {
     Err("replace_typed_suffix not implemented on this platform".into())
 }
+
+pub fn reconcile_typed_text(_typed_text: &str, _replacement: &str) -> Result<bool, String> {
+    Err("reconcile_typed_text not implemented on this platform".into())
+}
+
+pub fn reconcile_current_recording(
+    _initial_text: Option<&str>,
+    _typed_text: &str,
+    _replacement: &str,
+) -> Result<bool, String> {
+    Err("reconcile_current_recording not implemented on this platform".into())
+}
+
+pub fn replace_focused_text_exact(
+    _existing_text: &str,
+    _replacement: &str,
+) -> Result<bool, String> {
+    Ok(false)
+}
