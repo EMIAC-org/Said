@@ -1,0 +1,1053 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AirNote — Pipeline v4 Proposal</title>
+<style>
+  :root {
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #16162a;
+    --bg-surface: #222240;
+    --bg-card: rgba(30, 30, 55, 0.85);
+    --bg-code: #11111b;
+    --border: rgba(255, 255, 255, 0.06);
+    --text-primary: #cdd6f4;
+    --text-secondary: #a6adc8;
+    --text-muted: #6c7086;
+    --text-heading: #f0f0ff;
+
+    --green: #a6e3a1;
+    --green-dim: rgba(166, 227, 161, 0.12);
+    --green-border: rgba(166, 227, 161, 0.25);
+    --blue: #89b4fa;
+    --blue-dim: rgba(137, 180, 250, 0.12);
+    --blue-border: rgba(137, 180, 250, 0.25);
+    --red: #f38ba8;
+    --red-dim: rgba(243, 139, 168, 0.12);
+    --red-border: rgba(243, 139, 168, 0.25);
+    --yellow: #f9e2af;
+    --yellow-dim: rgba(249, 226, 175, 0.12);
+    --yellow-border: rgba(249, 226, 175, 0.25);
+    --mauve: #cba6f7;
+    --mauve-dim: rgba(203, 166, 247, 0.12);
+    --mauve-border: rgba(203, 166, 247, 0.25);
+    --peach: #fab387;
+    --teal: #94e2d5;
+
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --radius: 14px;
+    --radius-sm: 8px;
+    --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 40px rgba(0, 0, 0, 0.5);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.7;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* --- Background pattern --- */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 800px 600px at 20% 10%, rgba(166, 227, 161, 0.04), transparent),
+      radial-gradient(ellipse 600px 500px at 80% 30%, rgba(137, 180, 250, 0.04), transparent),
+      radial-gradient(ellipse 500px 400px at 50% 80%, rgba(243, 139, 168, 0.03), transparent);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 3rem 1.5rem 6rem;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* --- Header --- */
+  .page-header {
+    text-align: center;
+    margin-bottom: 3.5rem;
+  }
+
+  .page-header h1 {
+    font-size: 2.4rem;
+    font-weight: 700;
+    color: var(--text-heading);
+    letter-spacing: -0.03em;
+    margin-bottom: 0.5rem;
+  }
+
+  .page-header .subtitle {
+    font-size: 1.1rem;
+    color: var(--text-secondary);
+    font-weight: 400;
+  }
+
+  .version-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    background: var(--mauve-dim);
+    border: 1px solid var(--mauve-border);
+    border-radius: 100px;
+    color: var(--mauve);
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 1rem;
+  }
+
+  /* --- Principle Banner --- */
+  .principle-banner {
+    background: linear-gradient(135deg, rgba(203, 166, 247, 0.08), rgba(137, 180, 250, 0.08));
+    border: 1px solid var(--mauve-border);
+    border-radius: var(--radius);
+    padding: 1.5rem 2rem;
+    margin-bottom: 3.5rem;
+    text-align: center;
+  }
+
+  .principle-banner .label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--mauve);
+    margin-bottom: 0.5rem;
+  }
+
+  .principle-banner .text {
+    font-size: 1.15rem;
+    font-weight: 500;
+    color: var(--text-heading);
+    font-style: italic;
+  }
+
+  .principle-banner .text span {
+    color: var(--mauve);
+    font-weight: 600;
+    font-style: normal;
+  }
+
+  /* --- Flow Section --- */
+  .flow-section {
+    margin-bottom: 4rem;
+  }
+
+  .flow-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .flow-header .flow-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3rem;
+    flex-shrink: 0;
+  }
+
+  .flow-header.green .flow-icon { background: var(--green-dim); border: 1px solid var(--green-border); }
+  .flow-header.blue .flow-icon { background: var(--blue-dim); border: 1px solid var(--blue-border); }
+  .flow-header.red .flow-icon { background: var(--red-dim); border: 1px solid var(--red-border); }
+
+  .flow-header h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-heading);
+  }
+
+  .flow-header .flow-desc {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+
+  .flow-header.green h2 { color: var(--green); }
+  .flow-header.blue h2 { color: var(--blue); }
+  .flow-header.red h2 { color: var(--red); }
+
+  /* --- Pipeline (vertical card list with arrows) --- */
+  .pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .step-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .step-card {
+    width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem 1.75rem;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(12px);
+    transition: border-color 0.2s;
+  }
+
+  .step-card:hover {
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+
+  .step-card.green-accent { border-left: 3px solid var(--green); }
+  .step-card.blue-accent  { border-left: 3px solid var(--blue); }
+  .step-card.red-accent   { border-left: 3px solid var(--red); }
+
+  .step-num {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 0.25rem;
+  }
+
+  .green-accent .step-num { color: var(--green); }
+  .blue-accent  .step-num { color: var(--blue); }
+  .red-accent   .step-num { color: var(--red); }
+
+  .step-card h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-heading);
+    margin-bottom: 0.5rem;
+  }
+
+  .step-card p {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.65;
+  }
+
+  .step-card .detail {
+    margin-top: 0.75rem;
+    padding: 0.75rem 1rem;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  .step-card .detail p,
+  .step-card .detail li {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+  }
+
+  .step-card .detail ul {
+    list-style: none;
+    padding: 0;
+  }
+
+  .step-card .detail ul li {
+    padding-left: 1.2em;
+    position: relative;
+    margin-bottom: 0.2rem;
+  }
+
+  .step-card .detail ul li::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.6em;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--text-muted);
+  }
+
+  .green-accent .detail ul li::before { background: var(--green); opacity: 0.5; }
+  .blue-accent  .detail ul li::before { background: var(--blue); opacity: 0.5; }
+  .red-accent   .detail ul li::before { background: var(--red); opacity: 0.5; }
+
+  .step-card code {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    background: rgba(0, 0, 0, 0.3);
+    padding: 0.15em 0.45em;
+    border-radius: 4px;
+    color: var(--peach);
+  }
+
+  .step-card .callout {
+    margin-top: 0.75rem;
+    padding: 0.6rem 0.9rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+    font-weight: 500;
+  }
+
+  .callout.important {
+    background: var(--yellow-dim);
+    border: 1px solid var(--yellow-border);
+    color: var(--yellow);
+  }
+
+  .callout.note {
+    background: rgba(137, 180, 250, 0.08);
+    border: 1px solid rgba(137, 180, 250, 0.15);
+    color: var(--blue);
+  }
+
+  /* --- Arrow between steps --- */
+  .arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0.4rem 0;
+    color: var(--text-muted);
+    opacity: 0.4;
+  }
+
+  .arrow .shaft {
+    width: 2px;
+    height: 16px;
+    background: currentColor;
+  }
+
+  .arrow .head {
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid currentColor;
+  }
+
+  .arrow.green { color: var(--green); opacity: 0.35; }
+  .arrow.blue  { color: var(--blue); opacity: 0.35; }
+  .arrow.red   { color: var(--red); opacity: 0.35; }
+
+  /* --- Substeps --- */
+  .substeps {
+    margin-top: 0.75rem;
+    padding-left: 0;
+  }
+
+  .substep {
+    display: flex;
+    gap: 0.6rem;
+    margin-bottom: 0.4rem;
+    align-items: flex-start;
+  }
+
+  .substep-label {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    min-width: 2em;
+    text-align: right;
+    padding-top: 0.15em;
+  }
+
+  .green-accent .substep-label { color: var(--green); }
+  .blue-accent  .substep-label { color: var(--blue); }
+  .red-accent   .substep-label { color: var(--red); }
+
+  .substep-text {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+  }
+
+  /* --- Evidence example block --- */
+  .evidence-block {
+    margin-top: 0.75rem;
+    background: var(--bg-code);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: var(--radius-sm);
+    padding: 0.85rem 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.7;
+    color: var(--text-muted);
+    overflow-x: auto;
+  }
+
+  .evidence-block .key { color: var(--blue); }
+  .evidence-block .str { color: var(--green); }
+  .evidence-block .num { color: var(--peach); }
+  .evidence-block .kind { color: var(--mauve); }
+
+  /* --- What Changed Section --- */
+  .changed-section {
+    margin-bottom: 4rem;
+  }
+
+  .changed-section h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--yellow);
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+  }
+
+  @media (max-width: 700px) {
+    .comparison {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .compare-card {
+    padding: 1.5rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+  }
+
+  .compare-card.before {
+    background: var(--red-dim);
+    border-color: var(--red-border);
+  }
+
+  .compare-card.after {
+    background: var(--green-dim);
+    border-color: var(--green-border);
+  }
+
+  .compare-card .compare-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 0.6rem;
+  }
+
+  .compare-card.before .compare-label { color: var(--red); }
+  .compare-card.after  .compare-label { color: var(--green); }
+
+  .compare-card h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-heading);
+    margin-bottom: 0.75rem;
+  }
+
+  .compare-flow {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .compare-step {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+  }
+
+  .compare-step .cs-arrow {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    flex-shrink: 0;
+  }
+
+  .compare-step .strike {
+    text-decoration: line-through;
+    opacity: 0.6;
+  }
+
+  .compare-step .highlight-bad {
+    color: var(--red);
+    font-weight: 500;
+  }
+
+  .compare-step .highlight-good {
+    color: var(--green);
+    font-weight: 500;
+  }
+
+  .compare-card .result {
+    margin-top: 0.75rem;
+    padding: 0.6rem 0.85rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+    font-weight: 500;
+  }
+
+  .compare-card.before .result {
+    background: rgba(243, 139, 168, 0.08);
+    border: 1px solid rgba(243, 139, 168, 0.15);
+    color: var(--red);
+  }
+
+  .compare-card.after .result {
+    background: rgba(166, 227, 161, 0.08);
+    border: 1px solid rgba(166, 227, 161, 0.15);
+    color: var(--green);
+  }
+
+  /* --- TOC nav --- */
+  .toc {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-bottom: 3rem;
+  }
+
+  .toc a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 1rem;
+    border-radius: 100px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition: background 0.2s, border-color 0.2s;
+    border: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.15);
+  }
+
+  .toc a.green  { color: var(--green); border-color: var(--green-border); }
+  .toc a.green:hover { background: var(--green-dim); }
+  .toc a.blue   { color: var(--blue); border-color: var(--blue-border); }
+  .toc a.blue:hover  { background: var(--blue-dim); }
+  .toc a.red    { color: var(--red); border-color: var(--red-border); }
+  .toc a.red:hover   { background: var(--red-dim); }
+  .toc a.yellow { color: var(--yellow); border-color: var(--yellow-border); }
+  .toc a.yellow:hover { background: var(--yellow-dim); }
+
+  /* --- Responsive --- */
+  @media (max-width: 640px) {
+    .container { padding: 2rem 1rem 4rem; }
+    .page-header h1 { font-size: 1.6rem; }
+    .step-card { padding: 1.25rem 1.25rem; }
+    .flow-header h2 { font-size: 1.2rem; }
+    .principle-banner { padding: 1.25rem 1.25rem; }
+    .principle-banner .text { font-size: 1rem; }
+  }
+
+  /* --- Output row --- */
+  .output-row {
+    margin-top: 0.6rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .output-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding-top: 0.15em;
+    flex-shrink: 0;
+  }
+
+  .green-accent .output-label { color: var(--green); }
+  .blue-accent  .output-label { color: var(--blue); }
+  .red-accent   .output-label { color: var(--red); }
+
+  .output-value {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+  }
+
+  /* --- Footer --- */
+  .page-footer {
+    text-align: center;
+    padding-top: 2rem;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.78rem;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- Header -->
+  <header class="page-header">
+    <div class="version-badge">v4 Proposal</div>
+    <h1>AirNote Pipeline Architecture</h1>
+    <p class="subtitle">End-to-end voice dictation: capture, polish, learn, correct</p>
+  </header>
+
+  <!-- Table of Contents -->
+  <nav class="toc">
+    <a href="#flow-voice" class="green">Flow 1: Voice to Text</a>
+    <a href="#flow-learning" class="blue">Flow 2: Learning</a>
+    <a href="#flow-demotion" class="red">Flow 3: Demotion</a>
+    <a href="#what-changed" class="yellow">What Changed</a>
+  </nav>
+
+  <!-- Key Design Principle -->
+  <div class="principle-banner">
+    <div class="label">Key Design Principle</div>
+    <div class="text">
+      "One step, one job. <span>Tier2</span> collects evidence.
+      <span>LLM</span> makes decisions.
+      <span>Learning</span> writes to DB.
+      No step does another step's job."
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- FLOW 1: VOICE -> TEXT                                        -->
+  <!-- ============================================================ -->
+  <section class="flow-section" id="flow-voice">
+    <div class="flow-header green">
+      <div class="flow-icon">&#127908;</div>
+      <div>
+        <h2>Flow 1: Voice &rarr; Text</h2>
+        <div class="flow-desc">The hot path &mdash; runs every time the user speaks</div>
+      </div>
+    </div>
+
+    <div class="pipeline">
+
+      <!-- Step 1: Capture -->
+      <div class="step-wrapper">
+        <div class="step-card green-accent">
+          <div class="step-num">Step 1</div>
+          <h3>Capture</h3>
+          <p>User holds <code>Caps Lock</code> &rarr; audio recorded at 16 kHz PCM via <code>cpal</code>.</p>
+          <div class="detail">
+            <ul>
+              <li>macOS: <code>CGEventTap</code> (Input Monitoring permission)</li>
+              <li>Windows: <code>WH_KEYBOARD_LL</code> low-level keyboard hook</li>
+            </ul>
+          </div>
+        </div>
+        <div class="arrow green"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 2: STT -->
+      <div class="step-wrapper">
+        <div class="step-card green-accent">
+          <div class="step-num">Step 2</div>
+          <h3>STT (Deepgram nova-3)</h3>
+          <p>Audio streamed over pre-warmed WebSocket &rarr; raw transcript returned.</p>
+          <div class="detail">
+            <p>Transcript may contain garbles: <code>"meac"</code>, <code>"mecorbs"</code>, <code>"kafk"</code>. These are expected &mdash; the LLM will fix them later using evidence.</p>
+          </div>
+        </div>
+        <div class="arrow green"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 3: Evidence Collection -->
+      <div class="step-wrapper">
+        <div class="step-card green-accent">
+          <div class="step-num">Step 3</div>
+          <h3>Evidence Collection (Tier2 &mdash; READ ONLY)</h3>
+          <p>Tier2 engine scans the raw transcript against known data. Produces an evidence list. <strong>Does not modify text.</strong></p>
+          <div class="detail">
+            <ul>
+              <li><strong>STT aliases</strong> &mdash; meac&rarr;EMIAC, mecorbs&rarr;MACOBS</li>
+              <li><strong>Edit-policy rules</strong> &mdash; learned user preferences</li>
+              <li><strong>ONNX neural scorer</strong> &mdash; confidence scores for ambiguous tokens</li>
+            </ul>
+          </div>
+          <div class="output-row">
+            <span class="output-label">Output:</span>
+            <span class="output-value">Evidence list (metadata only, never text mutations)</span>
+          </div>
+          <div class="evidence-block">
+[{<span class="key">"token"</span>: <span class="str">"meac"</span>, <span class="key">"likely"</span>: <span class="str">"EMIAC"</span>, <span class="key">"score"</span>: <span class="num">0.95</span>, <span class="key">"kind"</span>: <span class="kind">"alias"</span>},<br>
+&nbsp;{<span class="key">"token"</span>: <span class="str">"kafk"</span>, <span class="key">"likely"</span>: <span class="str">"Kafka"</span>, <span class="key">"score"</span>: <span class="num">0.88</span>, <span class="key">"kind"</span>: <span class="kind">"alias"</span>}]
+          </div>
+          <div class="callout important">Raw transcript is NOT modified. Evidence is metadata only.</div>
+        </div>
+        <div class="arrow green"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 4: Dynamic Prompt Building -->
+      <div class="step-wrapper">
+        <div class="step-card green-accent">
+          <div class="step-num">Step 4</div>
+          <h3>Dynamic Prompt Building</h3>
+          <p>Build a context-rich prompt for the LLM using tier2 evidence. ONE filtering step &mdash; no separate phonetic filter.</p>
+          <div class="substeps">
+            <div class="substep">
+              <span class="substep-label">4a</span>
+              <span class="substep-text"><strong>Filter vocabulary:</strong> Only terms whose aliases matched tokens in the raw transcript (from Step 3 evidence).</span>
+            </div>
+            <div class="substep">
+              <span class="substep-label">4b</span>
+              <span class="substep-text"><strong>Select few-shot examples:</strong> From user's correction history, pick 6-8 examples similar to the current transcript.</span>
+            </div>
+            <div class="substep">
+              <span class="substep-label">4c</span>
+              <span class="substep-text"><strong>Build system prompt:</strong> Vocabulary table + few-shot turns + cleaning rules assembled into a single prompt.</span>
+            </div>
+          </div>
+          <div class="callout note">One filtering step using tier2 evidence. No separate phonetic filter.</div>
+        </div>
+        <div class="arrow green"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 5: LLM Polish -->
+      <div class="step-wrapper">
+        <div class="step-card green-accent">
+          <div class="step-num">Step 5</div>
+          <h3>LLM Polish (Scout 17B on Groq)</h3>
+          <p>The LLM receives the <strong>raw transcript (untouched)</strong> plus the dynamic prompt with vocabulary hints. It makes ALL corrections using full context.</p>
+          <div class="detail">
+            <ul>
+              <li>Fixes STT garbles: <code>meac</code>&rarr;<code>EMIAC</code>, <code>kafk</code>&rarr;<code>Kafka</code></li>
+              <li>Disambiguates: <code>meac</code>&rarr;<code>EMIAC</code> vs <code>meac</code>&rarr;<code>Mac</code> based on context</li>
+              <li>Preserves real Hindi/English words: <code>kaafi</code>, <code>mac</code>, <code>maine</code></li>
+              <li>Cleans grammar, punctuation, romanization</li>
+            </ul>
+          </div>
+          <div class="output-row">
+            <span class="output-label">Output:</span>
+            <span class="output-value">Polished text &mdash; streamed token-by-token via SSE</span>
+          </div>
+        </div>
+        <div class="arrow green"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 6: Post-LLM Passes -->
+      <div class="step-wrapper">
+        <div class="step-card green-accent">
+          <div class="step-num">Step 6</div>
+          <h3>Post-LLM Passes (deterministic, no LLM)</h3>
+          <p>Lightweight deterministic transforms that never conflict with LLM output.</p>
+          <div class="detail">
+            <ul>
+              <li><strong>Number formatting</strong> &mdash; "fifty" &rarr; "50", "two hundred" &rarr; "200"</li>
+              <li><strong>Email recovery</strong> &mdash; reassemble addresses split by STT</li>
+            </ul>
+          </div>
+        </div>
+        <div class="arrow green"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 7: Paste -->
+      <div class="step-wrapper">
+        <div class="step-card green-accent">
+          <div class="step-num">Step 7</div>
+          <h3>Paste</h3>
+          <p>Token-by-token HID typing into the currently focused app.</p>
+          <div class="detail">
+            <ul>
+              <li>macOS: <code>CGEventKeyboardSetUnicodeString</code> (Accessibility permission)</li>
+              <li>Windows: <code>SendInput(KEYEVENTF_UNICODE)</code></li>
+              <li>6ms keydown&rarr;keyup + 6ms post-keyup delays (sacred &mdash; prevents word-breaking)</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- .pipeline -->
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- FLOW 2: LEARNING                                             -->
+  <!-- ============================================================ -->
+  <section class="flow-section" id="flow-learning">
+    <div class="flow-header blue">
+      <div class="flow-icon">&#129504;</div>
+      <div>
+        <h2>Flow 2: Learning</h2>
+        <div class="flow-desc">Happens 30 seconds after paste, when the user edits</div>
+      </div>
+    </div>
+
+    <div class="pipeline">
+
+      <!-- Step 1: Edit Watch -->
+      <div class="step-wrapper">
+        <div class="step-card blue-accent">
+          <div class="step-num">Step 1</div>
+          <h3>Edit Watch</h3>
+          <p>30 seconds after paste, read the text field via Accessibility API. Capture what we pasted (<code>ai_output</code>) vs what the user left (<code>user_kept</code>).</p>
+          <div class="detail">
+            <p><strong>Rejection gates:</strong> stale (&gt;30s), app switched, clipboard match (user pasted over our text).</p>
+          </div>
+        </div>
+        <div class="arrow blue"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 2: Diff -->
+      <div class="step-wrapper">
+        <div class="step-card blue-accent">
+          <div class="step-num">Step 2</div>
+          <h3>Diff</h3>
+          <p><code>edit_diff::diff(transcript, ai_output, user_kept)</code> &rarr; produces a list of hunks.</p>
+          <div class="detail">
+            <p>Each hunk = <code>{polish_window, kept_window, transcript_window}</code> &mdash; captures the three-way relationship between what STT heard, what we wrote, and what the user kept.</p>
+          </div>
+        </div>
+        <div class="arrow blue"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 3: Classify -->
+      <div class="step-wrapper">
+        <div class="step-card blue-accent">
+          <div class="step-num">Step 3</div>
+          <h3>Classify (deterministic, no LLM)</h3>
+          <p>For each hunk, determine the reason for the user's edit.</p>
+          <div class="detail">
+            <ul>
+              <li><strong>SttError</strong> &mdash; original is gibberish + corrected is a proper noun/brand</li>
+              <li><strong>PolishError</strong> &mdash; user reverted to the transcript form</li>
+              <li><strong>StylePreference</strong> &mdash; synonym swap (not learnable)</li>
+              <li><strong>StructuralRewrite</strong> &mdash; large change (not learnable)</li>
+            </ul>
+          </div>
+          <div class="detail">
+            <p><strong>Safety gates:</strong></p>
+            <ul>
+              <li><code>is_in_dictionary(original)</code> &rarr; if real word and corrected not in vocab &rarr; skip</li>
+              <li><code>is_common_word(corrected)</code> &rarr; skip</li>
+              <li><code>classify_term_type(corrected)</code> &rarr; must be brand / acronym / code_identifier</li>
+            </ul>
+          </div>
+        </div>
+        <div class="arrow blue"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 4: Safety Gates -->
+      <div class="step-wrapper">
+        <div class="step-card blue-accent">
+          <div class="step-num">Step 4</div>
+          <h3>Safety Gates (SttError only)</h3>
+          <p>Additional validation for learned corrections before they reach the database.</p>
+          <div class="detail">
+            <ul>
+              <li><code>judge_alias_source()</code> &mdash; Groq 8B LLM check: is this a real word?</li>
+              <li><code>appears_in_user_kept()</code> &mdash; correction must exist in user's final text</li>
+              <li><code>script_matches()</code> &mdash; Roman script for Hinglish mode</li>
+              <li><code>is_plausible_alias()</code> &mdash; phonetic plausibility check</li>
+            </ul>
+          </div>
+          <div class="detail">
+            <p><strong>Routing:</strong></p>
+            <ul>
+              <li>2+ changes in one edit &rarr; all go to review card (user picks)</li>
+              <li>1 change, brand/acronym type &rarr; auto-learn immediately</li>
+            </ul>
+          </div>
+        </div>
+        <div class="arrow blue"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 5: Learn -->
+      <div class="step-wrapper">
+        <div class="step-card blue-accent">
+          <div class="step-num">Step 5</div>
+          <h3>Learn (write to DB)</h3>
+          <p>Persist the new knowledge to SQLite and update all caches.</p>
+          <div class="detail">
+            <ul>
+              <li><code>vocabulary::upsert</code> &mdash; add term to vocabulary</li>
+              <li><code>stt_replacements::upsert_aliases</code> &mdash; add alias (meac&rarr;EMIAC)</li>
+              <li><code>stt_replacements::approve_aliases</code> &mdash; mark as approved immediately</li>
+              <li><code>generate_proactive_distortions</code> &mdash; seed 8-12 synthetic STT variants</li>
+              <li><code>tier2_edit_policy::record_explicit_edit</code> &mdash; add edit-policy rule</li>
+              <li><code>tier2_edit_policy::activate_all_for_term</code> &mdash; activate rules</li>
+              <li>Invalidate lexicon cache</li>
+              <li>Trigger ONNX retrain</li>
+            </ul>
+          </div>
+        </div>
+        <div class="arrow blue"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 6: Notify Desktop -->
+      <div class="step-wrapper">
+        <div class="step-card blue-accent">
+          <div class="step-num">Step 6</div>
+          <h3>Notify Desktop</h3>
+          <p>Response sent to the Tauri desktop shell with learning outcomes.</p>
+          <div class="detail">
+            <ul>
+              <li><code>promoted_terms</code> &mdash; newly learned vocabulary</li>
+              <li><code>review_candidates</code> &mdash; ambiguous items for user review</li>
+              <li><code>ambiguous_terms</code> &mdash; multi-candidate aliases</li>
+              <li><code>negative_terms</code> &mdash; corrections that were rejected</li>
+            </ul>
+            <p style="margin-top: 0.5rem;">Desktop shows toast/picker as needed and refreshes STT bias cache for next recording.</p>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- .pipeline -->
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- FLOW 3: DEMOTION                                             -->
+  <!-- ============================================================ -->
+  <section class="flow-section" id="flow-demotion">
+    <div class="flow-header red">
+      <div class="flow-icon">&#128683;</div>
+      <div>
+        <h2>Flow 3: Demotion</h2>
+        <div class="flow-desc">When the user reverts a wrong correction</div>
+      </div>
+    </div>
+
+    <div class="pipeline">
+
+      <!-- Step 1: Detect Revert -->
+      <div class="step-wrapper">
+        <div class="step-card red-accent">
+          <div class="step-num">Step 1</div>
+          <h3>Detect Revert</h3>
+          <p>Inside Flow 2 (Steps 2-3): if <code>ai_output</code> contained <code>"EMIAC"</code> but <code>user_kept</code> has <code>"mac"</code> at the same position &rarr; the system wrongly corrected <code>mac</code>&rarr;<code>EMIAC</code>.</p>
+        </div>
+        <div class="arrow red"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 2: Revert Alias -->
+      <div class="step-wrapper">
+        <div class="step-card red-accent">
+          <div class="step-num">Step 2</div>
+          <h3>Revert Alias</h3>
+          <p><code>run_alias_revert_pass()</code>: delete the specific alias pair (<code>mac</code>&rarr;<code>EMIAC</code>).</p>
+        </div>
+        <div class="arrow red"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 3: Demote -->
+      <div class="step-wrapper">
+        <div class="step-card red-accent">
+          <div class="step-num">Step 3</div>
+          <h3>Demote</h3>
+          <p><code>stt_replacements::demote()</code> &rarr; decrease alias weight. When weight falls to 0 &rarr; <code>review_status = 'blocked'</code> (permanent).</p>
+        </div>
+        <div class="arrow red"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 4: Edit-Policy Penalty -->
+      <div class="step-wrapper">
+        <div class="step-card red-accent">
+          <div class="step-num">Step 4</div>
+          <h3>Edit-Policy Penalty</h3>
+          <p><code>tier2_edit_policy::mark_removed_feedback()</code> &rarr; penalize the edit-policy rule that caused the bad correction.</p>
+        </div>
+        <div class="arrow red"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 5: Blocked Forever -->
+      <div class="step-wrapper">
+        <div class="step-card red-accent">
+          <div class="step-num">Step 5</div>
+          <h3>Blocked Forever</h3>
+          <p>Blocked aliases are permanently excluded from all correction paths.</p>
+          <div class="detail">
+            <ul>
+              <li>Never fires in <code>apply_exact_safe</code> (filtered by <code>review_status</code>)</li>
+              <li>Never fires in tier2 correction (filtered by status)</li>
+              <li>Prevents re-learning (<code>ON CONFLICT</code> keeps <code>'blocked'</code> status)</li>
+              <li>ONNX retrain excludes blocked pairs from training data</li>
+            </ul>
+          </div>
+        </div>
+        <div class="arrow red"><div class="shaft"></div><div class="head"></div></div>
+      </div>
+
+      <!-- Step 6: Retrain -->
+      <div class="step-wrapper">
+        <div class="step-card red-accent">
+          <div class="step-num">Step 6</div>
+          <h3>Retrain</h3>
+          <p>Trigger ONNX retrain with updated data. Blocked pairs are excluded &mdash; the neural scorer will no longer recommend them.</p>
+        </div>
+      </div>
+
+    </div><!-- .pipeline -->
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- WHAT CHANGED                                                 -->
+  <!-- ============================================================ -->
+  <section class="changed-section" id="what-changed">
+    <h2>What Changed from v3</h2>
+
+    <div class="comparison">
+
+      <!-- BEFORE -->
+      <div class="compare-card before">
+        <div class="compare-label">Before (v3)</div>
+        <h3>Tier2 Replaces Text</h3>
+        <div class="compare-flow">
+          <div class="compare-step">
+            <span>Raw transcript: <code>"meac is down"</code></span>
+          </div>
+          <div class="compare-step">
+            <span class="cs-arrow">&darr;</span>
+            <span>Tier2 <span class="highlight-bad">REPLACES</span> text &rarr; <code>"EMIAC is down"</code></span>
+          </div>
+          <div class="compare-step">
+            <span class="cs-arrow">&darr;</span>
+            <span>LLM sees <span class="highlight-bad">corrupted input</span></span>
+          </div>
+          <div class="compare-step">
+            <span class="cs-arrow">&darr;</span>
+            <span>Cannot disambiguate: was <code>"meac"</code> really <code>"EMIAC"</code> or <code>"Mac"</code>?</span>
+          </div>
+        </div>
+        <div class="result">LLM trusts the replacement blindly. Wrong corrections are invisible.</div>
+      </div>
+
+      <!-- AFTER -->
+      <div class="compare-card after">
+        <div class="compare-label">After (v4)</div>
+        <h3>Tier2 Collects Evidence</h3>
+        <div class="compare-flow">
+          <div class="compare-step">
+            <span>Raw transcript: <code>"meac is down"</code></span>
+          </div>
+          <div class="compare-step">
+            <span class="cs-arrow">&darr;</span>
+            <span>Tier2 <span class="highlight-good">COLLECTS EVIDENCE</span>: meac &rarr; EMIAC (0.95)</span>
+          </div>
+          <div class="compare-step">
+            <span class="cs-arrow">&darr;</span>
+            <span>LLM sees <span class="highlight-good">raw text + hints</span></span>
+          </div>
+          <div class="compare-step">
+            <span class="cs-arrow">&darr;</span>
+            <span>LLM disambiguates using full sentence context</span>
+          </div>
+        </div>
+        <div class="result">LLM decides. "EMIAC is down" vs "Mac is down" based on surrounding words.</div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="page-footer">
+    AirNote Pipeline v4 Proposal &middot; Said Project &middot; 2026
+  </footer>
+
+</div><!-- .container -->
+
+</body>
+</html>

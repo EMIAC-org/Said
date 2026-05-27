@@ -551,11 +551,11 @@ impl LiveTypingGuard {
             self.disabled = true;
             return LiveTypingDecision::ResetAndDisable;
         }
-        if self.disabled {
-            LiveTypingDecision::PreviewOnly
-        } else {
-            LiveTypingDecision::TypeToken
-        }
+        // Buffer-then-paste mode: tokens go to UI preview only.
+        // The fully post-processed text (number format, email recovery,
+        // script sanitization) is pasted once from the `done` event.
+        // This avoids the flicker of typing → deleting → re-pasting.
+        LiveTypingDecision::PreviewOnly
     }
 }
 
@@ -4474,22 +4474,31 @@ fn get_performance_snapshot(
 
 // ── Edit watcher ──────────────────────────────────────────────────────────────
 
-const EDIT_WATCH_IDLE_TIMEOUT: Duration = Duration::from_secs(6);
-const EDIT_WATCH_MAX_DURATION: Duration = Duration::from_secs(15);
 const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(50);
 const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
-
-/// Seconds of stable (unchanged) edit region before we fire classify.
-/// This is the KEY improvement: instead of waiting for full idle,
-/// we detect when the user's edit has stabilised even while they
-/// keep typing new text.
-const EDIT_STABLE_SETTLE_SECS: u64 = 3;
 
 /// Faster settle for single high-jargon word replacements.
 /// If the user replaced exactly one word and it has brand/acronym
 /// characteristics, fire classify after just 1.5 seconds of stability.
 const EDIT_QUICK_SETTLE_MS: u64 = 1500;
+
+/// Compute edit-watch timeouts scaled by sentence length.
+/// Short sentences (≤15 words) = 15s max, 6s idle, 3s settle.
+/// Long sentences (50+ words) = 45s max, 12s idle, 8s settle.
+/// Users need more time to read and find errors in longer text.
+fn edit_watch_timeouts(word_count: usize) -> (Duration, Duration, u64) {
+    let words = word_count.max(5).min(80) as f64;
+    // Linear scale: 15s base + 0.6s per word above 15
+    let max_secs = 15.0 + (words - 15.0).max(0.0) * 0.6;
+    let max_duration = Duration::from_secs_f64(max_secs.min(45.0));
+    // Idle timeout: 6s base + 0.15s per word above 15
+    let idle_secs = 6.0 + (words - 15.0).max(0.0) * 0.15;
+    let idle_timeout = Duration::from_secs_f64(idle_secs.min(15.0));
+    // Settle: 3s base + 0.1s per word above 15
+    let settle_secs = (3.0 + (words - 15.0).max(0.0) * 0.1).min(10.0);
+    (max_duration, idle_timeout, settle_secs as u64)
+}
 
 async fn blocking_ax_option<T, F>(label: &'static str, f: F) -> Option<T>
 where
@@ -4664,15 +4673,21 @@ async fn watch_for_edit(
     };
 
     let mut last_val = post_paste.clone();
-    // best_candidate = last field value that still shared words with polished text.
-    // Needed because apps like Slack clear the input after Send, making last_val
-    // a UI placeholder ("Type / for commands") that replaces the actual edit.
     let mut best_candidate = post_paste.clone();
     let mut idle_at = Instant::now();
     let started = Instant::now();
     let mut last_change_at = Instant::now();
     let mut current_interval = EDIT_WATCH_FAST_INTERVAL;
     let mut last_pid = initial_pid;
+
+    // Scale timeouts by sentence length — long sentences need more reading time
+    let word_count = polished.split_whitespace().count();
+    let (max_duration, idle_timeout, stable_settle_secs) = edit_watch_timeouts(word_count);
+    tracing::info!(
+        "[edit-watch] word_count={word_count} max={}s idle={}s settle={stable_settle_secs}s",
+        max_duration.as_secs(),
+        idle_timeout.as_secs(),
+    );
     let mut edit_stable_since: Option<Instant> = None;
     let mut last_edit_snapshot: Option<String> = None;
     // Capture-error metadata, hoisted so we can ship it to the backend's
@@ -4789,18 +4804,16 @@ async fn watch_for_edit(
 
         // NEW: stable edit detection — fire early if edit region stopped changing
         if let Some(stable_since) = edit_stable_since {
-            if stable_since.elapsed().as_secs() >= EDIT_STABLE_SETTLE_SECS {
+            if stable_since.elapsed().as_secs() >= stable_settle_secs {
                 tracing::info!(
-                    "[edit-watch] edit stabilised for {}s — firing classify (total {}ms)",
-                    EDIT_STABLE_SETTLE_SECS,
+                    "[edit-watch] edit stabilised for {stable_settle_secs}s — firing classify (total {}ms, words={word_count})",
                     started.elapsed().as_millis(),
                 );
                 break;
             }
         }
 
-        let done = idle_at.elapsed() > EDIT_WATCH_IDLE_TIMEOUT
-            || started.elapsed() > EDIT_WATCH_MAX_DURATION;
+        let done = idle_at.elapsed() > idle_timeout || started.elapsed() > max_duration;
 
         if done {
             break;
@@ -6319,13 +6332,9 @@ mod live_typing_guard_tests {
     use super::{LiveTypingDecision, LiveTypingGuard, STREAM_RESET_SENTINEL};
 
     #[test]
-    fn reset_disables_future_live_typing() {
+    fn buffer_mode_always_previews() {
         let mut guard = LiveTypingGuard::default();
-        assert_eq!(guard.on_token("Hello"), LiveTypingDecision::TypeToken);
-        assert_eq!(
-            guard.on_token(STREAM_RESET_SENTINEL),
-            LiveTypingDecision::ResetAndDisable
-        );
+        assert_eq!(guard.on_token("Hello"), LiveTypingDecision::PreviewOnly);
         assert_eq!(guard.on_token("world"), LiveTypingDecision::PreviewOnly);
     }
 }

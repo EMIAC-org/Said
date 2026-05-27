@@ -85,7 +85,6 @@ static HINDI_ONES: Lazy<HashMap<&'static str, u64>> = Lazy::new(|| {
         ("pachas", 50),
         ("pachaas", 50),
         ("pachpan", 55),
-        ("saath", 60),
         ("sattar", 70),
         ("assee", 80),
         ("nabbe", 90),
@@ -127,6 +126,11 @@ static CURRENCY_UNITS: Lazy<[&'static str; 8]> = Lazy::new(|| {
         "rupaye", "rupay", "rupees", "rupee", "inr", "dollars", "dollar", "usd",
     ]
 });
+
+/// Hindi words that look like numbers ONLY when followed by a currency/money word.
+/// "saath" = "together/with" in normal speech, but "saath rupaye" = ₹60.
+static CURRENCY_ONLY_NUMBERS: Lazy<HashMap<&'static str, u64>> =
+    Lazy::new(|| HashMap::from([("saath", 60)]));
 
 static COUNT_UNITS: Lazy<[&'static str; 10]> = Lazy::new(|| {
     [
@@ -467,10 +471,15 @@ fn try_currency_sequence(text: &str, tokens: &[Token], start: usize) -> Option<(
             if words.is_empty() {
                 return None;
             }
-            let value = parse_number_words(&words)?;
+            let value = parse_currency_number_words(&words)?;
             return Some((format!("{}{value}", currency_symbol(w)), i + 1));
         }
         if can_use_number_connector(text, tokens, i, &words) {
+            words.push(w);
+            i += 1;
+            continue;
+        }
+        if CURRENCY_ONLY_NUMBERS.contains_key(w) {
             words.push(w);
             i += 1;
             continue;
@@ -693,10 +702,8 @@ fn safe_standalone_number_word(word: &str) -> Option<u64> {
         return Some(*v);
     }
     match word {
-        "pachas" | "pachaas" | "pachpan" | "bees" | "tees" | "pacchees" | "pachees" | "saath"
-        | "sattar" | "assee" | "nabbe" | "hazaar" | "hazar" | "lakh" | "crore" => {
-            parse_number_words(&[word])
-        }
+        "pachas" | "pachaas" | "pachpan" | "bees" | "tees" | "pacchees" | "pachees" | "sattar"
+        | "assee" | "nabbe" | "hazaar" | "hazar" | "lakh" | "crore" => parse_number_words(&[word]),
         _ => None,
     }
 }
@@ -748,9 +755,50 @@ fn english_digit_word(word: &str) -> Option<u64> {
     None
 }
 
+/// Like `parse_number_words` but also recognizes `CURRENCY_ONLY_NUMBERS` (e.g. "saath" = 60).
+/// Used exclusively inside `try_currency_sequence` where a trailing currency unit is guaranteed.
+fn parse_currency_number_words(words: &[&str]) -> Option<u64> {
+    if words.len() == 1 {
+        if let Some(v) = CURRENCY_ONLY_NUMBERS.get(words[0]) {
+            return Some(*v);
+        }
+    }
+    // For multi-word sequences containing a currency-only word, substitute it
+    // into the normal parser by resolving it first.
+    if words.iter().any(|w| CURRENCY_ONLY_NUMBERS.contains_key(w)) {
+        let resolved: Vec<&str> = words
+            .iter()
+            .map(|w| {
+                if CURRENCY_ONLY_NUMBERS.contains_key(w) {
+                    "sixty" // map to English equivalent for the generic parser
+                } else {
+                    *w
+                }
+            })
+            .collect();
+        return parse_number_words(&resolved);
+    }
+    parse_number_words(words)
+}
+
+/// True when `word` is a small Hindi number (not a scale like sau/hazaar).
+/// Hindi never adds two small numbers: "do char" ≠ 6, "ek teen" ≠ 4.
+fn is_small_hindi_number(word: &str) -> bool {
+    HINDI_ONES.contains_key(word) && !SCALES.contains_key(word)
+}
+
 fn parse_number_words(words: &[&str]) -> Option<u64> {
     if words.is_empty() {
         return None;
+    }
+
+    // Two consecutive small Hindi numbers without a scale between them is never
+    // a valid number. "do char sau" is "give ₹400", not ₹600. Hindi has
+    // dedicated words for compound numbers (chheh=6, not do+char).
+    for pair in words.windows(2) {
+        if is_small_hindi_number(pair[0]) && is_small_hindi_number(pair[1]) {
+            return None;
+        }
     }
 
     // English tens + ones: "sixty eight"
@@ -998,6 +1046,27 @@ mod tests {
         ] {
             assert_eq!(apply(phrase), phrase, "should not convert {phrase}");
         }
+    }
+
+    #[test]
+    fn compound_verb_do_not_number() {
+        // "bata do char sau rupaye" = "tell (me) ₹400", NOT ₹600
+        assert_eq!(
+            apply("bata do char sau rupaye chahiye"),
+            "bata do ₹400 chahiye"
+        );
+        assert_eq!(apply("bhej do paanch sau rupaye"), "bhej do ₹500");
+        assert_eq!(
+            apply("kar do teen sau rupaye transfer"),
+            "kar do ₹300 transfer"
+        );
+        // But standalone "do sau rupaye" (200 rupees) still works
+        assert_eq!(apply("do sau rupaye bhejo"), "₹200 bhejo");
+        // "laga do bees percent discount"
+        assert_eq!(
+            apply("laga do bees percent discount"),
+            "laga do 20% discount"
+        );
     }
 
     #[test]
@@ -1292,11 +1361,20 @@ mod tests {
                 "macobs one point release hai",
                 "macobs one point release hai",
             ),
+            // "saath" = together/with by default, number only with currency
+            (
+                "main tere saath office jaaunga",
+                "main tere saath office jaaunga",
+            ),
+            ("uske saath kaam karo", "uske saath kaam karo"),
+            ("saath rupaye dena", "₹60 dena"),
+            ("saath rupay ka tha", "₹60 ka tha"),
+            ("saath dollars lagenge", "$60 lagenge"),
         ];
 
         assert!(
-            (50..=70).contains(&cases.len()),
-            "expected a focused 50-70 case corpus, got {}",
+            (50..=75).contains(&cases.len()),
+            "expected a focused 50-75 case corpus, got {}",
             cases.len()
         );
 
