@@ -47,14 +47,16 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      - name: Build said-backend sidecar
+      - name: Build airnote-backend sidecar
         shell: pwsh
         run: |
-          cargo build -p said-backend --release --target x86_64-pc-windows-msvc
+          # Package is still `said-backend`; the sidecar bin is `airnote-backend`
+          # (matches externalBin in tauri.conf.json). Build just that bin.
+          cargo build -p said-backend --bin airnote-backend --release --target x86_64-pc-windows-msvc
           New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
           Copy-Item `
-            "target/x86_64-pc-windows-msvc/release/said-backend.exe" `
-            "desktop/src-tauri/binaries/said-backend-x86_64-pc-windows-msvc.exe"
+            "target/x86_64-pc-windows-msvc/release/airnote-backend.exe" `
+            "desktop/src-tauri/binaries/airnote-backend-x86_64-pc-windows-msvc.exe"
 
       - name: Build AirNote.exe + NSIS installer
         working-directory: desktop
