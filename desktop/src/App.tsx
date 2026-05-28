@@ -118,7 +118,7 @@ export default function App() {
   const [liveMeetingId, setLiveMeetingId] = useState<string | null>(null);
   const [inviteOpen,  setInviteOpen]  = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("writing");
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("models");
   const [performanceMonitorEnabled, setPerformanceMonitorEnabled] = useState(() => {
     try {
       return localStorage.getItem("said:performance-monitor-enabled") === "true";
@@ -358,7 +358,7 @@ export default function App() {
 
     // Tray menu → navigate to Settings
     const unsubNav = onNavSettings(() => {
-      setSettingsSection("writing");
+      setSettingsSection("models");
       setSettingsOpen(true);
     });
 
@@ -477,7 +477,7 @@ export default function App() {
   const handleViewChange = useCallback((view: string) => {
     // Settings is now a modal — intercept the route and open the modal instead
     if (view === "settings") {
-      setSettingsSection("writing");
+      setSettingsSection("models");
       setSettingsOpen(true);
       return;
     }
