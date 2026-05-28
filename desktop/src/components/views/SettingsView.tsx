@@ -9,7 +9,7 @@ import {
   RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown,
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { applyPendingUpdate, downloadUpdate } from "@/lib/autoUpdate";
 import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
 
@@ -736,15 +736,16 @@ export function SettingsView({
 
   const [downloadProgress, setDownloadProgress] = useState(0);
 
-  const downloadAndInstall = useCallback(async () => {
+  const downloadUpdateNow = useCallback(async () => {
     setUpdateStatus("downloading");
     setDownloadProgress(0);
     try {
-      const update = await check();
-      if (!update) return;
       let downloaded = 0;
       let total = 0;
-      await update.downloadAndInstall((event) => {
+      // Download + verify only — do NOT install here. On Windows installing
+      // would close the app immediately; we defer it to the Restart button so
+      // the UX matches macOS (download in-app, relaunch to apply).
+      const version = await downloadUpdate((event) => {
         if (event.event === "Started") {
           total = (event.data as { contentLength?: number }).contentLength ?? 0;
           downloaded = 0;
@@ -755,6 +756,7 @@ export function SettingsView({
           setDownloadProgress(100);
         }
       });
+      if (!version) return;
       setUpdateStatus("ready");
     } catch (err) {
       setUpdateError(err instanceof Error ? err.message : String(err));
@@ -1893,7 +1895,7 @@ export function SettingsView({
           <p className="section-label px-1 mb-2.5">API Keys</p>
           <div className="panel p-5 space-y-3">
             <p className="text-[12px] text-muted-foreground leading-relaxed">
-              Stored only on this Mac. Open a group only when you need to edit that key.
+              Stored only on this {isWindows ? "PC" : "Mac"}. Open a group only when you need to edit that key.
             </p>
 
             <SettingsDisclosure
@@ -2298,7 +2300,7 @@ export function SettingsView({
               updateStatus === "checking" ? "Checking for updates…" :
               updateStatus === "available" ? `Version ${updateVersion} is available` :
               updateStatus === "downloading" ? `Downloading update… ${downloadProgress}%` :
-              updateStatus === "ready" ? "Update installed — relaunch to finish" :
+              updateStatus === "ready" ? "Update downloaded — relaunch to finish" :
               updateStatus === "up-to-date" ? "You're on the latest version" :
               updateStatus === "error" ? (updateError || "Update check failed") :
               "Check for available updates"
@@ -2310,7 +2312,7 @@ export function SettingsView({
                   <Loader2 size={14} className="animate-spin text-muted-foreground" />
                 ) : updateStatus === "available" ? (
                   <button
-                    onClick={() => void downloadAndInstall()}
+                    onClick={() => void downloadUpdateNow()}
                     className="px-3 py-1 rounded-md text-[11px] font-medium border border-transparent text-background"
                     style={{ background: "hsl(var(--primary))" }}
                   >
@@ -2318,7 +2320,7 @@ export function SettingsView({
                   </button>
                 ) : updateStatus === "ready" ? (
                   <button
-                    onClick={() => void relaunch()}
+                    onClick={() => void applyPendingUpdate()}
                     className="px-3 py-1 rounded-md text-[11px] font-medium border border-transparent text-background"
                     style={{ background: "hsl(var(--primary))" }}
                   >

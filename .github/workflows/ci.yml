@@ -62,12 +62,12 @@ jobs:
           key: ci-windows
           cache-bin: false
 
-      # Type-check the whole cross-platform surface. said-hotkey and said-paster
-      # both landed their Windows impls in M3a / M3b. said-desktop and said
-      # (CLI) still have macOS-specific glue we'll port in M3c — excluded
-      # until that lands.
-      - name: cargo check (excl. desktop, CLI)
-        run: cargo check --workspace --exclude said-desktop --exclude said
+      # Full Windows compile gate: check the whole workspace including the Tauri
+      # desktop shell (`said-desktop`) so a push to main reports real Windows
+      # build errors for the actual app. Only the standalone `said` CLI stays
+      # excluded — it's macOS-only for now (also skipped in release.yml).
+      - name: cargo check (full Windows app; CLI is macOS-only)
+        run: cargo check --workspace --exclude said
 
       - name: cargo test pure-logic crates (runs on every host)
         # `--lib` is a global cargo-test flag — appears once even when

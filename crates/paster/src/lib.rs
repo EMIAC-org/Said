@@ -1835,6 +1835,9 @@ mod imp {
 #[cfg(target_os = "windows")]
 mod imp_windows;
 
+#[cfg(target_os = "windows")]
+mod uia;
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod imp_other;
 

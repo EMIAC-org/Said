@@ -1,12 +1,51 @@
 import { getVersion } from "@tauri-apps/api/app";
-import { emit } from "@tauri-apps/api/event";
-import { check } from "@tauri-apps/plugin-updater";
+import { emit, listen } from "@tauri-apps/api/event";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 
 const LAST_CHECK_KEY = "airnote:auto-update:last-check-ms";
 const READY_VERSION_KEY = "airnote:auto-update:ready-version";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Event the status-bar window emits when the user clicks Restart. The main
+ * window owns the downloaded `Update` handle, so the apply must happen here. */
+export const APPLY_UPDATE_EVENT = "airnote://apply-update";
+
 let running = false;
+
+// The verified, downloaded-but-not-yet-installed update. Held in the main
+// window's module scope between the background download and the user clicking
+// Restart. On macOS `download()` stages the bundle without swapping it; on
+// Windows it fetches the NSIS installer without closing the app. The actual
+// swap/relaunch happens in `applyPendingUpdate()`.
+let pendingUpdate: Update | null = null;
+
+/** Check for an update and, if present, download + verify it WITHOUT installing.
+ * Stores the handle in `pendingUpdate`. Returns the version, or null if none. */
+export async function downloadUpdate(
+  onProgress?: (event: DownloadEvent) => void,
+): Promise<string | null> {
+  const update = await check();
+  if (!update) return null;
+  await update.download(onProgress);
+  pendingUpdate = update;
+  return update.version;
+}
+
+/** Apply the previously downloaded update and relaunch. Idempotent-ish: if the
+ * handle was lost (e.g. the webview reloaded), re-check and download first.
+ * On Windows `install()` runs the NSIS installer, which closes the app and
+ * relaunches it, so the trailing `relaunch()` only runs on macOS. */
+export async function applyPendingUpdate(): Promise<void> {
+  let update = pendingUpdate;
+  if (!update) {
+    update = await check();
+    if (update) await update.download();
+  }
+  if (update) await update.install();
+  pendingUpdate = null;
+  await relaunch();
+}
 
 function readNumber(key: string): number {
   try {
@@ -78,11 +117,9 @@ async function runDailyCheck(): Promise<void> {
     if (last > 0 && now - last < DAY_MS) return;
     writeString(LAST_CHECK_KEY, String(now));
 
-    const update = await check();
-    if (!update) return;
+    const version = await downloadUpdate();
+    if (!version) return;
 
-    const version = update.version;
-    await update.downloadAndInstall();
     writeString(READY_VERSION_KEY, version);
     await notifyReady(version);
   } catch (err) {
@@ -115,6 +152,12 @@ export function startDailyAutoUpdateCheck(): () => void {
   window.addEventListener("online", trigger);
   window.addEventListener("pageshow", trigger);
 
+  // The status-bar runs in a separate webview and cannot hold the downloaded
+  // `Update` handle, so its Restart button emits this event for us to apply.
+  const unlistenApply = listen(APPLY_UPDATE_EVENT, () => {
+    void applyPendingUpdate();
+  });
+
   return () => {
     stopped = true;
     window.clearTimeout(firstTimer);
@@ -123,5 +166,6 @@ export function startDailyAutoUpdateCheck(): () => void {
     document.removeEventListener("visibilitychange", trigger);
     window.removeEventListener("online", trigger);
     window.removeEventListener("pageshow", trigger);
+    void unlistenApply.then((fn) => fn());
   };
 }

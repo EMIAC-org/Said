@@ -135,6 +135,15 @@ pub fn spawn() -> Result<BackendHandle, String> {
         });
     }
 
+    // The daemon is a console-subsystem binary; without CREATE_NO_WINDOW it
+    // flashes a console window every launch on Windows. macOS has no analog.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
     let child = command
         .spawn()
         .map_err(|e| format!("failed to spawn said-backend ({bin:?}): {e}"))?;

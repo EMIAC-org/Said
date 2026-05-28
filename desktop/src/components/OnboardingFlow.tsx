@@ -139,10 +139,12 @@ export function OnboardingFlow({
     goNext();
   }, [workspacePreview, onEnterpriseConnected, workspaceOnly, goNext]);
 
-  // Auto-advance the permissions step once all three are granted (delay so
-  // the user sees the green check before the screen swaps).
+  // Auto-advance the permissions step once the required grants are in (delay so
+  // the user sees the green check before the screen swaps). Windows only needs
+  // microphone — Accessibility / Input Monitoring are macOS-only TCC gates.
   useEffect(() => {
-    if (step === "permissions" && micGranted && accGranted && imGranted) {
+    const permsReady = micGranted && (isWindows || (accGranted && imGranted));
+    if (step === "permissions" && permsReady) {
       const t = setTimeout(goNext, 700);
       return () => clearTimeout(t);
     }
@@ -150,7 +152,7 @@ export function OnboardingFlow({
       const t = setTimeout(goNext, 300);
       return () => clearTimeout(t);
     }
-  }, [step, micGranted, accGranted, imGranted, hasKeys, goNext]);
+  }, [step, micGranted, accGranted, imGranted, isWindows, hasKeys, goNext]);
 
   const handleSaveKeys = useCallback(async () => {
     if (!groqKey.trim() || !deepgramKey.trim()) {
@@ -187,11 +189,19 @@ export function OnboardingFlow({
         totalSteps={TOTAL_STEPS}
         eyebrow="Get started"
         title="Welcome to AirNote."
-        subtitle="A two-minute setup. Connect your workspace, grant three permissions, add two free API keys, pick a hold-key — then you’ll never type by hand again."
-        brandTagline="Voice polish for Mac. Hold a key, speak, release — AirNote types polished text into any app."
-        brandKicker="Built for macOS"
+        subtitle={
+          isWindows
+            ? "A two-minute setup. Connect your workspace, grant microphone access, add two free API keys, pick a hold-key — then you’ll never type by hand again."
+            : "A two-minute setup. Connect your workspace, grant three permissions, add two free API keys, pick a hold-key — then you’ll never type by hand again."
+        }
+        brandTagline={
+          isWindows
+            ? "Voice polish for Windows. Hold a key, speak, release — AirNote types polished text into any app."
+            : "Voice polish for Mac. Hold a key, speak, release — AirNote types polished text into any app."
+        }
+        brandKicker={isWindows ? "Built for Windows" : "Built for macOS"}
         brandQuote="It’s like typing, except your brain is the keyboard."
-        bottomNote={<span>v2.0.3 · macOS 14+</span>}
+        bottomNote={<span>{isWindows ? "Windows 10/11" : "macOS 14+"}</span>}
       >
         <div className="mt-7 flex flex-col gap-2.5">
           <button onClick={goNext} className="btn-primary btn-lg w-full">
@@ -291,15 +301,25 @@ export function OnboardingFlow({
 
   // ── Step 3: Permissions ──────────────────────────────────────────────────
   if (step === "permissions") {
-    const allGranted = micGranted && accGranted && imGranted;
+    // Windows needs only microphone; Accessibility / Input Monitoring are
+    // macOS-only TCC gates (SendInput + WH_KEYBOARD_LL need no grant).
+    const allGranted = micGranted && (isWindows || (accGranted && imGranted));
     return (
       <OnboardingShell
         step={stepIndex}
         totalSteps={TOTAL_STEPS}
         eyebrow="Permissions"
-        title="A few system grants."
-        subtitle="Three macOS permissions — one click each. AirNote detects each grant automatically."
-        brandTagline="macOS will ask you once for each permission. AirNote detects each grant the moment it happens."
+        title={isWindows ? "One system grant." : "A few system grants."}
+        subtitle={
+          isWindows
+            ? "Just microphone access. AirNote detects the grant automatically."
+            : "Three macOS permissions — one click each. AirNote detects each grant automatically."
+        }
+        brandTagline={
+          isWindows
+            ? "Windows asks for microphone access the first time you record. AirNote detects the grant the moment it happens."
+            : "macOS will ask you once for each permission. AirNote detects each grant the moment it happens."
+        }
         brandKicker="Privacy"
         brandQuote="Audio never leaves the path between your mic and Deepgram. Nothing is stored on our servers."
         topRight={<span>{stepLabel(step)}</span>}
@@ -314,20 +334,24 @@ export function OnboardingFlow({
             granted={micGranted}
             onAllow={onMicrophone}
           />
-          <PermRow
-            icon={<Shield size={15} />}
-            title="Accessibility"
-            desc="Type polished text into the focused app."
-            granted={accGranted}
-            onAllow={onAccessibility}
-          />
-          <PermRow
-            icon={<Keyboard size={15} />}
-            title="Input Monitoring"
-            desc="Hear your hotkey from any app — even when AirNote isn’t focused."
-            granted={imGranted}
-            onAllow={onInputMonitoring}
-          />
+          {!isWindows && (
+            <PermRow
+              icon={<Shield size={15} />}
+              title="Accessibility"
+              desc="Type polished text into the focused app."
+              granted={accGranted}
+              onAllow={onAccessibility}
+            />
+          )}
+          {!isWindows && (
+            <PermRow
+              icon={<Keyboard size={15} />}
+              title="Input Monitoring"
+              desc="Hear your hotkey from any app — even when AirNote isn’t focused."
+              granted={imGranted}
+              onAllow={onInputMonitoring}
+            />
+          )}
         </div>
 
         <div className="mt-6">
@@ -355,7 +379,7 @@ export function OnboardingFlow({
         subtitle="Two free API keys do all the work. Both take under a minute."
         brandTagline="Two free keys. Speech-to-text and LLM polish — both on free tiers that cover daily use."
         brandKicker="Stored locally"
-        brandQuote="Your keys never leave this Mac except directly to Groq and Deepgram."
+        brandQuote={`Your keys never leave this ${isWindows ? "PC" : "Mac"} except directly to Groq and Deepgram.`}
         topRight={<span>{stepLabel(step)}</span>}
         bottomNote={<span>Optional services (e.g. Gemini) live in Settings</span>}
         onBack={goBack}
