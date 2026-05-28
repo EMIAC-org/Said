@@ -439,11 +439,11 @@ export interface DebugLogs {
 export async function getDebugLogs(): Promise<DebugLogs | null> {
   if (!isTauriRuntime()) {
     return {
-      desktop_path: "~/Library/Logs/Said/said.log",
-      backend_path: "~/Library/Logs/Said/backend.log",
+      desktop_path: "~/Library/Logs/AirNote/said.log",
+      backend_path: "~/Library/Logs/AirNote/backend.log",
       desktop:      "[main] said desktop starting — preview log",
-      backend:      "polish-backend build=0.1.0 features=openai_oauth+codex_api",
-      combined:     "── Said desktop ──\n[main] said desktop starting — preview log\n\n── polish-backend ──\npolish-backend build=0.1.0 features=openai_oauth+codex_api",
+      backend:      "airnote-backend build=0.1.0 features=openai_oauth+codex_api",
+      combined:     "── AirNote desktop ──\n[main] airnote desktop starting — preview log\n\n── airnote-backend ──\nairnote-backend build=0.1.0 features=openai_oauth+codex_api",
       truncated:    false,
     };
   }
@@ -477,7 +477,7 @@ export async function getPerformanceSnapshot(): Promise<PerformanceSnapshot | nu
       },
       backend: {
         pid: 102,
-        name: "said-backend",
+        name: "airnote-backend",
         cpu_percent: 6.8,
         memory_bytes: 180 * 1024 ** 2,
         virtual_memory_bytes: 0,

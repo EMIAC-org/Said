@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-voice-bench — feed pre-built STT transcripts to the running said-backend's
+voice-bench — feed pre-built STT transcripts to the running airnote-backend's
 /v1/voice endpoint (the real Hinglish voice pipeline) and check LLM output.
 
 Unlike polish-bench (which tests /v1/text/polish with the tray prompt),
@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DEFAULT_LOG = Path.home() / "Library/Logs/Said/said.log"
+DEFAULT_LOG = Path.home() / "Library/Logs/AirNote/said.log"
 SCRIPT_DIR = Path(__file__).parent
 DEFAULT_CASES = SCRIPT_DIR / "voice-cases.jsonl"
 

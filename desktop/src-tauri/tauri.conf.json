@@ -62,7 +62,7 @@
       "icons/icon_512x512.png"
     ],
     "externalBin": [
-      "binaries/said-backend"
+      "binaries/airnote-backend"
     ],
     "macOS": {
       "minimumSystemVersion": "13.0",

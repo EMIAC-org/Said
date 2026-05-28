@@ -1,4 +1,4 @@
-//! Async HTTP client for the local polish-backend daemon.
+//! Async HTTP client for the local airnote-backend daemon.
 //!
 //! All functions take a `&BackendEndpoint` (url + secret).
 //! They never interact with the child process — only the BackendState owns that.

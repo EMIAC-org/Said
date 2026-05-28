@@ -1,5 +1,5 @@
 /**
- * WebSocket client for Said Enterprise meeting transcript streaming.
+ * WebSocket client for AirNote Enterprise meeting transcript streaming.
  *
  * Usage:
  *   const ws = new MeetingWebSocket(serverUrl, meetingId, jwt);

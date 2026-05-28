@@ -3,16 +3,16 @@
 <plist version="1.0">
 <dict>
     <key>NSInputMonitoringUsageDescription</key>
-    <string>Said needs Input Monitoring to detect Caps Lock for recording and global shortcut keys (Ctrl+Cmd+V to paste, Option+1-5 for tone presets).</string>
+    <string>AirNote needs Input Monitoring to detect Caps Lock for recording and global shortcut keys (Ctrl+Cmd+V to paste, Option+1-5 for tone presets).</string>
 
     <key>NSAccessibilityUsageDescription</key>
-    <string>Said needs Accessibility access to paste polished text directly into other apps.</string>
+    <string>AirNote needs Accessibility access to paste polished text directly into other apps.</string>
 
     <key>NSMicrophoneUsageDescription</key>
-    <string>Said records your voice to transcribe and polish your text.</string>
+    <string>AirNote records your voice to transcribe and polish your text.</string>
 
     <key>NSAppleEventsUsageDescription</key>
-    <string>Said uses Apple Events to paste text into other apps.</string>
+    <string>AirNote uses Apple Events to paste text into other apps.</string>
 
     <key>CFBundleURLTypes</key>
     <array>

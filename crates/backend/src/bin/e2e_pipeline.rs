@@ -1,4 +1,4 @@
-//! End-to-end pipeline test suite for Said's learning pipeline.
+//! End-to-end pipeline test suite for AirNote's learning pipeline.
 //!
 //! Unlike eval_pipeline (which sweeps 14K transcripts for false injections),
 //! this binary tests the REAL failure scenarios from user reports:

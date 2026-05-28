@@ -27,8 +27,8 @@ esac
 
 BUNDLE_DIR="$REPO_ROOT/target/$TARGET/release/bundle"
 APP_PATH="$BUNDLE_DIR/macos/AirNote.app"
-SIDECAR_SRC="$REPO_ROOT/target/$TARGET/release/said-backend"
-SIDECAR_DEST="$TAURI_DIR/binaries/said-backend-$TARGET"
+SIDECAR_SRC="$REPO_ROOT/target/$TARGET/release/airnote-backend"
+SIDECAR_DEST="$TAURI_DIR/binaries/airnote-backend-$TARGET"
 BUNDLE_ID="com.emiac.airnote.desktop"
 
 # Read the workspace version from Cargo.toml. Single source of truth — bumped
@@ -79,12 +79,12 @@ rm -f "$BUNDLE_DIR"/macos/rw.*.AirNote_*.dmg 2>/dev/null || true
 ok "pre-clean done"
 
 # ── Build the Rust sidecar ────────────────────────────────────────────────────
-step "Build said-backend (release, $TARGET)"
+step "Build airnote-backend (release, $TARGET)"
 cd "$REPO_ROOT"
 # Bust the Cargo fingerprint cache for the binary entry point.
 touch crates/backend/src/main.rs
 cargo build -p said-backend --release --target "$TARGET"
-ok "said-backend built"
+ok "airnote-backend built"
 
 step "Sync sidecar to Tauri externalBin slot"
 mkdir -p "$TAURI_DIR/binaries"
@@ -116,7 +116,7 @@ ok "no .env embedded; packaged app will use API keys from preferences DB"
 xattr -cr "$APP_PATH" 2>/dev/null || true
 
 # Sign the embedded sidecar first, then the outer bundle.
-EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/said-backend"
+EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/airnote-backend"
 [ -x "$EMBEDDED_BACKEND" ] || fail "embedded sidecar not found at $EMBEDDED_BACKEND"
 
 ENTITLEMENTS="$TAURI_DIR/AirNote.entitlements"

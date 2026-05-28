@@ -1233,9 +1233,9 @@ mod imp {
         r
     }
 
-    /// Ensure Said appears in the Accessibility list and open the correct pane.
+    /// Ensure AirNote appears in the Accessibility list and open the correct pane.
     ///
-    /// Calling `AXIsProcessTrustedWithOptions(null)` triggers macOS to add Said
+    /// Calling `AXIsProcessTrustedWithOptions(null)` triggers macOS to add AirNote
     /// to the Privacy & Security → Accessibility list even before the user has
     /// granted access.  We then immediately open that pane so the user can
     /// toggle it on in one step.
@@ -1404,7 +1404,7 @@ mod imp {
         paste_inner(text, /* select_all_first = */ true)
     }
 
-    /// Replace only the suffix that Said typed during the current recording.
+    /// Replace only the suffix that AirNote typed during the current recording.
     /// This avoids Cmd+A in normal voice fallback paths, so existing user text
     /// in the field is not selected or overwritten.
     pub fn replace_typed_suffix(typed_text: &str, replacement: &str) -> Result<(), String> {
@@ -1419,7 +1419,7 @@ mod imp {
             replacement.len()
         );
         if !ax_ok {
-            return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable Said".into());
+            return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable AirNote".into());
         }
 
         unsafe {
@@ -1597,7 +1597,7 @@ mod imp {
         replacement: &str,
     ) -> Result<Option<bool>, String> {
         if !unsafe { ffi::AXIsProcessTrusted() } {
-            return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable Said".into());
+            return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable AirNote".into());
         }
 
         let elem = match unsafe { focused_ui_element() } {
@@ -1700,7 +1700,7 @@ mod imp {
     /// Reconcile the text typed during the current recording with the final
     /// backend output using the smallest single-span edit we can derive from
     /// common prefix/suffix. The caret is expected to be at the end of the text
-    /// Said just streamed.
+    /// AirNote just streamed.
     pub fn reconcile_typed_text(typed_text: &str, replacement: &str) -> Result<bool, String> {
         if typed_text == replacement {
             return Ok(false);
@@ -1722,7 +1722,7 @@ mod imp {
             suffix_len,
         );
         if !ax_ok {
-            return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable Said".into());
+            return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable AirNote".into());
         }
 
         post_key_repeated(KEY_LEFT, suffix_len, 1)?;
@@ -1745,9 +1745,9 @@ mod imp {
         if !ax_ok {
             tracing::warn!(
                 "[paste] Accessibility NOT granted — cannot paste. \
-                Grant Said in System Settings → Privacy & Security → Accessibility, then restart."
+                Grant AirNote in System Settings → Privacy & Security → Accessibility, then restart."
             );
-            return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable Said".into());
+            return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable AirNote".into());
         }
 
         // Copy text to clipboard, optionally select-all, send Cmd+V, then restore original clipboard

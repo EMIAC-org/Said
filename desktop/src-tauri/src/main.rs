@@ -393,7 +393,7 @@ fn schedule_present_status_bar_macos(
 /// it*, which is why we have two paths:
 ///
 /// 1. **Production (.app bundle):** use `tauri-plugin-notification`. The
-///    plugin posts via the app's own bundle, so the banner shows the Said
+///    plugin posts via the app's own bundle, so the banner shows the AirNote
 ///    icon (icon.icns from tauri.conf.json's `bundle.icon`). This is the
 ///    only path that gets the brand on the banner.
 ///
@@ -412,7 +412,7 @@ fn notify_macos(app: &tauri::AppHandle, title: &str, body: &str) {
     if is_bundled_app() {
         match app.notification().builder().title(title).body(body).show() {
             Ok(_) => {
-                tracing::info!("[notify] plugin sent (Said icon): {title}");
+                tracing::info!("[notify] plugin sent (AirNote icon): {title}");
                 return;
             }
             Err(e) => {
@@ -2888,7 +2888,7 @@ async fn run_voice_polish_sse(
             .unwrap_or_default();
         if n_failed > 0 {
             // Some tokens typed, then the stream reset or a token failed. Reconcile
-            // only the text Said typed for this recording; never Cmd+A the field.
+            // only the text AirNote typed for this recording; never Cmd+A the field.
             tracing::warn!(
                 "[main] word-by-word partial: {n_typed} ok, {n_failed} failed — reconciling current typed text"
             );
@@ -3686,7 +3686,7 @@ async fn add_vocabulary_term(
         }),
     );
 
-    // OS-level fallback for when the Said window isn't focused.
+    // OS-level fallback for when the AirNote window isn't focused.
     notify_macos(
         &app,
         "Added to vocabulary",
@@ -4091,7 +4091,7 @@ fn stop_meeting_stt(
     Ok(meeting_mode.status())
 }
 
-/// Toggle meeting capture. Muted meeting mode leaves normal Said dictation available.
+/// Toggle meeting capture. Muted meeting mode leaves normal AirNote dictation available.
 #[tauri::command]
 fn toggle_meeting_mute(
     app: tauri::AppHandle,
@@ -4303,10 +4303,10 @@ fn get_debug_logs() -> DebugLogs {
     let backend_path = dir.join("backend.log");
     let (desktop, desktop_truncated) =
         read_recent_log(&desktop_path, "[main] said desktop starting");
-    let (backend, backend_truncated) = read_recent_log(&backend_path, "polish-backend build=");
+    let (backend, backend_truncated) = read_recent_log(&backend_path, "airnote-backend build=");
 
     let combined = format!(
-        "── AirNote desktop ({}) ──\n{}\n\n── polish-backend ({}) ──\n{}",
+        "── AirNote desktop ({}) ──\n{}\n\n── airnote-backend ({}) ──\n{}",
         desktop_path.display(),
         if desktop.trim().is_empty() {
             "(no desktop log found)"
@@ -4366,7 +4366,12 @@ fn get_performance_snapshot(
     let backend_pid = owned_backend_pid.or_else(|| {
         sys.processes()
             .iter()
-            .filter(|(_, process)| process.name().to_string_lossy() == "said-backend")
+            .filter(|(_, process)| {
+                matches!(
+                    process.name().to_string_lossy().trim_end_matches(".exe"),
+                    "airnote-backend" | "said-backend"
+                )
+            })
             .max_by_key(|(_, process)| process.memory())
             .map(|(pid, _)| *pid)
     });
@@ -4521,7 +4526,7 @@ async fn watch_for_edit(
     polished: String,                // the AI-generated text we pasted
     watch_start: std::time::Instant, // captured at the call site, right after paste
     target_pid: Option<i32>,
-    pre_paste_text: Option<String>, // field text BEFORE Said typed (from ScreenContextState)
+    pre_paste_text: Option<String>, // field text BEFORE AirNote typed (from ScreenContextState)
 ) {
     use std::time::Instant;
 
@@ -5201,8 +5206,8 @@ fn shares_word_overlap(candidate: &str, reference: &str) -> bool {
 
 /// Given what we pasted (`polished`), where the field was right after paste
 /// (`post_paste`), the final field value (`last_val`), and optionally the field
-/// text from BEFORE Said typed (`pre_paste`), extract only the user's edited
-/// version of Said's output — stripping any pre-existing text.
+/// text from BEFORE AirNote typed (`pre_paste`), extract only the user's edited
+/// version of AirNote's output — stripping any pre-existing text.
 fn extract_kept(
     polished: &str,
     post_paste: &str,
@@ -5210,10 +5215,10 @@ fn extract_kept(
     pre_paste: Option<&str>,
 ) -> String {
     // ── Strategy 1: use pre_paste to reliably find prefix/suffix ─────────
-    // pre_paste = field content before Said typed.  post_paste = field content
-    // after Said typed.  The common prefix between them is text before cursor;
+    // pre_paste = field content before AirNote typed.  post_paste = field content
+    // after AirNote typed.  The common prefix between them is text before cursor;
     // the common suffix is text after cursor.  Whatever is in the middle of
-    // post_paste is what Said actually inserted (after any app normalization).
+    // post_paste is what AirNote actually inserted (after any app normalization).
     // We strip the same prefix/suffix from last_val to get the user's edit.
     if let Some(pre) = pre_paste {
         if !pre.is_empty() && post_paste.len() > pre.len() {
@@ -5847,7 +5852,7 @@ fn main() {
                 // (see said_hotkey::imp_windows). Linux: no-op stub.
                 //
                 // In meeting capture, Fn/Caps acts as a quick mute. Once muted,
-                // the hotkey goes back to normal Said dictation until the user
+                // the hotkey goes back to normal AirNote dictation until the user
                 // resumes meeting capture from the dock control.
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 {
@@ -5938,7 +5943,7 @@ fn main() {
                                     "[hotkey] Fn released while long dictation locked — keep listening"
                                 );
                             } else {
-                                // Normal Said route. This also applies while the
+                                // Normal AirNote route. This also applies while the
                                 // meeting view is open but meeting capture is muted.
                                 let back = Arc::clone(&back_hold_release);
                                 std::thread::spawn(move || {
@@ -6160,7 +6165,7 @@ fn main() {
             get_meeting_stt_status,
         ])
         .build(tauri::generate_context!())
-        .expect("failed to build Voice Polish desktop")
+        .expect("failed to build AirNote desktop")
         .run(|app, event| match event {
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { has_visible_windows, .. } if !has_visible_windows => {

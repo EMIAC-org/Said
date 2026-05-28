@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate the macOS menu bar tray icon for Said.
+Generate the macOS menu bar tray icon for AirNote.
 
 Produces a *template image* (pure white silhouette on transparent) that
 macOS will auto-tint to match dark/light menu bar appearance.
@@ -20,7 +20,7 @@ OUT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def draw_mark(size: int) -> Image.Image:
-    """Render the Said mark at the given square pixel size."""
+    """Render the AirNote mark at the given square pixel size."""
     img   = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw  = ImageDraw.Draw(img)
     s     = size / 22.0  # all coords below in 22-unit space

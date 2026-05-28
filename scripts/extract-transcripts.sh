@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-LOG="${1:-$HOME/Library/Logs/Said/said.log}"
+LOG="${1:-$HOME/Library/Logs/AirNote/said.log}"
 
 if [ ! -f "$LOG" ]; then
   echo "log file not found: $LOG" >&2

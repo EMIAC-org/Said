@@ -506,7 +506,7 @@
   [data-theme="light"] .input { background: hsl(var(--surface-3)); }
   [data-theme="light"] .input:focus { background: hsl(var(--surface-3)); }
 
-  /* ── Audio-bars brand mark — new Said logo, scales 14px → 64px ─────
+  /* ── Audio-bars brand mark — AirNote logo, scales 14px → 64px ──────
      A 4-bar SVG waveform that uses currentColor, so it tints correctly
      in the menu bar, sidebar, and brand canvas without a re-render. */
   .bars-mark { fill: currentColor; display: block; }

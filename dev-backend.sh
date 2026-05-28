@@ -1,5 +1,5 @@
 #!/bin/bash
-# dev-backend.sh — rebuild said-backend, then run the local daemon (no Tauri).
+# dev-backend.sh — rebuild airnote-backend, then run the local daemon (no Tauri).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -21,10 +21,10 @@ if lsof -ti ":$BACKEND_PORT" >/dev/null 2>&1; then
   sleep 0.5
 fi
 
-echo "▶ building said-backend..."
+echo "▶ building airnote-backend..."
 touch crates/backend/src/main.rs
 unset CARGO_TARGET_DIR
 cargo build -p said-backend
 
-echo "▶ starting said-backend on :$BACKEND_PORT..."
-exec ./target/debug/said-backend --port "$BACKEND_PORT"
+echo "▶ starting airnote-backend on :$BACKEND_PORT..."
+exec ./target/debug/airnote-backend --port "$BACKEND_PORT"

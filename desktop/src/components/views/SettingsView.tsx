@@ -2186,7 +2186,7 @@ export function SettingsView({
                 >
                   <FileText size={12} />
                   <span className="text-[11px] font-medium">
-                    {debugBusy ? "Loading" : debugTab === "combined" ? "Combined" : debugTab === "desktop" ? "AirNote desktop" : "polish-backend"}
+                    {debugBusy ? "Loading" : debugTab === "combined" ? "Combined" : debugTab === "desktop" ? "AirNote desktop" : "airnote-backend"}
                   </span>
                 </div>
                 <textarea

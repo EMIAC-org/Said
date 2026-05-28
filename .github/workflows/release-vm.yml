@@ -93,16 +93,16 @@ jobs:
         timeout-minutes: 8
         run: |
           cargo build -p said --release --target "$TARGET"
-          cp "target/$TARGET/release/said" "said-$TARGET"
-          chmod +x "said-$TARGET"
+          cp "target/$TARGET/release/airnote" "airnote-$TARGET"
+          chmod +x "airnote-$TARGET"
 
-      - name: Build said-backend sidecar
+      - name: Build airnote-backend sidecar
         timeout-minutes: 12
         run: |
           cargo build -p said-backend --release --target "$TARGET"
           mkdir -p desktop/src-tauri/binaries
-          cp "target/$TARGET/release/said-backend" "desktop/src-tauri/binaries/said-backend-$TARGET"
-          chmod +x "desktop/src-tauri/binaries/said-backend-$TARGET"
+          cp "target/$TARGET/release/airnote-backend" "desktop/src-tauri/binaries/airnote-backend-$TARGET"
+          chmod +x "desktop/src-tauri/binaries/airnote-backend-$TARGET"
 
       - name: Build AirNote.app only
         timeout-minutes: 20
@@ -125,7 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           APP_PATH="target/$TARGET/release/bundle/macos/$PRODUCT_NAME.app"
-          EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/said-backend"
+          EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/airnote-backend"
           ENTITLEMENTS="desktop/src-tauri/AirNote.entitlements"
           BUNDLE_ID="com.emiac.airnote.desktop"
 
@@ -250,7 +250,7 @@ jobs:
           )
 
           cp "target/$TARGET/release/bundle/dmg/$DMG" "$ARTIFACT_DIR/"
-          cp "said-$TARGET" "$ARTIFACT_DIR/"
+          cp "airnote-$TARGET" "$ARTIFACT_DIR/"
 
           SIGNATURE="$(cat "$ARTIFACT_DIR/$UPDATE_TAR.sig")"
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

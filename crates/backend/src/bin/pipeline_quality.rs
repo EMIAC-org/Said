@@ -1,4 +1,4 @@
-//! Full-pipeline quality test suite for Said.
+//! Full-pipeline quality test suite for AirNote.
 //!
 //! Runs real Deepgram transcripts through the REAL selection gates + Groq LLM.
 //! Vocab entries go through the same phonetic/BM25/anchor gates as production.

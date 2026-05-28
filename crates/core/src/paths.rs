@@ -1,24 +1,24 @@
-//! Per-platform filesystem locations for Said. Wraps the `dirs` crate with
-//! Said-specific subfolder names and the platform-conventional log dir.
+//! Per-platform filesystem locations for AirNote. Wraps the `dirs` crate with
+//! AirNote-specific subfolder names and the platform-conventional log dir.
 //!
-//! macOS keeps logs at `~/Library/Logs/Said` (Apple's HIG convention).
-//! Other platforms use `dirs::cache_dir()` + `Said/logs`.
+//! macOS keeps logs at `~/Library/Logs/AirNote` (Apple's HIG convention).
+//! Other platforms use `dirs::cache_dir()` + `AirNote/logs`.
 //!
 //! Data lives under `VoicePolish/` for backwards compatibility with v2.x
-//! installs; renaming to `Said/` is deferred to a future major version that
+//! installs; renaming this data dir is deferred to a future major version that
 //! owns the migration of existing user databases.
 
 use std::path::PathBuf;
 
-const APP_NAME: &str = "Said";
+const APP_NAME: &str = "AirNote";
 const LEGACY_DATA_SUBDIR: &str = "VoicePolish";
 
-/// Directory where Said writes log files. Created on first write by callers.
+/// Directory where AirNote writes log files. Created on first write by callers.
 ///
-/// - macOS: `~/Library/Logs/Said`
-/// - Windows: `%LOCALAPPDATA%\Said\logs`
-/// - Linux: `$XDG_CACHE_HOME/Said/logs` (or `~/.cache/Said/logs`)
-/// - Fallback: `<tempdir>/Said/logs`
+/// - macOS: `~/Library/Logs/AirNote`
+/// - Windows: `%LOCALAPPDATA%\AirNote\logs`
+/// - Linux: `$XDG_CACHE_HOME/AirNote/logs` (or `~/.cache/AirNote/logs`)
+/// - Fallback: `<tempdir>/AirNote/logs`
 pub fn log_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
@@ -35,7 +35,7 @@ pub fn log_dir() -> PathBuf {
     std::env::temp_dir().join(APP_NAME).join("logs")
 }
 
-/// Per-user data directory for persistent Said state (SQLite DB, device id,
+/// Per-user data directory for persistent AirNote state (SQLite DB, device id,
 /// retention-managed audio snippets). Created on first write by callers.
 ///
 /// - macOS: `~/Library/Application Support/VoicePolish`

@@ -1,4 +1,4 @@
-//! End-to-end Groq LLM test for Said's voice-polish pipeline.
+//! End-to-end Groq LLM test for AirNote's voice-polish pipeline.
 //!
 //! This binary builds the exact same system prompt the voice route builds
 //! (with vocab entries, screen context, etc.) and calls the real Groq API
