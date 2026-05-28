@@ -13,9 +13,8 @@ import type { AppSnapshot } from "@/types";
 
 /* ════════════════════════════════════════════════════════════════════════════
    SettingsModal — two-pane modal mirroring the InviteTeamModal aesthetic.
-   Left nav: 6 sections (Writing style, Permissions, API keys, Account,
-   Diagnostics, About). Right pane: scoped SettingsView rendering only the
-   matching section.
+   Left nav: scoped Settings sections only. Right pane renders the matching
+   SettingsView section.
    ════════════════════════════════════════════════════════════════════════════ */
 
 const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
@@ -44,7 +43,7 @@ const SECTION_TITLES: Record<SettingsSection, string> = {
 
 const SECTION_SUBTITLES: Record<SettingsSection, string> = {
   "appearance":    "Choose how the dashboard surfaces your activity.",
-  "writing":       "Tone, persona and language preferences.",
+  "writing":       "Advanced voice prompt controls.",
   "models":        "Dictation speed, quality, and ChatGPT connection.",
   "notifications": "Control which status bar alerts you see.",
   "permissions":   "Accessibility, input monitoring, notifications.",
@@ -64,7 +63,7 @@ interface Props {
   performanceMonitorEnabled?: boolean;
   onPerformanceMonitorChange?: (enabled: boolean) => void;
   onEnterpriseDisconnect?: () => void;
-  /** Optional initial section to land on. Defaults to "writing". */
+  /** Optional initial section to land on. Defaults to "models". */
   initialSection?:    SettingsSection;
 }
 
@@ -74,7 +73,7 @@ export function SettingsModal({
   onEnterpriseDisconnect, initialSection,
 }: Props) {
   const [activeSection, setActiveSection] = useState<SettingsSection>(
-    initialSection ?? "writing"
+    initialSection ?? "models"
   );
   const [appVersion, setAppVersion] = useState("…");
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -95,7 +94,7 @@ export function SettingsModal({
 
   // Reset to initial section when reopened
   useEffect(() => {
-    if (open) setActiveSection(initialSection ?? "writing");
+    if (open) setActiveSection(initialSection ?? "models");
   }, [open, initialSection]);
 
   if (!open) return null;

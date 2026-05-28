@@ -3,8 +3,8 @@ import { useEffect, useState, useCallback } from "react";
 /**
  * Dashboard layout preference — UI-only, persisted in localStorage.
  *
- * - `split`     : two-column "Insights ⟷ Timeline" view (default)
- * - `editorial` : single-column magazine-style daily summary
+ * - `split`     : two-column "Insights ⟷ Timeline" view
+ * - `editorial` : single-column magazine-style daily summary (default)
  *
  * Every call site stays in sync via two channels:
  *   1. `storage` event — fires when another window/tab writes the key.
@@ -17,7 +17,7 @@ export type DashboardLayout = "split" | "editorial";
 
 const KEY  = "said:dashboard-layout";
 const EVT  = "said:dashboard-layout-change";
-const DEFAULT: DashboardLayout = "split";
+const DEFAULT: DashboardLayout = "editorial";
 
 function read(): DashboardLayout {
   try {

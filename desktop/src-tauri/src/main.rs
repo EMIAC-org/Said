@@ -933,18 +933,12 @@ fn build_tray_menu(
     // Keep the visible tray menu intentionally small for senior/user-facing
     // builds. Existing Option+digit handlers remain wired for power users.
     #[cfg(target_os = "macos")]
-    let (h_prof, h_hinglish) = ("Professional English  ⌥2", "Hinglish  ⌥5");
+    let (h_format, h_prof, h_hinglish) = ("Polish My Message  ⌥1", "English  ⌥2", "Hinglish  ⌥5");
     #[cfg(not(target_os = "macos"))]
-    let (h_prof, h_hinglish) = ("Professional English", "Hinglish");
+    let (h_format, h_prof, h_hinglish) = ("Polish My Message", "English", "Hinglish");
 
+    let p_format = MenuItem::with_id(app, "tray_polish_format", h_format, true, None::<&str>)?;
     let p_prof = MenuItem::with_id(app, "tray_polish_professional", h_prof, true, None::<&str>)?;
-    let p_repair = MenuItem::with_id(
-        app,
-        "tray_smart_repair",
-        "Smart Repair Last",
-        true,
-        None::<&str>,
-    )?;
     let p_hinglish =
         MenuItem::with_id(app, "tray_polish_hinglish", h_hinglish, true, None::<&str>)?;
 
@@ -962,8 +956,8 @@ fn build_tray_menu(
         &[
             &toggle as &dyn tauri::menu::IsMenuItem<tauri::Wry>,
             &sep1,
+            &p_format,
             &p_prof,
-            &p_repair,
             &p_hinglish,
             &sep2,
             &show_item,

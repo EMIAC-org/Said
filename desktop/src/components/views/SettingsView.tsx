@@ -329,14 +329,11 @@ export type SettingsSection =
   | "about";
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
-  { id: "appearance",     label: "Appearance"     },
-  { id: "writing",        label: "Writing style"  },
   { id: "models",         label: "Models"         },
   { id: "notifications",  label: "Notifications"  },
   { id: "permissions",    label: "Permissions"     },
   { id: "api-keys",    label: "API keys"      },
   { id: "enterprise",  label: "Enterprise"    },
-  { id: "debug",       label: "Debug"         },
   { id: "about",       label: "About"         },
 ];
 
@@ -646,9 +643,11 @@ export function SettingsView({
   onPerformanceMonitorChange,
   onEnterpriseDisconnect,
 }: SettingsViewProps) {
-  // Helper — true when the section should render (no filter = render all)
-  const showAll = !activeSection;
-  const isOn    = (id: SettingsSection) => showAll || activeSection === id;
+  // Helper — settings are always section-scoped in the stable UI. If a caller
+  // omits the section, default to Models instead of rendering every advanced
+  // panel at once.
+  const currentSection = activeSection ?? "models";
+  const isOn    = (id: SettingsSection) => currentSection === id;
   const axGranted  = snapshot?.accessibility_granted    ?? false;
   const imGranted  = snapshot?.input_monitoring_granted ?? false;
   const micGranted = snapshot?.microphone_granted       ?? false;
@@ -2362,6 +2361,7 @@ interface NotifPrefs {
   confirm: boolean;
   negative: boolean;
   retrain: boolean;
+  updates: boolean;
   error: boolean;
   sounds: boolean;
 }
@@ -2372,6 +2372,7 @@ const DEFAULT_NOTIF: NotifPrefs = {
   confirm: true,
   negative: true,
   retrain: true,
+  updates: true,
   error: true,
   sounds: true,
 };
@@ -2397,6 +2398,7 @@ const NOTIF_ITEMS: { key: keyof NotifPrefs; label: string; desc: string }[] = [
   { key: "confirm",  label: "Ambiguous term",        desc: "Ask whether a corrected word is a brand/name (one-click confirm)" },
   { key: "negative", label: "Wrong correction",      desc: "Alert when AirNote keeps making the same wrong correction" },
   { key: "retrain",  label: "Model updated",         desc: "When the ONNX correction model finishes retraining" },
+  { key: "updates",  label: "App update ready",      desc: "When AirNote has downloaded an update and needs a restart" },
   { key: "error",    label: "Errors",                desc: "Recording errors, backend connection issues" },
   { key: "sounds",   label: "Sound effects",         desc: "Play subtle sounds on recording start, paste, learning events" },
 ];
