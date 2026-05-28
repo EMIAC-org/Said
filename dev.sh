@@ -5,16 +5,16 @@
 set -e
 cd "$(dirname "$0")"
 
-echo "▶ building said-backend..."
+echo "▶ building airnote-backend..."
 touch crates/backend/src/main.rs
 unset CARGO_TARGET_DIR
 cargo build -p said-backend
 
 echo "▶ syncing binary to Tauri externalBin..."
-# Tauri copies binaries/said-backend-aarch64-apple-darwin into the build,
-# overwriting target/debug/said-backend. Keep them in sync.
-cp target/debug/said-backend \
-   desktop/src-tauri/binaries/said-backend-aarch64-apple-darwin
+# Tauri copies binaries/airnote-backend-aarch64-apple-darwin into the build,
+# overwriting target/debug/airnote-backend. Keep them in sync.
+cp target/debug/airnote-backend \
+   desktop/src-tauri/binaries/airnote-backend-aarch64-apple-darwin
 
 echo "▶ launching tauri dev..."
 cd desktop

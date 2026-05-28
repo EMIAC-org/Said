@@ -1,4 +1,4 @@
-//! Best-effort guardrails for leaked `said-backend` processes.
+//! Best-effort guardrails for leaked `airnote-backend` processes.
 //!
 //! The normal owner is `backend::BackendHandle::Drop`. This module covers
 //! starts after crashes, stale PID files, and signal/panic paths that might
@@ -10,36 +10,60 @@ use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System, UpdateKind};
 use tracing::{info, warn};
 
-// The on-disk process name includes the `.exe` suffix on Windows; `sysinfo`
-// reports the full file name, so the match must include it or the reap/kill
-// guardrails silently never fire on Windows.
-#[cfg(windows)]
-const BACKEND_NAME: &str = "said-backend.exe";
-#[cfg(not(windows))]
-const BACKEND_NAME: &str = "said-backend";
+const BACKEND_NAME: &str = "airnote-backend";
+const LEGACY_BACKEND_NAME: &str = "said-backend";
+
+fn data_base() -> PathBuf {
+    dirs::data_local_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
+        .unwrap_or_else(|| std::env::temp_dir())
+}
 
 pub fn pid_file() -> PathBuf {
-    let base = dirs::data_local_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
-        .unwrap_or_else(|| std::env::temp_dir());
-    base.join("Said").join("said-backend.pid")
+    data_base().join("AirNote").join("airnote-backend.pid")
+}
+
+fn legacy_pid_file() -> PathBuf {
+    data_base().join("Said").join("said-backend.pid")
+}
+
+fn pid_files() -> [PathBuf; 2] {
+    [pid_file(), legacy_pid_file()]
+}
+
+fn is_backend_name(name: &str) -> bool {
+    // Windows process names may include `.exe`; normalize so both process-name
+    // and executable-path checks handle macOS and Windows consistently.
+    let normalized = name.trim_end_matches(".exe");
+    normalized == BACKEND_NAME || normalized == LEGACY_BACKEND_NAME
+}
+
+fn process_name_matches(process: &sysinfo::Process) -> bool {
+    is_backend_name(&process.name().to_string_lossy())
+}
+
+fn exe_name_matches(exe: &Path) -> bool {
+    exe.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(is_backend_name)
 }
 
 pub fn reap_previous() {
-    let pid_path = pid_file();
     let sys = System::new_with_specifics(
         RefreshKind::new()
             .with_processes(ProcessRefreshKind::new().with_exe(UpdateKind::OnlyIfNotSet)),
     );
 
-    if let Some(pid) = read_pid_file(&pid_path) {
-        if process_matches_pid(&sys, pid) {
-            info!("[backend-guard] reaping previous backend from pid file pid={pid}");
-            terminate_pid(pid, Duration::from_secs(1));
-        } else {
-            info!("[backend-guard] ignoring stale backend pid file pid={pid}");
+    for pid_path in pid_files() {
+        if let Some(pid) = read_pid_file(&pid_path) {
+            if process_matches_pid(&sys, pid) {
+                info!("[backend-guard] reaping previous backend from pid file pid={pid}");
+                terminate_pid(pid, Duration::from_secs(1));
+            } else {
+                info!("[backend-guard] ignoring stale backend pid file pid={pid}");
+            }
+            let _ = std::fs::remove_file(&pid_path);
         }
-        let _ = std::fs::remove_file(&pid_path);
     }
 
     let current_parent = std::env::current_exe()
@@ -70,28 +94,30 @@ pub fn write_pid_file(pid: u32) {
 }
 
 pub fn clear_pid_file() {
-    let path = pid_file();
-    if let Err(err) = std::fs::remove_file(&path) {
-        if err.kind() != std::io::ErrorKind::NotFound {
-            warn!("[backend-guard] failed to clear pid file {path:?}: {err}");
+    for path in pid_files() {
+        if let Err(err) = std::fs::remove_file(&path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!("[backend-guard] failed to clear pid file {path:?}: {err}");
+            }
         }
     }
 }
 
 pub fn kill_from_pid_file() {
-    let path = pid_file();
-    let Some(pid) = read_pid_file(&path) else {
-        return;
-    };
     let sys = System::new_with_specifics(
         RefreshKind::new()
             .with_processes(ProcessRefreshKind::new().with_exe(UpdateKind::OnlyIfNotSet)),
     );
-    if process_matches_pid(&sys, pid) {
-        warn!("[backend-guard] panic/signal cleanup killing backend pid={pid}");
-        terminate_pid(pid, Duration::from_secs(1));
+    for path in pid_files() {
+        let Some(pid) = read_pid_file(&path) else {
+            continue;
+        };
+        if process_matches_pid(&sys, pid) {
+            warn!("[backend-guard] panic/signal cleanup killing backend pid={pid}");
+            terminate_pid(pid, Duration::from_secs(1));
+        }
+        let _ = std::fs::remove_file(path);
     }
-    let _ = std::fs::remove_file(path);
 }
 
 fn read_pid_file(path: &Path) -> Option<u32> {
@@ -102,15 +128,11 @@ fn process_matches_pid(sys: &System, pid: u32) -> bool {
     let Some(process) = sys.process(Pid::from_u32(pid)) else {
         return false;
     };
-    process
-        .exe()
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        == Some(BACKEND_NAME)
+    process_name_matches(process) || process.exe().is_some_and(exe_name_matches)
 }
 
 fn should_reap_process(exe: &Path, current_parent: Option<&Path>) -> bool {
-    if exe.file_name().and_then(|name| name.to_str()) != Some(BACKEND_NAME) {
+    if !exe_name_matches(exe) {
         return false;
     }
 

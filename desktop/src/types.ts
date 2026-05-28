@@ -51,7 +51,7 @@ export interface AppSnapshot {
   avg_wpm: number;
 }
 
-// ── Backend types (mirrored from polish-backend) ─────────────────────────────
+// ── Backend types (mirrored from airnote-backend) ────────────────────────────
 
 export interface Preferences {
   user_id:            string;

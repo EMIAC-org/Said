@@ -1,6 +1,6 @@
-# Contributing to Said
+# Contributing to AirNote
 
-Thanks for your interest. Said is a small project; the contribution flow is informal but a few conventions keep the codebase coherent.
+Thanks for your interest. AirNote is a small project; the contribution flow is informal but a few conventions keep the codebase coherent.
 
 ---
 
@@ -30,10 +30,10 @@ Copy-Item .env.example .env   # fill in DEEPGRAM_API_KEY + GATEWAY_API_KEY
 #   # or
 #   winget install Casey.Just
 
-# Build the said-backend sidecar and sync it into the Tauri externalBin slot:
+# Build the backend sidecar and sync it into the Tauri externalBin slot:
 cargo build -p said-backend
 New-Item -ItemType Directory -Force -Path desktop\src-tauri\binaries | Out-Null
-Copy-Item target\debug\said-backend.exe desktop\src-tauri\binaries\said-backend-x86_64-pc-windows-msvc.exe
+Copy-Item target\debug\airnote-backend.exe desktop\src-tauri\binaries\airnote-backend-x86_64-pc-windows-msvc.exe
 
 # Then run the desktop dev loop:
 cd desktop
@@ -82,7 +82,7 @@ See [AGENTS.md](AGENTS.md) for the full map. Briefly:
 | `crates/paster` | HID typing + edit-watch (macOS today; Windows planned) |
 | `crates/backend` | Local Axum daemon — routes, LLM polish, SQLite, learning |
 | `crates/said` | Standalone CLI |
-| `desktop/src-tauri` | Tauri shell (spawns `said-backend`) |
+| `desktop/src-tauri` | Tauri shell (spawns `airnote-backend`) |
 | `desktop/src` | React + Vite frontend |
 | `scripts` | `build-dmg.sh`, `bump-version.sh` |
 | `.github/workflows` | CI + release |
@@ -95,7 +95,7 @@ These are in [AGENTS.md](AGENTS.md) under "Design Rules" but worth repeating in 
 
 1. **`just check` must pass.** No exceptions; CI runs the same.
 2. **HID delays in `paster/src/lib.rs` are sacred.** The 6 ms keydown→keyup pacing fixes word-merging at streaming speeds. Don't touch without an explanation in the PR description.
-3. **Binary name is `said-backend` everywhere** — never `polish-backend` or anything else.
+3. **Shipped sidecar binary name is `airnote-backend` everywhere** — crate/package name may remain `said-backend`, but packaged/runtime binaries must not ship as `said-backend`.
 4. **`crates/control-plane` stays excluded from the workspace.** Build it standalone.
 5. **STT transcript is NOT ground truth.** The classifier in `crates/backend/src/llm/classifier.rs` explicitly handles cases where STT and polish agree on the wrong word.
 6. **Lexicon cache needs explicit invalidation.** Any route that writes to `corrections` or `stt_replacements` must call `invalidate_lexicon_cache()`.

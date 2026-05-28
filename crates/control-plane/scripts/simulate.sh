@@ -3,7 +3,7 @@
 #
 # What it does:
 #   1. Ensures control-plane is running (starts it if not)
-#   2. Finds the running Said desktop app backend (port + secret)
+#   2. Finds the running AirNote desktop app backend (port + secret)
 #   3. Logs in all 4 participants
 #   4. Creates and starts a meeting
 #   5. Opens the simulator in your browser
@@ -16,7 +16,7 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo ""
 echo "  ╔═══════════════════════════════════════╗"
-echo "  ║   Said Meeting Simulator              ║"
+echo "  ║   AirNote Meeting Simulator           ║"
 echo "  ╚═══════════════════════════════════════╝"
 echo ""
 
@@ -43,12 +43,12 @@ else
   echo "  Already running"
 fi
 
-# ── Step 2: Find said-backend ────────────────────────────────────────
+# ── Step 2: Find airnote-backend ─────────────────────────────────────
 
-echo "[2/5] Finding Said desktop backend..."
-BACKEND_PID=$(pgrep -f said-backend 2>/dev/null | head -1)
+echo "[2/5] Finding AirNote desktop backend..."
+BACKEND_PID=$(pgrep -f 'airnote-backend|said-backend' 2>/dev/null | head -1)
 if [ -z "$BACKEND_PID" ]; then
-  echo "  WARNING: said-backend not found. Open the Said desktop app first."
+  echo "  WARNING: airnote-backend not found. Open the AirNote desktop app first."
   echo "  You can still use the simulator with text-only mode."
   BACKEND_URL=""
   BACKEND_SECRET=""

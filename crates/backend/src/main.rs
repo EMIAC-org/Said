@@ -5,7 +5,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
-#[command(name = "polish-backend", about = "Voice Polish local daemon")]
+#[command(name = "airnote-backend", about = "AirNote local daemon")]
 struct Cli {
     /// TCP port to listen on
     #[arg(long, default_value = "48484")]
@@ -20,7 +20,7 @@ struct Cli {
 async fn main() {
     // ── Sentry — must init before the tracing subscriber so the panic hook
     //   it installs runs before any other panic handler. Held until main returns.
-    let _sentry_guard = said_core::telemetry::init("said-backend");
+    let _sentry_guard = said_core::telemetry::init("airnote-backend");
 
     // ── Structured logging — platform-appropriate log dir ──────────────────────
     let log_dir = said_backend::paths::log_dir();
@@ -58,7 +58,7 @@ async fn main() {
 
     // ── Fingerprint — visible in logs so we can confirm binary version ───────
     info!(
-        "polish-backend build={} features=openai_oauth+codex_api",
+        "airnote-backend build={} features=openai_oauth+codex_api",
         env!("CARGO_PKG_VERSION")
     );
 
@@ -115,7 +115,7 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("failed to bind {addr}: {e}"));
 
-    info!("polish-backend listening on http://{addr}");
+    info!("airnote-backend listening on http://{addr}");
 
     // ── 7-day recording + 24h audio file cleanup (every 6 hours) ─────────────
     {
@@ -186,7 +186,7 @@ async fn main() {
         .await
         .expect("server error");
 
-    info!("polish-backend stopped");
+    info!("airnote-backend stopped");
 }
 
 #[cfg(target_os = "macos")]

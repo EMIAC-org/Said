@@ -120,19 +120,19 @@ jobs:
         shell: bash
         run: |
           cargo build -p said --release --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/said said-${{ matrix.target }}
-          chmod +x said-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/airnote airnote-${{ matrix.target }}
+          chmod +x airnote-${{ matrix.target }}
 
-      - name: Build said-backend sidecar (Mac)
+      - name: Build airnote-backend sidecar (Mac)
         if: matrix.platform == 'darwin'
         shell: bash
         timeout-minutes: 12
         run: |
           cargo build -p said-backend --release --target ${{ matrix.target }}
           mkdir -p desktop/src-tauri/binaries
-          cp "target/${{ matrix.target }}/release/said-backend" \
-            "desktop/src-tauri/binaries/said-backend-${{ matrix.target }}"
-          chmod +x "desktop/src-tauri/binaries/said-backend-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/airnote-backend" \
+            "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}"
+          chmod +x "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}"
 
       - name: Build AirNote.app only (Mac)
         if: matrix.platform == 'darwin'
@@ -159,7 +159,7 @@ jobs:
         run: |
           set -euo pipefail
           APP_PATH="target/${{ matrix.target }}/release/bundle/macos/${PRODUCT_NAME}.app"
-          EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/said-backend"
+          EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/airnote-backend"
           ENTITLEMENTS="desktop/src-tauri/AirNote.entitlements"
           BUNDLE_ID="com.emiac.airnote.desktop"
 
@@ -255,16 +255,16 @@ jobs:
           spctl --assess --type open --context context:primary-signature -v "$DMG_OUT"
           echo "DMG is signed, notarized, stapled, and Gatekeeper-verified: $DMG_OUT"
 
-      # ── Windows: said-backend sidecar + Tauri NSIS installer ───────────────
-      - name: Build said-backend sidecar (Windows)
+      # ── Windows: airnote-backend sidecar + Tauri NSIS installer ────────────
+      - name: Build airnote-backend sidecar (Windows)
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           cargo build -p said-backend --release --target ${{ matrix.target }}
           New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
           Copy-Item `
-            "target/${{ matrix.target }}/release/said-backend.exe" `
-            "desktop/src-tauri/binaries/said-backend-${{ matrix.target }}.exe"
+            "target/${{ matrix.target }}/release/airnote-backend.exe" `
+            "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}.exe"
 
       - name: Build AirNote.exe + NSIS installer (Windows)
         if: matrix.platform == 'windows'
@@ -284,7 +284,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           mkdir -p release-artifacts
-          cp said-${{ matrix.target }} release-artifacts/
+          cp airnote-${{ matrix.target }} release-artifacts/
 
           cp "target/${{ matrix.target }}/release/bundle/dmg/${PRODUCT_NAME}_${{ steps.ver_mac.outputs.version }}_${{ matrix.arch_short }}.dmg" release-artifacts/
 

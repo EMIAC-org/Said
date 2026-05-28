@@ -41,7 +41,7 @@ const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Parser, Debug)]
-#[command(name = "voice-polish", about = "Standalone Voice Polish core engine")]
+#[command(name = "airnote", about = "Standalone AirNote core engine")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -150,7 +150,7 @@ fn setup_logging() -> Result<(), String> {
     let log_file = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_dir.join("voice-polish.log"))
+        .open(log_dir.join("airnote.log"))
         .map_err(|e| format!("open log file failed: {e}"))?;
 
     tracing_subscriber::fmt()
@@ -221,7 +221,7 @@ fn show_status(ctx: &AppCtx) -> Result<(), String> {
     let cfg = load_config(ctx)?;
     let now = now_ms();
 
-    println!("Voice Polish standalone status");
+    println!("AirNote standalone status");
     println!("─────────────────────────────");
     println!("Config    : {}", ctx.config_path.display());
     println!(
@@ -240,8 +240,8 @@ fn show_status(ctx: &AppCtx) -> Result<(), String> {
     );
     match cfg.openai {
         Some(tok) if tok.expires_at > now => println!("OpenAI    : connected"),
-        Some(_) => println!("OpenAI    : expired (run `voice-polish auth`)"),
-        None => println!("OpenAI    : missing (run `voice-polish auth`)"),
+        Some(_) => println!("OpenAI    : expired (run `airnote auth`)"),
+        None => println!("OpenAI    : missing (run `airnote auth`)"),
     }
     println!(
         "Input Mon : {}",
@@ -397,10 +397,10 @@ async fn run_listener(ctx: AppCtx) -> Result<(), String> {
         .filter(|s| !s.is_empty())
         .is_none()
     {
-        return Err("Deepgram key missing. Run `voice-polish deepgram-key` first.".into());
+        return Err("Deepgram key missing. Run `airnote deepgram-key` first.".into());
     }
     if cfg.openai.is_none() {
-        return Err("OpenAI token missing. Run `voice-polish auth` first.".into());
+        return Err("OpenAI token missing. Run `airnote auth` first.".into());
     }
 
     if let Ok(device) = AudioRecorder::preflight() {
@@ -408,16 +408,16 @@ async fn run_listener(ctx: AppCtx) -> Result<(), String> {
     }
     if !said_hotkey::is_input_monitoring_granted() {
         println!(
-            "Input Monitoring is not granted yet. Run `voice-polish permissions`, grant it, then restart."
+            "Input Monitoring is not granted yet. Run `airnote permissions`, grant it, then restart."
         );
     }
     if !said_paster::is_accessibility_granted() {
         println!(
-            "Accessibility is not granted yet. Run `voice-polish permissions`, grant it, then restart."
+            "Accessibility is not granted yet. Run `airnote permissions`, grant it, then restart."
         );
     }
 
-    println!("Voice Polish standalone is listening.");
+    println!("AirNote standalone is listening.");
     println!("Hold Caps Lock to record, release to polish and paste.");
 
     let state = Arc::new(Mutex::new(RunnerState {
@@ -435,7 +435,7 @@ async fn run_listener(ctx: AppCtx) -> Result<(), String> {
     let on_press = Arc::new(move || {
         if let Err(e) = start_recording(&on_press_state, &on_press_ctx, &on_press_rt) {
             eprintln!("start failed: {e}");
-            warn!("[voice-polish] start failed: {e}");
+            warn!("[airnote] start failed: {e}");
         }
     });
 
@@ -445,7 +445,7 @@ async fn run_listener(ctx: AppCtx) -> Result<(), String> {
     let on_release = Arc::new(move || {
         if let Err(e) = finish_recording(&on_release_state, &on_release_ctx, &on_release_rt) {
             eprintln!("finish failed: {e}");
-            warn!("[voice-polish] finish failed: {e}");
+            warn!("[airnote] finish failed: {e}");
         }
     });
 
@@ -453,7 +453,7 @@ async fn run_listener(ctx: AppCtx) -> Result<(), String> {
     tokio::signal::ctrl_c()
         .await
         .map_err(|e| format!("ctrl-c listener failed: {e}"))?;
-    println!("\nStopping Voice Polish standalone.");
+    println!("\nStopping AirNote standalone.");
     Ok(())
 }
 
@@ -522,7 +522,7 @@ fn finish_recording(
         let result = process_recording(ctx2, wav, rx_opt, state2.clone()).await;
         if let Err(e) = result {
             eprintln!("processing failed: {e}");
-            error!("[voice-polish] processing failed: {e}");
+            error!("[airnote] processing failed: {e}");
         }
         if let Ok(mut guard) = state2.lock() {
             guard.processing = false;
@@ -599,7 +599,7 @@ async fn ensure_openai_access_token(ctx: &AppCtx) -> Result<String, String> {
     let tok = cfg
         .openai
         .clone()
-        .ok_or_else(|| "OpenAI token missing. Run `voice-polish auth`.".to_string())?;
+        .ok_or_else(|| "OpenAI token missing. Run `airnote auth`.".to_string())?;
 
     let now = now_ms();
     if tok.expires_at == 0 || tok.expires_at > now + 60_000 {
@@ -610,7 +610,7 @@ async fn ensure_openai_access_token(ctx: &AppCtx) -> Result<String, String> {
         .refresh_token
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| {
-            "OpenAI token expired and has no refresh token. Run `voice-polish auth`.".to_string()
+            "OpenAI token expired and has no refresh token. Run `airnote auth`.".to_string()
         })?;
 
     let refreshed = openai_codex::refresh_token(&ctx.http, &refresh_token).await?;
@@ -661,7 +661,7 @@ async fn stream_polish_and_paste(
             Ok(false) => failed_any = true,
             Err(e) => {
                 failed_any = true;
-                warn!("[voice-polish] type_text failed: {e}");
+                warn!("[airnote] type_text failed: {e}");
             }
         }
     }

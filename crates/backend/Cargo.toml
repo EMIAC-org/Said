@@ -12,7 +12,7 @@ name = "said_backend"
 path = "src/lib.rs"
 
 [[bin]]
-name = "said-backend"
+name = "airnote-backend"
 path = "src/main.rs"
 
 [[bin]]

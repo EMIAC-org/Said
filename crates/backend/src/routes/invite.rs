@@ -12,12 +12,12 @@
 //!      — fine for shipping to friends, NOT safe for public distribution.
 //!
 //!   2. Runtime env (server / dev):
-//!        RESEND_API_KEY=re_xxx ./polish-backend
+//!        RESEND_API_KEY=re_xxx ./airnote-backend
 //!      Useful if you later move the backend off-device.
 //!
-//!   RESEND_FROM is optional. Defaults to "Said <onboarding@resend.dev>"
+//!   RESEND_FROM is optional. Defaults to "AirNote <onboarding@resend.dev>"
 //!   which works without DNS but lands in spam more often. Once you've
-//!   verified a domain in Resend, set it to "Said <hello@yourdomain.com>".
+//!   verified a domain in Resend, set it to "AirNote <hello@yourdomain.com>".
 //!
 //! When neither source provides a key, returns 503 with body
 //! `{ "error": "email_not_configured" }` so the desktop client falls
@@ -39,20 +39,20 @@ pub struct InviteBody {
     pub to: String,
 }
 
-const SUBJECT: &str = "You should try Said";
+const SUBJECT: &str = "You should try AirNote";
 
 const BODY_TEXT: &str = "\
-Hey — I've been using Said to dictate and polish text.
+Hey — I've been using AirNote to dictate and polish text.
 It's quietly become my favourite way to write.
 
-Thought you'd like it: https://said.app
+Thought you'd like it: https://airnote.app
 ";
 
 const BODY_HTML: &str = "\
 <div style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;line-height:1.55;color:#1a1a1a;max-width:560px;\">
   <p>Hey —</p>
-  <p>I've been using <strong>Said</strong> to dictate and polish text.<br/>It's quietly become my favourite way to write.</p>
-  <p>Thought you'd like it: <a href=\"https://said.app\" style=\"color:#5b9b6a;font-weight:600;text-decoration:none;\">said.app</a></p>
+  <p>I've been using <strong>AirNote</strong> to dictate and polish text.<br/>It's quietly become my favourite way to write.</p>
+  <p>Thought you'd like it: <a href=\"https://airnote.app\" style=\"color:#5b9b6a;font-weight:600;text-decoration:none;\">airnote.app</a></p>
 </div>
 ";
 
@@ -99,7 +99,7 @@ pub async fn send(
                 .map(str::to_string)
                 .filter(|s| !s.trim().is_empty())
         })
-        .unwrap_or_else(|| "Said <onboarding@resend.dev>".into());
+        .unwrap_or_else(|| "AirNote <onboarding@resend.dev>".into());
 
     let payload = json!({
         "from":    from,

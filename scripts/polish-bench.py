@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-polish-bench — feed test transcripts to the running said-backend's
+polish-bench — feed test transcripts to the running airnote-backend's
 /v1/text/polish endpoint and check the LLM output against expectations.
 
 Usage:
@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DEFAULT_LOG = Path.home() / "Library/Logs/Said/said.log"
+DEFAULT_LOG = Path.home() / "Library/Logs/AirNote/said.log"
 
 GREEN = "\033[32m"
 RED   = "\033[31m"
@@ -39,7 +39,7 @@ RESET = "\033[0m"
 
 
 def discover_port() -> int | None:
-    """Find the port said-backend is listening on by scanning the desktop log."""
+    """Find the port airnote-backend is listening on by scanning the desktop log."""
     if not DEFAULT_LOG.exists():
         return None
     try:

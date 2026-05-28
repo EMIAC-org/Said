@@ -67,11 +67,11 @@ jobs:
       # produced in the release workflow), so drop a placeholder to satisfy the
       # existence check. The sidecar's *code* is still type-checked as part of
       # the workspace check below — we only need the file path to exist here.
-      - name: Stub said-backend sidecar for tauri externalBin check
+      - name: Stub airnote-backend sidecar for tauri externalBin check
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
-          New-Item -ItemType File -Force -Path desktop/src-tauri/binaries/said-backend-x86_64-pc-windows-msvc.exe | Out-Null
+          New-Item -ItemType File -Force -Path desktop/src-tauri/binaries/airnote-backend-x86_64-pc-windows-msvc.exe | Out-Null
 
       # Full Windows compile gate: check the whole workspace including the Tauri
       # desktop shell (`said-desktop`) so a push to main reports real Windows

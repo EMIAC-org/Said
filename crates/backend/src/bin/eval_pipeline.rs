@@ -1,4 +1,4 @@
-//! Eval harness for the Said learning pipeline.
+//! Eval harness for the AirNote learning pipeline.
 //!
 //! Three test layers:
 //!   1. RETRIEVAL — seed vocab, sweep 14K transcripts, assert 0 false injections

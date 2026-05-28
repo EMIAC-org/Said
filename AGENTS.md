@@ -6,8 +6,8 @@
 
 ## What This Project Is
 
-**Said** is a macOS + Windows voice dictation app that polishes speech in real-time using an LLM.
-Hold Caps Lock, speak, release — Said types polished text into any focused app in English,
+**AirNote** is a macOS + Windows voice dictation app that polishes speech in real-time using an LLM.
+Hold Caps Lock, speak, release — AirNote types polished text into any focused app in English,
 Hindi, Hinglish, or whatever mix comes out of your mouth.
 
 Core runtime (platform-specific code paths shown):
@@ -50,7 +50,7 @@ Core runtime (platform-specific code paths shown):
 ## Commands
 
 ```bash
-# Dev mode: builds said-backend, syncs sidecar, launches Tauri + Vite
+# Dev mode: builds airnote-backend, syncs sidecar, launches Tauri + Vite
 just dev
 
 # Full CI gate — run before every PR
@@ -91,7 +91,7 @@ cd desktop && npm ci              # reinstall deps
 /crates/backend       local Axum daemon — STT, LLM, SQLite, learning pipeline
 /crates/said          standalone CLI binary
 /crates/control-plane Fly.io cloud backend (Postgres) — EXCLUDED from workspace
-/desktop/src-tauri    Tauri v2 shell — spawns said-backend, 39 commands
+/desktop/src-tauri    Tauri v2 shell — spawns airnote-backend, 39 commands
 /desktop/src          React + Vite UI
 /scripts              build-dmg.sh, bump-version.sh
 /justfile             task runner (just dev, just check, just dmg, etc.)
@@ -115,8 +115,8 @@ crates/backend/src/lib.rs             AppState, prefs cache (30s TTL), lexicon c
 crates/backend/src/store/mod.rs       SQLite pool (r2d2, max 5 connections)
 crates/backend/src/stt/deepgram.rs    Deepgram batch STT client (30s timeout)
 crates/backend/src/embedder/gemini.rs Gemini embedding client
-desktop/src-tauri/src/backend.rs      spawns said-backend, polls /v1/health, find_binary()
-desktop/src-tauri/src/backend_guard.rs  reaps leaked said-backend processes
+desktop/src-tauri/src/backend.rs      spawns airnote-backend, polls /v1/health, find_binary()
+desktop/src-tauri/src/backend_guard.rs  reaps leaked airnote-backend processes
 desktop/src-tauri/src/dg_stream.rs    pre-warm Deepgram WS (PREWARM_MAX_AGE = 45s)
 desktop/src-tauri/src/main.rs         all 39 Tauri commands, app lifecycle
 ```
@@ -127,7 +127,7 @@ desktop/src-tauri/src/main.rs         all 39 Tauri commands, app lifecycle
 
 1. **`just check` must pass before committing** — fmt-check + clippy + tests + typecheck
 2. **HID delays are sacred** — `paster/src/lib.rs` has 6ms keydown→keyup + 6ms post-keyup. Removing these causes word-breaking at streaming speeds. Do not touch without understanding the hardware queue saturation root cause.
-3. **Binary name is `said-backend` everywhere** — `backend.rs`, `backend_guard.rs`, `tauri.conf.json`, `build-dmg.sh`. Never revert to `polish-backend`.
+3. **Shipped sidecar binary name is `airnote-backend` everywhere** — `backend.rs`, `backend_guard.rs`, `tauri.conf.json`, `build-dmg.sh`, and release workflows must agree. The Rust package can remain `said-backend`; the packaged/runtime binary must not ship as `said-backend`.
 4. **`control-plane` never re-enters the workspace** — postgres vs rusqlite linker conflict is unfixable without vendoring. Build it standalone.
 5. **STT transcript is NOT ground truth** — the classifier explicitly handles STT+polish agreement on the wrong word. See `classifier.rs:20`. Never assume the transcript is correct.
 6. **Lexicon cache needs explicit invalidation** — any route that writes to `corrections` or `stt_replacements` must call `invalidate_lexicon_cache()`. The 60s TTL is not sufficient on its own.
@@ -153,7 +153,7 @@ See `.env.example` for the full list of optional configuration.
 | Version | Goal | Status |
 |---|---|---|
 | v1.0 | Voice Polish — basic dictation + polish | Done |
-| v2.0 | Said rebrand, Hinglish-native, streaming word fix, learning pipeline | Done |
+| v2.0 | AirNote rebrand, Hinglish-native, streaming word fix, learning pipeline | Done |
 | v2.x | Performance fixes (faster STT fallback, embed circuit breaker, pool tuning) | Planned |
 | v3.0 | Windows port (unsigned beta), Sentry telemetry, stable/beta channels, PRIVACY/EULA | In progress |
 | v3.x | Windows Authenticode signing, macOS notarization, in-app Settings toggles, manifests-branch beta discovery, UIAutomation tree-reads | Planned |

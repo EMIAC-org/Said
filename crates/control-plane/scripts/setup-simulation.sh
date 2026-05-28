@@ -7,7 +7,7 @@
 set -e
 API="http://localhost:3100"
 
-echo "=== Said Meeting Simulator Setup ==="
+echo "=== AirNote Meeting Simulator Setup ==="
 echo ""
 
 login() {

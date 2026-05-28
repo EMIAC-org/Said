@@ -494,7 +494,7 @@ mod windows_tests {
     fn clipboard_round_trip_preserves_unicode() {
         // Use unusual content so we don't false-pass on whatever the runner
         // happened to have on the clipboard before the test.
-        let payload = "Said test ✓ नमस्ते 😀";
+        let payload = "AirNote test ✓ नमस्ते 😀";
 
         open_clipboard_with_retry().expect("open clipboard for write");
         write_clipboard_unicode(payload).expect("write clipboard");

@@ -50,7 +50,7 @@ fn current_record_hotkey() -> RecordHotkey {
 //
 // There is no Windows equivalent to macOS TCC Input Monitoring — low-level
 // keyboard hooks need no special grant for non-elevated targets, which is
-// what Said records. Always granted.
+// what AirNote records. Always granted.
 pub fn is_input_monitoring_granted() -> bool {
     true
 }

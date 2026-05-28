@@ -1,4 +1,4 @@
-# Said — task runner.
+# AirNote — task runner.
 # Install: `brew install just` (macOS) or `cargo install just`.
 # Run `just` (no args) to see the list.
 
@@ -8,7 +8,7 @@ default:
 
 # ── Day-to-day ───────────────────────────────────────────────────────────────
 
-# Build the polish-backend, sync it to the Tauri sidecar slot, then launch
+# Build the airnote-backend, sync it to the Tauri sidecar slot, then launch
 # the desktop app in dev mode (Vite + Tauri).
 dev:
     ./dev.sh
@@ -18,7 +18,7 @@ dev:
 dev-admin:
     ./dev-admin.sh
 
-# Local said-backend daemon only (no Tauri). Rebuilds before each start.
+# Local airnote-backend daemon only (no Tauri). Rebuilds before each start.
 dev-backend:
     ./dev-backend.sh
 
@@ -58,7 +58,7 @@ check: fmt-check clippy test typecheck
 bump VERSION:
     ./scripts/bump-version.sh {{VERSION}}
 
-# Build a signed Said.app + DMG for the given target.
+# Build a signed AirNote.app + DMG for the given target.
 # Default target is the host arch on Apple Silicon.
 #   just dmg                       # aarch64
 #   just dmg x86_64-apple-darwin   # Intel
