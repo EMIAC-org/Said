@@ -39,7 +39,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const FINALIZE_WITH_TEXT_RESULT_TIMEOUT: Duration = Duration::from_millis(1500);
 const FINALIZE_NO_RESULT_TIMEOUT: Duration = Duration::from_millis(900);
-const FINALIZE_QUIET_TIMEOUT: Duration = Duration::from_millis(250);
+const FINALIZE_QUIET_TIMEOUT: Duration = Duration::from_millis(300);
 const RESPONSE_DRAIN_POLL_TIMEOUT: Duration = Duration::from_millis(1);
 const LIVE_STT_HEALTH_TIMEOUT: Duration = Duration::from_millis(700);
 const PCM_SIGNAL_THRESHOLD: i16 = 500;
@@ -546,8 +546,12 @@ impl DeepgramSession {
                         saw_any_after_finalize = true;
                     }
                     if outcome.from_finalize {
+                        // Deepgram can emit more than one final result around
+                        // release, especially after a user pause split the
+                        // recording into utterances. Treat `from_finalize` as
+                        // a signal that finalization started, not as permission
+                        // to stop reading immediately.
                         saw_finalize_result = true;
-                        break;
                     }
                 }
                 Ok(None) => {
@@ -1204,8 +1208,9 @@ fn plain_for_embed(parts: &[String]) -> String {
 mod tests {
     use super::{
         AUDIO_BRIDGE_BUFFER_CHUNKS, ActiveRecording, DeepgramSession, FINALIZE_NO_RESULT_TIMEOUT,
-        FINALIZE_WITH_TEXT_RESULT_TIMEOUT, LIVE_STT_HEALTH_TIMEOUT, SessionState,
-        WARM_PRIME_SILENCE_MS, extract_result_chunk, pcm_has_signal, warm_prime_silence_pcm,
+        FINALIZE_QUIET_TIMEOUT, FINALIZE_WITH_TEXT_RESULT_TIMEOUT, LIVE_STT_HEALTH_TIMEOUT,
+        SessionState, WARM_PRIME_SILENCE_MS, extract_result_chunk, pcm_has_signal,
+        warm_prime_silence_pcm,
     };
     use said_core::deepgram::{BiasPackage, ReplacementRule, build_ws_url};
     use said_recorder::SAMPLE_RATE;
@@ -1305,6 +1310,7 @@ mod tests {
     fn finalize_timeouts_stay_inside_fast_path_budget() {
         assert_eq!(LIVE_STT_HEALTH_TIMEOUT, Duration::from_millis(700));
         assert_eq!(FINALIZE_NO_RESULT_TIMEOUT, Duration::from_millis(900));
+        assert_eq!(FINALIZE_QUIET_TIMEOUT, Duration::from_millis(300));
         assert_eq!(
             FINALIZE_WITH_TEXT_RESULT_TIMEOUT,
             Duration::from_millis(1500)

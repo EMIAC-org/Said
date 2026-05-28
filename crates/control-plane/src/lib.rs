@@ -21,7 +21,7 @@ use axum::{
     extract::Path,
     http::{Method, StatusCode, Uri, header},
     response::{Html, IntoResponse, Redirect},
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
 };
 use tower_http::cors::{Any, CorsLayer};
 
@@ -55,6 +55,7 @@ pub fn build_router(state: AppState) -> Router {
             Method::GET,
             Method::POST,
             Method::PUT,
+            Method::PATCH,
             Method::DELETE,
             Method::OPTIONS,
         ])
@@ -63,13 +64,24 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         // Previews (standalone HTML, outside /admin SPA)
         .route("/preview/floors", get(preview_floors))
+        .route("/report-bug", get(report_bug_page))
         // Public
         .route("/v1/health", get(routes::health::handler))
         .route("/v1/auth/signup", post(routes::auth::signup))
         .route("/v1/auth/login", post(routes::auth::login))
+        .route("/v1/bug-reports/public", post(routes::bugs::submit_public))
         // Authenticated
         .route("/v1/auth/logout", post(routes::auth::logout))
         .route("/v1/auth/me", get(routes::auth::me))
+        .route(
+            "/v1/bug-reports/session",
+            post(routes::bugs::create_session),
+        )
+        .route("/v1/bug-reports", get(routes::bugs::list))
+        .route(
+            "/v1/bug-reports/:id/status",
+            patch(routes::bugs::update_status),
+        )
         // Enterprise — Lark OAuth
         .route("/v1/auth/lark/start", get(routes::lark_auth::start))
         .route("/v1/auth/lark/callback", get(routes::lark_auth::callback))
@@ -145,6 +157,7 @@ const ADMIN_CSS: &str = include_str!("../admin-ui/dist/assets/app.css");
 const ADMIN_JS: &str = include_str!("../admin-ui/dist/assets/app.js");
 const SIMULATOR_HTML: &str = include_str!("../admin/simulator.html");
 const PREVIEW_FLOORS: &str = include_str!("../admin-ui/public/preview-floors.html");
+const REPORT_BUG_HTML: &str = include_str!("../public/report-bug.html");
 
 async fn admin_index() -> Html<&'static str> {
     Html(ADMIN_HTML)
@@ -184,6 +197,10 @@ async fn admin_simulator() -> Html<&'static str> {
 
 async fn preview_floors() -> Html<&'static str> {
     Html(PREVIEW_FLOORS)
+}
+
+async fn report_bug_page() -> Html<&'static str> {
+    Html(REPORT_BUG_HTML)
 }
 
 async fn not_found_or_admin_typo(uri: Uri) -> axum::response::Response {

@@ -339,6 +339,29 @@ pub fn replace_typed_suffix(typed_text: &str, replacement: &str) -> Result<(), S
     paste(replacement)
 }
 
+pub fn reconcile_typed_text(typed_text: &str, replacement: &str) -> Result<bool, String> {
+    if typed_text == replacement {
+        return Ok(false);
+    }
+    replace_typed_suffix(typed_text, replacement)?;
+    Ok(true)
+}
+
+pub fn reconcile_current_recording(
+    _initial_text: Option<&str>,
+    typed_text: &str,
+    replacement: &str,
+) -> Result<bool, String> {
+    reconcile_typed_text(typed_text, replacement)
+}
+
+pub fn replace_focused_text_exact(
+    _existing_text: &str,
+    _replacement: &str,
+) -> Result<bool, String> {
+    Ok(false)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 //
 // Real-host smoke tests that exercise the Win32 clipboard plumbing end-to-end.

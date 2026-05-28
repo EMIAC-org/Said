@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { ChevronLeft, ChevronRight, CornerDownLeft, ListChecks, RotateCcw, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
 
@@ -93,6 +94,7 @@ type BarState =
   | { kind: "queued"; term: string; remaining: number }
   | { kind: "reviewing"; candidates: ReviewCandidate[]; selected: Set<number>; recordingId: string }
   | { kind: "placement"; message: string }
+  | { kind: "update_ready"; version: string; message: string }
   | { kind: "retraining" }
   | { kind: "retrain_done"; durationS: number };
 
@@ -236,6 +238,7 @@ export default function StatusBar() {
     || bar.kind === "reviewing"
     || bar.kind === "error"
     || bar.kind === "learned"
+    || bar.kind === "update_ready"
     || bar.kind === "placement";
   const isFullBleedCard = bar.kind === "reviewing" && reviewExpanded;
 
@@ -253,6 +256,7 @@ export default function StatusBar() {
       case "queued": return `"${bar.term}" — ${bar.remaining === 1 ? "1 more edit to learn" : `${bar.remaining} more edits to learn`}`;
       case "wrong_fixed": return `Got it — won’t type "${bar.wrongReplacement}" for "${bar.term}"`;
       case "placement": return bar.message;
+      case "update_ready": return `Update ${bar.version} ready`;
       case "retraining": return "Improving model...";
       case "retrain_done": return bar.durationS > 0 ? `Model updated (${bar.durationS.toFixed(1)}s)` : "Model updated";
       default: return "";
@@ -777,6 +781,21 @@ export default function StatusBar() {
       subs.push(fn);
     }).catch(() => {});
 
+    listen<{ version: string; message?: string }>("auto-update-ready", (e) => {
+      if (!notifEnabled("updates")) return;
+      console.info("[status-bar] auto-update-ready", e.payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      win.show().catch(() => {});
+      playSound("shimmer");
+      setBar({
+        kind: "update_ready",
+        version: e.payload.version,
+        message: e.payload.message || `Update ${e.payload.version} downloaded. Restart AirNote to use it.`,
+      });
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch(() => {});
+
     return () => {
       console.info("[status-bar] unmount subscriptions", subs.length);
       subs.forEach((fn) => fn());
@@ -1074,6 +1093,35 @@ export default function StatusBar() {
         >
           <span className="sb-status-dot sb-status-dot--ok" />
           <span className="sb-survey-label">{pillLabel}</span>
+        </div>
+      </CardHost>
+    );
+  }
+
+  if (bar.kind === "update_ready") {
+    return (
+      <CardHost>
+        <div
+          className="sb-survey sb-survey--panel sb-survey--interactive"
+          style={{ width: 300, height: 122 }}
+          aria-label="AirNote update ready"
+        >
+          <div className="sb-survey-kicker-row">
+            <span className="sb-status-dot sb-status-dot--ok" />
+            <span className="sb-survey-kicker">Update downloaded</span>
+          </div>
+          <div className="sb-survey-body">
+            {bar.message}
+          </div>
+          <div className="sb-survey-footer">
+            <button type="button" className="sb-survey-skip" onClick={() => setBar({ kind: "idle" })}>
+              Later
+            </button>
+            <button type="button" className="sb-survey-next" onClick={() => void relaunch()}>
+              Restart
+              <RotateCcw size={14} strokeWidth={2} aria-hidden="true" />
+            </button>
+          </div>
         </div>
       </CardHost>
     );

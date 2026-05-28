@@ -43,7 +43,7 @@ pub fn mode_label() -> &'static str {
     MODES[0].label
 }
 
-/// Returns the Groq Llama 4 Scout model — the default and only supported model.
+/// Returns the Groq Llama 4 Scout model — the default smart model.
 pub fn resolve_model(_key_or_model: &str) -> &'static str {
     "meta-llama/llama-4-scout-17b-16e-instruct"
 }

@@ -404,12 +404,22 @@ pub fn build_tray_system_prompt(tone_preset: &str) -> String {
         return build_tray_format_system_prompt(&[], &[]);
     }
 
-    let lang_rule = "ABSOLUTE RULE — OUTPUT LANGUAGE: English only.\n\
-                     Every word must be in English. If the text contains Hindi or any \
-                     other language, translate it to natural English. \
-                     Do NOT output Devanagari, Roman Hindi, or any non-English script.";
+    let lang_rule = if tone_preset == "hinglish" {
+        "ABSOLUTE RULE — OUTPUT LANGUAGE: Roman Hinglish.\n\
+         Use only Latin letters, digits, and standard punctuation. Translate any \
+         Devanagari or other non-Latin script into natural Roman Hinglish."
+    } else {
+        "ABSOLUTE RULE — OUTPUT LANGUAGE: English only.\n\
+         Every word must be in English. If the text contains Hindi or any \
+         other language, translate it to natural English. \
+         Do NOT output Devanagari, Roman Hindi, or any non-English script."
+    };
 
-    let tone = tone_description(tone_preset);
+    let tone = if tone_preset == "hinglish" {
+        "Tone: natural Roman Hinglish. Keep Hindi/Hinglish flavor, but clean grammar and punctuation.".to_string()
+    } else {
+        tone_description(tone_preset)
+    };
 
     format!(
         "You are a text polish tool. Your ONLY job is to output the polished text — nothing else. \
@@ -423,6 +433,24 @@ pub fn build_tray_system_prompt(tone_preset: &str) -> String {
          The output_language rule above is ABSOLUTE.\n\
          Remove disfluencies (um, uh, like, basically, you know).\n\
          Honour the tone above."
+    )
+}
+
+pub fn build_tray_user_message(transcript: &str, tone_preset: &str) -> String {
+    let language_reminder = if tone_preset == "hinglish" {
+        "Return natural Roman Hinglish only. Do not output Devanagari."
+    } else {
+        "Return natural English only. Translate Hindi, Hinglish, or any other language into English."
+    };
+
+    format!(
+        "Rewrite the selected text below as a polished message.\n\
+         {language_reminder}\n\
+         Preserve the factual meaning, names, numbers, and intent. Do not answer questions in the text.\n\
+         Output only the rewritten text.\n\n\
+         === BEGIN SELECTED TEXT ===\n\
+         {transcript}\n\
+         === END SELECTED TEXT ==="
     )
 }
 
@@ -979,6 +1007,20 @@ mod tests {
             msg.contains("not responding to it"),
             "formatter must not execute commands in selected text"
         );
+    }
+
+    #[test]
+    fn tray_professional_user_message_forces_english_not_hinglish() {
+        let msg = build_tray_user_message("hello bhai kaise ho", "professional");
+        assert!(msg.contains("Return natural English only"));
+        assert!(!msg.contains("Return natural Roman Hinglish only"));
+    }
+
+    #[test]
+    fn tray_hinglish_user_message_preserves_hinglish_mode() {
+        let msg = build_tray_user_message("hello bhai kaise ho", "hinglish");
+        assert!(msg.contains("Return natural Roman Hinglish only"));
+        assert!(!msg.contains("Return natural English only"));
     }
 
     #[test]

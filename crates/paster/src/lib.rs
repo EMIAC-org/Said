@@ -21,6 +21,8 @@ mod imp {
     const KEY_A: u16 = 0; // kVK_ANSI_A
     const KEY_C: u16 = 8; // kVK_ANSI_C
     const KEY_DELETE: u16 = 51; // kVK_Delete (backspace)
+    const KEY_LEFT: u16 = 123; // kVK_LeftArrow
+    const KEY_RIGHT: u16 = 124; // kVK_RightArrow
     const KEY_CMD: u16 = 55;
 
     const K_CG_HID_EVENT_TAP: u32 = 0;
@@ -1265,6 +1267,58 @@ mod imp {
         }
     }
 
+    fn post_key_repeated(keycode: u16, count: usize, delay_ms: u64) -> Result<(), String> {
+        if count == 0 {
+            return Ok(());
+        }
+        unsafe {
+            let source = ffi::CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_COMBINED_SESSION);
+            if source.is_null() {
+                return Err("CGEventSourceCreate failed".into());
+            }
+            for _ in 0..count {
+                post_key(source, keycode, true, 0);
+                thread::sleep(Duration::from_millis(delay_ms));
+                post_key(source, keycode, false, 0);
+                thread::sleep(Duration::from_millis(delay_ms));
+            }
+            ffi::CFRelease(source);
+        }
+        Ok(())
+    }
+
+    fn post_unicode_chunk(source: *mut std::ffi::c_void, text: &str) -> Result<(), String> {
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        let len = utf16.len() as u64;
+        let ptr = utf16.as_ptr();
+
+        unsafe {
+            let dn = ffi::CGEventCreateKeyboardEvent(source, 0, true);
+            if dn.is_null() {
+                return Err("CGEventCreateKeyboardEvent keydown failed".into());
+            }
+            ffi::CGEventKeyboardSetUnicodeString(dn, len, ptr);
+            ffi::CGEventPost(K_CG_HID_EVENT_TAP, dn);
+            ffi::CFRelease(dn);
+
+            // Give the HID stack time to dispatch keydown before keyup.
+            thread::sleep(Duration::from_millis(6));
+
+            let up = ffi::CGEventCreateKeyboardEvent(source, 0, false);
+            if up.is_null() {
+                return Err("CGEventCreateKeyboardEvent keyup failed".into());
+            }
+            ffi::CGEventKeyboardSetUnicodeString(up, len, ptr);
+            ffi::CGEventPost(K_CG_HID_EVENT_TAP, up);
+            ffi::CFRelease(up);
+
+            // Pause after keyup so subsequent chunks cannot interleave.
+            thread::sleep(Duration::from_millis(12));
+        }
+
+        Ok(())
+    }
+
     fn pbcopy(text: &str) {
         if let Ok(mut child) = Command::new("pbcopy")
             .stdin(std::process::Stdio::piped())
@@ -1303,36 +1357,36 @@ mod imp {
                 return Ok(false);
             }
             let source = ffi::CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_COMBINED_SESSION);
-            // Encode the whole token as UTF-16 and send as a single synthetic key event.
-            // CGEventKeyboardSetUnicodeString handles multi-character strings natively.
-            let utf16: Vec<u16> = text.encode_utf16().collect();
-            let len = utf16.len() as u64;
-            let ptr = utf16.as_ptr();
+            if source.is_null() {
+                return Err("CGEventSourceCreate failed".into());
+            }
 
-            let dn = ffi::CGEventCreateKeyboardEvent(source, 0, true);
-            ffi::CGEventKeyboardSetUnicodeString(dn, len, ptr);
-            ffi::CGEventPost(K_CG_HID_EVENT_TAP, dn);
-            ffi::CFRelease(dn);
-
-            // Give the HID stack time to dispatch keydown before keyup.
-            // Without this, rapid token delivery floods the queue and the
-            // receiving app drops/merges characters (e.g. "bhi kaam" → "bhiam").
-            thread::sleep(Duration::from_millis(6));
-
-            let up = ffi::CGEventCreateKeyboardEvent(source, 0, false);
-            ffi::CGEventKeyboardSetUnicodeString(up, len, ptr);
-            ffi::CGEventPost(K_CG_HID_EVENT_TAP, up);
-            ffi::CFRelease(up);
-
-            // Pause after keyup so the next token's keydown doesn't arrive
-            // before this event pair is fully processed.  6ms was insufficient
-            // for multi-char tokens at streaming speed — "par bhai" became
-            // "parai bh".  12ms eliminates interleaving on all tested hardware.
-            thread::sleep(Duration::from_millis(12));
+            // CGEventKeyboardSetUnicodeString handles multi-character strings,
+            // but chunking avoids very large final dictation payloads getting
+            // dropped by the focused app while keeping the system clipboard clean.
+            const MAX_CHUNK_CHARS: usize = 96;
+            let mut start = 0;
+            let mut count = 0;
+            let mut result = Ok(());
+            for (idx, _) in text.char_indices() {
+                if count == MAX_CHUNK_CHARS {
+                    result = post_unicode_chunk(source, &text[start..idx]);
+                    if result.is_err() {
+                        break;
+                    }
+                    start = idx;
+                    count = 0;
+                }
+                count += 1;
+            }
+            if result.is_ok() && start < text.len() {
+                result = post_unicode_chunk(source, &text[start..]);
+            }
 
             if !source.is_null() {
                 ffi::CFRelease(source);
             }
+            result?;
         }
         Ok(true)
     }
@@ -1381,7 +1435,303 @@ mod imp {
             }
         }
         thread::sleep(Duration::from_millis(40));
-        paste(replacement)
+        match type_text(replacement) {
+            Ok(true) => Ok(()),
+            Ok(false) => paste(replacement),
+            Err(e) => {
+                tracing::warn!(
+                    "[paste] direct replacement typing failed ({e}) — falling back to clipboard paste"
+                );
+                paste(replacement)
+            }
+        }
+    }
+
+    fn diff_single_span(old: &str, new: &str) -> (usize, usize, String, usize) {
+        let old_chars: Vec<char> = old.chars().collect();
+        let new_chars: Vec<char> = new.chars().collect();
+
+        let mut prefix_len = 0;
+        while prefix_len < old_chars.len()
+            && prefix_len < new_chars.len()
+            && old_chars[prefix_len] == new_chars[prefix_len]
+        {
+            prefix_len += 1;
+        }
+
+        let mut suffix_len = 0;
+        while suffix_len < old_chars.len().saturating_sub(prefix_len)
+            && suffix_len < new_chars.len().saturating_sub(prefix_len)
+            && old_chars[old_chars.len() - 1 - suffix_len]
+                == new_chars[new_chars.len() - 1 - suffix_len]
+        {
+            suffix_len += 1;
+        }
+
+        let old_mid_len = old_chars.len().saturating_sub(prefix_len + suffix_len);
+        let new_mid: String = new_chars[prefix_len..new_chars.len().saturating_sub(suffix_len)]
+            .iter()
+            .collect();
+
+        (prefix_len, old_mid_len, new_mid, suffix_len)
+    }
+
+    fn utf16_len_for_chars(text: &str, char_count: usize) -> i64 {
+        text.chars()
+            .take(char_count)
+            .map(char::len_utf16)
+            .sum::<usize>() as i64
+    }
+
+    fn find_current_recording_span(
+        initial_text: Option<&str>,
+        current_text: &str,
+        typed_text: &str,
+    ) -> Option<usize> {
+        if typed_text.is_empty() {
+            return None;
+        }
+
+        if let Some(initial) = initial_text {
+            let initial_chars: Vec<char> = initial.chars().collect();
+            let current_chars: Vec<char> = current_text.chars().collect();
+            let typed_chars: Vec<char> = typed_text.chars().collect();
+            if current_chars.len() == initial_chars.len() + typed_chars.len() {
+                for split in 0..=initial_chars.len() {
+                    if current_chars[..split] == initial_chars[..split]
+                        && current_chars[split..split + typed_chars.len()] == typed_chars[..]
+                        && current_chars[split + typed_chars.len()..] == initial_chars[split..]
+                    {
+                        return Some(split);
+                    }
+                }
+            }
+        }
+
+        let mut matches = Vec::new();
+        let mut search_from = 0;
+        while let Some(relative) = current_text[search_from..].find(typed_text) {
+            let byte_idx = search_from + relative;
+            matches.push(current_text[..byte_idx].chars().count());
+            search_from = byte_idx + typed_text.len();
+        }
+        if matches.len() == 1 {
+            return matches.into_iter().next();
+        }
+
+        if current_text.ends_with(typed_text) {
+            return Some(
+                current_text[..current_text.len() - typed_text.len()]
+                    .chars()
+                    .count(),
+            );
+        }
+
+        None
+    }
+
+    unsafe fn focused_ui_element() -> Option<*mut c_void> {
+        let sys = unsafe { ffi::AXUIElementCreateSystemWide() };
+        if sys.is_null() {
+            return None;
+        }
+        let focused_app = unsafe { ax_attr(sys as *const _, "AXFocusedApplication") };
+        unsafe { ffi::CFRelease(sys) };
+
+        let app_elem = focused_app?;
+        let focused_elem = unsafe { ax_attr(app_elem as *const _, "AXFocusedUIElement") };
+        unsafe { ffi::CFRelease(app_elem) };
+        focused_elem
+    }
+
+    unsafe fn set_selected_text_range(
+        element: *const c_void,
+        location: i64,
+        length: i64,
+    ) -> Result<(), String> {
+        let range = CFRange { location, length };
+        let range_val = unsafe {
+            ffi::AXValueCreate(
+                K_AX_VALUE_CF_RANGE_TYPE,
+                &range as *const _ as *const c_void,
+            )
+        };
+        if range_val.is_null() {
+            return Err("AXValueCreate for selected range failed".into());
+        }
+        let attr = unsafe { cf_str("AXSelectedTextRange") };
+        if attr.is_null() {
+            unsafe { ffi::CFRelease(range_val) };
+            return Err("CFStringCreate for AXSelectedTextRange failed".into());
+        }
+        let err = unsafe { ffi::AXUIElementSetAttributeValue(element, attr, range_val) };
+        unsafe {
+            ffi::CFRelease(attr);
+            ffi::CFRelease(range_val);
+        }
+        if err != 0 {
+            return Err(format!("AXSelectedTextRange set failed err={err}"));
+        }
+        Ok(())
+    }
+
+    fn type_or_paste_at_cursor(text: &str) -> Result<(), String> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        match type_text(text) {
+            Ok(true) => Ok(()),
+            Ok(false) => paste(text),
+            Err(e) => {
+                tracing::warn!(
+                    "[paste] direct reconciliation typing failed ({e}) — falling back to clipboard paste"
+                );
+                paste(text)
+            }
+        }
+    }
+
+    fn try_reconcile_by_ax_range(
+        initial_text: Option<&str>,
+        typed_text: &str,
+        replacement: &str,
+    ) -> Result<Option<bool>, String> {
+        if !unsafe { ffi::AXIsProcessTrusted() } {
+            return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable Said".into());
+        }
+
+        let elem = match unsafe { focused_ui_element() } {
+            Some(elem) => elem,
+            None => return Ok(None),
+        };
+
+        let current = unsafe { ax_attr(elem as *const _, "AXValue") }.and_then(|value| {
+            let text = unsafe { cfstring_to_rust(value as *const _) };
+            unsafe { ffi::CFRelease(value) };
+            text
+        });
+        let Some(current_text) = current else {
+            unsafe { ffi::CFRelease(elem) };
+            return Ok(None);
+        };
+
+        let Some(span_start_chars) =
+            find_current_recording_span(initial_text, &current_text, typed_text)
+        else {
+            unsafe { ffi::CFRelease(elem) };
+            return Err("current recording span was not found in focused field".into());
+        };
+
+        let (prefix_len, old_mid_len, new_mid, suffix_len) =
+            diff_single_span(typed_text, replacement);
+        let selection_start_chars = span_start_chars + prefix_len;
+        let selection_location = utf16_len_for_chars(&current_text, selection_start_chars);
+        let old_mid: String = typed_text
+            .chars()
+            .skip(prefix_len)
+            .take(old_mid_len)
+            .collect();
+        let selection_length = old_mid.encode_utf16().count() as i64;
+
+        tracing::info!(
+            "[paste] AX range reconcile — span_start_chars={} prefix_chars={} old_mid_chars={} new_mid_chars={} suffix_chars={}",
+            span_start_chars,
+            prefix_len,
+            old_mid_len,
+            new_mid.chars().count(),
+            suffix_len,
+        );
+
+        unsafe { set_selected_text_range(elem as *const _, selection_location, selection_length)? };
+        unsafe { ffi::CFRelease(elem) };
+
+        if new_mid.is_empty() {
+            post_key_repeated(KEY_DELETE, 1, 2)?;
+        } else {
+            type_or_paste_at_cursor(&new_mid)?;
+        }
+        post_key_repeated(KEY_RIGHT, suffix_len, 1)?;
+        Ok(Some(true))
+    }
+
+    /// Reconcile the text typed during the current recording by first locating
+    /// that exact span in the focused field. If AX text is not readable, falls
+    /// back to caret-based reconciliation.
+    pub fn reconcile_current_recording(
+        initial_text: Option<&str>,
+        typed_text: &str,
+        replacement: &str,
+    ) -> Result<bool, String> {
+        if typed_text == replacement {
+            return Ok(false);
+        }
+        match try_reconcile_by_ax_range(initial_text, typed_text, replacement) {
+            Ok(Some(changed)) => Ok(changed),
+            Ok(None) => {
+                tracing::warn!(
+                    "[paste] AX range reconcile unavailable — falling back to caret-based reconciliation"
+                );
+                reconcile_typed_text(typed_text, replacement)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Safely replace an existing focused-field span only when the exact text
+    /// can be located through AX. This is used by repair/refine actions where
+    /// we must not blindly type into the user's current app.
+    pub fn replace_focused_text_exact(
+        existing_text: &str,
+        replacement: &str,
+    ) -> Result<bool, String> {
+        if existing_text == replacement {
+            return Ok(false);
+        }
+        match try_reconcile_by_ax_range(None, existing_text, replacement) {
+            Ok(Some(changed)) => Ok(changed),
+            Ok(None) => Ok(false),
+            Err(e) => {
+                tracing::warn!("[paste] exact focused-text replacement skipped: {e}");
+                Ok(false)
+            }
+        }
+    }
+
+    /// Reconcile the text typed during the current recording with the final
+    /// backend output using the smallest single-span edit we can derive from
+    /// common prefix/suffix. The caret is expected to be at the end of the text
+    /// Said just streamed.
+    pub fn reconcile_typed_text(typed_text: &str, replacement: &str) -> Result<bool, String> {
+        if typed_text == replacement {
+            return Ok(false);
+        }
+        if typed_text.is_empty() {
+            paste(replacement)?;
+            return Ok(true);
+        }
+
+        let (prefix_len, old_mid_len, new_mid, suffix_len) =
+            diff_single_span(typed_text, replacement);
+
+        let ax_ok = unsafe { ffi::AXIsProcessTrusted() };
+        tracing::info!(
+            "[paste] reconciling current typed text — prefix_chars={} old_mid_chars={} new_mid_chars={} suffix_chars={}",
+            prefix_len,
+            old_mid_len,
+            new_mid.chars().count(),
+            suffix_len,
+        );
+        if !ax_ok {
+            return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable Said".into());
+        }
+
+        post_key_repeated(KEY_LEFT, suffix_len, 1)?;
+        post_key_repeated(KEY_DELETE, old_mid_len, 2)?;
+
+        type_or_paste_at_cursor(&new_mid)?;
+        post_key_repeated(KEY_RIGHT, suffix_len, 1)?;
+
+        Ok(true)
     }
 
     fn paste_inner(text: &str, select_all_first: bool) -> Result<(), String> {
@@ -1440,6 +1790,45 @@ mod imp {
         pbcopy(&original);
         tracing::debug!("[paste] done — clipboard restored");
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{diff_single_span, find_current_recording_span};
+
+        #[test]
+        fn diff_single_span_keeps_common_prefix_and_suffix() {
+            let (prefix, old_mid_len, new_mid, suffix) =
+                diff_single_span("monthly five dollar dena padega", "monthly $5 dena padega");
+            assert_eq!(prefix, "monthly ".chars().count());
+            assert_eq!(old_mid_len, "five dollar".chars().count());
+            assert_eq!(new_mid, "$5");
+            assert_eq!(suffix, " dena padega".chars().count());
+        }
+
+        #[test]
+        fn current_recording_span_uses_initial_field_context() {
+            let initial = "Hello  world";
+            let typed = "monthly five dollar dena padega";
+            let current = "Hello monthly five dollar dena padega world";
+            assert_eq!(
+                find_current_recording_span(Some(initial), current, typed),
+                Some("Hello ".chars().count())
+            );
+        }
+
+        #[test]
+        fn current_recording_span_requires_unique_fallback_match() {
+            let typed = "same";
+            assert_eq!(
+                find_current_recording_span(None, "before same after", typed),
+                Some("before ".chars().count())
+            );
+            assert_eq!(
+                find_current_recording_span(None, "same before same", typed),
+                Some("same before ".chars().count())
+            );
+        }
     }
 }
 

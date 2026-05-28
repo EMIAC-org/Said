@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use tauri::{
     Emitter, Manager, State,
-    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
 use tokio_util::sync::CancellationToken;
@@ -551,11 +551,10 @@ impl LiveTypingGuard {
             self.disabled = true;
             return LiveTypingDecision::ResetAndDisable;
         }
-        // Buffer-then-paste mode: tokens go to UI preview only.
-        // The fully post-processed text (number format, email recovery,
-        // script sanitization) is pasted once from the `done` event.
-        // This avoids the flicker of typing → deleting → re-pasting.
-        LiveTypingDecision::PreviewOnly
+        if self.disabled {
+            return LiveTypingDecision::PreviewOnly;
+        }
+        LiveTypingDecision::TypeToken
     }
 }
 
@@ -913,8 +912,8 @@ fn tray_title(state: &str) -> &'static str {
 fn build_tray_menu(
     app: &tauri::AppHandle,
     snap: &AppSnapshot,
-    custom_prompt: Option<&str>,
-    output_language: &str,
+    _custom_prompt: Option<&str>,
+    _output_language: &str,
 ) -> Result<Menu<tauri::Wry>, tauri::Error> {
     // ── 1. Toggle recording (state-aware label + enabled) ──────────────
     let toggle_label = match snap.state.as_str() {
@@ -930,63 +929,15 @@ fn build_tray_menu(
         None::<&str>,
     )?;
 
-    // ── 2. Output language submenu ─────────────────────────────────────
-    let mk_lang =
-        |id: &str, label: &str, active: bool| -> Result<MenuItem<tauri::Wry>, tauri::Error> {
-            let prefix = if active { "✓  " } else { "    " };
-            MenuItem::with_id(app, id, format!("{prefix}{label}"), true, None::<&str>)
-        };
-    let lang_hinglish = mk_lang(
-        "tray_lang_hinglish",
-        "Hinglish → Hinglish",
-        output_language == "hinglish",
-    )?;
-    let lang_english = mk_lang(
-        "tray_lang_english",
-        "Hindi → Polished English",
-        output_language == "english",
-    )?;
-    let lang_hindi = mk_lang(
-        "tray_lang_hindi",
-        "Hindi → Hindi (Devanagari)",
-        output_language == "hindi",
-    )?;
-    let lang_submenu = Submenu::with_items(
-        app,
-        "Output Language",
-        true,
-        &[
-            &lang_hinglish as &dyn tauri::menu::IsMenuItem<tauri::Wry>,
-            &lang_english,
-            &lang_hindi,
-        ],
-    )?;
-
-    // ── 4. "Polish my message" submenu ─────────────────────────────────
-    // Shortcut hints: macOS shows ⌥1..5 because the Option+digit hotkeys are
-    // wired by said-hotkey on macOS. Windows currently doesn't have these
-    // hotkeys wired (impl_windows.rs's register_shortcut_callback is a
-    // no-op), so we drop the hint to avoid promising a shortcut that does
-    // nothing. The menu items themselves work on every platform — they just
-    // need a click rather than a key chord.
+    // ── 2. Focused polish actions ──────────────────────────────────────
+    // Keep the visible tray menu intentionally small for senior/user-facing
+    // builds. Existing Option+digit handlers remain wired for power users.
     #[cfg(target_os = "macos")]
-    let (h_format, h_prof, h_casual, h_concise, h_hinglish) = (
-        "Format Selected Text  ⌥1",
-        "Professional English  ⌥2",
-        "Casual  ⌥3",
-        "Concise  ⌥4",
-        "Hinglish  ⌥5",
-    );
+    let (h_prof, h_hinglish) = ("Professional English  ⌥2", "Hinglish  ⌥5");
     #[cfg(not(target_os = "macos"))]
-    let (h_format, h_prof, h_casual, h_concise, h_hinglish) = (
-        "Format Selected Text",
-        "Professional English",
-        "Casual",
-        "Concise",
-        "Hinglish",
-    );
+    let (h_prof, h_hinglish) = ("Professional English", "Hinglish");
 
-    let p_format = MenuItem::with_id(app, "tray_polish_format", h_format, true, None::<&str>)?;
+    let p_prof = MenuItem::with_id(app, "tray_polish_professional", h_prof, true, None::<&str>)?;
     let p_repair = MenuItem::with_id(
         app,
         "tray_smart_repair",
@@ -994,44 +945,10 @@ fn build_tray_menu(
         true,
         None::<&str>,
     )?;
-    let p_prof = MenuItem::with_id(app, "tray_polish_professional", h_prof, true, None::<&str>)?;
-    let p_casual = MenuItem::with_id(app, "tray_polish_casual", h_casual, true, None::<&str>)?;
-    let p_concise = MenuItem::with_id(app, "tray_polish_concise", h_concise, true, None::<&str>)?;
     let p_hinglish =
         MenuItem::with_id(app, "tray_polish_hinglish", h_hinglish, true, None::<&str>)?;
-    let p_assertive = MenuItem::with_id(
-        app,
-        "tray_polish_assertive",
-        "Assertive",
-        true,
-        None::<&str>,
-    )?;
-    let p_neutral = MenuItem::with_id(app, "tray_polish_neutral", "Neutral", true, None::<&str>)?;
 
-    let polish_refs: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = {
-        let mut v: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = vec![
-            Box::new(p_format),
-            Box::new(p_prof),
-            Box::new(p_casual),
-            Box::new(p_concise),
-            Box::new(p_hinglish),
-            Box::new(p_repair),
-            Box::new(p_assertive),
-            Box::new(p_neutral),
-        ];
-        // Add "Custom  ⌥5" only when the user has set a custom prompt in Settings
-        if custom_prompt.map(|s| !s.trim().is_empty()).unwrap_or(false) {
-            let p_custom =
-                MenuItem::with_id(app, "tray_polish_custom", "Custom", true, None::<&str>)?;
-            v.push(Box::new(p_custom));
-        }
-        v
-    };
-    let polish_item_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
-        polish_refs.iter().map(|b| b.as_ref()).collect();
-    let polish_submenu = Submenu::with_items(app, "Polish my message", true, &polish_item_refs)?;
-
-    // ── 4. Window actions + quit ────────────────────────────────────────
+    // ── 3. Window actions + quit ────────────────────────────────────────
     let show_item = MenuItem::with_id(app, "show", "Open AirNote", true, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit AirNote", true, None::<&str>)?;
@@ -1039,20 +956,19 @@ fn build_tray_menu(
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
-    let sep4 = PredefinedMenuItem::separator(app)?;
 
     Menu::with_items(
         app,
         &[
             &toggle as &dyn tauri::menu::IsMenuItem<tauri::Wry>,
             &sep1,
-            &lang_submenu,
+            &p_prof,
+            &p_repair,
+            &p_hinglish,
             &sep2,
-            &polish_submenu,
-            &sep3,
             &show_item,
             &settings_item,
-            &sep4,
+            &sep3,
             &quit_item,
         ],
     )
@@ -1397,6 +1313,20 @@ fn tray_toggle_recording(app: &tauri::AppHandle) {
     }
 }
 
+fn insert_text_prefer_direct(label: &str, text: &str) -> Result<(), String> {
+    match paster::type_text(text) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            tracing::warn!("[{label}] direct typing unavailable — falling back to clipboard paste");
+            paster::paste(text)
+        }
+        Err(e) => {
+            tracing::warn!("[{label}] direct typing failed: {e} — falling back to clipboard paste");
+            paster::paste(text)
+        }
+    }
+}
+
 /// Polish the currently selected text using the given tone preset.
 ///
 /// Flow: read selection → POST /v1/text/polish (SSE) with tone_override → paste result.
@@ -1465,7 +1395,9 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
                 );
                 // Emit tokens to the UI for live preview if the window is visible
                 let _ = app_clone.emit("voice-done", &done);
-                // Paste the polished text (replaces selection)
+                // Selected-text transform must reliably replace the active
+                // selection. Direct Unicode typing has no success signal from
+                // macOS, so this explicit command keeps the proven paste path.
                 if let Err(e) = paster::paste(&done.polished) {
                     tracing::warn!("[tray_polish] paste failed: {e}");
                 }
@@ -2795,6 +2727,11 @@ async fn run_voice_polish_sse(
     let live_guard2 = live_guard.clone();
     let typed_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let typed_text2 = typed_text.clone();
+    let initial_field_text = if is_meeting {
+        None
+    } else {
+        paster::read_focused_value_fast()
+    };
 
     tracing::info!(
         "[pipeline] → sending to backend: wav={}KB pre_transcript={}",
@@ -2951,43 +2888,81 @@ async fn run_voice_polish_sse(
     if is_meeting {
         tracing::info!("[main] meeting mode — skipping paste for polished chunk");
     } else if typed_any.load(std::sync::atomic::Ordering::Relaxed) {
+        let typed_snapshot = typed_text
+            .lock()
+            .map(|text| text.clone())
+            .unwrap_or_default();
         if n_failed > 0 {
-            // Some tokens typed, then the stream reset or a token failed. Replace
-            // only the suffix Said typed for this recording; never Cmd+A the field.
+            // Some tokens typed, then the stream reset or a token failed. Reconcile
+            // only the text Said typed for this recording; never Cmd+A the field.
             tracing::warn!(
-                "[main] word-by-word partial: {n_typed} ok, {n_failed} failed — replacing current typed suffix"
+                "[main] word-by-word partial: {n_typed} ok, {n_failed} failed — reconciling current typed text"
             );
             if !done.polished.is_empty() {
-                let typed_snapshot = typed_text
-                    .lock()
-                    .map(|text| text.clone())
-                    .unwrap_or_default();
-                match paster::replace_typed_suffix(&typed_snapshot, &done.polished) {
-                    Ok(_) => {
+                match paster::reconcile_current_recording(
+                    initial_field_text.as_deref(),
+                    &typed_snapshot,
+                    &done.polished,
+                ) {
+                    Ok(changed) => {
+                        if changed {
+                            tracing::info!(
+                                "[main] current typed text reconciled after partial stream"
+                            );
+                        }
                         output_pasted = true;
                     }
                     Err(e) => {
-                        tracing::warn!("[main] safety paste failed: {e}");
+                        tracing::warn!("[main] typed-text reconciliation failed: {e}");
                     }
                 }
             }
-        } else {
+        } else if done.polished.is_empty() {
+            tracing::warn!(
+                "[main] word-by-word complete but final output is empty — keeping streamed text"
+            );
+            output_pasted = !typed_snapshot.is_empty();
+        } else if typed_snapshot == done.polished {
             tracing::info!("[main] word-by-word complete — {n_typed} token(s) typed directly");
             output_pasted = true;
+        } else {
+            tracing::info!(
+                "[main] word-by-word complete — final text differs, reconciling current typed text (typed_chars={} final_chars={})",
+                typed_snapshot.chars().count(),
+                done.polished.chars().count()
+            );
+            match paster::reconcile_current_recording(
+                initial_field_text.as_deref(),
+                &typed_snapshot,
+                &done.polished,
+            ) {
+                Ok(changed) => {
+                    if changed {
+                        tracing::info!("[main] current typed text reconciled with final output");
+                    }
+                    output_pasted = true;
+                }
+                Err(e) => {
+                    tracing::warn!("[main] final typed-text reconciliation failed: {e}");
+                    output_pasted = !typed_snapshot.is_empty();
+                }
+            }
         }
     } else {
-        // Live token typing did not produce output — paste the final result.
+        // Live token typing did not produce output. Insert the final result
+        // directly first so normal dictation does not touch the user's
+        // clipboard; fall back to Cmd+V only if direct typing fails.
         tracing::info!(
-            "[main] live typing produced no output — clipboard paste final result ({} chars)",
+            "[main] live typing produced no output — direct insert final result ({} chars)",
             done.polished.len()
         );
         if !done.polished.is_empty() {
-            match paster::paste(&done.polished) {
+            match insert_text_prefer_direct("main_final_insert", &done.polished) {
                 Ok(_) => {
                     output_pasted = true;
                 }
                 Err(e) => {
-                    tracing::warn!("[main] paste fallback failed: {e}");
+                    tracing::warn!("[main] final insert failed: {e}");
                 }
             }
         }
@@ -3063,39 +3038,16 @@ async fn run_voice_repair_sse(
     };
     let transcript = action.raw_transcript.clone();
     let previous_output = action.polished.clone();
+    let previous_output_for_replace = previous_output.clone();
     let target_app = action.target_app.clone();
     let output_language = action.output_language.clone();
     let audio_id = action.audio_id.clone();
     let enriched_transcript = action.enriched_transcript.clone();
     let app_clone = app.clone();
 
-    let typed_any = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let typed_any2 = typed_any.clone();
-    let token_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let token_count2 = token_count.clone();
-    let fail_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let fail_count2 = fail_count.clone();
-
     let mut on_polish_event = move |event| match &event {
         api::PolishEvent::Token { token } => {
-            if token == "\u{1F}__RESET__\u{1F}" {
-                fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return;
-            }
             let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
-            match paster::type_text(token) {
-                Ok(true) => {
-                    typed_any2.store(true, std::sync::atomic::Ordering::Relaxed);
-                    token_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                Ok(false) => {
-                    fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                Err(e) => {
-                    fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    tracing::warn!("[voice-repair] type_text error: {e}");
-                }
-            }
         }
         api::PolishEvent::Status { phase, transcript } => {
             let _ = app_clone.emit(
@@ -3136,12 +3088,10 @@ async fn run_voice_repair_sse(
     )
     .await?;
 
-    finalize_typed_or_pasted_output(
+    finalize_repair_or_refine_output(
         app,
         &done,
-        typed_any,
-        token_count,
-        fail_count,
+        &previous_output_for_replace,
         LastRepairStage::FastRepair,
     )?;
     Ok(done)
@@ -3158,32 +3108,13 @@ async fn run_text_refine_sse(
     };
     let source_text = action.source_text.clone();
     let previous_output = action.polished.clone();
+    let previous_output_for_replace = previous_output.clone();
     let tone = Some(action.tone.clone());
     let app_clone = app.clone();
-
-    let typed_any = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let typed_any2 = typed_any.clone();
-    let token_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let token_count2 = token_count.clone();
-    let fail_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let fail_count2 = fail_count.clone();
 
     let mut on_polish_event = move |event| match &event {
         api::PolishEvent::Token { token } => {
             let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
-            match paster::type_text(token) {
-                Ok(true) => {
-                    typed_any2.store(true, std::sync::atomic::Ordering::Relaxed);
-                    token_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                Ok(false) => {
-                    fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                Err(e) => {
-                    fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    tracing::warn!("[text-refine] type_text error: {e}");
-                }
-            }
         }
         api::PolishEvent::Status { phase, transcript } => {
             let _ = app_clone.emit(
@@ -3219,12 +3150,10 @@ async fn run_text_refine_sse(
     )
     .await?;
 
-    finalize_typed_or_pasted_output(
+    finalize_repair_or_refine_output(
         app,
         &done,
-        typed_any,
-        token_count,
-        fail_count,
+        &previous_output_for_replace,
         LastRepairStage::None,
     )?;
     cache_last_text_transform(
@@ -3236,31 +3165,28 @@ async fn run_text_refine_sse(
     Ok(done)
 }
 
-fn finalize_typed_or_pasted_output(
+fn finalize_repair_or_refine_output(
     app: &tauri::AppHandle,
     done: &api::PolishDone,
-    typed_any: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    token_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    fail_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    previous_output: &str,
     repair_stage: LastRepairStage,
 ) -> Result<(), String> {
-    let n_typed = token_count.load(std::sync::atomic::Ordering::Relaxed);
-    let n_failed = fail_count.load(std::sync::atomic::Ordering::Relaxed);
     let mut output_pasted = false;
-    if typed_any.load(std::sync::atomic::Ordering::Relaxed) {
-        if n_failed > 0 {
-            if !done.polished.is_empty() {
-                paster::paste_replacing(&done.polished)
-                    .map_err(|e| format!("paste replacing failed: {e}"))?;
+    if !done.polished.is_empty() {
+        match paster::replace_focused_text_exact(previous_output, &done.polished) {
+            Ok(true) => {
+                tracing::info!("[repair] replaced exact previous output in focused field");
                 output_pasted = true;
             }
-        } else {
-            tracing::info!("[main] word-by-word complete — {n_typed} token(s) typed directly");
-            output_pasted = true;
+            Ok(false) => {
+                tracing::warn!(
+                    "[repair] exact previous output not found in focused field — storing latest only"
+                );
+            }
+            Err(e) => {
+                tracing::warn!("[repair] focused-field replacement failed: {e}");
+            }
         }
-    } else if !done.polished.is_empty() {
-        paster::paste(&done.polished).map_err(|e| format!("paste failed: {e}"))?;
-        output_pasted = true;
     }
 
     if !done.polished.is_empty() {
@@ -3278,17 +3204,17 @@ fn finalize_typed_or_pasted_output(
         "manual_paste"
     };
     let output_message = if output_pasted {
-        "Pasted"
+        "Repaired"
     } else {
         // The Ctrl+Cmd+V "re-paste" hotkey is only wired on macOS today;
         // Windows users use the tray menu's "Paste latest" item instead.
         #[cfg(target_os = "macos")]
         {
-            "Press Ctrl+Cmd+V to paste anywhere"
+            "Repair ready — press Ctrl+Cmd+V to paste"
         }
         #[cfg(not(target_os = "macos"))]
         {
-            "Use the tray menu → Paste latest"
+            "Repair ready — use Paste latest"
         }
     };
     let _ = app.emit(
@@ -6332,9 +6258,14 @@ mod live_typing_guard_tests {
     use super::{LiveTypingDecision, LiveTypingGuard, STREAM_RESET_SENTINEL};
 
     #[test]
-    fn buffer_mode_always_previews() {
+    fn streams_until_reset_then_previews() {
         let mut guard = LiveTypingGuard::default();
-        assert_eq!(guard.on_token("Hello"), LiveTypingDecision::PreviewOnly);
-        assert_eq!(guard.on_token("world"), LiveTypingDecision::PreviewOnly);
+        assert_eq!(guard.on_token("Hello"), LiveTypingDecision::TypeToken);
+        assert_eq!(guard.on_token("world"), LiveTypingDecision::TypeToken);
+        assert_eq!(
+            guard.on_token(STREAM_RESET_SENTINEL),
+            LiveTypingDecision::ResetAndDisable
+        );
+        assert_eq!(guard.on_token("final"), LiveTypingDecision::PreviewOnly);
     }
 }

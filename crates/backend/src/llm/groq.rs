@@ -33,8 +33,10 @@ const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 pub const GROQ_MODEL_DEFAULT: &str = "llama-3.1-8b-instant";
 /// Fast model — same as default on Groq (8B is already the fastest).
 pub const GROQ_MODEL_FAST: &str = "llama-3.1-8b-instant";
-/// Smart model — Llama 4 Scout 17B on Groq. Better quality for complex sentences.
+/// Smart model — Llama 4 Scout 17B on Groq. Better quality for normal dictation.
 pub const GROQ_MODEL_SMART: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
+/// High quality fallback for Option+N selected-text transforms.
+pub const GROQ_MODEL_70B: &str = "llama-3.3-70b-versatile";
 
 // ── SSE types (identical to OpenAI format) ────────────────────────────────────
 

@@ -79,6 +79,27 @@ export interface DesktopClient {
   lark_avatar_url?: string | null
 }
 
+export interface BugReport {
+  id: string
+  org_id?: string | null
+  account_id?: string | null
+  reporter_email?: string | null
+  reporter_name?: string | null
+  title: string
+  description: string
+  severity: 'low' | 'normal' | 'high' | 'blocking' | string
+  status: 'open' | 'triaged' | 'fixed' | 'closed' | string
+  app_version?: string | null
+  platform?: string | null
+  device_id?: string | null
+  screenshot_url?: string | null
+  screenshot_data_url?: string | null
+  screenshot_name?: string | null
+  screenshot_mime?: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface User {
   account: { id: string; email: string }
   license?: { tier: string }

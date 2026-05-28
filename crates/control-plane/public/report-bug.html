@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Report a Bug - AirNote</title>
+  <style>
+    :root {
+      --bg: #f0f2f8;
+      --surface: #ffffff;
+      --ink: #0c0e1a;
+      --muted: #6b7090;
+      --line: #e2e4ef;
+      --soft: #f8f9fc;
+      --accent: #7591ef;
+      --red: #dc2626;
+      --green: #16a34a;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(ellipse at 0% 20%, rgba(117, 145, 239, 0.14), transparent 42%),
+        radial-gradient(ellipse at 100% 80%, rgba(117, 145, 239, 0.10), transparent 40%),
+        var(--bg);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+    main {
+      width: min(720px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 48px 0;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 22px;
+      color: var(--ink);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .mark {
+      width: 28px;
+      height: 28px;
+      color: var(--accent);
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: 0 18px 60px rgba(22, 27, 45, 0.10), 0 1px 3px rgba(22, 27, 45, 0.05);
+      overflow: hidden;
+    }
+    .hero {
+      padding: 30px 34px 22px;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.08;
+      letter-spacing: -0.04em;
+    }
+    .sub {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    form {
+      padding: 28px 34px 34px;
+      display: grid;
+      gap: 18px;
+    }
+    label {
+      display: block;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 800;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      color: var(--ink);
+      border-radius: 14px;
+      padding: 12px 13px;
+      font: inherit;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+    }
+    textarea {
+      min-height: 150px;
+      resize: vertical;
+      line-height: 1.55;
+    }
+    input:focus, textarea:focus, select:focus {
+      background: #fff;
+      border-color: rgba(117, 145, 239, 0.75);
+      box-shadow: 0 0 0 4px rgba(117, 145, 239, 0.14);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 170px;
+      gap: 14px;
+    }
+    .drop {
+      border: 1px dashed #c8cad8;
+      border-radius: 16px;
+      padding: 14px;
+      background: rgba(248, 249, 252, 0.7);
+    }
+    .drop p {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .preview {
+      display: none;
+      margin-top: 12px;
+      max-height: 260px;
+      max-width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+    }
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+    button {
+      height: 46px;
+      border: 0;
+      border-radius: 14px;
+      background: var(--ink);
+      color: #fff;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: transform 120ms ease, opacity 120ms ease;
+    }
+    button:hover { transform: translateY(-1px); }
+    button:disabled { cursor: not-allowed; opacity: 0.55; transform: none; }
+    .message {
+      display: none;
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .message.ok {
+      display: block;
+      background: #f0fdf4;
+      color: var(--green);
+      border: 1px solid #bbf7d0;
+    }
+    .message.err {
+      display: block;
+      background: #fef2f2;
+      color: var(--red);
+      border: 1px solid #fecaca;
+    }
+    .token-missing {
+      margin-top: 12px;
+      color: var(--red);
+      font-size: 13px;
+      line-height: 1.5;
+      display: none;
+    }
+    @media (max-width: 640px) {
+      main { padding: 24px 0; }
+      .hero, form { padding-left: 22px; padding-right: 22px; }
+      .grid, .meta { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"></rect>
+        <rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"></rect>
+        <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"></rect>
+        <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"></rect>
+      </svg>
+      AirNote
+    </div>
+
+    <section class="card">
+      <div class="hero">
+        <h1>Report a bug</h1>
+        <p class="sub">
+          Tell us what happened in AirNote. Add a screenshot if it helps. This goes straight to the AirNote control plane for the team to triage.
+        </p>
+        <p id="token-missing" class="token-missing">
+          This report link is missing or expired. Open this page from the AirNote desktop app again.
+        </p>
+      </div>
+
+      <form id="bug-form">
+        <div>
+          <label for="title">Short title</label>
+          <input id="title" maxlength="140" placeholder="e.g. Dictation pasted into the wrong field" required />
+        </div>
+
+        <div class="grid">
+          <div>
+            <label for="description">What happened?</label>
+            <textarea id="description" maxlength="10000" placeholder="Steps, expected behavior, actual behavior..." required></textarea>
+          </div>
+          <div>
+            <label for="severity">Severity</label>
+            <select id="severity">
+              <option value="normal">Normal</option>
+              <option value="high">High</option>
+              <option value="blocking">Blocking</option>
+              <option value="low">Low</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="drop">
+          <label for="screenshot">Screenshot optional</label>
+          <p>PNG/JPG/WebP up to roughly 4 MB. Cloud upload will be added later; for now the report stores this attachment directly.</p>
+          <input id="screenshot" type="file" accept="image/png,image/jpeg,image/webp" />
+          <img id="preview" class="preview" alt="Screenshot preview" />
+        </div>
+
+        <div class="meta">
+          <div>
+            <label for="app-version">App version</label>
+            <input id="app-version" placeholder="2.2.7" />
+          </div>
+          <div>
+            <label for="platform">Platform</label>
+            <input id="platform" placeholder="macOS" />
+          </div>
+          <div>
+            <label for="device-id">Device ID</label>
+            <input id="device-id" placeholder="optional" />
+          </div>
+        </div>
+
+        <div id="message" class="message"></div>
+        <button id="submit" type="submit">Submit bug report</button>
+      </form>
+    </section>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const token = params.get('token') || '';
+    const form = document.getElementById('bug-form');
+    const submit = document.getElementById('submit');
+    const message = document.getElementById('message');
+    const missing = document.getElementById('token-missing');
+    const fileInput = document.getElementById('screenshot');
+    const preview = document.getElementById('preview');
+
+    for (const id of ['app-version', 'platform', 'device-id']) {
+      const value = params.get(id.replace('-', '_')) || params.get(id) || '';
+      if (value) document.getElementById(id).value = value;
+    }
+
+    let screenshotDataUrl = null;
+    let screenshotName = null;
+    let screenshotMime = null;
+
+    if (!token) {
+      missing.style.display = 'block';
+      submit.disabled = true;
+    }
+
+    function show(kind, text) {
+      message.className = 'message ' + kind;
+      message.textContent = text;
+    }
+
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files && fileInput.files[0];
+      screenshotDataUrl = null;
+      screenshotName = null;
+      screenshotMime = null;
+      preview.style.display = 'none';
+      preview.removeAttribute('src');
+      if (!file) return;
+      if (file.size > 4 * 1024 * 1024) {
+        show('err', 'Screenshot is too large. Please attach an image under 4 MB.');
+        fileInput.value = '';
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        screenshotDataUrl = String(reader.result || '');
+        screenshotName = file.name;
+        screenshotMime = file.type;
+        preview.src = screenshotDataUrl;
+        preview.style.display = 'block';
+      };
+      reader.readAsDataURL(file);
+    });
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!token) return;
+      submit.disabled = true;
+      submit.textContent = 'Submitting...';
+      message.className = 'message';
+      try {
+        const res = await fetch('/v1/bug-reports/public', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token,
+            title: document.getElementById('title').value.trim(),
+            description: document.getElementById('description').value.trim(),
+            severity: document.getElementById('severity').value,
+            screenshot_data_url: screenshotDataUrl,
+            screenshot_name: screenshotName,
+            screenshot_mime: screenshotMime,
+            app_version: document.getElementById('app-version').value.trim() || null,
+            platform: document.getElementById('platform').value.trim() || null,
+            device_id: document.getElementById('device-id').value.trim() || null,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not submit bug report.');
+        show('ok', 'Bug report submitted. Thank you.');
+        form.reset();
+        preview.style.display = 'none';
+        screenshotDataUrl = null;
+      } catch (err) {
+        show('err', err.message || 'Could not submit bug report.');
+      } finally {
+        submit.disabled = false;
+        submit.textContent = 'Submit bug report';
+      }
+    });
+  </script>
+</body>
+</html>

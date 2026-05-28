@@ -76,8 +76,31 @@ mkdir -p "$ARTIFACT_DIR"
 echo "Creating updater archive: $UPDATE_TAR"
 (
   cd "target/$TARGET/release/bundle/macos"
-  tar czf "$REPO_ROOT/$UPDATE_TAR_PATH" "$PRODUCT_NAME.app"
+  # macOS bsdtar otherwise writes AppleDouble `._*` sidecar entries for
+  # extended attributes. Tauri's updater tries to unpack those as real app
+  # paths and fails with errors like `failed to unpack ._AirNote.app`.
+  COPYFILE_DISABLE=1 tar --no-xattrs -czf "$REPO_ROOT/$UPDATE_TAR_PATH" "$PRODUCT_NAME.app"
 )
+
+python3 - "$UPDATE_TAR_PATH" <<'PY'
+import os
+import sys
+import tarfile
+
+archive_path = sys.argv[1]
+with tarfile.open(archive_path, "r:gz") as archive:
+    appledouble = [
+        member.name
+        for member in archive.getmembers()
+        if os.path.basename(member.name).startswith("._")
+    ]
+
+if appledouble:
+    print("updater archive contains macOS AppleDouble sidecar files:", file=sys.stderr)
+    for name in appledouble[:20]:
+        print(f"  {name}", file=sys.stderr)
+    raise SystemExit(1)
+PY
 
 echo "Signing updater archive..."
 (
