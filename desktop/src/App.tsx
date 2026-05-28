@@ -44,13 +44,23 @@ import {
 } from "@/lib/enterprise";
 import { useTheme } from "@/lib/useTheme";
 import { useBackendHeartbeat } from "@/lib/useBackendHeartbeat";
+import { startDailyAutoUpdateCheck } from "@/lib/autoUpdate";
 import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
 export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "meetings" | "settings" | "live-meeting";
 const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "meetings", "settings", "live-meeting"];
-type SettingsSectionId = "writing" | "permissions" | "api-keys" | "debug" | "about";
+type SettingsSectionId =
+  | "appearance"
+  | "writing"
+  | "models"
+  | "notifications"
+  | "permissions"
+  | "api-keys"
+  | "enterprise"
+  | "debug"
+  | "about";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -157,6 +167,8 @@ export default function App() {
 
   // Backend watchdog heartbeat — detects unresponsive backend and shows recovery overlay
   const heartbeat = useBackendHeartbeat();
+
+  useEffect(() => startDailyAutoUpdateCheck(), []);
 
   const setPerformanceMonitor = useCallback((enabled: boolean) => {
     setPerformanceMonitorEnabled(enabled);

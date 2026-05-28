@@ -6,7 +6,7 @@ import {
   Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap,
   Languages, MessageSquareText, Loader2, RefreshCw,
   Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, Download, Activity,
-  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut,
+  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown,
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -106,6 +106,127 @@ function Row({
   );
 }
 
+function SecretInput({
+  icon,
+  label,
+  helper,
+  placeholder,
+  value,
+  visible,
+  onChange,
+  onToggle,
+}: {
+  icon:        React.ReactNode;
+  label:       string;
+  helper?:     string;
+  placeholder: string;
+  value:       string;
+  visible:     boolean;
+  onChange:    (value: string) => void;
+  onToggle:    () => void;
+}) {
+  return (
+    <div>
+      <div className="mb-1.5">
+        <p className="text-[12px] font-semibold text-foreground flex items-center gap-1.5">
+          {icon}
+          {label}
+        </p>
+        {helper && (
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            {helper}
+          </p>
+        )}
+      </div>
+      <div className="relative">
+        <input
+          type={visible ? "text" : "password"}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="input pr-9 font-mono text-[12px]"
+        />
+        <button
+          type="button"
+          onClick={onToggle}
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+          tabIndex={-1}
+          aria-label={visible ? `Hide ${label}` : `Show ${label}`}
+        >
+          {visible ? <EyeOff size={14} /> : <Eye size={14} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SettingsDisclosure({
+  title,
+  description,
+  icon,
+  defaultOpen = false,
+  status,
+  children,
+}: {
+  title:        string;
+  description:  string;
+  icon:         React.ReactNode;
+  defaultOpen?: boolean;
+  status?:      React.ReactNode;
+  children:     React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <div
+      className="rounded-xl overflow-hidden"
+      style={{
+        background: "hsl(var(--surface-3))",
+        boxShadow: "inset 0 0 0 1px hsl(var(--surface-4))",
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left"
+        aria-expanded={open}
+      >
+        <span
+          className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+          style={{
+            background: "hsl(var(--surface-4))",
+            color: "hsl(var(--accent-violet))",
+          }}
+        >
+          {icon}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[13px] font-semibold text-foreground">
+            {title}
+          </span>
+          <span className="block text-[11.5px] text-muted-foreground mt-0.5 leading-relaxed">
+            {description}
+          </span>
+        </span>
+        {status && <span className="flex-shrink-0">{status}</span>}
+        <ChevronDown
+          size={15}
+          className="flex-shrink-0 text-muted-foreground transition-transform"
+          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+        />
+      </button>
+      {open && (
+        <div
+          className="px-4 pb-4 pt-1 space-y-4"
+          style={{ borderTop: "1px solid hsl(var(--surface-4))" }}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ChatGPT Connection Section ────────────────────────────────────────────────
 
 function ChatGPTSection() {
@@ -148,16 +269,16 @@ function ChatGPTSection() {
     : null;
 
   return (
-    <Section title="ChatGPT (Smart Learning)">
+    <Section title="ChatGPT">
       <Row
         icon={<Sparkles size={16} />}
         label={isConnected ? "ChatGPT Connected" : "Connect ChatGPT"}
         description={
           isConnected
-            ? `GPT-5.4-mini powers the learning pipeline for smarter vocabulary decisions${expiresDate ? ` · expires ${expiresDate}` : ""}`
+            ? `Used for shortcut transforms and repair/refine${expiresDate ? ` · expires ${expiresDate}` : ""}`
             : connecting
             ? "Waiting for browser sign-in..."
-            : "Connect your ChatGPT account to use GPT-5.4-mini for smarter learning. Free — uses your existing ChatGPT subscription. Falls back to Groq if not connected."
+            : "Optional. AirNote falls back to Groq when ChatGPT is not connected."
         }
         action={
           <div className="flex items-center gap-2">
@@ -199,6 +320,7 @@ function ChatGPTSection() {
 export type SettingsSection =
   | "appearance"
   | "writing"
+  | "models"
   | "notifications"
   | "permissions"
   | "api-keys"
@@ -209,6 +331,7 @@ export type SettingsSection =
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "appearance",     label: "Appearance"     },
   { id: "writing",        label: "Writing style"  },
+  { id: "models",         label: "Models"         },
   { id: "notifications",  label: "Notifications"  },
   { id: "permissions",    label: "Permissions"     },
   { id: "api-keys",    label: "API keys"      },
@@ -1454,6 +1577,85 @@ export function SettingsView({
         </Section>
         </Show>
 
+        {/* ── Models ───────────────────────────────────── */}
+        <Show when={isOn("models")}>
+        <Section title="Dictation Model">
+          <div className="px-5 py-4">
+            <div className="flex items-center gap-4 mb-3">
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
+                style={{ background: "hsl(var(--surface-4))" }}
+              >
+                <Zap size={16} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-medium text-foreground">Normal voice polish</p>
+                <p className="text-[12px] text-muted-foreground mt-0.5">
+                  Groq is the fixed provider. Choose speed vs quality for regular hotkey dictation.
+                </p>
+              </div>
+            </div>
+            <div
+              className="flex rounded-xl p-1"
+              style={{ background: "hsl(var(--surface-3))" }}
+            >
+              {([
+                {
+                  key: "fast",
+                  icon: <Zap size={13} />,
+                  label: "Fast",
+                  desc: "Llama 3.1 8B - lowest latency",
+                },
+                {
+                  key: "smart",
+                  icon: <Sparkles size={13} />,
+                  label: "Smart",
+                  desc: "Llama 4 Scout - better for complex sentences",
+                },
+              ] as const).map((opt) => {
+                const isActive = (prefs?.selected_model ?? "fast") === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    onClick={() => void patch({ selected_model: opt.key })}
+                    className="flex-1 text-left px-3 py-2.5 rounded-[10px] transition-all"
+                    style={{
+                      background: isActive ? "hsl(var(--surface-1))" : "transparent",
+                      boxShadow: isActive
+                        ? "0 1px 3px hsl(0 0% 0% / 0.3)"
+                        : "none",
+                    }}
+                  >
+                    <p
+                      className="text-[12px] font-semibold leading-tight flex items-center justify-between gap-2"
+                      style={{
+                        color: isActive
+                          ? "hsl(var(--foreground))"
+                          : "hsl(var(--muted-foreground))",
+                      }}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {opt.icon}
+                        {opt.label}
+                      </span>
+                      {isActive && <Check size={12} />}
+                    </p>
+                    <p
+                      className="text-[10px] leading-snug mt-0.5"
+                      style={{ color: "hsl(var(--muted-foreground))" }}
+                    >
+                      {opt.desc}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </Section>
+
+        <ChatGPTSection />
+        </Show>
+
         {/* ── Notifications ─────────────────────────────── */}
         <Show when={isOn("notifications")}>
         <div className="mb-7">
@@ -1690,96 +1892,82 @@ export function SettingsView({
         <Show when={isOn("api-keys")}>
         <div className="mb-7">
           <p className="section-label px-1 mb-2.5">API Keys</p>
-          <div className="panel p-5 space-y-4">
+          <div className="panel p-5 space-y-3">
             <p className="text-[12px] text-muted-foreground leading-relaxed">
-              Keys are loaded from the local SQLite database and stored only on this Mac.
+              Stored only on this Mac. Open a group only when you need to edit that key.
             </p>
 
-            {/* Gateway API Key */}
-            <div>
-              <p className="text-[12px] font-semibold text-foreground mb-1.5 flex items-center gap-1.5">
-                <Wifi size={12} className="text-muted-foreground" />
-                Gateway API Key
-              </p>
-              <div className="relative">
-                <input
-                  type={showGateway ? "text" : "password"}
-                  placeholder="sk-…"
-                  value={gatewayKey}
-                  onChange={(e) => setGatewayKey(e.target.value)}
-                  className="input pr-9 font-mono text-[12px]"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowGateway((v) => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                  tabIndex={-1}
-                >
-                  {showGateway ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-            </div>
+            <SettingsDisclosure
+              title="Required for dictation"
+              description="Groq polishes text. Deepgram transcribes audio."
+              icon={<Zap size={15} />}
+              defaultOpen
+              status={
+                prefs?.groq_api_key && prefs?.deepgram_api_key ? (
+                  <span className="text-[10px] px-2 py-1 rounded-full"
+                        style={{ background: "hsl(145 60% 16%)", color: "hsl(145 70% 65%)" }}>
+                    Ready
+                  </span>
+                ) : (
+                  <span className="text-[10px] px-2 py-1 rounded-full"
+                        style={{ background: "hsl(30 80% 20%)", color: "hsl(30 90% 75%)" }}>
+                    Missing
+                  </span>
+                )
+              }
+            >
+              <SecretInput
+                icon={<Zap size={12} className="text-muted-foreground" />}
+                label="Groq API Key"
+                helper="Used by normal voice polish, repair, classification, and fallbacks."
+                placeholder="gsk_..."
+                value={groqKey}
+                visible={showGroq}
+                onChange={setGroqKey}
+                onToggle={() => setShowGroq((v) => !v)}
+              />
+              <SecretInput
+                icon={<Cpu size={12} className="text-muted-foreground" />}
+                label="Deepgram API Key"
+                helper="Used for speech-to-text."
+                placeholder="Token ..."
+                value={deepgramKey}
+                visible={showDeepgram}
+                onChange={setDeepgramKey}
+                onToggle={() => setShowDeepgram((v) => !v)}
+              />
+            </SettingsDisclosure>
 
-            {/* Deepgram API Key */}
-            <div>
-              <p className="text-[12px] font-semibold text-foreground mb-1.5 flex items-center gap-1.5">
-                <Cpu size={12} className="text-muted-foreground" />
-                Deepgram API Key
-              </p>
-              <div className="relative">
-                <input
-                  type={showDeepgram ? "text" : "password"}
-                  placeholder="Token …"
-                  value={deepgramKey}
-                  onChange={(e) => setDeepgramKey(e.target.value)}
-                  className="input pr-9 font-mono text-[12px]"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowDeepgram((v) => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                  tabIndex={-1}
-                >
-                  {showDeepgram ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-            </div>
+            <SettingsDisclosure
+              title="Optional learning"
+              description="Gemini embeddings improve local vocabulary/context memory."
+              icon={<Sparkles size={15} />}
+              status={
+                prefs?.gemini_api_key ? (
+                  <span className="text-[10px] px-2 py-1 rounded-full"
+                        style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}>
+                    Configured
+                  </span>
+                ) : undefined
+              }
+            >
+              <SecretInput
+                icon={<Sparkles size={12} className="text-muted-foreground" />}
+                label="Gemini API Key"
+                helper="Optional. Without it, dictation still works."
+                placeholder="AIza..."
+                value={geminiKey}
+                visible={showGemini}
+                onChange={setGeminiKey}
+                onToggle={() => setShowGemini((v) => !v)}
+              />
 
-            {/* Gemini API Key */}
-            <div>
-              <div className="mb-1.5">
-                <p className="text-[12px] font-semibold text-foreground flex items-center gap-1.5">
-                  <Sparkles size={12} className="text-muted-foreground" />
-                  Gemini API Key
-                </p>
-                <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Optional — enables smart learning
-                </p>
-              </div>
-              <div className="relative">
-                <input
-                  type={showGemini ? "text" : "password"}
-                  placeholder="AIza…"
-                  value={geminiKey}
-                  onChange={(e) => setGeminiKey(e.target.value)}
-                  className="input pr-9 font-mono text-[12px]"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowGemini((v) => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                  tabIndex={-1}
-                >
-                  {showGemini ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-
-              <div className="mt-3 flex items-center justify-between gap-4 rounded-xl px-3 py-2.5"
-                   style={{ background: "hsl(var(--surface-3))" }}>
+              <div className="flex items-center justify-between gap-4 rounded-xl px-3 py-2.5"
+                   style={{ background: "hsl(var(--surface-4))" }}>
                 <div className="min-w-0">
                   <p className="text-[12px] font-semibold text-foreground">Enable smart learning</p>
                   <p className="text-[11px] text-muted-foreground mt-0.5">
-                    Uses Gemini embeddings to remember corrected words and context.
+                    Uses local corrections plus embeddings when a Gemini key is saved.
                   </p>
                 </div>
                 <button
@@ -1793,7 +1981,7 @@ export function SettingsView({
                   style={{
                     background: learningEnabled && hasStoredGeminiKey
                       ? "hsl(var(--primary))"
-                      : "hsl(var(--surface-4))",
+                      : "hsl(var(--surface-3))",
                   }}
                 >
                   <span
@@ -1808,39 +1996,32 @@ export function SettingsView({
                   />
                 </button>
               </div>
-            </div>
+            </SettingsDisclosure>
 
-            {/* Groq API Key */}
-            <div>
-              <p className="text-[12px] font-semibold text-foreground mb-1.5 flex items-center gap-1.5">
-                <Zap size={12} className="text-muted-foreground" />
-                Groq API Key
-                <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
-                      style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}>
-                  Fast
-                </span>
-              </p>
-              <p className="text-[11px] text-muted-foreground mb-1.5">
-                Get a free key at <span className="font-medium">console.groq.com</span> — enables Groq LPU provider (llama-3.3-70b, ~200ms TTFT)
-              </p>
-              <div className="relative">
-                <input
-                  type={showGroq ? "text" : "password"}
-                  placeholder="gsk_…"
-                  value={groqKey}
-                  onChange={(e) => setGroqKey(e.target.value)}
-                  className="input pr-9 font-mono text-[12px]"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowGroq((v) => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                  tabIndex={-1}
-                >
-                  {showGroq ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-            </div>
+            <SettingsDisclosure
+              title="Advanced legacy gateway"
+              description="Only needed for older routing setups. Most users should leave this closed."
+              icon={<Wifi size={15} />}
+              status={
+                prefs?.gateway_api_key ? (
+                  <span className="text-[10px] px-2 py-1 rounded-full"
+                        style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}>
+                    Set
+                  </span>
+                ) : undefined
+              }
+            >
+              <SecretInput
+                icon={<Wifi size={12} className="text-muted-foreground" />}
+                label="Gateway API Key"
+                helper="Legacy/shared gateway. Not required for the current Groq-first path."
+                placeholder="sk-..."
+                value={gatewayKey}
+                visible={showGateway}
+                onChange={setGatewayKey}
+                onToggle={() => setShowGateway((v) => !v)}
+              />
+            </SettingsDisclosure>
 
             {/* Save button */}
             <div className="flex items-center justify-between pt-1">
@@ -1865,129 +2046,6 @@ export function SettingsView({
             </div>
           </div>
         </div>
-
-        {/* ── ChatGPT / OpenAI Connection ────────────────── */}
-        <ChatGPTSection />
-
-        {/* ── LLM Provider picker ───────────────────────── */}
-        <Section title="LLM Provider">
-          {/* Provider option list */}
-          {([
-            {
-              id:    "groq",
-              icon:  <Zap size={15} />,
-              label: "Groq LPU",
-              desc:  "Llama 4 Scout — fastest (~200ms TTFT), free tier",
-              badge: "Default",
-              needsKey: !prefs?.groq_api_key && !groqKey,
-            },
-            {
-              id:    "gemini_direct",
-              icon:  <Sparkles size={15} />,
-              label: "Gemini Direct",
-              desc:  "gemini-2.0-flash-thinking via Google AI — needs Gemini API key",
-              badge: null,
-              needsKey: !prefs?.gemini_api_key && !geminiKey,
-            },
-          ] as const).map((opt, idx, arr) => {
-            const isActive = prefs?.llm_provider === opt.id;
-            return (
-              <Row
-                key={opt.id}
-                icon={opt.icon}
-                label={opt.label}
-                description={opt.desc}
-                last={idx === arr.length - 1}
-                action={
-                  <div className="flex items-center gap-2">
-                    {opt.needsKey && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded"
-                            style={{ background: "hsl(30 80% 20%)", color: "hsl(30 90% 75%)" }}>
-                        Key missing
-                      </span>
-                    )}
-                    {opt.badge && !isActive && (
-                      <span className="badge-model">{opt.badge}</span>
-                    )}
-                    <button
-                      onClick={() => void patch({ llm_provider: opt.id })}
-                      className={`px-3 py-1 rounded-md text-[11px] font-medium transition-all border ${
-                        isActive
-                          ? "border-transparent text-background"
-                          : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
-                      }`}
-                      style={isActive ? { background: "hsl(var(--muted-foreground))" } : {}}
-                    >
-                      {isActive ? "✓ Active" : "Use"}
-                    </button>
-                  </div>
-                }
-              />
-            );
-          })}
-        </Section>
-
-        {/* ── Polish Model toggle ────────────────────── */}
-        <Section title="Polish Model">
-          <div className="px-5 py-3">
-            <div
-              className="flex rounded-xl p-1"
-              style={{ background: "hsl(var(--surface-3))" }}
-            >
-              {([
-                {
-                  key: "fast",
-                  icon: <Zap size={13} />,
-                  label: "Fast (Llama 3.1 8B)",
-                  desc: "Fastest response, great for simple dictation",
-                },
-                {
-                  key: "smart",
-                  icon: <Sparkles size={13} />,
-                  label: "Smart (Llama 4 Scout)",
-                  desc: "Best quality, handles complex sentences",
-                },
-              ] as const).map((opt) => {
-                const isActive = (prefs?.selected_model ?? "fast") === opt.key;
-                return (
-                  <button
-                    key={opt.key}
-                    onClick={() => void patch({ selected_model: opt.key })}
-                    className="flex-1 text-left px-3 py-2.5 rounded-[10px] transition-all"
-                    style={{
-                      background: isActive ? "hsl(var(--surface-1))" : "transparent",
-                      boxShadow: isActive
-                        ? "0 1px 3px hsl(0 0% 0% / 0.3)"
-                        : "none",
-                    }}
-                  >
-                    <p
-                      className="text-[12px] font-semibold leading-tight flex items-center gap-1.5"
-                      style={{
-                        color: isActive
-                          ? "hsl(var(--foreground))"
-                          : "hsl(var(--muted-foreground))",
-                      }}
-                    >
-                      {opt.icon}
-                      {opt.label}
-                    </p>
-                    <p
-                      className="text-[10px] leading-snug mt-0.5"
-                      style={{
-                        color: isActive
-                          ? "hsl(var(--muted-foreground))"
-                          : "hsl(var(--muted-foreground) / 0.6)",
-                      }}
-                    >
-                      {opt.desc}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </Section>
         </Show>
 
         {/* ── Enterprise ──────────────────────────────── */}

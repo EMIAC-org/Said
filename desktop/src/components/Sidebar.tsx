@@ -1,16 +1,12 @@
-import React, { useState, useRef, useEffect, useLayoutEffect } from "react";
-import { createPortal } from "react-dom";
+import React, { useState, useEffect } from "react";
 import {
   LayoutDashboard,
   History,
   BarChart2,
   BookOpen,
   Settings,
-  HelpCircle,
   UserPlus,
-  Mail,
-  Copy,
-  Check,
+  Bug,
   Activity,
   Cpu,
   HardDrive,
@@ -20,8 +16,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BrandMark } from "@/components/BrandMark";
-import { getPerformanceSnapshot } from "@/lib/invoke";
-import { isConnected as isEnterpriseConnected } from "@/lib/enterprise";
+import { getPerformanceSnapshot, openExternal } from "@/lib/invoke";
+import {
+  getConnection,
+  isConnected as isEnterpriseConnected,
+} from "@/lib/enterprise";
 import type { AppSnapshot, PerformanceSnapshot, ProcessPerf } from "@/types";
 
 // ── Nav item type ──────────────────────────────────────────────────────────────
@@ -224,8 +223,8 @@ export function Sidebar({
           <span className="flex-1 truncate">Settings</span>
         </button>
 
-        {/* Help — popover beside the button (no auto-open of mail) */}
-        <HelpButton />
+        {/* Report bug — opens the control-plane report form with a signed token when connected. */}
+        <ReportBugButton snapshot={snapshot} />
       </div>
     </aside>
   );
@@ -380,169 +379,96 @@ function PerformanceMonitor() {
   );
 }
 
-// ── Help popover — anchors to the right of the Help nav item ─────────────────
+// ── Report bug ──────────────────────────────────────────────────────────────
 
-const SUPPORT_EMAIL = "support@emiactech.com";
+const DEFAULT_REPORT_SERVER = "https://airnote.103.180.163.41.sslip.io";
 
-function HelpButton() {
-  const [open,   setOpen]   = useState(false);
-  const [copied, setCopied] = useState(false);
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const popRef = useRef<HTMLDivElement>(null);
-  const [pos,   setPos]     = useState<{ left: number; bottom: number } | null>(null);
+async function getAppVersionForReport(): Promise<string | undefined> {
+  try {
+    const { getVersion } = await import("@tauri-apps/api/app");
+    return await getVersion();
+  } catch {
+    return undefined;
+  }
+}
 
-  // Reset the "Copied!" affordance whenever the popover reopens
-  useEffect(() => { if (!open) setCopied(false); }, [open]);
+async function getDeviceIdForReport(): Promise<string | undefined> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<string>("get_device_id");
+  } catch {
+    return undefined;
+  }
+}
 
-  async function copyEmail() {
+function buildPublicReportUrl(base: string, params: Record<string, string | undefined>): string {
+  const url = new URL("/report-bug", base);
+  for (const [key, value] of Object.entries(params)) {
+    if (value?.trim()) url.searchParams.set(key, value.trim());
+  }
+  return url.toString();
+}
+
+function ReportBugButton({ snapshot }: { snapshot: AppSnapshot | null }) {
+  const [opening, setOpening] = useState(false);
+
+  async function openReport() {
+    if (opening) return;
+    setOpening(true);
     try {
-      await navigator.clipboard.writeText(SUPPORT_EMAIL);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1400);
-    } catch {
-      // Clipboard can fail in restricted contexts — fall back to a hidden
-      // textarea + execCommand so we still get something into the buffer.
-      const ta = document.createElement("textarea");
-      ta.value = SUPPORT_EMAIL;
-      ta.style.position = "fixed";
-      ta.style.opacity  = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand("copy"); } catch {}
-      document.body.removeChild(ta);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1400);
+      const conn = getConnection();
+      const base = (conn?.serverUrl || DEFAULT_REPORT_SERVER).replace(/\/+$/, "");
+      const [appVersion, deviceId] = await Promise.all([
+        getAppVersionForReport(),
+        getDeviceIdForReport(),
+      ]);
+      const context = {
+        app_version: appVersion,
+        platform: snapshot?.platform || undefined,
+        device_id: deviceId,
+      };
+      let url = buildPublicReportUrl(base, context);
+
+      if (conn?.jwt) {
+        try {
+          const res = await fetch(`${base}/v1/bug-reports/session`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${conn.jwt}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(context),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const returned = typeof data.url === "string" ? data.url : data.path;
+            if (typeof returned === "string" && returned.trim()) {
+              url = new URL(returned, base).toString();
+            }
+          }
+        } catch {
+          // Fall back to the public page; it will explain that sign-in is needed.
+        }
+      }
+
+      await openExternal(url);
+    } finally {
+      setOpening(false);
     }
   }
 
-  // Compute popover position from the anchor button's rect — using a portal
-  // so we escape the sidebar's overflow:hidden clipping.
-  useLayoutEffect(() => {
-    if (!open || !btnRef.current) return;
-    const r = btnRef.current.getBoundingClientRect();
-    setPos({
-      left:   r.right + 10,                          // 10px to the right of the button
-      bottom: window.innerHeight - r.bottom,         // align to button's bottom edge
-    });
-  }, [open]);
-
-  // Click-away + ESC to close
-  useEffect(() => {
-    if (!open) return;
-    function onDoc(e: MouseEvent) {
-      const t = e.target as Node;
-      if (btnRef.current?.contains(t)) return;
-      if (popRef.current?.contains(t)) return;
-      setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   return (
-    <>
-      <button
-        ref={btnRef}
-        className={cn("nav-item", open && "active")}
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-      >
-        <span className="flex-shrink-0 opacity-70">
-          <HelpCircle size={15} />
-        </span>
-        <span className="flex-1 truncate text-left">Help</span>
-      </button>
-
-      {/* Portal to body so overflow:hidden on the sidebar can't clip us,
-          and so we sit above any view content (recordings list, etc). */}
-      {open && pos && createPortal(
-        <div
-          ref={popRef}
-          className="fixed z-[100] w-[240px] rounded-2xl overflow-hidden"
-          style={{
-            left: pos.left, bottom: pos.bottom,
-            background: "hsl(var(--surface-2))",
-            boxShadow:
-              "inset 0 0 0 1px hsl(var(--border)), inset 0 1px 0 hsl(0 0% 100% / 0.06), 0 6px 20px hsl(220 60% 2% / 0.30)",
-            animation: "fadeIn 0.14s ease-out",
-          }}
-        >
-          {/* Header */}
-          <div className="px-4 pt-4 pb-3">
-            <div className="flex items-center gap-2 mb-1">
-              <span
-                className="flex items-center justify-center w-6 h-6 rounded-md flex-shrink-0"
-                style={{
-                  background: "hsl(var(--primary) / 0.16)",
-                  color:      "hsl(var(--primary))",
-                }}
-              >
-                <Mail size={12} />
-              </span>
-              <span className="text-[13px] font-semibold text-foreground leading-tight">
-                Need help?
-              </span>
-            </div>
-            <p className="text-[11.5px] text-muted-foreground leading-relaxed">
-              Email us — we usually reply within a day.
-            </p>
-          </div>
-
-          {/* Email + copy — single click target. Whole row copies the address
-              to the clipboard; mailto is intentionally not used because many
-              setups (browser-as-default-handler, no mail client configured)
-              open an empty Untitled tab instead of a mail composer. */}
-          <div className="px-4 pb-4">
-            <button
-              onClick={copyEmail}
-              className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg transition-colors"
-              style={{
-                background: "hsl(var(--surface-3))",
-                boxShadow:  "inset 0 0 0 1px hsl(var(--surface-4))",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "hsl(var(--surface-hover))";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "hsl(var(--surface-3))";
-              }}
-            >
-              <span
-                className="text-[12px] font-medium text-foreground truncate select-text text-left"
-                title={SUPPORT_EMAIL}
-              >
-                {SUPPORT_EMAIL}
-              </span>
-              <span
-                className="flex items-center gap-1 text-[11px] font-semibold flex-shrink-0"
-                style={{
-                  color: copied ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
-                }}
-              >
-                {copied ? (
-                  <>
-                    <Check size={11} strokeWidth={2.6} />
-                    Copied
-                  </>
-                ) : (
-                  <>
-                    <Copy size={11} />
-                    Copy
-                  </>
-                )}
-              </span>
-            </button>
-          </div>
-        </div>,
-        document.body,
-      )}
-    </>
+    <button
+      className={cn("nav-item", opening && "disabled")}
+      onClick={() => void openReport()}
+      disabled={opening}
+    >
+      <span className="flex-shrink-0 opacity-70">
+        <Bug size={15} />
+      </span>
+      <span className="flex-1 truncate text-left">
+        {opening ? "Opening…" : "Report bug"}
+      </span>
+    </button>
   );
 }
