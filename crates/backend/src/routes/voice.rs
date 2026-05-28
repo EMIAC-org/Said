@@ -1080,7 +1080,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             tracing::debug!("{full_debug}");
             if let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true).append(true)
-                .open("/tmp/said-llm-debug.log")
+                .open(std::env::temp_dir().join("said-llm-debug.log"))
             {
                 use std::io::Write;
                 let _ = writeln!(f, "\n{full_debug}");

@@ -62,12 +62,23 @@ jobs:
           key: ci-windows
           cache-bin: false
 
-      # Type-check the whole cross-platform surface. said-hotkey and said-paster
-      # both landed their Windows impls in M3a / M3b. said-desktop and said
-      # (CLI) still have macOS-specific glue we'll port in M3c — excluded
-      # until that lands.
-      - name: cargo check (excl. desktop, CLI)
-        run: cargo check --workspace --exclude said-desktop --exclude said
+      # Tauri's build script verifies the externalBin sidecar exists for the
+      # target triple. `cargo check` doesn't build it (and the real .exe is only
+      # produced in the release workflow), so drop a placeholder to satisfy the
+      # existence check. The sidecar's *code* is still type-checked as part of
+      # the workspace check below — we only need the file path to exist here.
+      - name: Stub said-backend sidecar for tauri externalBin check
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
+          New-Item -ItemType File -Force -Path desktop/src-tauri/binaries/said-backend-x86_64-pc-windows-msvc.exe | Out-Null
+
+      # Full Windows compile gate: check the whole workspace including the Tauri
+      # desktop shell (`said-desktop`) so a push to main reports real Windows
+      # build errors for the actual app. Only the standalone `said` CLI stays
+      # excluded — it's macOS-only for now (also skipped in release.yml).
+      - name: cargo check (full Windows app; CLI is macOS-only)
+        run: cargo check --workspace --exclude said
 
       - name: cargo test pure-logic crates (runs on every host)
         # `--lib` is a global cargo-test flag — appears once even when

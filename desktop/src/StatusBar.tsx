@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
-import { relaunch } from "@tauri-apps/plugin-process";
 import { ChevronLeft, ChevronRight, CornerDownLeft, ListChecks, RotateCcw, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
+import { APPLY_UPDATE_EVENT } from "./lib/autoUpdate";
 
 function notifEnabled(key: string): boolean {
   try {
@@ -318,7 +318,7 @@ export default function StatusBar() {
     }).catch(() => {});
   }, [isInteractive, dragUnlocked]);
 
-  // Hold ⌥ (Left Option) + drag to reposition — saved to disk, restored on every show.
+  // Hold Left Option (⌥) / Left Alt + drag to reposition — saved to disk, restored on every show.
   useEffect(() => {
     const app = document.getElementById("app");
     if (!app) return;
@@ -403,7 +403,10 @@ export default function StatusBar() {
     overlay.setAttribute("aria-hidden", "true");
     const hint = document.createElement("span");
     hint.className = "sb-drag-hint";
-    hint.textContent = "Drag to move · ⇧⌘/ to finish";
+    const isWin = typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent);
+    hint.textContent = isWin
+      ? "Drag to move · Shift+Ctrl+/ to finish"
+      : "Drag to move · ⇧⌘/ to finish";
     overlay.appendChild(hint);
     app.appendChild(overlay);
 
@@ -1117,7 +1120,7 @@ export default function StatusBar() {
             <button type="button" className="sb-survey-skip" onClick={() => setBar({ kind: "idle" })}>
               Later
             </button>
-            <button type="button" className="sb-survey-next" onClick={() => void relaunch()}>
+            <button type="button" className="sb-survey-next" onClick={() => void emit(APPLY_UPDATE_EVENT)}>
               Restart
               <RotateCcw size={14} strokeWidth={2} aria-hidden="true" />
             </button>

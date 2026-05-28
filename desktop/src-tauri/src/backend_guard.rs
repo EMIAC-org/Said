@@ -10,6 +10,12 @@ use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System, UpdateKind};
 use tracing::{info, warn};
 
+// The on-disk process name includes the `.exe` suffix on Windows; `sysinfo`
+// reports the full file name, so the match must include it or the reap/kill
+// guardrails silently never fire on Windows.
+#[cfg(windows)]
+const BACKEND_NAME: &str = "said-backend.exe";
+#[cfg(not(windows))]
 const BACKEND_NAME: &str = "said-backend";
 
 pub fn pid_file() -> PathBuf {
@@ -114,8 +120,13 @@ fn should_reap_process(exe: &Path, current_parent: Option<&Path>) -> bool {
         }
     }
 
+    // Match dev builds run straight from the cargo target dir, using
+    // `MAIN_SEPARATOR` so the check also fires for Windows backslash paths.
+    let sep = std::path::MAIN_SEPARATOR;
+    let target_debug = format!("{sep}target{sep}debug{sep}");
+    let target_release = format!("{sep}target{sep}release{sep}");
     let path = exe.to_string_lossy();
-    path.contains("/target/debug/") || path.contains("/target/release/")
+    path.contains(&target_debug) || path.contains(&target_release)
 }
 
 fn terminate_pid(pid: u32, graceful_for: Duration) {

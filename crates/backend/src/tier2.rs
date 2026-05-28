@@ -2389,8 +2389,14 @@ mod tests {
         let vocab = vec![vocab("EMIAC", "acronym", "auto")];
         let metadata = Tier2ModelMetadata {
             user_id: "u1".to_string(),
-            artifact_path: "/tmp/said-missing-correction-model.onnx".to_string(),
-            vocab_index_path: "/tmp/said-missing-vocab-index.json".to_string(),
+            artifact_path: std::env::temp_dir()
+                .join("said-missing-correction-model.onnx")
+                .to_string_lossy()
+                .into_owned(),
+            vocab_index_path: std::env::temp_dir()
+                .join("said-missing-vocab-index.json")
+                .to_string_lossy()
+                .into_owned(),
             trained_at: 0,
             alias_count: 1,
             vocab_count: 1,

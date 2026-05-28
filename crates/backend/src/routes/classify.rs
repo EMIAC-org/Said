@@ -1144,15 +1144,34 @@ fn schedule_onnx_retrain(state: crate::AppState) {
                 script_path.display(),
                 db.display()
             );
-            match std::process::Command::new("python3")
-                .arg(&script_path)
-                .arg("--db")
-                .arg(db.to_str().unwrap_or_default())
-                .arg("--user-id")
-                .arg(&user)
-                .arg("--micro")
-                .output()
-            {
+            // Windows has no `python3` on PATH; try the `py` launcher and
+            // `python` first there. Skip a candidate only when it's truly
+            // absent (NotFound) so a real script error still surfaces.
+            let python_candidates: &[&str] = if cfg!(windows) {
+                &["py", "python", "python3"]
+            } else {
+                &["python3", "python"]
+            };
+            let mut output = Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no python interpreter found in PATH",
+            ));
+            for cmd in python_candidates {
+                let attempt = std::process::Command::new(cmd)
+                    .arg(&script_path)
+                    .arg("--db")
+                    .arg(db.to_str().unwrap_or_default())
+                    .arg("--user-id")
+                    .arg(&user)
+                    .arg("--micro")
+                    .output();
+                if matches!(&attempt, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+                    continue;
+                }
+                output = attempt;
+                break;
+            }
+            match output {
                 Ok(out) => {
                     let elapsed = train_start.elapsed();
                     let dur_ms = elapsed.as_millis() as i64;
