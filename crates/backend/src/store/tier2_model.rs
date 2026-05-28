@@ -159,8 +159,14 @@ mod tests {
     fn tier2_metadata_round_trip() {
         let pool = mem_pool();
         let metadata = Tier2ModelMetadataUpsert {
-            artifact_path: "/tmp/correction_model.onnx".to_string(),
-            vocab_index_path: "/tmp/vocab_index.json".to_string(),
+            artifact_path: std::env::temp_dir()
+                .join("correction_model.onnx")
+                .to_string_lossy()
+                .into_owned(),
+            vocab_index_path: std::env::temp_dir()
+                .join("vocab_index.json")
+                .to_string_lossy()
+                .into_owned(),
             trained_at: 123,
             alias_count: 4,
             vocab_count: 7,

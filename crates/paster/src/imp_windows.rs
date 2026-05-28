@@ -18,7 +18,7 @@ use windows::Win32::System::Memory::{
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_BACK, VK_CONTROL, VK_V,
+    KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_BACK, VK_C, VK_CONTROL, VK_V,
 };
 
 use crate::win_paster::{
@@ -57,37 +57,105 @@ pub fn is_accessibility_granted() -> bool {
     true
 }
 
-// ── AX-tree reads (v1: stubbed; UIAutomation port is a follow-up) ─────────────
+// ── Focused-field reads (UIAutomation, via the dedicated worker in `uia`) ──────
+//
+// Timeouts mirror the macOS contract: the 30ms poll loop uses the `fast` path
+// (~80ms budget, value/text patterns only); the one-shot/full reads use a larger
+// budget and add the bounded subtree walk for Chromium/Electron. All sit inside
+// the watcher's 500ms `blocking_ax_option`, so a wedged provider just drops a tick.
 
 pub fn read_focused_value_fast() -> Option<String> {
-    None
+    crate::uia::value(true, None, 80)
 }
 pub fn read_focused_value_first() -> Option<String> {
-    None
+    crate::uia::value(false, None, 450)
 }
 pub fn read_focused_value() -> Option<String> {
-    None
+    crate::uia::value(false, None, 450)
 }
-pub fn read_focused_value_fast_for_pid(_pid: i32) -> Option<String> {
-    None
+pub fn read_focused_value_fast_for_pid(pid: i32) -> Option<String> {
+    crate::uia::value(true, Some(pid), 80)
 }
-pub fn read_focused_value_first_for_pid(_pid: i32) -> Option<String> {
-    None
+pub fn read_focused_value_first_for_pid(pid: i32) -> Option<String> {
+    crate::uia::value(false, Some(pid), 450)
 }
+
+/// Last-resort full-field read for a11y-blind controls: select-all + copy, read
+/// the clipboard, then restore it. Destructive to selection + clipboard, so only
+/// used when UIA yields nothing. Not run on password fields (UIA reads already
+/// return None there, and the OS blocks copying password text).
 pub fn capture_focused_text_via_selection() -> Option<String> {
-    None
+    open_clipboard_with_retry().ok()?;
+    let saved = read_clipboard_unicode();
+    let _ = unsafe { CloseClipboard() };
+
+    send_chord(VK_CONTROL, VK_A);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    send_chord(VK_CONTROL, VK_C);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    open_clipboard_with_retry().ok()?;
+    let captured = read_clipboard_unicode();
+    let _ = unsafe { CloseClipboard() };
+
+    restore_clipboard(saved);
+    captured.filter(|s| !s.trim().is_empty())
 }
+
+/// Read only the selected text. UIA `TextPattern::GetSelection` first; if that's
+/// unavailable, fall back to a copy-only clipboard read (guarded so an empty copy
+/// doesn't return the prior clipboard contents).
 pub fn read_selected_text() -> Option<String> {
-    None
+    if let Some(sel) = crate::uia::selection(300) {
+        return Some(sel);
+    }
+    copy_selection_read()
 }
+
 pub fn focused_pid() -> Option<i32> {
-    None
+    crate::uia::focused_pid()
 }
 pub fn unlock_focused_app_now() -> Option<i32> {
-    None
+    crate::uia::activate_foreground()
 }
 pub fn lock_frontmost_app_now() -> Option<i32> {
-    None
+    crate::uia::activate_foreground()
+}
+
+/// Copy the current selection (no select-all) and read it back. Returns None if
+/// the copy produced nothing new (i.e. there was no selection), so we never
+/// mistake leftover clipboard contents for selected text.
+fn copy_selection_read() -> Option<String> {
+    open_clipboard_with_retry().ok()?;
+    let saved = read_clipboard_unicode();
+    let _ = unsafe { CloseClipboard() };
+
+    send_chord(VK_CONTROL, VK_C);
+    std::thread::sleep(std::time::Duration::from_millis(120));
+
+    open_clipboard_with_retry().ok()?;
+    let captured = read_clipboard_unicode();
+    let _ = unsafe { CloseClipboard() };
+
+    let result = match (&captured, &saved) {
+        (Some(c), Some(s)) if c == s => None, // copy changed nothing → no selection
+        (Some(c), _) if !c.trim().is_empty() => Some(c.clone()),
+        _ => None,
+    };
+    restore_clipboard(saved);
+    result
+}
+
+/// Restore previously-saved clipboard contents (best-effort).
+fn restore_clipboard(saved: Option<String>) {
+    if let Some(prev) = saved {
+        if !prev.is_empty() {
+            if open_clipboard_with_retry().is_ok() {
+                let _ = write_clipboard_unicode(&prev);
+                let _ = unsafe { CloseClipboard() };
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -111,14 +179,49 @@ pub struct AxDiagnostics {
 }
 
 pub fn diagnose_focused_field() -> AxDiagnostics {
+    let app_pid = crate::uia::focused_pid();
+    let (app_name, element_role) = match crate::uia::info(500) {
+        Some((name, role)) => (
+            Some(name).filter(|s| !s.is_empty()),
+            Some(role).filter(|s| !s.is_empty()),
+        ),
+        None => (None, None),
+    };
+
+    let mut methods = Vec::new();
+    let value = crate::uia::value(false, None, 500);
+    methods.push(AxMethodResult {
+        method: "value".into(),
+        label: "Value / Text pattern".into(),
+        ok: value.is_some(),
+        text: value,
+        err: None,
+    });
+    let selection = crate::uia::selection(500);
+    methods.push(AxMethodResult {
+        method: "selection".into(),
+        label: "Selected text".into(),
+        ok: selection.is_some(),
+        text: selection,
+        err: None,
+    });
+
+    let clipboard = if open_clipboard_with_retry().is_ok() {
+        let c = read_clipboard_unicode().unwrap_or_default();
+        let _ = unsafe { CloseClipboard() };
+        c
+    } else {
+        String::new()
+    };
+
     AxDiagnostics {
         ax_trusted: is_accessibility_granted(),
-        app_name: None,
-        app_pid: None,
-        element_role: None,
+        app_name,
+        app_pid,
+        element_role,
         attributes: vec![],
-        methods: vec![],
-        clipboard: String::new(),
+        methods,
+        clipboard,
     }
 }
 

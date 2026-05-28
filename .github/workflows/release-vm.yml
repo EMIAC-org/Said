@@ -1,5 +1,11 @@
 name: Release to VM
 
+# Manual, VM-hosted release for both macOS and Windows. Builds the same signed
+# artifacts as the GitHub `Release` workflow, then publishes them to the
+# self-hosted update server (the updater's primary endpoint; GitHub Releases is
+# the fallback). Composes a single `latest.json` containing both platforms so
+# macOS and Windows clients update from the VM identically.
+
 on:
   workflow_dispatch:
     inputs:
@@ -15,21 +21,32 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   PRODUCT_NAME: AirNote
-  TARGET: aarch64-apple-darwin
-  ARCH_SHORT: aarch64
   PUBLIC_BASE_URL: https://airnote.103.180.163.41.sslip.io
   REMOTE_RELEASE_ROOT: /opt/airnote-control-plane/releases
 
 jobs:
-  release-vm:
-    name: Build, notarize, and upload macOS release
-    runs-on: macos-latest
-    timeout-minutes: 70
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch_short: aarch64
+            runs_on: macos-latest
+            platform: darwin
+          - target: x86_64-pc-windows-msvc
+            arch_short: x86_64
+            runs_on: windows-latest
+            platform: windows
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read workspace version
-        id: ver
+      - name: Read workspace version (bash)
+        if: matrix.platform == 'darwin'
+        id: ver_mac
         shell: bash
         run: |
           VERSION=$(awk '
@@ -39,24 +56,34 @@ jobs:
               gsub(/.*=[[:space:]]*"/, ""); gsub(/".*/, ""); print; exit
             }
           ' Cargo.toml)
-          test -n "$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "workspace version: $VERSION"
+
+      - name: Read workspace version (pwsh)
+        if: matrix.platform == 'windows'
+        id: ver_win
+        shell: pwsh
+        run: |
+          $content = Get-Content Cargo.toml -Raw
+          $match = [regex]::Match($content, '(?ms)^\[workspace\.package\].*?^version\s*=\s*"([^"]+)"')
+          $version = $match.Groups[1].Value
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "workspace version: $version"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ env.TARGET }}
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: release-vm-${{ env.TARGET }}
+          key: release-vm-${{ matrix.target }}
           cache-targets: false
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
@@ -64,15 +91,13 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      # ── macOS: import signing certificate into CI keychain ────────────────
       - name: Import Apple codesign certificate
+        if: matrix.platform == 'darwin'
         env:
           CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
         run: |
-          set -euo pipefail
-          : "${CERTIFICATE_BASE64:?CODESIGN_CERTIFICATE_BASE64 secret is required}"
-          : "${CERTIFICATE_PASSWORD:?CODESIGN_CERTIFICATE_PASSWORD secret is required}"
-
           CERT_PATH=$RUNNER_TEMP/certificate.p12
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
           KEYCHAIN_PASSWORD=$(uuidgen)
@@ -89,22 +114,29 @@ jobs:
             /System/Library/Keychains/SystemRootCertificates.keychain
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
-      - name: Build CLI binary
-        timeout-minutes: 8
+      # ── macOS: CLI binary + AirNote.app + DMG + notarization ───────────────
+      - name: Build CLI binary (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
         run: |
-          cargo build -p said --release --target "$TARGET"
-          cp "target/$TARGET/release/airnote" "airnote-$TARGET"
-          chmod +x "airnote-$TARGET"
+          cargo build -p said --release --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/airnote airnote-${{ matrix.target }}
+          chmod +x airnote-${{ matrix.target }}
 
-      - name: Build airnote-backend sidecar
+      - name: Build airnote-backend sidecar (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
         timeout-minutes: 12
         run: |
-          cargo build -p said-backend --release --target "$TARGET"
+          cargo build -p said-backend --release --target ${{ matrix.target }}
           mkdir -p desktop/src-tauri/binaries
-          cp "target/$TARGET/release/airnote-backend" "desktop/src-tauri/binaries/airnote-backend-$TARGET"
-          chmod +x "desktop/src-tauri/binaries/airnote-backend-$TARGET"
+          cp "target/${{ matrix.target }}/release/airnote-backend" \
+            "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}"
+          chmod +x "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}"
 
-      - name: Build AirNote.app only
+      - name: Build AirNote.app only (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
         timeout-minutes: 20
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -112,19 +144,21 @@ jobs:
         working-directory: desktop
         run: |
           npm run tauri:build -- \
-            --target "$TARGET" \
+            --target ${{ matrix.target }} \
             --bundles app \
             --ci \
             --verbose \
             --no-sign
 
-      - name: Sign and verify AirNote.app
+      - name: Sign and verify AirNote.app (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
         timeout-minutes: 8
         env:
           APPLE_SIGNING_IDENTITY: "Developer ID Application: EMIAC TECHNOLOGIES LIMITED (96ZQGP7L3B)"
         run: |
           set -euo pipefail
-          APP_PATH="target/$TARGET/release/bundle/macos/$PRODUCT_NAME.app"
+          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/${PRODUCT_NAME}.app"
           EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/airnote-backend"
           ENTITLEMENTS="desktop/src-tauri/AirNote.entitlements"
           BUNDLE_ID="com.emiac.airnote.desktop"
@@ -152,21 +186,22 @@ jobs:
           test "$ACTUAL_ID" = "$BUNDLE_ID"
           echo "Signed app verified: $APP_PATH"
 
-      - name: Create and verify DMG
+      - name: Create and verify DMG (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
         timeout-minutes: 8
         env:
           APPLE_SIGNING_IDENTITY: "Developer ID Application: EMIAC TECHNOLOGIES LIMITED (96ZQGP7L3B)"
         run: |
           set -euo pipefail
-          VERSION="${{ steps.ver.outputs.version }}"
-          APP_PATH="target/$TARGET/release/bundle/macos/$PRODUCT_NAME.app"
-          BUNDLE_DIR="target/$TARGET/release/bundle"
+          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/${PRODUCT_NAME}.app"
+          BUNDLE_DIR="target/${{ matrix.target }}/release/bundle"
           STAGING="$BUNDLE_DIR/dmg-staging"
-          DMG_OUT="$BUNDLE_DIR/dmg/${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.dmg"
+          DMG_OUT="$BUNDLE_DIR/dmg/${PRODUCT_NAME}_${{ steps.ver_mac.outputs.version }}_${{ matrix.arch_short }}.dmg"
 
           rm -rf "$STAGING" "$DMG_OUT"
           mkdir -p "$STAGING" "$BUNDLE_DIR/dmg"
-          ditto "$APP_PATH" "$STAGING/$PRODUCT_NAME.app"
+          ditto "$APP_PATH" "$STAGING/${PRODUCT_NAME}.app"
           ln -s /Applications "$STAGING/Applications"
 
           hdiutil create \
@@ -179,9 +214,6 @@ jobs:
           rm -rf "$STAGING"
           test -f "$DMG_OUT"
 
-          # Gatekeeper assesses the downloaded DMG before the .app inside it.
-          # Sign the disk image container as well as the app bundle; otherwise
-          # notarization can be accepted but spctl reports "no usable signature".
           codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG_OUT"
           codesign -dv --verbose=2 "$DMG_OUT"
 
@@ -189,11 +221,13 @@ jobs:
           echo "$ATTACH_OUT"
           DMG_DEV=$(echo "$ATTACH_OUT" | awk '/\/dev\/disk[0-9]+s[0-9]+/ && /\/Volumes\// {print $1; exit}')
           DMG_VOL=$(echo "$ATTACH_OUT" | awk '/\/Volumes\// {for (i=3;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":""); print ""; exit}')
-          codesign --verify --deep --strict --verbose=2 "$DMG_VOL/$PRODUCT_NAME.app"
+          codesign --verify --deep --strict --verbose=2 "$DMG_VOL/${PRODUCT_NAME}.app"
           hdiutil detach "$DMG_DEV" -force >/dev/null
           echo "DMG verified: $DMG_OUT"
 
-      - name: Notarize, staple, and verify DMG
+      - name: Notarize, staple, and verify DMG (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
         timeout-minutes: 30
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -204,8 +238,7 @@ jobs:
           : "${APPLE_ID:?APPLE_ID secret is required for release notarization}"
           : "${APPLE_APP_SPECIFIC_PASSWORD:?APPLE_APP_SPECIFIC_PASSWORD secret is required for release notarization}"
 
-          VERSION="${{ steps.ver.outputs.version }}"
-          DMG_OUT="target/$TARGET/release/bundle/dmg/${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.dmg"
+          DMG_OUT="target/${{ matrix.target }}/release/bundle/dmg/${PRODUCT_NAME}_${{ steps.ver_mac.outputs.version }}_${{ matrix.arch_short }}.dmg"
           test -f "$DMG_OUT"
 
           defaults write com.apple.gke.notary.tool nt-upload-connection-timeout 300 || true
@@ -222,62 +255,159 @@ jobs:
           spctl --assess --type open --context context:primary-signature -v "$DMG_OUT"
           echo "DMG is signed, notarized, stapled, and Gatekeeper-verified: $DMG_OUT"
 
-      - name: Create updater archive, manifest, and checksums
-        id: artifacts
-        timeout-minutes: 8
+      # ── Windows: airnote-backend sidecar + Tauri NSIS installer ────────────
+      - name: Build airnote-backend sidecar (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          cargo build -p said-backend --release --target ${{ matrix.target }}
+          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
+          Copy-Item `
+            "target/${{ matrix.target }}/release/airnote-backend.exe" `
+            "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}.exe"
+
+      - name: Build AirNote.exe + NSIS installer (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        working-directory: desktop
+        run: npm run tauri:build -- --target ${{ matrix.target }}
+
+      # ── Stage artifacts ────────────────────────────────────────────────────
+      - name: Stage release artifacts (Mac)
+        if: matrix.platform == 'darwin'
+        shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          mkdir -p release-artifacts
+          cp airnote-${{ matrix.target }} release-artifacts/
+
+          cp "target/${{ matrix.target }}/release/bundle/dmg/${PRODUCT_NAME}_${{ steps.ver_mac.outputs.version }}_${{ matrix.arch_short }}.dmg" release-artifacts/
+
+          UPDATE_TAR="${PRODUCT_NAME}_${{ steps.ver_mac.outputs.version }}_${{ matrix.arch_short }}.app.tar.gz"
+          cd "target/${{ matrix.target }}/release/bundle/macos"
+          tar czf "$UPDATE_TAR" "${PRODUCT_NAME}.app"
+          mv "$UPDATE_TAR" "$GITHUB_WORKSPACE/release-artifacts/"
+          cd "$GITHUB_WORKSPACE"
+
+          cd desktop
+          npx tauri signer sign \
+            "$GITHUB_WORKSPACE/release-artifacts/$UPDATE_TAR" \
+            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+          cd "$GITHUB_WORKSPACE"
+          echo "Signature file:"
+          ls -la "$GITHUB_WORKSPACE/release-artifacts/"*.sig || true
+
+      - name: Stage release artifacts (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
+          $nsis = "target/${{ matrix.target }}/release/bundle/nsis"
+          Get-ChildItem $nsis -Filter "${env:PRODUCT_NAME}_*-setup.exe"          | ForEach-Object { Copy-Item $_.FullName release-artifacts/ }
+          Get-ChildItem $nsis -Filter "${env:PRODUCT_NAME}_*-setup.nsis.zip"     | ForEach-Object { Copy-Item $_.FullName release-artifacts/ }
+          Get-ChildItem $nsis -Filter "${env:PRODUCT_NAME}_*-setup.nsis.zip.sig" | ForEach-Object { Copy-Item $_.FullName release-artifacts/ }
+
+          Write-Host "── staged windows artifacts ──"
+          Get-ChildItem release-artifacts | Format-List Name, Length
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.target }}
+          path: release-artifacts/
+          retention-days: 7
+
+  deploy-vm:
+    name: Compose manifest and deploy to VM
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read workspace version
+        id: ver
+        run: |
+          VERSION=$(awk '
+            /^\[workspace\.package\]/ { in_section = 1; next }
+            /^\[/                     { in_section = 0 }
+            in_section && /^[[:space:]]*version[[:space:]]*=/ {
+              gsub(/.*=[[:space:]]*"/, ""); gsub(/".*/, ""); print; exit
+            }
+          ' Cargo.toml)
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "workspace version: $VERSION"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten and checksum
+        working-directory: artifacts
+        run: |
+          find . -mindepth 2 -type f -exec mv -f {} . \;
+          find . -mindepth 1 -type d -empty -delete
+          sha256sum * | sort -k 2 > SHA256SUMS
+          echo "── released files ──"
+          ls -lh
+
+      - name: Generate updater manifest (latest.json with both platforms)
+        id: manifest
+        working-directory: artifacts
+        run: |
           set -euo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
-          ARTIFACT_DIR="$RUNNER_TEMP/airnote-release-$VERSION"
-          UPDATE_TAR="${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.app.tar.gz"
-          DMG="${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.dmg"
+          PRODUCT_NAME="${PRODUCT_NAME:-AirNote}"
+          BASE_URL="${PUBLIC_BASE_URL}/releases/${VERSION}"
 
-          mkdir -p "$ARTIFACT_DIR"
-          (
-            cd "target/$TARGET/release/bundle/macos"
-            tar czf "$ARTIFACT_DIR/$UPDATE_TAR" "$PRODUCT_NAME.app"
-          )
+          read_sig() { [ -f "$1" ] && cat "$1" || echo ""; }
 
-          (
-            cd desktop
-            npx tauri signer sign \
-              "$ARTIFACT_DIR/$UPDATE_TAR" \
-              --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
-              --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
-          )
+          AARCH64_SIG=$(read_sig "${PRODUCT_NAME}_${VERSION}_aarch64.app.tar.gz.sig")
+          WINDOWS_SIG=$(read_sig "${PRODUCT_NAME}_${VERSION}_x64-setup.nsis.zip.sig")
+          WINDOWS_FILE="${PRODUCT_NAME}_${VERSION}_x64-setup.nsis.zip"
 
-          cp "target/$TARGET/release/bundle/dmg/$DMG" "$ARTIFACT_DIR/"
-          cp "airnote-$TARGET" "$ARTIFACT_DIR/"
+          WINDOWS_PLATFORM_JSON=""
+          if [ -f "$WINDOWS_FILE" ]; then
+            WINDOWS_PLATFORM_JSON=$(cat <<EOF
+              ,
+              "windows-x86_64": {
+                "signature": "${WINDOWS_SIG}",
+                "url": "${BASE_URL}/${WINDOWS_FILE}"
+              }
+          EOF
+            )
+          else
+            echo "No Windows updater bundle found; omitting windows-x86_64 from manifest."
+          fi
 
-          SIGNATURE="$(cat "$ARTIFACT_DIR/$UPDATE_TAR.sig")"
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          cat > "$ARTIFACT_DIR/latest.json" <<JSON
+          cat > latest.json <<EOF
           {
-            "version": "$VERSION",
-            "notes": "AirNote $VERSION",
-            "pub_date": "$PUB_DATE",
+            "version": "${VERSION}",
+            "notes": "AirNote ${VERSION}",
+            "pub_date": "${PUB_DATE}",
             "platforms": {
               "darwin-aarch64": {
-                "signature": "$SIGNATURE",
-                "url": "$PUBLIC_BASE_URL/releases/$VERSION/$UPDATE_TAR"
+                "signature": "${AARCH64_SIG}",
+                "url": "${BASE_URL}/${PRODUCT_NAME}_${VERSION}_aarch64.app.tar.gz"
               }
+          ${WINDOWS_PLATFORM_JSON}
             }
           }
-          JSON
+          EOF
 
-          (
-            cd "$ARTIFACT_DIR"
-            shasum -a 256 * | sort -k 2 > SHA256SUMS
-            ls -lh
-            cat SHA256SUMS
-          )
-
-          echo "artifact_dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
-          echo "dmg_url=$PUBLIC_BASE_URL/releases/$VERSION/$DMG" >> "$GITHUB_OUTPUT"
-          echo "manifest_url=$PUBLIC_BASE_URL/updates/latest.json" >> "$GITHUB_OUTPUT"
+          echo "── latest.json ──"
+          cat latest.json
+          echo "dmg_url=${BASE_URL}/${PRODUCT_NAME}_${VERSION}_aarch64.dmg" >> "$GITHUB_OUTPUT"
+          echo "exe_url=${BASE_URL}/${PRODUCT_NAME}_${VERSION}_x64-setup.exe" >> "$GITHUB_OUTPUT"
+          echo "manifest_url=${PUBLIC_BASE_URL}/updates/latest.json" >> "$GITHUB_OUTPUT"
 
       - name: Configure SSH
         timeout-minutes: 3
@@ -294,7 +424,7 @@ jobs:
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
       - name: Upload release to VM
-        timeout-minutes: 8
+        timeout-minutes: 10
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -303,11 +433,10 @@ jobs:
           set -euo pipefail
           : "${DEPLOY_USER:?DEPLOY_USER secret is required}"
           VERSION="${{ steps.ver.outputs.version }}"
-          ARTIFACT_DIR="${{ steps.artifacts.outputs.artifact_dir }}"
 
           ssh "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$REMOTE_RELEASE_ROOT/releases/$VERSION' '$REMOTE_RELEASE_ROOT/updates'"
-          scp "$ARTIFACT_DIR"/* "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_RELEASE_ROOT/releases/$VERSION/"
-          scp "$ARTIFACT_DIR/latest.json" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_RELEASE_ROOT/updates/latest.json"
+          scp artifacts/* "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_RELEASE_ROOT/releases/$VERSION/"
+          scp artifacts/latest.json "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_RELEASE_ROOT/updates/latest.json"
 
           ssh "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_RELEASE_ROOT='$REMOTE_RELEASE_ROOT' KEEP_RELEASES='$KEEP_RELEASES' bash -s" <<'REMOTE'
           set -euo pipefail
@@ -323,24 +452,19 @@ jobs:
           REMOTE
 
           echo "VM release uploaded."
-          echo "DMG: ${{ steps.artifacts.outputs.dmg_url }}"
-          echo "Manifest: ${{ steps.artifacts.outputs.manifest_url }}"
 
       - name: Verify public VM URLs
         timeout-minutes: 3
         run: |
           set -euo pipefail
-          # GitHub macOS runners occasionally fail resolving sslip.io even
-          # though the VM and public URL are healthy. Resolve the release host
-          # directly to the VM IP and retry before marking the release failed.
           CURL_RESOLVE=(--resolve airnote.103.180.163.41.sslip.io:443:103.180.163.41)
-          curl "${CURL_RESOLVE[@]}" --retry 5 --retry-delay 5 --retry-all-errors -fsS "${{ steps.artifacts.outputs.manifest_url }}" | tee /tmp/latest.json
-          curl "${CURL_RESOLVE[@]}" --retry 5 --retry-delay 5 --retry-all-errors -fsSI "${{ steps.artifacts.outputs.dmg_url }}"
-          echo "Public DMG URL: ${{ steps.artifacts.outputs.dmg_url }}"
+          curl "${CURL_RESOLVE[@]}" --retry 5 --retry-delay 5 --retry-all-errors -fsS "${{ steps.manifest.outputs.manifest_url }}" | tee /tmp/latest.json
+          curl "${CURL_RESOLVE[@]}" --retry 5 --retry-delay 5 --retry-all-errors -fsSI "${{ steps.manifest.outputs.dmg_url }}"
+          echo "Public manifest: ${{ steps.manifest.outputs.manifest_url }}"
 
       - name: Upload backup artifact
         uses: actions/upload-artifact@v4
         with:
           name: airnote-vm-release-${{ steps.ver.outputs.version }}
-          path: ${{ steps.artifacts.outputs.artifact_dir }}/
+          path: artifacts/
           retention-days: 14

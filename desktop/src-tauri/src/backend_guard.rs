@@ -32,6 +32,8 @@ fn pid_files() -> [PathBuf; 2] {
 }
 
 fn is_backend_name(name: &str) -> bool {
+    // Windows process names may include `.exe`; normalize so both process-name
+    // and executable-path checks handle macOS and Windows consistently.
     let normalized = name.trim_end_matches(".exe");
     normalized == BACKEND_NAME || normalized == LEGACY_BACKEND_NAME
 }
@@ -140,8 +142,13 @@ fn should_reap_process(exe: &Path, current_parent: Option<&Path>) -> bool {
         }
     }
 
+    // Match dev builds run straight from the cargo target dir, using
+    // `MAIN_SEPARATOR` so the check also fires for Windows backslash paths.
+    let sep = std::path::MAIN_SEPARATOR;
+    let target_debug = format!("{sep}target{sep}debug{sep}");
+    let target_release = format!("{sep}target{sep}release{sep}");
     let path = exe.to_string_lossy();
-    path.contains("/target/debug/") || path.contains("/target/release/")
+    path.contains(&target_debug) || path.contains(&target_release)
 }
 
 fn terminate_pid(pid: u32, graceful_for: Duration) {
