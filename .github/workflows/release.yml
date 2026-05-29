@@ -18,6 +18,12 @@ on:
         description: 'Release tag to publish, for example v2.1.8'
         required: true
         type: string
+      platforms:
+        description: 'Which platforms to build/publish'
+        required: false
+        default: both
+        type: choice
+        options: [both, darwin, windows]
 
 permissions:
   contents: write
@@ -27,21 +33,37 @@ env:
   PRODUCT_NAME: AirNote
 
 jobs:
+  # Compute the build matrix from the `platforms` input. A tag push (no input)
+  # defaults to `both`. Selecting a single platform lets you ship, e.g., a
+  # Windows-only update without rebuilding/republishing macOS — combined with the
+  # per-target manifests below, macOS clients then see no update.
+  setup:
+    name: Resolve build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        run: |
+          P="${{ github.event.inputs.platforms }}"
+          [ -z "$P" ] && P="both"
+          DARWIN='{"target":"aarch64-apple-darwin","arch_short":"aarch64","runs_on":"macos-latest","platform":"darwin"}'
+          WINDOWS='{"target":"x86_64-pc-windows-msvc","arch_short":"x86_64","runs_on":"windows-latest","platform":"windows"}'
+          case "$P" in
+            darwin)  INCLUDE="[$DARWIN]" ;;
+            windows) INCLUDE="[$WINDOWS]" ;;
+            *)       INCLUDE="[$DARWIN,$WINDOWS]" ;;
+          esac
+          echo "matrix={\"include\":$INCLUDE}" >> "$GITHUB_OUTPUT"
+          echo "platforms=$P -> $INCLUDE"
+
   build:
     name: Build (${{ matrix.target }})
+    needs: setup
     runs-on: ${{ matrix.runs_on }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            arch_short: aarch64
-            runs_on: macos-latest
-            platform: darwin
-          - target: x86_64-pc-windows-msvc
-            arch_short: x86_64
-            runs_on: windows-latest
-            platform: windows
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -415,70 +437,77 @@ jobs:
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "release channel: $CHANNEL"
 
-      - name: Generate updater manifests (latest.json + channel manifests)
+      - name: Generate updater manifests (per-target + combined)
         working-directory: artifacts
         run: |
+          set -euo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
           TAG="${{ steps.rel.outputs.tag }}"
           CHANNEL="${{ steps.chan.outputs.channel }}"
           PRODUCT_NAME="${PRODUCT_NAME:-AirNote}"
           NOTES="See https://github.com/EMIAC-org/Said/releases/tag/${TAG}"
           BASE_URL="https://github.com/EMIAC-org/Said/releases/download/${TAG}"
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # stable -> latest.json / darwin-latest.json / windows-latest.json
+          # beta   -> beta.json   / darwin-beta.json   / windows-beta.json
+          SUFFIX="latest"; [ "$CHANNEL" = "stable" ] || SUFFIX="beta"
 
-          read_sig() {
-            local file="$1"
-            [ -f "$file" ] && cat "$file" || echo ""
-          }
+          read_sig() { [ -f "$1" ] && cat "$1" || echo ""; }
 
-          AARCH64_SIG=$(read_sig "${PRODUCT_NAME}_${VERSION}_aarch64.app.tar.gz.sig")
-          WINDOWS_SIG=$(read_sig "${PRODUCT_NAME}_${VERSION}_x64-setup.nsis.zip.sig")
+          DARWIN_FILE="${PRODUCT_NAME}_${VERSION}_aarch64.app.tar.gz"
           WINDOWS_FILE="${PRODUCT_NAME}_${VERSION}_x64-setup.nsis.zip"
-          WINDOWS_PLATFORM_JSON=""
-          if [ -f "$WINDOWS_FILE" ]; then
-            WINDOWS_PLATFORM_JSON=$(cat <<EOF
-              ,
+
+          darwin_entry() {
+            cat <<EOF
+              "darwin-aarch64": {
+                "signature": "$(read_sig "${DARWIN_FILE}.sig")",
+                "url": "${BASE_URL}/${DARWIN_FILE}"
+              }
+          EOF
+          }
+          windows_entry() {
+            cat <<EOF
               "windows-x86_64": {
-                "signature": "${WINDOWS_SIG}",
+                "signature": "$(read_sig "${WINDOWS_FILE}.sig")",
                 "url": "${BASE_URL}/${WINDOWS_FILE}"
               }
           EOF
-            )
-          else
-            echo "No Windows updater bundle found; omitting windows-x86_64 from updater manifest."
-          fi
+          }
 
-          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
+          # $1 = output file, $2 = platforms block (already-joined entries)
           write_manifest() {
-            local FILE="$1"
-            cat > "$FILE" <<EOF
+            cat > "$1" <<EOF
           {
             "version": "${VERSION}",
             "notes": "${NOTES}",
             "pub_date": "${PUB_DATE}",
             "platforms": {
-              "darwin-aarch64": {
-                "signature": "${AARCH64_SIG}",
-                "url": "${BASE_URL}/${PRODUCT_NAME}_${VERSION}_aarch64.app.tar.gz"
-              }
-          ${WINDOWS_PLATFORM_JSON}
+          $2
             }
           }
           EOF
           }
 
-          if [ "$CHANNEL" = "stable" ]; then
-            write_manifest latest.json
-          else
-            write_manifest beta.json
+          # Per-target manifests — only for platforms actually built this run.
+          if [ -f "$DARWIN_FILE" ]; then
+            write_manifest "darwin-${SUFFIX}.json" "$(darwin_entry)"
+          fi
+          if [ -f "$WINDOWS_FILE" ]; then
+            write_manifest "windows-${SUFFIX}.json" "$(windows_entry)"
+          fi
+
+          # Combined (legacy) manifest for clients on the old single-endpoint
+          # build. Only written on a FULL both-platform release, so a
+          # single-platform release never rewrites it (which would otherwise show
+          # legacy clients a version with their platform missing → check errors).
+          if [ -f "$DARWIN_FILE" ] && [ -f "$WINDOWS_FILE" ]; then
+            write_manifest "${SUFFIX}.json" "$(darwin_entry),
+          $(windows_entry)"
           fi
 
           echo "── manifests written ──"
           ls -la *.json
-          for f in *.json; do
-            echo "── $f ──"
-            cat "$f"
-          done
+          for f in *.json; do echo "── $f ──"; cat "$f"; done
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
