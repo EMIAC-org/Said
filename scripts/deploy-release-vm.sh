@@ -4,8 +4,9 @@
 # This script intentionally does not build or notarize the app. Run
 # scripts/build-dmg.sh first on a Mac with the Developer ID certificate and
 # Apple notarization credentials available. This deploy step only packages the
-# Tauri updater archive, signs that updater archive, writes latest.json, uploads
-# everything to the VM, and prunes old versions.
+# Tauri updater archive, signs that updater archive, writes the Darwin updater
+# manifest, uploads everything to the VM, and prunes old versions. It is
+# intentionally Mac-only and does not overwrite the Windows updater manifest.
 
 set -euo pipefail
 
@@ -49,7 +50,8 @@ ARTIFACT_DIR=".context/release-artifacts/$VERSION"
 UPDATE_TAR="${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.app.tar.gz"
 UPDATE_TAR_PATH="$ARTIFACT_DIR/$UPDATE_TAR"
 UPDATE_SIG_PATH="$UPDATE_TAR_PATH.sig"
-MANIFEST_PATH="$ARTIFACT_DIR/latest.json"
+DARWIN_MANIFEST_PATH="$ARTIFACT_DIR/darwin-latest.json"
+LEGACY_MANIFEST_PATH="$ARTIFACT_DIR/latest.json"
 
 require_file() {
   [ -f "$1" ] || { echo "missing required file: $1" >&2; exit 1; }
@@ -116,7 +118,7 @@ cp "$DMG_PATH" "$ARTIFACT_DIR/"
 
 PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 SIGNATURE="$(cat "$UPDATE_SIG_PATH")"
-cat > "$MANIFEST_PATH" <<JSON
+cat > "$DARWIN_MANIFEST_PATH" <<JSON
 {
   "version": "$VERSION",
   "notes": "AirNote $VERSION",
@@ -130,17 +132,26 @@ cat > "$MANIFEST_PATH" <<JSON
 }
 JSON
 
+if [ "${UPDATE_LEGACY_COMBINED_MANIFEST:-0}" = "1" ]; then
+  cp "$DARWIN_MANIFEST_PATH" "$LEGACY_MANIFEST_PATH"
+fi
+
 (
   cd "$ARTIFACT_DIR"
   shasum -a 256 * | sort -k 2 > SHA256SUMS
 )
 
-echo "Uploading release $VERSION to $REMOTE:$REMOTE_RELEASE_ROOT"
-"${SSH_CMD[@]}" "$REMOTE" "mkdir -p '$REMOTE_RELEASE_ROOT/releases/$VERSION' '$REMOTE_RELEASE_ROOT/updates'"
+echo "Uploading macOS release $VERSION to $REMOTE:$REMOTE_RELEASE_ROOT"
+"${SSH_CMD[@]}" "$REMOTE" "mkdir -p '$REMOTE_RELEASE_ROOT/releases/$VERSION' '$REMOTE_RELEASE_ROOT/updates/darwin'"
 "${SCP_CMD[@]}" "$ARTIFACT_DIR/$UPDATE_TAR" "$ARTIFACT_DIR/$UPDATE_TAR.sig" "$ARTIFACT_DIR/$(basename "$DMG_PATH")" "$ARTIFACT_DIR/SHA256SUMS" \
   "$REMOTE:$REMOTE_RELEASE_ROOT/releases/$VERSION/"
-"${SCP_CMD[@]}" "$MANIFEST_PATH" "$REMOTE:$REMOTE_RELEASE_ROOT/updates/latest.json"
-"${SCP_CMD[@]}" "$MANIFEST_PATH" "$REMOTE:$REMOTE_RELEASE_ROOT/releases/$VERSION/latest.json"
+"${SCP_CMD[@]}" "$DARWIN_MANIFEST_PATH" "$REMOTE:$REMOTE_RELEASE_ROOT/updates/darwin/latest.json"
+"${SCP_CMD[@]}" "$DARWIN_MANIFEST_PATH" "$REMOTE:$REMOTE_RELEASE_ROOT/releases/$VERSION/darwin-latest.json"
+
+if [ "${UPDATE_LEGACY_COMBINED_MANIFEST:-0}" = "1" ]; then
+  "${SCP_CMD[@]}" "$LEGACY_MANIFEST_PATH" "$REMOTE:$REMOTE_RELEASE_ROOT/updates/latest.json"
+  "${SCP_CMD[@]}" "$LEGACY_MANIFEST_PATH" "$REMOTE:$REMOTE_RELEASE_ROOT/releases/$VERSION/latest.json"
+fi
 
 "${SSH_CMD[@]}" "$REMOTE" "REMOTE_RELEASE_ROOT='$REMOTE_RELEASE_ROOT' KEEP_RELEASES='$KEEP_RELEASES' bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
@@ -156,6 +167,11 @@ fi
 REMOTE_SCRIPT
 
 echo "Release uploaded:"
-echo "  manifest: $PUBLIC_BASE_URL/updates/latest.json"
+echo "  manifest: $PUBLIC_BASE_URL/updates/darwin/latest.json"
 echo "  manual DMG: $PUBLIC_BASE_URL/releases/$VERSION/$(basename "$DMG_PATH")"
 echo "  updater: $PUBLIC_BASE_URL/releases/$VERSION/$UPDATE_TAR"
+if [ "${UPDATE_LEGACY_COMBINED_MANIFEST:-0}" = "1" ]; then
+  echo "  legacy combined manifest also updated: $PUBLIC_BASE_URL/updates/latest.json"
+else
+  echo "  windows manifest left untouched"
+fi

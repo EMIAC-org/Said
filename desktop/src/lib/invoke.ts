@@ -955,11 +955,12 @@ export function onVocabToast(handler: (p: VocabToastPayload) => void): () => voi
 export interface DesktopPrefs {
   sentry_disabled: boolean;
   update_channel: "stable" | "beta";
+  message_polish_mode: boolean;
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
   if (!isTauriRuntime()) {
-    return { sentry_disabled: false, update_channel: "stable" };
+    return { sentry_disabled: false, update_channel: "stable", message_polish_mode: false };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");
 }

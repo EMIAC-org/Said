@@ -12,6 +12,7 @@ pub mod meeting_hub;
 pub mod notification_worker;
 pub mod routes;
 pub mod store;
+pub mod vocab_worker;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -100,6 +101,59 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::clients::client_usage),
         )
         .route("/v1/orgs/:org_id/stats", get(routes::clients::org_stats))
+        // Enterprise — Company vocabulary bucket
+        .route(
+            "/v1/orgs/:org_id/vocab/terms",
+            get(routes::vocab::list_terms).post(routes::vocab::create_term),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/terms/:term_id",
+            patch(routes::vocab::update_term).delete(routes::vocab::delete_term),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/aliases",
+            get(routes::vocab::list_aliases).post(routes::vocab::create_alias),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/aliases/:alias_id",
+            patch(routes::vocab::update_alias).delete(routes::vocab::delete_alias),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/publish",
+            post(routes::vocab::publish),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/releases",
+            get(routes::vocab::releases),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/suggestions",
+            get(routes::vocab::list_suggestions),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/suggestions/aggregate",
+            post(routes::vocab::aggregate_now),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/suggestions/:suggestion_id",
+            patch(routes::vocab::update_suggestion),
+        )
+        .route(
+            "/v1/orgs/:org_id/clients/:account_id/vocab",
+            get(routes::vocab::user_vocab_detail),
+        )
+        .route(
+            "/v1/company-vocab/version",
+            get(routes::vocab::desktop_version),
+        )
+        .route(
+            "/v1/company-vocab/bucket",
+            get(routes::vocab::desktop_bucket),
+        )
+        .route(
+            "/v1/company-vocab/user-vocab",
+            post(routes::vocab::upload_user_vocab),
+        )
         // Enterprise — Orgs
         .route("/v1/orgs", post(routes::orgs::create))
         .route("/v1/orgs/me", get(routes::orgs::me))

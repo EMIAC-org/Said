@@ -699,6 +699,7 @@ export function SettingsView({
   const [desktopPrefs, setDesktopPrefsState] = useState<DesktopPrefs>({
     sentry_disabled: false,
     update_channel: "stable",
+    message_polish_mode: false,
   });
   useEffect(() => {
     void getDesktopPrefs().then(setDesktopPrefsState).catch(() => {});

@@ -40,6 +40,8 @@ import {
   getConnection,
   isConnected,
   ensureDesktopRegistered,
+  syncCompanyVocab,
+  uploadUserVocabSummary,
   type EnterpriseConnection,
 } from "@/lib/enterprise";
 import { useTheme } from "@/lib/useTheme";
@@ -240,6 +242,8 @@ export default function App() {
       const conn = getConnection();
       if (!conn?.serverUrl || !conn.jwt) return;
       void ensureDesktopRegistered(conn.serverUrl, conn.jwt);
+      void syncCompanyVocab(false);
+      void uploadUserVocabSummary();
     };
     tick();
     const interval = setInterval(tick, 5 * 60 * 1000);
@@ -249,6 +253,8 @@ export default function App() {
   const handleEnterpriseConnected = useCallback((conn: EnterpriseConnection) => {
     setEnterpriseGate("connected");
     void ensureDesktopRegistered(conn.serverUrl, conn.jwt);
+    void syncCompanyVocab(true);
+    void uploadUserVocabSummary(true);
   }, []);
 
   const handleEnterpriseDisconnect = useCallback(() => {

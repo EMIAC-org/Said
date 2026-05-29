@@ -5,9 +5,11 @@ mod backend;
 mod backend_guard;
 mod desktop;
 mod dg_stream; // P5: Deepgram WebSocket live streaming
+mod echo_gate;
 mod enterprise_oauth;
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
+mod speaker_suppression;
 
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -133,6 +135,20 @@ fn show_status_bar_panel(app: &tauri::AppHandle) -> bool {
             false
         }
     }
+}
+
+fn emit_status_bar_resync(app: &tauri::AppHandle, reason: &str) {
+    let state = app
+        .try_state::<SharedApp>()
+        .and_then(|shared| shared.0.lock().ok().map(|d| d.state.as_str().to_string()))
+        .unwrap_or_else(|| "unknown".to_string());
+    let _ = app.emit(
+        "status-bar-resync",
+        serde_json::json!({
+            "reason": reason,
+            "state": state,
+        }),
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -341,6 +357,7 @@ fn present_status_bar_macos_on_main(
     app: &tauri::AppHandle,
     win: &tauri::WebviewWindow,
     state: &str,
+    resync: bool,
 ) {
     reposition_status_bar(app, win);
     configure_status_bar_macos(win);
@@ -353,6 +370,9 @@ fn present_status_bar_macos_on_main(
     }
     configure_status_bar_macos(win);
     let _ = show_status_bar_panel(app);
+    if resync {
+        emit_status_bar_resync(app, state);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -360,16 +380,51 @@ fn schedule_present_status_bar_macos(
     app: &tauri::AppHandle,
     win: &tauri::WebviewWindow,
     state: &str,
+    resync: bool,
 ) {
     let app_for_main = app.clone();
     let app_in_closure = app_for_main.clone();
     let win = win.clone();
     let state = state.to_string();
     if let Err(e) = app_for_main.run_on_main_thread(move || {
-        present_status_bar_macos_on_main(&app_in_closure, &win, &state);
+        present_status_bar_macos_on_main(&app_in_closure, &win, &state, resync);
     }) {
         tracing::warn!("[status-bar] schedule present on main thread failed: {e}");
     }
+}
+
+fn present_status_bar_native(
+    app: &tauri::AppHandle,
+    reason: &str,
+    resync: bool,
+) -> Result<(), String> {
+    if app.get_webview_window("status-bar").is_none() {
+        create_status_bar(app);
+    }
+    let win = app
+        .get_webview_window("status-bar")
+        .ok_or_else(|| "status-bar window not found".to_string())?;
+    tracing::debug!("[status-bar] native present reason={reason} resync={resync}");
+
+    #[cfg(target_os = "macos")]
+    {
+        schedule_present_status_bar_macos(app, &win, reason, resync);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        win.set_always_on_top(true)
+            .map_err(|e| format!("set_always_on_top failed: {e}"))?;
+        win.set_visible_on_all_workspaces(true)
+            .map_err(|e| format!("set_visible_on_all_workspaces failed: {e}"))?;
+        win.show()
+            .map_err(|e| format!("show status bar failed: {e}"))?;
+        if resync {
+            emit_status_bar_resync(app, reason);
+        }
+    }
+
+    Ok(())
 }
 
 // ── Keystroke reconstruction (edit detection for AX-blind apps) ──────────────
@@ -682,6 +737,10 @@ struct MeetingSttStatus {
     active: bool,
     muted: bool,
     capture_running: bool,
+    speaker_reference_available: bool,
+    echo_gate_active: bool,
+    local_speech_active: bool,
+    last_gate_reason: String,
 }
 
 /// Meeting-mode flags. Active means the live meeting view owns the recorder;
@@ -690,6 +749,7 @@ struct MeetingModeState {
     active: Arc<AtomicBool>,
     muted: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
+    echo_gate: Arc<echo_gate::EchoGateShared>,
 }
 
 impl MeetingModeState {
@@ -698,6 +758,7 @@ impl MeetingModeState {
             active: Arc::new(AtomicBool::new(false)),
             muted: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU64::new(0)),
+            echo_gate: echo_gate::EchoGateShared::new(),
         }
     }
 
@@ -710,6 +771,7 @@ impl MeetingModeState {
     fn exit(&self) -> bool {
         self.muted.store(false, Ordering::SeqCst);
         self.generation.fetch_add(1, Ordering::SeqCst);
+        self.echo_gate.stop_reference();
         self.active.swap(false, Ordering::SeqCst)
     }
 
@@ -729,20 +791,42 @@ impl MeetingModeState {
         if self.muted.swap(muted, Ordering::SeqCst) != muted {
             self.generation.fetch_add(1, Ordering::SeqCst);
         }
+        if muted {
+            self.echo_gate.stop_reference();
+        }
     }
 
     fn status(&self) -> MeetingSttStatus {
+        let echo_status = self.echo_gate.status();
         MeetingSttStatus {
             active: self.is_active(),
             muted: self.is_muted(),
             capture_running: self.capture_enabled(),
+            speaker_reference_available: echo_status.speaker_reference_available,
+            echo_gate_active: echo_status.echo_gate_active,
+            local_speech_active: echo_status.local_speech_active,
+            last_gate_reason: echo_status.last_gate_reason,
         }
+    }
+
+    fn ensure_echo_reference(&self) -> Result<(), String> {
+        if self.echo_gate.is_filter_available() {
+            return Ok(());
+        }
+        self.echo_gate.start_reference()
     }
 }
 
 fn emit_meeting_stt_status(app: &tauri::AppHandle) {
     if let Some(meeting) = app.try_state::<MeetingModeState>() {
         let _ = app.emit("meeting-stt-state", meeting.status());
+    }
+}
+
+fn restore_speaker_suppression(app: &tauri::AppHandle, reason: &str) {
+    #[cfg(target_os = "macos")]
+    if let Some(guard) = app.try_state::<speaker_suppression::SpeakerSuppressionGuard>() {
+        guard.restore(reason);
     }
 }
 
@@ -771,8 +855,58 @@ struct HotPathCacheInner {
 /// Each idle sync increments this; a timer whose generation no longer matches is silently dropped.
 struct StatusBarHideGen(Arc<AtomicU64>);
 
+/// True while the status bar is showing a user-action-required notification.
+/// Idle app-state syncs must not hide the native window until the frontend
+/// explicitly clears this hold.
+struct StatusBarPersistentHold(AtomicBool);
+
 /// True while ⇧⌘/ placement mode is active (drag to reposition HUD).
 struct StatusBarPlacementActive(AtomicBool);
+
+fn status_bar_persistent_hold(app: &tauri::AppHandle) -> bool {
+    app.try_state::<StatusBarPersistentHold>()
+        .map(|s| s.0.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+fn apply_status_bar_interactive_state(win: &tauri::WebviewWindow, interactive: bool) {
+    let _ = win.set_ignore_cursor_events(!interactive);
+    #[cfg(target_os = "macos")]
+    {
+        use objc::Message;
+        use objc::runtime::{Object, Sel};
+        if let Ok(ns_window) = win.ns_window() {
+            if !ns_window.is_null() {
+                unsafe {
+                    let ns_window = &*(ns_window as *mut Object);
+                    let _: Result<(), _> = ns_window
+                        .send_message(Sel::register("setIgnoresMouseEvents:"), (!interactive,));
+                }
+            }
+        }
+    }
+    tracing::debug!("[status-bar] interactive={interactive}");
+}
+
+fn set_status_bar_interactive_state(app: &tauri::AppHandle, interactive: bool) {
+    if let Some(win) = app.get_webview_window("status-bar") {
+        #[cfg(target_os = "macos")]
+        {
+            let app_for_main = app.clone();
+            let win_for_main = win.clone();
+            if let Err(e) = app_for_main.run_on_main_thread(move || {
+                apply_status_bar_interactive_state(&win_for_main, interactive);
+            }) {
+                tracing::warn!("[status-bar] schedule interactive state failed: {e}");
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            apply_status_bar_interactive_state(&win, interactive);
+        }
+    }
+}
 
 fn placement_mode_active(app: &tauri::AppHandle) -> bool {
     app.try_state::<StatusBarPlacementActive>()
@@ -947,7 +1081,13 @@ fn build_tray_menu(
     #[cfg(not(target_os = "macos"))]
     let (h_format, h_prof, h_hinglish) = ("Polish My Message", "English", "Hinglish");
 
-    let p_format = MenuItem::with_id(app, "tray_polish_format", h_format, true, None::<&str>)?;
+    let p_format = MenuItem::with_id(
+        app,
+        "tray_polish_message_polish",
+        h_format,
+        true,
+        None::<&str>,
+    )?;
     let p_prof = MenuItem::with_id(app, "tray_polish_professional", h_prof, true, None::<&str>)?;
     let p_hinglish =
         MenuItem::with_id(app, "tray_polish_hinglish", h_hinglish, true, None::<&str>)?;
@@ -1004,10 +1144,10 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
 
     tracing::debug!("[status-bar] sync state={state}");
     if state == "idle" {
-        if status_bar_pinned() {
-            tracing::debug!("[status-bar] idle state — pinned, keeping visible");
+        if status_bar_pinned() || status_bar_persistent_hold(handle) {
+            tracing::debug!("[status-bar] idle state — pinned/held, keeping visible");
             #[cfg(target_os = "macos")]
-            schedule_present_status_bar_macos(handle, &win, state);
+            schedule_present_status_bar_macos(handle, &win, state, false);
             #[cfg(not(target_os = "macos"))]
             {
                 let _ = win.set_always_on_top(true);
@@ -1047,6 +1187,10 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
                 tracing::debug!("[status-bar] hide skipped — app is active again");
                 return;
             }
+            if status_bar_pinned() || status_bar_persistent_hold(&app) {
+                tracing::debug!("[status-bar] hide skipped — status bar is pinned/held");
+                return;
+            }
             if let Some(win) = app.get_webview_window("status-bar") {
                 match win.hide() {
                     Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
@@ -1069,7 +1213,7 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
 
     #[cfg(target_os = "macos")]
     {
-        schedule_present_status_bar_macos(handle, &win, state);
+        schedule_present_status_bar_macos(handle, &win, state, state != "placement");
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -1085,6 +1229,9 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
         match win.show() {
             Ok(_) => tracing::debug!("[status-bar] show ok for state={state}"),
             Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
+        }
+        if state != "placement" {
+            emit_status_bar_resync(handle, state);
         }
     }
 }
@@ -1154,6 +1301,9 @@ fn create_status_bar(app: &tauri::AppHandle) {
             .no_activate(true)
             .with_window(|window| {
                 window
+                    .background_throttling(
+                        tauri::utils::config::BackgroundThrottlingPolicy::Disabled,
+                    )
                     .decorations(false)
                     .always_on_top(true)
                     .visible_on_all_workspaces(true)
@@ -1192,6 +1342,7 @@ fn create_status_bar(app: &tauri::AppHandle) {
     #[cfg(not(target_os = "macos"))]
     match tauri::WebviewWindowBuilder::new(app, "status-bar", tauri::WebviewUrl::App(url.into()))
         .title("AirNote")
+        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
         .inner_size(idle_w, idle_h)
         .position(x, y)
         .decorations(false)
@@ -1315,6 +1466,33 @@ fn tray_toggle_recording(app: &tauri::AppHandle) {
         }
         desktop::AppState::Processing => {} // ignore — already in flight
     }
+}
+
+fn toggle_message_polish_mode(app: &tauri::AppHandle) {
+    let mut prefs = said_core::prefs::load();
+    prefs.message_polish_mode = !prefs.message_polish_mode;
+    if let Err(e) = said_core::prefs::save(&prefs) {
+        tracing::warn!("[message_polish] failed to persist mode toggle: {e}");
+        emit_tray_error(app, "Couldn't save polish mode. Try again.");
+        return;
+    }
+
+    tracing::info!(
+        "[message_polish] mode toggled {}",
+        if prefs.message_polish_mode {
+            "on"
+        } else {
+            "off"
+        }
+    );
+    let _ = present_status_bar_native(app, "message-polish-mode", false);
+    let _ = app.emit(
+        "message-polish-mode",
+        serde_json::json!({
+            "enabled": prefs.message_polish_mode,
+            "message": if prefs.message_polish_mode { "Polish mode on" } else { "Polish mode off" },
+        }),
+    );
 }
 
 fn insert_text_prefer_direct(label: &str, text: &str) -> Result<(), String> {
@@ -1552,7 +1730,7 @@ fn get_snapshot(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
 
 #[tauri::command]
 fn dismiss_status_bar(app: tauri::AppHandle) -> Result<(), String> {
-    if status_bar_pinned() {
+    if status_bar_pinned() || status_bar_persistent_hold(&app) {
         return Ok(());
     }
     let is_active = app
@@ -1572,6 +1750,35 @@ fn dismiss_status_bar(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("status-bar") {
         win.hide()
             .map_err(|e| format!("hide status bar failed: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn present_status_bar(app: tauri::AppHandle, reason: Option<String>) -> Result<(), String> {
+    let reason = reason.unwrap_or_else(|| "notification".to_string());
+    tracing::debug!("[status-bar] present requested reason={reason}");
+    present_status_bar_native(&app, &reason, false)
+}
+
+#[tauri::command]
+fn set_status_bar_persistent(
+    app: tauri::AppHandle,
+    persistent: bool,
+    reason: Option<String>,
+) -> Result<(), String> {
+    let reason = reason.unwrap_or_else(|| "notification".to_string());
+    let hold = app
+        .try_state::<StatusBarPersistentHold>()
+        .ok_or_else(|| "status-bar persistent hold state missing".to_string())?;
+    hold.0.store(persistent, Ordering::SeqCst);
+    tracing::debug!("[status-bar] persistent_hold={persistent} reason={reason}");
+    if persistent {
+        // Update prompts are actionable. Make the native panel interactive
+        // immediately instead of relying on a later React effect; otherwise the
+        // visible panel can remain click-through after being shown from Rust.
+        set_status_bar_interactive_state(&app, true);
+        present_status_bar_native(&app, &reason, false)?;
     }
     Ok(())
 }
@@ -1657,24 +1864,7 @@ fn reset_status_bar_position(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn set_status_bar_interactive(app: tauri::AppHandle, interactive: bool) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("status-bar") {
-        let _ = win.set_ignore_cursor_events(!interactive);
-        #[cfg(target_os = "macos")]
-        {
-            use objc::Message;
-            use objc::runtime::{Object, Sel};
-            if let Ok(ns_window) = win.ns_window() {
-                if !ns_window.is_null() {
-                    unsafe {
-                        let ns_window = &*(ns_window as *mut Object);
-                        let _: Result<(), _> = ns_window
-                            .send_message(Sel::register("setIgnoresMouseEvents:"), (!interactive,));
-                    }
-                }
-            }
-        }
-        tracing::debug!("[status-bar] interactive={interactive}");
-    }
+    set_status_bar_interactive_state(&app, interactive);
     Ok(())
 }
 
@@ -2011,6 +2201,18 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
 
     cancel_edit_watcher(app, "new recording");
 
+    let meeting_capture = app
+        .try_state::<MeetingModeState>()
+        .map(|s| s.capture_enabled())
+        .unwrap_or(false);
+
+    #[cfg(target_os = "macos")]
+    if !meeting_capture {
+        if let Some(guard) = app.try_state::<speaker_suppression::SpeakerSuppressionGuard>() {
+            guard.begin("normal dictation start");
+        }
+    }
+
     // Lock and pre-unlock the frontmost app's AX tree BEFORE recording begins.
     // Chrome / Electron need ~150-200 ms to build their accessibility cache after
     // AXEnhancedUserInterface / AXManualAccessibility is set.  By unlocking here
@@ -2018,10 +2220,6 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     // ready, so that post-paste edit detection can read AXValue reliably.
     #[cfg(target_os = "macos")]
     {
-        let meeting_capture = app
-            .try_state::<MeetingModeState>()
-            .map(|s| s.capture_enabled())
-            .unwrap_or(false);
         if !meeting_capture {
             let pid = paster::lock_frontmost_app_now();
             tracing::debug!("[record] locked frontmost app for edit-watch pid={pid:?}");
@@ -2058,7 +2256,10 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             };
             (result, lr)
         }
-        Err(_) => return,
+        Err(_) => {
+            restore_speaker_suppression(app, "start lock failed");
+            return;
+        }
     };
     match started {
         Ok(snap) => {
@@ -2088,6 +2289,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             emit_meeting_stt_status(app);
         }
         Err(e) => {
+            restore_speaker_suppression(app, "start failed");
             FINISH_AFTER_START.store(false, Ordering::SeqCst);
             let _ = app.emit(
                 "voice-error",
@@ -2115,6 +2317,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 Arc::clone(&meeting.muted),
                 Arc::clone(&meeting.generation),
                 meeting.generation.load(Ordering::SeqCst),
+                Arc::clone(&meeting.echo_gate),
                 Arc::clone(shared),
                 app.clone(),
                 Arc::clone(&app.state::<BackendState>().0),
@@ -2141,8 +2344,16 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                     last_emit = std::time::Instant::now();
                 }
 
-                if let Some((active, muted, generation, expected_generation, shared, _, _)) =
-                    &meeting_pause
+                if let Some((
+                    active,
+                    muted,
+                    generation,
+                    expected_generation,
+                    echo_gate,
+                    shared,
+                    _,
+                    _,
+                )) = &meeting_pause
                 {
                     if !active.load(Ordering::SeqCst)
                         || muted.load(Ordering::SeqCst)
@@ -2152,11 +2363,21 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                     }
 
                     let now = std::time::Instant::now();
-                    if level >= MEETING_SPEECH_LEVEL {
+                    let speech_active = if echo_gate.is_filter_available() {
+                        echo_gate.local_speech_active()
+                    } else {
+                        level >= MEETING_SPEECH_LEVEL
+                    };
+                    let silence_active = if echo_gate.is_filter_available() {
+                        !echo_gate.local_speech_active()
+                    } else {
+                        level <= MEETING_SILENCE_LEVEL
+                    };
+                    if speech_active {
                         heard_speech = true;
                         last_voice_at = now;
                     } else if heard_speech
-                        && level <= MEETING_SILENCE_LEVEL
+                        && silence_active
                         && now.duration_since(last_voice_at)
                             >= std::time::Duration::from_millis(MEETING_PAUSE_MS)
                         && now.duration_since(started_at)
@@ -2174,7 +2395,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             }
             let _ = app_levels.emit("voice-level", serde_json::json!({ "level": 0.0 }));
             if finish_for_pause {
-                if let Some((_, _, _, _, shared, app, backend)) = meeting_pause {
+                if let Some((_, _, _, _, _, shared, app, backend)) = meeting_pause {
                     do_finish_recording(shared, app, backend);
                 }
             }
@@ -2255,6 +2476,13 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
 
         let backend_for_pe = Arc::clone(&app.state::<BackendState>().0);
         let session_tx = app.state::<DeepgramSessionState>().0.clone();
+        let echo_gate = app.try_state::<MeetingModeState>().and_then(|meeting| {
+            if meeting.capture_enabled() {
+                Some(Arc::clone(&meeting.echo_gate))
+            } else {
+                None
+            }
+        });
 
         tauri::async_runtime::spawn(async move {
             let pre_embed_info: Option<(String, String)> =
@@ -2274,7 +2502,12 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 }
                 return;
             }
-            dg_stream::spawn_audio_bridge(recording_id, chunk_recv, session_tx);
+            dg_stream::spawn_audio_bridge_with_echo_gate(
+                recording_id,
+                chunk_recv,
+                session_tx,
+                echo_gate,
+            );
         });
     } else {
         tracing::debug!("[dg_stream] no chunk receiver — WS streaming not started");
@@ -2290,6 +2523,7 @@ fn do_cancel_recording(
 ) {
     LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
     reset_long_dictation_lock(&app);
+    restore_speaker_suppression(&app, reason);
 
     if let Ok(mut route) = app.state::<RecordingRouteState>().0.lock() {
         *route = None;
@@ -2362,7 +2596,10 @@ fn do_finish_recording(
     let begin_stop = {
         let mut d = match shared.lock() {
             Ok(g) => g,
-            Err(_) => return,
+            Err(_) => {
+                restore_speaker_suppression(&app, "finish lock failed");
+                return;
+            }
         };
         match d.begin_stop() {
             Ok((stop_rx, was_too_short)) => {
@@ -2382,6 +2619,7 @@ fn do_finish_recording(
             }
         }
     };
+    restore_speaker_suppression(&app, "finish initiated");
 
     let (stop_rx, was_too_short) = match begin_stop {
         Ok((stop_rx, was_too_short, snap)) => {
@@ -2719,6 +2957,12 @@ async fn run_voice_polish_sse(
     };
 
     let app_clone = app.clone();
+    let message_polish_mode = !is_meeting && said_core::prefs::load().message_polish_mode;
+    if message_polish_mode {
+        tracing::info!(
+            "[pipeline] message polish mode enabled — suppressing live target typing until final output"
+        );
+    }
 
     // Track whether word-by-word AX typing succeeded
     let typed_any = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2727,7 +2971,9 @@ async fn run_voice_polish_sse(
     let token_count2 = token_count.clone();
     let fail_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let fail_count2 = fail_count.clone();
-    let live_guard = std::sync::Arc::new(std::sync::Mutex::new(LiveTypingGuard::default()));
+    let live_guard = std::sync::Arc::new(std::sync::Mutex::new(LiveTypingGuard {
+        disabled: message_polish_mode,
+    }));
     let live_guard2 = live_guard.clone();
     let typed_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let typed_text2 = typed_text.clone();
@@ -2752,7 +2998,6 @@ async fn run_voice_polish_sse(
             })
             .unwrap_or_else(|| "none (will use HTTP STT)".into()),
     );
-
     let mut on_polish_event = move |event| {
         match &event {
             api::PolishEvent::Token { token } => {
@@ -2869,6 +3114,7 @@ async fn run_voice_polish_sse(
             Some(transcript.meta),
             repair_mode,
             screen_context,
+            message_polish_mode,
             &mut on_polish_event,
         )
         .await?
@@ -2881,6 +3127,7 @@ async fn run_voice_polish_sse(
             None,
             repair_mode,
             screen_context,
+            message_polish_mode,
             &mut on_polish_event,
         )
         .await?
@@ -4064,6 +4311,21 @@ fn start_meeting_stt(
 ) -> Result<MeetingSttStatus, String> {
     let was_inactive = meeting_mode.enter();
     tracing::info!("[meeting_mode] entered — auto-starting recording");
+    if let Err(err) = meeting_mode.ensure_echo_reference() {
+        tracing::warn!("[meeting_mode] speaker filter unavailable: {err}");
+        meeting_mode
+            .echo_gate
+            .mark_reference_unavailable(err.clone());
+        let _ = app.emit(
+            "voice-error",
+            serde_json::json!({
+                "message": "Speaker filter unavailable",
+                "raw_error": err,
+                "audio_id": null,
+                "auto_hide_ms": 3500,
+            }),
+        );
+    }
     let current = state.0.lock().map_err(|_| "lock failed")?.state;
     if was_inactive || current == desktop::AppState::Idle {
         do_start_recording(&state.0, &app);
@@ -4127,6 +4389,21 @@ fn toggle_meeting_mute(
             );
         }
         meeting_mode.set_muted(false);
+        if let Err(err) = meeting_mode.ensure_echo_reference() {
+            tracing::warn!("[meeting_mode] speaker filter unavailable after resume: {err}");
+            meeting_mode
+                .echo_gate
+                .mark_reference_unavailable(err.clone());
+            let _ = app.emit(
+                "voice-error",
+                serde_json::json!({
+                    "message": "Speaker filter unavailable",
+                    "raw_error": err,
+                    "audio_id": null,
+                    "auto_hide_ms": 3500,
+                }),
+            );
+        }
         emit_meeting_stt_status(&app);
         do_start_recording(&state.0, &app);
         return Ok(meeting_mode.status());
@@ -4888,9 +5165,7 @@ async fn watch_for_edit(
 
                 if let Some(email) = resp.learned_emails.first() {
                     if !email.trim().is_empty() {
-                        if let Some(w) = app.get_webview_window("status-bar") {
-                            let _ = w.show();
-                        }
+                        let _ = present_status_bar_native(&app, "email-learned", false);
                         let _ = app.emit(
                             "email-learned",
                             serde_json::json!({
@@ -4933,9 +5208,7 @@ async fn watch_for_edit(
                         }
                         _ => "Remembered your correction".to_string(),
                     };
-                    if let Some(w) = app.get_webview_window("status-bar") {
-                        let _ = w.show();
-                    }
+                    let _ = present_status_bar_native(&app, "vocab-learned", false);
                     let _ = app.emit(
                         "vocab-learned",
                         serde_json::json!({
@@ -4950,9 +5223,7 @@ async fn watch_for_edit(
                 if let Some(qt) = resp.queued_terms.first() {
                     if !qt.term.trim().is_empty() {
                         let remaining = qt.k - qt.sighting_count;
-                        if let Some(w) = app.get_webview_window("status-bar") {
-                            let _ = w.show();
-                        }
+                        let _ = present_status_bar_native(&app, "vocab-queued", false);
                         let _ = app.emit(
                             "vocab-queued",
                             serde_json::json!({
@@ -4974,9 +5245,7 @@ async fn watch_for_edit(
 
                 // Review candidates — show interactive picker
                 if !resp.review_candidates.is_empty() {
-                    if let Some(w) = app.get_webview_window("status-bar") {
-                        let _ = w.show();
-                    }
+                    let _ = present_status_bar_native(&app, "vocab-review", false);
                     let candidates: Vec<serde_json::Value> = resp
                         .review_candidates
                         .iter()
@@ -5005,9 +5274,7 @@ async fn watch_for_edit(
 
                 // Ambiguous terms — show confirmation toast in status bar
                 for amb in &resp.ambiguous_terms {
-                    if let Some(w) = app.get_webview_window("status-bar") {
-                        let _ = w.show();
-                    }
+                    let _ = present_status_bar_native(&app, "vocab-confirm", false);
                     let _ = app.emit(
                         "vocab-confirm",
                         serde_json::json!({
@@ -5026,9 +5293,7 @@ async fn watch_for_edit(
 
                 // Wrong corrections auto-fixed — show acknowledgement pill
                 for neg in &resp.negative_terms {
-                    if let Some(w) = app.get_webview_window("status-bar") {
-                        let _ = w.show();
-                    }
+                    let _ = present_status_bar_native(&app, "vocab-wrong-fixed", false);
                     let _ = app.emit(
                         "vocab-wrong-fixed",
                         serde_json::json!({
@@ -5066,9 +5331,11 @@ async fn watch_for_edit(
 
                             if status.running && !started_emitted {
                                 started_emitted = true;
-                                if let Some(w) = app_retrain.get_webview_window("status-bar") {
-                                    let _ = w.show();
-                                }
+                                let _ = present_status_bar_native(
+                                    &app_retrain,
+                                    "retrain-started",
+                                    false,
+                                );
                                 let _ = app_retrain.emit(
                                     "retrain-status",
                                     serde_json::json!({ "phase": "started" }),
@@ -5078,9 +5345,8 @@ async fn watch_for_edit(
 
                             if status.finished_at > baseline_finished {
                                 let dur = status.duration_ms as f64 / 1000.0;
-                                if let Some(w) = app_retrain.get_webview_window("status-bar") {
-                                    let _ = w.show();
-                                }
+                                let _ =
+                                    present_status_bar_native(&app_retrain, "retrain-done", false);
                                 let _ = app_retrain.emit(
                                     "retrain-status",
                                     serde_json::json!({
@@ -6017,6 +6283,10 @@ fn main() {
                                 reset_status_bar_to_default(&app_h);
                                 show_status_bar_placement_mode(&app_h, "Centered");
                             }
+                            hotkey::HudShortcutAction::ToggleMessagePolishMode => {
+                                tracing::info!("[hotkey] ⇧⌘Space → toggle message polish mode");
+                                toggle_message_polish_mode(&app_h);
+                            }
                         });
                     }));
 
@@ -6036,7 +6306,7 @@ fn main() {
                             // CFRunLoop process queued events before we try Cmd+C.
                             std::thread::sleep(std::time::Duration::from_millis(50));
                             match n {
-                                1 => tray_polish_message(&app_clone, "format"),
+                                1 => tray_polish_message(&app_clone, "message_polish"),
                                 2 => tray_polish_message(&app_clone, "professional"),
                                 3 => tray_polish_message(&app_clone, "casual"),
                                 4 => tray_polish_message(&app_clone, "concise"),
@@ -6089,12 +6359,16 @@ fn main() {
         .manage(LastActionState(Mutex::new(None)))
         .manage(HotPathCache(Arc::new(tokio::sync::RwLock::new(HotPathCacheInner::default()))))
         .manage(StatusBarHideGen(Arc::new(AtomicU64::new(0))))
+        .manage(StatusBarPersistentHold(AtomicBool::new(false)))
         .manage(StatusBarPlacementActive(AtomicBool::new(false)))
         .manage(MeetingModeState::new())
+        .manage(speaker_suppression::SpeakerSuppressionGuard::new())
         .manage(LongDictationState::new())
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             get_snapshot,
+            present_status_bar,
+            set_status_bar_persistent,
             dismiss_status_bar,
             resize_status_bar,
             get_status_bar_position,

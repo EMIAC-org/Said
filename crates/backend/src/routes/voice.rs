@@ -108,6 +108,7 @@ use crate::{
         cerebras, gateway, gemini_direct, groq, openai_codex,
         prompt::{
             VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE, VocabEntry,
+            build_message_polish_system_prompt, build_message_polish_user_message,
             build_user_message_with_hints, build_voice_repair_system_prompt,
             build_voice_repair_user_message, default_voice_prompt_template,
             render_voice_system_prompt_template, resolved_vocab_terms_to_entries_with_aliases,
@@ -119,7 +120,7 @@ use crate::{
         vocab_resolver,
     },
     store::{
-        email_memory,
+        company_vocab, email_memory,
         history::{InsertRecording, insert_recording},
         openai_oauth, prompt_templates, stt_replacements,
         vectors::retrieve_similar,
@@ -150,6 +151,7 @@ struct VoicePolishInput {
     pre_transcript_meta: Option<TranscriptMeta>,
     repair_mode: Option<String>,
     screen_context: Option<String>,
+    message_polish_mode: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,6 +191,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
     let mut pre_transcript_meta: Option<TranscriptMeta> = None;
     let mut repair_mode: Option<String> = None;
     let mut screen_context: Option<String> = None;
+    let mut message_polish_mode = false;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name() {
@@ -224,6 +227,13 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             Some("screen_context") => {
                 screen_context = field.text().await.ok().filter(|s| !s.trim().is_empty());
             }
+            Some("message_polish_mode") => {
+                message_polish_mode = field
+                    .text()
+                    .await
+                    .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(false);
+            }
             _ => {}
         }
     }
@@ -237,6 +247,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             pre_transcript_meta,
             repair_mode,
             screen_context,
+            message_polish_mode,
         },
     )
     .await
@@ -269,6 +280,7 @@ pub async fn polish_transcript(
             pre_transcript_meta: req.pre_transcript_meta,
             repair_mode: None,
             screen_context: None,
+            message_polish_mode: false,
         },
     )
     .await
@@ -535,6 +547,70 @@ pub async fn repair_transcript(
         .into_response()
 }
 
+async fn run_message_polish_pass(
+    http_client: reqwest::Client,
+    pool: crate::store::DbPool,
+    user_id: String,
+    groq_key: String,
+    text: &str,
+) -> Result<(crate::llm::PolishResult, String), String> {
+    let system_prompt = build_message_polish_system_prompt();
+    let user_message = build_message_polish_user_message(text);
+
+    let codex_token = {
+        let pool_tok = pool.clone();
+        let uid_tok = user_id.clone();
+        tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
+            .await
+            .unwrap_or(None)
+    };
+
+    if let Some(tok) = codex_token {
+        let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
+        let drain = tokio::spawn(async move { while token_rx.recv().await.is_some() {} });
+        let result = openai_codex::stream_polish(
+            &http_client,
+            &tok.access_token,
+            openai_codex::MODEL_MINI,
+            &system_prompt,
+            &user_message,
+            token_tx,
+        )
+        .await;
+        let _ = drain.await;
+        match result {
+            Ok(r) => return Ok((r, openai_codex::MODEL_MINI.to_string())),
+            Err(e) => {
+                let auth_failed =
+                    invalidate_openai_session_on_auth_error(&pool, &user_id, "openai_codex", &e);
+                if !auth_failed {
+                    warn!(
+                        "[voice] message polish Codex pass failed; falling back to Groq 70B: {e}"
+                    );
+                }
+            }
+        }
+    }
+
+    if groq_key.trim().is_empty() {
+        return Err("Groq key missing for message polish fallback".to_string());
+    }
+
+    let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
+    let drain = tokio::spawn(async move { while token_rx.recv().await.is_some() {} });
+    let result = groq::stream_polish(
+        &http_client,
+        &groq_key,
+        groq::GROQ_MODEL_70B,
+        &system_prompt,
+        &user_message,
+        token_tx,
+    )
+    .await;
+    let _ = drain.await;
+    result.map(|r| (r, groq::GROQ_MODEL_70B.to_string()))
+}
+
 async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response {
     let VoicePolishInput {
         wav_data,
@@ -543,6 +619,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         pre_transcript_meta,
         repair_mode,
         screen_context,
+        message_polish_mode,
     } = input;
 
     // Allow empty WAV when the caller supplied a pre_transcript (P5 / WS path).
@@ -589,13 +666,34 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         // Load full VocabTerm rows so we can carry example_context into the
         // polish prompt — the foundational signal that lets the LLM do
         // context-aware recognition of unseen STT mishearings.
-        tokio::task::spawn_blocking(move || vocabulary::top_terms(&pool_c, &uid_c, 100))
+        tokio::task::spawn_blocking(move || {
+            let mut terms = vocabulary::top_terms(&pool_c, &uid_c, 100);
+            let company_terms = company_vocab::load_terms(&pool_c, &uid_c, 100);
+            for term in company_terms {
+                if !terms
+                    .iter()
+                    .any(|t| t.term.eq_ignore_ascii_case(&term.term))
+                {
+                    terms.push(term);
+                }
+            }
+            terms
+        })
     };
-    let (prefs_opt, (word_corrections, stt_replacement_rules), vocab_full) = tokio::join!(
+    let (prefs_opt, (word_corrections, mut stt_replacement_rules), vocab_full) = tokio::join!(
         crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id),
         crate::get_lexicon_cached(&state.lexicon_cache, &pool, &user_id),
         async { vocab_task.await.unwrap_or_default() },
     );
+    let company_aliases = company_vocab::load_aliases(&pool, &user_id);
+    for rule in company_aliases {
+        if !stt_replacement_rules.iter().any(|r| {
+            r.transcript_form
+                .eq_ignore_ascii_case(&rule.transcript_form)
+        }) {
+            stt_replacement_rules.push(rule);
+        }
+    }
     let Some(prefs_for_guard) = prefs_opt.as_ref() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -928,38 +1026,36 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let lang_v   = prefs.output_language.clone();
             let emb_v    = embedding.clone();
             let txt_v = alias_result.text.clone();
-            let chosen = tokio::task::spawn_blocking(move || {
+            let mut chosen = tokio::task::spawn_blocking(move || {
                 vocab_embeddings::select_for_prompt(
                     &pool_v, &uid_v, &lang_v, emb_v.as_deref(), Some(&txt_v),
                 )
             }).await.unwrap_or_default();
+            // Company terms are not embedded in the local personal-vector index.
+            // Include the highest-priority company entries in the resolver
+            // candidate set so fresh enterprise installs get day-one value.
+            for term in vocab_full.iter().filter(|t| t.source == "company") {
+                if chosen.len() >= 25 {
+                    break;
+                }
+                if !chosen.iter().any(|t| t.term.eq_ignore_ascii_case(&term.term)) {
+                    chosen.push(term.clone());
+                }
+            }
             // Load safe STT aliases for prompt rendering. These are displayed
             // only for terms the resolver admits below; Tier 2 now carries
             // protected-term evidence through polish and mutates only at the end.
             let alias_map: std::collections::HashMap<String, Vec<(String, i64)>> = {
-                let conn = pool.get().ok();
-                if let Some(c) = conn {
-                    let mut map: std::collections::HashMap<String, Vec<(String, i64)>> =
-                        std::collections::HashMap::new();
-                    if let Ok(mut stmt) = c.prepare(
-                        "SELECT LOWER(correct_form), transcript_form, use_count \
-                         FROM stt_replacements WHERE user_id = ?1"
-                    ) {
-                        let rows = stmt.query_map(rusqlite::params![user_id], |row| {
-                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
-                        });
-                        if let Ok(rows) = rows {
-                            for row in rows.flatten() {
-                                if stt_replacements::is_plausible_alias(&row.1, &row.0) {
-                                    map.entry(row.0).or_default().push((row.1, row.2));
-                                }
-                            }
-                        }
+                let mut map: std::collections::HashMap<String, Vec<(String, i64)>> =
+                    std::collections::HashMap::new();
+                for rule in &stt_replacement_rules {
+                    if stt_replacements::is_plausible_alias(&rule.transcript_form, &rule.correct_form) {
+                        map.entry(rule.correct_form.to_lowercase())
+                            .or_default()
+                            .push((rule.transcript_form.clone(), rule.use_count));
                     }
-                    map
-                } else {
-                    std::collections::HashMap::new()
                 }
+                map
             };
 
             if chosen.is_empty() {
@@ -1155,7 +1251,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
 
         let llm_start = Instant::now();
         info!("[timing] LLM start — provider={llm_provider:?} model={model_for_llm:?}");
-        let actual_model_used = model_for_llm.clone();
+        let mut actual_model_used = model_for_llm.clone();
 
         let llm_task = tokio::spawn(async move {
             if llm_provider_for_task == "openai_codex" {
@@ -1356,11 +1452,66 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             llm_result.polished = email_final;
         }
 
-        // Post-LLM tier2 correction removed — tier2 runs ONCE before the
-        // LLM (correct_with_store above). Number-format and email-recover
-        // are the only deterministic post-LLM passes.
+        // Final exact-alias resolver. This is intentionally narrower than the
+        // old global fuzzy Tier2 pass: only approved exact aliases/edit-safe
+        // rows can fire here, including cached company bucket aliases.
+        let exact_final = stt_replacements::apply_exact_safe(&llm_result.polished, &stt_replacement_rules);
+        if exact_final.text != llm_result.polished {
+            info!(
+                "[voice] final exact alias resolver: {} replacement(s)",
+                exact_final.matches.len()
+            );
+            llm_result.polished = exact_final.text;
+        }
 
-        // Post-LLM number/email changes are reconciled by the desktop against
+        if message_polish_mode {
+            yield Ok(Event::default().event("status")
+                .data(json!({"phase": "message_polishing", "transcript": llm_result.polished}).to_string()));
+            let before_message_polish = llm_result.polished.clone();
+            match run_message_polish_pass(
+                http_client.clone(),
+                pool.clone(),
+                user_id.clone(),
+                groq_key.clone(),
+                &before_message_polish,
+            ).await {
+                Ok((mut message_result, message_model)) => {
+                    let scrubbed = scrub_polished_output(
+                        &message_result.polished,
+                        &before_message_polish,
+                        false,
+                    );
+                    if scrubbed != message_result.polished {
+                        warn!(
+                            "[voice] scrubbed message-polish leakage {} → {} chars",
+                            message_result.polished.len(),
+                            scrubbed.len(),
+                        );
+                        message_result.polished = scrubbed;
+                    }
+                    if message_result.polished.trim().is_empty() {
+                        warn!("[voice] message polish returned empty output — keeping first-pass result");
+                    } else {
+                        info!(
+                            "[voice] message polish mode applied using model={message_model} {} → {} chars",
+                            before_message_polish.len(),
+                            message_result.polished.len(),
+                        );
+                        llm_result.polish_ms =
+                            llm_result.polish_ms.saturating_add(message_result.polish_ms);
+                        llm_result.polished = message_result.polished;
+                        actual_model_used = format!("{actual_model_used} + {message_model}");
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "[voice] message polish pass failed — keeping first-pass result: {e}"
+                    );
+                }
+            }
+        }
+
+        // Post-LLM number/email/exact-alias changes are reconciled by the desktop against
         // the current recording's streamed text. No STREAM_RESET_SENTINEL is
         // needed for deterministic formatter-only changes because the desktop
         // patches only this recording span after `done`.
