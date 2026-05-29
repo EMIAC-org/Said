@@ -451,8 +451,18 @@ fn osa_fallback(title: &str, body: &str) {
     }
 }
 
+// Windows / Linux: post via the cross-platform notification plugin. On Windows
+// this shows an Action Center toast — it requires the app to be installed (the
+// NSIS installer registers the Start-Menu shortcut + AppUserModelID), which is
+// why nothing appears for an unpackaged/dev run but works once installed.
 #[cfg(not(target_os = "macos"))]
-fn notify_macos(_app: &tauri::AppHandle, _title: &str, _body: &str) {}
+fn notify_macos(app: &tauri::AppHandle, title: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    match app.notification().builder().title(title).body(body).show() {
+        Ok(_) => tracing::info!("[notify] plugin sent: {title}"),
+        Err(e) => tracing::warn!("[notify] plugin failed: {e}"),
+    }
+}
 
 /// Translate a raw pipeline error string into one short human sentence.
 ///
