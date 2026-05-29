@@ -18,6 +18,10 @@ pub struct ClientBody {
     pub platform: String,
     pub app_version: String,
     pub hostname: Option<String>,
+    pub company_bucket_version: Option<i32>,
+    pub company_vocab_synced_at: Option<DateTime<Utc>>,
+    pub personal_vocab_count: Option<i32>,
+    pub personal_alias_count: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -33,6 +37,10 @@ pub struct ClientRow {
     pub email: Option<String>,
     pub lark_name: Option<String>,
     pub lark_avatar_url: Option<String>,
+    pub company_bucket_version: i32,
+    pub company_vocab_synced_at: Option<DateTime<Utc>>,
+    pub personal_vocab_count: i32,
+    pub personal_alias_count: i32,
 }
 
 #[derive(Serialize)]
@@ -111,13 +119,19 @@ pub async fn register(
     }
 
     sqlx::query(
-        "INSERT INTO desktop_clients (org_id, account_id, device_id, platform, app_version, hostname)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO desktop_clients
+            (org_id, account_id, device_id, platform, app_version, hostname,
+             company_bucket_version, company_vocab_synced_at, personal_vocab_count, personal_alias_count)
+         VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, 0), $8, COALESCE($9, 0), COALESCE($10, 0))
          ON CONFLICT (org_id, device_id) DO UPDATE
            SET account_id  = EXCLUDED.account_id,
                platform    = EXCLUDED.platform,
                app_version = EXCLUDED.app_version,
                hostname    = EXCLUDED.hostname,
+               company_bucket_version = GREATEST(desktop_clients.company_bucket_version, EXCLUDED.company_bucket_version),
+               company_vocab_synced_at = COALESCE(EXCLUDED.company_vocab_synced_at, desktop_clients.company_vocab_synced_at),
+               personal_vocab_count = EXCLUDED.personal_vocab_count,
+               personal_alias_count = EXCLUDED.personal_alias_count,
                last_seen_at = now()",
     )
     .bind(org_id)
@@ -126,6 +140,10 @@ pub async fn register(
     .bind(body.platform.trim())
     .bind(body.app_version.trim())
     .bind(body.hostname.as_deref())
+    .bind(body.company_bucket_version)
+    .bind(body.company_vocab_synced_at)
+    .bind(body.personal_vocab_count)
+    .bind(body.personal_alias_count)
     .execute(&state.db)
     .await
     .map_err(db_err)?;
@@ -152,7 +170,11 @@ pub async fn heartbeat(
         "UPDATE desktop_clients
             SET last_seen_at = now(),
                 app_version  = COALESCE(NULLIF($4, ''), app_version),
-                platform     = COALESCE(NULLIF($5, ''), platform)
+                platform     = COALESCE(NULLIF($5, ''), platform),
+                company_bucket_version = GREATEST(company_bucket_version, COALESCE($6, company_bucket_version)),
+                company_vocab_synced_at = COALESCE($7, company_vocab_synced_at),
+                personal_vocab_count = COALESCE($8, personal_vocab_count),
+                personal_alias_count = COALESCE($9, personal_alias_count)
           WHERE org_id = $1 AND device_id = $2 AND account_id = $3",
     )
     .bind(org_id)
@@ -160,6 +182,10 @@ pub async fn heartbeat(
     .bind(user.account_id)
     .bind(body.app_version.trim())
     .bind(body.platform.trim())
+    .bind(body.company_bucket_version)
+    .bind(body.company_vocab_synced_at)
+    .bind(body.personal_vocab_count)
+    .bind(body.personal_alias_count)
     .execute(&state.db)
     .await
     .map_err(db_err)?;
@@ -201,11 +227,17 @@ pub async fn list_org_clients(
             Option<String>,
             Option<String>,
             Option<String>,
+            i32,
+            Option<DateTime<Utc>>,
+            i32,
+            i32,
         ),
     >(
         "SELECT dc.id, dc.account_id, dc.device_id, dc.platform, dc.app_version,
                 dc.hostname, dc.first_seen_at, dc.last_seen_at,
-                a.email, om.lark_name, om.lark_avatar_url
+                a.email, om.lark_name, om.lark_avatar_url,
+                dc.company_bucket_version, dc.company_vocab_synced_at,
+                dc.personal_vocab_count, dc.personal_alias_count
            FROM desktop_clients dc
            JOIN accounts a ON a.id = dc.account_id
            LEFT JOIN org_members om ON om.account_id = dc.account_id AND om.org_id = dc.org_id
@@ -232,6 +264,10 @@ pub async fn list_org_clients(
                 email,
                 lark_name,
                 lark_avatar_url,
+                company_bucket_version,
+                company_vocab_synced_at,
+                personal_vocab_count,
+                personal_alias_count,
             )| {
                 ClientRow {
                     id,
@@ -245,6 +281,10 @@ pub async fn list_org_clients(
                     email,
                     lark_name,
                     lark_avatar_url,
+                    company_bucket_version,
+                    company_vocab_synced_at,
+                    personal_vocab_count,
+                    personal_alias_count,
                 }
             },
         )
@@ -337,11 +377,17 @@ pub async fn org_stats(
                 Option<String>,
                 Option<String>,
                 Option<String>,
+                i32,
+                Option<DateTime<Utc>>,
+                i32,
+                i32,
             ),
         >(
             "SELECT dc.id, dc.account_id, dc.device_id, dc.platform, dc.app_version,
                     dc.hostname, dc.first_seen_at, dc.last_seen_at,
-                    a.email, om.lark_name, om.lark_avatar_url
+                    a.email, om.lark_name, om.lark_avatar_url,
+                    dc.company_bucket_version, dc.company_vocab_synced_at,
+                    dc.personal_vocab_count, dc.personal_alias_count
                FROM desktop_clients dc
                JOIN accounts a ON a.id = dc.account_id
                LEFT JOIN org_members om ON om.account_id = dc.account_id AND om.org_id = dc.org_id
@@ -368,6 +414,10 @@ pub async fn org_stats(
                     email,
                     lark_name,
                     lark_avatar_url,
+                    company_bucket_version,
+                    company_vocab_synced_at,
+                    personal_vocab_count,
+                    personal_alias_count,
                 )| {
                     ClientRow {
                         id,
@@ -381,6 +431,10 @@ pub async fn org_stats(
                         email,
                         lark_name,
                         lark_avatar_url,
+                        company_bucket_version,
+                        company_vocab_synced_at,
+                        personal_vocab_count,
+                        personal_alias_count,
                     }
                 },
             )

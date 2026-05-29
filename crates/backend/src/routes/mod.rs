@@ -1,5 +1,6 @@
 pub mod classify;
 pub mod cloud;
+pub mod company_vocab;
 pub mod confirm;
 pub mod feedback;
 pub mod health;

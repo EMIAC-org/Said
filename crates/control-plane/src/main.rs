@@ -15,6 +15,7 @@ use tracing::info;
 
 use said_control_plane::{
     AppState, LarkConfig, ai_worker, build_router, meeting_hub, notification_worker, store,
+    vocab_worker,
 };
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -92,6 +93,9 @@ async fn main() {
 
     // Start the notification worker (15-min reminders + urgent join alerts).
     notification_worker::start_notification_worker(db.clone(), lark.clone(), hub.clone());
+
+    // Build privacy-safe org vocabulary suggestions once daily.
+    vocab_worker::start_vocab_aggregation_worker(db.clone());
 
     let state = AppState {
         db,

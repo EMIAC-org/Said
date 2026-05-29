@@ -21,6 +21,10 @@ async function clientPayload(): Promise<{
   platform: string;
   app_version: string;
   hostname?: string;
+  company_bucket_version?: number;
+  company_vocab_synced_at?: string | null;
+  personal_vocab_count?: number;
+  personal_alias_count?: number;
 }> {
   const platform =
     typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent)
@@ -43,7 +47,17 @@ async function clientPayload(): Promise<{
     } catch {
       hostname = undefined;
     }
-    return { device_id: deviceId, platform, app_version: appVersion, hostname };
+    const vocab = await localCompanyVocabStatus();
+    return {
+      device_id: deviceId,
+      platform,
+      app_version: appVersion,
+      hostname,
+      company_bucket_version: vocab?.bucket?.version ?? undefined,
+      company_vocab_synced_at: msToIso(vocab?.bucket?.last_synced_at),
+      personal_vocab_count: vocab?.bucket?.term_count ?? undefined,
+      personal_alias_count: vocab?.bucket?.alias_count ?? undefined,
+    };
   } catch (err) {
     console.warn("[enterprise] clientPayload fallback", err);
     return {
@@ -51,6 +65,67 @@ async function clientPayload(): Promise<{
       platform,
       app_version: "unknown",
     };
+  }
+}
+
+function msToIso(value: unknown): string | null | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return new Date(value).toISOString();
+}
+
+async function localBackendFetch(path: string, opts: RequestInit = {}): Promise<Response | null> {
+  try {
+    const { getBackendEndpoint } = await import("./invoke");
+    const endpoint = await getBackendEndpoint();
+    if (!endpoint?.url || !endpoint.secret) return null;
+    const headers: Record<string, string> = {
+      ...(opts.headers as Record<string, string> | undefined),
+      Authorization: `Bearer ${endpoint.secret}`,
+    };
+    if (opts.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+    return fetch(`${endpoint.url}${path}`, { ...opts, headers });
+  } catch (err) {
+    console.warn("[enterprise] local backend fetch failed", err);
+    return null;
+  }
+}
+
+async function localCompanyVocabStatus(): Promise<any | null> {
+  const res = await localBackendFetch("/v1/company-vocab/status");
+  if (!res?.ok) return null;
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function syncCompanyVocab(force = false): Promise<void> {
+  const res = await localBackendFetch("/v1/company-vocab/sync", {
+    method: "POST",
+    body: JSON.stringify({ force }),
+  });
+  if (!res?.ok) return;
+  try {
+    const data = await res.json();
+    if (data?.changed) console.info("[enterprise] company vocabulary synced", data.bucket);
+  } catch {
+    // ignore
+  }
+}
+
+export async function uploadUserVocabSummary(force = false): Promise<void> {
+  const payload = await clientPayload();
+  const res = await localBackendFetch("/v1/company-vocab/upload-user-summary", {
+    method: "POST",
+    body: JSON.stringify({ device_id: payload.device_id, force }),
+  });
+  if (!res?.ok) return;
+  try {
+    const data = await res.json();
+    if (data?.ok) console.info("[enterprise] uploaded vocab summary", data);
+  } catch {
+    // ignore
   }
 }
 
@@ -340,6 +415,8 @@ export async function completeAuth(
 
   try {
     await ensureDesktopRegistered(url, sessionToken);
+    await syncCompanyVocab(true);
+    await uploadUserVocabSummary(true);
   } catch (err) {
     console.warn("[enterprise] desktop registration deferred until next heartbeat", err);
   }

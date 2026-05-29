@@ -119,7 +119,7 @@ use crate::{
         vocab_resolver,
     },
     store::{
-        email_memory,
+        company_vocab, email_memory,
         history::{InsertRecording, insert_recording},
         openai_oauth, prompt_templates, stt_replacements,
         vectors::retrieve_similar,
@@ -589,13 +589,34 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         // Load full VocabTerm rows so we can carry example_context into the
         // polish prompt — the foundational signal that lets the LLM do
         // context-aware recognition of unseen STT mishearings.
-        tokio::task::spawn_blocking(move || vocabulary::top_terms(&pool_c, &uid_c, 100))
+        tokio::task::spawn_blocking(move || {
+            let mut terms = vocabulary::top_terms(&pool_c, &uid_c, 100);
+            let company_terms = company_vocab::load_terms(&pool_c, &uid_c, 100);
+            for term in company_terms {
+                if !terms
+                    .iter()
+                    .any(|t| t.term.eq_ignore_ascii_case(&term.term))
+                {
+                    terms.push(term);
+                }
+            }
+            terms
+        })
     };
-    let (prefs_opt, (word_corrections, stt_replacement_rules), vocab_full) = tokio::join!(
+    let (prefs_opt, (word_corrections, mut stt_replacement_rules), vocab_full) = tokio::join!(
         crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id),
         crate::get_lexicon_cached(&state.lexicon_cache, &pool, &user_id),
         async { vocab_task.await.unwrap_or_default() },
     );
+    let company_aliases = company_vocab::load_aliases(&pool, &user_id);
+    for rule in company_aliases {
+        if !stt_replacement_rules.iter().any(|r| {
+            r.transcript_form
+                .eq_ignore_ascii_case(&rule.transcript_form)
+        }) {
+            stt_replacement_rules.push(rule);
+        }
+    }
     let Some(prefs_for_guard) = prefs_opt.as_ref() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -928,38 +949,36 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let lang_v   = prefs.output_language.clone();
             let emb_v    = embedding.clone();
             let txt_v = alias_result.text.clone();
-            let chosen = tokio::task::spawn_blocking(move || {
+            let mut chosen = tokio::task::spawn_blocking(move || {
                 vocab_embeddings::select_for_prompt(
                     &pool_v, &uid_v, &lang_v, emb_v.as_deref(), Some(&txt_v),
                 )
             }).await.unwrap_or_default();
+            // Company terms are not embedded in the local personal-vector index.
+            // Include the highest-priority company entries in the resolver
+            // candidate set so fresh enterprise installs get day-one value.
+            for term in vocab_full.iter().filter(|t| t.source == "company") {
+                if chosen.len() >= 25 {
+                    break;
+                }
+                if !chosen.iter().any(|t| t.term.eq_ignore_ascii_case(&term.term)) {
+                    chosen.push(term.clone());
+                }
+            }
             // Load safe STT aliases for prompt rendering. These are displayed
             // only for terms the resolver admits below; Tier 2 now carries
             // protected-term evidence through polish and mutates only at the end.
             let alias_map: std::collections::HashMap<String, Vec<(String, i64)>> = {
-                let conn = pool.get().ok();
-                if let Some(c) = conn {
-                    let mut map: std::collections::HashMap<String, Vec<(String, i64)>> =
-                        std::collections::HashMap::new();
-                    if let Ok(mut stmt) = c.prepare(
-                        "SELECT LOWER(correct_form), transcript_form, use_count \
-                         FROM stt_replacements WHERE user_id = ?1"
-                    ) {
-                        let rows = stmt.query_map(rusqlite::params![user_id], |row| {
-                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
-                        });
-                        if let Ok(rows) = rows {
-                            for row in rows.flatten() {
-                                if stt_replacements::is_plausible_alias(&row.1, &row.0) {
-                                    map.entry(row.0).or_default().push((row.1, row.2));
-                                }
-                            }
-                        }
+                let mut map: std::collections::HashMap<String, Vec<(String, i64)>> =
+                    std::collections::HashMap::new();
+                for rule in &stt_replacement_rules {
+                    if stt_replacements::is_plausible_alias(&rule.transcript_form, &rule.correct_form) {
+                        map.entry(rule.correct_form.to_lowercase())
+                            .or_default()
+                            .push((rule.transcript_form.clone(), rule.use_count));
                     }
-                    map
-                } else {
-                    std::collections::HashMap::new()
                 }
+                map
             };
 
             if chosen.is_empty() {
@@ -1356,11 +1375,19 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             llm_result.polished = email_final;
         }
 
-        // Post-LLM tier2 correction removed — tier2 runs ONCE before the
-        // LLM (correct_with_store above). Number-format and email-recover
-        // are the only deterministic post-LLM passes.
+        // Final exact-alias resolver. This is intentionally narrower than the
+        // old global fuzzy Tier2 pass: only approved exact aliases/edit-safe
+        // rows can fire here, including cached company bucket aliases.
+        let exact_final = stt_replacements::apply_exact_safe(&llm_result.polished, &stt_replacement_rules);
+        if exact_final.text != llm_result.polished {
+            info!(
+                "[voice] final exact alias resolver: {} replacement(s)",
+                exact_final.matches.len()
+            );
+            llm_result.polished = exact_final.text;
+        }
 
-        // Post-LLM number/email changes are reconciled by the desktop against
+        // Post-LLM number/email/exact-alias changes are reconciled by the desktop against
         // the current recording's streamed text. No STREAM_RESET_SENTINEL is
         // needed for deterministic formatter-only changes because the desktop
         // patches only this recording span after `done`.
