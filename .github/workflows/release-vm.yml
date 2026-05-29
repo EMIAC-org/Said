@@ -331,8 +331,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
           $nsis = "target/${{ matrix.target }}/release/bundle/nsis"
           Get-ChildItem $nsis -Filter "${env:PRODUCT_NAME}_*-setup.exe"          | ForEach-Object { Copy-Item $_.FullName release-artifacts/ }
-          Get-ChildItem $nsis -Filter "${env:PRODUCT_NAME}_*-setup.nsis.zip"     | ForEach-Object { Copy-Item $_.FullName release-artifacts/ }
-          Get-ChildItem $nsis -Filter "${env:PRODUCT_NAME}_*-setup.nsis.zip.sig" | ForEach-Object { Copy-Item $_.FullName release-artifacts/ }
+          Get-ChildItem $nsis -Filter "${env:PRODUCT_NAME}_*-setup.exe.sig"      | ForEach-Object { Copy-Item $_.FullName release-artifacts/ }
 
           Write-Host "── staged windows artifacts ──"
           Get-ChildItem release-artifacts | Format-List Name, Length
@@ -391,7 +390,8 @@ jobs:
 
           read_sig() { [ -f "$1" ] && cat "$1" || echo ""; }
           DARWIN_FILE="${PRODUCT_NAME}_${VERSION}_aarch64.app.tar.gz"
-          WINDOWS_FILE="${PRODUCT_NAME}_${VERSION}_x64-setup.nsis.zip"
+          # Tauri v2 NSIS updater artifact is the signed -setup.exe (+ .exe.sig).
+          WINDOWS_FILE="${PRODUCT_NAME}_${VERSION}_x64-setup.exe"
 
           darwin_entry() {
             cat <<EOF
