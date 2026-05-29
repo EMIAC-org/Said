@@ -25,6 +25,8 @@ pub enum HudShortcutAction {
     PlacementMode,
     /// ⇧⌘. — reset saved position to default, then enter placement mode.
     ResetPosition,
+    /// ⇧⌘Space — toggle message-polish mode for normal dictation.
+    ToggleMessagePolishMode,
 }
 
 #[cfg(target_os = "macos")]
@@ -241,6 +243,7 @@ mod imp {
     }
 
     /// ⇧⌘/ toggles draggable placement mode. ⇧⌘. resets to the centered default.
+    /// ⇧⌘Space toggles message-polish mode.
     unsafe fn check_and_fire_hud_shortcut(event: ffi::CGEventRef) -> bool {
         let flags = unsafe { ffi::CGEventGetFlags(event) };
         let keycode =
@@ -257,6 +260,7 @@ mod imp {
         let action = match keycode {
             ffi::KC_SLASH => HudShortcutAction::PlacementMode,
             ffi::KC_PERIOD => HudShortcutAction::ResetPosition,
+            ffi::KC_SPACE => HudShortcutAction::ToggleMessagePolishMode,
             _ => return false,
         };
 

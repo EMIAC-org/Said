@@ -94,9 +94,12 @@ type BarState =
   | { kind: "queued"; term: string; remaining: number }
   | { kind: "reviewing"; candidates: ReviewCandidate[]; selected: Set<number>; recordingId: string }
   | { kind: "placement"; message: string }
+  | { kind: "polish_mode"; enabled: boolean; message: string }
   | { kind: "update_ready"; version: string; message: string }
   | { kind: "retraining" }
   | { kind: "retrain_done"; durationS: number };
+
+type UpdateReadyState = Extract<BarState, { kind: "update_ready" }>;
 
 type ReviewCandidate = {
   original: string;
@@ -188,6 +191,7 @@ function pillSize(
 
 function processingLabel(phase: string): string {
   const p = phase.toLowerCase();
+  if (p.includes("message_polish") || p.includes("message-polish")) return "Polishing message";
   if (p.includes("polish") || p.includes("llm") || p.includes("enhanc")) return "Enhancing";
   if (p.includes("paste")) return "Pasting";
   return "Transcribing";
@@ -226,11 +230,50 @@ export default function StatusBar() {
   const [audioLevel, setAudioLevel] = useState(0);
   const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLevelRef = useRef(0);
+  const pinnedUpdateRef = useRef<UpdateReadyState | null>(null);
   const barTargets = useRef<number[]>(new Array(15).fill(0));
   const lastResizeRef = useRef<{ width: number; height: number } | null>(null);
   const barKindRef = useRef<BarState["kind"]>("idle");
   const [, forceFrame] = useState(0);
   const [win] = useState(() => getCurrentWindow());
+  const presentStatusBar = (reason: string) => {
+    invoke("present_status_bar", { reason }).catch((err) => {
+      console.warn("[status-bar] native present failed", err);
+      win.show().catch((showErr) => console.warn("[status-bar] fallback show failed", showErr));
+    });
+  };
+  const showPinnedUpdate = (next: UpdateReadyState, reason: string) => {
+    pinnedUpdateRef.current = next;
+    if (doneTimer.current) clearTimeout(doneTimer.current);
+    invoke("set_status_bar_persistent", { persistent: true, reason }).catch((err) => {
+      console.warn("[status-bar] persistent hold failed", err);
+      presentStatusBar(reason);
+    });
+    setBar(next);
+  };
+  const restorePinnedUpdate = (reason: string): boolean => {
+    const pinned = pinnedUpdateRef.current;
+    if (!pinned) return false;
+    if (doneTimer.current) clearTimeout(doneTimer.current);
+    presentStatusBar(reason);
+    setBar(pinned);
+    return true;
+  };
+  const returnToIdleOrPinned = (reason: string, dismiss = true) => {
+    if (restorePinnedUpdate(reason)) return;
+    setBar({ kind: "idle" });
+    if (dismiss) {
+      invoke("dismiss_status_bar").catch(() => {});
+    }
+  };
+  const clearPinnedUpdate = async (reason: string) => {
+    pinnedUpdateRef.current = null;
+    try {
+      await invoke("set_status_bar_persistent", { persistent: false, reason });
+    } catch (err) {
+      console.warn("[status-bar] clear persistent hold failed", err);
+    }
+  };
   const hasTranscript = bar.kind === "processing" && liveTranscript.trim().length > 0;
   const isInteractive =
     bar.kind === "confirming"
@@ -256,6 +299,7 @@ export default function StatusBar() {
       case "queued": return `"${bar.term}" — ${bar.remaining === 1 ? "1 more edit to learn" : `${bar.remaining} more edits to learn`}`;
       case "wrong_fixed": return `Got it — won’t type "${bar.wrongReplacement}" for "${bar.term}"`;
       case "placement": return bar.message;
+      case "polish_mode": return bar.message;
       case "update_ready": return `Update ${bar.version} ready`;
       case "retraining": return "Improving model...";
       case "retrain_done": return bar.durationS > 0 ? `Model updated (${bar.durationS.toFixed(1)}s)` : "Model updated";
@@ -502,16 +546,26 @@ export default function StatusBar() {
   }, [bar.kind]);
 
   // Seed from current snapshot on mount so we reflect any in-progress state
+  const applyActiveSnapshot = (snap: AppSnapshot, source: string) => {
+    console.info("[status-bar] snapshot resync", source, snap.state);
+    if (snap.state === "recording") {
+      setBar((prev) =>
+        prev.kind === "recording"
+          ? prev
+          : { kind: "recording", startMs: Date.now() },
+      );
+    } else if (snap.state === "processing") {
+      setBar((prev) =>
+        prev.kind === "processing"
+          ? prev
+          : { kind: "processing", phase: "stt" },
+      );
+    }
+  };
+
   useEffect(() => {
     invoke<AppSnapshot>("get_snapshot")
-      .then((snap) => {
-        console.info("[status-bar] initial snapshot", snap.state);
-        if (snap.state === "recording") {
-          setBar({ kind: "recording", startMs: Date.now() });
-        } else if (snap.state === "processing") {
-          setBar({ kind: "processing", phase: "stt" });
-        }
-      })
+      .then((snap) => applyActiveSnapshot(snap, "mount"))
       .catch((err) => {
         console.warn("[status-bar] initial snapshot failed", err);
       });
@@ -519,6 +573,15 @@ export default function StatusBar() {
 
   useEffect(() => {
     const subs: Array<() => void> = [];
+
+    listen<{ reason?: string; state?: string }>("status-bar-resync", (e) => {
+      console.info("[status-bar] resync event", e.payload);
+      invoke<AppSnapshot>("get_snapshot")
+        .then((snap) => applyActiveSnapshot(snap, e.payload?.reason || "event"))
+        .catch((err) => console.warn("[status-bar] resync snapshot failed", err));
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch((err) => console.warn("[status-bar] resync subscribe failed", err));
 
     // ── Source of truth for recording / processing / idle ──────────────────
     listen<AppSnapshot>("app-state", (e) => {
@@ -546,14 +609,17 @@ export default function StatusBar() {
         );
         if (doneTimer.current) clearTimeout(doneTimer.current);
         doneTimer.current = setTimeout(() => {
+          if (restorePinnedUpdate("auto-update-ready-after-processing-timeout")) return;
           setBar((prev) => prev.kind === "processing" ? { kind: "idle" } : prev);
         }, 15000);
       } else if (state === "idle") {
+        if (restorePinnedUpdate("auto-update-ready-idle")) return;
         setBar((prev) => {
           if (prev.kind === "error") return prev;
           if (prev.kind === "confirming" || prev.kind === "negative_confirm" || prev.kind === "reviewing") return prev;
           if (prev.kind === "processing") return prev;
           if (prev.kind === "done" || prev.kind === "pasted" || prev.kind === "manual_paste") return prev;
+          if (prev.kind === "update_ready") return prev;
           return { kind: "idle" };
         });
       }
@@ -590,6 +656,7 @@ export default function StatusBar() {
     // ── Success: brief flash then hide ──────────────────────────────────────
     listen("voice-done", () => {
       console.info("[status-bar] voice-done event");
+      if (restorePinnedUpdate("auto-update-ready-after-done")) return;
       if (doneTimer.current) clearTimeout(doneTimer.current);
       setBar({ kind: "done" });
       doneTimer.current = setTimeout(() => {
@@ -602,6 +669,7 @@ export default function StatusBar() {
 
     listen<{ status: "pasted" | "manual_paste"; message?: string }>("voice-output", (e) => {
       console.info("[status-bar] voice-output event", e.payload);
+      if (restorePinnedUpdate("auto-update-ready-after-output")) return;
       if (doneTimer.current) clearTimeout(doneTimer.current);
       playSound("whoosh");
       setBar({ kind: e.payload.status });
@@ -614,17 +682,37 @@ export default function StatusBar() {
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] voice-output subscribe failed", err));
 
+    listen<{ enabled: boolean; message?: string }>("message-polish-mode", (e) => {
+      console.info("[status-bar] message-polish-mode event", e.payload);
+      if (restorePinnedUpdate("auto-update-ready-after-polish-mode")) return;
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      presentStatusBar("message-polish-mode");
+      playSound(e.payload.enabled ? "levelUp" : "tick");
+      setBar({
+        kind: "polish_mode",
+        enabled: e.payload.enabled,
+        message: e.payload.message || (e.payload.enabled ? "Polish mode on" : "Polish mode off"),
+      });
+      doneTimer.current = setTimeout(() => returnToIdleOrPinned("message-polish-mode-hide"), 1700);
+    }).then((fn) => {
+      console.info("[status-bar] subscribed message-polish-mode");
+      subs.push(fn);
+    }).catch((err) => console.warn("[status-bar] message-polish-mode subscribe failed", err));
+
     // ── Error: show message + optional retry ──────────────────────────────
     listen<VoiceErrorPayload & { raw_error?: string }>("voice-error", (e) => {
       const { message, audio_id, auto_hide_ms, raw_error } = e.payload;
       console.error("[status-bar] voice-error event", { message, raw_error, hasAudioId: Boolean(audio_id) });
       if (doneTimer.current) clearTimeout(doneTimer.current);
       if (!notifEnabled("error")) return;
-      win.show().catch((err) => console.warn("[status-bar] show failed for error", err));
+      presentStatusBar("voice-error");
       playSound("lowThud");
       setBar({ kind: "error", message, audioId: audio_id });
       if (typeof auto_hide_ms === "number" && auto_hide_ms > 0) {
-        doneTimer.current = setTimeout(() => setBar({ kind: "idle" }), auto_hide_ms);
+        doneTimer.current = setTimeout(
+          () => returnToIdleOrPinned("auto-update-ready-after-error", false),
+          auto_hide_ms,
+        );
       }
     }).then((fn) => {
       console.info("[status-bar] subscribed voice-error");
@@ -657,7 +745,9 @@ export default function StatusBar() {
           invoke("set_status_bar_position", { x: pos.x / scale, y: pos.y / scale }),
         )
         .catch(() => {});
-      setBar({ kind: "idle" });
+      if (!restorePinnedUpdate("auto-update-ready-after-placement")) {
+        setBar({ kind: "idle" });
+      }
     }).then((fn) => {
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] placement finish subscribe failed", err));
@@ -667,7 +757,7 @@ export default function StatusBar() {
       if (!notifEnabled("learned")) return;
       console.info("[status-bar] vocab-learned", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
-      win.show().catch(() => {});
+      presentStatusBar("vocab-learned");
       playSound("levelUp");
       setBar({ kind: "learned", term: e.payload.term, message: e.payload.message });
       doneTimer.current = setTimeout(() => {
@@ -682,7 +772,7 @@ export default function StatusBar() {
       if (!notifEnabled("learned")) return;
       console.info("[status-bar] email-learned", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
-      win.show().catch(() => {});
+      presentStatusBar("email-learned");
       playSound("levelUp");
       setBar({ kind: "email_saved", email: e.payload.email, message: e.payload.message });
       doneTimer.current = setTimeout(() => {
@@ -698,7 +788,7 @@ export default function StatusBar() {
       if (!notifEnabled("queued")) return;
       console.info("[status-bar] vocab-queued", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
-      win.show().catch(() => {});
+      presentStatusBar("vocab-queued");
       playSound("tick");
       setBar({ kind: "queued", term: e.payload.term, remaining: e.payload.remaining });
       doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 5000);
@@ -711,7 +801,7 @@ export default function StatusBar() {
       if (!notifEnabled("confirm")) return;
       console.info("[status-bar] vocab-confirm", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
-      win.show().catch(() => {});
+      presentStatusBar("vocab-confirm");
       playSound("knock");
       setBar({ kind: "confirming", term: e.payload.term, original: e.payload.original, context: e.payload.context, recordingId: e.payload.recording_id });
     }).then((fn) => {
@@ -723,7 +813,7 @@ export default function StatusBar() {
       if (!notifEnabled("learned")) return;
       console.info("[status-bar] vocab-review", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
-      win.show().catch(() => {});
+      presentStatusBar("vocab-review");
       playSound("knock");
       const learnable = e.payload.candidates.filter(c => c.learnable);
       const selected = new Set<number>(learnable.map((_, i) => {
@@ -745,7 +835,7 @@ export default function StatusBar() {
       if (!notifEnabled("negative")) return;
       console.info("[status-bar] vocab-negative", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
-      win.show().catch(() => {});
+      presentStatusBar("vocab-negative");
       playSound("alert");
       setBar({ kind: "negative_confirm", term: e.payload.term, wrongReplacement: e.payload.wrong_replacement });
     }).then((fn) => {
@@ -757,7 +847,7 @@ export default function StatusBar() {
       if (!notifEnabled("negative")) return;
       console.info("[status-bar] vocab-wrong-fixed", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
-      win.show().catch(() => {});
+      presentStatusBar("vocab-wrong-fixed");
       playSound("chimeDown");
       setBar({ kind: "wrong_fixed", term: e.payload.term, wrongReplacement: e.payload.wrong_replacement });
       doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 4000);
@@ -771,7 +861,7 @@ export default function StatusBar() {
       console.info("[status-bar] retrain-status", e.payload);
       if (e.payload.phase === "started") {
         if (doneTimer.current) clearTimeout(doneTimer.current);
-        win.show().catch(() => {});
+        presentStatusBar("retrain-started");
         setBar({ kind: "retraining" });
       } else if (e.payload.phase === "done") {
         playSound("shimmer");
@@ -787,14 +877,12 @@ export default function StatusBar() {
     listen<{ version: string; message?: string }>("auto-update-ready", (e) => {
       if (!notifEnabled("updates")) return;
       console.info("[status-bar] auto-update-ready", e.payload);
-      if (doneTimer.current) clearTimeout(doneTimer.current);
-      win.show().catch(() => {});
       playSound("shimmer");
-      setBar({
+      showPinnedUpdate({
         kind: "update_ready",
         version: e.payload.version,
         message: e.payload.message || `Update ${e.payload.version} downloaded. Restart AirNote to use it.`,
-      });
+      }, "auto-update-ready");
     }).then((fn) => {
       subs.push(fn);
     }).catch(() => {});
@@ -1117,10 +1205,25 @@ export default function StatusBar() {
             {bar.message}
           </div>
           <div className="sb-survey-footer">
-            <button type="button" className="sb-survey-skip" onClick={() => setBar({ kind: "idle" })}>
+            <button
+              type="button"
+              className="sb-survey-skip"
+              onClick={async () => {
+                await clearPinnedUpdate("auto-update-later");
+                setBar({ kind: "idle" });
+                invoke("dismiss_status_bar").catch(() => {});
+              }}
+            >
               Later
             </button>
-            <button type="button" className="sb-survey-next" onClick={() => void emit(APPLY_UPDATE_EVENT)}>
+            <button
+              type="button"
+              className="sb-survey-next"
+              onClick={async () => {
+                await clearPinnedUpdate("auto-update-restart");
+                void emit(APPLY_UPDATE_EVENT);
+              }}
+            >
               Restart
               <RotateCcw size={14} strokeWidth={2} aria-hidden="true" />
             </button>
@@ -1229,6 +1332,11 @@ export default function StatusBar() {
           ) : bar.kind === "placement" ? (
             <div className="sb-survey-label">
               <span className="sb-status-dot sb-status-dot--info" />
+              <span>{bar.message}</span>
+            </div>
+          ) : bar.kind === "polish_mode" ? (
+            <div className="sb-survey-label">
+              <span className={`sb-status-dot ${bar.enabled ? "sb-status-dot--ok" : "sb-status-dot--info"}`} />
               <span>{bar.message}</span>
             </div>
           ) : (

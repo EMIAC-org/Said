@@ -108,6 +108,7 @@ use crate::{
         cerebras, gateway, gemini_direct, groq, openai_codex,
         prompt::{
             VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE, VocabEntry,
+            build_message_polish_system_prompt, build_message_polish_user_message,
             build_user_message_with_hints, build_voice_repair_system_prompt,
             build_voice_repair_user_message, default_voice_prompt_template,
             render_voice_system_prompt_template, resolved_vocab_terms_to_entries_with_aliases,
@@ -150,6 +151,7 @@ struct VoicePolishInput {
     pre_transcript_meta: Option<TranscriptMeta>,
     repair_mode: Option<String>,
     screen_context: Option<String>,
+    message_polish_mode: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,6 +191,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
     let mut pre_transcript_meta: Option<TranscriptMeta> = None;
     let mut repair_mode: Option<String> = None;
     let mut screen_context: Option<String> = None;
+    let mut message_polish_mode = false;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name() {
@@ -224,6 +227,13 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             Some("screen_context") => {
                 screen_context = field.text().await.ok().filter(|s| !s.trim().is_empty());
             }
+            Some("message_polish_mode") => {
+                message_polish_mode = field
+                    .text()
+                    .await
+                    .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(false);
+            }
             _ => {}
         }
     }
@@ -237,6 +247,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             pre_transcript_meta,
             repair_mode,
             screen_context,
+            message_polish_mode,
         },
     )
     .await
@@ -269,6 +280,7 @@ pub async fn polish_transcript(
             pre_transcript_meta: req.pre_transcript_meta,
             repair_mode: None,
             screen_context: None,
+            message_polish_mode: false,
         },
     )
     .await
@@ -535,6 +547,70 @@ pub async fn repair_transcript(
         .into_response()
 }
 
+async fn run_message_polish_pass(
+    http_client: reqwest::Client,
+    pool: crate::store::DbPool,
+    user_id: String,
+    groq_key: String,
+    text: &str,
+) -> Result<(crate::llm::PolishResult, String), String> {
+    let system_prompt = build_message_polish_system_prompt();
+    let user_message = build_message_polish_user_message(text);
+
+    let codex_token = {
+        let pool_tok = pool.clone();
+        let uid_tok = user_id.clone();
+        tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
+            .await
+            .unwrap_or(None)
+    };
+
+    if let Some(tok) = codex_token {
+        let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
+        let drain = tokio::spawn(async move { while token_rx.recv().await.is_some() {} });
+        let result = openai_codex::stream_polish(
+            &http_client,
+            &tok.access_token,
+            openai_codex::MODEL_MINI,
+            &system_prompt,
+            &user_message,
+            token_tx,
+        )
+        .await;
+        let _ = drain.await;
+        match result {
+            Ok(r) => return Ok((r, openai_codex::MODEL_MINI.to_string())),
+            Err(e) => {
+                let auth_failed =
+                    invalidate_openai_session_on_auth_error(&pool, &user_id, "openai_codex", &e);
+                if !auth_failed {
+                    warn!(
+                        "[voice] message polish Codex pass failed; falling back to Groq 70B: {e}"
+                    );
+                }
+            }
+        }
+    }
+
+    if groq_key.trim().is_empty() {
+        return Err("Groq key missing for message polish fallback".to_string());
+    }
+
+    let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
+    let drain = tokio::spawn(async move { while token_rx.recv().await.is_some() {} });
+    let result = groq::stream_polish(
+        &http_client,
+        &groq_key,
+        groq::GROQ_MODEL_70B,
+        &system_prompt,
+        &user_message,
+        token_tx,
+    )
+    .await;
+    let _ = drain.await;
+    result.map(|r| (r, groq::GROQ_MODEL_70B.to_string()))
+}
+
 async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response {
     let VoicePolishInput {
         wav_data,
@@ -543,6 +619,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         pre_transcript_meta,
         repair_mode,
         screen_context,
+        message_polish_mode,
     } = input;
 
     // Allow empty WAV when the caller supplied a pre_transcript (P5 / WS path).
@@ -1174,7 +1251,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
 
         let llm_start = Instant::now();
         info!("[timing] LLM start — provider={llm_provider:?} model={model_for_llm:?}");
-        let actual_model_used = model_for_llm.clone();
+        let mut actual_model_used = model_for_llm.clone();
 
         let llm_task = tokio::spawn(async move {
             if llm_provider_for_task == "openai_codex" {
@@ -1385,6 +1462,53 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 exact_final.matches.len()
             );
             llm_result.polished = exact_final.text;
+        }
+
+        if message_polish_mode {
+            yield Ok(Event::default().event("status")
+                .data(json!({"phase": "message_polishing", "transcript": llm_result.polished}).to_string()));
+            let before_message_polish = llm_result.polished.clone();
+            match run_message_polish_pass(
+                http_client.clone(),
+                pool.clone(),
+                user_id.clone(),
+                groq_key.clone(),
+                &before_message_polish,
+            ).await {
+                Ok((mut message_result, message_model)) => {
+                    let scrubbed = scrub_polished_output(
+                        &message_result.polished,
+                        &before_message_polish,
+                        false,
+                    );
+                    if scrubbed != message_result.polished {
+                        warn!(
+                            "[voice] scrubbed message-polish leakage {} → {} chars",
+                            message_result.polished.len(),
+                            scrubbed.len(),
+                        );
+                        message_result.polished = scrubbed;
+                    }
+                    if message_result.polished.trim().is_empty() {
+                        warn!("[voice] message polish returned empty output — keeping first-pass result");
+                    } else {
+                        info!(
+                            "[voice] message polish mode applied using model={message_model} {} → {} chars",
+                            before_message_polish.len(),
+                            message_result.polished.len(),
+                        );
+                        llm_result.polish_ms =
+                            llm_result.polish_ms.saturating_add(message_result.polish_ms);
+                        llm_result.polished = message_result.polished;
+                        actual_model_used = format!("{actual_model_used} + {message_model}");
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "[voice] message polish pass failed — keeping first-pass result: {e}"
+                    );
+                }
+            }
         }
 
         // Post-LLM number/email/exact-alias changes are reconciled by the desktop against

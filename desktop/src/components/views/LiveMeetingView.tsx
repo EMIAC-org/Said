@@ -53,6 +53,10 @@ interface MeetingSttStatus {
   active: boolean;
   muted: boolean;
   capture_running: boolean;
+  speaker_reference_available: boolean;
+  echo_gate_active: boolean;
+  local_speech_active: boolean;
+  last_gate_reason: string;
 }
 
 type WsMessage =
@@ -123,6 +127,10 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
   const [muted, setMuted] = useState(false);
   const [sttRunning, setSttRunning] = useState(false);
   const [captureRunning, setCaptureRunning] = useState(false);
+  const [speakerReferenceAvailable, setSpeakerReferenceAvailable] = useState(false);
+  const [echoGateActive, setEchoGateActive] = useState(false);
+  const [localSpeechActive, setLocalSpeechActive] = useState(false);
+  const [lastGateReason, setLastGateReason] = useState("not_started");
   const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
   const [controlBusy, setControlBusy] = useState(false);
   const [ending, setEnding] = useState(false);
@@ -142,6 +150,16 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
   const endedRef = useRef(false); // track ended via ref to avoid stale closures
   const isFirstConnectRef = useRef(true);
 
+  const applyMeetingStatus = useCallback((status: MeetingSttStatus) => {
+    setSttRunning(status.active);
+    setMuted(status.muted);
+    setCaptureRunning(status.capture_running);
+    setSpeakerReferenceAvailable(status.speaker_reference_available);
+    setEchoGateActive(status.echo_gate_active);
+    setLocalSpeechActive(status.local_speech_active);
+    setLastGateReason(status.last_gate_reason || "unknown");
+  }, []);
+
   // Keep endedRef in sync with state (avoids stale closures in WS callbacks)
   useEffect(() => {
     endedRef.current = ended;
@@ -158,9 +176,7 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
     invoke<MeetingSttStatus>("start_meeting_stt")
       .then((status) => {
         if (!cancelled) {
-          setSttRunning(status.active);
-          setMuted(status.muted);
-          setCaptureRunning(status.capture_running);
+          applyMeetingStatus(status);
         }
       })
       .catch((e) => {
@@ -173,27 +189,21 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
       setSttRunning(false);
       setCaptureRunning(false);
     };
-  }, []);
+  }, [applyMeetingStatus]);
 
   useEffect(() => {
     const unlistenPromise = listen<MeetingSttStatus>("meeting-stt-state", (event) => {
-      setSttRunning(event.payload.active);
-      setMuted(event.payload.muted);
-      setCaptureRunning(event.payload.capture_running);
+      applyMeetingStatus(event.payload);
     });
 
     invoke<MeetingSttStatus>("get_meeting_stt_status")
-      .then((status) => {
-        setSttRunning(status.active);
-        setMuted(status.muted);
-        setCaptureRunning(status.capture_running);
-      })
+      .then(applyMeetingStatus)
       .catch(() => {});
 
     return () => {
       unlistenPromise.then((fn) => fn());
     };
-  }, []);
+  }, [applyMeetingStatus]);
 
   // ── Listen for meeting-transcript events from the native pipeline ───────
   useEffect(() => {
@@ -243,16 +253,14 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
     setControlError(null);
     try {
       const status = await invoke<MeetingSttStatus>("toggle_meeting_mute");
-      setMuted(status.muted);
-      setSttRunning(status.active);
-      setCaptureRunning(status.capture_running);
+      applyMeetingStatus(status);
     } catch (e) {
       console.warn("[meeting_audio] toggle mute failed:", e);
       setControlError(e instanceof Error ? e.message : String(e));
     } finally {
       setControlBusy(false);
     }
-  }, []);
+  }, [applyMeetingStatus]);
 
   const handleLeave = useCallback(async () => {
     setControlBusy(true);
@@ -602,6 +610,12 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
   const conn = getConnection();
   const isOwner = !!meeting && !!conn && meeting.created_by === conn.accountId;
   const captureLabel = captureRunning ? "Recording" : muted ? "Muted" : "Paused";
+  const speakerFilterReady = echoGateActive && speakerReferenceAvailable;
+  const speakerFilterLabel = speakerFilterReady
+    ? localSpeechActive
+      ? "Local speech"
+      : "Speaker filter on"
+    : "Speaker filter unavailable";
 
   // ── Ended overlay ──────────────────────────────────────────────────────────
 
@@ -986,6 +1000,29 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
               />
             )}
           </button>
+
+          <div
+            className="flex items-center gap-1.5 h-8 px-3 rounded-full text-[11px] font-medium"
+            title={lastGateReason}
+            style={{
+              background: speakerFilterReady
+                ? "hsl(142 70% 45% / 0.12)"
+                : "hsl(38 90% 55% / 0.13)",
+              color: speakerFilterReady
+                ? "hsl(142 70% 65%)"
+                : "hsl(38 90% 72%)",
+            }}
+          >
+            <span
+              className={localSpeechActive ? "w-1.5 h-1.5 rounded-full animate-pulse" : "w-1.5 h-1.5 rounded-full"}
+              style={{
+                background: speakerFilterReady
+                  ? "hsl(142 70% 55%)"
+                  : "hsl(38 90% 62%)",
+              }}
+            />
+            <span>{speakerFilterLabel}</span>
+          </div>
 
           <div
             className="h-8 w-px"

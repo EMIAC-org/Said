@@ -6,8 +6,10 @@
 //! socket warm with a tiny silent audio prime followed by Deepgram `KeepAlive`
 //! messages.
 
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
+
+use crate::echo_gate::EchoGateShared;
 
 use deepgram::{
     Deepgram,
@@ -896,12 +898,40 @@ pub fn spawn_audio_bridge(
     chunk_recv: ChunkReceiver,
     session_tx: SessionSender,
 ) {
+    spawn_audio_bridge_with_echo_gate(recording_id, chunk_recv, session_tx, None);
+}
+
+pub fn spawn_audio_bridge_with_echo_gate(
+    recording_id: String,
+    chunk_recv: ChunkReceiver,
+    session_tx: SessionSender,
+    echo_gate: Option<Arc<EchoGateShared>>,
+) {
     std::thread::spawn(move || {
         let native_rate = chunk_recv.native_rate;
         let sync_rx: mpsc::Receiver<Vec<f32>> = chunk_recv.rx;
         let mut bridged_chunks = 0usize;
+        let mut dropped_echo_chunks = 0usize;
         while let Ok(chunk_f32) = sync_rx.recv() {
             let resampled = resample_to_16k(&chunk_f32, native_rate);
+            if let Some(gate) = &echo_gate {
+                let decision = gate.filter_mic_samples_16k(&resampled);
+                if !decision.allow {
+                    dropped_echo_chunks += 1;
+                    if dropped_echo_chunks == 1 || dropped_echo_chunks % 50 == 0 {
+                        debug!(
+                            "[dg_session] echo gate dropped chunk id={} reason={} mic_rms={:.4} speaker_rms={:.4} corr={:.3} dropped={}",
+                            recording_id,
+                            decision.reason,
+                            decision.mic_rms,
+                            decision.speaker_rms,
+                            decision.correlation,
+                            dropped_echo_chunks
+                        );
+                    }
+                    continue;
+                }
+            }
             let pcm: Vec<u8> = resampled
                 .iter()
                 .flat_map(|&s| {
@@ -923,7 +953,9 @@ pub fn spawn_audio_bridge(
         let _ = session_tx.blocking_send(SessionCommand::Finalize {
             id: recording_id.clone(),
         });
-        debug!("[dg_session] audio bridge closed id={recording_id} chunks={bridged_chunks}");
+        debug!(
+            "[dg_session] audio bridge closed id={recording_id} chunks={bridged_chunks} echo_dropped={dropped_echo_chunks}"
+        );
     });
 }
 
