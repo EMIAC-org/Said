@@ -27,7 +27,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   PRODUCT_NAME: AirNote
-  PUBLIC_BASE_URL: https://airnote.103.180.163.41.sslip.io
+  PUBLIC_BASE_URL: https://airnote.emiactech.com
   REMOTE_RELEASE_ROOT: /opt/airnote-control-plane/releases
 
 jobs:
@@ -498,7 +498,7 @@ jobs:
         timeout-minutes: 3
         run: |
           set -euo pipefail
-          CURL_RESOLVE=(--resolve airnote.103.180.163.41.sslip.io:443:103.180.163.41)
+          CURL_RESOLVE=(--resolve airnote.emiactech.com:443:103.180.163.41)
           # Verify whichever per-target manifests were published this run.
           for t in darwin windows; do
             if [ -f "artifacts/${t}-latest.json" ]; then

@@ -188,9 +188,9 @@ jobs:
       - name: Verify Lark OAuth redirect
         shell: bash
         run: |
-          location="$(curl --resolve airnote.103.180.163.41.sslip.io:443:103.180.163.41 \
+          location="$(curl --resolve airnote.emiactech.com:443:103.180.163.41 \
             --retry 5 --retry-delay 3 --retry-all-errors \
-            -fsSI 'https://airnote.103.180.163.41.sslip.io/auth/lark?callback_port=55992' \
+            -fsSI 'https://airnote.emiactech.com/auth/lark?callback_port=55992' \
             | tr -d '\r' | awk 'tolower($1)=="location:" {print $2}' | tail -n 1)"
           test -n "$location" || (echo "OAuth redirect location missing" && exit 1)
           echo "$location" | grep -q 'app_id=[^&]' || (echo "OAuth redirect has empty app_id" && exit 1)
