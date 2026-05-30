@@ -32,7 +32,7 @@ VERSION=$(awk '
 ' Cargo.toml)
 [ -n "$VERSION" ] || { echo "could not parse workspace version" >&2; exit 1; }
 
-PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://airnote.103.180.163.41.sslip.io}"
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://airnote.emiactech.com}"
 REMOTE="${REMOTE:-root@103.180.163.41}"
 REMOTE_RELEASE_ROOT="${REMOTE_RELEASE_ROOT:-/opt/airnote-control-plane/releases}"
 KEEP_RELEASES="${KEEP_RELEASES:-3}"

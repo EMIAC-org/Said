@@ -381,7 +381,7 @@ function PerformanceMonitor() {
 
 // ── Report bug ──────────────────────────────────────────────────────────────
 
-const DEFAULT_REPORT_SERVER = "https://airnote.103.180.163.41.sslip.io";
+const DEFAULT_REPORT_SERVER = "https://airnote.emiactech.com";
 
 async function getAppVersionForReport(): Promise<string | undefined> {
   try {

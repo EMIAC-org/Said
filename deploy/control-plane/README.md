@@ -51,8 +51,8 @@ docker compose --profile caddy up -d
 
 Caddy also serves local release artifacts for the desktop updater:
 
-- `https://airnote.103.180.163.41.sslip.io/updates/latest.json`
-- `https://airnote.103.180.163.41.sslip.io/releases/<version>/...`
+- `https://airnote.emiactech.com/updates/latest.json`
+- `https://airnote.emiactech.com/releases/<version>/...`
 
 The release files live under `${RELEASES_PATH:-./releases}` on the server. The
 recommended path is `/opt/airnote-control-plane/releases` when running compose
@@ -80,7 +80,7 @@ Set these repository secrets for CI/CD:
 - `DEPLOY_PATH`: usually `/opt/airnote-control-plane`
 - `LARK_APP_ID`: production Lark app ID
 - `LARK_APP_SECRET`: production Lark app secret
-- `LARK_REDIRECT_URI`: production callback URL, usually `https://airnote.103.180.163.41.sslip.io/v1/auth/lark/callback`
+- `LARK_REDIRECT_URI`: production callback URL, usually `https://airnote.emiactech.com/v1/auth/lark/callback`
 
 The deploy workflow builds and pushes a GHCR image, copies the compose files to the server, writes the new image tag and Lark OAuth secrets into `.env`, validates those values reached the running container, and runs:
 
