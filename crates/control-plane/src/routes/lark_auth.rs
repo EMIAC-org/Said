@@ -250,8 +250,9 @@ pub async fn callback(
         };
 
         sqlx::query(
-            "INSERT INTO org_members (org_id, account_id, role, lark_user_id, lark_name, lark_avatar_url, lark_department)
-             VALUES ($1, $2, 'COMPANY_ADMIN', $3, $4, $5, $6)",
+            "INSERT INTO org_members
+                (org_id, account_id, role, lark_user_id, lark_name, lark_avatar_url, lark_department, auth_source)
+             VALUES ($1, $2, 'COMPANY_ADMIN', $3, $4, $5, $6, 'lark')",
         )
         .bind(oid)
         .bind(account_id)
@@ -281,7 +282,8 @@ pub async fn callback(
                 SET lark_user_id    = $1,
                     lark_name       = $2,
                     lark_avatar_url = $3,
-                    lark_department = $4
+                    lark_department = $4,
+                    auth_source     = 'lark'
               WHERE id = $5",
         )
         .bind(&lark_user.user_id)

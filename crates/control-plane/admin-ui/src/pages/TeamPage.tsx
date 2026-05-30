@@ -11,6 +11,21 @@ function isActive(lastSeen: string): boolean {
   return Date.now() - new Date(lastSeen).getTime() < 15 * 60 * 1000
 }
 
+function AuthTag({ member }: { member: OrgMember }) {
+  const lark = member.lark_connected || member.auth_source === 'lark'
+  return (
+    <span
+      className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+      style={{
+        background: lark ? 'hsl(145 60% 16%)' : 'hsl(210 60% 16%)',
+        color: lark ? 'hsl(145 70% 65%)' : 'hsl(210 70% 68%)',
+      }}
+    >
+      {lark ? 'Lark' : 'Email only'}
+    </span>
+  )
+}
+
 export function TeamPage() {
   const { org } = useAuth()
   const [members, setMembers] = useState<OrgMember[]>([])
@@ -60,22 +75,28 @@ export function TeamPage() {
           <table className="w-full">
             <thead>
               <tr>
-                {['Name', 'Department', 'Role', 'Desktop', 'Joined'].map(h => (
+                {['Name', 'Auth', 'Department', 'Role', 'Desktop', 'Joined'].map(h => (
                   <th key={h} className="text-[10px] font-medium text-fg-4 text-left px-5 py-3 border-b border-border uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {members.map(m => {
-                const name = m.lark_name || `User ${(m.account_id || '?').substring(0, 8)}`
+                const name = m.lark_name || m.email || `User ${(m.account_id || '?').substring(0, 8)}`
                 return (
                   <tr key={m.account_id} className="hover:bg-surface-4/30 transition-colors">
                     <td className="px-5 py-3.5 border-b border-border-light">
                       <div className="flex items-center gap-2.5">
                         <Avatar name={name} size="sm" />
-                        <span className="text-[13px] font-medium">{name}</span>
+                        <div>
+                          <div className="text-[13px] font-medium">{name}</div>
+                          {m.email && m.lark_name && (
+                            <div className="text-[10px] text-fg-4">{m.email}</div>
+                          )}
+                        </div>
                       </div>
                     </td>
+                    <td className="px-5 py-3.5 border-b border-border-light"><AuthTag member={m} /></td>
                     <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{m.lark_department || '--'}</td>
                     <td className="px-5 py-3.5 border-b border-border-light"><RolePill role={m.role} /></td>
                     <td className="px-5 py-3.5 border-b border-border-light">

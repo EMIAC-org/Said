@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Clock, ExternalLink, Link, Loader2, RotateCcw, X } from "lucide-react";
 import { openExternal } from "@/lib/invoke";
 import {
+  completeEmailAuth,
   completeAuth,
   forgetWorkspaceUrl,
   getConnection,
@@ -43,6 +44,11 @@ export function EnterpriseConnectForm({
   const [token, setToken] = useState("");
   const [tokenError, setTokenError] = useState("");
   const [showManualToken, setShowManualToken] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [emailSignup, setEmailSignup] = useState(true);
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailError, setEmailError] = useState("");
   const [recentUrls, setRecentUrls] = useState<string[]>(() => getRecentWorkspaceUrls());
   const serverUrlRef = useRef(serverUrl);
   serverUrlRef.current = serverUrl;
@@ -138,7 +144,6 @@ export function EnterpriseConnectForm({
       if (ok) {
         setValidated(true);
         refreshRecents();
-        await startOAuth(trimmed);
       } else {
         setValidationError("Server did not respond with a valid health check.");
       }
@@ -148,6 +153,26 @@ export function EnterpriseConnectForm({
       setValidating(false);
     }
   }
+
+  const handleEmailSubmit = useCallback(async () => {
+    const trimmedServer = serverUrl.trim();
+    const trimmedEmail = email.trim();
+    if (!trimmedServer || !trimmedEmail || password.length < 8) {
+      setEmailError("Enter a valid email and an 8+ character password.");
+      return;
+    }
+    setEmailLoading(true);
+    setEmailError("");
+    try {
+      const conn = await completeEmailAuth(trimmedServer, trimmedEmail, password, emailSignup);
+      refreshRecents();
+      onConnected(conn);
+    } catch (e) {
+      setEmailError((e as Error).message || "Email sign-in failed");
+    } finally {
+      setEmailLoading(false);
+    }
+  }, [serverUrl, email, password, emailSignup, refreshRecents, onConnected]);
 
   const handleTokenSubmit = useCallback(async (manualToken?: string) => {
     const trimmed = (manualToken ?? token).trim();
@@ -270,8 +295,8 @@ export function EnterpriseConnectForm({
     <div className="space-y-4">
       {!compact && (
         <p className="text-[12px] text-muted-foreground leading-relaxed">
-          Connect to your organization&apos;s AirNote Enterprise server. You must sign in with
-          your workspace before using the app.
+          Connect to your organization&apos;s AirNote server. Use email sign-in, or connect Lark
+          later for calendar and meeting sync.
         </p>
       )}
 
@@ -308,7 +333,7 @@ export function EnterpriseConnectForm({
               {waitingForBrowser
                 ? "Waiting for sign-in…"
                 : validated
-                  ? "Verified — sign in below"
+                  ? "Verified — choose a sign-in method"
                   : "Connect workspace"}
             </button>
             <RecentWorkspaces />
@@ -357,12 +382,91 @@ export function EnterpriseConnectForm({
       )}
 
       {validated && !waitingForBrowser && oauthPhase === "idle" && (
-        <div
-          className="rounded-lg px-3 py-2 text-[12px] flex items-center gap-2"
-          style={{ background: "hsl(145 60% 12%)", color: "hsl(145 70% 70%)" }}
-        >
-          <Check size={12} />
-          Server is reachable. Sign in to complete the connection.
+        <div className="space-y-3">
+          <div
+            className="rounded-lg px-3 py-2 text-[12px] flex items-center gap-2"
+            style={{ background: "hsl(145 60% 12%)", color: "hsl(145 70% 70%)" }}
+          >
+            <Check size={12} />
+            Server is reachable. Sign in to complete the connection.
+          </div>
+
+          <div className="rounded-xl border border-border bg-white/[0.025] p-3 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[12px] font-semibold text-foreground">Email sign-in</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Lark is optional. Admins will see this account as email-only.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="text-[11px] text-accent hover:underline font-semibold"
+                onClick={() => {
+                  setEmailSignup((v) => !v);
+                  setEmailError("");
+                }}
+              >
+                {emailSignup ? "Already have one?" : "Create account"}
+              </button>
+            </div>
+            <input
+              type="email"
+              placeholder="you@company.com"
+              value={email}
+              disabled={emailLoading}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                setEmailError("");
+              }}
+              className="input w-full text-[12px]"
+              autoComplete="email"
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              value={password}
+              disabled={emailLoading}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                setEmailError("");
+              }}
+              className="input w-full text-[12px]"
+              autoComplete={emailSignup ? "new-password" : "current-password"}
+            />
+            {emailError && (
+              <div
+                className="rounded-lg px-3 py-2 text-[12px]"
+                style={{ background: "hsl(0 70% 14%)", color: "hsl(0 85% 76%)" }}
+              >
+                {emailError}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => void handleEmailSubmit()}
+              disabled={emailLoading || !email.trim() || password.length < 8}
+              className="btn-primary w-full !py-2 !text-[12px] flex items-center justify-center gap-2"
+            >
+              {emailLoading ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+              {emailSignup ? "Create account and connect" : "Sign in and connect"}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">or</span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void startOAuth(serverUrl)}
+            className="w-full rounded-lg border border-border px-3 py-2 text-[12px] font-semibold text-foreground hover:border-primary/35 hover:bg-white/[0.04] transition-colors flex items-center justify-center gap-2"
+          >
+            <ExternalLink size={13} />
+            Continue with Lark
+          </button>
         </div>
       )}
 

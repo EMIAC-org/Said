@@ -24,7 +24,7 @@ pub struct ClientBody {
     pub personal_alias_count: Option<i32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, sqlx::FromRow)]
 pub struct ClientRow {
     pub id: Uuid,
     pub account_id: Uuid,
@@ -37,6 +37,8 @@ pub struct ClientRow {
     pub email: Option<String>,
     pub lark_name: Option<String>,
     pub lark_avatar_url: Option<String>,
+    pub auth_source: String,
+    pub lark_connected: bool,
     pub company_bucket_version: i32,
     pub company_vocab_synced_at: Option<DateTime<Utc>>,
     pub personal_vocab_count: i32,
@@ -213,29 +215,16 @@ pub async fn list_org_clients(
     }
     require_viewer(&role)?;
 
-    let rows = sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            Uuid,
-            String,
-            String,
-            String,
-            Option<String>,
-            DateTime<Utc>,
-            DateTime<Utc>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            i32,
-            Option<DateTime<Utc>>,
-            i32,
-            i32,
-        ),
-    >(
+    let clients: Vec<ClientRow> = sqlx::query_as::<_, ClientRow>(
         "SELECT dc.id, dc.account_id, dc.device_id, dc.platform, dc.app_version,
                 dc.hostname, dc.first_seen_at, dc.last_seen_at,
                 a.email, om.lark_name, om.lark_avatar_url,
+                CASE
+                  WHEN om.lark_user_id IS NOT NULL THEN 'lark'
+                  WHEN om.auth_source IS NOT NULL THEN om.auth_source
+                  ELSE 'email'
+                END AS auth_source,
+                (om.lark_user_id IS NOT NULL) AS lark_connected,
                 dc.company_bucket_version, dc.company_vocab_synced_at,
                 dc.personal_vocab_count, dc.personal_alias_count
            FROM desktop_clients dc
@@ -248,47 +237,6 @@ pub async fn list_org_clients(
     .fetch_all(&state.db)
     .await
     .map_err(db_err)?;
-
-    let clients: Vec<ClientRow> = rows
-        .into_iter()
-        .map(
-            |(
-                id,
-                account_id,
-                device_id,
-                platform,
-                app_version,
-                hostname,
-                first_seen_at,
-                last_seen_at,
-                email,
-                lark_name,
-                lark_avatar_url,
-                company_bucket_version,
-                company_vocab_synced_at,
-                personal_vocab_count,
-                personal_alias_count,
-            )| {
-                ClientRow {
-                    id,
-                    account_id,
-                    device_id,
-                    platform,
-                    app_version,
-                    hostname,
-                    first_seen_at,
-                    last_seen_at,
-                    email,
-                    lark_name,
-                    lark_avatar_url,
-                    company_bucket_version,
-                    company_vocab_synced_at,
-                    personal_vocab_count,
-                    personal_alias_count,
-                }
-            },
-        )
-        .collect();
 
     Ok(Json(json!({ "clients": clients })))
 }
@@ -363,29 +311,16 @@ pub async fn org_stats(
     .map_err(db_err)?;
 
     let recent: Vec<ClientRow> = {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                Uuid,
-                Uuid,
-                String,
-                String,
-                String,
-                Option<String>,
-                DateTime<Utc>,
-                DateTime<Utc>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                i32,
-                Option<DateTime<Utc>>,
-                i32,
-                i32,
-            ),
-        >(
+        sqlx::query_as::<_, ClientRow>(
             "SELECT dc.id, dc.account_id, dc.device_id, dc.platform, dc.app_version,
                     dc.hostname, dc.first_seen_at, dc.last_seen_at,
                     a.email, om.lark_name, om.lark_avatar_url,
+                    CASE
+                      WHEN om.lark_user_id IS NOT NULL THEN 'lark'
+                      WHEN om.auth_source IS NOT NULL THEN om.auth_source
+                      ELSE 'email'
+                    END AS auth_source,
+                    (om.lark_user_id IS NOT NULL) AS lark_connected,
                     dc.company_bucket_version, dc.company_vocab_synced_at,
                     dc.personal_vocab_count, dc.personal_alias_count
                FROM desktop_clients dc
@@ -398,47 +333,7 @@ pub async fn org_stats(
         .bind(org_id)
         .fetch_all(&state.db)
         .await
-        .map_err(db_err)?;
-
-        rows.into_iter()
-            .map(
-                |(
-                    id,
-                    account_id,
-                    device_id,
-                    platform,
-                    app_version,
-                    hostname,
-                    first_seen_at,
-                    last_seen_at,
-                    email,
-                    lark_name,
-                    lark_avatar_url,
-                    company_bucket_version,
-                    company_vocab_synced_at,
-                    personal_vocab_count,
-                    personal_alias_count,
-                )| {
-                    ClientRow {
-                        id,
-                        account_id,
-                        device_id,
-                        platform,
-                        app_version,
-                        hostname,
-                        first_seen_at,
-                        last_seen_at,
-                        email,
-                        lark_name,
-                        lark_avatar_url,
-                        company_bucket_version,
-                        company_vocab_synced_at,
-                        personal_vocab_count,
-                        personal_alias_count,
-                    }
-                },
-            )
-            .collect()
+        .map_err(db_err)?
     };
 
     Ok(Json(json!({

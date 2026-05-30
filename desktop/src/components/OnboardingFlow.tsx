@@ -224,10 +224,10 @@ export function OnboardingFlow({
         subtitle={
           workspacePreview
             ? "Signed in to your organization. Continue setup on the next step."
-            : "Enter your organization's server URL and sign in with Lark. This links AirNote to your team."
+            : "Enter your organization's server URL and sign in with email. Lark can be connected later."
         }
         brandTagline="Enterprise AirNote runs on your organization's server — your data stays in your workspace."
-        brandKicker="Sign in with Lark"
+        brandKicker="Workspace sign-in"
         brandQuote="One workspace login, then every device knows who you are."
         topRight={<span>{stepLabel(step)}</span>}
         bottomNote={

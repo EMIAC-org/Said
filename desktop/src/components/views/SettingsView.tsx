@@ -538,11 +538,15 @@ function EnterpriseSection({ onDisconnect }: { onDisconnect?: () => void }) {
                 <span
                   className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
                   style={{
-                    background: "hsl(145 60% 16%)",
-                    color: "hsl(145 70% 65%)",
+                    background: connection.authSource === "email"
+                      ? "hsl(210 60% 16%)"
+                      : "hsl(145 60% 16%)",
+                    color: connection.authSource === "email"
+                      ? "hsl(210 70% 68%)"
+                      : "hsl(145 70% 65%)",
                   }}
                 >
-                  Connected
+                  {connection.authSource === "email" ? "Email only" : "Connected"}
                 </span>
               </div>
               <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed truncate">
