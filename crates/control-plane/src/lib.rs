@@ -70,6 +70,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/health", get(routes::health::handler))
         .route("/v1/auth/signup", post(routes::auth::signup))
         .route("/v1/auth/login", post(routes::auth::login))
+        .route("/v1/auth/desktop-email", post(routes::auth::desktop_email))
         .route("/v1/bug-reports/public", post(routes::bugs::submit_public))
         // Authenticated
         .route("/v1/auth/logout", post(routes::auth::logout))

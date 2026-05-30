@@ -25,6 +25,21 @@ function isActive(lastSeen: string): boolean {
   return Date.now() - new Date(lastSeen).getTime() < 15 * 60 * 1000
 }
 
+function AuthBadge({ client }: { client: Pick<DesktopClient, 'auth_source' | 'lark_connected'> }) {
+  const lark = client.lark_connected || client.auth_source === 'lark'
+  return (
+    <span
+      className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+      style={{
+        background: lark ? 'hsl(145 60% 16%)' : 'hsl(210 60% 16%)',
+        color: lark ? 'hsl(145 70% 65%)' : 'hsl(210 70% 68%)',
+      }}
+    >
+      {lark ? 'Lark' : 'Email only'}
+    </span>
+  )
+}
+
 export function DesktopPage() {
   const { org } = useAuth()
   const [clients, setClients] = useState<DesktopClient[]>([])
@@ -86,7 +101,7 @@ export function DesktopPage() {
             <table className="w-full">
               <thead>
                 <tr>
-                  {['User', 'Platform', 'Version', 'Last seen', 'Status'].map(h => (
+                  {['User', 'Auth', 'Platform', 'Version', 'Last seen', 'Status'].map(h => (
                     <th key={h} className="text-[10px] font-medium text-fg-4 text-left px-5 py-3 border-b border-border uppercase tracking-wider">{h}</th>
                   ))}
                 </tr>
@@ -112,6 +127,7 @@ export function DesktopPage() {
                           </div>
                         </div>
                       </td>
+                      <td className="px-5 py-3.5 border-b border-border-light"><AuthBadge client={c} /></td>
                       <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light capitalize">{c.platform}</td>
                       <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light font-mono">{c.app_version}</td>
                       <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{relativeLastSeen(c.last_seen_at)}</td>
@@ -153,6 +169,10 @@ export function DesktopPage() {
                       <div className="text-[18px] font-semibold tabular-nums">{(selected.personal_vocab_count || 0) + (selected.personal_alias_count || 0)}</div>
                       <div className="text-[10px] text-fg-4">Vocab rows</div>
                     </div>
+                  </div>
+                  <div>
+                    <div className="text-fg-4 text-[10px] uppercase tracking-wider mb-1">Authentication</div>
+                    <AuthBadge client={selected} />
                   </div>
                   <div>
                     <div className="text-fg-4 text-[10px] uppercase tracking-wider mb-1">First seen</div>

@@ -58,9 +58,12 @@ export interface MeetingDetail {
 
 export interface OrgMember {
   account_id: string
+  email?: string
   lark_name?: string
   lark_department?: string
   role: string
+  auth_source?: string
+  lark_connected?: boolean
   joined_at?: string
   desktop_active?: boolean
 }
@@ -77,6 +80,8 @@ export interface DesktopClient {
   email?: string | null
   lark_name?: string | null
   lark_avatar_url?: string | null
+  auth_source?: string
+  lark_connected?: boolean
   company_bucket_version?: number
   company_vocab_synced_at?: string | null
   personal_vocab_count?: number

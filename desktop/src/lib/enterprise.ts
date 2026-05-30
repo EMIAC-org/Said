@@ -182,6 +182,7 @@ export interface EnterpriseConnection {
   orgName?: string;
   larkName?: string;
   larkAvatarUrl?: string;
+  authSource?: "lark" | "email";
 }
 
 export type ConnectionStatus = "connected" | "missing" | "expired";
@@ -397,16 +398,76 @@ export async function completeAuth(
     orgName,
     larkName,
     larkAvatarUrl,
+    authSource: larkName ? "lark" : "email",
   };
 
+  await persistEnterpriseConnection(conn, sessionToken, me.account.email, orgName);
+
+  return conn;
+}
+
+export async function completeEmailAuth(
+  serverUrl: string,
+  email: string,
+  password: string,
+  signup: boolean,
+): Promise<EnterpriseConnection> {
+  const url = serverUrl.replace(/\/+$/, "");
+  const res = await fetch(`${url}/v1/auth/desktop-email`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, signup }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || "Email sign-in failed");
+  }
+
+  const sessionToken = data.token as string;
+  const accountEmail = data.account?.email as string;
+
+  const orgRes = await fetch(`${url}/v1/orgs/me`, {
+    headers: { Authorization: `Bearer ${sessionToken}` },
+  });
+  let orgName: string | undefined;
+  if (orgRes.ok) {
+    const orgData = await orgRes.json();
+    orgName = orgData.org?.name;
+  }
+
+  const licenseOk = await checkLicense(url, sessionToken);
+  if (!licenseOk) {
+    throw new Error("Your workspace license is inactive. Contact your administrator.");
+  }
+
+  const conn: EnterpriseConnection = {
+    serverUrl: url,
+    jwt: sessionToken,
+    accountId: data.account?.id,
+    email: accountEmail,
+    orgName,
+    authSource: "email",
+  };
+
+  await persistEnterpriseConnection(conn, sessionToken, accountEmail, orgName);
+
+  return conn;
+}
+
+async function persistEnterpriseConnection(
+  conn: EnterpriseConnection,
+  sessionToken: string,
+  email: string,
+  orgName?: string,
+): Promise<void> {
   saveConnection(conn);
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("store_enterprise_auth", {
       token: sessionToken,
-      email: me.account.email,
-      serverUrl: url,
+      email,
+      serverUrl: conn.serverUrl,
       orgName: orgName ?? null,
     });
   } catch {
@@ -414,14 +475,12 @@ export async function completeAuth(
   }
 
   try {
-    await ensureDesktopRegistered(url, sessionToken);
+    await ensureDesktopRegistered(conn.serverUrl, sessionToken);
     await syncCompanyVocab(true);
     await uploadUserVocabSummary(true);
   } catch (err) {
     console.warn("[enterprise] desktop registration deferred until next heartbeat", err);
   }
-
-  return conn;
 }
 
 /** Full disconnect — local storage + backend token. */
