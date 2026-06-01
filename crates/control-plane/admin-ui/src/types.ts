@@ -137,6 +137,22 @@ export interface OrgVocabRelease {
   created_at: string
 }
 
+export interface DiagnosticsEvent {
+  id: string
+  device_id: string
+  account_id?: string | null
+  org_id?: string | null
+  event_type: string
+  severity: string
+  app_version?: string | null
+  os?: string | null
+  arch?: string | null
+  channel?: string | null
+  phase?: string | null
+  context: Record<string, unknown>
+  created_at: string
+}
+
 export interface BugReport {
   id: string
   org_id?: string | null
