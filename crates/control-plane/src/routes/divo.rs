@@ -53,11 +53,15 @@ fn not_linked_resp() -> Response {
 /// Resolve this account's current Lark `user_access_token`, refreshing it when it
 /// is within 60s of expiry (or always when `force_refresh` is set — used to retry
 /// once after Divo rejects a token with 401).
+///
+/// Returns `(token, refreshed)`. `refreshed` is true when this call minted a new
+/// token, letting the caller tell a freshly-minted token from a cached one (a
+/// cached token Divo rejects is genuinely stale; a just-minted one is not).
 async fn get_lark_token(
     state: &AppState,
     account_id: Uuid,
     force_refresh: bool,
-) -> Result<String, Response> {
+) -> Result<(String, bool), Response> {
     let row: Option<(Uuid, String, String, DateTime<Utc>)> = sqlx::query_as(
         "SELECT id, access_token, refresh_token, token_expires_at
            FROM lark_tokens
@@ -72,7 +76,7 @@ async fn get_lark_token(
     let (row_id, access_token, refresh_token, expires_at) = row.ok_or_else(not_linked_resp)?;
 
     if !force_refresh && expires_at > Utc::now() + Duration::seconds(60) {
-        return Ok(access_token);
+        return Ok((access_token, false));
     }
 
     let new_tokens = crate::lark_client::refresh_access_token(
@@ -105,7 +109,7 @@ async fn get_lark_token(
     .execute(&state.db)
     .await;
 
-    Ok(new_tokens.access_token)
+    Ok((new_tokens.access_token, true))
 }
 
 fn divo_base(state: &AppState) -> String {
@@ -126,7 +130,7 @@ pub async fn chat(
     let url = format!("{}/api/airnote/chat", divo_base(&state));
 
     // First attempt with the proactively-refreshed token.
-    let mut token = match get_lark_token(&state, user.account_id, false).await {
+    let (mut token, was_fresh) = match get_lark_token(&state, user.account_id, false).await {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -136,16 +140,32 @@ pub async fn chat(
         Err(resp) => return resp,
     };
 
-    // Spec §2: on 401 the Lark token is stale/invalid — force a refresh and retry once.
+    // Spec §2: a 401 means Divo rejected the Lark token. A *cached* token it
+    // rejects is genuinely stale, so force a refresh and retry. But a token we
+    // just minted is valid — Divo occasionally fails to verify a brand-new Lark
+    // token for ~1s — so retry the same token with short backoff (rather than
+    // rotating it again) before surfacing the 401.
     if upstream.status() == reqwest::StatusCode::UNAUTHORIZED {
-        token = match get_lark_token(&state, user.account_id, true).await {
-            Ok(t) => t,
-            Err(resp) => return resp,
-        };
-        upstream = match post_chat(&client, &url, &token, &body).await {
-            Ok(r) => r,
-            Err(resp) => return resp,
-        };
+        if !was_fresh {
+            token = match get_lark_token(&state, user.account_id, true).await {
+                Ok((t, _)) => t,
+                Err(resp) => return resp,
+            };
+            upstream = match post_chat(&client, &url, &token, &body).await {
+                Ok(r) => r,
+                Err(resp) => return resp,
+            };
+        }
+        for delay_ms in [500u64, 1000, 1500] {
+            if upstream.status() != reqwest::StatusCode::UNAUTHORIZED {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            upstream = match post_chat(&client, &url, &token, &body).await {
+                Ok(r) => r,
+                Err(resp) => return resp,
+            };
+        }
     }
 
     let status = upstream.status();
@@ -209,7 +229,7 @@ pub async fn thread(
         _ => format!("{base}/api/airnote/threads/{thread_id}"),
     };
 
-    let token = match get_lark_token(&state, user.account_id, false).await {
+    let (mut token, was_fresh) = match get_lark_token(&state, user.account_id, false).await {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -219,15 +239,29 @@ pub async fn thread(
         Err(resp) => return resp,
     };
 
+    // Same 401 handling as `chat`: refresh a genuinely-stale cached token, then
+    // ride over the brief verification delay on a freshly-minted token.
     if upstream.status() == reqwest::StatusCode::UNAUTHORIZED {
-        let token = match get_lark_token(&state, user.account_id, true).await {
-            Ok(t) => t,
-            Err(resp) => return resp,
-        };
-        upstream = match get_thread(&client, &url, &token).await {
-            Ok(r) => r,
-            Err(resp) => return resp,
-        };
+        if !was_fresh {
+            token = match get_lark_token(&state, user.account_id, true).await {
+                Ok((t, _)) => t,
+                Err(resp) => return resp,
+            };
+            upstream = match get_thread(&client, &url, &token).await {
+                Ok(r) => r,
+                Err(resp) => return resp,
+            };
+        }
+        for delay_ms in [500u64, 1000, 1500] {
+            if upstream.status() != reqwest::StatusCode::UNAUTHORIZED {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            upstream = match get_thread(&client, &url, &token).await {
+                Ok(r) => r,
+                Err(resp) => return resp,
+            };
+        }
     }
 
     let status = upstream.status();
