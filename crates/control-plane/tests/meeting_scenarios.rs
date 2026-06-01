@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
 
-use said_control_plane::{AppState, LarkConfig, build_router, meeting_hub, store};
+use said_control_plane::{AppState, LarkConfig, build_router, meeting_hub, routes, store};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test harness
@@ -46,6 +46,8 @@ impl TestServer {
             },
             hub,
             deepgram_api_key: String::new(),
+            diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
+            divo_base_url: String::new(),
         };
 
         let app = build_router(state);
@@ -1889,4 +1891,110 @@ async fn s30_cross_org_isolation() {
         !meetings.iter().any(|m| m["id"] == m_a.to_string()),
         "org B should not see org A's meetings"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Scenario 31: Diagnostics ingest + admin list
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn s31_diagnostics_ingest_and_admin_list() {
+    let srv = TestServer::start().await;
+    let tag = Uuid::new_v4();
+    let device_id = format!("diag-{tag}");
+
+    let res = srv
+        .client
+        .post(srv.url("/v1/diagnostics"))
+        .header("x-forwarded-for", "203.0.113.10")
+        .json(&json!({
+            "device_id": device_id,
+            "events": [{
+                "event_type": "backend.spawn_failed",
+                "severity": "error",
+                "app_version": "2.3.2",
+                "os": "macos",
+                "arch": "aarch64",
+                "channel": "stable",
+                "phase": "starting",
+                "context": { "error": "spawn failed", "port": 48484 }
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "diagnostics ingest should succeed");
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["accepted"], 1);
+
+    let inserted: (String, String, Value) = sqlx::query_as(
+        "SELECT event_type, severity, context
+           FROM diagnostics_events
+          WHERE device_id = $1
+          ORDER BY created_at DESC
+          LIMIT 1",
+    )
+    .bind(&device_id)
+    .fetch_one(&srv.db)
+    .await
+    .unwrap();
+    assert_eq!(inserted.0, "backend.spawn_failed");
+    assert_eq!(inserted.1, "error");
+    assert_eq!(inserted.2["port"], 48484);
+
+    let (_admin_id, admin_token) = srv.create_account(&format!("diag-admin-{tag}")).await;
+    let res = srv
+        .client
+        .get(srv.url("/v1/diagnostics"))
+        .header("Authorization", format!("Bearer {admin_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "admin diagnostics list should succeed");
+    let body: Value = res.json().await.unwrap();
+    let events = body["events"].as_array().unwrap();
+    assert!(
+        events.iter().any(|e| e["device_id"] == device_id),
+        "admin list should include the ingested diagnostics event"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Scenario 32: Diagnostics drops private dictation context
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn s32_diagnostics_rejects_private_context() {
+    let srv = TestServer::start().await;
+    let device_id = format!("diag-private-{}", Uuid::new_v4());
+
+    let res = srv
+        .client
+        .post(srv.url("/v1/diagnostics"))
+        .json(&json!({
+            "device_id": device_id,
+            "events": [{
+                "event_type": "voice.finish",
+                "severity": "error",
+                "context": { "transcript": "private dictated words" }
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "unsafe diagnostics payload should be accepted at request level"
+    );
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["accepted"], 0);
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM diagnostics_events WHERE device_id = $1")
+            .bind(&device_id)
+            .fetch_one(&srv.db)
+            .await
+            .unwrap();
+    assert_eq!(count, 0, "private transcript event should not be stored");
 }

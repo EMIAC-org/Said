@@ -12,6 +12,7 @@ import { TeamPage } from './pages/TeamPage'
 import { DesktopPage } from './pages/DesktopPage'
 import { VocabularyPage } from './pages/VocabularyPage'
 import { BugsPage } from './pages/BugsPage'
+import { DiagnosticsPage } from './pages/DiagnosticsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { LiveMeetingPage } from './pages/LiveMeetingPage'
 import { OnboardingPage } from './pages/OnboardingPage'
@@ -35,6 +36,7 @@ createRoot(document.getElementById('app')!).render(
             <Route path="desktop" element={<DesktopPage />} />
             <Route path="vocabulary" element={<VocabularyPage />} />
             <Route path="bugs" element={<BugsPage />} />
+            <Route path="diagnostics" element={<DiagnosticsPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>

@@ -45,6 +45,9 @@ pub struct AppState {
     pub lark: LarkConfig,
     pub hub: Arc<meeting_hub::MeetingHub>,
     pub deepgram_api_key: String,
+    pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
+    /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
+    pub divo_base_url: String,
 }
 
 // ── Router constructor ───────────────────────────────────────────────────────
@@ -72,6 +75,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/auth/login", post(routes::auth::login))
         .route("/v1/auth/desktop-email", post(routes::auth::desktop_email))
         .route("/v1/bug-reports/public", post(routes::bugs::submit_public))
+        .route("/v1/diagnostics", post(routes::diagnostics::ingest))
+        .route("/v1/diagnostics", get(routes::diagnostics::list))
         // Authenticated
         .route("/v1/auth/logout", post(routes::auth::logout))
         .route("/v1/auth/me", get(routes::auth::me))
@@ -88,6 +93,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/auth/lark/start", get(routes::lark_auth::start))
         .route("/v1/auth/lark/callback", get(routes::lark_auth::callback))
         .route("/v1/auth/lark/refresh", post(routes::lark_auth::refresh))
+        // Divo agent proxy (attaches the account's Lark token, streams SSE back)
+        .route("/v1/divo/chat", post(routes::divo::chat))
+        .route("/v1/divo/threads/:id", get(routes::divo::thread))
         .route("/v1/license/check", get(routes::license::check))
         .route("/v1/metering/report", post(routes::metering::report))
         // Enterprise — Desktop clients
