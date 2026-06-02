@@ -10,6 +10,7 @@ import { HistoryView } from "@/components/views/HistoryView";
 import { InsightsView } from "@/components/views/InsightsView";
 import { VocabularyView } from "@/components/views/VocabularyView";
 import { MeetingsView } from "@/components/views/MeetingsView";
+import { DivoView } from "@/components/views/DivoView";
 import { LiveMeetingView } from "@/components/views/LiveMeetingView";
 import {
   invoke,
@@ -53,8 +54,8 @@ import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
-export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "meetings" | "settings" | "live-meeting";
-const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "meetings", "settings", "live-meeting"];
+export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "meetings" | "divo" | "settings" | "live-meeting";
+const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "meetings", "divo", "settings", "live-meeting"];
 type SettingsSectionId =
   | "appearance"
   | "writing"
@@ -654,6 +655,7 @@ export default function App() {
                 onBack={() => setActiveView("meetings")}
               />
             )}
+            {activeView === "divo" && <DivoView />}
             {/* Settings is now a modal — opened via setSettingsOpen */}
           </div>
         </main>

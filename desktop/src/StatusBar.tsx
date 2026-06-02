@@ -2,9 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
-import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, ListChecks, Mic, RotateCcw, Send, Sparkles, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, ListChecks, Mic, Pencil, Plus, RotateCcw, Send, Sparkles, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
 import { APPLY_UPDATE_EVENT } from "./lib/autoUpdate";
+import { divoListThreads, type DivoThreadSummary } from "./lib/invoke";
 import { Markdown } from "./components/Markdown";
 
 function notifEnabled(key: string): boolean {
@@ -100,7 +101,8 @@ type BarState =
   | { kind: "retraining" }
   | { kind: "retrain_done"; durationS: number }
   // ── Divo (Ctrl hold-to-talk → agent) ──
-  | { kind: "divo_stage"; followup: boolean } // review/edit transcript before sending
+  | { kind: "divo_stage" } // compact review bar: transcript + Send + ✎
+  | { kind: "divo_route" } // expanded (on ✎): edit transcript + pick target chat
   | { kind: "divo_streaming" } // live activity panel (status/plan/thinking)
   | { kind: "divo_min" } // hidden — collapsed "Divo is working…" pill
   | { kind: "divo_ready" } // "Divo (1)" notification badge
@@ -110,6 +112,8 @@ type BarState =
 
 type DivoTool = { name: string; verb?: string; past?: string; ok?: boolean; done: boolean };
 type DivoPlan = { status: string; title: string; subtitle?: string };
+/// Where a staged turn will be sent: a brand-new chat, or an existing thread.
+type DivoTarget = { type: "new" } | { type: "thread"; id: string; title: string };
 type DivoActivity = {
   liveLabel: string;
   progressPct: number;
@@ -198,7 +202,8 @@ function pillSize(
   reviewExpanded = true,
 ): { width: number; height: number } {
   if (hasTranscript) return { width: VOICE_INNER_WIDTH, height: VOICE_INNER_HEIGHT };
-  if (kind === "divo_stage") return { width: 380, height: 208 };
+  if (kind === "divo_stage") return { width: 520, height: 58 };
+  if (kind === "divo_route") return { width: 460, height: 338 };
   if (kind === "divo_streaming") return { width: 340, height: 236 };
   if (kind === "divo_answer") return { width: 440, height: 468 };
   if (kind === "divo_min") return { width: 188, height: 38 };
@@ -271,6 +276,8 @@ export default function StatusBar() {
   const [divo, setDivo] = useState<DivoActivity>(() => emptyDivo());
   const [divoCopied, setDivoCopied] = useState(false);
   const [divoDraft, setDivoDraft] = useState("");
+  const [divoTarget, setDivoTarget] = useState<DivoTarget>({ type: "new" });
+  const [divoThreads, setDivoThreads] = useState<DivoThreadSummary[]>([]);
   const divoDraftRef = useRef<HTMLTextAreaElement | null>(null);
   const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLevelRef = useRef(0);
@@ -341,6 +348,7 @@ export default function StatusBar() {
     // review/staging step (edit + Send), the "Divo (1)" notification, and the
     // opened answer panel grab clicks.
     || bar.kind === "divo_stage"
+    || bar.kind === "divo_route"
     || bar.kind === "divo_ready"
     || bar.kind === "divo_answer";
   const isFullBleedCard = bar.kind === "reviewing" && reviewExpanded;
@@ -978,20 +986,42 @@ export default function StatusBar() {
     // ── Divo (Ctrl hold-to-talk → agent) ──────────────────────────────────
     // Review step: the polished transcript arrives here for edit + Send, instead
     // of being sent to Divo automatically.
-    listen<{ text: string; followup: boolean }>("divo-stage", (e) => {
+    listen<{ text: string; newChat: boolean; currentThreadId: string | null }>("divo-stage", (e) => {
       console.info("[status-bar] divo-stage", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
       setDivoCopied(false);
       setDivoDraft(e.payload?.text ?? "");
-      // Hold the HUD open and make it interactive — the user edits a textarea and
-      // clicks Send/Cancel here.
+      // Default routing: Ctrl+N → new chat; otherwise continue the active thread if
+      // there is one. The user can override via the ✎ chat router.
+      const cur = e.payload?.currentThreadId ?? null;
+      const initialTarget: DivoTarget =
+        !e.payload?.newChat && cur
+          ? { type: "thread", id: cur, title: "Current chat" }
+          : { type: "new" };
+      setDivoTarget(initialTarget);
+      setDivoThreads([]);
+      // Hold the HUD open and make it interactive — the compact review bar takes
+      // clicks (Send / ✎), and the expanded router edits text + picks a chat.
       invoke("set_status_bar_persistent", { persistent: true, reason: "divo-stage", interactive: true })
         .catch(() => presentStatusBar("divo-stage"));
-      setBar({ kind: "divo_stage", followup: !!e.payload?.followup });
-      // Make the panel key so the textarea can receive keystrokes (the status bar
-      // is a non-activating panel; without this it accepts clicks but not typing).
+      setBar({ kind: "divo_stage" });
+      // Make the panel key so buttons/textarea can receive input (the status bar is
+      // a non-activating panel; without this it accepts clicks but not typing).
       win.setFocus().catch(() => {});
-      setTimeout(() => { const el = divoDraftRef.current; if (el) { el.focus(); el.select(); } }, 60);
+      // Load the chat list for the router, and resolve the active chat's title.
+      void divoListThreads().then((threads) => {
+        setDivoThreads(threads);
+        if (cur) {
+          const match = threads.find((t) => t.id === cur);
+          if (match?.title) {
+            setDivoTarget((prev) =>
+              prev.type === "thread" && prev.id === cur
+                ? { type: "thread", id: cur, title: match.title }
+                : prev,
+            );
+          }
+        }
+      });
     }).then((fn) => subs.push(fn)).catch(() => {});
 
     listen<{ followup: boolean }>("divo-started", (e) => {
@@ -1143,26 +1173,73 @@ export default function StatusBar() {
     return null;
   }
 
-  // ── Divo: review/edit the transcript, then Send ───────────────────────
-  if (bar.kind === "divo_stage") {
-    const followup = bar.followup;
+  // ── Divo: compact review bar — transcript + Send + ✎ (stays horizontal) ──
+  if (bar.kind === "divo_stage" || bar.kind === "divo_route") {
+    const targetLabel = divoTarget.type === "new" ? "New chat" : (divoTarget.title || "Current chat");
     const sendDraft = () => {
       const text = divoDraft.trim();
       if (!text) return;
       // divo-started (emitted by the send) transitions the HUD to streaming.
-      invoke("divo_send", { message: text, followup }).catch(() => {});
+      const threadId = divoTarget.type === "new" ? null : divoTarget.id;
+      invoke("divo_send", { message: text, threadId }).catch(() => {});
     };
+
+    // Compact horizontal bar — the default. The editor never auto-expands.
+    if (bar.kind === "divo_stage") {
+      return (
+        <CardHost>
+          <div
+            className="sb-survey sb-survey--interactive divo-review"
+            style={{ width: innerSize.width, height: innerSize.height }}
+            aria-label="Review instruction before sending to Divo"
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); sendDraft(); }
+              else if (e.key === "Escape") { e.preventDefault(); releaseDivoHoldThenIdle("divo-stage-cancel"); }
+            }}
+            tabIndex={0}
+          >
+            <span className="divo-mark"><Sparkles size={11} strokeWidth={2.4} /></span>
+            <span className="divo-review-text" title={divoDraft}>{divoDraft || "…"}</span>
+            <button
+              type="button"
+              className={`divo-review-target ${divoTarget.type === "new" ? "is-new" : ""}`}
+              title="Choose which chat this goes to"
+              onClick={() => setBar({ kind: "divo_route" })}
+            >
+              {divoTarget.type === "new" ? <Plus size={11} strokeWidth={2.6} /> : null}
+              <span className="divo-review-target-nm">{targetLabel}</span>
+            </button>
+            <button
+              type="button"
+              className="divo-review-edit"
+              title="Edit & route"
+              aria-label="Edit and route"
+              onClick={() => setBar({ kind: "divo_route" })}
+            >
+              <Pencil size={13} strokeWidth={2.1} />
+            </button>
+            <button type="button" className="divo-review-send" onClick={sendDraft} disabled={!divoDraft.trim()}>
+              <Send size={12} strokeWidth={2.2} /> Send
+            </button>
+          </div>
+        </CardHost>
+      );
+    }
+
+    // Expanded editor + tabular chat router — only on ✎.
     return (
       <CardHost>
         <div
-          className="sb-survey sb-survey--panel sb-survey--interactive divo-stage"
+          className="sb-survey sb-survey--panel sb-survey--interactive divo-route"
           style={{ width: innerSize.width, height: innerSize.height }}
-          aria-label="Review instruction before sending to Divo"
+          aria-label="Edit instruction and choose a chat"
         >
           <div className="divo-head">
             <span className="divo-mark"><Sparkles size={11} strokeWidth={2.4} /></span>
-            <span className="divo-name">Send to Divo</span>
-            <span className="divo-stage-hint">{followup ? "follow-up" : "edit, then send"}</span>
+            <span className="divo-name">Edit &amp; route</span>
+            <button className="divo-hide" title="Back" aria-label="Back" onClick={() => setBar({ kind: "divo_stage" })}>
+              <ChevronLeft size={14} />
+            </button>
           </div>
           <textarea
             ref={divoDraftRef}
@@ -1171,17 +1248,39 @@ export default function StatusBar() {
             onChange={(e) => setDivoDraft(e.target.value)}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); sendDraft(); }
-              else if (e.key === "Escape") { e.preventDefault(); releaseDivoHoldThenIdle("divo-stage-cancel"); }
+              else if (e.key === "Escape") { e.preventDefault(); setBar({ kind: "divo_stage" }); }
             }}
             spellCheck={false}
             autoFocus
           />
+          <div className="divo-route-label">Send to</div>
+          <div className="divo-route-chips">
+            {divoThreads.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={`divo-chip ${divoTarget.type === "thread" && divoTarget.id === t.id ? "active" : ""}`}
+                title={t.title}
+                onClick={() => setDivoTarget({ type: "thread", id: t.id, title: t.title || "Chat" })}
+              >
+                {t.title || "Untitled chat"}
+              </button>
+            ))}
+            <button
+              type="button"
+              className={`divo-chip divo-chip--new ${divoTarget.type === "new" ? "active" : ""}`}
+              onClick={() => setDivoTarget({ type: "new" })}
+            >
+              <Plus size={11} strokeWidth={2.6} /> New chat
+            </button>
+          </div>
           <div className="divo-stage-foot">
-            <button type="button" className="sb-survey-skip" onClick={() => releaseDivoHoldThenIdle("divo-stage-cancel")}>
+            <span className="divo-route-hint">⌘↵ to send</span>
+            <button type="button" className="sb-survey-skip" onClick={() => setBar({ kind: "divo_stage" })}>
               Cancel
             </button>
             <button type="button" className="divo-stage-send" onClick={sendDraft} disabled={!divoDraft.trim()}>
-              <Send size={12} strokeWidth={2.2} /> Send <span className="divo-stage-kbd">⌘↵</span>
+              <Send size={12} strokeWidth={2.2} /> Send
             </button>
           </div>
         </div>

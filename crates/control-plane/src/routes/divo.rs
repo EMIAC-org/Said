@@ -1,6 +1,7 @@
 //! Divo proxy — bridges AirNote desktop clients to the Divo agent backend.
 //!
 //!   POST /v1/divo/chat            — stream an instruction to Divo (SSE pass-through)
+//!   GET  /v1/divo/threads         — list this account's AirNote threads (chat history)
 //!   GET  /v1/divo/threads/:id     — fetch a thread (recovery / post-approval answer)
 //!
 //! AirNote authenticates with its own control-plane session token (the `AuthUser`
@@ -264,6 +265,68 @@ pub async fn thread(
     };
 
     // Same 401 handling as `chat`: refresh a genuinely-stale cached token, then
+    // ride over the brief verification delay on a freshly-minted token.
+    if upstream.status() == reqwest::StatusCode::UNAUTHORIZED {
+        if !was_fresh {
+            token = match get_lark_token(&state, user.account_id, true).await {
+                Ok((t, _)) => t,
+                Err(resp) => return resp,
+            };
+            upstream = match get_thread(&client, &url, &token).await {
+                Ok(r) => r,
+                Err(resp) => return resp,
+            };
+        }
+        for delay_ms in [500u64, 1000, 1500] {
+            if upstream.status() != reqwest::StatusCode::UNAUTHORIZED {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            upstream = match get_thread(&client, &url, &token).await {
+                Ok(r) => r,
+                Err(resp) => return resp,
+            };
+        }
+    }
+
+    let status = upstream.status();
+    let code = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let text = upstream.text().await.unwrap_or_default();
+    (code, [(header::CONTENT_TYPE, "application/json")], text).into_response()
+}
+
+// ── GET /v1/divo/threads ─────────────────────────────────────────────────────────
+
+/// List the account's AirNote threads (the in-app Divo chat history). Forwards the
+/// JSON list response from Divo verbatim, with the same gate, Lark-token resolution
+/// and 401 handling as [`thread`].
+pub async fn list_threads(
+    State(state): State<AppState>,
+    user: AuthUser,
+    RawQuery(query): RawQuery,
+) -> Response {
+    if let Err(resp) = ensure_divo_allowed(&user) {
+        return resp;
+    }
+
+    let client = reqwest::Client::new();
+    let base = divo_base(&state);
+    let url = match query {
+        Some(q) if !q.is_empty() => format!("{base}/api/airnote/threads?{q}"),
+        _ => format!("{base}/api/airnote/threads"),
+    };
+
+    let (mut token, was_fresh) = match get_lark_token(&state, user.account_id, false).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+
+    let mut upstream = match get_thread(&client, &url, &token).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    // Same 401 handling as `thread`: refresh a genuinely-stale cached token, then
     // ride over the brief verification delay on a freshly-minted token.
     if upstream.status() == reqwest::StatusCode::UNAUTHORIZED {
         if !was_fresh {
