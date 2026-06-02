@@ -3,12 +3,16 @@
 mod api;
 mod backend;
 mod backend_guard;
+mod chaos; // env-gated fault injection for torture-testing the resilience paths
 mod desktop;
 mod dg_stream; // P5: Deepgram WebSocket live streaming
+mod diag; // lock-holder + breadcrumb instrumentation for stuck-state diagnostics
+mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plane)
 mod echo_gate;
 mod enterprise_oauth;
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
+mod recovery; // crash-safe dictation audio capture + relaunch recovery
 mod speaker_suppression;
 
 use std::io::{Read, Seek, SeekFrom};
@@ -39,6 +43,65 @@ const MEETING_MAX_CHUNK_MS: u64 = 30_000;
 
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
+}
+
+// ── Main-thread panic seatbelt ────────────────────────────────────────────────
+//
+// A Rust panic that unwinds across the Objective-C → Rust boundary (any AppKit
+// callback: tray menu, window events, `run_on_main_thread` dispatches) aborts the
+// whole process with SIGABRT. `guard_panics` runs such a callback inside
+// `catch_unwind` so a panic is caught, logged, and reported — the app stays alive
+// and only the offending UI event is dropped.
+//
+// The global panic hook (installed in `main`) kills the backend sidecar on a
+// *fatal* panic so it doesn't leak. When we are inside a guarded section the app
+// will survive, so the hook must NOT kill the backend — `GUARD_DEPTH` lets the
+// hook tell the two apart. The hook runs on the panicking thread before unwinding,
+// so this thread-local is observed correctly.
+thread_local! {
+    static GUARD_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// True when the current thread is executing inside `guard_panics`, i.e. a panic
+/// here is recoverable and the backend must be left alone.
+fn in_guarded_section() -> bool {
+    GUARD_DEPTH.with(|d| d.get() > 0)
+}
+
+/// Run `f`, catching any panic so it cannot abort the process. Returns `None` if
+/// `f` panicked (already logged + reported), `Some(value)` otherwise.
+fn guard_panics<R>(label: &'static str, f: impl FnOnce() -> R) -> Option<R> {
+    GUARD_DEPTH.with(|d| d.set(d.get() + 1));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    GUARD_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    match result {
+        Ok(value) => Some(value),
+        Err(_) => {
+            tracing::error!(
+                "[guard] recovered from panic in main-thread callback: {label} — app kept alive"
+            );
+            diag::breadcrumb(format!("guard:recovered:{label}"));
+            said_core::reporter::report_event(
+                "panic.recovered",
+                said_core::reporter::Severity::Error,
+                serde_json::json!({ "where": label, "trail": diag::breadcrumbs(20) }),
+            );
+            None
+        }
+    }
+}
+
+/// Dispatch `f` to the AppKit main thread wrapped in the panic seatbelt. Use this
+/// instead of `run_on_main_thread` for any closure touching windows/panels/tray so
+/// a panic inside it can never SIGABRT the app.
+fn run_on_main_guarded(
+    app: &tauri::AppHandle,
+    label: &'static str,
+    f: impl FnOnce() + Send + 'static,
+) -> Result<(), tauri::Error> {
+    app.run_on_main_thread(move || {
+        guard_panics(label, f);
+    })
 }
 
 fn record_hotkey_label(raw: &str) -> &'static str {
@@ -98,10 +161,11 @@ tauri_panel! {
 
 #[cfg(target_os = "macos")]
 fn status_bar_collection_behavior() -> CollectionBehavior {
+    // `.stationary` + `.can_join_all_spaces` conflict in release builds:
+    // macOS silently ignores setCollectionBehavior after Space/fullscreen transitions
+    // (Tauri #5566). Use only what is needed: pin to all spaces, allow over fullscreen.
     CollectionBehavior::new()
         .can_join_all_spaces()
-        .stationary()
-        .ignores_cycle()
         .full_screen_auxiliary()
 }
 
@@ -114,7 +178,7 @@ fn tune_status_bar_panel(app: &tauri::AppHandle) {
     panel.set_floating_panel(true);
     panel.set_hides_on_deactivate(false);
     panel.set_works_when_modal(true);
-    panel.set_ignores_mouse_events(true);
+    panel.set_ignores_mouse_events(!status_bar_interactive(app));
     panel.set_collection_behavior(status_bar_collection_behavior().into());
     panel.set_style_mask(StyleMask::empty().borderless().nonactivating_panel().into());
     panel.set_transparent(true);
@@ -165,13 +229,11 @@ fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
         return;
     }
 
-    // Match VoiceInk's recorder HUD window behavior as closely as Tauri's
-    // NSWindow allows: a non-activating floating panel, available on every
-    // Space, allowed over fullscreen apps, stationary during Space transitions,
-    // and kept out of Cmd-` window cycling.
+    // Non-activating floating panel available on every Space and over fullscreen apps.
+    // `.stationary` (1<<4) and `.ignoresExposeCycle` (1<<6) are intentionally omitted:
+    // combining them with `.canJoinAllSpaces` silently breaks setCollectionBehavior in
+    // release builds after Space/fullscreen transitions (Tauri #5566).
     const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
-    const STATIONARY: usize = 1 << 4;
-    const IGNORES_CYCLE: usize = 1 << 6;
     const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
     const NONACTIVATING_PANEL_STYLE: usize = 1 << 7;
     const FULL_SIZE_CONTENT_VIEW_STYLE: usize = 1 << 15;
@@ -186,7 +248,7 @@ fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
         let _: Result<(), _> =
             ns_window.send_message(Sel::register("setStyleMask:"), (panel_style,));
 
-        let behavior = CAN_JOIN_ALL_SPACES | STATIONARY | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY;
+        let behavior = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
         let _: Result<(), _> =
             ns_window.send_message(Sel::register("setCollectionBehavior:"), (behavior,));
         let _: Result<(), _> = ns_window.send_message(
@@ -194,8 +256,9 @@ fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
             (NS_STATUS_WINDOW_LEVEL_PLUS_THREE,),
         );
         let _: Result<(), _> = ns_window.send_message(Sel::register("setCanHide:"), (false,));
+        let ignores_mouse = !status_bar_interactive(win.app_handle());
         let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setIgnoresMouseEvents:"), (true,));
+            ns_window.send_message(Sel::register("setIgnoresMouseEvents:"), (ignores_mouse,));
         for (selector_name, value) in [
             ("setHidesOnDeactivate:", false),
             ("setFloatingPanel:", true),
@@ -386,7 +449,7 @@ fn schedule_present_status_bar_macos(
     let app_in_closure = app_for_main.clone();
     let win = win.clone();
     let state = state.to_string();
-    if let Err(e) = app_for_main.run_on_main_thread(move || {
+    if let Err(e) = run_on_main_guarded(&app_for_main, "status_bar.present", move || {
         present_status_bar_macos_on_main(&app_in_closure, &win, &state, resync);
     }) {
         tracing::warn!("[status-bar] schedule present on main thread failed: {e}");
@@ -706,6 +769,8 @@ struct PerformanceState(Mutex<sysinfo::System>);
 enum RecordingRoute {
     Normal,
     Meeting,
+    /// Ctrl hold-to-talk: transcribe + polish, then send to Divo instead of pasting.
+    Divo,
 }
 
 struct RecordingRouteState(Mutex<Option<RecordingRoute>>);
@@ -863,8 +928,63 @@ struct StatusBarPersistentHold(AtomicBool);
 /// True while ⇧⌘/ placement mode is active (drag to reposition HUD).
 struct StatusBarPlacementActive(AtomicBool);
 
+/// Whether the status bar should currently accept mouse clicks. Single source of
+/// truth so every native show/tune re-applies the real state instead of hardcoding
+/// click-through: a `present` while the HUD is already interactive (e.g.
+/// divo_streaming → divo_ready) would otherwise silently re-disable clicks, since
+/// the frontend only re-asserts interactivity when the flag actually changes.
+struct StatusBarInteractive(AtomicBool);
+
+/// Active dictation session id + generation for stale-result guards and logging.
+struct RecordingSessionState {
+    generation: AtomicU64,
+    active_id: Mutex<Option<String>>,
+}
+
+impl RecordingSessionState {
+    fn begin(&self) -> (u64, String) {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let id = uuid::Uuid::new_v4().to_string();
+        if let Ok(mut guard) = self.active_id.lock() {
+            *guard = Some(id.clone());
+        }
+        tracing::info!("[record] session begin id={id} generation={generation}");
+        (generation, id)
+    }
+
+    fn end(&self) -> Option<(u64, String)> {
+        let generation = self.generation.load(Ordering::SeqCst);
+        let id = self.active_id.lock().ok()?.take()?;
+        tracing::info!("[record] session end id={id} generation={generation}");
+        Some((generation, id))
+    }
+
+    fn current(&self) -> Option<(u64, String)> {
+        let generation = self.generation.load(Ordering::SeqCst);
+        let id = self.active_id.lock().ok()?.clone()?;
+        Some((generation, id))
+    }
+}
+
+impl Default for RecordingSessionState {
+    fn default() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            active_id: Mutex::new(None),
+        }
+    }
+}
+
 fn status_bar_persistent_hold(app: &tauri::AppHandle) -> bool {
     app.try_state::<StatusBarPersistentHold>()
+        .map(|s| s.0.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+/// Whether the status bar currently wants to accept clicks. Defaults to false
+/// (click-through) when the state hasn't been registered yet.
+fn status_bar_interactive(app: &tauri::AppHandle) -> bool {
+    app.try_state::<StatusBarInteractive>()
         .map(|s| s.0.load(Ordering::SeqCst))
         .unwrap_or(false)
 }
@@ -889,14 +1009,19 @@ fn apply_status_bar_interactive_state(win: &tauri::WebviewWindow, interactive: b
 }
 
 fn set_status_bar_interactive_state(app: &tauri::AppHandle, interactive: bool) {
+    if let Some(state) = app.try_state::<StatusBarInteractive>() {
+        state.0.store(interactive, Ordering::SeqCst);
+    }
     if let Some(win) = app.get_webview_window("status-bar") {
         #[cfg(target_os = "macos")]
         {
             let app_for_main = app.clone();
             let win_for_main = win.clone();
-            if let Err(e) = app_for_main.run_on_main_thread(move || {
-                apply_status_bar_interactive_state(&win_for_main, interactive);
-            }) {
+            if let Err(e) =
+                run_on_main_guarded(&app_for_main, "status_bar.interactive", move || {
+                    apply_status_bar_interactive_state(&win_for_main, interactive);
+                })
+            {
                 tracing::warn!("[status-bar] schedule interactive state failed: {e}");
             }
         }
@@ -1059,12 +1184,19 @@ fn build_tray_menu(
     _custom_prompt: Option<&str>,
     _output_language: &str,
 ) -> Result<Menu<tauri::Wry>, tauri::Error> {
+    build_tray_menu_for_state(app, &snap.state)
+}
+
+fn build_tray_menu_for_state(
+    app: &tauri::AppHandle,
+    state: &str,
+) -> Result<Menu<tauri::Wry>, tauri::Error> {
     // ── 1. Toggle recording (state-aware label + enabled) ──────────────
-    let toggle_label = match snap.state.as_str() {
+    let toggle_label = match state {
         "recording" => "Stop recording",
         _ => "Start recording",
     };
-    let toggle_enabled = snap.state.as_str() == "idle";
+    let toggle_enabled = state == "idle";
     let toggle = MenuItem::with_id(
         app,
         "tray_toggle",
@@ -1119,6 +1251,22 @@ fn build_tray_menu(
 }
 
 fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let app = handle.clone();
+        let state = state.to_string();
+        if let Err(e) = run_on_main_guarded(&app.clone(), "status_bar.sync", move || {
+            sync_status_bar_on_main(&app, &state);
+        }) {
+            tracing::warn!("[status-bar] sync on main thread failed: {e}");
+        }
+        return;
+    }
+    #[cfg(not(target_os = "macos"))]
+    sync_status_bar_on_main(handle, state);
+}
+
+fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
     let win = match handle.get_webview_window("status-bar") {
         Some(win) => win,
         None if state != "idle" => {
@@ -1191,10 +1339,31 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
                 tracing::debug!("[status-bar] hide skipped — status bar is pinned/held");
                 return;
             }
-            if let Some(win) = app.get_webview_window("status-bar") {
-                match win.hide() {
-                    Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
-                    Err(e) => tracing::warn!("[status-bar] hide after idle failed: {e}"),
+            if app.get_webview_window("status-bar").is_some() {
+                #[cfg(target_os = "macos")]
+                {
+                    let app_main = app.clone();
+                    if let Err(e) =
+                        run_on_main_guarded(&app_main.clone(), "status_bar.idle_hide", move || {
+                            if let Some(win) = app_main.get_webview_window("status-bar") {
+                                match win.hide() {
+                                    Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
+                                    Err(e) => {
+                                        tracing::warn!("[status-bar] hide after idle failed: {e}")
+                                    }
+                                }
+                            }
+                        })
+                    {
+                        tracing::warn!("[status-bar] schedule idle hide failed: {e}");
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                if let Some(win) = app.get_webview_window("status-bar") {
+                    match win.hide() {
+                        Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
+                        Err(e) => tracing::warn!("[status-bar] hide after idle failed: {e}"),
+                    }
                 }
             }
         });
@@ -1238,8 +1407,24 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
 
 /// Re-render the tray icon title + menu from the cached prefs (no async needed).
 fn sync_tray(handle: &tauri::AppHandle, snap: &AppSnapshot) {
+    #[cfg(target_os = "macos")]
+    {
+        let app = handle.clone();
+        let state = snap.state.clone();
+        if let Err(e) = run_on_main_guarded(&app.clone(), "tray.sync", move || {
+            sync_tray_on_main(&app, &state);
+        }) {
+            tracing::warn!("[tray] sync on main thread failed: {e}");
+        }
+        return;
+    }
+    #[cfg(not(target_os = "macos"))]
+    sync_tray_on_main(handle, &snap.state);
+}
+
+fn sync_tray_on_main(handle: &tauri::AppHandle, state: &str) {
     if let Some(tray) = handle.tray_by_id("said") {
-        let _ = tray.set_title(Some(tray_title(&snap.state)));
+        let _ = tray.set_title(Some(tray_title(state)));
 
         // Read from in-process cache — never blocks on async or HTTP
         let cache = handle.state::<TrayCache>();
@@ -1248,12 +1433,16 @@ fn sync_tray(handle: &tauri::AppHandle, snap: &AppSnapshot) {
         let lang = inner.output_language.clone();
         drop(inner);
 
-        if let Ok(menu) = build_tray_menu(handle, snap, custom.as_deref(), &lang) {
+        let _ = (custom, lang);
+        if let Ok(menu) = build_tray_menu_for_state(handle, state) {
             let _ = tray.set_menu(Some(menu));
         }
     }
 
-    sync_status_bar(handle, &snap.state);
+    #[cfg(target_os = "macos")]
+    sync_status_bar_on_main(handle, state);
+    #[cfg(not(target_os = "macos"))]
+    sync_status_bar(handle, state);
 }
 
 // ── Floating status bar ───────────────────────────────────────────────────────
@@ -1728,9 +1917,36 @@ fn get_snapshot(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
     Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
 }
 
+/// Fault injection for resilience testing. Inert unless `AIRNOTE_CHAOS=1` is set
+/// at launch. `kind` is one of: main_panic | pipeline_panic | stick_processing |
+/// plant_orphan | drop_hud | emit_diag. Returns a short status string.
+#[tauri::command]
+fn chaos_inject(app: tauri::AppHandle, kind: String) -> Result<String, String> {
+    Ok(chaos::inject(&app, &kind))
+}
+
 #[tauri::command]
 fn dismiss_status_bar(app: tauri::AppHandle) -> Result<(), String> {
-    if status_bar_pinned() || status_bar_persistent_hold(&app) {
+    #[cfg(target_os = "macos")]
+    {
+        let app_c = app.clone();
+        if let Err(e) = run_on_main_guarded(&app, "status_bar.dismiss", move || {
+            if let Err(e) = dismiss_status_bar_on_main(&app_c) {
+                tracing::warn!("[status-bar] dismiss failed: {e}");
+            }
+        }) {
+            return Err(format!("schedule dismiss failed: {e}"));
+        }
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        dismiss_status_bar_on_main(&app)
+    }
+}
+
+fn dismiss_status_bar_on_main(app: &tauri::AppHandle) -> Result<(), String> {
+    if status_bar_pinned() || status_bar_persistent_hold(app) {
         return Ok(());
     }
     let is_active = app
@@ -1766,6 +1982,7 @@ fn set_status_bar_persistent(
     app: tauri::AppHandle,
     persistent: bool,
     reason: Option<String>,
+    interactive: Option<bool>,
 ) -> Result<(), String> {
     let reason = reason.unwrap_or_else(|| "notification".to_string());
     let hold = app
@@ -1774,10 +1991,12 @@ fn set_status_bar_persistent(
     hold.0.store(persistent, Ordering::SeqCst);
     tracing::debug!("[status-bar] persistent_hold={persistent} reason={reason}");
     if persistent {
-        // Update prompts are actionable. Make the native panel interactive
-        // immediately instead of relying on a later React effect; otherwise the
-        // visible panel can remain click-through after being shown from Rust.
-        set_status_bar_interactive_state(&app, true);
+        // The hold keeps the panel visible past idle syncs. Interactivity is a
+        // separate concern set by the caller: actionable prompts (updates, the
+        // Divo answer) want clicks; a passive run (Divo streaming) stays
+        // click-through so it never steals a click from the user's app. Apply it
+        // from Rust immediately rather than relying on a later React effect.
+        set_status_bar_interactive_state(&app, interactive.unwrap_or(true));
         present_status_bar_native(&app, &reason, false)?;
     }
     Ok(())
@@ -1803,11 +2022,34 @@ fn origin_from_bottom_anchor(center_x: f64, bottom_y: f64, width: f64, height: f
 
 #[tauri::command]
 fn resize_status_bar(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let app_c = app.clone();
+        if let Err(e) = run_on_main_guarded(&app, "status_bar.resize", move || {
+            if let Err(e) = resize_status_bar_on_main(&app_c, width, height) {
+                tracing::warn!("[status-bar] resize failed: {e}");
+            }
+        }) {
+            return Err(format!("schedule resize failed: {e}"));
+        }
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        resize_status_bar_on_main(&app, width, height)
+    }
+}
+
+fn resize_status_bar_on_main(
+    app: &tauri::AppHandle,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
     let win = app
         .get_webview_window("status-bar")
         .ok_or_else(|| "status-bar window not found".to_string())?;
     let (center_x, bottom_y) = read_window_bottom_anchor(&win).unwrap_or_else(|| {
-        let (x, y) = status_bar_target_origin(&app, width, height);
+        let (x, y) = status_bar_target_origin(app, width, height);
         (x + width / 2.0, y + height)
     });
     win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)))
@@ -1836,6 +2078,25 @@ fn get_status_bar_position(app: tauri::AppHandle) -> Result<Option<serde_json::V
 
 #[tauri::command]
 fn set_status_bar_position(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let app_c = app.clone();
+        if let Err(e) = run_on_main_guarded(&app, "status_bar.set_position", move || {
+            if let Err(e) = set_status_bar_position_on_main(&app_c, x, y) {
+                tracing::warn!("[status-bar] set position failed: {e}");
+            }
+        }) {
+            return Err(format!("schedule set position failed: {e}"));
+        }
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        set_status_bar_position_on_main(&app, x, y)
+    }
+}
+
+fn set_status_bar_position_on_main(app: &tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
     let win = app
         .get_webview_window("status-bar")
         .ok_or_else(|| "status-bar window not found".to_string())?;
@@ -1855,9 +2116,28 @@ fn set_status_bar_position(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), 
 
 #[tauri::command]
 fn reset_status_bar_position(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let app_c = app.clone();
+        if let Err(e) = run_on_main_guarded(&app, "status_bar.reset_position", move || {
+            if let Err(e) = reset_status_bar_position_on_main(&app_c) {
+                tracing::warn!("[status-bar] reset position failed: {e}");
+            }
+        }) {
+            return Err(format!("schedule reset position failed: {e}"));
+        }
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        reset_status_bar_position_on_main(&app)
+    }
+}
+
+fn reset_status_bar_position_on_main(app: &tauri::AppHandle) -> Result<(), String> {
     clear_status_bar_position()?;
     if let Some(win) = app.get_webview_window("status-bar") {
-        apply_status_bar_position(&app, &win)?;
+        apply_status_bar_position(app, &win)?;
     }
     Ok(())
 }
@@ -2133,6 +2413,33 @@ fn toggle_recording(
     }
 }
 
+/// Panel "Speak follow-up" (press-and-hold): start a Divo-routed recording that,
+/// on release, is sent as a follow-up on the active thread rather than a new task.
+#[tauri::command]
+fn divo_followup_begin(state: State<'_, SharedApp>, app: tauri::AppHandle) -> Result<(), String> {
+    let current = state.0.lock().map_err(|_| "lock failed")?.state;
+    if current == desktop::AppState::Idle {
+        DIVO_START_PENDING.store(true, Ordering::SeqCst);
+        DIVO_FOLLOWUP_PENDING.store(true, Ordering::SeqCst);
+        do_start_recording(&state.0, &app);
+    }
+    Ok(())
+}
+
+/// Release of the panel follow-up button — finish recording and send to Divo.
+#[tauri::command]
+fn divo_followup_end(
+    state: State<'_, SharedApp>,
+    backend: State<'_, BackendState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let current = state.0.lock().map_err(|_| "lock failed")?.state;
+    if current == desktop::AppState::Recording {
+        do_finish_recording(Arc::clone(&state.0), app.clone(), Arc::clone(&backend.0));
+    }
+    Ok(())
+}
+
 // ── Recording flow ────────────────────────────────────────────────────────────
 
 /// Guards against overlapping start-start or start-cancel-start races.
@@ -2141,11 +2448,20 @@ fn toggle_recording(
 static RECORDING_STARTING: AtomicBool = AtomicBool::new(false);
 static HOTKEY_START_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static FINISH_AFTER_START: AtomicBool = AtomicBool::new(false);
+static HOTKEY_FINISH_RETRY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+/// Set by the Ctrl press (or the panel follow-up command) right before
+/// `do_start_recording`, consumed there to route the turn to Divo.
+static DIVO_START_PENDING: AtomicBool = AtomicBool::new(false);
+/// Distinguishes a spoken follow-up (continue the current thread) from a fresh
+/// Ctrl press (new task). Consumed in `do_finish_recording`'s Divo branch.
+static DIVO_FOLLOWUP_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Minimum time between consecutive finish→start cycles (ms).
 /// Prevents rapid Caps Lock taps from flooding the recording pipeline.
 static LAST_FINISH_MS: AtomicU64 = AtomicU64::new(0);
 const MIN_CYCLE_GAP_MS: u64 = 300;
+const QUEUED_FINISH_TIMEOUT_MS: u64 = 2_500;
+const QUEUED_FINISH_POLL_MS: u64 = 25;
 
 fn now_ms_desktop() -> u64 {
     std::time::SystemTime::now()
@@ -2165,7 +2481,239 @@ fn hotkey_current_state(shared: &Arc<Mutex<DesktopApp>>, label: &str) -> Option<
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     tracing::warn!("[hotkey] {label} skipped — shared app lock busy for 200ms");
+    diag::breadcrumb(format!("lock_busy:{label}"));
     None
+}
+
+/// RAII guard over the SharedApp mutex that publishes the holder label to
+/// [`diag`] on acquire and clears it on drop. Lets stuck-state diagnostics name
+/// the thread that is actually holding the lock (e.g. a slow CoreAudio open
+/// inside `start_recording`) instead of only reporting `lock_busy`.
+struct TrackedGuard<'a> {
+    inner: std::sync::MutexGuard<'a, DesktopApp>,
+}
+
+impl Drop for TrackedGuard<'_> {
+    fn drop(&mut self) {
+        diag::note_lock_released();
+    }
+}
+
+impl std::ops::Deref for TrackedGuard<'_> {
+    type Target = DesktopApp;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for TrackedGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+/// Acquire the SharedApp mutex while recording the holder for diagnostics.
+/// `label` is a fixed identifier such as `"start_recording"`.
+fn lock_shared<'a>(
+    shared: &'a Arc<Mutex<DesktopApp>>,
+    label: &'static str,
+) -> Result<TrackedGuard<'a>, std::sync::PoisonError<std::sync::MutexGuard<'a, DesktopApp>>> {
+    // Recover from a poisoned lock instead of failing. A poisoned mutex means a
+    // previous holder panicked; if we propagated the error, every future
+    // recording would silently refuse to start (the lock would be permanently
+    // wedged). The state watchdog resets any half-updated state back to idle, so
+    // taking the (possibly inconsistent) data here is safe and keeps the app usable.
+    let inner = shared.lock().unwrap_or_else(|poison| {
+        tracing::warn!("[lock] recovering poisoned SharedApp lock for {label}");
+        diag::breadcrumb("lock:poison_recovered");
+        poison.into_inner()
+    });
+    diag::note_lock_acquired(label);
+    Ok(TrackedGuard { inner })
+}
+
+/// Heal a wedged app after an operation was abandoned mid-way (a caught panic, a
+/// killed pipeline task, a lost event). Resets a stuck `Processing` state to Idle,
+/// clears the in-flight recording guards, restores audio/HUD/tray, and recovers
+/// the captured audio so the user's words aren't lost. Safe no-op when nothing is
+/// stuck — only `Processing` is reset, never an active `Recording`.
+fn heal_stuck_state(app: &tauri::AppHandle, reason: &'static str) {
+    let snap = {
+        let shared = app.state::<SharedApp>();
+        let mut d = match shared.0.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        d.recover_stuck_to_idle()
+    };
+    let Some(snap) = snap else {
+        return;
+    };
+
+    // Clear in-flight guards so the next recording can start cleanly.
+    FINISH_AFTER_START.store(false, Ordering::SeqCst);
+    HOTKEY_START_IN_FLIGHT.store(false, Ordering::SeqCst);
+    HOTKEY_FINISH_RETRY_IN_FLIGHT.store(false, Ordering::SeqCst);
+    RECORDING_STARTING.store(false, Ordering::SeqCst);
+    restore_speaker_suppression(app, "heal stuck state");
+    reset_long_dictation_lock(app);
+
+    tracing::warn!("[heal] stuck 'processing' state reset to idle (reason={reason})");
+    diag::breadcrumb(format!("heal:reset_idle:{reason}"));
+    said_core::reporter::report_event(
+        "state.healed",
+        said_core::reporter::Severity::Error,
+        serde_json::json!({ "reason": reason, "trail": diag::breadcrumbs(20) }),
+    );
+
+    sync_tray(app, &snap);
+    let _ = app.emit("app-state", &snap);
+    sync_status_bar(app, "idle");
+
+    // The dictation's audio is still on disk (the pipeline never reached cleanup).
+    // Recover the user's words in-session. `take_orphan()` returns None if the
+    // pipeline actually finished and cleared it, so this never double-processes.
+    let app_h = app.clone();
+    let back = Arc::clone(&app.state::<BackendState>().0);
+    tauri::async_runtime::spawn(async move {
+        let Some(wav) = recovery::take_orphan() else {
+            return;
+        };
+        let ep = match back.lock() {
+            Ok(g) => g.clone(),
+            Err(p) => p.into_inner().clone(),
+        };
+        let Some(ep) = ep else {
+            return;
+        };
+        match recover_transcribe(&ep, wav).await {
+            Ok(done) => {
+                let text = if !done.polished.trim().is_empty() {
+                    done.polished
+                } else {
+                    done.transcript
+                };
+                if text.trim().is_empty() {
+                    return;
+                }
+                tracing::warn!(
+                    "[heal] recovered {} chars from the interrupted dictation",
+                    text.len()
+                );
+                diag::breadcrumb("heal:words_recovered");
+                if let Ok(mut g) = app_h.state::<LatestResult>().0.lock() {
+                    *g = Some(text.clone());
+                }
+                show_main_window(&app_h);
+                let _ = app_h.emit("dictation-recovered", serde_json::json!({ "text": text }));
+            }
+            Err(e) => tracing::warn!("[heal] re-transcribe failed: {e}"),
+        }
+    });
+}
+
+fn request_queued_finish(
+    shared: Arc<Mutex<DesktopApp>>,
+    app: tauri::AppHandle,
+    back: Arc<Mutex<Option<BackendEndpoint>>>,
+    reason: &'static str,
+) {
+    FINISH_AFTER_START.store(true, Ordering::SeqCst);
+    diag::breadcrumb(format!("queued_finish:request:{reason}"));
+    if HOTKEY_FINISH_RETRY_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        tracing::debug!("[hotkey] queued finish already has a retry worker — reason={reason}");
+        return;
+    }
+
+    std::thread::spawn(move || {
+        struct RetryGuard;
+        impl Drop for RetryGuard {
+            fn drop(&mut self) {
+                HOTKEY_FINISH_RETRY_IN_FLIGHT.store(false, Ordering::SeqCst);
+            }
+        }
+        let _guard = RetryGuard;
+        let started = std::time::Instant::now();
+
+        loop {
+            if !FINISH_AFTER_START.load(Ordering::SeqCst) {
+                return;
+            }
+
+            let state = shared.try_lock().ok().map(|d| d.state);
+            let last_state = match state {
+                Some(desktop::AppState::Recording) => {
+                    if FINISH_AFTER_START.swap(false, Ordering::SeqCst) {
+                        let waited_ms = started.elapsed().as_millis() as u64;
+                        tracing::info!(
+                            "[hotkey] queued finish recovered after {waited_ms}ms — reason={reason}"
+                        );
+                        if waited_ms >= 250 {
+                            said_core::reporter::report_event(
+                                "hotkey.queued_finish_recovered",
+                                said_core::reporter::Severity::Warning,
+                                serde_json::json!({
+                                    "wait_ms": waited_ms,
+                                    "reason": reason,
+                                    "lock": diag::lock_status(),
+                                    "trail": diag::breadcrumbs(20),
+                                }),
+                            );
+                        }
+                        do_finish_recording(shared, app, back);
+                    }
+                    return;
+                }
+                Some(desktop::AppState::Processing) => {
+                    FINISH_AFTER_START.store(false, Ordering::SeqCst);
+                    tracing::debug!("[hotkey] queued finish cleared — already processing");
+                    return;
+                }
+                Some(desktop::AppState::Idle) => {
+                    if !HOTKEY_START_IN_FLIGHT.load(Ordering::SeqCst)
+                        && !RECORDING_STARTING.load(Ordering::SeqCst)
+                    {
+                        FINISH_AFTER_START.store(false, Ordering::SeqCst);
+                        tracing::debug!(
+                            "[hotkey] queued finish cleared — start never reached recording"
+                        );
+                        return;
+                    }
+                    "idle"
+                }
+                None => "lock_busy",
+            };
+
+            let waited_ms = started.elapsed().as_millis() as u64;
+            if waited_ms >= QUEUED_FINISH_TIMEOUT_MS {
+                if FINISH_AFTER_START.swap(false, Ordering::SeqCst) {
+                    tracing::error!(
+                        "[hotkey] queued finish timed out after {waited_ms}ms — reason={reason} state={last_state}"
+                    );
+                    let session = app
+                        .try_state::<RecordingSessionState>()
+                        .and_then(|s| s.current());
+                    diag::breadcrumb("queued_finish:timeout");
+                    said_core::reporter::report_event(
+                        "hotkey.queued_finish_timeout",
+                        said_core::reporter::Severity::Error,
+                        serde_json::json!({
+                            "wait_ms": waited_ms,
+                            "reason": reason,
+                            "state": last_state,
+                            "lock": diag::lock_status(),
+                            "session_id": session.as_ref().map(|(_, id)| id.clone()),
+                            "generation": session.as_ref().map(|(g, _)| *g),
+                            "trail": diag::breadcrumbs(20),
+                        }),
+                    );
+                }
+                return;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(QUEUED_FINISH_POLL_MS));
+        }
+    });
 }
 
 /// Start recording. Called when user presses Caps Lock (or taps the button).
@@ -2173,6 +2721,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     // Reject if another start is already in progress
     if RECORDING_STARTING.swap(true, Ordering::SeqCst) {
         tracing::info!("[record] start skipped — another start already in progress");
+        DIVO_START_PENDING.store(false, Ordering::SeqCst);
         return;
     }
 
@@ -2187,6 +2736,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
         );
         FINISH_AFTER_START.store(false, Ordering::SeqCst);
         RECORDING_STARTING.store(false, Ordering::SeqCst);
+        DIVO_START_PENDING.store(false, Ordering::SeqCst);
         return;
     }
 
@@ -2236,17 +2786,15 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             };
             if let Ok(mut ctx) = app.state::<ScreenContextState>().0.lock() {
                 *ctx = screen_text.filter(|s| !s.trim().is_empty());
-                if ctx.is_some() {
-                    tracing::info!(
-                        "[record] screen context: {} chars",
-                        ctx.as_ref().unwrap().len()
-                    );
+                if let Some(text) = ctx.as_ref() {
+                    tracing::info!("[record] screen context: {} chars", text.len());
                 }
             }
         }
     }
 
-    let (started, level_recv) = match shared.lock() {
+    diag::breadcrumb("start:lock_acquire");
+    let (started, level_recv) = match lock_shared(shared, "start_recording") {
         Ok(mut d) => {
             let result = d.start_recording();
             let lr = if result.is_ok() {
@@ -2263,20 +2811,25 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     };
     match started {
         Ok(snap) => {
-            let route = app
-                .try_state::<MeetingModeState>()
-                .map(|s| {
-                    if s.capture_enabled() {
-                        RecordingRoute::Meeting
-                    } else {
-                        RecordingRoute::Normal
-                    }
-                })
-                .unwrap_or(RecordingRoute::Normal);
+            let (_session_gen, _recording_id) = app.state::<RecordingSessionState>().begin();
+            let route = if DIVO_START_PENDING.swap(false, Ordering::SeqCst) {
+                RecordingRoute::Divo
+            } else {
+                app.try_state::<MeetingModeState>()
+                    .map(|s| {
+                        if s.capture_enabled() {
+                            RecordingRoute::Meeting
+                        } else {
+                            RecordingRoute::Normal
+                        }
+                    })
+                    .unwrap_or(RecordingRoute::Normal)
+            };
             if let Ok(mut route_state) = app.state::<RecordingRouteState>().0.lock() {
                 *route_state = Some(route);
             }
             tracing::info!("[record] started — state={}", snap.state);
+            diag::breadcrumb("start:recording");
             sync_tray(app, &snap);
             let _ = app.emit("app-state", &snap);
             if app
@@ -2289,6 +2842,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             emit_meeting_stt_status(app);
         }
         Err(e) => {
+            diag::breadcrumb("start:failed");
             restore_speaker_suppression(app, "start failed");
             FINISH_AFTER_START.store(false, Ordering::SeqCst);
             let _ = app.emit(
@@ -2438,7 +2992,20 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     // ── P5: Start Deepgram WS streaming immediately ────────────────────────────
     let chunk_recv = shared.lock().ok().and_then(|mut d| d.take_chunk_receiver());
     if let Some(chunk_recv) = chunk_recv {
-        let recording_id = uuid::Uuid::new_v4().to_string();
+        // Crash-safe recovery: capture this dictation's audio to disk so a crash
+        // before delivery can be recovered on next launch. Meeting capture is a
+        // long continuous stream that auto-restarts, so we skip it there.
+        let is_meeting_capture = app
+            .try_state::<MeetingModeState>()
+            .map(|m| m.capture_enabled())
+            .unwrap_or(false);
+        if !is_meeting_capture {
+            recovery::begin();
+        }
+        let recording_id = app
+            .try_state::<RecordingSessionState>()
+            .and_then(|s| s.current().map(|(_, id)| id))
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let streaming_state = app.state::<StreamingState>();
         let (transcript_tx, transcript_rx) =
             tokio::sync::oneshot::channel::<Option<dg_stream::StreamingTranscript>>();
@@ -2524,6 +3091,7 @@ fn do_cancel_recording(
     LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
     reset_long_dictation_lock(&app);
     restore_speaker_suppression(&app, reason);
+    recovery::clear();
 
     if let Ok(mut route) = app.state::<RecordingRouteState>().0.lock() {
         *route = None;
@@ -2575,8 +3143,17 @@ fn do_finish_recording(
     app: tauri::AppHandle,
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
 ) {
+    FINISH_AFTER_START.store(false, Ordering::SeqCst);
     LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
     reset_long_dictation_lock(&app);
+
+    let session_end = app
+        .try_state::<RecordingSessionState>()
+        .and_then(|session| session.end());
+    let session_tag = session_end
+        .as_ref()
+        .map(|(generation, id)| format!("id={id} generation={generation}"))
+        .unwrap_or_else(|| "id=unknown".into());
 
     let edit_target_pid = app
         .state::<EditTargetState>()
@@ -2593,10 +3170,12 @@ fn do_finish_recording(
     // Signal the recorder to stop while holding the app mutex, then wait for
     // samples and encode WAV after releasing it. Keep all UI/AppKit work outside
     // this mutex; tray/menu calls can block on macOS and must not freeze hotkeys.
+    diag::breadcrumb("finish:enter");
     let begin_stop = {
-        let mut d = match shared.lock() {
+        let mut d = match lock_shared(&shared, "finish_recording") {
             Ok(g) => g,
             Err(_) => {
+                diag::breadcrumb("finish:lock_failed");
                 restore_speaker_suppression(&app, "finish lock failed");
                 return;
             }
@@ -2628,12 +3207,14 @@ fn do_finish_recording(
             (stop_rx, was_too_short)
         }
         Err(BeginStopError::Short(snap)) => {
+            recovery::clear();
             sync_tray(&app, &snap);
             emit_short_recording_error(&app);
             let _ = app.emit("app-state", &snap);
             return;
         }
         Err(BeginStopError::Failed(snap)) => {
+            recovery::clear();
             sync_tray(&app, &snap);
             let _ = app.emit(
                 "voice-error",
@@ -2655,6 +3236,7 @@ fn do_finish_recording(
         .and_then(|mut route| route.take())
         .unwrap_or(RecordingRoute::Normal);
     let is_meeting = recording_route == RecordingRoute::Meeting;
+    let is_divo = recording_route == RecordingRoute::Divo;
     let meeting_generation_at_stop = if is_meeting {
         app.try_state::<MeetingModeState>()
             .map(|s| s.generation.load(Ordering::SeqCst))
@@ -2679,6 +3261,7 @@ fn do_finish_recording(
                     d.finish_err(e)
                 }
             };
+            recovery::clear();
             sync_tray(&app, &snap);
             if is_short {
                 emit_short_recording_error(&app);
@@ -2712,6 +3295,7 @@ fn do_finish_recording(
     let back_arc2 = Arc::clone(&back_arc);
 
     tauri::async_runtime::spawn(async move {
+        tracing::info!("[finish] pipeline start session={session_tag}");
         // ── P5: Wait briefly for the Deepgram WS transcript ───────────────────
         // begin_stop() dropped chunk_tx, which makes the audio bridge send a
         // Deepgram Finalize command. The persistent WS actor usually returns
@@ -2748,7 +3332,7 @@ fn do_finish_recording(
                         None
                     } else {
                         tracing::info!(
-                            "[finish] ✓ WS pre-transcript ready after {wait_ms}ms ({} chars, {} words, {:.1}s audio): \"{}\"",
+                            "[finish] ✓ WS pre-transcript ready session={session_tag} after {wait_ms}ms ({} chars, {} words, {:.1}s audio): \"{}\"",
                             t.transcript.len(),
                             word_count,
                             wav_duration_s,
@@ -2803,8 +3387,77 @@ fn do_finish_recording(
             screen_context,
             &app2,
             is_meeting,
+            is_divo,
         )
         .await;
+
+        if is_divo {
+            // Divo turn: reset the desktop recording state (capture is done), then
+            // hand the polished instruction to the Divo bridge. The Divo SSE drives
+            // the HUD from here via `divo-*` events — no paste, no edit-watcher.
+            let (snap, instruction, err) = {
+                let mut d = match shared2.lock() {
+                    Ok(g) => g,
+                    Err(_) => {
+                        emit_voice_error_quiet(&app2, "Recording interrupted");
+                        recovery::clear();
+                        return;
+                    }
+                };
+                match result {
+                    Ok(done) => {
+                        let text = done.polished.clone();
+                        (
+                            d.finish_ok(ProcessSummary {
+                                transcript: done.transcript.clone(),
+                                polished: done.polished,
+                                model: done.model_used,
+                                confidence: done.confidence.unwrap_or(0.0),
+                                transcribe_ms: done.latency_ms.transcribe as u64,
+                                polish_ms: done.latency_ms.polish as u64,
+                            }),
+                            Some(text),
+                            None,
+                        )
+                    }
+                    Err(ref e) => (d.finish_err(e.clone()), None, Some(e.clone())),
+                }
+            };
+            sync_tray(&app2, &snap);
+            let _ = app2.emit("app-state", &snap);
+
+            let followup = DIVO_FOLLOWUP_PENDING.swap(false, Ordering::SeqCst);
+            match (instruction, err) {
+                (Some(text), _) if !text.trim().is_empty() => {
+                    // Don't auto-send. Stage the polished transcript so the user
+                    // can review/edit it and press Send (or cancel). The Send
+                    // button invokes `divo_send`, which does the actual send.
+                    tracing::info!(
+                        "[divo] staging instruction for review ({} chars, followup={followup})",
+                        text.len()
+                    );
+                    let _ = app2.emit(
+                        "divo-stage",
+                        serde_json::json!({ "text": text, "followup": followup }),
+                    );
+                }
+                (Some(_), _) => {
+                    // Empty transcript (e.g. a stray Ctrl tap with no speech) — don't
+                    // bother Divo, and keep the HUD quiet.
+                    tracing::info!("[divo] empty instruction — not sending to Divo");
+                }
+                (None, Some(e)) => {
+                    tracing::warn!("[divo] transcription failed before send: {e}");
+                    let _ = app2.emit(
+                        "divo-error",
+                        serde_json::json!({ "message": humanize_error(&e) }),
+                    );
+                }
+                _ => {}
+            }
+            recovery::clear();
+            return;
+        }
 
         if is_meeting {
             // Meeting mode: emit polished text as meeting-transcript, skip edit-watcher
@@ -2935,7 +3588,28 @@ fn do_finish_recording(
             let _ = app2.emit("app-state", &snap);
             emit_meeting_stt_status(&app2);
         }
+        // Dictation delivered (or surfaced as an error to the user) — the captured
+        // audio is no longer needed, so the orphan file must not linger.
+        recovery::clear();
     });
+}
+
+/// Re-transcribe a recovered orphan recording. Uses a no-op event handler so the
+/// pipeline performs zero typing/pasting — recovery must never inject text into
+/// whatever app happens to be focused at launch. Returns transcript + polished text.
+async fn recover_transcribe(ep: &BackendEndpoint, wav: Vec<u8>) -> Result<api::PolishDone, String> {
+    api::stream_voice_polish(
+        ep,
+        wav,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        |_event: api::PolishEvent| {},
+    )
+    .await
 }
 
 /// Async SSE consumer: streams tokens from backend, types them word-by-word,
@@ -2950,14 +3624,18 @@ async fn run_voice_polish_sse(
     screen_context: Option<String>,
     app: &tauri::AppHandle,
     #[allow(unused_variables)] is_meeting: bool,
+    is_divo: bool,
 ) -> Result<api::PolishDone, String> {
     let ep = {
         let lock = back_arc.lock().map_err(|_| "backend lock failed")?;
         lock.clone().ok_or("backend not started")?
     };
 
+    // Meeting capture AND Divo turns both suppress all local output (no live
+    // typing, no paste, no focused-field read) — they only need the polished text.
+    let suppress_local = is_meeting || is_divo;
     let app_clone = app.clone();
-    let message_polish_mode = !is_meeting && said_core::prefs::load().message_polish_mode;
+    let message_polish_mode = !suppress_local && said_core::prefs::load().message_polish_mode;
     if message_polish_mode {
         tracing::info!(
             "[pipeline] message polish mode enabled — suppressing live target typing until final output"
@@ -2977,7 +3655,7 @@ async fn run_voice_polish_sse(
     let live_guard2 = live_guard.clone();
     let typed_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let typed_text2 = typed_text.clone();
-    let initial_field_text = if is_meeting {
+    let initial_field_text = if suppress_local {
         None
     } else {
         paster::read_focused_value_fast()
@@ -3001,8 +3679,8 @@ async fn run_voice_polish_sse(
     let mut on_polish_event = move |event| {
         match &event {
             api::PolishEvent::Token { token } => {
-                // In meeting mode, skip all typing — only emit for live preview
-                if is_meeting {
+                // Meeting / Divo: skip all typing — only emit for live preview
+                if suppress_local {
                     let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
                     return;
                 }
@@ -3081,7 +3759,10 @@ async fn run_voice_polish_sse(
                     ""
                 };
                 tracing::info!("[pipeline] polished text: \"{preview}{suffix}\"");
-                let _ = app_clone.emit("voice-done", done);
+                // For Divo turns the Divo bridge drives the HUD — don't flash "Done".
+                if !is_divo {
+                    let _ = app_clone.emit("voice-done", done);
+                }
             }
             api::PolishEvent::Error {
                 message,
@@ -3136,8 +3817,8 @@ async fn run_voice_polish_sse(
     let n_typed = token_count.load(std::sync::atomic::Ordering::Relaxed);
     let n_failed = fail_count.load(std::sync::atomic::Ordering::Relaxed);
     let mut output_pasted = false;
-    if is_meeting {
-        tracing::info!("[main] meeting mode — skipping paste for polished chunk");
+    if suppress_local {
+        tracing::info!("[main] meeting/divo mode — skipping paste for polished chunk");
     } else if typed_any.load(std::sync::atomic::Ordering::Relaxed) {
         let typed_snapshot = typed_text
             .lock()
@@ -3219,8 +3900,9 @@ async fn run_voice_polish_sse(
         }
     }
 
-    // Always store latest result so Ctrl+Cmd+V can re-paste it any time
-    if !done.polished.is_empty() {
+    // Always store latest result so Ctrl+Cmd+V can re-paste it any time.
+    // Divo instructions are commands, not dictation output — never store them.
+    if !is_divo && !done.polished.is_empty() {
         if let Ok(mut g) = app.state::<LatestResult>().0.lock() {
             *g = Some(done.polished.clone());
         }
@@ -3266,14 +3948,17 @@ async fn run_voice_polish_sse(
             "Use the tray menu → Paste latest"
         }
     };
-    tracing::debug!("[main] voice-output status={output_status}");
-    let _ = app.emit(
-        "voice-output",
-        serde_json::json!({
-            "status": output_status,
-            "message": output_message,
-        }),
-    );
+    // Divo turns never produce a paste — the Divo bridge owns the HUD from here.
+    if !is_divo {
+        tracing::debug!("[main] voice-output status={output_status}");
+        let _ = app.emit(
+            "voice-output",
+            serde_json::json!({
+                "status": output_status,
+                "message": output_message,
+            }),
+        );
+    }
 
     Ok(done)
 }
@@ -3812,6 +4497,7 @@ fn retry_recording_spawn(
             None, // no screen context for re-polish
             &app2,
             false,
+            false, // not a Divo turn
         )
         .await;
 
@@ -5362,6 +6048,17 @@ async fn watch_for_edit(
                                 break;
                             }
                         }
+                        // If retrain never started (API unavailable, feature gated, etc.)
+                        // emit unavailable so the frontend doesn't stay in a silent state.
+                        if !started_emitted {
+                            tracing::info!(
+                                "[retrain-poll] training did not start within 30 s (API unavailable or feature not enabled on this machine)"
+                            );
+                            let _ = app_retrain.emit(
+                                "retrain-status",
+                                serde_json::json!({ "phase": "unavailable" }),
+                            );
+                        }
                     });
                 }
 
@@ -5748,13 +6445,49 @@ fn main() {
     // 1. Load env vars from .env files
     said_core::load_env();
 
+    const DEFAULT_DIAGNOSTICS_BASE: &str = "https://airnote.emiactech.com";
+    let diagnostics_base = std::env::var("AIRNOTE_DIAGNOSTICS_URL")
+        .or_else(|_| std::env::var("AIRNOTE_CONTROL_PLANE_URL"))
+        .unwrap_or_else(|_| DEFAULT_DIAGNOSTICS_BASE.to_string());
+    said_core::reporter::configure(&diagnostics_base);
+    said_core::reporter::set_phase("starting");
+
     // 1a. Sentry telemetry — must init before tracing so its panic hook
     //     stacks correctly. Held until main returns.
     let _sentry_guard = said_core::telemetry::init("said-desktop");
 
     let default_panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        backend_guard::kill_from_pid_file();
+        let summary = info.to_string();
+        // A guarded main-thread callback will catch this panic and the app
+        // survives. Report it as recovered and return — do not run the default
+        // (abort-printing) hook.
+        if in_guarded_section() {
+            said_core::reporter::report_event(
+                "panic.recovered",
+                said_core::reporter::Severity::Error,
+                serde_json::json!({
+                    "summary": summary.chars().take(500).collect::<String>(),
+                }),
+            );
+            tracing::error!(
+                "[panic] caught in guarded callback — recovering: {}",
+                summary.chars().take(300).collect::<String>()
+            );
+            return;
+        }
+        // Unguarded panic. This is NOT necessarily fatal: tokio catches panics in
+        // spawned tasks, so the process usually survives and the state watchdog
+        // heals any stuck state. Therefore we must NOT kill the backend here —
+        // doing so would take the sidecar down on a fully recoverable task panic.
+        // A genuinely fatal abort is cleaned up by `reap_previous()` on next launch.
+        said_core::reporter::report_event(
+            "panic",
+            said_core::reporter::Severity::Fatal,
+            serde_json::json!({
+                "summary": summary.chars().take(500).collect::<String>(),
+            }),
+        );
         default_panic_hook(info);
     }));
 
@@ -5787,6 +6520,7 @@ fn main() {
             .with(file_layer)
             .with(stderr_layer)
             .with(said_core::telemetry::tracing_layer())
+            .with(said_core::reporter::tracing_layer())
             .init();
     }
     tracing::info!(
@@ -5804,6 +6538,12 @@ fn main() {
 
     builder
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // Only one AirNote runs at a time (keyed by bundle id). A second
+            // launch — e.g. opening /Applications/AirNote.app while a copy is
+            // already running — forwards here instead of starting a new process.
+            // Bring the existing instance to the front so the relaunch is not a
+            // silent no-op (the running instance keeps the single Dock icon).
+            show_main_window(app);
             handle_enterprise_oauth_urls(app, &argv);
         }))
         .plugin(tauri_plugin_deep_link::init())
@@ -5897,16 +6637,66 @@ fn main() {
                         // Extract all endpoint clones BEFORE storing (move) the handle.
                         let ep  = handle.endpoint();
                         let ep2 = handle.endpoint();
+                        let ep_recovery = handle.endpoint();
                         if let Some(pid) = handle.pid() {
                             backend_guard::write_pid_file(pid);
                         }
-                        *back_arc.lock().unwrap() = Some(ep.clone());
+                        match back_arc.lock() {
+                            Ok(mut slot) => *slot = Some(ep.clone()),
+                            Err(p) => *p.into_inner() = Some(ep.clone()),
+                        }
                         // Store the full handle so Drop kills the child on app exit.
                         // Without this the child outlives the app (zombie leak).
                         if let Ok(mut h) = app.state::<BackendHandleState>().0.lock() {
                             *h = Some(handle);
                         }
                         tracing::info!("[main] backend daemon ready");
+
+                        // ── Crash recovery ─────────────────────────────────────
+                        // If a previous run died mid-dictation, its audio is still on
+                        // disk. Re-transcribe it and hand the user their words back.
+                        {
+                            let app_rec = app.handle().clone();
+                            tauri::async_runtime::spawn(async move {
+                                let Some(wav) = recovery::take_orphan() else {
+                                    return;
+                                };
+                                // Let the backend finish coming up before transcribing.
+                                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                                diag::breadcrumb("recovery:attempt");
+                                match recover_transcribe(&ep_recovery, wav).await {
+                                    Ok(done) => {
+                                        let text = if !done.polished.trim().is_empty() {
+                                            done.polished
+                                        } else {
+                                            done.transcript
+                                        };
+                                        if text.trim().is_empty() {
+                                            tracing::info!(
+                                                "[recovery] orphan produced empty transcript — nothing to recover"
+                                            );
+                                            return;
+                                        }
+                                        tracing::warn!(
+                                            "[recovery] recovered {} chars from a crashed dictation",
+                                            text.len()
+                                        );
+                                        diag::breadcrumb("recovery:recovered");
+                                        if let Ok(mut g) = app_rec.state::<LatestResult>().0.lock() {
+                                            *g = Some(text.clone());
+                                        }
+                                        show_main_window(&app_rec);
+                                        let _ = app_rec.emit(
+                                            "dictation-recovered",
+                                            serde_json::json!({ "text": text }),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("[recovery] re-transcribe failed: {e}");
+                                    }
+                                }
+                            });
+                        }
                         // Seed the tray cache with real prefs so the first tray
                         // menu already shows the correct model checkmark.
                         let app_h = app.handle().clone();
@@ -6026,6 +6816,11 @@ fn main() {
                     }
                     Err(e) => {
                         tracing::error!("[main] failed to spawn backend: {e}");
+                        said_core::reporter::report_event(
+                            "backend.spawn_failed",
+                            said_core::reporter::Severity::Error,
+                            serde_json::json!({ "error": e.to_string() }),
+                        );
                         // App continues without backend; commands return errors.
                     }
                 }
@@ -6087,25 +6882,29 @@ fn main() {
 
                 tray_builder
                     .on_menu_event(|app, event| {
-                        let id = event.id.as_ref();
-                        match id {
-                            "tray_toggle" => tray_toggle_recording(app),
-                            "show" => show_main_window(app),
-                            "settings"  => tray_open_settings(app),
-                            "quit"      => app.exit(0),
-                            // Output language switch
-                            _ if id.starts_with("tray_lang_") => {
-                                let lang = &id["tray_lang_".len()..];
-                                tray_set_output_language(app, lang);
+                        // Seatbelt: a panic in any handler here runs inside an AppKit
+                        // callback and would SIGABRT the whole app — catch + recover.
+                        guard_panics("tray.menu_event", || {
+                            let id = event.id.as_ref();
+                            match id {
+                                "tray_toggle" => tray_toggle_recording(app),
+                                "show" => show_main_window(app),
+                                "settings"  => tray_open_settings(app),
+                                "quit"      => app.exit(0),
+                                // Output language switch
+                                _ if id.starts_with("tray_lang_") => {
+                                    let lang = &id["tray_lang_".len()..];
+                                    tray_set_output_language(app, lang);
+                                }
+                                "tray_smart_repair" => smart_repair_last(app),
+                                // Polish my message — tone preset suffix
+                                _ if id.starts_with("tray_polish_") => {
+                                    let tone = &id["tray_polish_".len()..];
+                                    tray_polish_message(app, tone);
+                                }
+                                _ => tracing::warn!("[tray] unhandled menu id={id}"),
                             }
-                            "tray_smart_repair" => smart_repair_last(app),
-                            // Polish my message — tone preset suffix
-                            _ if id.starts_with("tray_polish_") => {
-                                let tone = &id["tray_polish_".len()..];
-                                tray_polish_message(app, tone);
-                            }
-                            _ => tracing::warn!("[tray] unhandled menu id={id}"),
-                        }
+                        });
                     })
                     .build(app)?;
 
@@ -6113,15 +6912,127 @@ fn main() {
                 if let Some(window) = app.get_webview_window("main") {
                     let win = window.clone();
                     window.on_window_event(move |event| {
-                        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                            api.prevent_close();
-                            let _ = win.hide();
-                        }
+                        guard_panics("window.main_event", || {
+                            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                                api.prevent_close();
+                                let _ = win.hide();
+                            }
+                        });
                     });
                 }
 
                 // ── Floating status bar ────────────────────────────────────────
                 create_status_bar(app.handle());
+
+                // ── Frontend-ready handshake ───────────────────────────────────
+                // The status-bar WebView emits "frontend-ready" once all its event
+                // listeners are registered. We re-sync immediately so any state that
+                // was set before the listeners were up gets delivered.
+                {
+                    use tauri::Listener as _;
+                    let app_fh = app.handle().clone();
+                    app.listen("frontend-ready", move |_| {
+                        tracing::debug!("[status-bar] frontend-ready received — resyncing state");
+                        emit_status_bar_resync(&app_fh, "frontend-ready");
+                    });
+                }
+
+                // ── State self-heal watchdog ───────────────────────────────────
+                // If the finish pipeline dies (caught panic, killed task, lost
+                // event) the state machine can wedge in "processing", which blocks
+                // every new recording. A legitimate polish takes seconds; detect a
+                // processing state that persists far beyond that and reset it so
+                // dictation keeps working — and recover the captured audio.
+                {
+                    let app_sw = app.handle().clone();
+                    let shared_sw = Arc::clone(&shared);
+                    tauri::async_runtime::spawn(async move {
+                        // Threshold beyond which a "processing" state is considered
+                        // wedged. A real polish takes seconds; 60s default never
+                        // false-triggers. Lowered via env for fast soak testing.
+                        let stuck_secs: u64 = std::env::var("AIRNOTE_HEAL_STUCK_SECS")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .filter(|&n| n >= 5)
+                            .unwrap_or(60);
+                        let tick_secs = (stuck_secs / 4).clamp(2, 15);
+                        let mut interval =
+                            tokio::time::interval(std::time::Duration::from_secs(tick_secs));
+                        interval.tick().await; // skip the immediate first tick
+                        let mut processing_secs: u64 = 0;
+                        loop {
+                            interval.tick().await;
+                            let state = shared_sw
+                                .lock()
+                                .map(|d| d.state)
+                                .unwrap_or_else(|p| p.into_inner().state);
+                            if state == desktop::AppState::Processing {
+                                processing_secs += tick_secs;
+                                if processing_secs >= stuck_secs {
+                                    tracing::warn!(
+                                        "[heal] processing state stuck ~{processing_secs}s — healing"
+                                    );
+                                    heal_stuck_state(&app_sw, "watchdog_stuck_processing");
+                                    processing_secs = 0;
+                                }
+                            } else {
+                                processing_secs = 0;
+                            }
+                        }
+                    });
+                }
+
+                // ── Chaos soak (env-gated, inert in production) ────────────────
+                // With AIRNOTE_CHAOS=1 AIRNOTE_CHAOS_SOAK=1 the app self-injects
+                // faults on a loop so a monitor can verify it tortures-and-heals.
+                chaos::maybe_start_soak(app.handle());
+
+                // ── HUD level watchdog (macOS) ─────────────────────────────────
+                // macOS silently resets NSPanel window level and collection behavior
+                // after sleep/wake and Space/fullscreen transitions. Re-tune every
+                // 30 s so the HUD never stays invisible for more than one interval.
+                // If the app is in a non-idle state but the panel is hidden, recover.
+                #[cfg(target_os = "macos")]
+                {
+                    let app_wdg = app.handle().clone();
+                    let shared_wdg = Arc::clone(&shared);
+                    tauri::async_runtime::spawn(async move {
+                        let mut interval =
+                            tokio::time::interval(std::time::Duration::from_secs(30));
+                        interval.tick().await; // skip the immediate first tick
+                        loop {
+                            interval.tick().await;
+                            let h = app_wdg.clone();
+                            if let Err(e) = run_on_main_guarded(&app_wdg, "hud_watchdog.retune", move || {
+                                tune_status_bar_panel(&h);
+                            }) {
+                                tracing::warn!("[hud-watchdog] retune dispatch failed: {e}");
+                            }
+                            let is_active = shared_wdg
+                                .lock()
+                                .ok()
+                                .map(|d| d.state != desktop::AppState::Idle)
+                                .unwrap_or(false);
+                            if is_active {
+                                let visible = app_wdg
+                                    .get_webview_window("status-bar")
+                                    .and_then(|w| w.is_visible().ok())
+                                    .unwrap_or(true);
+                                if !visible {
+                                    tracing::warn!(
+                                        "[hud-watchdog] HUD hidden while state is active — recovering"
+                                    );
+                                    diag::breadcrumb("hud_watchdog:recover");
+                                    let _ = present_status_bar_native(
+                                        &app_wdg,
+                                        "watchdog-recover",
+                                        true,
+                                    );
+                                }
+                            }
+                        }
+                    });
+                }
 
                 // ── Hold-to-record hotkey ─────────────────────────────────────
                 // macOS: CGEventTap (see said_hotkey::imp). Windows: WH_KEYBOARD_LL
@@ -6193,15 +7104,13 @@ fn main() {
                                         do_finish_recording(shared, app_h, back);
                                     } else if current == Some(desktop::AppState::Idle) {
                                         do_start_recording(&shared, &app_h);
-                                        if FINISH_AFTER_START.swap(false, Ordering::SeqCst) {
-                                            tracing::info!(
-                                                "[hotkey] release arrived during start — finishing immediately"
+                                        if FINISH_AFTER_START.load(Ordering::SeqCst) {
+                                            request_queued_finish(
+                                                shared,
+                                                app_h,
+                                                back,
+                                                "release_during_start",
                                             );
-                                            if hotkey_current_state(&shared, "finish after start")
-                                                == Some(desktop::AppState::Recording)
-                                            {
-                                                do_finish_recording(shared, app_h, back);
-                                            }
                                         }
                                     }
                                 });
@@ -6225,6 +7134,7 @@ fn main() {
                                 std::thread::spawn(move || {
                                     let current = hotkey_current_state(&shared, "finish");
                                     if current == Some(desktop::AppState::Recording) {
+                                        FINISH_AFTER_START.store(false, Ordering::SeqCst);
                                         do_finish_recording(shared, app_h, back);
                                     } else if (current == Some(desktop::AppState::Idle)
                                         || current.is_none())
@@ -6234,12 +7144,122 @@ fn main() {
                                         tracing::info!(
                                             "[hotkey] release arrived before recording started — queue finish"
                                         );
-                                        FINISH_AFTER_START.store(true, Ordering::SeqCst);
+                                        request_queued_finish(
+                                            shared,
+                                            app_h,
+                                            back,
+                                            if current.is_none() {
+                                                "release_lock_busy"
+                                            } else {
+                                                "release_before_start"
+                                            },
+                                        );
+                                    } else if current.is_none() {
+                                        tracing::info!(
+                                            "[hotkey] release could not read state — queue guarded finish retry"
+                                        );
+                                        request_queued_finish(
+                                            shared,
+                                            app_h,
+                                            back,
+                                            "release_state_unknown",
+                                        );
                                     }
                                 });
                             }
                         }),
                     );
+
+                    // ── Ctrl hold-to-talk → Divo (independent of the record hotkey) ──
+                    {
+                        let shared_dp = Arc::clone(&app.state::<SharedApp>().0);
+                        let shared_dr = Arc::clone(&app.state::<SharedApp>().0);
+                        let shared_dc = Arc::clone(&app.state::<SharedApp>().0);
+                        let back_dp = Arc::clone(&app.state::<BackendState>().0);
+                        let back_dr = Arc::clone(&app.state::<BackendState>().0);
+                        let app_dp = app.handle().clone();
+                        let app_dr = app.handle().clone();
+                        let app_dc = app.handle().clone();
+                        hotkey::register_divo_hotkey_callbacks(
+                            // press → start a Divo-routed recording
+                            Arc::new(move || {
+                                let shared = Arc::clone(&shared_dp);
+                                let app_h = app_dp.clone();
+                                let back = Arc::clone(&back_dp);
+                                HOTKEY_START_IN_FLIGHT.store(true, Ordering::SeqCst);
+                                std::thread::spawn(move || {
+                                    struct HotkeyStartGuard;
+                                    impl Drop for HotkeyStartGuard {
+                                        fn drop(&mut self) {
+                                            HOTKEY_START_IN_FLIGHT.store(false, Ordering::SeqCst);
+                                        }
+                                    }
+                                    let _guard = HotkeyStartGuard;
+                                    let current = hotkey_current_state(&shared, "divo start");
+                                    if current == Some(desktop::AppState::Idle) {
+                                        DIVO_START_PENDING.store(true, Ordering::SeqCst);
+                                        DIVO_FOLLOWUP_PENDING.store(false, Ordering::SeqCst);
+                                        do_start_recording(&shared, &app_h);
+                                        if FINISH_AFTER_START.load(Ordering::SeqCst) {
+                                            request_queued_finish(
+                                                shared,
+                                                app_h,
+                                                back,
+                                                "divo_release_during_start",
+                                            );
+                                        }
+                                    }
+                                });
+                            }),
+                            // release → finish & send to Divo
+                            Arc::new(move || {
+                                let shared = Arc::clone(&shared_dr);
+                                let app_h = app_dr.clone();
+                                let back = Arc::clone(&back_dr);
+                                std::thread::spawn(move || {
+                                    let current = hotkey_current_state(&shared, "divo finish");
+                                    if current == Some(desktop::AppState::Recording) {
+                                        FINISH_AFTER_START.store(false, Ordering::SeqCst);
+                                        do_finish_recording(shared, app_h, back);
+                                    } else if (current == Some(desktop::AppState::Idle)
+                                        || current.is_none())
+                                        && (HOTKEY_START_IN_FLIGHT.load(Ordering::SeqCst)
+                                            || RECORDING_STARTING.load(Ordering::SeqCst))
+                                    {
+                                        request_queued_finish(
+                                            shared,
+                                            app_h,
+                                            back,
+                                            "divo_release_before_start",
+                                        );
+                                    }
+                                });
+                            }),
+                            // cancel → a shortcut (Ctrl+C etc.) tainted the hold; drop it
+                            Arc::new(move || {
+                                let shared = Arc::clone(&shared_dc);
+                                let app_h = app_dc.clone();
+                                std::thread::spawn(move || {
+                                    DIVO_START_PENDING.store(false, Ordering::SeqCst);
+                                    DIVO_FOLLOWUP_PENDING.store(false, Ordering::SeqCst);
+                                    let current = hotkey_current_state(&shared, "divo cancel");
+                                    if current == Some(desktop::AppState::Recording) {
+                                        do_cancel_recording(shared, app_h, "divo ctrl shortcut");
+                                    }
+                                });
+                            }),
+                        );
+                        // Stays disabled until the webview pushes valid Divo credentials —
+                        // except in local dev-direct mode, where we force it on so the
+                        // feature can be exercised without a control-plane connection.
+                        let divo_direct = std::env::var("AIRNOTE_DIVO_DIRECT")
+                            .map(|s| !s.trim().is_empty())
+                            .unwrap_or(false);
+                        hotkey::set_divo_hotkey_enabled(divo_direct);
+                        if divo_direct {
+                            tracing::info!("[divo] dev-direct mode — Ctrl hotkey force-enabled");
+                        }
+                    }
 
                     let app_long = app.handle().clone();
                     let shared_long = Arc::clone(&app.state::<SharedApp>().0);
@@ -6352,6 +7372,7 @@ fn main() {
         .manage(ScreenContextState(Mutex::new(None)))
         .manage(StreamingState(Mutex::new(None)))
         .manage(RecordingRouteState(Mutex::new(None)))
+        .manage(divo::DivoState::new())
         .manage(DeepgramSessionState(dg_stream::DeepgramSession::spawn()))
         .manage(PerformanceState(Mutex::new(sysinfo::System::new_all())))
         .manage(TrayCache(Mutex::new(TrayCacheInner::default())))
@@ -6359,14 +7380,22 @@ fn main() {
         .manage(LastActionState(Mutex::new(None)))
         .manage(HotPathCache(Arc::new(tokio::sync::RwLock::new(HotPathCacheInner::default()))))
         .manage(StatusBarHideGen(Arc::new(AtomicU64::new(0))))
+        .manage(RecordingSessionState::default())
         .manage(StatusBarPersistentHold(AtomicBool::new(false)))
         .manage(StatusBarPlacementActive(AtomicBool::new(false)))
+        .manage(StatusBarInteractive(AtomicBool::new(false)))
         .manage(MeetingModeState::new())
         .manage(speaker_suppression::SpeakerSuppressionGuard::new())
         .manage(LongDictationState::new())
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             get_snapshot,
+            chaos_inject,
+            divo::divo_set_credentials,
+            divo::divo_fetch_thread,
+            divo::divo_send,
+            divo_followup_begin,
+            divo_followup_end,
             present_status_bar,
             set_status_bar_persistent,
             dismiss_status_bar,
@@ -6450,22 +7479,26 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("failed to build AirNote desktop")
-        .run(|app, event| match event {
-            #[cfg(target_os = "macos")]
-            tauri::RunEvent::Reopen { has_visible_windows, .. } if !has_visible_windows => {
-                show_main_window(app);
-            }
-            tauri::RunEvent::ExitRequested { code, api, .. } if code.is_none() => {
-                // Window closed / Cmd+Q — hide instead of quit for accessory-app UX.
-                api.prevent_exit();
-            }
-            tauri::RunEvent::Exit => {
-                if let Ok(mut guard) = app.state::<BackendHandleState>().0.lock() {
-                    drop(guard.take());
+        .run(|app, event| {
+            // Seatbelt: the RunEvent loop runs on the AppKit main thread, so a panic
+            // here would SIGABRT the app — catch + recover.
+            guard_panics("run_event", || match event {
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { has_visible_windows, .. } if !has_visible_windows => {
+                    show_main_window(app);
                 }
-                backend_guard::clear_pid_file();
-            }
-            _ => {}
+                tauri::RunEvent::ExitRequested { code, api, .. } if code.is_none() => {
+                    // Window closed / Cmd+Q — hide instead of quit for accessory-app UX.
+                    api.prevent_exit();
+                }
+                tauri::RunEvent::Exit => {
+                    if let Ok(mut guard) = app.state::<BackendHandleState>().0.lock() {
+                        drop(guard.take());
+                    }
+                    backend_guard::clear_pid_file();
+                }
+                _ => {}
+            });
         });
 }
 

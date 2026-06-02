@@ -2,9 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
-import { ChevronLeft, ChevronRight, CornerDownLeft, ListChecks, RotateCcw, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, ListChecks, Mic, RotateCcw, Send, Sparkles, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
 import { APPLY_UPDATE_EVENT } from "./lib/autoUpdate";
+import { Markdown } from "./components/Markdown";
 
 function notifEnabled(key: string): boolean {
   try {
@@ -97,7 +98,39 @@ type BarState =
   | { kind: "polish_mode"; enabled: boolean; message: string }
   | { kind: "update_ready"; version: string; message: string }
   | { kind: "retraining" }
-  | { kind: "retrain_done"; durationS: number };
+  | { kind: "retrain_done"; durationS: number }
+  // ── Divo (Ctrl hold-to-talk → agent) ──
+  | { kind: "divo_stage"; followup: boolean } // review/edit transcript before sending
+  | { kind: "divo_streaming" } // live activity panel (status/plan/thinking)
+  | { kind: "divo_min" } // hidden — collapsed "Divo is working…" pill
+  | { kind: "divo_ready" } // "Divo (1)" notification badge
+  | { kind: "divo_answer" } // expanded markdown response panel
+  | { kind: "divo_pending"; message: string } // awaiting Lark approval
+  | { kind: "divo_error"; message: string };
+
+type DivoTool = { name: string; verb?: string; past?: string; ok?: boolean; done: boolean };
+type DivoPlan = { status: string; title: string; subtitle?: string };
+type DivoActivity = {
+  liveLabel: string;
+  progressPct: number;
+  plan: DivoPlan[];
+  thinking: string;
+  tools: DivoTool[];
+  threadId: string | null;
+  answer: string;
+  followup: boolean;
+};
+
+const emptyDivo = (followup = false): DivoActivity => ({
+  liveLabel: followup ? "Sending follow-up…" : "Sending to Divo…",
+  progressPct: 4,
+  plan: [],
+  thinking: "",
+  tools: [],
+  threadId: null,
+  answer: "",
+  followup,
+});
 
 type UpdateReadyState = Extract<BarState, { kind: "update_ready" }>;
 
@@ -165,6 +198,13 @@ function pillSize(
   reviewExpanded = true,
 ): { width: number; height: number } {
   if (hasTranscript) return { width: VOICE_INNER_WIDTH, height: VOICE_INNER_HEIGHT };
+  if (kind === "divo_stage") return { width: 380, height: 208 };
+  if (kind === "divo_streaming") return { width: 340, height: 236 };
+  if (kind === "divo_answer") return { width: 440, height: 468 };
+  if (kind === "divo_min") return { width: 188, height: 38 };
+  if (kind === "divo_ready") return { width: 168, height: 46 };
+  if (kind === "divo_pending") return { width: 300, height: 104 };
+  if (kind === "divo_error") return { width: 300, height: 96 };
   if (kind === "confirming") return { width: 280, height: 142 };
   if (kind === "negative_confirm") return { width: 280, height: 142 };
   if (kind === "reviewing") {
@@ -228,6 +268,10 @@ export default function StatusBar() {
   const dragActiveRef = useRef(false);
   const [liveTranscript, setLiveTranscript] = useState("");
   const [audioLevel, setAudioLevel] = useState(0);
+  const [divo, setDivo] = useState<DivoActivity>(() => emptyDivo());
+  const [divoCopied, setDivoCopied] = useState(false);
+  const [divoDraft, setDivoDraft] = useState("");
+  const divoDraftRef = useRef<HTMLTextAreaElement | null>(null);
   const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLevelRef = useRef(0);
   const pinnedUpdateRef = useRef<UpdateReadyState | null>(null);
@@ -274,6 +318,14 @@ export default function StatusBar() {
       console.warn("[status-bar] clear persistent hold failed", err);
     }
   };
+  // Release the Divo visibility hold, then return to idle. Clearing first (and
+  // awaiting it) ensures the native dismiss isn't blocked by the still-active hold.
+  const releaseDivoHoldThenIdle = async (reason: string) => {
+    try {
+      await invoke("set_status_bar_persistent", { persistent: false, reason });
+    } catch { /* ignore */ }
+    returnToIdleOrPinned(reason, true);
+  };
   const hasTranscript = bar.kind === "processing" && liveTranscript.trim().length > 0;
   const isInteractive =
     bar.kind === "confirming"
@@ -282,7 +334,15 @@ export default function StatusBar() {
     || bar.kind === "error"
     || bar.kind === "learned"
     || bar.kind === "update_ready"
-    || bar.kind === "placement";
+    || bar.kind === "placement"
+    // Divo: the working HUD stays VISIBLE (persistent hold) but click-through —
+    // it floats over the user's app, so making it interactive would swallow every
+    // click over its area for the whole run and feel like the app froze. Only the
+    // review/staging step (edit + Send), the "Divo (1)" notification, and the
+    // opened answer panel grab clicks.
+    || bar.kind === "divo_stage"
+    || bar.kind === "divo_ready"
+    || bar.kind === "divo_answer";
   const isFullBleedCard = bar.kind === "reviewing" && reviewExpanded;
 
   const pillLabel = (() => {
@@ -509,6 +569,30 @@ export default function StatusBar() {
     });
   }, []);
 
+  // Web Lock: prevents WKWebView from suspending JS on macOS 13 (Sonoma+
+  // already handles this via BackgroundThrottlingPolicy::Disabled, but 13 ignores it).
+  // visibilitychange: re-sync app state if the WebView was throttled while hidden.
+  useEffect(() => {
+    if (typeof navigator?.locks?.request === "function") {
+      navigator.locks.request(
+        "airnote-statusbar-keepalive",
+        { mode: "shared" },
+        () => new Promise<void>(() => {}),
+      );
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        invoke<AppSnapshot>("get_snapshot")
+          .then((snap) => applyActiveSnapshot(snap, "visibility-restored"))
+          .catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
+
   // VoiceInk uses a max-size native panel and expands the inner capsule inside it.
   // Keep our native Tauri window at the largest HUD size so hover panels are never clipped.
   // No fixed mount sizing — the content-driven resize effect handles everything.
@@ -620,6 +704,7 @@ export default function StatusBar() {
           if (prev.kind === "processing") return prev;
           if (prev.kind === "done" || prev.kind === "pasted" || prev.kind === "manual_paste") return prev;
           if (prev.kind === "update_ready") return prev;
+          if (prev.kind.startsWith("divo")) return prev; // Divo flow owns the HUD
           return { kind: "idle" };
         });
       }
@@ -869,6 +954,9 @@ export default function StatusBar() {
         setBar({ kind: "retrain_done", durationS: dur });
         if (doneTimer.current) clearTimeout(doneTimer.current);
         doneTimer.current = setTimeout(() => setBar({ kind: "idle" }), 10000);
+      } else if (e.payload.phase === "unavailable") {
+        // Retrain API not available or feature not enabled on this machine — silent.
+        console.info("[status-bar] retrain not available on this machine");
       }
     }).then((fn) => {
       subs.push(fn);
@@ -887,6 +975,118 @@ export default function StatusBar() {
       subs.push(fn);
     }).catch(() => {});
 
+    // ── Divo (Ctrl hold-to-talk → agent) ──────────────────────────────────
+    // Review step: the polished transcript arrives here for edit + Send, instead
+    // of being sent to Divo automatically.
+    listen<{ text: string; followup: boolean }>("divo-stage", (e) => {
+      console.info("[status-bar] divo-stage", e.payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      setDivoCopied(false);
+      setDivoDraft(e.payload?.text ?? "");
+      // Hold the HUD open and make it interactive — the user edits a textarea and
+      // clicks Send/Cancel here.
+      invoke("set_status_bar_persistent", { persistent: true, reason: "divo-stage", interactive: true })
+        .catch(() => presentStatusBar("divo-stage"));
+      setBar({ kind: "divo_stage", followup: !!e.payload?.followup });
+      // Make the panel key so the textarea can receive keystrokes (the status bar
+      // is a non-activating panel; without this it accepts clicks but not typing).
+      win.setFocus().catch(() => {});
+      setTimeout(() => { const el = divoDraftRef.current; if (el) { el.focus(); el.select(); } }, 60);
+    }).then((fn) => subs.push(fn)).catch(() => {});
+
+    listen<{ followup: boolean }>("divo-started", (e) => {
+      console.info("[status-bar] divo-started", e.payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      setDivoCopied(false);
+      setDivo(emptyDivo(!!e.payload?.followup));
+      // Hold the HUD open for the whole run (the local voice pipeline going idle
+      // must not auto-hide it mid-run), but keep it CLICK-THROUGH: it floats over
+      // the user's app, so it must never swallow clicks while Divo works.
+      invoke("set_status_bar_persistent", { persistent: true, reason: "divo-started", interactive: false })
+        .catch(() => presentStatusBar("divo-started"));
+      setBar({ kind: "divo_streaming" });
+    }).then((fn) => subs.push(fn)).catch(() => {});
+
+    listen<{ threadId: string }>("divo-meta", (e) => {
+      setDivo((d) => ({ ...d, threadId: e.payload?.threadId ?? d.threadId }));
+    }).then((fn) => subs.push(fn)).catch(() => {});
+
+    listen<{ liveLabel?: string; progressPct?: number; phase?: string; plan?: DivoPlan[] }>(
+      "divo-status",
+      (e) => {
+        const p = e.payload || {};
+        setDivo((d) => ({
+          ...d,
+          liveLabel: p.liveLabel ?? d.liveLabel,
+          progressPct: typeof p.progressPct === "number" ? p.progressPct : d.progressPct,
+          plan: Array.isArray(p.plan) && p.plan.length ? p.plan : d.plan,
+        }));
+      },
+    ).then((fn) => subs.push(fn)).catch(() => {});
+
+    listen<{ text: string }>("divo-thinking", (e) => {
+      const t = e.payload?.text;
+      if (t) setDivo((d) => ({ ...d, thinking: t }));
+    }).then((fn) => subs.push(fn)).catch(() => {});
+
+    listen<{ phase: "start" | "end"; name: string; verb?: string | null; past?: string | null; ok?: boolean }>(
+      "divo-tool",
+      (e) => {
+        const p = e.payload;
+        if (!p) return;
+        setDivo((d) => {
+          let tools = d.tools.slice();
+          if (p.phase === "start") {
+            tools.push({ name: p.name, verb: p.verb ?? undefined, done: false });
+          } else {
+            for (let i = tools.length - 1; i >= 0; i--) {
+              if (!tools[i].done) {
+                tools[i] = { ...tools[i], done: true, ok: p.ok, past: p.past ?? undefined };
+                break;
+              }
+            }
+          }
+          if (tools.length > 4) tools = tools.slice(tools.length - 4);
+          return { ...d, tools };
+        });
+      },
+    ).then((fn) => subs.push(fn)).catch(() => {});
+
+    listen<{ content: string; threadId: string | null }>("divo-done", (e) => {
+      console.info("[status-bar] divo-done");
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      const content = e.payload?.content ?? "";
+      setDivo((d) => ({
+        ...d,
+        answer: content,
+        threadId: e.payload?.threadId ?? d.threadId,
+        progressPct: 100,
+      }));
+      playSound("ding");
+      // Keep the hold open and make it actionable — the "Divo (1)" badge is a
+      // click target, so the panel must grab clicks now.
+      invoke("set_status_bar_persistent", { persistent: true, reason: "divo-done", interactive: true })
+        .catch(() => presentStatusBar("divo-done"));
+      setBar({ kind: "divo_ready" });
+    }).then((fn) => subs.push(fn)).catch(() => {});
+
+    listen<{ message: string }>("divo-error", (e) => {
+      console.error("[status-bar] divo-error", e.payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      playSound("lowThud");
+      presentStatusBar("divo-error");
+      setBar({ kind: "divo_error", message: e.payload?.message || "Divo failed" });
+      doneTimer.current = setTimeout(() => { releaseDivoHoldThenIdle("divo-error-hide"); }, 6000);
+    }).then((fn) => subs.push(fn)).catch(() => {});
+
+    listen<{ message: string }>("divo-pending", (e) => {
+      console.info("[status-bar] divo-pending", e.payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      presentStatusBar("divo-pending");
+      setBar({ kind: "divo_pending", message: e.payload?.message || "Pending approval in Lark" });
+      doneTimer.current = setTimeout(() => { releaseDivoHoldThenIdle("divo-pending-hide"); }, 8000);
+    }).then((fn) => subs.push(fn)).catch(() => {});
+
     return () => {
       console.info("[status-bar] unmount subscriptions", subs.length);
       subs.forEach((fn) => fn());
@@ -894,6 +1094,17 @@ export default function StatusBar() {
   }, []);
 
   useEffect(() => () => { if (doneTimer.current) clearTimeout(doneTimer.current); }, []);
+
+  // Signal the backend that all event listeners are registered.
+  // Runs after the listener-registration useEffect above (effects run in order).
+  // A small delay covers the async IPC round-trip inside each listen() call.
+  // The backend re-emits status-bar-resync so any state set during startup is not missed.
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      emit("frontend-ready").catch(() => {});
+    }, 100);
+    return () => window.clearTimeout(t);
+  }, []);
 
   function dismissToIdle() {
     setBar({ kind: "idle" });
@@ -930,6 +1141,236 @@ export default function StatusBar() {
   // ── Idle: nothing visible; native window hides via dismiss_status_bar ──
   if (bar.kind === "idle") {
     return null;
+  }
+
+  // ── Divo: review/edit the transcript, then Send ───────────────────────
+  if (bar.kind === "divo_stage") {
+    const followup = bar.followup;
+    const sendDraft = () => {
+      const text = divoDraft.trim();
+      if (!text) return;
+      // divo-started (emitted by the send) transitions the HUD to streaming.
+      invoke("divo_send", { message: text, followup }).catch(() => {});
+    };
+    return (
+      <CardHost>
+        <div
+          className="sb-survey sb-survey--panel sb-survey--interactive divo-stage"
+          style={{ width: innerSize.width, height: innerSize.height }}
+          aria-label="Review instruction before sending to Divo"
+        >
+          <div className="divo-head">
+            <span className="divo-mark"><Sparkles size={11} strokeWidth={2.4} /></span>
+            <span className="divo-name">Send to Divo</span>
+            <span className="divo-stage-hint">{followup ? "follow-up" : "edit, then send"}</span>
+          </div>
+          <textarea
+            ref={divoDraftRef}
+            className="divo-stage-input"
+            value={divoDraft}
+            onChange={(e) => setDivoDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); sendDraft(); }
+              else if (e.key === "Escape") { e.preventDefault(); releaseDivoHoldThenIdle("divo-stage-cancel"); }
+            }}
+            spellCheck={false}
+            autoFocus
+          />
+          <div className="divo-stage-foot">
+            <button type="button" className="sb-survey-skip" onClick={() => releaseDivoHoldThenIdle("divo-stage-cancel")}>
+              Cancel
+            </button>
+            <button type="button" className="divo-stage-send" onClick={sendDraft} disabled={!divoDraft.trim()}>
+              <Send size={12} strokeWidth={2.2} /> Send <span className="divo-stage-kbd">⌘↵</span>
+            </button>
+          </div>
+        </div>
+      </CardHost>
+    );
+  }
+
+  // ── Divo: hidden mini pill / live activity panel ──────────────────────
+  if (bar.kind === "divo_min") {
+    return (
+      <CardHost>
+        <div
+          className="sb-survey sb-survey--toast sb-survey--interactive divo-min"
+          style={{ width: innerSize.width, height: innerSize.height }}
+          role="button"
+          onClick={() => {
+            presentStatusBar("divo-reexpand");
+            setBar({ kind: "divo_streaming" });
+          }}
+        >
+          <span className="divo-min-spin" aria-hidden="true" />
+          <span className="divo-min-txt">Divo is working…</span>
+        </div>
+      </CardHost>
+    );
+  }
+
+  if (bar.kind === "divo_streaming") {
+    const pct = Math.max(2, Math.min(100, divo.progressPct));
+    const showTools = divo.plan.length === 0 && divo.tools.length > 0;
+    return (
+      <CardHost>
+        <div
+          className="sb-survey sb-survey--panel sb-survey--interactive"
+          style={{ width: innerSize.width, height: innerSize.height }}
+          aria-label="Divo working"
+        >
+          <div className="divo-head">
+            <span className="divo-mark"><Sparkles size={11} strokeWidth={2.4} /></span>
+            <span className="divo-name">Divo</span>
+            <span className="divo-live">{divo.liveLabel}</span>
+            <button
+              className="divo-hide"
+              title="Hide — Divo keeps working"
+              aria-label="Hide"
+              onClick={() => setBar({ kind: "divo_min" })}
+            >
+              <X size={13} />
+            </button>
+          </div>
+          <div className="divo-progress"><i style={{ width: `${pct}%` }} /></div>
+          {divo.plan.length > 0 ? (
+            <div className="divo-plan">
+              {divo.plan.slice(0, 4).map((p, i) => (
+                <div key={i} className={`divo-plan-row ${p.status}`}>
+                  <span className="divo-plan-ic">{p.status === "done" ? "✓" : ""}</span>
+                  <span className="divo-plan-title">{p.title}</span>
+                </div>
+              ))}
+            </div>
+          ) : showTools ? (
+            <div className="divo-plan">
+              {divo.tools.map((t, i) => (
+                <div key={i} className={`divo-plan-row ${t.done ? "done" : "running"}`}>
+                  <span className="divo-plan-ic">{t.done ? "✓" : ""}</span>
+                  <span className="divo-plan-title">
+                    {t.done ? t.past || `${t.name} done` : t.verb || `Using ${t.name}…`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {divo.thinking ? <div className="divo-think">{divo.thinking}</div> : null}
+        </div>
+      </CardHost>
+    );
+  }
+
+  if (bar.kind === "divo_ready") {
+    return (
+      <CardHost>
+        <div
+          className="sb-survey sb-survey--toast sb-survey--interactive divo-badge"
+          style={{ width: innerSize.width, height: innerSize.height }}
+          role="button"
+          onClick={() => {
+            presentStatusBar("divo-open-answer");
+            setBar({ kind: "divo_answer" });
+          }}
+        >
+          <span className="divo-mark"><Sparkles size={11} strokeWidth={2.4} /></span>
+          <span className="divo-badge-txt">Divo</span>
+          <span className="divo-badge-count">1</span>
+          <ChevronRight size={14} className="divo-badge-chev" />
+        </div>
+      </CardHost>
+    );
+  }
+
+  if (bar.kind === "divo_answer") {
+    return (
+      <CardHost variant="card">
+        <div
+          className="sb-survey sb-survey--interactive divo-answer"
+          style={{ width: innerSize.width, height: innerSize.height }}
+          aria-label="Divo answer"
+        >
+          <div className="divo-panel-head">
+            <span className="divo-mark"><Sparkles size={11} strokeWidth={2.4} /></span>
+            <div className="divo-panel-titles">
+              <div className="divo-panel-title">Divo</div>
+              {divo.threadId ? (
+                <div className="divo-panel-thread">thread {divo.threadId.slice(0, 8)}</div>
+              ) : null}
+            </div>
+            <button
+              className="divo-x"
+              title="Close"
+              aria-label="Close"
+              onClick={() => { releaseDivoHoldThenIdle("divo-close"); }}
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <div className="divo-panel-body">
+            <Markdown content={divo.answer} />
+          </div>
+          <div className="divo-panel-foot">
+            <button
+              className="divo-followup"
+              title="Hold to speak a follow-up"
+              onMouseDown={() => { invoke("divo_followup_begin").catch(() => {}); }}
+              onMouseUp={() => { invoke("divo_followup_end").catch(() => {}); }}
+              onMouseLeave={() => { invoke("divo_followup_end").catch(() => {}); }}
+            >
+              <Mic size={14} strokeWidth={2} /> Hold to follow up
+            </button>
+            <button
+              className="divo-copy"
+              title="Copy answer"
+              onClick={() => {
+                navigator.clipboard
+                  .writeText(divo.answer)
+                  .then(() => setDivoCopied(true))
+                  .catch(() => {});
+              }}
+            >
+              <Copy size={13} strokeWidth={2} /> {divoCopied ? "Copied" : "Copy"}
+            </button>
+          </div>
+        </div>
+      </CardHost>
+    );
+  }
+
+  if (bar.kind === "divo_pending") {
+    return (
+      <CardHost>
+        <div
+          className="sb-survey sb-survey--panel sb-survey--interactive"
+          style={{ width: innerSize.width, height: innerSize.height }}
+          aria-label="Divo pending approval"
+        >
+          <div className="sb-survey-kicker-row">
+            <span className="sb-status-dot sb-status-dot--warn" />
+            <span className="sb-survey-kicker">Pending approval</span>
+          </div>
+          <div className="sb-survey-body">{bar.message}</div>
+        </div>
+      </CardHost>
+    );
+  }
+
+  if (bar.kind === "divo_error") {
+    return (
+      <CardHost>
+        <div
+          className="sb-survey sb-survey--panel sb-survey--interactive"
+          style={{ width: innerSize.width, height: innerSize.height }}
+          aria-label="Divo error"
+        >
+          <div className="sb-survey-kicker-row">
+            <span className="sb-status-dot sb-status-dot--err" />
+            <span className="sb-survey-kicker">Divo</span>
+          </div>
+          <div className="sb-survey-body">{bar.message}</div>
+        </div>
+      </CardHost>
+    );
   }
 
   // ── Toast states render as expanded cards, not pills ──────────────────

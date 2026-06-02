@@ -19,7 +19,7 @@
 
 use sentry::{ClientInitGuard, ClientOptions};
 
-use crate::paths;
+use crate::{paths, scrub};
 
 /// Initialise Sentry for a service. Returns `None` when telemetry is
 /// disabled by env, in which case the caller's panic hook + tracing setup
@@ -97,41 +97,19 @@ where
 fn scrub_event(
     mut event: sentry::protocol::Event<'static>,
 ) -> Option<sentry::protocol::Event<'static>> {
-    let home = dirs::home_dir().and_then(|p| p.to_str().map(|s| s.to_owned()));
-    let user = std::env::var("USER")
-        .ok()
-        .filter(|s| !s.is_empty() && s != "root");
-
-    let scrub = |s: &mut String| {
-        if let Some(ref h) = home {
-            if !h.is_empty() && s.contains(h) {
-                *s = s.replace(h, "~");
-            }
-        }
-        if let Some(ref u) = user {
-            // Replace bare username in path-like segments only, not arbitrary
-            // text (avoid clobbering valid identifiers that happen to share
-            // the username).
-            let needle = format!("/{u}/");
-            if s.contains(&needle) {
-                *s = s.replace(&needle, "/~/");
-            }
-        }
-    };
-
     if let Some(ref mut msg) = event.message {
-        scrub(msg);
+        scrub::scrub_string(msg);
     }
 
     for exc in event.exception.values.iter_mut() {
         if let Some(ref mut val) = exc.value {
-            scrub(val);
+            scrub::scrub_string(val);
         }
     }
 
     for bc in event.breadcrumbs.values.iter_mut() {
         if let Some(ref mut m) = bc.message {
-            scrub(m);
+            scrub::scrub_string(m);
         }
     }
 

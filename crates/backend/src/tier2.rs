@@ -41,6 +41,15 @@ const TRACE_REJECTED_SCORE_FLOOR: f64 = 0.74;
 const MAX_REPLACEMENTS_PER_RECORDING: usize = 3;
 const DEFAULT_MAX_LEN: usize = 32;
 const CLUSTER_FUZZY_THRESHOLD: f64 = 0.78;
+const CONTEXT_OVERLAP_THRESHOLD: f64 = 0.55;
+const CONTEXT_MIN_SIM: f64 = 0.55;
+const CONTEXT_ONNX_FLOOR: f64 = 0.80;
+
+static CONTEXT_PATH_ENABLED: Lazy<bool> = Lazy::new(|| {
+    std::env::var("AIRNOTE_TIER2_CONTEXT_APPLY")
+        .map(|v| v.trim() != "off")
+        .unwrap_or(true)
+});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -128,6 +137,9 @@ struct CandidateScore {
     onnx_score: Option<f64>,
     policy_score: Option<f64>,
     policy_boost: f64,
+    context_overlap_left: f64,
+    context_overlap_right: f64,
+    hinglish_particle: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -252,6 +264,7 @@ impl<'a> CorrectionEngine<'a> {
                 MatchKind::Tier2Onnx => "onnx",
                 MatchKind::Tier2Deterministic => "det",
                 MatchKind::Tier2Policy => "policy",
+                MatchKind::Tier2Context => "context",
                 _ => "other",
             };
             info!(
@@ -1310,6 +1323,7 @@ fn apply_tier2(
             traces: vec![],
         });
     }
+    let cores: Vec<String> = chunks.iter().map(|c| normalize_core(c)).collect();
 
     let mut out = String::with_capacity(transcript.len());
     let mut matches = Vec::new();
@@ -1320,7 +1334,7 @@ fn apply_tier2(
         .map(|candidate| candidate.term_lower.as_str())
         .collect();
 
-    for chunk in chunks {
+    for (idx, chunk) in chunks.iter().enumerate() {
         if replacement_count >= MAX_REPLACEMENTS_PER_RECORDING {
             out.push_str(chunk);
             continue;
@@ -1351,7 +1365,15 @@ fn apply_tier2(
             continue;
         }
 
-        let Some(decision) = choose_candidate(core, candidates, onnx_model, policy_weights)? else {
+        let Some(decision) = choose_candidate(
+            core,
+            candidates,
+            onnx_model,
+            policy_weights,
+            &nearby_left(&cores, idx),
+            &nearby_right(&cores, idx),
+        )?
+        else {
             debug!("[tier2-score] skip {:?}: no candidate matched", core);
             out.push_str(chunk);
             continue;
@@ -1392,12 +1414,15 @@ fn choose_candidate(
     candidates: &[Candidate],
     onnx_model: Option<&Arc<OnnxModel>>,
     policy_weights: &HashMap<PolicyKey, Tier2PolicyWeight>,
+    left: &[&str],
+    right: &[&str],
 ) -> Result<Option<ScoringDecision>, String> {
     let token_norm = normalize_core(token);
     if token_norm.is_empty() {
         return Ok(None);
     }
 
+    let particle_nearby = hinglish_particle_nearby(left, right);
     let mut scored = Vec::new();
     for candidate in candidates {
         if candidate.term_lower == token_norm {
@@ -1408,7 +1433,7 @@ fn choose_candidate(
         }
         let deterministic_score = deterministic_score(&token_norm, candidate);
         let onnx_score = if let Some(model) = onnx_model {
-            let raw = model.score(&token_norm, candidate, deterministic_score)?;
+            let raw = model.score(&token_norm, candidate, deterministic_score, left, right)?;
             let edit_sim = edit_similarity(&token_norm, &candidate.term_lower);
             let phon_sim = phonetics::similarity(&token_norm, &candidate.term_lower);
             if raw > 0.8 && (edit_sim < 0.45 || phon_sim < 0.35) {
@@ -1444,6 +1469,9 @@ fn choose_candidate(
                 kind = MatchKind::Tier2Policy;
             }
         }
+        let profile =
+            onnx_model.and_then(|m| m.vocab_index.context_profiles.get(&candidate.term_lower));
+        let (context_overlap_left, context_overlap_right) = context_overlap(profile, left, right);
         scored.push(CandidateScore {
             candidate: candidate.clone(),
             score,
@@ -1452,6 +1480,9 @@ fn choose_candidate(
             onnx_score,
             policy_score,
             policy_boost,
+            context_overlap_left,
+            context_overlap_right,
+            hinglish_particle: particle_nearby,
         });
     }
     if scored.is_empty() {
@@ -1459,19 +1490,42 @@ fn choose_candidate(
     }
 
     scored.sort_by(|a, b| b.score.total_cmp(&a.score));
-    let best = scored[0].clone();
+    let mut best = scored[0].clone();
     let second = scored.get(1).cloned();
     let second_score = second.as_ref().map(|s| s.score).unwrap_or(0.0);
     let margin = best.score - second_score;
     let has_direct_policy_evidence = best.policy_score.is_some();
+    let policy_applied = has_direct_policy_evidence
+        && margin >= MARGIN_THRESHOLD
+        && best.score >= SCORE_THRESHOLD
+        && best.deterministic_score >= DETERMINISTIC_FLOOR;
+    let context_confident = onnx_model.is_some()
+        && (best.context_overlap_left + best.context_overlap_right) >= CONTEXT_OVERLAP_THRESHOLD
+        && best.deterministic_score >= CONTEXT_MIN_SIM
+        && best.onnx_score.unwrap_or(0.0) >= CONTEXT_ONNX_FLOOR
+        && !best.hinglish_particle
+        && margin >= MARGIN_THRESHOLD;
+    let context_applied = *CONTEXT_PATH_ENABLED
+        && !has_direct_policy_evidence
+        && context_confident
+        && best.score >= SCORE_THRESHOLD;
+    if context_applied && !policy_applied {
+        best.kind = MatchKind::Tier2Context;
+        info!(
+            "[tier2] CONTEXT-APPLY: {} → {} ctx_l={:.3} ctx_r={:.3} onnx={:.3} margin={:.3}",
+            token,
+            best.candidate.term,
+            best.context_overlap_left,
+            best.context_overlap_right,
+            best.onnx_score.unwrap_or(0.0),
+            margin,
+        );
+    }
     Ok(Some(ScoringDecision {
         best,
         second,
         margin,
-        applied: has_direct_policy_evidence
-            && margin >= MARGIN_THRESHOLD
-            && scored[0].score >= SCORE_THRESHOLD
-            && scored[0].deterministic_score >= DETERMINISTIC_FLOOR,
+        applied: policy_applied || context_applied,
     }))
 }
 
@@ -1624,7 +1678,7 @@ fn match_priority(kind: MatchKind) -> usize {
         MatchKind::Tier2ClusterFuzzy => 2,
         MatchKind::Tier2Policy => 3,
         MatchKind::Phonetic => 4,
-        MatchKind::Tier2Onnx | MatchKind::Tier2Deterministic => 9,
+        MatchKind::Tier2Onnx | MatchKind::Tier2Deterministic | MatchKind::Tier2Context => 9,
     }
 }
 
@@ -1903,6 +1957,14 @@ struct OnnxModel {
     vocab_index: VocabIndex,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ContextProfile {
+    #[serde(default)]
+    left: HashMap<String, f64>,
+    #[serde(default)]
+    right: HashMap<String, f64>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct VocabIndex {
     #[serde(default = "default_max_len")]
@@ -1913,6 +1975,8 @@ struct VocabIndex {
     feature_names: Vec<String>,
     #[serde(default)]
     model_type: Option<String>,
+    #[serde(default)]
+    context_profiles: HashMap<String, ContextProfile>,
 }
 
 impl VocabIndex {
@@ -1982,6 +2046,7 @@ fn default_max_len() -> usize {
     DEFAULT_MAX_LEN
 }
 
+// Legacy fallback only — never reorder; not the source of truth.
 fn default_feature_names() -> Vec<String> {
     vec![
         "edit_similarity".to_string(),
@@ -1994,6 +2059,44 @@ fn default_feature_names() -> Vec<String> {
         "deterministic_score".to_string(),
     ]
 }
+
+fn context_overlap(profile: Option<&ContextProfile>, left: &[&str], right: &[&str]) -> (f64, f64) {
+    let Some(p) = profile else {
+        return (0.0, 0.0);
+    };
+    let l = left
+        .iter()
+        .filter_map(|t| p.left.get(*t))
+        .sum::<f64>()
+        .min(1.0);
+    let r = right
+        .iter()
+        .filter_map(|t| p.right.get(*t))
+        .sum::<f64>()
+        .min(1.0);
+    (l, r)
+}
+
+/// Canonical ONNX feature wire contract (append-only; must match Python `FEATURE_NAMES`).
+pub const ONNX_FEATURE_NAMES: &[&str] = &[
+    "edit_similarity",
+    "phonetic_similarity",
+    "length_ratio",
+    "term_type_acronym",
+    "term_type_brand",
+    "term_type_proper_noun",
+    "term_type_code_identifier",
+    "source_manual",
+    "source_starred",
+    "alias_count",
+    "use_count_log",
+    "weight",
+    "deterministic_score",
+    "is_dictionary_word",
+    "context_overlap_left",
+    "context_overlap_right",
+    "hinglish_particle_present",
+];
 
 fn load_onnx_model(metadata: &Tier2ModelMetadata) -> Result<Arc<OnnxModel>, String> {
     let artifact_path = PathBuf::from(&metadata.artifact_path);
@@ -2073,11 +2176,13 @@ impl OnnxModel {
         token_norm: &str,
         candidate: &Candidate,
         deterministic_score: f64,
+        left: &[&str],
+        right: &[&str],
     ) -> Result<f64, String> {
         if self.vocab_index.is_tree_model() {
-            return self.score_tree(token_norm, candidate, deterministic_score);
+            return self.score_tree(token_norm, candidate, deterministic_score, left, right);
         }
-        self.score_mlp(token_norm, candidate, deterministic_score)
+        self.score_mlp(token_norm, candidate, deterministic_score, left, right)
     }
 
     fn score_tree(
@@ -2085,8 +2190,10 @@ impl OnnxModel {
         token_norm: &str,
         candidate: &Candidate,
         deterministic_score: f64,
+        left: &[&str],
+        right: &[&str],
     ) -> Result<f64, String> {
-        let features = self.features(token_norm, candidate, deterministic_score);
+        let features = self.features(token_norm, candidate, deterministic_score, left, right);
         let feature_tensor =
             ort::value::Tensor::from_array(([1usize, features.len()], features.into_boxed_slice()))
                 .map_err(|e| format!("feature tensor failed: {e}"))?;
@@ -2117,11 +2224,13 @@ impl OnnxModel {
         token_norm: &str,
         candidate: &Candidate,
         deterministic_score: f64,
+        left: &[&str],
+        right: &[&str],
     ) -> Result<f64, String> {
         let max_len = self.vocab_index.max_len.max(1);
         let token_ids = self.encode(token_norm, max_len);
         let candidate_ids = self.encode(&candidate.term, max_len);
-        let features = self.features(token_norm, candidate, deterministic_score);
+        let features = self.features(token_norm, candidate, deterministic_score, left, right);
 
         let token_tensor =
             ort::value::Tensor::from_array(([1usize, max_len], token_ids.into_boxed_slice()))
@@ -2181,7 +2290,14 @@ impl OnnxModel {
         token_norm: &str,
         candidate: &Candidate,
         deterministic_score: f64,
+        left: &[&str],
+        right: &[&str],
     ) -> Vec<f32> {
+        let (col, cor) = context_overlap(
+            self.vocab_index.context_profiles.get(&candidate.term_lower),
+            left,
+            right,
+        );
         self.vocab_index
             .feature_names
             .iter()
@@ -2206,6 +2322,9 @@ impl OnnxModel {
                 "weight" => (candidate.weight as f32 / 5.0).clamp(0.0, 1.0),
                 "deterministic_score" => deterministic_score as f32,
                 "is_dictionary_word" => bool_feature(is_in_dictionary(token_norm)),
+                "context_overlap_left" => col as f32,
+                "context_overlap_right" => cor as f32,
+                "hinglish_particle_present" => bool_feature(hinglish_particle_nearby(left, right)),
                 _ => 0.0,
             })
             .collect()
@@ -3827,5 +3946,101 @@ mod tests {
                 "{distortion:?} is a distortion — must NOT be in dictionary"
             );
         }
+    }
+
+    #[test]
+    fn feature_names_contract() {
+        assert_eq!(ONNX_FEATURE_NAMES.len(), 17);
+        assert_eq!(
+            &ONNX_FEATURE_NAMES[ONNX_FEATURE_NAMES.len() - 3..],
+            &[
+                "context_overlap_left",
+                "context_overlap_right",
+                "hinglish_particle_present",
+            ]
+        );
+    }
+
+    #[test]
+    fn context_overlap_basic() {
+        let mut profile = ContextProfile::default();
+        profile.left.insert("office".to_string(), 0.4);
+        profile.right.insert("revenue".to_string(), 0.35);
+        let left = ["office"];
+        let right = ["revenue"];
+        let (l, r) = context_overlap(Some(&profile), &left, &right);
+        assert!((l - 0.4).abs() < f64::EPSILON);
+        assert!((r - 0.35).abs() < f64::EPSILON);
+        assert_eq!(context_overlap(None, &left, &right), (0.0, 0.0));
+    }
+
+    fn candidate_for_gate(term: &str, term_lower: &str) -> Candidate {
+        Candidate {
+            term: term.to_string(),
+            term_lower: term_lower.to_string(),
+            term_type: "acronym".to_string(),
+            source: "manual".to_string(),
+            weight: 2.0,
+            use_count: 5,
+            aliases: vec![],
+        }
+    }
+
+    fn context_apply_gate(
+        best: &CandidateScore,
+        margin: f64,
+        has_direct_policy_evidence: bool,
+        onnx_model_present: bool,
+    ) -> bool {
+        let policy_applied = has_direct_policy_evidence
+            && margin >= MARGIN_THRESHOLD
+            && best.score >= SCORE_THRESHOLD
+            && best.deterministic_score >= DETERMINISTIC_FLOOR;
+        let context_confident = onnx_model_present
+            && (best.context_overlap_left + best.context_overlap_right)
+                >= CONTEXT_OVERLAP_THRESHOLD
+            && best.deterministic_score >= CONTEXT_MIN_SIM
+            && best.onnx_score.unwrap_or(0.0) >= CONTEXT_ONNX_FLOOR
+            && !best.hinglish_particle
+            && margin >= MARGIN_THRESHOLD;
+        let context_applied = *CONTEXT_PATH_ENABLED
+            && !has_direct_policy_evidence
+            && context_confident
+            && best.score >= SCORE_THRESHOLD;
+        policy_applied || context_applied
+    }
+
+    #[test]
+    fn context_path_applies_novel_garble_with_context() {
+        let best = CandidateScore {
+            candidate: candidate_for_gate("EMIAC", "emiac"),
+            score: 0.90,
+            kind: MatchKind::Tier2Onnx,
+            deterministic_score: 0.60,
+            onnx_score: Some(0.85),
+            policy_score: None,
+            policy_boost: 0.0,
+            context_overlap_left: 0.35,
+            context_overlap_right: 0.30,
+            hinglish_particle: false,
+        };
+        assert!(context_apply_gate(&best, 0.25, false, true));
+    }
+
+    #[test]
+    fn context_path_vetoed_by_particle() {
+        let best = CandidateScore {
+            candidate: candidate_for_gate("Macobs", "macobs"),
+            score: 0.90,
+            kind: MatchKind::Tier2Onnx,
+            deterministic_score: 0.60,
+            onnx_score: Some(0.85),
+            policy_score: None,
+            policy_boost: 0.0,
+            context_overlap_left: 0.40,
+            context_overlap_right: 0.30,
+            hinglish_particle: true,
+        };
+        assert!(!context_apply_gate(&best, 0.25, false, true));
     }
 }

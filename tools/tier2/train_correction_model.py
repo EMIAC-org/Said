@@ -42,7 +42,16 @@ FEATURE_NAMES = [
     "weight",
     "deterministic_score",
     "is_dictionary_word",
+    "context_overlap_left",
+    "context_overlap_right",
+    "hinglish_particle_present",
 ]
+
+PARTICLES = {
+    "ka", "ki", "ke", "ko", "mein", "mai", "hai", "hain", "par", "pe", "se", "ne", "bhi",
+    "nahi", "nhi", "aur", "ya", "thi", "tha", "ho", "wala", "wali", "wale", "kya", "kaisa",
+    "kaisi", "kaise", "kaha", "yeh", "ye", "voh", "vo", "ek",
+}
 COMMON_WORDS = {
     "a",
     "an",
@@ -231,6 +240,8 @@ class Example:
     token: str
     candidate: VocabTerm
     label: float
+    left_context: tuple[str, ...] = ()
+    right_context: tuple[str, ...] = ()
 
 
 class TinyCorrectionModel(nn.Module):
@@ -367,12 +378,32 @@ def deterministic_score(token: str, candidate: VocabTerm, alias_count: int) -> f
     return float(min(1.0, base + type_boost + source_boost + evidence + alias_boost))
 
 
-def features(token: str, candidate: VocabTerm, alias_count: int) -> list[float]:
+def context_overlap_side(
+    window: tuple[str, ...],
+    side_map: dict[str, float],
+) -> float:
+    return min(1.0, sum(side_map.get(t, 0.0) for t in window))
+
+
+def features(
+    token: str,
+    candidate: VocabTerm,
+    alias_count: int,
+    left_context: tuple[str, ...] = (),
+    right_context: tuple[str, ...] = (),
+    profiles: dict[str, dict[str, dict[str, float]]] | None = None,
+) -> list[float]:
     token_norm = normalize(token)
     cand_norm = normalize(candidate.term)
     lhs = max(len(token_norm), 1)
     rhs = max(len(cand_norm), 1)
     det = deterministic_score(token, candidate, alias_count)
+    prof = (profiles or {}).get(cand_norm, {})
+    left_map = prof.get("left", {})
+    right_map = prof.get("right", {})
+    col = context_overlap_side(left_context, left_map)
+    cor = context_overlap_side(right_context, right_map)
+    particle = 1.0 if PARTICLES & set(left_context + right_context) else 0.0
     return [
         edit_similarity(token_norm, cand_norm),
         phonetic_similarity(token_norm, cand_norm),
@@ -388,6 +419,9 @@ def features(token: str, candidate: VocabTerm, alias_count: int) -> list[float]:
         max(0.0, min(candidate.weight / 5.0, 1.0)),
         det,
         1.0 if is_dictionary_word(token) else 0.0,
+        col,
+        cor,
+        particle,
     ]
 
 
@@ -521,14 +555,177 @@ def load_data(
     return vocab, rules, policy
 
 
+def load_edit_events(conn: sqlite3.Connection, user_id: str) -> list[tuple[str, str, str]]:
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edit_events'"
+    ).fetchone():
+        return []
+    return conn.execute(
+        """
+        SELECT transcript, ai_output, user_kept
+          FROM edit_events
+         WHERE user_id = ?
+           AND COALESCE(user_kept, '') <> ''
+        """,
+        (user_id,),
+    ).fetchall()
+
+
+def load_edit_policy_rules(
+    conn: sqlite3.Connection, user_id: str
+) -> list[tuple[str, str, str, int, str]]:
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tier2_edit_policy_rules'"
+    ).fetchone():
+        return []
+    return conn.execute(
+        """
+        SELECT correct_form, left_context_json, right_context_json, positive_count, status
+          FROM tier2_edit_policy_rules
+         WHERE user_id = ?
+        """,
+        (user_id,),
+    ).fetchall()
+
+
+def tokenize_norm(text: str) -> list[str]:
+    return [normalize(part) for part in text.split() if normalize(part)]
+
+
+def context_window(tokens: list[str], idx: int, radius: int = 3) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    left = tuple(tokens[max(0, idx - radius) : idx])
+    right = tuple(tokens[idx + 1 : idx + 1 + radius])
+    return left, right
+
+
+def build_context_profiles(
+    edit_policy_rows: list[tuple[str, str, str, int, str]],
+    mined_contexts: dict[str, dict[str, dict[str, int]]],
+) -> dict[str, dict[str, dict[str, float]]]:
+    profiles: dict[str, dict[str, dict[str, int]]] = {}
+
+    def bump(term_norm: str, side: str, token: str, weight: int) -> None:
+        if not token:
+            return
+        profiles.setdefault(term_norm, {"left": {}, "right": {}})
+        side_map = profiles[term_norm][side]
+        side_map[token] = side_map.get(token, 0) + weight
+
+    for correct_form, left_json, right_json, positive_count, status in edit_policy_rows:
+        if status == "blocked":
+            continue
+        term_norm = normalize(correct_form)
+        if not term_norm:
+            continue
+        weight = max(1, int(positive_count or 0))
+        try:
+            left_tokens = [normalize(t) for t in json.loads(left_json or "[]")]
+            right_tokens = [normalize(t) for t in json.loads(right_json or "[]")]
+        except json.JSONDecodeError:
+            left_tokens, right_tokens = [], []
+        for token in left_tokens:
+            bump(term_norm, "left", token, weight)
+        for token in right_tokens:
+            bump(term_norm, "right", token, weight)
+
+    for term_norm, sides in mined_contexts.items():
+        for token, count in sides.get("left", {}).items():
+            bump(term_norm, "left", token, count)
+        for token, count in sides.get("right", {}).items():
+            bump(term_norm, "right", token, count)
+
+    normalized: dict[str, dict[str, dict[str, float]]] = {}
+    for term_norm, sides in profiles.items():
+        normalized[term_norm] = {"left": {}, "right": {}}
+        for side in ("left", "right"):
+            counts = sides[side]
+            total = sum(counts.values())
+            if total <= 0:
+                continue
+            top = sorted(counts.items(), key=lambda item: item[1], reverse=True)[:12]
+            normalized[term_norm][side] = {token: count / total for token, count in top}
+    return normalized
+
+
+def mine_context_examples(
+    edit_events: list[tuple[str, str, str]],
+    protected: list[VocabTerm],
+    by_norm: dict[str, VocabTerm],
+) -> tuple[list[Example], list[Example], dict[str, dict[str, dict[str, int]]]]:
+    positives: list[Example] = []
+    negatives: list[Example] = []
+    mined_contexts: dict[str, dict[str, dict[str, int]]] = {}
+
+    def record_context(term_norm: str, left: tuple[str, ...], right: tuple[str, ...]) -> None:
+        entry = mined_contexts.setdefault(term_norm, {"left": {}, "right": {}})
+        for token in left:
+            if token:
+                entry["left"][token] = entry["left"].get(token, 0) + 1
+        for token in right:
+            if token:
+                entry["right"][token] = entry["right"].get(token, 0) + 1
+
+    protected_norms = set(by_norm.keys())
+
+    for transcript, _ai_output, user_kept in edit_events:
+        kept_tokens = tokenize_norm(user_kept)
+        transcript_tokens = tokenize_norm(transcript)
+
+        for idx, term_norm in enumerate(kept_tokens):
+            if term_norm not in by_norm:
+                continue
+            term = by_norm[term_norm]
+            left, right = context_window(kept_tokens, idx)
+            record_context(term_norm, left, right)
+
+            best_g: str | None = None
+            best_sim = 0.0
+            for g in transcript_tokens:
+                if g == term_norm or g in protected_norms:
+                    continue
+                if is_dictionary_word(g) or is_common_alias_source(g):
+                    continue
+                sim = edit_similarity(g, term_norm)
+                if 0.45 <= sim < 0.95 and sim > best_sim:
+                    best_sim = sim
+                    best_g = g
+            if best_g is None:
+                continue
+            positives.append(Example(best_g, term, 1.0, left, right))
+            for variant in list(variants(best_g))[:8]:
+                positives.append(Example(variant, term, 1.0, left, right))
+
+        for idx, token in enumerate(transcript_tokens):
+            kept_token = kept_tokens[idx] if idx < len(kept_tokens) else token
+            if token != kept_token:
+                continue
+            if token in protected_norms:
+                continue
+            left, right = context_window(kept_tokens, min(idx, len(kept_tokens) - 1))
+            nearest_norm: str | None = None
+            nearest_sim = 0.0
+            for term_norm in protected_norms:
+                sim = edit_similarity(token, term_norm)
+                if sim >= 0.55 and sim > nearest_sim:
+                    nearest_sim = sim
+                    nearest_norm = term_norm
+            if nearest_norm is None:
+                continue
+            negatives.append(Example(token, by_norm[nearest_norm], 0.0, left, right))
+
+    return positives, negatives, mined_contexts
+
+
 def build_examples(
     vocab: list[VocabTerm],
     rules: list[AliasRule],
     policy: list[PolicyWeight],
     *,
+    edit_events: list[tuple[str, str, str]] | None = None,
+    edit_policy_rows: list[tuple[str, str, str, int, str]] | None = None,
     cache_dir: Path | None = None,
     micro: bool = False,
-) -> tuple[list[Example], dict[str, int]]:
+) -> tuple[list[Example], dict[str, int], dict[str, dict[str, dict[str, float]]]]:
     protected = [term for term in vocab if is_protected(term) and len(term.term.split()) == 1]
     by_norm = {normalize(term.term): term for term in protected}
     alias_count: dict[str, int] = {normalize(term.term): 0 for term in protected}
@@ -675,9 +872,20 @@ def build_examples(
         dictionary_negatives = mine_hard_negatives_from_dictionary(protected, neg_cache)
         negatives.extend(dictionary_negatives)
 
+    if edit_events:
+        mined_pos, mined_neg, mined_contexts = mine_context_examples(
+            edit_events, protected, by_norm
+        )
+        positives.extend(mined_pos)
+        negatives.extend(mined_neg)
+    else:
+        mined_contexts = {}
+
+    profiles = build_context_profiles(edit_policy_rows or [], mined_contexts)
+
     examples = positives + negatives
     random.shuffle(examples)
-    return examples, alias_count
+    return examples, alias_count, profiles
 
 
 def build_char_vocab(examples: list[Example]) -> dict[str, int]:
@@ -702,6 +910,7 @@ def tensorize(
     examples: list[Example],
     char_to_id: dict[str, int],
     alias_count: dict[str, int],
+    profiles: dict[str, dict[str, dict[str, float]]] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     token_ids = []
     candidate_ids = []
@@ -711,7 +920,16 @@ def tensorize(
         candidate_key = normalize(example.candidate.term)
         token_ids.append(encode(example.token, char_to_id))
         candidate_ids.append(encode(example.candidate.term, char_to_id))
-        feature_rows.append(features(example.token, example.candidate, alias_count.get(candidate_key, 0)))
+        feature_rows.append(
+            features(
+                example.token,
+                example.candidate,
+                alias_count.get(candidate_key, 0),
+                example.left_context,
+                example.right_context,
+                profiles,
+            )
+        )
         labels.append([example.label])
     return (
         torch.tensor(token_ids, dtype=torch.long),
@@ -800,6 +1018,7 @@ def train_xgboost(
     examples: list[Example],
     alias_count: dict[str, int],
     artifact_path: Path,
+    profiles: dict[str, dict[str, dict[str, float]]] | None = None,
 ) -> dict[str, float]:
     """Train an XGBoost classifier on the 14 hand-crafted features."""
     import xgboost as xgb
@@ -807,7 +1026,14 @@ def train_xgboost(
     from onnxmltools.convert.common.data_types import FloatTensorType
 
     X = np.array([
-        features(ex.token, ex.candidate, alias_count.get(normalize(ex.candidate.term), 0))
+        features(
+            ex.token,
+            ex.candidate,
+            alias_count.get(normalize(ex.candidate.term), 0),
+            ex.left_context,
+            ex.right_context,
+            profiles,
+        )
         for ex in examples
     ], dtype=np.float32)
     y = np.array([ex.label for ex in examples], dtype=np.float32)
@@ -862,10 +1088,13 @@ def train_mlp(
     epochs: int,
     batch_size: int,
     lr: float,
+    profiles: dict[str, dict[str, dict[str, float]]] | None = None,
 ) -> tuple[dict[str, int], dict[str, float]]:
     """Train the MLP with focal loss, label smoothing, deterministic gate, and early stopping."""
     char_to_id = build_char_vocab(examples)
-    token_ids, candidate_ids, feature_rows, labels = tensorize(examples, char_to_id, alias_count)
+    token_ids, candidate_ids, feature_rows, labels = tensorize(
+        examples, char_to_id, alias_count, profiles
+    )
 
     # 80/20 train/val split for early stopping
     n = len(examples)
@@ -968,7 +1197,17 @@ def train(args: argparse.Namespace) -> None:
     out_dir = Path(args.out_dir).expanduser().resolve() if args.out_dir else db_path.parent / "tier2" / args.user_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    examples, alias_count = build_examples(vocab, rules, policy, cache_dir=out_dir, micro=args.micro)
+    edit_events = load_edit_events(conn, args.user_id)
+    edit_policy_rows = load_edit_policy_rules(conn, args.user_id)
+    examples, alias_count, profiles = build_examples(
+        vocab,
+        rules,
+        policy,
+        edit_events=edit_events,
+        edit_policy_rows=edit_policy_rows,
+        cache_dir=out_dir,
+        micro=args.micro,
+    )
     if len(examples) < 20 or not any(example.label == 1.0 for example in examples):
         raise SystemExit("not enough Tier 2 examples; add more approved local corrections first")
     artifact_path = out_dir / "correction_model.onnx"
@@ -983,17 +1222,20 @@ def train(args: argparse.Namespace) -> None:
 
     char_to_id: dict[str, int] = {}
     if use_xgboost:
-        metrics = train_xgboost(examples, alias_count, artifact_path)
+        metrics = train_xgboost(examples, alias_count, artifact_path, profiles)
     else:
         torch.manual_seed(SEED)
         epochs = 15 if args.micro else (40 if args.incremental else args.epochs)
-        char_to_id, metrics = train_mlp(examples, alias_count, artifact_path, epochs, args.batch_size, args.lr)
+        char_to_id, metrics = train_mlp(
+            examples, alias_count, artifact_path, epochs, args.batch_size, args.lr, profiles
+        )
 
     protected_vocab = [term for term in vocab if is_protected(term) and len(term.term.split()) == 1]
     vocab_index: dict = {
-        "version": 2,
+        "version": 3,
         "model_type": mode,
         "feature_names": FEATURE_NAMES,
+        "context_profiles": profiles,
         "candidates": [
             {
                 "term": term.term,
@@ -1064,4 +1306,14 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
+    assert FEATURE_NAMES[-3:] == [
+        "context_overlap_left",
+        "context_overlap_right",
+        "hinglish_particle_present",
+    ]
+    dummy = VocabTerm("EMIAC", "acronym", "manual", 2.0, 5)
+    prof = {"emiac": {"left": {"office": 0.5}, "right": {"revenue": 0.5}}}
+    assert len(
+        features("meac", dummy, 0, ("office",), ("revenue",), prof)
+    ) == len(FEATURE_NAMES)
     train(parse_args())

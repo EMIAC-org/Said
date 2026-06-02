@@ -11,15 +11,16 @@ import {
   Link,
   Wifi,
   LogOut,
+  Loader2,
 } from "lucide-react";
 import { OnboardingShell } from "@/components/OnboardingShell";
 import { EnterpriseConnectForm } from "@/components/EnterpriseConnectForm";
 import type { EnterpriseConnection } from "@/lib/enterprise";
-import { getConnection } from "@/lib/enterprise";
+import { getConnection, completeEmailAuth, DEFAULT_CLOUD_SERVER_URL } from "@/lib/enterprise";
 import type { AppSnapshot, Preferences } from "@/types";
 import { getPreferences, patchPreferences, openExternal } from "@/lib/invoke";
 
-type Step = "welcome" | "workspace" | "permissions" | "keys" | "hotkey";
+type Step = "welcome" | "account" | "permissions" | "keys" | "hotkey";
 
 interface Props {
   snapshot: AppSnapshot | null;
@@ -35,7 +36,7 @@ interface Props {
   workspaceOnly?: boolean;
 }
 
-const STEPS: Step[] = ["welcome", "workspace", "permissions", "keys", "hotkey"];
+const STEPS: Step[] = ["welcome", "account", "permissions", "keys", "hotkey"];
 const TOTAL_STEPS = STEPS.length;
 
 function stepLabel(step: Step): string {
@@ -96,6 +97,21 @@ export function OnboardingFlow({
   const [keyError, setKeyError] = useState("");
   const [workspacePreview, setWorkspacePreview] = useState<EnterpriseConnection | null>(null);
 
+  // account step: personal vs workspace sub-view.
+  // Personal sign-up is the default for everyone; only the Settings reconnect
+  // path (workspaceOnly) lands directly on the workspace screen. NOTE:
+  // `enterpriseRequired` here just means "not signed in yet" (true for every
+  // fresh user, personal included) — it must NOT force the workspace screen.
+  const [authMode, setAuthMode] = useState<"personal" | "workspace">(
+    workspaceOnly ? "workspace" : "personal",
+  );
+  // personal email signup/login
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [emailSignup, setEmailSignup] = useState(true); // true = create, false = log in
+  const [personalLoading, setPersonalLoading] = useState(false);
+  const [personalError, setPersonalError] = useState("");
+
   const micGranted = snapshot?.microphone_granted ?? false;
   const accGranted = snapshot?.accessibility_granted ?? false;
   const imGranted = snapshot?.input_monitoring_granted ?? false;
@@ -113,7 +129,7 @@ export function OnboardingFlow({
 
   const hasKeys = !!(prefs?.groq_api_key && prefs?.deepgram_api_key);
 
-  const [step, setStep] = useState<Step>(() => (workspaceOnly ? "workspace" : "welcome"));
+  const [step, setStep] = useState<Step>(() => (workspaceOnly ? "account" : "welcome"));
 
   const stepIndex = STEPS.indexOf(step);
 
@@ -121,7 +137,7 @@ export function OnboardingFlow({
     const idx = STEPS.indexOf(step);
     if (idx >= STEPS.length - 1) return;
     let next = STEPS[idx + 1];
-    if (next === "workspace" && !enterpriseRequired && getConnection()) {
+    if (next === "account" && !enterpriseRequired && getConnection()) {
       next = STEPS[idx + 2] ?? next;
     }
     setStep(next);
@@ -138,6 +154,34 @@ export function OnboardingFlow({
     if (workspaceOnly) return;
     goNext();
   }, [workspacePreview, onEnterpriseConnected, workspaceOnly, goNext]);
+
+  const handlePersonalSubmit = useCallback(async () => {
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || password.length < 8) {
+      setPersonalError("Enter a valid email and an 8+ character password.");
+      return;
+    }
+    setPersonalLoading(true);
+    setPersonalError("");
+    try {
+      const conn = await completeEmailAuth(
+        DEFAULT_CLOUD_SERVER_URL,
+        trimmedEmail,
+        password,
+        emailSignup,
+      );
+      onEnterpriseConnected?.(conn);
+      if (workspaceOnly) return;
+      goNext();
+    } catch (e) {
+      setPersonalError(
+        (e as Error).message ||
+          (emailSignup ? "Could not create account." : "Could not sign in."),
+      );
+    } finally {
+      setPersonalLoading(false);
+    }
+  }, [email, password, emailSignup, onEnterpriseConnected, workspaceOnly, goNext]);
 
   // Auto-advance the permissions step once the required grants are in (delay so
   // the user sees the green check before the screen swaps). Windows only needs
@@ -191,8 +235,8 @@ export function OnboardingFlow({
         title="Welcome to AirNote."
         subtitle={
           isWindows
-            ? "A two-minute setup. Connect your workspace, grant microphone access, add two free API keys, pick a hold-key — then you’ll never type by hand again."
-            : "A two-minute setup. Connect your workspace, grant three permissions, add two free API keys, pick a hold-key — then you’ll never type by hand again."
+            ? "A two-minute setup. Create your account, grant microphone access, add two free API keys, pick a hold-key — then you’ll never type by hand again."
+            : "A two-minute setup. Create your account, grant three permissions, add two free API keys, pick a hold-key — then you’ll never type by hand again."
         }
         brandTagline={
           isWindows
@@ -213,8 +257,131 @@ export function OnboardingFlow({
     );
   }
 
-  // ── Step 2: Workspace connect ─────────────────────────────────────────────
-  if (step === "workspace") {
+  // ── Step 2a: Account — personal sign up / log in (default, first-class) ────
+  if (step === "account" && authMode === "personal") {
+    return (
+      <OnboardingShell
+        step={stepIndex}
+        totalSteps={TOTAL_STEPS}
+        eyebrow="Account"
+        title={emailSignup ? "Create your account." : "Welcome back."}
+        subtitle={
+          emailSignup
+            ? "Sign up with email — it takes seconds. No server or setup needed."
+            : "Log in to pick up right where you left off."
+        }
+        brandTagline="Voice polish that just works. Sign in and start dictating in seconds."
+        brandKicker="Your account"
+        brandQuote="One sign-in, then just hold the key and talk."
+        topRight={<span>{stepLabel(step)}</span>}
+        bottomNote={<span>Free to start · no credit card</span>}
+        onBack={workspaceOnly ? undefined : goBack}
+      >
+        <div className="mt-7 flex flex-col gap-3">
+          <div className="flex items-center justify-end">
+            <button
+              type="button"
+              className="text-[11px] text-accent hover:underline font-semibold"
+              onClick={() => {
+                setEmailSignup((v) => !v);
+                setPersonalError("");
+              }}
+            >
+              {emailSignup ? "Already have an account? Log in" : "New here? Create account"}
+            </button>
+          </div>
+
+          <input
+            type="email"
+            placeholder="you@company.com"
+            value={email}
+            disabled={personalLoading}
+            autoComplete="email"
+            onChange={(e) => {
+              setEmail(e.target.value);
+              setPersonalError("");
+            }}
+            className="input w-full text-[13px]"
+          />
+          <input
+            type="password"
+            placeholder="Password (8+ characters)"
+            value={password}
+            disabled={personalLoading}
+            autoComplete={emailSignup ? "new-password" : "current-password"}
+            onChange={(e) => {
+              setPassword(e.target.value);
+              setPersonalError("");
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void handlePersonalSubmit();
+            }}
+            className="input w-full text-[13px]"
+          />
+
+          {personalError && (
+            <p className="text-[12px] text-center" style={{ color: "hsl(var(--destructive))" }}>
+              {personalError}
+            </p>
+          )}
+
+          <button
+            onClick={() => void handlePersonalSubmit()}
+            disabled={personalLoading || !email.trim() || password.length < 8}
+            className="btn-primary btn-lg w-full"
+          >
+            {personalLoading ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <ArrowRight size={14} />
+            )}
+            {personalLoading
+              ? emailSignup
+                ? "Creating account…"
+                : "Signing in…"
+              : emailSignup
+                ? "Create account"
+                : "Sign in"}
+          </button>
+
+          <div className="flex items-center gap-3 my-1">
+            <div className="h-px flex-1" style={{ background: "hsl(var(--border))" }} />
+            <span
+              className="text-[10px] uppercase tracking-[0.12em]"
+              style={{ color: "hsl(var(--muted-foreground))" }}
+            >
+              or
+            </span>
+            <div className="h-px flex-1" style={{ background: "hsl(var(--border))" }} />
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setAuthMode("workspace");
+              setPersonalError("");
+            }}
+            className="w-full rounded-lg border px-3 py-2.5 text-[12px] font-semibold transition-colors flex items-center justify-center gap-2"
+            style={{ borderColor: "hsl(var(--border))", color: "hsl(var(--foreground))" }}
+          >
+            Setting up for your organization?
+            <span style={{ color: "hsl(var(--primary))" }}>Connect a workspace →</span>
+          </button>
+        </div>
+      </OnboardingShell>
+    );
+  }
+
+  // ── Step 2b: Account — connect workspace (secondary, org server) ───────────
+  if (step === "account") {
+    // Back from the workspace screen always returns to the personal screen
+    // (workspace is the opt-in secondary path). Settings reconnect has no back.
+    const workspaceBack = workspaceOnly
+      ? undefined
+      : () => {
+          setAuthMode("personal");
+          setWorkspacePreview(null);
+        };
     return (
       <OnboardingShell
         step={stepIndex}
@@ -224,18 +391,20 @@ export function OnboardingFlow({
         subtitle={
           workspacePreview
             ? "Signed in to your organization. Continue setup on the next step."
-            : "Enter your organization's server URL and sign in with email. Lark can be connected later."
+            : "Enter your organization's server URL, then sign in. For teams on a self-hosted AirNote server."
         }
         brandTagline="Enterprise AirNote runs on your organization's server — your data stays in your workspace."
         brandKicker="Workspace sign-in"
         brandQuote="One workspace login, then every device knows who you are."
         topRight={<span>{stepLabel(step)}</span>}
         bottomNote={
-          workspaceOnly
-            ? <span>Reconnect to continue using AirNote</span>
-            : <span>Managed by your organization</span>
+          workspaceOnly ? (
+            <span>Reconnect to continue using AirNote</span>
+          ) : (
+            <span>Managed by your organization</span>
+          )
         }
-        onBack={workspaceOnly ? undefined : goBack}
+        onBack={workspaceBack}
       >
         {workspacePreview ? (
           <div className="mt-7 flex flex-col gap-4">
@@ -291,7 +460,7 @@ export function OnboardingFlow({
               compact
               variant="onboarding"
               onConnected={setWorkspacePreview}
-              onCancel={workspaceOnly ? undefined : goBack}
+              onCancel={workspaceBack}
             />
           </div>
         )}

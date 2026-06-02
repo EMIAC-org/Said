@@ -952,6 +952,10 @@ pub fn spawn_audio_bridge_with_echo_gate(
                     i16_val.to_le_bytes()
                 })
                 .collect();
+            // Crash-safe recovery tap: persist the exact PCM we stream so a crash
+            // mid-dictation doesn't lose the user's words. No-op unless a capture
+            // session is active (non-meeting recordings only).
+            crate::recovery::append_pcm(&pcm);
             if session_tx
                 .blocking_send(SessionCommand::Audio {
                     id: recording_id.clone(),
@@ -1286,17 +1290,17 @@ mod tests {
     fn ws_url_uses_multi_mode_and_replacements() {
         let bias = BiasPackage {
             stt_mode: "multi".into(),
-            keyterms: vec!["EMIAC".into()],
+            keyterms: vec!["AcmeCorp".into()],
             replacements: vec![ReplacementRule {
-                find: "n10n".into(),
-                replace: Some("n8n".into()),
+                find: "ack me".into(),
+                replace: Some("AcmeCorp".into()),
             }],
         };
         let url = build_ws_url("wss://api.deepgram.com/v1/listen", &bias, SAMPLE_RATE);
         assert!(url.contains("language=multi"));
         assert!(url.contains("endpointing=1000"));
         assert!(url.contains("utterance_end_ms=2000"));
-        assert!(url.contains("replace=n10n:n8n"));
+        assert!(url.contains("replace=ack%20me:AcmeCorp"));
     }
 
     #[test]
@@ -1314,7 +1318,7 @@ mod tests {
                 "alternatives": [{
                     "languages": ["hi", "en"],
                     "words": [
-                        { "word": "EMIAC", "confidence": 0.95, "language": "en" },
+                        { "word": "AcmeCorp", "confidence": 0.95, "language": "en" },
                         { "word": "hai", "confidence": 0.61, "language": "hi" }
                     ]
                 }]

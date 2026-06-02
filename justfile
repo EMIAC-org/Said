@@ -83,3 +83,20 @@ clean:
 install-js:
     cd desktop && npm ci
     cd landing && npm ci
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+
+# Rapid-recording HTTP stress: fires 50 silence-WAV requests against the local
+# backend and asserts HTTP 200 for every cycle.  Requires `just dev-backend`
+# running in another terminal.  Set CYCLES=N to change the load.
+e2e-stress:
+    ./tools/e2e-stress/run.sh
+
+# Chaos/longevity soak monitor: attaches to a RUNNING AirNote app that was
+# launched in soak mode and asserts it survives + self-heals + does not leak.
+# Launch the app first (separate terminal):
+#   AIRNOTE_CHAOS=1 AIRNOTE_CHAOS_SOAK=1 AIRNOTE_CHAOS_INTERVAL=15 \
+#   AIRNOTE_HEAL_STUCK_SECS=12 just dev
+# Then: DURATION=1200 just soak
+soak:
+    ./tools/e2e-stress/soak.sh
