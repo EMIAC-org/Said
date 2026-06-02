@@ -48,6 +48,22 @@ fn not_linked_resp() -> Response {
         .into_response()
 }
 
+/// Divo may touch confidential project data. Keep this proxy behind a strict
+/// server-side email allowlist until the feature is ready for broader rollout.
+fn ensure_divo_allowed(user: &AuthUser) -> Result<(), Response> {
+    let email = user.email.trim().to_ascii_lowercase();
+    match email.as_str() {
+        "abhishek@emiactech.com" | "shivam@emiactech.com" => Ok(()),
+        _ => Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Divo access is currently limited to approved EMIAC accounts."
+            })),
+        )
+            .into_response()),
+    }
+}
+
 // ── Lark token resolution (with refresh) ────────────────────────────────────────
 
 /// Resolve this account's current Lark `user_access_token`, refreshing it when it
@@ -126,6 +142,10 @@ pub async fn chat(
     user: AuthUser,
     Json(body): Json<Value>,
 ) -> Response {
+    if let Err(resp) = ensure_divo_allowed(&user) {
+        return resp;
+    }
+
     let client = reqwest::Client::new();
     let url = format!("{}/api/airnote/chat", divo_base(&state));
 
@@ -222,6 +242,10 @@ pub async fn thread(
     Path(thread_id): Path<String>,
     RawQuery(query): RawQuery,
 ) -> Response {
+    if let Err(resp) = ensure_divo_allowed(&user) {
+        return resp;
+    }
+
     let client = reqwest::Client::new();
     let base = divo_base(&state);
     let url = match query {
