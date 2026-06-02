@@ -131,6 +131,15 @@ fn thread_url(base: &str, direct: bool, thread_id: &str) -> String {
     }
 }
 
+fn list_url(base: &str, direct: bool) -> String {
+    let base = base.trim_end_matches('/');
+    if direct {
+        format!("{base}/api/airnote/threads?page=1&pageSize=30")
+    } else {
+        format!("{base}/v1/divo/threads?page=1&pageSize=30")
+    }
+}
+
 /// Kick off a Divo turn for `message`. `thread_id = Some(..)` continues an existing
 /// thread (a spoken follow-up); `None` starts a fresh task. Returns immediately —
 /// the SSE is consumed on a background task that emits `divo-*` events.
@@ -155,21 +164,21 @@ pub fn send_instruction(app: AppHandle, message: String, thread_id: Option<Strin
 
 /// Send a reviewed/edited instruction to Divo — invoked by the staging HUD's
 /// Send button. Transcription/polish already happened; this is the explicit
-/// commit. `followup = true` continues the active thread (a spoken follow-up).
+/// commit. `thread_id = Some(..)` routes the turn into that chat (continue an
+/// existing thread or a chat picked in the router); `None` starts a new chat.
 #[tauri::command]
-pub fn divo_send(app: AppHandle, message: String, followup: bool) {
+pub fn divo_send(app: AppHandle, message: String, thread_id: Option<String>) {
     let trimmed = message.trim();
     if trimmed.is_empty() {
         return;
     }
-    let thread = if followup {
-        app.state::<DivoState>().current_thread()
-    } else {
-        None
-    };
+    let thread = thread_id
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
     tracing::info!(
-        "[divo] sending reviewed instruction ({} chars, followup={followup})",
-        trimmed.len()
+        "[divo] sending reviewed instruction ({} chars, thread={:?})",
+        trimmed.len(),
+        thread.as_deref()
     );
     send_instruction(app, trimmed.to_string(), thread);
 }
@@ -467,6 +476,61 @@ pub async fn divo_fetch_thread(
     Ok(content)
 }
 
+/// List the user's AirNote Divo chats — backs the in-app history list and the
+/// HUD chat router. Returns the proxy JSON verbatim (`{ data: { threads, … } }`).
+#[tauri::command]
+pub async fn divo_list_threads(state: tauri::State<'_, DivoState>) -> Result<Value, String> {
+    let (base, token, direct) = resolve_target(&state).ok_or("not connected to Divo")?;
+    let url = list_url(&base, direct);
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("divo unreachable: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("divo error ({})", resp.status().as_u16()));
+    }
+    resp.json().await.map_err(|e| format!("bad response: {e}"))
+}
+
+/// Fetch a full thread (all messages) for the in-app conversation pane. Returns the
+/// proxy JSON verbatim (`{ data: { id, title, messages, … } }`).
+#[tauri::command]
+pub async fn divo_thread_messages(
+    thread_id: String,
+    state: tauri::State<'_, DivoState>,
+) -> Result<Value, String> {
+    let (base, token, direct) = resolve_target(&state).ok_or("not connected to Divo")?;
+    let url = thread_url(&base, direct, &thread_id);
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("divo unreachable: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("divo error ({})", resp.status().as_u16()));
+    }
+    resp.json().await.map_err(|e| format!("bad response: {e}"))
+}
+
+/// Mark a thread as the active one so a plain Ctrl hold continues it — or clear it
+/// (`None`) so the next Ctrl press starts fresh. Called when the user opens a chat
+/// in the in-app Divo section.
+#[tauri::command]
+pub fn divo_set_active_thread(thread_id: Option<String>, state: tauri::State<'_, DivoState>) {
+    match thread_id
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+    {
+        Some(id) => state.set_thread(id),
+        None => state.clear_thread(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,6 +663,14 @@ mod tests {
         assert_eq!(
             thread_url("https://cp.example", false, "abc"),
             "https://cp.example/v1/divo/threads/abc?page=1&pageSize=50"
+        );
+        assert_eq!(
+            list_url("http://localhost:8000", true),
+            "http://localhost:8000/api/airnote/threads?page=1&pageSize=30"
+        );
+        assert_eq!(
+            list_url("https://cp.example/", false),
+            "https://cp.example/v1/divo/threads?page=1&pageSize=30"
         );
     }
 }

@@ -2421,6 +2421,7 @@ fn divo_followup_begin(state: State<'_, SharedApp>, app: tauri::AppHandle) -> Re
     if current == desktop::AppState::Idle {
         DIVO_START_PENDING.store(true, Ordering::SeqCst);
         DIVO_FOLLOWUP_PENDING.store(true, Ordering::SeqCst);
+        DIVO_NEW_CHAT_PENDING.store(false, Ordering::SeqCst);
         do_start_recording(&state.0, &app);
     }
     Ok(())
@@ -2455,6 +2456,9 @@ static DIVO_START_PENDING: AtomicBool = AtomicBool::new(false);
 /// Distinguishes a spoken follow-up (continue the current thread) from a fresh
 /// Ctrl press (new task). Consumed in `do_finish_recording`'s Divo branch.
 static DIVO_FOLLOWUP_PENDING: AtomicBool = AtomicBool::new(false);
+/// Set on release when the capture was a Ctrl+N hold — the staged turn defaults to
+/// a brand-new chat. Captured from the hotkey crate at release, read at staging.
+static DIVO_NEW_CHAT_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Minimum time between consecutive finish→start cycles (ms).
 /// Prevents rapid Caps Lock taps from flooding the recording pipeline.
@@ -3426,19 +3430,29 @@ fn do_finish_recording(
             sync_tray(&app2, &snap);
             let _ = app2.emit("app-state", &snap);
 
-            let followup = DIVO_FOLLOWUP_PENDING.swap(false, Ordering::SeqCst);
+            // Default routing for the staged turn: Ctrl+N forces a new chat;
+            // otherwise we continue the active thread if there is one (the HUD lets
+            // the user override either way via the chat router).
+            let new_chat = DIVO_NEW_CHAT_PENDING.swap(false, Ordering::SeqCst);
+            let _ = DIVO_FOLLOWUP_PENDING.swap(false, Ordering::SeqCst);
+            let current_thread = app2.state::<divo::DivoState>().current_thread();
             match (instruction, err) {
                 (Some(text), _) if !text.trim().is_empty() => {
                     // Don't auto-send. Stage the polished transcript so the user
-                    // can review/edit it and press Send (or cancel). The Send
-                    // button invokes `divo_send`, which does the actual send.
+                    // can review/edit it, pick a target chat, and press Send (or
+                    // cancel). The Send button invokes `divo_send`.
                     tracing::info!(
-                        "[divo] staging instruction for review ({} chars, followup={followup})",
-                        text.len()
+                        "[divo] staging instruction for review ({} chars, new_chat={new_chat}, current_thread={:?})",
+                        text.len(),
+                        current_thread.as_deref()
                     );
                     let _ = app2.emit(
                         "divo-stage",
-                        serde_json::json!({ "text": text, "followup": followup }),
+                        serde_json::json!({
+                            "text": text,
+                            "newChat": new_chat,
+                            "currentThreadId": current_thread,
+                        }),
                     );
                 }
                 (Some(_), _) => {
@@ -7199,6 +7213,7 @@ fn main() {
                                     if current == Some(desktop::AppState::Idle) {
                                         DIVO_START_PENDING.store(true, Ordering::SeqCst);
                                         DIVO_FOLLOWUP_PENDING.store(false, Ordering::SeqCst);
+                                        DIVO_NEW_CHAT_PENDING.store(false, Ordering::SeqCst);
                                         do_start_recording(&shared, &app_h);
                                         if FINISH_AFTER_START.load(Ordering::SeqCst) {
                                             request_queued_finish(
@@ -7217,6 +7232,11 @@ fn main() {
                                 let app_h = app_dr.clone();
                                 let back = Arc::clone(&back_dr);
                                 std::thread::spawn(move || {
+                                    // Capture the Ctrl+N intent now, before the async
+                                    // transcription, so the staged turn knows whether
+                                    // to default to a new chat.
+                                    DIVO_NEW_CHAT_PENDING
+                                        .store(hotkey::divo_take_new_chat(), Ordering::SeqCst);
                                     let current = hotkey_current_state(&shared, "divo finish");
                                     if current == Some(desktop::AppState::Recording) {
                                         FINISH_AFTER_START.store(false, Ordering::SeqCst);
@@ -7242,6 +7262,8 @@ fn main() {
                                 std::thread::spawn(move || {
                                     DIVO_START_PENDING.store(false, Ordering::SeqCst);
                                     DIVO_FOLLOWUP_PENDING.store(false, Ordering::SeqCst);
+                                    DIVO_NEW_CHAT_PENDING.store(false, Ordering::SeqCst);
+                                    let _ = hotkey::divo_take_new_chat();
                                     let current = hotkey_current_state(&shared, "divo cancel");
                                     if current == Some(desktop::AppState::Recording) {
                                         do_cancel_recording(shared, app_h, "divo ctrl shortcut");
@@ -7394,6 +7416,9 @@ fn main() {
             divo::divo_set_credentials,
             divo::divo_fetch_thread,
             divo::divo_send,
+            divo::divo_list_threads,
+            divo::divo_thread_messages,
+            divo::divo_set_active_thread,
             divo_followup_begin,
             divo_followup_end,
             present_status_bar,

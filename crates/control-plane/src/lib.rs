@@ -95,6 +95,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/auth/lark/refresh", post(routes::lark_auth::refresh))
         // Divo agent proxy (attaches the account's Lark token, streams SSE back)
         .route("/v1/divo/chat", post(routes::divo::chat))
+        .route("/v1/divo/threads", get(routes::divo::list_threads))
         .route("/v1/divo/threads/:id", get(routes::divo::thread))
         .route("/v1/license/check", get(routes::license::check))
         .route("/v1/metering/report", post(routes::metering::report))

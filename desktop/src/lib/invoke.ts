@@ -1036,6 +1036,78 @@ export async function divoFetchThread(threadId: string): Promise<string | null> 
   }
 }
 
+// ── Divo chats (in-app history + HUD chat router) ─────────────────────────────
+
+export type DivoThreadSummary = {
+  id: string;
+  title: string;
+  createdAt?: string;
+  updatedAt?: string;
+  lastMessageAt?: string | null;
+  preview?: string;
+};
+
+export type DivoMessage = {
+  id: string;
+  threadId: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+};
+
+export type DivoThreadDetail = {
+  id: string;
+  title: string;
+  createdAt?: string;
+  updatedAt?: string;
+  lastMessageAt?: string | null;
+  messages: DivoMessage[];
+};
+
+/** Send a reviewed instruction to a chat (`threadId`) or a new one (`null`). */
+export async function divoSend(message: string, threadId: string | null): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await tauriInvoke("divo_send", { message, threadId });
+  } catch (e) {
+    console.warn("[divo] send failed", e);
+  }
+}
+
+/** List the user's AirNote Divo chats (most recent first). */
+export async function divoListThreads(): Promise<DivoThreadSummary[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    const res = await tauriInvoke<{ data?: { threads?: DivoThreadSummary[] } }>("divo_list_threads");
+    return res?.data?.threads ?? [];
+  } catch (e) {
+    console.warn("[divo] list_threads failed", e);
+    return [];
+  }
+}
+
+/** Fetch a full thread (all messages) for the in-app conversation pane. */
+export async function divoThreadMessages(threadId: string): Promise<DivoThreadDetail | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const res = await tauriInvoke<{ data?: DivoThreadDetail }>("divo_thread_messages", { threadId });
+    return res?.data ?? null;
+  } catch (e) {
+    console.warn("[divo] thread_messages failed", e);
+    return null;
+  }
+}
+
+/** Mark a chat as active (Ctrl continues it), or clear it (`null` → next Ctrl = new). */
+export async function divoSetActiveThread(threadId: string | null): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await tauriInvoke("divo_set_active_thread", { threadId });
+  } catch (e) {
+    console.warn("[divo] set_active_thread failed", e);
+  }
+}
+
 function divoListener<T>(event: string, handler: (p: T) => void): () => void {
   if (!isTauriRuntime()) return () => {};
   let unsub: () => void = () => {};

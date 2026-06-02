@@ -94,6 +94,7 @@ mod imp {
         pub const KC_HOME: i64 = 115;
         pub const KC_END: i64 = 119;
         pub const KC_A: i64 = 0; // Cmd+A = select-all
+        pub const KC_N: i64 = 45; // Ctrl+N = new Divo chat
         pub const KC_V: i64 = 9; // Ctrl+Cmd+V = paste-latest
         pub const KC_X: i64 = 7; // Cmd+X = cut
         pub const KC_Z: i64 = 6; // Cmd+Z = undo
@@ -423,6 +424,10 @@ mod imp {
     static DIVO_ENABLED: AtomicBool = AtomicBool::new(false);
     static DIVO_IS_DOWN: AtomicBool = AtomicBool::new(false);
     static DIVO_TAINTED: AtomicBool = AtomicBool::new(false);
+    /// Set when the user presses **N** while holding Control — routes this capture
+    /// to a brand-new Divo chat. Reset on every Ctrl-down; consumed (and cleared) by
+    /// [`divo_take_new_chat`] when the desktop layer handles the release.
+    static DIVO_NEW_CHAT: AtomicBool = AtomicBool::new(false);
     /// Whether `on_press` actually fired for the current hold (it only fires after
     /// the key has been held past [`DIVO_HOLD_DELAY_MS`]).
     static DIVO_STARTED: AtomicBool = AtomicBool::new(false);
@@ -453,6 +458,13 @@ mod imp {
     pub fn set_divo_hotkey_enabled(enabled: bool) {
         DIVO_ENABLED.store(enabled, Ordering::Relaxed);
         tracing::info!("[hotkey] Divo Ctrl hotkey enabled={enabled}");
+    }
+
+    /// Take (and clear) the "new chat" intent from the just-finished Ctrl hold.
+    /// Returns true when the user pressed **N** while holding Control (Ctrl+N),
+    /// meaning this turn should open a fresh Divo chat. Read once on release.
+    pub fn divo_take_new_chat() -> bool {
+        DIVO_NEW_CHAT.swap(false, Ordering::SeqCst)
     }
 
     fn divo_is_control_keycode(kc: i64) -> bool {
@@ -634,14 +646,20 @@ mod imp {
 
             if event_type == ffi::K_CG_EVENT_KEY_DOWN {
                 // Log keycode + flags for every keydown so we can confirm events arrive
-                let _kc = ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE);
+                let kc = ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE);
                 let _fl = ffi::CGEventGetFlags(event);
-                tracing::trace!("[hotkey] HOLD tap keydown kc={_kc} flags={_fl:#010x}");
+                tracing::trace!("[hotkey] HOLD tap keydown kc={kc} flags={_fl:#010x}");
 
-                // Any key pressed while Control is held means this is a shortcut
+                // A key pressed while Control is held normally means a shortcut
                 // (Ctrl+C etc.), not a Divo dictation — taint the hold so release
-                // cancels instead of sending.
+                // cancels instead of sending. The one exception is **N**: Ctrl+N
+                // deliberately starts a NEW Divo chat, so record that intent without
+                // tainting, and swallow the keystroke so it never types an 'n'.
                 if DIVO_IS_DOWN.load(Ordering::Relaxed) {
+                    if DIVO_ENABLED.load(Ordering::Relaxed) && kc == ffi::KC_N {
+                        DIVO_NEW_CHAT.store(true, Ordering::SeqCst);
+                        return std::ptr::null_mut();
+                    }
                     DIVO_TAINTED.store(true, Ordering::Relaxed);
                 }
 
@@ -730,6 +748,7 @@ mod imp {
                     DIVO_IS_DOWN.store(true, Ordering::SeqCst);
                     DIVO_TAINTED.store(false, Ordering::SeqCst);
                     DIVO_STARTED.store(false, Ordering::SeqCst);
+                    DIVO_NEW_CHAT.store(false, Ordering::SeqCst);
                     let hold_gen = DIVO_GEN.fetch_add(1, Ordering::SeqCst) + 1;
                     // Defer the start: a quick Ctrl tap (Ctrl+C etc.) releases before
                     // this elapses, so it never records. Only a deliberate hold does.
@@ -919,3 +938,8 @@ pub fn register_divo_hotkey_callbacks(
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_divo_hotkey_enabled(_enabled: bool) {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn divo_take_new_chat() -> bool {
+    false
+}
