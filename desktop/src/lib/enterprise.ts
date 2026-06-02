@@ -4,6 +4,9 @@ const RECENT_WORKSPACES_KEY = "said:enterprise-recent-urls";
 const DEVICE_ID_FALLBACK_KEY = "said:enterprise-device-id";
 const MAX_RECENT_WORKSPACES = 5;
 
+/** Default AirNote cloud server for personal (non-org) accounts. */
+export const DEFAULT_CLOUD_SERVER_URL = "https://airnote.emiactech.com";
+
 function fallbackDeviceId(): string {
   try {
     const existing = localStorage.getItem(DEVICE_ID_FALLBACK_KEY);

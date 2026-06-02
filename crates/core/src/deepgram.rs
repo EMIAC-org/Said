@@ -146,23 +146,23 @@ mod tests {
     fn batch_url_includes_keyterms_and_replacements() {
         let bias = BiasPackage {
             stt_mode: "hi".into(),
-            keyterms: vec!["EMIAC".into(), "n8n".into()],
+            keyterms: vec!["AcmeCorp".into(), "WidgetX".into()],
             replacements: vec![
                 ReplacementRule {
-                    find: "n10n".into(),
-                    replace: Some("n8n".into()),
+                    find: "widget ten".into(),
+                    replace: Some("WidgetX".into()),
                 },
                 ReplacementRule {
-                    find: "main corps".into(),
-                    replace: Some("MACOBS".into()),
+                    find: "ack me".into(),
+                    replace: Some("AcmeCorp".into()),
                 },
             ],
         };
         let url = build_batch_url("https://api.deepgram.com/v1/listen", &bias);
         assert!(url.contains("language=hi"));
-        assert!(url.contains("&keyterm=EMIAC"));
-        assert!(url.contains("&replace=n10n:n8n"));
-        assert!(url.contains("&replace=main%20corps:MACOBS"));
+        assert!(url.contains("&keyterm=AcmeCorp"));
+        assert!(url.contains("&replace=widget%20ten:WidgetX"));
+        assert!(url.contains("&replace=ack%20me:AcmeCorp"));
     }
 
     #[test]

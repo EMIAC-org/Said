@@ -678,14 +678,10 @@ export function SettingsView({
   const promptLoadStartedRef = useRef(false);
 
   // ── API key state ────────────────────────────────────────────────────────────
-  const [gatewayKey,    setGatewayKey]    = useState("");
   const [deepgramKey,   setDeepgramKey]   = useState("");
-  const [geminiKey,     setGeminiKey]     = useState("");
   const [groqKey,       setGroqKey]       = useState("");
   const [cerebrasKey,   setCerebrasKey]   = useState("");
-  const [showGateway,   setShowGateway]   = useState(false);
   const [showDeepgram,  setShowDeepgram]  = useState(false);
-  const [showGemini,    setShowGemini]    = useState(false);
   const [showGroq,      setShowGroq]      = useState(false);
   const [, setShowCerebras]  = useState(false);
   const [keySaving,     setKeySaving]     = useState(false);
@@ -779,14 +775,10 @@ export function SettingsView({
     "Caps Lock";
 
   function syncApiKeyInputs(nextPrefs: Preferences) {
-    setGatewayKey(nextPrefs.gateway_api_key ?? "");
     setDeepgramKey(nextPrefs.deepgram_api_key ?? "");
-    setGeminiKey(nextPrefs.gemini_api_key ?? "");
     setGroqKey(nextPrefs.groq_api_key ?? "");
     setCerebrasKey(nextPrefs.cerebras_api_key ?? "");
-    setShowGateway(false);
     setShowDeepgram(false);
-    setShowGemini(false);
     setShowGroq(false);
     setShowCerebras(false);
   }
@@ -838,6 +830,11 @@ export function SettingsView({
         setPrefs(p);
         setCustomPrompt(p.custom_prompt ?? "");
         syncApiKeyInputs(p);
+        if (!p.learning_enabled) {
+          patchPreferences({ learning_enabled: true }).then((updated) => {
+            if (updated) setPrefs(updated);
+          });
+        }
       }
     });
   }, []);
@@ -871,25 +868,16 @@ export function SettingsView({
     setSaveError("");
     try {
       const update: Partial<Preferences> = {};
-      const currentGateway = prefs.gateway_api_key ?? "";
       const currentDeepgram = prefs.deepgram_api_key ?? "";
-      const currentGemini = prefs.gemini_api_key ?? "";
       const currentGroq = prefs.groq_api_key ?? "";
       const currentCerebras = prefs.cerebras_api_key ?? "";
-      const nextGateway = gatewayKey.trim();
       const nextDeepgram = deepgramKey.trim();
-      const nextGemini = geminiKey.trim();
       const nextGroq = groqKey.trim();
       const nextCerebras = cerebrasKey.trim();
 
-      if (nextGateway !== currentGateway) update.gateway_api_key = nextGateway || null;
       if (nextDeepgram !== currentDeepgram) update.deepgram_api_key = nextDeepgram || null;
-      if (nextGemini !== currentGemini) update.gemini_api_key = nextGemini || null;
       if (nextGroq !== currentGroq) update.groq_api_key = nextGroq || null;
       if (nextCerebras !== currentCerebras) update.cerebras_api_key = nextCerebras || null;
-      if (prefs.learning_enabled && currentGemini !== "" && nextGemini === "") {
-        update.learning_enabled = false;
-      }
 
       if (Object.keys(update).length === 0) {
         setKeySaved(true);
@@ -1044,8 +1032,6 @@ export function SettingsView({
 
   const tone = (prefs?.tone_preset ?? "neutral") as ToneKey;
   const activeToneLabel = TONE_PRESETS.find((preset) => preset.key === tone)?.label ?? "Neutral";
-  const hasStoredGeminiKey = Boolean(prefs?.gemini_api_key);
-  const learningEnabled = prefs?.learning_enabled ?? true;
   const promptDiff = useMemo(
     () => diffPromptLines(voicePrompt?.active_body ?? "", promptDraftBody),
     [voicePrompt?.active_body, promptDraftBody]
@@ -1941,91 +1927,6 @@ export function SettingsView({
                 visible={showDeepgram}
                 onChange={setDeepgramKey}
                 onToggle={() => setShowDeepgram((v) => !v)}
-              />
-            </SettingsDisclosure>
-
-            <SettingsDisclosure
-              title="Optional learning"
-              description="Gemini embeddings improve local vocabulary/context memory."
-              icon={<Sparkles size={15} />}
-              status={
-                prefs?.gemini_api_key ? (
-                  <span className="text-[10px] px-2 py-1 rounded-full"
-                        style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}>
-                    Configured
-                  </span>
-                ) : undefined
-              }
-            >
-              <SecretInput
-                icon={<Sparkles size={12} className="text-muted-foreground" />}
-                label="Gemini API Key"
-                helper="Optional. Without it, dictation still works."
-                placeholder="AIza..."
-                value={geminiKey}
-                visible={showGemini}
-                onChange={setGeminiKey}
-                onToggle={() => setShowGemini((v) => !v)}
-              />
-
-              <div className="flex items-center justify-between gap-4 rounded-xl px-3 py-2.5"
-                   style={{ background: "hsl(var(--surface-4))" }}>
-                <div className="min-w-0">
-                  <p className="text-[12px] font-semibold text-foreground">Enable smart learning</p>
-                  <p className="text-[11px] text-muted-foreground mt-0.5">
-                    Uses local corrections plus embeddings when a Gemini key is saved.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={learningEnabled}
-                  disabled={!hasStoredGeminiKey}
-                  title={!hasStoredGeminiKey ? "Enter a Gemini key above to enable" : undefined}
-                  onClick={() => patch({ learning_enabled: !learningEnabled })}
-                  className="relative h-6 w-11 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                  style={{
-                    background: learningEnabled && hasStoredGeminiKey
-                      ? "hsl(var(--primary))"
-                      : "hsl(var(--surface-3))",
-                  }}
-                >
-                  <span
-                    className="absolute top-1 h-4 w-4 rounded-full transition-transform"
-                    style={{
-                      left: 4,
-                      transform: learningEnabled && hasStoredGeminiKey
-                        ? "translateX(20px)"
-                        : "translateX(0)",
-                      background: "hsl(var(--foreground))",
-                    }}
-                  />
-                </button>
-              </div>
-            </SettingsDisclosure>
-
-            <SettingsDisclosure
-              title="Advanced legacy gateway"
-              description="Only needed for older routing setups. Most users should leave this closed."
-              icon={<Wifi size={15} />}
-              status={
-                prefs?.gateway_api_key ? (
-                  <span className="text-[10px] px-2 py-1 rounded-full"
-                        style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}>
-                    Set
-                  </span>
-                ) : undefined
-              }
-            >
-              <SecretInput
-                icon={<Wifi size={12} className="text-muted-foreground" />}
-                label="Gateway API Key"
-                helper="Legacy/shared gateway. Not required for the current Groq-first path."
-                placeholder="sk-..."
-                value={gatewayKey}
-                visible={showGateway}
-                onChange={setGatewayKey}
-                onToggle={() => setShowGateway((v) => !v)}
               />
             </SettingsDisclosure>
 

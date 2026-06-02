@@ -1193,9 +1193,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 base_system_prompt.push_str(&format!(
                     "\n\nSCREEN CONTEXT (text already in the user's app):\n\
                      \"{trimmed}\"\n\n\
-                     Use screen context to pick the right word when two sound alike. \
-                     Screen mentions EMIAC = prefer EMIAC over similar sounds. \
-                     Screen mentions code/tech = prefer technical terms. \
+                     Use screen context to pick the right word when two sound alike — \
+                     if the field already names a product, person, or acronym, prefer that \
+                     spelling over phonetically similar STT guesses. \
                      Only use as a tiebreaker — transcript words come first.\n"
                 ));
             }
@@ -2257,5 +2257,78 @@ mod scrub_tests {
             ),
             "Kitna bhi kaam kar lo kuch nahin hone wala hai bhai."
         );
+    }
+}
+
+// ── WAV header + timing helpers ───────────────────────────────────────────────
+//
+// These tests cover the pure, side-effect-free math in wav_duration_secs and
+// estimated_secs.  They are a reliability safety net: if the byte offsets in the
+// WAV header parser drift, these catch it immediately.
+
+#[cfg(test)]
+mod audio_tests {
+    use super::{estimated_secs, wav_duration_secs};
+
+    /// Buffer shorter than a WAV header (44 bytes) must return 0.0, not panic.
+    #[test]
+    fn wav_too_short_returns_zero() {
+        assert_eq!(wav_duration_secs(&[0u8; 20]), 0.0);
+        assert_eq!(wav_duration_secs(&[]), 0.0);
+    }
+
+    /// A WAV header where byte_rate is 0 must return 0.0 (no divide-by-zero).
+    #[test]
+    fn wav_zero_byte_rate_returns_zero() {
+        let mut header = [0u8; 44];
+        // byte_rate @ offset 28-31: leave as 0x00000000
+        // data_size  @ offset 40-43: set to non-zero to confirm byte_rate=0 is the guard
+        header[40] = 100;
+        assert_eq!(wav_duration_secs(&header), 0.0);
+    }
+
+    /// A synthetic 44-byte header with known byte_rate and data_size must give the
+    /// correct duration.  16 kHz mono 16-bit PCM: byte_rate = 32000, data = 32000 → 1 s.
+    #[test]
+    fn wav_valid_header_gives_correct_duration() {
+        let mut header = [0u8; 44];
+        // byte_rate = 32000 (LE u32) at offset 28
+        let byte_rate: u32 = 32_000;
+        header[28..32].copy_from_slice(&byte_rate.to_le_bytes());
+        // data_size = 32000 (LE u32) at offset 40 → duration = 1.0 s
+        let data_size: u32 = 32_000;
+        header[40..44].copy_from_slice(&data_size.to_le_bytes());
+
+        let dur = wav_duration_secs(&header);
+        assert!((dur - 1.0_f64).abs() < 1e-9, "expected 1.0 s, got {dur}");
+    }
+
+    /// 3-second clip: data_size = byte_rate * 3
+    #[test]
+    fn wav_three_second_clip() {
+        let mut header = [0u8; 44];
+        let byte_rate: u32 = 32_000;
+        header[28..32].copy_from_slice(&byte_rate.to_le_bytes());
+        let data_size: u32 = byte_rate * 3;
+        header[40..44].copy_from_slice(&data_size.to_le_bytes());
+        assert!((wav_duration_secs(&header) - 3.0_f64).abs() < 1e-9);
+    }
+
+    /// 0 words → 0 seconds.
+    #[test]
+    fn estimated_secs_zero_words() {
+        assert_eq!(estimated_secs(0), 0.0);
+    }
+
+    /// 130 words → exactly 60 seconds at 130 WPM.
+    #[test]
+    fn estimated_secs_130_words_is_60s() {
+        assert!((estimated_secs(130) - 60.0_f64).abs() < 1e-9);
+    }
+
+    /// 65 words → 30 seconds.
+    #[test]
+    fn estimated_secs_65_words_is_30s() {
+        assert!((estimated_secs(65) - 30.0_f64).abs() < 1e-9);
     }
 }
