@@ -1,0 +1,3 @@
+# Local-only harness state — never commit test keys or built mock artifacts.
+keys/
+mock/

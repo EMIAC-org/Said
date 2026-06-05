@@ -25,6 +25,8 @@ pub enum HudShortcutAction {
     PlacementMode,
     /// ⇧⌘. — reset saved position to default, then enter placement mode.
     ResetPosition,
+    /// ⇧⌘Space — toggle message-polish mode for normal dictation.
+    ToggleMessagePolishMode,
 }
 
 #[cfg(target_os = "macos")]
@@ -92,12 +94,15 @@ mod imp {
         pub const KC_HOME: i64 = 115;
         pub const KC_END: i64 = 119;
         pub const KC_A: i64 = 0; // Cmd+A = select-all
+        pub const KC_N: i64 = 45; // Ctrl+N = new Divo chat
         pub const KC_V: i64 = 9; // Ctrl+Cmd+V = paste-latest
         pub const KC_X: i64 = 7; // Cmd+X = cut
         pub const KC_Z: i64 = 6; // Cmd+Z = undo
         pub const KC_LEFT_OPTION: i64 = 58;
         pub const KC_RIGHT_OPTION: i64 = 61;
         pub const KC_FUNCTION: i64 = 63;
+        pub const KC_LEFT_CONTROL: i64 = 59;
+        pub const KC_RIGHT_CONTROL: i64 = 62;
 
         unsafe extern "C" {
             pub fn CGEventTapCreate(
@@ -241,6 +246,7 @@ mod imp {
     }
 
     /// ⇧⌘/ toggles draggable placement mode. ⇧⌘. resets to the centered default.
+    /// ⇧⌘Space toggles message-polish mode.
     unsafe fn check_and_fire_hud_shortcut(event: ffi::CGEventRef) -> bool {
         let flags = unsafe { ffi::CGEventGetFlags(event) };
         let keycode =
@@ -257,6 +263,7 @@ mod imp {
         let action = match keycode {
             ffi::KC_SLASH => HudShortcutAction::PlacementMode,
             ffi::KC_PERIOD => HudShortcutAction::ResetPosition,
+            ffi::KC_SPACE => HudShortcutAction::ToggleMessagePolishMode,
             _ => return false,
         };
 
@@ -401,6 +408,67 @@ mod imp {
             tracing::warn!("[hotkey] Ctrl+Cmd+V fired but PASTE_CB not registered!");
         }
         true
+    }
+
+    // ── Ctrl hold-to-talk → Divo ──────────────────────────────────────────────
+    //
+    // Independent of the configured record hotkey: holding the Control key starts
+    // a "send to Divo" capture; releasing it sends. If any other key is pressed
+    // while Control is held (e.g. Ctrl+C), the hold is "tainted" and treated as a
+    // shortcut — we fire the cancel callback instead of release, so ordinary Ctrl
+    // combinations are completely unaffected.
+
+    static DIVO_PRESS_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+    static DIVO_RELEASE_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+    static DIVO_CANCEL_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+    static DIVO_ENABLED: AtomicBool = AtomicBool::new(false);
+    static DIVO_IS_DOWN: AtomicBool = AtomicBool::new(false);
+    static DIVO_TAINTED: AtomicBool = AtomicBool::new(false);
+    /// Set when the user presses **N** while holding Control — routes this capture
+    /// to a brand-new Divo chat. Reset on every Ctrl-down; consumed (and cleared) by
+    /// [`divo_take_new_chat`] when the desktop layer handles the release.
+    static DIVO_NEW_CHAT: AtomicBool = AtomicBool::new(false);
+    /// Whether `on_press` actually fired for the current hold (it only fires after
+    /// the key has been held past [`DIVO_HOLD_DELAY_MS`]).
+    static DIVO_STARTED: AtomicBool = AtomicBool::new(false);
+    /// Bumped on every Ctrl down/up so a pending start timer for a previous hold
+    /// can detect it is stale and not fire.
+    static DIVO_GEN: AtomicU64 = AtomicU64::new(0);
+    /// A Ctrl press must be held this long before a Divo capture begins. Keeps a
+    /// quick Ctrl tap (Ctrl+C, Ctrl-click, etc.) from ever flashing the recorder.
+    const DIVO_HOLD_DELAY_MS: u64 = 280;
+
+    /// Register the Ctrl hold-to-talk Divo callbacks and enable the Ctrl hotkey.
+    /// `on_press` fires when Control goes down, `on_release` when it lifts cleanly,
+    /// and `on_cancel` when it lifts after a shortcut combo was pressed.
+    pub fn register_divo_hotkey_callbacks(
+        on_press: Arc<dyn Fn() + Send + Sync>,
+        on_release: Arc<dyn Fn() + Send + Sync>,
+        on_cancel: Arc<dyn Fn() + Send + Sync>,
+    ) {
+        let _ = DIVO_PRESS_CB.set(on_press);
+        let _ = DIVO_RELEASE_CB.set(on_release);
+        let _ = DIVO_CANCEL_CB.set(on_cancel);
+        DIVO_ENABLED.store(true, Ordering::Relaxed);
+        tracing::info!("[hotkey] Divo Ctrl hold-to-talk registered");
+    }
+
+    /// Enable/disable the Ctrl hold-to-talk Divo hotkey at runtime (e.g. when the
+    /// signed-in user is not connected to an org that has Divo).
+    pub fn set_divo_hotkey_enabled(enabled: bool) {
+        DIVO_ENABLED.store(enabled, Ordering::Relaxed);
+        tracing::info!("[hotkey] Divo Ctrl hotkey enabled={enabled}");
+    }
+
+    /// Take (and clear) the "new chat" intent from the just-finished Ctrl hold.
+    /// Returns true when the user pressed **N** while holding Control (Ctrl+N),
+    /// meaning this turn should open a fresh Divo chat. Read once on release.
+    pub fn divo_take_new_chat() -> bool {
+        DIVO_NEW_CHAT.swap(false, Ordering::SeqCst)
+    }
+
+    fn divo_is_control_keycode(kc: i64) -> bool {
+        kc == ffi::KC_LEFT_CONTROL || kc == ffi::KC_RIGHT_CONTROL
     }
 
     // ── Input Monitoring permission tracking ──────────────────────────────────
@@ -578,9 +646,22 @@ mod imp {
 
             if event_type == ffi::K_CG_EVENT_KEY_DOWN {
                 // Log keycode + flags for every keydown so we can confirm events arrive
-                let _kc = ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE);
+                let kc = ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE);
                 let _fl = ffi::CGEventGetFlags(event);
-                tracing::trace!("[hotkey] HOLD tap keydown kc={_kc} flags={_fl:#010x}");
+                tracing::trace!("[hotkey] HOLD tap keydown kc={kc} flags={_fl:#010x}");
+
+                // A key pressed while Control is held normally means a shortcut
+                // (Ctrl+C etc.), not a Divo dictation — taint the hold so release
+                // cancels instead of sending. The one exception is **N**: Ctrl+N
+                // deliberately starts a NEW Divo chat, so record that intent without
+                // tainting, and swallow the keystroke so it never types an 'n'.
+                if DIVO_IS_DOWN.load(Ordering::Relaxed) {
+                    if DIVO_ENABLED.load(Ordering::Relaxed) && kc == ffi::KC_N {
+                        DIVO_NEW_CHAT.store(true, Ordering::SeqCst);
+                        return std::ptr::null_mut();
+                    }
+                    DIVO_TAINTED.store(true, Ordering::Relaxed);
+                }
 
                 if check_and_fire_paste(event) {
                     return std::ptr::null_mut(); // suppress Ctrl+Cmd+V system action
@@ -654,6 +735,58 @@ mod imp {
                                 (s.on_release)();
                             }
                         }
+                    }
+                }
+            }
+
+            // Ctrl hold-to-talk for Divo — runs alongside the record hotkey above,
+            // tracked independently so the two never interfere.
+            if DIVO_ENABLED.load(Ordering::Relaxed) && divo_is_control_keycode(keycode) {
+                let ctrl_on = (flags & ffi::K_CG_FLAG_CONTROL) != 0;
+                let was_down = DIVO_IS_DOWN.load(Ordering::Relaxed);
+                if ctrl_on && !was_down {
+                    DIVO_IS_DOWN.store(true, Ordering::SeqCst);
+                    DIVO_TAINTED.store(false, Ordering::SeqCst);
+                    DIVO_STARTED.store(false, Ordering::SeqCst);
+                    DIVO_NEW_CHAT.store(false, Ordering::SeqCst);
+                    let hold_gen = DIVO_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+                    // Defer the start: a quick Ctrl tap (Ctrl+C etc.) releases before
+                    // this elapses, so it never records. Only a deliberate hold does.
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(DIVO_HOLD_DELAY_MS));
+                        if DIVO_GEN.load(Ordering::SeqCst) == hold_gen
+                            && DIVO_IS_DOWN.load(Ordering::SeqCst)
+                            && !DIVO_TAINTED.load(Ordering::SeqCst)
+                            && !DIVO_STARTED.swap(true, Ordering::SeqCst)
+                        {
+                            tracing::info!("[hotkey] Ctrl held → start Divo capture");
+                            if let Some(cb) = DIVO_PRESS_CB.get() {
+                                cb();
+                            }
+                        }
+                    });
+                } else if !ctrl_on && was_down {
+                    DIVO_IS_DOWN.store(false, Ordering::SeqCst);
+                    // Invalidate any pending start timer for this hold.
+                    DIVO_GEN.fetch_add(1, Ordering::SeqCst);
+                    if DIVO_STARTED.swap(false, Ordering::SeqCst) {
+                        if DIVO_TAINTED.swap(false, Ordering::SeqCst) {
+                            tracing::info!(
+                                "[hotkey] Ctrl released (shortcut) → cancel Divo capture"
+                            );
+                            if let Some(cb) = DIVO_CANCEL_CB.get() {
+                                cb();
+                            }
+                        } else {
+                            tracing::info!("[hotkey] Ctrl released → send to Divo");
+                            if let Some(cb) = DIVO_RELEASE_CB.get() {
+                                cb();
+                            }
+                        }
+                    } else {
+                        // Released before the hold delay elapsed (a tap) — nothing started.
+                        DIVO_TAINTED.store(false, Ordering::SeqCst);
+                        tracing::trace!("[hotkey] Ctrl tap ignored — no Divo capture started");
                     }
                 }
             }
@@ -791,4 +924,22 @@ pub fn register_long_dictation_callback(_cb: std::sync::Arc<dyn Fn() + Send + Sy
 pub fn register_hud_shortcut_callback(
     _cb: std::sync::Arc<dyn Fn(HudShortcutAction) + Send + Sync>,
 ) {
+}
+
+// Divo Ctrl hold-to-talk is macOS-only (CGEventTap). Stub it everywhere else so
+// the desktop crate compiles on Windows / Linux dev hosts.
+#[cfg(not(target_os = "macos"))]
+pub fn register_divo_hotkey_callbacks(
+    _on_press: std::sync::Arc<dyn Fn() + Send + Sync>,
+    _on_release: std::sync::Arc<dyn Fn() + Send + Sync>,
+    _on_cancel: std::sync::Arc<dyn Fn() + Send + Sync>,
+) {
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_divo_hotkey_enabled(_enabled: bool) {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn divo_take_new_chat() -> bool {
+    false
 }

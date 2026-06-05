@@ -242,6 +242,7 @@ pub async fn stream_voice_polish<F>(
     pre_transcript_meta: Option<TranscriptMeta>,
     repair_mode: Option<String>,
     screen_context: Option<String>,
+    message_polish_mode: bool,
     mut on_event: F,
 ) -> Result<PolishDone, String>
 where
@@ -281,6 +282,9 @@ where
         if !trimmed.trim().is_empty() {
             form = form.text("screen_context", trimmed);
         }
+    }
+    if message_polish_mode {
+        form = form.text("message_polish_mode", "true");
     }
 
     let resp = client

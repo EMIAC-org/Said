@@ -39,10 +39,13 @@ pub struct OrgInfo {
 pub struct MemberInfo {
     pub id: Uuid,
     pub account_id: Uuid,
+    pub email: String,
     pub role: String,
     pub lark_name: Option<String>,
     pub lark_avatar_url: Option<String>,
     pub lark_department: Option<String>,
+    pub auth_source: String,
+    pub lark_connected: bool,
     pub joined_at: DateTime<Utc>,
 }
 
@@ -207,43 +210,73 @@ pub async fn members(
         ));
     }
 
-    let members: Vec<(
-        Uuid,
-        Uuid,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        DateTime<Utc>,
-    )> = sqlx::query_as(
-        "SELECT id, account_id, role, lark_name, lark_avatar_url, lark_department, joined_at
-               FROM org_members
-              WHERE org_id = $1
-              ORDER BY joined_at ASC",
+    let members: Vec<MemberInfo> = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Uuid,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            bool,
+            DateTime<Utc>,
+        ),
+    >(
+        "SELECT om.id,
+                om.account_id,
+                a.email,
+                om.role,
+                om.lark_name,
+                om.lark_avatar_url,
+                om.lark_department,
+                CASE
+                  WHEN om.lark_user_id IS NOT NULL THEN 'lark'
+                  WHEN om.auth_source IS NOT NULL THEN om.auth_source
+                  ELSE 'email'
+                END AS auth_source,
+                (om.lark_user_id IS NOT NULL) AS lark_connected,
+                om.joined_at
+           FROM org_members om
+           JOIN accounts a ON a.id = om.account_id
+          WHERE om.org_id = $1
+          ORDER BY om.joined_at ASC",
     )
     .bind(org_id)
     .fetch_all(&state.db)
     .await
-    .map_err(db_err)?;
+    .map_err(db_err)?
+    .into_iter()
+    .map(
+        |(
+            id,
+            account_id,
+            email,
+            role,
+            lark_name,
+            lark_avatar_url,
+            lark_department,
+            auth_source,
+            lark_connected,
+            joined_at,
+        )| MemberInfo {
+            id,
+            account_id,
+            email,
+            role,
+            lark_name,
+            lark_avatar_url,
+            lark_department,
+            auth_source,
+            lark_connected,
+            joined_at,
+        },
+    )
+    .collect();
 
-    let members_json: Vec<Value> = members
-        .into_iter()
-        .map(
-            |(id, account_id, role, lark_name, lark_avatar_url, lark_department, joined_at)| {
-                json!({
-                    "id":              id,
-                    "account_id":      account_id,
-                    "role":            role,
-                    "lark_name":       lark_name,
-                    "lark_avatar_url": lark_avatar_url,
-                    "lark_department": lark_department,
-                    "joined_at":       joined_at,
-                })
-            },
-        )
-        .collect();
-
-    Ok(Json(json!({ "members": members_json })))
+    Ok(Json(json!({ "members": members })))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

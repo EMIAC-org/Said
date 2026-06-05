@@ -278,6 +278,7 @@ pub fn mark_removed_feedback(
                     'tier2_cluster_fuzzy',
                     'tier2_deterministic',
                     'tier2_onnx',
+                    'tier2_context',
                     'tier2_policy',
                     'stt_alias'
                 )

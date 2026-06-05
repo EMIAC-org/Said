@@ -946,6 +946,15 @@ export function onVocabToast(handler: (p: VocabToastPayload) => void): () => voi
   return () => unsub();
 }
 
+/// Fired on launch when a dictation that was lost to a crash has been recovered
+/// and re-transcribed. `text` is the recovered (polished) transcript.
+export function onDictationRecovered(handler: (text: string) => void): () => void {
+  if (!isTauriRuntime()) return () => {};
+  let unsub: () => void = () => {};
+  listen<{ text: string }>("dictation-recovered", (e) => handler(e.payload.text)).then((fn) => { unsub = fn; });
+  return () => unsub();
+}
+
 // ── Desktop-only prefs (Sentry on/off + update channel) ───────────────────────
 //
 // These live in `<data_dir>/desktop_prefs.json` (NOT the backend's SQLite
@@ -955,11 +964,12 @@ export function onVocabToast(handler: (p: VocabToastPayload) => void): () => voi
 export interface DesktopPrefs {
   sentry_disabled: boolean;
   update_channel: "stable" | "beta";
+  message_polish_mode: boolean;
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
   if (!isTauriRuntime()) {
-    return { sentry_disabled: false, update_channel: "stable" };
+    return { sentry_disabled: false, update_channel: "stable", message_polish_mode: false };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");
 }
@@ -985,6 +995,161 @@ export async function openLogFolder(): Promise<void> {
   if (!isTauriRuntime()) return;
   return tauriInvoke<void>("open_log_folder");
 }
+
+// ── Divo (Ctrl hold-to-talk → agent) ──────────────────────────────────────────
+
+export type DivoStatusPayload = {
+  liveLabel?: string;
+  progressPct?: number;
+  phase?: string;
+  plan?: { status: string; title: string; subtitle?: string }[];
+};
+export type DivoToolPayload = {
+  phase: "start" | "end";
+  name: string;
+  family?: string | null;
+  verb?: string | null;
+  past?: string | null;
+  ok?: boolean;
+  callId?: string | null;
+};
+
+/** Push the control-plane URL + session token to Rust (enables the Ctrl hotkey). */
+export async function divoSetCredentials(serverUrl: string, token: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await tauriInvoke("divo_set_credentials", { serverUrl, token });
+  } catch (e) {
+    console.warn("[divo] set_credentials failed", e);
+  }
+}
+
+/** Panel "Speak follow-up" — press-and-hold record on the active thread. */
+export async function divoFollowupBegin(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await tauriInvoke("divo_followup_begin");
+  } catch (e) {
+    console.warn("[divo] followup_begin failed", e);
+  }
+}
+export async function divoFollowupEnd(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await tauriInvoke("divo_followup_end");
+  } catch (e) {
+    console.warn("[divo] followup_end failed", e);
+  }
+}
+
+/** Recover the latest assistant answer for a thread (post-disconnect / approval). */
+export async function divoFetchThread(threadId: string): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<string | null>("divo_fetch_thread", { threadId });
+  } catch (e) {
+    console.warn("[divo] fetch_thread failed", e);
+    return null;
+  }
+}
+
+// ── Divo chats (in-app history + HUD chat router) ─────────────────────────────
+
+export type DivoThreadSummary = {
+  id: string;
+  title: string;
+  createdAt?: string;
+  updatedAt?: string;
+  lastMessageAt?: string | null;
+  preview?: string;
+};
+
+export type DivoMessage = {
+  id: string;
+  threadId: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+};
+
+export type DivoThreadDetail = {
+  id: string;
+  title: string;
+  createdAt?: string;
+  updatedAt?: string;
+  lastMessageAt?: string | null;
+  messages: DivoMessage[];
+};
+
+/** Send a reviewed instruction to a chat (`threadId`) or a new one (`null`). */
+export async function divoSend(message: string, threadId: string | null): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await tauriInvoke("divo_send", { message, threadId });
+  } catch (e) {
+    console.warn("[divo] send failed", e);
+  }
+}
+
+/** List the user's AirNote Divo chats (most recent first). */
+export async function divoListThreads(): Promise<DivoThreadSummary[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    const res = await tauriInvoke<{ data?: { threads?: DivoThreadSummary[] } }>("divo_list_threads");
+    return res?.data?.threads ?? [];
+  } catch (e) {
+    console.warn("[divo] list_threads failed", e);
+    return [];
+  }
+}
+
+/** Fetch a full thread (all messages) for the in-app conversation pane. */
+export async function divoThreadMessages(threadId: string): Promise<DivoThreadDetail | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const res = await tauriInvoke<{ data?: DivoThreadDetail }>("divo_thread_messages", { threadId });
+    return res?.data ?? null;
+  } catch (e) {
+    console.warn("[divo] thread_messages failed", e);
+    return null;
+  }
+}
+
+/** Mark a chat as active (Ctrl continues it), or clear it (`null` → next Ctrl = new). */
+export async function divoSetActiveThread(threadId: string | null): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await tauriInvoke("divo_set_active_thread", { threadId });
+  } catch (e) {
+    console.warn("[divo] set_active_thread failed", e);
+  }
+}
+
+function divoListener<T>(event: string, handler: (p: T) => void): () => void {
+  if (!isTauriRuntime()) return () => {};
+  let unsub: () => void = () => {};
+  listen<T>(event, (e) => handler(e.payload)).then((fn) => {
+    unsub = fn;
+  });
+  return () => unsub();
+}
+
+export const onDivoStarted = (h: (p: { followup: boolean }) => void) =>
+  divoListener("divo-started", h);
+export const onDivoMeta = (h: (p: { threadId: string }) => void) =>
+  divoListener("divo-meta", h);
+export const onDivoStatus = (h: (p: DivoStatusPayload) => void) =>
+  divoListener("divo-status", h);
+export const onDivoThinking = (h: (p: { text: string }) => void) =>
+  divoListener("divo-thinking", h);
+export const onDivoTool = (h: (p: DivoToolPayload) => void) =>
+  divoListener("divo-tool", h);
+export const onDivoDone = (h: (p: { content: string; threadId: string | null }) => void) =>
+  divoListener("divo-done", h);
+export const onDivoError = (h: (p: { message: string }) => void) =>
+  divoListener("divo-error", h);
+export const onDivoPending = (h: (p: { message: string }) => void) =>
+  divoListener("divo-pending", h);
 
 // Suppress unused-import warnings for types only used in exported signatures
 export type {

@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router'
-import { Bug, LayoutDashboard, Video, Users, Monitor, Settings, LogOut } from 'lucide-react'
+import { Activity, BookOpenText, Bug, LayoutDashboard, Video, Users, Monitor, Settings, LogOut } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { Avatar } from './Avatar'
 
@@ -8,7 +8,9 @@ const nav = [
   { to: '/meetings', icon: Video, label: 'Meetings' },
   { to: '/team', icon: Users, label: 'Team' },
   { to: '/desktop', icon: Monitor, label: 'Desktop' },
+  { to: '/vocabulary', icon: BookOpenText, label: 'Vocabulary' },
   { to: '/bugs', icon: Bug, label: 'Bugs' },
+  { to: '/diagnostics', icon: Activity, label: 'Diagnostics' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
 

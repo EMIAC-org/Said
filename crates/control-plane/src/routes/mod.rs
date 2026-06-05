@@ -1,6 +1,8 @@
 pub mod auth;
 pub mod bugs;
 pub mod clients;
+pub mod diagnostics;
+pub mod divo;
 pub mod guest;
 pub mod guest_ws;
 pub mod health;
@@ -11,4 +13,5 @@ pub mod meetings;
 pub mod metering;
 pub mod openai;
 pub mod orgs;
+pub mod vocab;
 pub mod ws;

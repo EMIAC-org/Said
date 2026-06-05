@@ -179,4 +179,22 @@ impl DesktopApp {
         self.recording_started = None;
         self.snapshot()
     }
+
+    /// Heal a wedged state machine back to Idle after an operation was abandoned
+    /// mid-way (e.g. a panic killed the finish pipeline, leaving us stuck in
+    /// `Processing` so new recordings refuse to start). Only resets `Processing`
+    /// — `Recording` is user-controlled (the hold key / long-dictation lock) and
+    /// is never force-reset out from under an active dictation. Returns the new
+    /// snapshot when a reset happened, or `None` if there was nothing stuck.
+    pub fn recover_stuck_to_idle(&mut self) -> Option<AppSnapshot> {
+        match self.state {
+            AppState::Processing => {
+                self.state = AppState::Idle;
+                self.recording_started = None;
+                self.last_error = None;
+                Some(self.snapshot())
+            }
+            _ => None,
+        }
+    }
 }

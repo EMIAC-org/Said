@@ -325,6 +325,15 @@ pub fn router_with_state(state: AppState) -> Router {
             "/v1/enterprise/status",
             get(routes::cloud::enterprise_status),
         )
+        .route(
+            "/v1/company-vocab/status",
+            get(routes::company_vocab::status),
+        )
+        .route("/v1/company-vocab/sync", post(routes::company_vocab::sync))
+        .route(
+            "/v1/company-vocab/upload-user-summary",
+            post(routes::company_vocab::upload_user_summary),
+        )
         // OpenAI Codex OAuth
         .route(
             "/v1/openai-oauth/initiate",

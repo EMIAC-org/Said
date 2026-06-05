@@ -1,13 +1,10 @@
-use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
-
-use said_core::deepgram::{BiasPackage, ReplacementRule, resolve_stt_mode};
+use said_core::deepgram::{BiasPackage, resolve_stt_mode};
 
 use crate::{
     llm::phonetics,
     store::{
         DbPool,
-        stt_replacements::{self, ExportTier, ReviewStatus, SttReplacement},
+        stt_replacements::{self, ExportTier, SttReplacement},
         vocabulary,
     },
 };
@@ -171,7 +168,7 @@ pub fn build_bias_package(
     pool: &DbPool,
     user_id: &str,
     transcription_language: &str,
-    output_language: &str,
+    _output_language: &str,
 ) -> BiasPackage {
     // v5: Starred-only biasing. Sending all vocab as keyterms degrades STT
     // accuracy — too many keywords confuse Deepgram's model. Only terms the
@@ -179,7 +176,7 @@ pub fn build_bias_package(
     // post-STT correction pipeline (alias table, edit-policy, ONNX scorer).
     let stt_mode = resolve_stt_mode(transcription_language);
 
-    let keyterms = vocabulary::starred_term_strings(pool, user_id);
+    let keyterms = crate::store::company_vocab::starred_or_priority_terms(pool, user_id, 50);
 
     if !keyterms.is_empty() {
         tracing::info!(
@@ -199,7 +196,7 @@ pub fn build_bias_package(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{DbPool, stt_replacements, vocabulary};
+    use crate::store::{DbPool, vocabulary};
     use r2d2_sqlite::SqliteConnectionManager;
 
     fn mem_pool() -> DbPool {

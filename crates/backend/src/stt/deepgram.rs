@@ -333,15 +333,15 @@ mod tests {
     fn batch_url_contains_replacements() {
         let bias = BiasPackage {
             stt_mode: "hi".into(),
-            keyterms: vec!["EMIAC".into()],
+            keyterms: vec!["AcmeCorp".into()],
             replacements: vec![ReplacementRule {
-                find: "n10n".into(),
-                replace: Some("n8n".into()),
+                find: "ack me".into(),
+                replace: Some("AcmeCorp".into()),
             }],
         };
         let url = build_batch_url(DEEPGRAM_URL, &bias);
         assert!(url.contains("language=hi"));
-        assert!(url.contains("keyterm=EMIAC"));
-        assert!(url.contains("replace=n10n:n8n"));
+        assert!(url.contains("keyterm=AcmeCorp"));
+        assert!(url.contains("replace=ack%20me:AcmeCorp"));
     }
 }

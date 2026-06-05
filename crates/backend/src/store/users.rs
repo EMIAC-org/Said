@@ -46,6 +46,20 @@ pub fn update_enterprise_auth(
     org_name: Option<&str>,
 ) {
     if let Ok(conn) = pool.get() {
+        if server_url.is_some() {
+            let _ = conn.execute(
+                "DELETE FROM company_bucket_state WHERE user_id = ?1",
+                params![user_id],
+            );
+            let _ = conn.execute(
+                "DELETE FROM company_vocabulary WHERE user_id = ?1",
+                params![user_id],
+            );
+            let _ = conn.execute(
+                "DELETE FROM company_stt_replacements WHERE user_id = ?1",
+                params![user_id],
+            );
+        }
         let _ = conn.execute(
             "UPDATE local_user
                 SET cloud_token = ?1,
@@ -68,6 +82,22 @@ pub fn clear_cloud_token(pool: &DbPool, user_id: &str) {
                     enterprise_server_url = NULL,
                     enterprise_org_name = NULL
               WHERE id = ?1",
+            params![user_id],
+        );
+        let _ = conn.execute(
+            "DELETE FROM company_bucket_state WHERE user_id = ?1",
+            params![user_id],
+        );
+        let _ = conn.execute(
+            "DELETE FROM company_vocabulary WHERE user_id = ?1",
+            params![user_id],
+        );
+        let _ = conn.execute(
+            "DELETE FROM company_stt_replacements WHERE user_id = ?1",
+            params![user_id],
+        );
+        let _ = conn.execute(
+            "DELETE FROM company_vocab_tombstones WHERE user_id = ?1",
             params![user_id],
         );
     }

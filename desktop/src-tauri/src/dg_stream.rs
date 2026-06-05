@@ -6,8 +6,10 @@
 //! socket warm with a tiny silent audio prime followed by Deepgram `KeepAlive`
 //! messages.
 
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
+
+use crate::echo_gate::EchoGateShared;
 
 use deepgram::{
     Deepgram,
@@ -411,9 +413,19 @@ impl DeepgramSession {
                                 return true;
                             }
 
-                            let transcript = self.drain_finalize(&mut ws, &mut current).await;
-                            let had_transcript = transcript.is_some();
-                            current.send_result(transcript);
+                            let drained = self.drain_finalize(&mut ws, &mut current).await;
+                            if !drained.saw_finalize_result {
+                                warn!(
+                                    "[dg_session] finalize did not produce a final marker id={} after {} result message(s) — falling back to batch and reconnecting to prevent transcript carry-over",
+                                    current.id,
+                                    current.result_messages_seen
+                                );
+                                current.send_result(None);
+                                self.set_state(SessionState::Disconnected);
+                                return true;
+                            }
+                            let had_transcript = drained.transcript.is_some();
+                            current.send_result(drained.transcript);
                             debug!(
                                 "[dg_session] finalized id={id} transcript={} chunks={} elapsed={}ms",
                                 had_transcript,
@@ -504,7 +516,7 @@ impl DeepgramSession {
         &self,
         ws: &mut WebsocketHandle,
         current: &mut ActiveRecording,
-    ) -> Option<StreamingTranscript> {
+    ) -> FinalizeDrain {
         let drain_start = tokio::time::Instant::now();
         let timeout = if current.text_result_messages_seen > 0 {
             FINALIZE_WITH_TEXT_RESULT_TIMEOUT
@@ -582,7 +594,10 @@ impl DeepgramSession {
             saw_finalize_result,
             current.parts.len()
         );
-        current.finish(self.bias.stt_mode.clone())
+        FinalizeDrain {
+            transcript: current.finish(self.bias.stt_mode.clone()),
+            saw_finalize_result,
+        }
     }
 
     async fn wait_for_config_or_shutdown(&mut self) -> bool {
@@ -896,12 +911,40 @@ pub fn spawn_audio_bridge(
     chunk_recv: ChunkReceiver,
     session_tx: SessionSender,
 ) {
+    spawn_audio_bridge_with_echo_gate(recording_id, chunk_recv, session_tx, None);
+}
+
+pub fn spawn_audio_bridge_with_echo_gate(
+    recording_id: String,
+    chunk_recv: ChunkReceiver,
+    session_tx: SessionSender,
+    echo_gate: Option<Arc<EchoGateShared>>,
+) {
     std::thread::spawn(move || {
         let native_rate = chunk_recv.native_rate;
         let sync_rx: mpsc::Receiver<Vec<f32>> = chunk_recv.rx;
         let mut bridged_chunks = 0usize;
+        let mut dropped_echo_chunks = 0usize;
         while let Ok(chunk_f32) = sync_rx.recv() {
             let resampled = resample_to_16k(&chunk_f32, native_rate);
+            if let Some(gate) = &echo_gate {
+                let decision = gate.filter_mic_samples_16k(&resampled);
+                if !decision.allow {
+                    dropped_echo_chunks += 1;
+                    if dropped_echo_chunks == 1 || dropped_echo_chunks % 50 == 0 {
+                        debug!(
+                            "[dg_session] echo gate dropped chunk id={} reason={} mic_rms={:.4} speaker_rms={:.4} corr={:.3} dropped={}",
+                            recording_id,
+                            decision.reason,
+                            decision.mic_rms,
+                            decision.speaker_rms,
+                            decision.correlation,
+                            dropped_echo_chunks
+                        );
+                    }
+                    continue;
+                }
+            }
             let pcm: Vec<u8> = resampled
                 .iter()
                 .flat_map(|&s| {
@@ -909,6 +952,10 @@ pub fn spawn_audio_bridge(
                     i16_val.to_le_bytes()
                 })
                 .collect();
+            // Crash-safe recovery tap: persist the exact PCM we stream so a crash
+            // mid-dictation doesn't lose the user's words. No-op unless a capture
+            // session is active (non-meeting recordings only).
+            crate::recovery::append_pcm(&pcm);
             if session_tx
                 .blocking_send(SessionCommand::Audio {
                     id: recording_id.clone(),
@@ -923,7 +970,9 @@ pub fn spawn_audio_bridge(
         let _ = session_tx.blocking_send(SessionCommand::Finalize {
             id: recording_id.clone(),
         });
-        debug!("[dg_session] audio bridge closed id={recording_id} chunks={bridged_chunks}");
+        debug!(
+            "[dg_session] audio bridge closed id={recording_id} chunks={bridged_chunks} echo_dropped={dropped_echo_chunks}"
+        );
     });
 }
 
@@ -934,6 +983,11 @@ struct CollectOutcome {
     is_result: bool,
     has_text: bool,
     utterance_end: bool,
+}
+
+struct FinalizeDrain {
+    transcript: Option<StreamingTranscript>,
+    saw_finalize_result: bool,
 }
 
 fn collect_response(
@@ -980,6 +1034,21 @@ fn collect_result_value(
     }
     let from_finalize = v["from_finalize"].as_bool().unwrap_or(false);
     let has_text = result_has_text(v);
+    if phase == "stream" && from_finalize {
+        warn!(
+            "[dg_session] dropping stale finalize result during new stream id={} words={} chars={}",
+            recording_id.unwrap_or("-"),
+            result_word_count(v),
+            result_transcript(v).chars().count()
+        );
+        return CollectOutcome {
+            collected: false,
+            from_finalize,
+            is_result: true,
+            has_text,
+            utterance_end: false,
+        };
+    }
     if !v["is_final"].as_bool().unwrap_or(false) {
         return CollectOutcome {
             collected: false,
@@ -1209,8 +1278,8 @@ mod tests {
     use super::{
         AUDIO_BRIDGE_BUFFER_CHUNKS, ActiveRecording, DeepgramSession, FINALIZE_NO_RESULT_TIMEOUT,
         FINALIZE_QUIET_TIMEOUT, FINALIZE_WITH_TEXT_RESULT_TIMEOUT, LIVE_STT_HEALTH_TIMEOUT,
-        SessionState, WARM_PRIME_SILENCE_MS, extract_result_chunk, pcm_has_signal,
-        warm_prime_silence_pcm,
+        SessionState, WARM_PRIME_SILENCE_MS, collect_result_value, extract_result_chunk,
+        pcm_has_signal, warm_prime_silence_pcm,
     };
     use said_core::deepgram::{BiasPackage, ReplacementRule, build_ws_url};
     use said_recorder::SAMPLE_RATE;
@@ -1221,17 +1290,17 @@ mod tests {
     fn ws_url_uses_multi_mode_and_replacements() {
         let bias = BiasPackage {
             stt_mode: "multi".into(),
-            keyterms: vec!["EMIAC".into()],
+            keyterms: vec!["AcmeCorp".into()],
             replacements: vec![ReplacementRule {
-                find: "n10n".into(),
-                replace: Some("n8n".into()),
+                find: "ack me".into(),
+                replace: Some("AcmeCorp".into()),
             }],
         };
         let url = build_ws_url("wss://api.deepgram.com/v1/listen", &bias, SAMPLE_RATE);
         assert!(url.contains("language=multi"));
         assert!(url.contains("endpointing=1000"));
         assert!(url.contains("utterance_end_ms=2000"));
-        assert!(url.contains("replace=n10n:n8n"));
+        assert!(url.contains("replace=ack%20me:AcmeCorp"));
     }
 
     #[test]
@@ -1249,7 +1318,7 @@ mod tests {
                 "alternatives": [{
                     "languages": ["hi", "en"],
                     "words": [
-                        { "word": "EMIAC", "confidence": 0.95, "language": "en" },
+                        { "word": "AcmeCorp", "confidence": 0.95, "language": "en" },
                         { "word": "hai", "confidence": 0.61, "language": "hi" }
                     ]
                 }]
@@ -1290,6 +1359,87 @@ mod tests {
         assert!(recording.should_log_live_stt_health_miss());
         assert!(!recording.should_log_live_stt_health_miss());
         assert!(recording.result_tx.is_some());
+    }
+
+    #[test]
+    fn streaming_phase_drops_late_finalize_results() {
+        let value = json!({
+            "type": "Results",
+            "is_final": true,
+            "from_finalize": true,
+            "channel": {
+                "alternatives": [{
+                    "transcript": "left over words",
+                    "words": [
+                        { "word": "left", "punctuated_word": "left", "confidence": 0.96 },
+                        { "word": "over", "punctuated_word": "over", "confidence": 0.96 },
+                        { "word": "words", "punctuated_word": "words", "confidence": 0.96 }
+                    ]
+                }]
+            }
+        });
+        let mut parts = Vec::new();
+        let mut word_count = 0;
+        let mut low_conf = 0;
+        let mut conf_sum = 0.0;
+        let mut languages = Vec::new();
+
+        let outcome = collect_result_value(
+            &value,
+            Some("new-recording"),
+            "stream",
+            &mut parts,
+            &mut word_count,
+            &mut low_conf,
+            &mut conf_sum,
+            &mut languages,
+        );
+
+        assert!(outcome.from_finalize);
+        assert!(outcome.is_result);
+        assert!(outcome.has_text);
+        assert!(!outcome.collected);
+        assert!(parts.is_empty());
+        assert_eq!(word_count, 0);
+    }
+
+    #[test]
+    fn finalize_phase_collects_finalize_results() {
+        let value = json!({
+            "type": "Results",
+            "is_final": true,
+            "from_finalize": true,
+            "channel": {
+                "alternatives": [{
+                    "transcript": "final words",
+                    "words": [
+                        { "word": "final", "punctuated_word": "final", "confidence": 0.97 },
+                        { "word": "words", "punctuated_word": "words", "confidence": 0.97 }
+                    ]
+                }]
+            }
+        });
+        let mut parts = Vec::new();
+        let mut word_count = 0;
+        let mut low_conf = 0;
+        let mut conf_sum = 0.0;
+        let mut languages = Vec::new();
+
+        let outcome = collect_result_value(
+            &value,
+            Some("same-recording"),
+            "finalize",
+            &mut parts,
+            &mut word_count,
+            &mut low_conf,
+            &mut conf_sum,
+            &mut languages,
+        );
+
+        assert!(outcome.from_finalize);
+        assert!(outcome.collected);
+        assert_eq!(parts, vec!["final words".to_string()]);
+        assert_eq!(word_count, 2);
     }
 
     #[test]

@@ -14,7 +14,8 @@ use clap::Parser;
 use tracing::info;
 
 use said_control_plane::{
-    AppState, LarkConfig, ai_worker, build_router, meeting_hub, notification_worker, store,
+    AppState, LarkConfig, ai_worker, build_router, meeting_hub, notification_worker, routes, store,
+    vocab_worker,
 };
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -57,6 +58,14 @@ struct Cli {
     /// Deepgram API key for guest browser STT relay
     #[arg(long, env = "DEEPGRAM_API_KEY", default_value = "")]
     deepgram_api_key: String,
+
+    /// Divo agent backend base URL (AirNote ⇄ Divo proxy target)
+    #[arg(
+        long,
+        env = "DIVO_BASE_URL",
+        default_value = "https://divo.outreachdeal.com"
+    )]
+    divo_base_url: String,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -93,12 +102,17 @@ async fn main() {
     // Start the notification worker (15-min reminders + urgent join alerts).
     notification_worker::start_notification_worker(db.clone(), lark.clone(), hub.clone());
 
+    // Build privacy-safe org vocabulary suggestions once daily.
+    vocab_worker::start_vocab_aggregation_worker(db.clone());
+
     let state = AppState {
         db,
         started_at: Arc::new(Instant::now()),
         lark,
         hub,
         deepgram_api_key: cli.deepgram_api_key,
+        diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
+        divo_base_url: cli.divo_base_url,
     };
 
     let app = build_router(state);

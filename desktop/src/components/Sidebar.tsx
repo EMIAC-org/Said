@@ -13,6 +13,7 @@ import {
   Server,
   Zap,
   Video,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BrandMark } from "@/components/BrandMark";
@@ -39,6 +40,14 @@ const GENERAL_NAV: NavItem[] = [
   { id: "vocabulary", label: "Vocabulary", icon: <BookOpen        size={15} /> },
   { id: "insights",   label: "Insights",   icon: <BarChart2       size={15} />, badge: "New" },
 ];
+
+// Divo is gated to approved EMIAC accounts. This only controls nav visibility —
+// the control-plane still enforces the same allowlist with a 403 on every call.
+const DIVO_ALLOWED_EMAILS = ["abhishek@emiactech.com", "shivam@emiactech.com"];
+function isDivoAllowed(): boolean {
+  const email = getConnection()?.email?.trim().toLowerCase();
+  return !!email && DIVO_ALLOWED_EMAILS.includes(email);
+}
 
 // ── Nav button ─────────────────────────────────────────────────────────────────
 
@@ -157,6 +166,13 @@ export function Sidebar({
                 isActive={activeView === "meetings"}
                 onClick={() => !busy && onViewChange("meetings")}
               />
+              {isDivoAllowed() && (
+                <NavButton
+                  item={{ id: "divo", label: "Divo", icon: <Sparkles size={15} /> }}
+                  isActive={activeView === "divo"}
+                  onClick={() => !busy && onViewChange("divo")}
+                />
+              )}
             </div>
           </section>
         )}
@@ -381,7 +397,7 @@ function PerformanceMonitor() {
 
 // ── Report bug ──────────────────────────────────────────────────────────────
 
-const DEFAULT_REPORT_SERVER = "https://airnote.103.180.163.41.sslip.io";
+const DEFAULT_REPORT_SERVER = "https://airnote.emiactech.com";
 
 async function getAppVersionForReport(): Promise<string | undefined> {
   try {

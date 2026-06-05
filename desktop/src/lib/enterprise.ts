@@ -4,6 +4,9 @@ const RECENT_WORKSPACES_KEY = "said:enterprise-recent-urls";
 const DEVICE_ID_FALLBACK_KEY = "said:enterprise-device-id";
 const MAX_RECENT_WORKSPACES = 5;
 
+/** Default AirNote cloud server for personal (non-org) accounts. */
+export const DEFAULT_CLOUD_SERVER_URL = "https://airnote.emiactech.com";
+
 function fallbackDeviceId(): string {
   try {
     const existing = localStorage.getItem(DEVICE_ID_FALLBACK_KEY);
@@ -21,6 +24,10 @@ async function clientPayload(): Promise<{
   platform: string;
   app_version: string;
   hostname?: string;
+  company_bucket_version?: number;
+  company_vocab_synced_at?: string | null;
+  personal_vocab_count?: number;
+  personal_alias_count?: number;
 }> {
   const platform =
     typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent)
@@ -43,7 +50,17 @@ async function clientPayload(): Promise<{
     } catch {
       hostname = undefined;
     }
-    return { device_id: deviceId, platform, app_version: appVersion, hostname };
+    const vocab = await localCompanyVocabStatus();
+    return {
+      device_id: deviceId,
+      platform,
+      app_version: appVersion,
+      hostname,
+      company_bucket_version: vocab?.bucket?.version ?? undefined,
+      company_vocab_synced_at: msToIso(vocab?.bucket?.last_synced_at),
+      personal_vocab_count: vocab?.bucket?.term_count ?? undefined,
+      personal_alias_count: vocab?.bucket?.alias_count ?? undefined,
+    };
   } catch (err) {
     console.warn("[enterprise] clientPayload fallback", err);
     return {
@@ -51,6 +68,67 @@ async function clientPayload(): Promise<{
       platform,
       app_version: "unknown",
     };
+  }
+}
+
+function msToIso(value: unknown): string | null | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return new Date(value).toISOString();
+}
+
+async function localBackendFetch(path: string, opts: RequestInit = {}): Promise<Response | null> {
+  try {
+    const { getBackendEndpoint } = await import("./invoke");
+    const endpoint = await getBackendEndpoint();
+    if (!endpoint?.url || !endpoint.secret) return null;
+    const headers: Record<string, string> = {
+      ...(opts.headers as Record<string, string> | undefined),
+      Authorization: `Bearer ${endpoint.secret}`,
+    };
+    if (opts.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+    return fetch(`${endpoint.url}${path}`, { ...opts, headers });
+  } catch (err) {
+    console.warn("[enterprise] local backend fetch failed", err);
+    return null;
+  }
+}
+
+async function localCompanyVocabStatus(): Promise<any | null> {
+  const res = await localBackendFetch("/v1/company-vocab/status");
+  if (!res?.ok) return null;
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function syncCompanyVocab(force = false): Promise<void> {
+  const res = await localBackendFetch("/v1/company-vocab/sync", {
+    method: "POST",
+    body: JSON.stringify({ force }),
+  });
+  if (!res?.ok) return;
+  try {
+    const data = await res.json();
+    if (data?.changed) console.info("[enterprise] company vocabulary synced", data.bucket);
+  } catch {
+    // ignore
+  }
+}
+
+export async function uploadUserVocabSummary(force = false): Promise<void> {
+  const payload = await clientPayload();
+  const res = await localBackendFetch("/v1/company-vocab/upload-user-summary", {
+    method: "POST",
+    body: JSON.stringify({ device_id: payload.device_id, force }),
+  });
+  if (!res?.ok) return;
+  try {
+    const data = await res.json();
+    if (data?.ok) console.info("[enterprise] uploaded vocab summary", data);
+  } catch {
+    // ignore
   }
 }
 
@@ -107,6 +185,7 @@ export interface EnterpriseConnection {
   orgName?: string;
   larkName?: string;
   larkAvatarUrl?: string;
+  authSource?: "lark" | "email";
 }
 
 export type ConnectionStatus = "connected" | "missing" | "expired";
@@ -322,16 +401,76 @@ export async function completeAuth(
     orgName,
     larkName,
     larkAvatarUrl,
+    authSource: larkName ? "lark" : "email",
   };
 
+  await persistEnterpriseConnection(conn, sessionToken, me.account.email, orgName);
+
+  return conn;
+}
+
+export async function completeEmailAuth(
+  serverUrl: string,
+  email: string,
+  password: string,
+  signup: boolean,
+): Promise<EnterpriseConnection> {
+  const url = serverUrl.replace(/\/+$/, "");
+  const res = await fetch(`${url}/v1/auth/desktop-email`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, signup }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || "Email sign-in failed");
+  }
+
+  const sessionToken = data.token as string;
+  const accountEmail = data.account?.email as string;
+
+  const orgRes = await fetch(`${url}/v1/orgs/me`, {
+    headers: { Authorization: `Bearer ${sessionToken}` },
+  });
+  let orgName: string | undefined;
+  if (orgRes.ok) {
+    const orgData = await orgRes.json();
+    orgName = orgData.org?.name;
+  }
+
+  const licenseOk = await checkLicense(url, sessionToken);
+  if (!licenseOk) {
+    throw new Error("Your workspace license is inactive. Contact your administrator.");
+  }
+
+  const conn: EnterpriseConnection = {
+    serverUrl: url,
+    jwt: sessionToken,
+    accountId: data.account?.id,
+    email: accountEmail,
+    orgName,
+    authSource: "email",
+  };
+
+  await persistEnterpriseConnection(conn, sessionToken, accountEmail, orgName);
+
+  return conn;
+}
+
+async function persistEnterpriseConnection(
+  conn: EnterpriseConnection,
+  sessionToken: string,
+  email: string,
+  orgName?: string,
+): Promise<void> {
   saveConnection(conn);
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("store_enterprise_auth", {
       token: sessionToken,
-      email: me.account.email,
-      serverUrl: url,
+      email,
+      serverUrl: conn.serverUrl,
       orgName: orgName ?? null,
     });
   } catch {
@@ -339,12 +478,12 @@ export async function completeAuth(
   }
 
   try {
-    await ensureDesktopRegistered(url, sessionToken);
+    await ensureDesktopRegistered(conn.serverUrl, sessionToken);
+    await syncCompanyVocab(true);
+    await uploadUserVocabSummary(true);
   } catch (err) {
     console.warn("[enterprise] desktop registration deferred until next heartbeat", err);
   }
-
-  return conn;
 }
 
 /** Full disconnect — local storage + backend token. */

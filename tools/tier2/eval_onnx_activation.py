@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from train_correction_model import (
     COMMON_WORDS,
     MAX_LEN,
+    PARTICLES,
     SEED,
     Example,
     TinyCorrectionModel,
@@ -41,6 +42,7 @@ from train_correction_model import (
     build_char_vocab,
     build_examples,
     classify_term_type,
+    context_overlap_side,
     deterministic_score,
     edit_similarity,
     encode,
@@ -55,6 +57,10 @@ from train_correction_model import (
 
 SCORE_THRESHOLD = 0.86
 MARGIN_THRESHOLD = 0.18
+DETERMINISTIC_FLOOR = 0.68
+CONTEXT_OVERLAP_THRESHOLD = 0.55
+CONTEXT_MIN_SIM = 0.55
+CONTEXT_ONNX_FLOOR = 0.80
 
 # ── Dev terms: the vocabulary Said should learn ──────────────────────────────
 
@@ -106,6 +112,27 @@ DEV_ALIASES: list[AliasRule] = [
     AliasRule("abishek", "Abhishek", 1.0, 1, "approved"),
 ]
 
+# Context windows for disambiguation eval (term_norm → left/right token weights).
+DEV_CONTEXTS: dict[str, dict[str, dict[str, float]]] = {
+    "emiac": {
+        "left": {"office": 0.45, "quarterly": 0.35},
+        "right": {"revenue": 0.50, "review": 0.30},
+    },
+    "macobs": {
+        "left": {"install": 0.40, "deploy": 0.35},
+        "right": {"cluster": 0.45, "config": 0.30},
+    },
+}
+
+
+def build_dev_profiles() -> dict[str, dict[str, dict[str, float]]]:
+    profiles: dict[str, dict[str, dict[str, float]]] = {}
+    for term in DEV_VOCAB:
+        norm = normalize(term.term)
+        if norm in DEV_CONTEXTS:
+            profiles[norm] = DEV_CONTEXTS[norm]
+    return profiles
+
 
 # ── Test battery ─────────────────────────────────────────────────────────────
 
@@ -115,6 +142,8 @@ class TestCase:
     expected_term: str | None  # None = should NOT correct
     category: str
     description: str
+    left: tuple[str, ...] = ()
+    right: tuple[str, ...] = ()
 
 
 TEST_BATTERY: list[TestCase] = [
@@ -197,6 +226,40 @@ TEST_BATTERY: list[TestCase] = [
     TestCase("12345", None, "numeric", "pure digits"),
     TestCase("xyzqwplm", None, "random_gibberish", "no candidate should match"),
     TestCase("brlmnsk", None, "random_gibberish", "consonant soup"),
+
+    # ── T7: Context disambiguation ─────────────────────────────────────────────
+    TestCase(
+        "meac",
+        "EMIAC",
+        "context_disambiguation",
+        "office/revenue context → EMIAC",
+        left=("office",),
+        right=("revenue",),
+    ),
+    TestCase(
+        "mac",
+        None,
+        "context_disambiguation",
+        "laptop/Hinglish particle context → no apply",
+        left=("naya",),
+        right=("liya",),
+    ),
+    TestCase(
+        "meeak",
+        "EMIAC",
+        "context_disambiguation",
+        "novel garble, no policy, strong EMIAC context",
+        left=("quarterly",),
+        right=("revenue",),
+    ),
+    TestCase(
+        "meeak",
+        None,
+        "context_disambiguation",
+        "same novel garble, laptop context → no apply",
+        left=("my",),
+        right=("laptop",),
+    ),
 ]
 
 
@@ -216,12 +279,20 @@ class ScoringResult:
     kind: str  # "onnx", "deterministic", "none"
 
 
+def hinglish_particle_nearby(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
+    return bool(PARTICLES & set(left + right))
+
+
 def score_token(
     token: str,
     candidates: list[VocabTerm],
     model: TinyCorrectionModel,
     char_to_id: dict[str, int],
     alias_count: dict[str, int],
+    left: tuple[str, ...] = (),
+    right: tuple[str, ...] = (),
+    profiles: dict[str, dict[str, dict[str, float]]] | None = None,
+    policy_pairs: set[tuple[str, str]] | None = None,
 ) -> ScoringResult:
     token_norm = normalize(token)
     if not token_norm or len(token_norm) < 3:
@@ -237,17 +308,28 @@ def score_token(
         if cand_norm == token_norm:
             continue
         det = deterministic_score(token, cand, alias_count.get(cand_norm, 0))
+        prof = (profiles or {}).get(cand_norm, {})
+        col = context_overlap_side(left, prof.get("left", {}))
+        cor = context_overlap_side(right, prof.get("right", {}))
+        particle = hinglish_particle_nearby(left, right)
         # ONNX scoring
         token_ids = torch.tensor([encode(token, char_to_id)], dtype=torch.long)
         cand_ids = torch.tensor([encode(cand.term, char_to_id)], dtype=torch.long)
-        feat = features(token, cand, alias_count.get(cand_norm, 0))
+        feat = features(
+            token,
+            cand,
+            alias_count.get(cand_norm, 0),
+            left,
+            right,
+            profiles,
+        )
         feat_tensor = torch.tensor([feat], dtype=torch.float32)
         with torch.no_grad():
             onnx = model(token_ids, cand_ids, feat_tensor).item()
 
         blended = max(det, onnx * 0.65 + det * 0.35)
         kind = "onnx" if blended > det else "deterministic"
-        scored.append((cand, blended, det, onnx, kind))
+        scored.append((cand, blended, det, onnx, kind, col, cor, particle))
 
     if not scored:
         return ScoringResult(token, None, 0, None, 0, 0, False, 0, 0, "none")
@@ -257,7 +339,30 @@ def score_token(
     second = scored[1] if len(scored) > 1 else None
     second_score = second[1] if second else 0.0
     margin = best[1] - second_score
-    applied = best[1] >= SCORE_THRESHOLD and margin >= MARGIN_THRESHOLD
+    best_norm = normalize(best[0].term)
+    has_policy = (token_norm, best_norm) in (policy_pairs or set())
+    policy_applied = (
+        has_policy
+        and margin >= MARGIN_THRESHOLD
+        and best[1] >= SCORE_THRESHOLD
+        and best[2] >= DETERMINISTIC_FLOOR
+    )
+    context_confident = (
+        (best[5] + best[6]) >= CONTEXT_OVERLAP_THRESHOLD
+        and best[2] >= CONTEXT_MIN_SIM
+        and best[3] >= CONTEXT_ONNX_FLOOR
+        and not best[7]
+        and margin >= MARGIN_THRESHOLD
+    )
+    context_applied = (
+        not has_policy
+        and context_confident
+        and best[1] >= SCORE_THRESHOLD
+    )
+    applied = policy_applied or context_applied
+    kind = best[4]
+    if context_applied and not policy_applied:
+        kind = "context"
 
     return ScoringResult(
         token=token,
@@ -269,7 +374,7 @@ def score_token(
         applied=applied,
         det_score=best[2],
         onnx_score=best[3],
-        kind=best[4],
+        kind=kind,
     )
 
 
@@ -284,14 +389,14 @@ def train_model(
     np.random.seed(SEED)
     torch.manual_seed(SEED)
 
-    examples, alias_count = build_examples(vocab, aliases, [])
+    examples, alias_count, _profiles = build_examples(vocab, aliases, [])
     pos = sum(1 for e in examples if e.label > 0.5)
     neg = len(examples) - pos
     print(f"  Training: {len(examples)} examples ({pos} pos / {neg} neg)")
 
     char_to_id = build_char_vocab(examples)
     token_ids, candidate_ids, feature_rows, labels = tensorize(
-        examples, char_to_id, alias_count
+        examples, char_to_id, alias_count, None
     )
 
     feature_count = feature_rows.shape[1]
@@ -343,18 +448,50 @@ def run_eval():
 
     # Step 2: Build candidate list (mirrors build_candidates in tier2.rs)
     candidates = [v for v in DEV_VOCAB if is_protected(v) and len(v.term.split()) == 1]
+    profiles = build_dev_profiles()
+    policy_pairs = {
+        (normalize(rule.transcript_form), normalize(rule.correct_form))
+        for rule in DEV_ALIASES
+        if rule.review_status == "approved"
+    }
     print(f"{B}Phase 2: Evaluating {len(TEST_BATTERY)} test cases against {len(candidates)} candidates{E}\n")
 
     # Step 3: Run test battery
     results_by_category: dict[str, list[tuple[TestCase, ScoringResult, bool]]] = {}
     total_pass = 0
     total_fail = 0
+    novel_context_caught = 0
 
     for tc in TEST_BATTERY:
-        result = score_token(tc.token, candidates, model, char_to_id, alias_count)
+        result = score_token(
+            tc.token,
+            candidates,
+            model,
+            char_to_id,
+            alias_count,
+            tc.left,
+            tc.right,
+            profiles,
+            policy_pairs,
+        )
+        if (
+            tc.category == "context_disambiguation"
+            and tc.expected_term is not None
+            and normalize(tc.token) not in {normalize(r.transcript_form) for r in DEV_ALIASES}
+            and result.applied
+            and result.kind == "context"
+        ):
+            novel_context_caught += 1
 
         if tc.expected_term is None:
             passed = not result.applied
+        elif tc.category in ("new_distortion", "cross_term"):
+            # Production apply needs policy evidence or context; these cases test ranking.
+            passed = (
+                result.best_term == tc.expected_term
+                and result.best_score >= SCORE_THRESHOLD
+                and result.margin >= MARGIN_THRESHOLD
+            )
         else:
             passed = result.applied and result.best_term == tc.expected_term
 
@@ -379,6 +516,7 @@ def run_eval():
         "too_short": "T6b: Too Short (< 3 chars) → MUST skip",
         "numeric": "T6c: Numeric → MUST skip",
         "random_gibberish": "T6d: Random Gibberish → SHOULD NOT match",
+        "context_disambiguation": "T7: Context Disambiguation (overlap + particle veto)",
     }
 
     for cat, label in CATEGORY_LABELS.items():
@@ -417,6 +555,7 @@ def run_eval():
 
     print(f"  {B}═══ SUMMARY ═══{E}")
     print(f"  {bar}  {total_pass}/{total} ({pct:.0f}%)")
+    print(f"  {B}Novel garbles caught via context:{E} {novel_context_caught}")
     if total_fail > 0:
         print(f"  {R}{total_fail} test(s) failed — review the results above{E}")
     else:
@@ -426,18 +565,30 @@ def run_eval():
     print(f"\n  {B}Safety Audit:{E}")
     load_dictionary()
     common_en_safe = all(
-        not score_token(w, candidates, model, char_to_id, alias_count).applied
+        not score_token(
+            w, candidates, model, char_to_id, alias_count, profiles=profiles, policy_pairs=policy_pairs
+        ).applied
         for w in ["air", "note", "dock", "graph", "sprint", "nest", "spring",
                    "tower", "guard", "press", "base", "react", "swift", "rust"]
     )
     common_hi_safe = all(
-        not score_token(w, candidates, model, char_to_id, alias_count).applied
+        not score_token(
+            w, candidates, model, char_to_id, alias_count, profiles=profiles, policy_pairs=policy_pairs
+        ).applied
         for w in ["bol", "sun", "kaam", "din", "ghar", "raat", "banda", "baat",
                    "mein", "kya", "dekh", "chal", "abhi", "mil", "rakh",
                    "waqt", "baar", "jagah", "cheez", "log"]
     )
     identity_safe = all(
-        not score_token(normalize(v.term), candidates, model, char_to_id, alias_count).applied
+        not score_token(
+            normalize(v.term),
+            candidates,
+            model,
+            char_to_id,
+            alias_count,
+            profiles=profiles,
+            policy_pairs=policy_pairs,
+        ).applied
         for v in DEV_VOCAB
     )
     print(f"  {'✓' if common_en_safe else '✗'} English common words: {'SAFE' if common_en_safe else 'UNSAFE'}")

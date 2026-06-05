@@ -58,9 +58,12 @@ export interface MeetingDetail {
 
 export interface OrgMember {
   account_id: string
+  email?: string
   lark_name?: string
   lark_department?: string
   role: string
+  auth_source?: string
+  lark_connected?: boolean
   joined_at?: string
   desktop_active?: boolean
 }
@@ -77,6 +80,77 @@ export interface DesktopClient {
   email?: string | null
   lark_name?: string | null
   lark_avatar_url?: string | null
+  auth_source?: string
+  lark_connected?: boolean
+  company_bucket_version?: number
+  company_vocab_synced_at?: string | null
+  personal_vocab_count?: number
+  personal_alias_count?: number
+}
+
+export interface OrgVocabTerm {
+  id: string
+  term: string
+  term_norm: string
+  term_type: string
+  language: string
+  weight: number
+  priority: number
+  status: string
+  updated_at: string
+}
+
+export interface OrgVocabAlias {
+  id: string
+  transcript_form: string
+  transcript_norm: string
+  correct_form: string
+  correct_norm: string
+  language: string
+  weight: number
+  status: string
+  safety_status: string
+  updated_at: string
+}
+
+export interface OrgVocabSuggestion {
+  id: string
+  kind: 'term' | 'alias' | string
+  term?: string | null
+  transcript_form?: string | null
+  correct_form?: string | null
+  term_type?: string | null
+  users_count: number
+  total_positive_count: number
+  total_negative_count: number
+  confidence: number
+  safety_status: string
+  status: string
+  updated_at: string
+}
+
+export interface OrgVocabRelease {
+  id: string
+  version: number
+  bucket_hash: string
+  notes?: string | null
+  created_at: string
+}
+
+export interface DiagnosticsEvent {
+  id: string
+  device_id: string
+  account_id?: string | null
+  org_id?: string | null
+  event_type: string
+  severity: string
+  app_version?: string | null
+  os?: string | null
+  arch?: string | null
+  channel?: string | null
+  phase?: string | null
+  context: Record<string, unknown>
+  created_at: string
 }
 
 export interface BugReport {

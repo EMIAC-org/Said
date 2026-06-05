@@ -12,6 +12,7 @@ pub mod meeting_hub;
 pub mod notification_worker;
 pub mod routes;
 pub mod store;
+pub mod vocab_worker;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -44,6 +45,9 @@ pub struct AppState {
     pub lark: LarkConfig,
     pub hub: Arc<meeting_hub::MeetingHub>,
     pub deepgram_api_key: String,
+    pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
+    /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
+    pub divo_base_url: String,
 }
 
 // ── Router constructor ───────────────────────────────────────────────────────
@@ -69,7 +73,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/health", get(routes::health::handler))
         .route("/v1/auth/signup", post(routes::auth::signup))
         .route("/v1/auth/login", post(routes::auth::login))
+        .route("/v1/auth/desktop-email", post(routes::auth::desktop_email))
         .route("/v1/bug-reports/public", post(routes::bugs::submit_public))
+        .route("/v1/diagnostics", post(routes::diagnostics::ingest))
+        .route("/v1/diagnostics", get(routes::diagnostics::list))
         // Authenticated
         .route("/v1/auth/logout", post(routes::auth::logout))
         .route("/v1/auth/me", get(routes::auth::me))
@@ -86,6 +93,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/auth/lark/start", get(routes::lark_auth::start))
         .route("/v1/auth/lark/callback", get(routes::lark_auth::callback))
         .route("/v1/auth/lark/refresh", post(routes::lark_auth::refresh))
+        // Divo agent proxy (attaches the account's Lark token, streams SSE back)
+        .route("/v1/divo/chat", post(routes::divo::chat))
+        .route("/v1/divo/threads", get(routes::divo::list_threads))
+        .route("/v1/divo/threads/:id", get(routes::divo::thread))
         .route("/v1/license/check", get(routes::license::check))
         .route("/v1/metering/report", post(routes::metering::report))
         // Enterprise — Desktop clients
@@ -100,6 +111,59 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::clients::client_usage),
         )
         .route("/v1/orgs/:org_id/stats", get(routes::clients::org_stats))
+        // Enterprise — Company vocabulary bucket
+        .route(
+            "/v1/orgs/:org_id/vocab/terms",
+            get(routes::vocab::list_terms).post(routes::vocab::create_term),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/terms/:term_id",
+            patch(routes::vocab::update_term).delete(routes::vocab::delete_term),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/aliases",
+            get(routes::vocab::list_aliases).post(routes::vocab::create_alias),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/aliases/:alias_id",
+            patch(routes::vocab::update_alias).delete(routes::vocab::delete_alias),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/publish",
+            post(routes::vocab::publish),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/releases",
+            get(routes::vocab::releases),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/suggestions",
+            get(routes::vocab::list_suggestions),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/suggestions/aggregate",
+            post(routes::vocab::aggregate_now),
+        )
+        .route(
+            "/v1/orgs/:org_id/vocab/suggestions/:suggestion_id",
+            patch(routes::vocab::update_suggestion),
+        )
+        .route(
+            "/v1/orgs/:org_id/clients/:account_id/vocab",
+            get(routes::vocab::user_vocab_detail),
+        )
+        .route(
+            "/v1/company-vocab/version",
+            get(routes::vocab::desktop_version),
+        )
+        .route(
+            "/v1/company-vocab/bucket",
+            get(routes::vocab::desktop_bucket),
+        )
+        .route(
+            "/v1/company-vocab/user-vocab",
+            post(routes::vocab::upload_user_vocab),
+        )
         // Enterprise — Orgs
         .route("/v1/orgs", post(routes::orgs::create))
         .route("/v1/orgs/me", get(routes::orgs::me))

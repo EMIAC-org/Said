@@ -47,7 +47,7 @@ const SECTION_SUBTITLES: Record<SettingsSection, string> = {
   "models":        "Dictation speed, quality, and ChatGPT connection.",
   "notifications": "Control which status bar alerts you see.",
   "permissions":   "Accessibility, input monitoring, notifications.",
-  "api-keys":    "Gateway, Deepgram and Gemini keys (stored locally).",
+  "api-keys":    "Groq and Deepgram keys (stored locally).",
   "enterprise":  "Connect to your organization's AirNote Enterprise server.",
   "debug":       "Recent app and backend logs.",
   "about":       "Version and credits.",

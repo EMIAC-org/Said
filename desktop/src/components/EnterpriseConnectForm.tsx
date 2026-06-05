@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Clock, ExternalLink, Link, Loader2, RotateCcw, X } from "lucide-react";
 import { openExternal } from "@/lib/invoke";
+import { LarkLogo } from "@/components/LarkLogo";
 import {
   completeAuth,
   forgetWorkspaceUrl,
@@ -138,7 +139,6 @@ export function EnterpriseConnectForm({
       if (ok) {
         setValidated(true);
         refreshRecents();
-        await startOAuth(trimmed);
       } else {
         setValidationError("Server did not respond with a valid health check.");
       }
@@ -270,8 +270,7 @@ export function EnterpriseConnectForm({
     <div className="space-y-4">
       {!compact && (
         <p className="text-[12px] text-muted-foreground leading-relaxed">
-          Connect to your organization&apos;s AirNote Enterprise server. You must sign in with
-          your workspace before using the app.
+          Connect to your organization&apos;s AirNote server, then sign in with your Lark account.
         </p>
       )}
 
@@ -295,23 +294,17 @@ export function EnterpriseConnectForm({
               }}
               className="input w-full text-[13px]"
             />
-            <button
-              onClick={() => void handleValidate()}
-              disabled={validating || waitingForBrowser || !serverUrl.trim()}
-              className={connectBtnClass}
-            >
-              {validating ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : validated && !waitingForBrowser ? (
-                <Check size={14} />
-              ) : null}
-              {waitingForBrowser
-                ? "Waiting for sign-in…"
-                : validated
-                  ? "Verified — sign in below"
-                  : "Connect workspace"}
-            </button>
-            <RecentWorkspaces />
+            {!validated && (
+              <button
+                onClick={() => void handleValidate()}
+                disabled={validating || waitingForBrowser || !serverUrl.trim()}
+                className={connectBtnClass}
+              >
+                {validating && <Loader2 size={14} className="animate-spin" />}
+                {validating ? "Verifying…" : "Connect workspace"}
+              </button>
+            )}
+            {!validated && <RecentWorkspaces />}
           </div>
         ) : (
           <div className="space-y-2">
@@ -329,20 +322,18 @@ export function EnterpriseConnectForm({
                 }}
                 className="input flex-1 text-[12px]"
               />
-              <button
-                onClick={() => void handleValidate()}
-                disabled={validating || waitingForBrowser || !serverUrl.trim()}
-                className={connectBtnClass}
-              >
-                {validating ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : validated && !waitingForBrowser ? (
-                  <Check size={12} />
-                ) : null}
-                {waitingForBrowser ? "Waiting…" : validated ? "Verified" : "Connect"}
-              </button>
+              {!validated && (
+                <button
+                  onClick={() => void handleValidate()}
+                  disabled={validating || waitingForBrowser || !serverUrl.trim()}
+                  className={connectBtnClass}
+                >
+                  {validating && <Loader2 size={12} className="animate-spin" />}
+                  {validating ? "Verifying…" : "Connect"}
+                </button>
+              )}
             </div>
-            {recentUrls.length > 0 && <RecentWorkspaces />}
+            {!validated && recentUrls.length > 0 && <RecentWorkspaces />}
           </div>
         )}
       </div>
@@ -357,12 +348,28 @@ export function EnterpriseConnectForm({
       )}
 
       {validated && !waitingForBrowser && oauthPhase === "idle" && (
-        <div
-          className="rounded-lg px-3 py-2 text-[12px] flex items-center gap-2"
-          style={{ background: "hsl(145 60% 12%)", color: "hsl(145 70% 70%)" }}
-        >
-          <Check size={12} />
-          Server is reachable. Sign in to complete the connection.
+        <div className="rounded-2xl border border-border bg-white/[0.025] px-5 py-6 flex flex-col items-center text-center gap-4">
+          <LarkLogo size={46} />
+          <div className="space-y-1">
+            <p className="text-[14px] font-semibold text-foreground">Sign in with Lark</p>
+            <p className="text-[12px] text-muted-foreground leading-relaxed max-w-[260px]">
+              Use your organization&apos;s Lark account. We&apos;ll open Lark in your browser and
+              connect automatically.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void startOAuth(serverUrl)}
+            className="w-full rounded-xl px-4 py-2.5 text-[13px] font-semibold flex items-center justify-center gap-2.5 transition-transform active:scale-[0.99]"
+            style={{
+              background: "#ffffff",
+              color: "#1a1a1a",
+              boxShadow: "0 6px 18px -8px rgba(0, 0, 0, 0.55)",
+            }}
+          >
+            <LarkLogo size={18} />
+            Continue with Lark
+          </button>
         </div>
       )}
 

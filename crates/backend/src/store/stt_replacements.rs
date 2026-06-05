@@ -100,6 +100,7 @@ pub enum MatchKind {
     Tier2ClusterFuzzy,
     Tier2Deterministic,
     Tier2Onnx,
+    Tier2Context,
 }
 
 impl MatchKind {
@@ -112,6 +113,7 @@ impl MatchKind {
             Self::Tier2ClusterFuzzy => "tier2_cluster_fuzzy",
             Self::Tier2Deterministic => "tier2_deterministic",
             Self::Tier2Onnx => "tier2_onnx",
+            Self::Tier2Context => "tier2_context",
         }
     }
 }

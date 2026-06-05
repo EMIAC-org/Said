@@ -11,6 +11,8 @@
 //!   - `update_channel` — Tauri's `tauri-plugin-updater` reads its endpoint
 //!     list at builder time during app setup, also before the backend is
 //!     ready.
+//!   - `message_polish_mode` — read synchronously by the desktop recording
+//!     pipeline before it sends a voice request to the backend.
 //!
 //! Everything else (the rich preferences struct: hotkey choice, custom
 //! prompts, language, lexicon, etc.) lives in the backend's SQLite DB and is
@@ -38,6 +40,11 @@ pub struct DesktopPrefs {
     /// because GitHub Releases excludes prereleases from `/latest/download`.
     #[serde(default = "default_channel")]
     pub update_channel: String,
+
+    /// When true, normal voice dictation adds a final professional English
+    /// message-polish pass and pastes only the final result.
+    #[serde(default)]
+    pub message_polish_mode: bool,
 }
 
 fn default_channel() -> String {
@@ -49,6 +56,7 @@ impl Default for DesktopPrefs {
         Self {
             sentry_disabled: false,
             update_channel: default_channel(),
+            message_polish_mode: false,
         }
     }
 }
@@ -105,11 +113,13 @@ mod tests {
         let p: DesktopPrefs = serde_json::from_str(partial).unwrap();
         assert!(!p.sentry_disabled);
         assert_eq!(p.update_channel, "stable");
+        assert!(!p.message_polish_mode);
 
         let partial = r#"{ "sentry_disabled": true }"#;
         let p: DesktopPrefs = serde_json::from_str(partial).unwrap();
         assert!(p.sentry_disabled);
         assert_eq!(p.update_channel, "stable");
+        assert!(!p.message_polish_mode);
     }
 
     #[test]
@@ -117,10 +127,12 @@ mod tests {
         let prefs = DesktopPrefs {
             sentry_disabled: true,
             update_channel: "beta".into(),
+            message_polish_mode: true,
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: DesktopPrefs = serde_json::from_str(&json).unwrap();
         assert!(back.sentry_disabled);
         assert_eq!(back.update_channel, "beta");
+        assert!(back.message_polish_mode);
     }
 }

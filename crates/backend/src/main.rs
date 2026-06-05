@@ -40,12 +40,20 @@ async fn main() {
         .with(filter)
         .with(file_layer)
         .with(said_core::telemetry::tracing_layer())
+        .with(said_core::reporter::tracing_layer())
         .init();
 
     start_parent_death_watch();
 
     // ── Load env vars ─────────────────────────────────────────────────────────
     said_core::load_env();
+
+    const DEFAULT_DIAGNOSTICS_BASE: &str = "https://airnote.emiactech.com";
+    let diagnostics_base = std::env::var("AIRNOTE_DIAGNOSTICS_URL")
+        .or_else(|_| std::env::var("AIRNOTE_CONTROL_PLANE_URL"))
+        .unwrap_or_else(|_| DEFAULT_DIAGNOSTICS_BASE.to_string());
+    said_core::reporter::configure(&diagnostics_base);
+    said_core::reporter::set_phase("backend_starting");
 
     let cli = Cli::parse();
 

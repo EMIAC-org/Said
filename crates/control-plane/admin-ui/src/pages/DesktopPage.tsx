@@ -6,6 +6,11 @@ import { Loading, Empty, ErrorBox } from '../components/States'
 import { formatDate } from '../utils'
 import type { DesktopClient } from '../types'
 
+interface DesktopVocabDetail {
+  terms: Array<{ term: string; term_type: string; weight: number; use_count: number; safety_status: string }>
+  aliases: Array<{ transcript_form: string; correct_form: string; weight: number; use_count: number; review_status: string; safety_status: string }>
+}
+
 function relativeLastSeen(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime()
   const min = Math.floor(ms / 60_000)
@@ -20,6 +25,21 @@ function isActive(lastSeen: string): boolean {
   return Date.now() - new Date(lastSeen).getTime() < 15 * 60 * 1000
 }
 
+function AuthBadge({ client }: { client: Pick<DesktopClient, 'auth_source' | 'lark_connected'> }) {
+  const lark = client.lark_connected || client.auth_source === 'lark'
+  return (
+    <span
+      className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+      style={{
+        background: lark ? 'hsl(145 60% 16%)' : 'hsl(210 60% 16%)',
+        color: lark ? 'hsl(145 70% 65%)' : 'hsl(210 70% 68%)',
+      }}
+    >
+      {lark ? 'Lark' : 'Email only'}
+    </span>
+  )
+}
+
 export function DesktopPage() {
   const { org } = useAuth()
   const [clients, setClients] = useState<DesktopClient[]>([])
@@ -27,6 +47,7 @@ export function DesktopPage() {
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<DesktopClient | null>(null)
   const [usage, setUsage] = useState<{ polish_count: number; word_count: number } | null>(null)
+  const [vocab, setVocab] = useState<DesktopVocabDetail | null>(null)
 
   useEffect(() => {
     if (!org?.org?.id) { setLoading(false); return }
@@ -39,6 +60,7 @@ export function DesktopPage() {
   useEffect(() => {
     if (!selected || !org?.org?.id) {
       setUsage(null)
+      setVocab(null)
       return
     }
     apiJson<{ usage: { polish_count: number; word_count: number } }>(
@@ -46,6 +68,11 @@ export function DesktopPage() {
     )
       .then(d => setUsage(d.usage))
       .catch(() => setUsage(null))
+    apiJson<DesktopVocabDetail>(
+      `/v1/orgs/${org.org.id}/clients/${selected.account_id}/vocab`,
+    )
+      .then(d => setVocab(d))
+      .catch(() => setVocab(null))
   }, [selected, org])
 
   if (loading) return <Loading />
@@ -74,7 +101,7 @@ export function DesktopPage() {
             <table className="w-full">
               <thead>
                 <tr>
-                  {['User', 'Platform', 'Version', 'Last seen', 'Status'].map(h => (
+                  {['User', 'Auth', 'Platform', 'Version', 'Last seen', 'Status'].map(h => (
                     <th key={h} className="text-[10px] font-medium text-fg-4 text-left px-5 py-3 border-b border-border uppercase tracking-wider">{h}</th>
                   ))}
                 </tr>
@@ -100,6 +127,7 @@ export function DesktopPage() {
                           </div>
                         </div>
                       </td>
+                      <td className="px-5 py-3.5 border-b border-border-light"><AuthBadge client={c} /></td>
                       <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light capitalize">{c.platform}</td>
                       <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light font-mono">{c.app_version}</td>
                       <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{relativeLastSeen(c.last_seen_at)}</td>
@@ -132,6 +160,20 @@ export function DesktopPage() {
                   </div>
                 </div>
                 <div className="space-y-3 text-[12px]">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-lg bg-surface-4/40 px-3 py-2">
+                      <div className="text-[18px] font-semibold tabular-nums">{selected.company_bucket_version || 0}</div>
+                      <div className="text-[10px] text-fg-4">Bucket v</div>
+                    </div>
+                    <div className="rounded-lg bg-surface-4/40 px-3 py-2">
+                      <div className="text-[18px] font-semibold tabular-nums">{(selected.personal_vocab_count || 0) + (selected.personal_alias_count || 0)}</div>
+                      <div className="text-[10px] text-fg-4">Vocab rows</div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-fg-4 text-[10px] uppercase tracking-wider mb-1">Authentication</div>
+                    <AuthBadge client={selected} />
+                  </div>
                   <div>
                     <div className="text-fg-4 text-[10px] uppercase tracking-wider mb-1">First seen</div>
                     <div>{formatDate(selected.first_seen_at)}</div>
@@ -144,6 +186,12 @@ export function DesktopPage() {
                     <div>
                       <div className="text-fg-4 text-[10px] uppercase tracking-wider mb-1">Hostname</div>
                       <div className="font-mono text-[11px]">{selected.hostname}</div>
+                    </div>
+                  )}
+                  {selected.company_vocab_synced_at && (
+                    <div>
+                      <div className="text-fg-4 text-[10px] uppercase tracking-wider mb-1">Vocab synced</div>
+                      <div>{formatDate(selected.company_vocab_synced_at)}</div>
                     </div>
                   )}
                   <div className="pt-3 border-t border-border-light">
@@ -161,6 +209,38 @@ export function DesktopPage() {
                       </div>
                     ) : (
                       <div className="text-fg-4">No usage recorded yet</div>
+                    )}
+                  </div>
+                  <div className="pt-3 border-t border-border-light">
+                    <div className="text-fg-4 text-[10px] uppercase tracking-wider mb-2">Uploaded vocabulary</div>
+                    {vocab && (vocab.terms.length || vocab.aliases.length) ? (
+                      <div className="space-y-3">
+                        <div>
+                          <div className="text-[11px] font-medium mb-1">Terms</div>
+                          <div className="space-y-1 max-h-[130px] overflow-y-auto">
+                            {vocab.terms.slice(0, 12).map(t => (
+                              <div key={t.term} className="flex items-center justify-between gap-2 text-[11px] rounded-md bg-surface-4/35 px-2 py-1">
+                                <span className="truncate">{t.term}</span>
+                                <span className="text-fg-4 tabular-nums">{t.use_count}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[11px] font-medium mb-1">Aliases</div>
+                          <div className="space-y-1 max-h-[130px] overflow-y-auto">
+                            {vocab.aliases.slice(0, 12).map(a => (
+                              <div key={`${a.transcript_form}-${a.correct_form}`} className="text-[11px] rounded-md bg-surface-4/35 px-2 py-1">
+                                <span className="font-mono">{a.transcript_form}</span>
+                                <span className="text-fg-4"> → </span>
+                                <span>{a.correct_form}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-fg-4">No vocabulary summary uploaded yet</div>
                     )}
                   </div>
                 </div>

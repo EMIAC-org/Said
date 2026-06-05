@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use tracing::{info, warn};
 
 pub mod alias_safety;
+pub mod company_vocab;
 pub mod corrections;
 pub mod email_memory;
 pub mod history;
@@ -58,6 +59,7 @@ const MIGRATION_030: &str = include_str!("migrations/030_stt_provider.sql");
 const MIGRATION_031: &str = include_str!("migrations/031_alias_safety_judgments.sql");
 const MIGRATION_032: &str = include_str!("migrations/032_enterprise_server_url.sql");
 const MIGRATION_033: &str = include_str!("migrations/033_email_memory.sql");
+const MIGRATION_034: &str = include_str!("migrations/034_company_vocab.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -372,6 +374,14 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 33")
             .expect("failed to set user_version to 33");
     }
+
+    if version < 34 {
+        info!("running migration 034_company_vocab");
+        conn.execute_batch(MIGRATION_034)
+            .expect("migration 034 failed");
+        conn.execute_batch("PRAGMA user_version = 34")
+            .expect("failed to set user_version to 34");
+    }
 }
 
 /// Return the default database path. Delegates to `paths::default_db_path()`
@@ -510,7 +520,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 33);
+        assert_eq!(version, 34);
 
         for table in [
             "tier2_policy_weights",
@@ -518,6 +528,9 @@ mod tests {
             "tier2_edit_policy_rules",
             "alias_safety_judgments",
             "email_memories",
+            "company_bucket_state",
+            "company_vocabulary",
+            "company_stt_replacements",
         ] {
             let exists: i64 = conn
                 .query_row(

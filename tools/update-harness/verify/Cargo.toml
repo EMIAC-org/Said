@@ -1,0 +1,17 @@
+# Standalone (NOT a workspace member) — reproduces the exact signature check the
+# Tauri updater runs in `verify_signature` (tauri-plugin-updater/src/updater.rs),
+# using the same minisign-verify crate + version.
+[workspace]
+
+[package]
+name = "verify-sig"
+version = "0.0.0"
+edition = "2021"
+
+[[bin]]
+name = "verify-sig"
+path = "src/main.rs"
+
+[dependencies]
+minisign-verify = "=0.2.5"
+base64 = "=0.22.1"

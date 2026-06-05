@@ -52,6 +52,7 @@ pub async fn store_token(
 
 pub async fn clear_token(State(state): State<AppState>) -> StatusCode {
     users::clear_cloud_token(&state.pool, &state.default_user_id);
+    crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
     StatusCode::NO_CONTENT
 }
 
