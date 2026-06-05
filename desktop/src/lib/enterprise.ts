@@ -28,6 +28,8 @@ async function clientPayload(): Promise<{
   company_vocab_synced_at?: string | null;
   personal_vocab_count?: number;
   personal_alias_count?: number;
+  os_version?: string;
+  build_channel?: string;
 }> {
   const platform =
     typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent)
@@ -50,6 +52,18 @@ async function clientPayload(): Promise<{
     } catch {
       hostname = undefined;
     }
+    let os_version: string | undefined;
+    let build_channel: string | undefined;
+    try {
+      const info = await invoke<{ os_version?: string; build_channel?: string }>(
+        "get_client_build_info",
+      );
+      os_version = info.os_version || undefined;
+      build_channel = info.build_channel || undefined;
+    } catch {
+      os_version = undefined;
+      build_channel = undefined;
+    }
     const vocab = await localCompanyVocabStatus();
     return {
       device_id: deviceId,
@@ -60,6 +74,8 @@ async function clientPayload(): Promise<{
       company_vocab_synced_at: msToIso(vocab?.bucket?.last_synced_at),
       personal_vocab_count: vocab?.bucket?.term_count ?? undefined,
       personal_alias_count: vocab?.bucket?.alias_count ?? undefined,
+      os_version,
+      build_channel,
     };
   } catch (err) {
     console.warn("[enterprise] clientPayload fallback", err);

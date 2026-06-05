@@ -5217,6 +5217,23 @@ fn get_hostname() -> String {
         .unwrap_or_else(|_| "desktop".to_string())
 }
 
+/// Build identity for the enterprise client registry: the running OS version
+/// and which Option A channel this binary is — `standard` (macOS 11+, no echo
+/// gate) or `echo` (macOS 13+, ScreenCaptureKit echo gate compiled in).
+#[tauri::command]
+fn get_client_build_info() -> serde_json::Value {
+    let os_version = sysinfo::System::os_version().unwrap_or_default();
+    let build_channel = if cfg!(feature = "system-echo-gate") {
+        "echo"
+    } else {
+        "standard"
+    };
+    serde_json::json!({
+        "os_version": os_version,
+        "build_channel": build_channel,
+    })
+}
+
 #[tauri::command]
 async fn cloud_logout(backend: State<'_, BackendState>) -> Result<(), String> {
     let ep = get_endpoint(&backend)?;
@@ -7454,6 +7471,7 @@ fn main() {
             get_enterprise_status,
             get_device_id,
             get_hostname,
+            get_client_build_info,
             cloud_login,
             cloud_logout,
             get_cloud_status,
