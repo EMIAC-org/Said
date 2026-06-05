@@ -233,7 +233,10 @@ fn upsert_inner(
 ) -> bool {
     let conn = match pool.get() {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(e) => {
+            tracing::warn!("[vocab] upsert: could not get DB connection: {e}");
+            return false;
+        }
     };
     let trimmed = term.trim();
     if trimmed.is_empty() {

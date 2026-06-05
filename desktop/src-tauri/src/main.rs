@@ -4052,6 +4052,40 @@ fn set_desktop_prefs(prefs: said_core::prefs::DesktopPrefs) -> Result<(), String
     said_core::prefs::save(&prefs)
 }
 
+// ── Developer log viewer (Settings → Developer log) ──────────────────────────
+//
+// Surfaces the backend daemon's `backend.log` in-app so issues (e.g. a failed
+// vocabulary write) can be diagnosed without hunting through the OS data dir.
+
+fn backend_log_path() -> std::path::PathBuf {
+    said_core::paths::log_dir().join("backend.log")
+}
+
+/// Return the tail of the backend log (last `max_lines` lines, default 600).
+#[tauri::command]
+fn read_backend_log(max_lines: Option<usize>) -> Result<String, String> {
+    let path = backend_log_path();
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let max = max_lines.unwrap_or(600);
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(max);
+    Ok(lines[start..].join("\n"))
+}
+
+/// Absolute path of the backend log file (shown in the UI).
+#[tauri::command]
+fn backend_log_location() -> String {
+    backend_log_path().to_string_lossy().into_owned()
+}
+
+/// Reveal the log directory in the OS file manager.
+#[tauri::command]
+fn open_log_folder() -> Result<(), String> {
+    let dir = said_core::paths::log_dir();
+    open::that(&dir).map_err(|e| format!("couldn't open {}: {e}", dir.display()))
+}
+
 // ── Meeting mode commands ────────────────────────────────────────────────────
 
 /// Enter meeting mode: auto-start recording, invert hotkey (hold = mute).
@@ -6168,6 +6202,10 @@ fn main() {
             // Backed by `<data_dir>/desktop_prefs.json`, not the SQLite preferences DB.
             get_desktop_prefs,
             set_desktop_prefs,
+            // Developer log viewer
+            read_backend_log,
+            backend_log_location,
+            open_log_folder,
             // Meeting audio pipeline
             start_meeting_stt,
             stop_meeting_stt,

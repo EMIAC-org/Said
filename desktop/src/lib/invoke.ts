@@ -969,6 +969,23 @@ export async function setDesktopPrefs(prefs: DesktopPrefs): Promise<void> {
   return tauriInvoke<void>("set_desktop_prefs", { prefs });
 }
 
+// ── Developer log (backend.log tail) ─────────────────────────────────────────
+
+export async function readBackendLog(maxLines = 600): Promise<string> {
+  if (!isTauriRuntime()) return "(dev log only available in the desktop app)";
+  return tauriInvoke<string>("read_backend_log", { maxLines });
+}
+
+export async function backendLogLocation(): Promise<string> {
+  if (!isTauriRuntime()) return "";
+  return tauriInvoke<string>("backend_log_location");
+}
+
+export async function openLogFolder(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  return tauriInvoke<void>("open_log_folder");
+}
+
 // Suppress unused-import warnings for types only used in exported signatures
 export type {
   CloudAuthResponse,
