@@ -71,7 +71,7 @@
       "binaries/airnote-backend"
     ],
     "macOS": {
-      "minimumSystemVersion": "13.0",
+      "minimumSystemVersion": "11.0",
       "infoPlist": "Info.plist",
       "signingIdentity": "Developer ID Application: EMIAC TECHNOLOGIES LIMITED (96ZQGP7L3B)"
     },

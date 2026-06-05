@@ -10,6 +10,15 @@ repository.workspace   = true
 [lints]
 workspace = true
 
+[features]
+# Opt-in: compiles the ScreenCaptureKit system-audio echo gate (Meeting Mode
+# speaker-bleed cancellation). It pulls in `screencapturekit`, which builds a
+# Swift bridge and strong-links ScreenCaptureKit + MetalFX — frameworks that
+# force a macOS 13.0 floor. Left OFF by default so the shipped build has no
+# >11 framework dependency and runs on macOS 11+. See build.rs and
+# src/echo_gate.rs (the gate fails open when this is absent).
+system-echo-gate = ["dep:screencapturekit"]
+
 [build-dependencies]
 tauri-build = { version = "2.0.0", features = [] }
 
@@ -67,4 +76,4 @@ dispatch        = "0.2"
 libc            = "0.2"
 block           = "0.1"
 tauri-nspanel   = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
-screencapturekit = { version = "6.1.0", features = ["macos_13_0"] }
+screencapturekit = { version = "6.1.0", features = ["macos_13_0"], optional = true }

@@ -247,7 +247,7 @@ fn normalized_correlation(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "system-echo-gate"))]
 mod system_reference {
     use super::EchoGateShared;
     use std::sync::Arc;
@@ -338,7 +338,12 @@ mod system_reference {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+// Stub used on non-macOS, and on macOS when the `system-echo-gate` feature is
+// off (the default, macOS 11+ build). `start()` returns Err, which every call
+// site already tolerates: the gate marks itself unavailable and Meeting Mode
+// falls back to level-based speech detection (fails open — no echo cancellation,
+// but full functionality otherwise).
+#[cfg(not(all(target_os = "macos", feature = "system-echo-gate")))]
 mod system_reference {
     use super::EchoGateShared;
     use std::sync::Arc;
@@ -348,7 +353,7 @@ mod system_reference {
 
     impl SystemAudioReferenceCapture {
         pub fn start(_gate: Arc<EchoGateShared>) -> Result<Self, String> {
-            Err("system-output reference capture is macOS-only".into())
+            Err("echo cancellation is not available in this build".into())
         }
     }
 }
