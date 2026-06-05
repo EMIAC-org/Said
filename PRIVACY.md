@@ -52,6 +52,12 @@ Said is a thin client that orchestrates three external services to convert your 
 - **When**: On crash, on startup, on update check.
 - **Default**: On. You can disable it in Settings → Diagnostics. Toggling it off stops sends within ~30 seconds.
 
+### 5. Enterprise workspace server (only if you connect one)
+- **What is sent**: When the desktop app is linked to a self-hosted AirNote workspace, it registers install metadata — anonymous device UUID, platform, OS version, app version, build channel (`standard`/`echo`), and hostname — so workspace admins can see and support their fleet.
+- **What is NOT sent**: transcripts, polished text, audio, API keys, or anything you dictate. Counts and metadata only.
+- **Where**: Your organization's own server (the workspace URL you connected to), never Said's infrastructure.
+- **When**: On connect and on periodic heartbeat.
+
 ---
 
 ## What stays local

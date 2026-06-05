@@ -101,7 +101,7 @@ export function DesktopPage() {
             <table className="w-full">
               <thead>
                 <tr>
-                  {['User', 'Auth', 'Platform', 'Version', 'Last seen', 'Status'].map(h => (
+                  {['User', 'Auth', 'Platform', 'OS', 'Build', 'Version', 'Last seen', 'Status'].map(h => (
                     <th key={h} className="text-[10px] font-medium text-fg-4 text-left px-5 py-3 border-b border-border uppercase tracking-wider">{h}</th>
                   ))}
                 </tr>
@@ -129,6 +129,22 @@ export function DesktopPage() {
                       </td>
                       <td className="px-5 py-3.5 border-b border-border-light"><AuthBadge client={c} /></td>
                       <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light capitalize">{c.platform}</td>
+                      <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{c.os_version || '—'}</td>
+                      <td className="px-5 py-3.5 border-b border-border-light">
+                        {c.build_channel ? (
+                          <span
+                            className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                            style={{
+                              background: c.build_channel === 'echo' ? 'hsl(210 60% 16%)' : 'hsl(220 8% 22%)',
+                              color: c.build_channel === 'echo' ? 'hsl(210 70% 68%)' : 'hsl(220 12% 72%)',
+                            }}
+                          >
+                            {c.build_channel === 'echo' ? 'Echo · 13+' : 'Standard'}
+                          </span>
+                        ) : (
+                          <span className="text-[12px] text-fg-3">—</span>
+                        )}
+                      </td>
                       <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light font-mono">{c.app_version}</td>
                       <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{relativeLastSeen(c.last_seen_at)}</td>
                       <td className="px-5 py-3.5 border-b border-border-light">

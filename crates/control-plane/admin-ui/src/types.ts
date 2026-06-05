@@ -86,6 +86,8 @@ export interface DesktopClient {
   company_vocab_synced_at?: string | null
   personal_vocab_count?: number
   personal_alias_count?: number
+  os_version?: string | null
+  build_channel?: string | null
 }
 
 export interface OrgVocabTerm {

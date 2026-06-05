@@ -22,6 +22,8 @@ pub struct ClientBody {
     pub company_vocab_synced_at: Option<DateTime<Utc>>,
     pub personal_vocab_count: Option<i32>,
     pub personal_alias_count: Option<i32>,
+    pub os_version: Option<String>,
+    pub build_channel: Option<String>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -43,6 +45,8 @@ pub struct ClientRow {
     pub company_vocab_synced_at: Option<DateTime<Utc>>,
     pub personal_vocab_count: i32,
     pub personal_alias_count: i32,
+    pub os_version: Option<String>,
+    pub build_channel: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -123,8 +127,9 @@ pub async fn register(
     sqlx::query(
         "INSERT INTO desktop_clients
             (org_id, account_id, device_id, platform, app_version, hostname,
-             company_bucket_version, company_vocab_synced_at, personal_vocab_count, personal_alias_count)
-         VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, 0), $8, COALESCE($9, 0), COALESCE($10, 0))
+             company_bucket_version, company_vocab_synced_at, personal_vocab_count, personal_alias_count,
+             os_version, build_channel)
+         VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, 0), $8, COALESCE($9, 0), COALESCE($10, 0), $11, $12)
          ON CONFLICT (org_id, device_id) DO UPDATE
            SET account_id  = EXCLUDED.account_id,
                platform    = EXCLUDED.platform,
@@ -134,6 +139,8 @@ pub async fn register(
                company_vocab_synced_at = COALESCE(EXCLUDED.company_vocab_synced_at, desktop_clients.company_vocab_synced_at),
                personal_vocab_count = EXCLUDED.personal_vocab_count,
                personal_alias_count = EXCLUDED.personal_alias_count,
+               os_version = COALESCE(EXCLUDED.os_version, desktop_clients.os_version),
+               build_channel = COALESCE(EXCLUDED.build_channel, desktop_clients.build_channel),
                last_seen_at = now()",
     )
     .bind(org_id)
@@ -146,6 +153,8 @@ pub async fn register(
     .bind(body.company_vocab_synced_at)
     .bind(body.personal_vocab_count)
     .bind(body.personal_alias_count)
+    .bind(body.os_version.as_deref())
+    .bind(body.build_channel.as_deref())
     .execute(&state.db)
     .await
     .map_err(db_err)?;
@@ -176,7 +185,9 @@ pub async fn heartbeat(
                 company_bucket_version = GREATEST(company_bucket_version, COALESCE($6, company_bucket_version)),
                 company_vocab_synced_at = COALESCE($7, company_vocab_synced_at),
                 personal_vocab_count = COALESCE($8, personal_vocab_count),
-                personal_alias_count = COALESCE($9, personal_alias_count)
+                personal_alias_count = COALESCE($9, personal_alias_count),
+                os_version = COALESCE(NULLIF($10, ''), os_version),
+                build_channel = COALESCE(NULLIF($11, ''), build_channel)
           WHERE org_id = $1 AND device_id = $2 AND account_id = $3",
     )
     .bind(org_id)
@@ -188,6 +199,8 @@ pub async fn heartbeat(
     .bind(body.company_vocab_synced_at)
     .bind(body.personal_vocab_count)
     .bind(body.personal_alias_count)
+    .bind(body.os_version.as_deref())
+    .bind(body.build_channel.as_deref())
     .execute(&state.db)
     .await
     .map_err(db_err)?;
@@ -226,7 +239,8 @@ pub async fn list_org_clients(
                 END AS auth_source,
                 (om.lark_user_id IS NOT NULL) AS lark_connected,
                 dc.company_bucket_version, dc.company_vocab_synced_at,
-                dc.personal_vocab_count, dc.personal_alias_count
+                dc.personal_vocab_count, dc.personal_alias_count,
+                dc.os_version, dc.build_channel
            FROM desktop_clients dc
            JOIN accounts a ON a.id = dc.account_id
            LEFT JOIN org_members om ON om.account_id = dc.account_id AND om.org_id = dc.org_id
@@ -322,7 +336,8 @@ pub async fn org_stats(
                     END AS auth_source,
                     (om.lark_user_id IS NOT NULL) AS lark_connected,
                     dc.company_bucket_version, dc.company_vocab_synced_at,
-                    dc.personal_vocab_count, dc.personal_alias_count
+                    dc.personal_vocab_count, dc.personal_alias_count,
+                    dc.os_version, dc.build_channel
                FROM desktop_clients dc
                JOIN accounts a ON a.id = dc.account_id
                LEFT JOIN org_members om ON om.account_id = dc.account_id AND om.org_id = dc.org_id
