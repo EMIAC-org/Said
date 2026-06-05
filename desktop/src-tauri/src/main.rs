@@ -476,10 +476,13 @@ fn present_status_bar_native(
 
     #[cfg(not(target_os = "macos"))]
     {
+        // Position the HUD before showing — the macOS path repositions via the
+        // panel presenter, but the native path must do it explicitly or the
+        // window appears at its stale/default origin.
+        reposition_status_bar(app, &win);
         win.set_always_on_top(true)
             .map_err(|e| format!("set_always_on_top failed: {e}"))?;
-        win.set_visible_on_all_workspaces(true)
-            .map_err(|e| format!("set_visible_on_all_workspaces failed: {e}"))?;
+        let _ = win.set_visible_on_all_workspaces(true); // no-op on Windows; best-effort
         win.show()
             .map_err(|e| format!("show status bar failed: {e}"))?;
         if resync {
@@ -1298,6 +1301,7 @@ fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
             schedule_present_status_bar_macos(handle, &win, state, false);
             #[cfg(not(target_os = "macos"))]
             {
+                reposition_status_bar(handle, &win);
                 let _ = win.set_always_on_top(true);
                 let _ = win.set_visible_on_all_workspaces(true);
                 let _ = win.show();
@@ -1387,6 +1391,7 @@ fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
 
     #[cfg(not(target_os = "macos"))]
     {
+        reposition_status_bar(handle, &win);
         match win.set_always_on_top(true) {
             Ok(_) => tracing::debug!("[status-bar] set_always_on_top ok"),
             Err(e) => tracing::warn!("[status-bar] set_always_on_top failed: {e}"),
