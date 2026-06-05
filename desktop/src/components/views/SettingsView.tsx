@@ -9,7 +9,7 @@ import {
   RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown,
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
-import { applyPendingUpdate, downloadUpdate } from "@/lib/autoUpdate";
+import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
 import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
 
@@ -320,6 +320,7 @@ function ChatGPTSection() {
 export type SettingsSection =
   | "appearance"
   | "writing"
+  | "hotkeys"
   | "models"
   | "notifications"
   | "permissions"
@@ -329,6 +330,7 @@ export type SettingsSection =
   | "about";
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
+  { id: "hotkeys",      label: "Hotkeys"      },
   { id: "models",         label: "Models"         },
   { id: "notifications",  label: "Notifications"  },
   { id: "permissions",    label: "Permissions"     },
@@ -757,7 +759,11 @@ export function SettingsView({
           setDownloadProgress(100);
         }
       });
-      if (!version) return;
+      if (!version) {
+        setUpdateStatus("up-to-date");
+        return;
+      }
+      setUpdateVersion(version);
       setUpdateStatus("ready");
     } catch (err) {
       setUpdateError(err instanceof Error ? err.message : String(err));
@@ -785,6 +791,14 @@ export function SettingsView({
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion("?"));
+  }, []);
+
+  useEffect(() => {
+    void getPendingReadyUpdateVersion().then((version) => {
+      if (!version) return;
+      setUpdateVersion(version);
+      setUpdateStatus("ready");
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1090,6 +1104,65 @@ export function SettingsView({
           <div className="mb-7">
             <AppearanceSection />
           </div>
+        </Show>
+
+        {/* ── Hotkeys ─────────────────────────────────── */}
+        <Show when={isOn("hotkeys")}>
+        <Section title="Voice Hotkey">
+          <div className="px-5 py-4">
+            <div className="flex items-center gap-4">
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
+                style={{ background: "hsl(var(--surface-4))" }}
+              >
+                <Key size={16} />
+              </div>
+              <div className="flex-1">
+                <p className="text-[13px] font-medium text-foreground mb-1">Hold-to-speak key</p>
+                <p className="text-[12px] text-muted-foreground">
+                  Choose the key AirNote listens for when you speak. Changes apply immediately.
+                </p>
+              </div>
+            </div>
+            <div
+              className="flex mt-3 rounded-xl p-0.5 gap-0.5"
+              style={{ background: "hsl(var(--surface-4))" }}
+            >
+              {([
+                { key: "caps_lock", label: "Caps Lock" },
+                { key: "right_option", label: isWindows ? "Right Alt" : "Right Option" },
+                ...(!isWindows ? [{ key: "fn", label: "Fn / Globe" }] : []),
+              ] as { key: "caps_lock" | "right_option" | "fn"; label: string }[]).map((opt) => {
+                const isActive = recordHotkey === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    aria-pressed={isActive}
+                    disabled={saving}
+                    onClick={() => patch({ record_hotkey: opt.key })}
+                    className="flex-1 text-[13px] font-medium rounded-[10px] py-1.5 transition-all disabled:opacity-60"
+                    style={{
+                      background: isActive ? "hsl(var(--surface-1))" : "transparent",
+                      color: isActive ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
+                      boxShadow: isActive ? "0 1px 3px rgba(0,0,0,0.25)" : "none",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
+              Current: {recordHotkeyLabel}. macOS requires Input Monitoring for global hotkeys.
+            </p>
+            {saveError && (
+              <p className="text-[11px] mt-2" style={{ color: "hsl(var(--destructive))" }}>
+                {saveError}
+              </p>
+            )}
+          </div>
+        </Section>
         </Show>
 
         {/* ── Tone & Persona ───────────────────────────── */}
@@ -2226,7 +2299,15 @@ export function SettingsView({
                   </button>
                 ) : updateStatus === "ready" ? (
                   <button
-                    onClick={() => void applyPendingUpdate()}
+                    onClick={() => void (async () => {
+                      try {
+                        await applyPendingUpdate();
+                        setUpdateStatus("up-to-date");
+                      } catch (err) {
+                        setUpdateError(err instanceof Error ? err.message : String(err));
+                        setUpdateStatus("error");
+                      }
+                    })()}
                     className="px-3 py-1 rounded-md text-[11px] font-medium border border-transparent text-background"
                     style={{ background: "hsl(var(--primary))" }}
                   >

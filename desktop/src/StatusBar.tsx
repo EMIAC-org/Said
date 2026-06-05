@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, ListChecks, Mic, Pencil, Plus, RotateCcw, Send, Sparkles, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
-import { APPLY_UPDATE_EVENT } from "./lib/autoUpdate";
+import { applyPendingUpdate, getPendingReadyUpdateVersion } from "./lib/autoUpdate";
 import { divoListThreads, type DivoThreadSummary } from "./lib/invoke";
 import { Markdown } from "./components/Markdown";
 
@@ -661,6 +661,23 @@ export default function StatusBar() {
       .catch((err) => {
         console.warn("[status-bar] initial snapshot failed", err);
       });
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void getPendingReadyUpdateVersion().then((version) => {
+      if (!alive || !version) return;
+      showPinnedUpdate({
+        kind: "update_ready",
+        version,
+        message: `Update ${version} is ready. Restart AirNote to use it.`,
+      }, "auto-update-ready-restored");
+    }).catch((err) => {
+      console.warn("[status-bar] failed to restore pending update", err);
+    });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -1760,8 +1777,18 @@ export default function StatusBar() {
               type="button"
               className="sb-survey-next"
               onClick={async () => {
-                await clearPinnedUpdate("auto-update-restart");
-                void emit(APPLY_UPDATE_EVENT);
+                try {
+                  await applyPendingUpdate();
+                  await clearPinnedUpdate("auto-update-restart-applied");
+                  setBar({ kind: "idle" });
+                  invoke("dismiss_status_bar").catch(() => {});
+                } catch (err) {
+                  const message = err instanceof Error ? err.message : String(err);
+                  showPinnedUpdate({
+                    ...bar,
+                    message: `Restart failed. Try again, or open Settings > About. ${message}`,
+                  }, "auto-update-restart-failed");
+                }
               }}
             >
               Restart

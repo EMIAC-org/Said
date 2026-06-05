@@ -59,6 +59,7 @@ const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insigh
 type SettingsSectionId =
   | "appearance"
   | "writing"
+  | "hotkeys"
   | "models"
   | "notifications"
   | "permissions"
