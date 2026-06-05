@@ -7,6 +7,15 @@
 # Tauri updater archive, signs that updater archive, writes the Darwin updater
 # manifest, uploads everything to the VM, and prunes old versions. It is
 # intentionally Mac-only and does not overwrite the Windows updater manifest.
+#
+# Usage: scripts/deploy-release-vm.sh [TARGET] [CHANNEL]
+#   TARGET   default aarch64-apple-darwin
+#   CHANNEL  default "standard" (the macOS 11+ build, published under
+#            /updates/darwin/ — the historical path every install polls).
+#            Pass "echo" for the macOS 13+ build (built with
+#            --features system-echo-gate); it is published under
+#            /updates/echo/darwin/ so a standard install can never be
+#            offered it.
 
 set -euo pipefail
 
@@ -20,6 +29,12 @@ case "$TARGET" in
   *) echo "unsupported target: $TARGET (currently only aarch64-apple-darwin is deployable)" >&2; exit 1 ;;
 esac
 
+CHANNEL="${2:-standard}"
+case "$CHANNEL" in
+  standard|echo) ;;
+  *) echo "unsupported channel: $CHANNEL (expected: standard | echo)" >&2; exit 1 ;;
+esac
+
 VERSION=$(awk '
   /^\[workspace\.package\]/ { in_section = 1; next }
   /^\[/                     { in_section = 0 }
@@ -31,6 +46,18 @@ VERSION=$(awk '
   }
 ' Cargo.toml)
 [ -n "$VERSION" ] || { echo "could not parse workspace version" >&2; exit 1; }
+
+# Channel-aware remote layout. `standard` keeps the historical paths so every
+# already-installed client keeps polling /updates/darwin/latest.json unchanged.
+# `echo` (the macOS 13+ build) lives under its own subtree, so a standard
+# install can never be offered it.
+if [ "$CHANNEL" = "echo" ]; then
+  UPDATES_SUBPATH="echo/darwin"
+  RELEASE_SUBPATH="releases/$VERSION/echo"
+else
+  UPDATES_SUBPATH="darwin"
+  RELEASE_SUBPATH="releases/$VERSION"
+fi
 
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://airnote.emiactech.com}"
 REMOTE="${REMOTE:-root@103.180.163.41}"
@@ -46,7 +73,7 @@ fi
 
 APP_DIR="target/$TARGET/release/bundle/macos/$PRODUCT_NAME.app"
 DMG_PATH="target/$TARGET/release/bundle/dmg/${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.dmg"
-ARTIFACT_DIR=".context/release-artifacts/$VERSION"
+ARTIFACT_DIR=".context/release-artifacts/$VERSION/$CHANNEL"
 UPDATE_TAR="${PRODUCT_NAME}_${VERSION}_${ARCH_SHORT}.app.tar.gz"
 UPDATE_TAR_PATH="$ARTIFACT_DIR/$UPDATE_TAR"
 UPDATE_SIG_PATH="$UPDATE_TAR_PATH.sig"
@@ -126,13 +153,13 @@ cat > "$DARWIN_MANIFEST_PATH" <<JSON
   "platforms": {
     "$PLATFORM_KEY": {
       "signature": "$SIGNATURE",
-      "url": "$PUBLIC_BASE_URL/releases/$VERSION/$UPDATE_TAR"
+      "url": "$PUBLIC_BASE_URL/$RELEASE_SUBPATH/$UPDATE_TAR"
     }
   }
 }
 JSON
 
-if [ "${UPDATE_LEGACY_COMBINED_MANIFEST:-0}" = "1" ]; then
+if [ "${UPDATE_LEGACY_COMBINED_MANIFEST:-0}" = "1" ] && [ "$CHANNEL" = "standard" ]; then
   cp "$DARWIN_MANIFEST_PATH" "$LEGACY_MANIFEST_PATH"
 fi
 
@@ -148,7 +175,7 @@ echo "Uploading macOS release $VERSION to $REMOTE:$REMOTE_RELEASE_ROOT"
 "${SCP_CMD[@]}" "$DARWIN_MANIFEST_PATH" "$REMOTE:$REMOTE_RELEASE_ROOT/updates/darwin/latest.json"
 "${SCP_CMD[@]}" "$DARWIN_MANIFEST_PATH" "$REMOTE:$REMOTE_RELEASE_ROOT/releases/$VERSION/darwin-latest.json"
 
-if [ "${UPDATE_LEGACY_COMBINED_MANIFEST:-0}" = "1" ]; then
+if [ "${UPDATE_LEGACY_COMBINED_MANIFEST:-0}" = "1" ] && [ "$CHANNEL" = "standard" ]; then
   "${SCP_CMD[@]}" "$LEGACY_MANIFEST_PATH" "$REMOTE:$REMOTE_RELEASE_ROOT/updates/latest.json"
   "${SCP_CMD[@]}" "$LEGACY_MANIFEST_PATH" "$REMOTE:$REMOTE_RELEASE_ROOT/releases/$VERSION/latest.json"
 fi
@@ -166,11 +193,11 @@ if [ "$remove_count" -gt 0 ]; then
 fi
 REMOTE_SCRIPT
 
-echo "Release uploaded:"
-echo "  manifest: $PUBLIC_BASE_URL/updates/darwin/latest.json"
-echo "  manual DMG: $PUBLIC_BASE_URL/releases/$VERSION/$(basename "$DMG_PATH")"
-echo "  updater: $PUBLIC_BASE_URL/releases/$VERSION/$UPDATE_TAR"
-if [ "${UPDATE_LEGACY_COMBINED_MANIFEST:-0}" = "1" ]; then
+echo "Release uploaded ($CHANNEL channel):"
+echo "  manifest: $PUBLIC_BASE_URL/updates/$UPDATES_SUBPATH/latest.json"
+echo "  manual DMG: $PUBLIC_BASE_URL/$RELEASE_SUBPATH/$(basename "$DMG_PATH")"
+echo "  updater: $PUBLIC_BASE_URL/$RELEASE_SUBPATH/$UPDATE_TAR"
+if [ "${UPDATE_LEGACY_COMBINED_MANIFEST:-0}" = "1" ] && [ "$CHANNEL" = "standard" ]; then
   echo "  legacy combined manifest also updated: $PUBLIC_BASE_URL/updates/latest.json"
 else
   echo "  windows manifest left untouched"
