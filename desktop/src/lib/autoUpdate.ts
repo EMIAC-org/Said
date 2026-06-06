@@ -10,6 +10,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Event the status-bar window emits when the user clicks Restart. The main
  * window owns the downloaded `Update` handle, so the apply must happen here. */
 export const APPLY_UPDATE_EVENT = "airnote://apply-update";
+export const APPLY_UPDATE_FAILED_EVENT = "airnote://apply-update-failed";
 
 let running = false;
 
@@ -45,12 +46,23 @@ export async function applyPendingUpdate(): Promise<void> {
   }
   if (!update) {
     clearStoredReadyUpdateVersion();
-    return;
+    throw new Error("No downloaded update is available. Please check for updates and download it again.");
   }
   await update.install();
   pendingUpdate = null;
   clearStoredReadyUpdateVersion();
   await relaunch();
+}
+
+/** Ask the main app webview to apply the pending update.
+ *
+ * The downloaded `Update` handle belongs to the webview that performed the
+ * download. Secondary windows, especially the status-bar HUD, cannot reliably
+ * hold that handle. Emitting one shared event keeps every Restart/Relaunch
+ * button on the same code path.
+ */
+export async function requestApplyPendingUpdate(): Promise<void> {
+  await emit(APPLY_UPDATE_EVENT, { requestedAt: Date.now() });
 }
 
 function readNumber(key: string): number {
@@ -178,7 +190,11 @@ export function startDailyAutoUpdateCheck(): () => void {
   // The status-bar runs in a separate webview and cannot hold the downloaded
   // `Update` handle, so its Restart button emits this event for us to apply.
   const unlistenApply = listen(APPLY_UPDATE_EVENT, () => {
-    void applyPendingUpdate();
+    void applyPendingUpdate().catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[auto-update] apply failed:", err);
+      void emit(APPLY_UPDATE_FAILED_EVENT, { message });
+    });
   });
 
   return () => {

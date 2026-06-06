@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, ListChecks, Mic, Pencil, Plus, RotateCcw, Send, Sparkles, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
-import { applyPendingUpdate, getPendingReadyUpdateVersion } from "./lib/autoUpdate";
+import { APPLY_UPDATE_FAILED_EVENT, getPendingReadyUpdateVersion, requestApplyPendingUpdate } from "./lib/autoUpdate";
 import { divoListThreads, type DivoThreadSummary } from "./lib/invoke";
 import { Markdown } from "./components/Markdown";
 
@@ -1000,6 +1000,18 @@ export default function StatusBar() {
       subs.push(fn);
     }).catch(() => {});
 
+    listen<{ message?: string }>(APPLY_UPDATE_FAILED_EVENT, (e) => {
+      if (!notifEnabled("updates")) return;
+      const version = pinnedUpdateRef.current?.version || "the update";
+      showPinnedUpdate({
+        kind: "update_ready",
+        version,
+        message: `Restart failed. Try again from Settings. ${e.payload?.message || ""}`.trim(),
+      }, "auto-update-restart-failed");
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch(() => {});
+
     // ── Divo (Ctrl hold-to-talk → agent) ──────────────────────────────────
     // Review step: the polished transcript arrives here for edit + Send, instead
     // of being sent to Divo automatically.
@@ -1778,10 +1790,11 @@ export default function StatusBar() {
               className="sb-survey-next"
               onClick={async () => {
                 try {
-                  await applyPendingUpdate();
-                  await clearPinnedUpdate("auto-update-restart-applied");
-                  setBar({ kind: "idle" });
-                  invoke("dismiss_status_bar").catch(() => {});
+                  showPinnedUpdate({
+                    ...bar,
+                    message: `Applying update ${bar.version}…`,
+                  }, "auto-update-restart-requested");
+                  await requestApplyPendingUpdate();
                 } catch (err) {
                   const message = err instanceof Error ? err.message : String(err);
                   showPinnedUpdate({
