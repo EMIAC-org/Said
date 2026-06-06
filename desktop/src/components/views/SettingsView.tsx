@@ -717,7 +717,7 @@ export function SettingsView({
 
   // ── Auto-update state ─────────────────────────────────────────────────────
   const [appVersion, setAppVersion] = useState("…");
-  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "ready" | "up-to-date" | "error">("idle");
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "ready" | "applying" | "up-to-date" | "error">("idle");
   const [updateVersion, setUpdateVersion] = useState("");
   const [updateError, setUpdateError] = useState("");
 
@@ -766,6 +766,17 @@ export function SettingsView({
       }
       setUpdateVersion(version);
       setUpdateStatus("ready");
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+      setUpdateStatus("error");
+    }
+  }, []);
+
+  const relaunchToApplyUpdate = useCallback(async () => {
+    setUpdateStatus("applying");
+    setUpdateError("");
+    try {
+      await applyPendingUpdate();
     } catch (err) {
       setUpdateError(err instanceof Error ? err.message : String(err));
       setUpdateStatus("error");
@@ -2319,6 +2330,7 @@ export function SettingsView({
               updateStatus === "checking" ? "Checking for updates…" :
               updateStatus === "available" ? `Version ${updateVersion} is available` :
               updateStatus === "downloading" ? `Downloading update… ${downloadProgress}%` :
+              updateStatus === "applying" ? "Applying update…" :
               updateStatus === "ready" ? "Update downloaded — relaunch to finish" :
               updateStatus === "up-to-date" ? "You're on the latest version" :
               updateStatus === "error" ? (updateError || "Update check failed") :
@@ -2327,7 +2339,7 @@ export function SettingsView({
             last
             action={
               <div className="flex items-center gap-2">
-                {updateStatus === "checking" || updateStatus === "downloading" ? (
+                {updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "applying" ? (
                   <Loader2 size={14} className="animate-spin text-muted-foreground" />
                 ) : updateStatus === "available" ? (
                   <button
@@ -2339,15 +2351,8 @@ export function SettingsView({
                   </button>
                 ) : updateStatus === "ready" ? (
                   <button
-                    onClick={() => void (async () => {
-                      try {
-                        await applyPendingUpdate();
-                        setUpdateStatus("up-to-date");
-                      } catch (err) {
-                        setUpdateError(err instanceof Error ? err.message : String(err));
-                        setUpdateStatus("error");
-                      }
-                    })()}
+                    type="button"
+                    onClick={() => void relaunchToApplyUpdate()}
                     className="px-3 py-1 rounded-md text-[11px] font-medium border border-transparent text-background"
                     style={{ background: "hsl(var(--primary))" }}
                   >
