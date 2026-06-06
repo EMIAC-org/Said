@@ -260,6 +260,7 @@ pub fn mark_removed_feedback(
     pool: &DbPool,
     user_id: &str,
     recording_id: &str,
+    visible_output: &str,
     user_kept: &str,
 ) -> FeedbackMarkResult {
     let events: Vec<(String, String, String, String)> = {
@@ -301,6 +302,20 @@ pub fn mark_removed_feedback(
 
     let mut result = FeedbackMarkResult::default();
     for (event_id, token_text, chosen_form, scorer_kind) in events {
+        let was_visible = contains_term(visible_output, &chosen_form);
+        if !was_visible {
+            if let Ok(conn) = pool.get() {
+                let _ = conn.execute(
+                    "UPDATE tier2_decision_events
+                        SET reward_outcome = ?2,
+                            feedback_at = ?3
+                      WHERE id = ?1",
+                    params![event_id, "negative_unverified", now_ms()],
+                );
+            }
+            continue;
+        }
+
         let kept = contains_term(user_kept, &chosen_form);
         let outcome = if kept {
             result.marked_kept += 1;
@@ -666,7 +681,13 @@ mod tests {
         drop(conn);
 
         // User corrected back to "Mac" -- EMIAC is NOT in kept text
-        let feedback = mark_removed_feedback(&pool, "u1", "r1", "Mac ka kaam ho gaya");
+        let feedback = mark_removed_feedback(
+            &pool,
+            "u1",
+            "r1",
+            "EMIAC ka kaam ho gaya",
+            "Mac ka kaam ho gaya",
+        );
         assert_eq!(feedback.penalized, 1, "stt_alias event should be penalized");
         assert_eq!(feedback.marked_kept, 0);
 
@@ -715,7 +736,13 @@ mod tests {
         drop(conn);
 
         // User kept EMIAC in their text — should NOT penalize
-        let feedback = mark_removed_feedback(&pool, "u1", "r1", "EMIAC ka kaam ho gaya");
+        let feedback = mark_removed_feedback(
+            &pool,
+            "u1",
+            "r1",
+            "EMIAC ka kaam ho gaya",
+            "EMIAC ka kaam ho gaya",
+        );
         assert_eq!(feedback.penalized, 0);
         assert_eq!(feedback.marked_kept, 1);
 
@@ -751,7 +778,8 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let feedback = mark_removed_feedback(&pool, "u1", "r1", "nahi bol raha hun");
+        let feedback =
+            mark_removed_feedback(&pool, "u1", "r1", "n8n bol raha hun", "nahi bol raha hun");
 
         assert_eq!(
             feedback.penalized, 1,
@@ -779,6 +807,45 @@ mod tests {
     }
 
     #[test]
+    fn invisible_decision_is_not_penalized() {
+        let pool = mem_pool_with_stt();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO tier2_decision_events
+                 (id, user_id, recording_id, timestamp_ms, token_text, token_norm,
+                  chosen_form, chosen_form_norm, scorer_kind, score, margin,
+                  deterministic_score, policy_boost, applied)
+             VALUES ('evt_hidden', 'u1', 'r1', 0, 'करके', 'karake', 'Groq', 'groq',
+                     'tier2_cluster_fuzzy', 0.82, 0.82, 0.82, 0.0, 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let feedback = mark_removed_feedback(
+            &pool,
+            "u1",
+            "r1",
+            "n8n aur Kafka ka use karke automation seekhni hai",
+            "n8n aur Kafka ka use karke automation seekhni hai",
+        );
+
+        assert_eq!(feedback.penalized, 0);
+        assert_eq!(feedback.marked_kept, 0);
+        assert!(feedback.penalized_pairs.is_empty());
+
+        let conn = pool.get().unwrap();
+        let outcome: String = conn
+            .query_row(
+                "SELECT reward_outcome FROM tier2_decision_events WHERE id = 'evt_hidden'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(outcome, "negative_unverified");
+    }
+
+    #[test]
     fn onnx_revert_inserts_blocked_rule() {
         let pool = mem_pool_with_stt();
         let conn = pool.get().unwrap();
@@ -794,8 +861,13 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let feedback =
-            mark_removed_feedback(&pool, "u1", "r1", "agent is working on the deployment");
+        let feedback = mark_removed_feedback(
+            &pool,
+            "u1",
+            "r1",
+            "AirNote is working on the deployment",
+            "agent is working on the deployment",
+        );
 
         assert_eq!(feedback.penalized, 1);
         assert_eq!(feedback.penalized_pairs[0].0, "agent");
@@ -840,8 +912,13 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let feedback =
-            mark_removed_feedback(&pool, "u1", "r1", "nahi aajkal yeh sab chal raha hai");
+        let feedback = mark_removed_feedback(
+            &pool,
+            "u1",
+            "r1",
+            "n8n Kafka yeh sab chal raha hai",
+            "nahi aajkal yeh sab chal raha hai",
+        );
 
         assert_eq!(
             feedback.penalized, 2,
@@ -877,7 +954,13 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let feedback = mark_removed_feedback(&pool, "u1", "r1", "Macobs ka kaam ho gaya hai");
+        let feedback = mark_removed_feedback(
+            &pool,
+            "u1",
+            "r1",
+            "Macobs ka kaam ho gaya hai",
+            "Macobs ka kaam ho gaya hai",
+        );
 
         assert_eq!(
             feedback.penalized, 0,

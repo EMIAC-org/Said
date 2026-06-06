@@ -40,6 +40,7 @@ const MEETING_SILENCE_LEVEL: f32 = 0.012;
 const MEETING_PAUSE_MS: u64 = 900;
 const MEETING_MIN_CHUNK_MS: u64 = 700;
 const MEETING_MAX_CHUNK_MS: u64 = 30_000;
+const AUTOSTART_ARG: &str = "--airnote-autostart";
 
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
@@ -1576,6 +1577,57 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+    activate_airnote(app, "show_main_window");
+}
+
+fn launched_from_autostart() -> bool {
+    std::env::args().any(|arg| arg == AUTOSTART_ARG)
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn activate_airnote(app: &tauri::AppHandle, reason: &'static str) {
+    let app_h = app.clone();
+    let _ = run_on_main_guarded(app, "activate_airnote", move || {
+        use cocoa::appkit::{NSApp, NSApplication};
+        use cocoa::base::YES;
+
+        unsafe {
+            NSApp().activateIgnoringOtherApps_(YES);
+        }
+        if let Some(w) = app_h.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+        tracing::debug!("[main] activated AirNote window ({reason})");
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn activate_airnote(_app: &tauri::AppHandle, _reason: &'static str) {}
+
+fn apply_launch_at_login(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let manager = app
+        .try_state::<tauri_plugin_autostart::AutoLaunchManager>()
+        .ok_or_else(|| "autostart manager unavailable".to_string())?;
+    let current = manager
+        .is_enabled()
+        .map_err(|e| format!("read launch-at-login state: {e}"))?;
+    if enabled == current {
+        return Ok(());
+    }
+    if enabled {
+        manager
+            .enable()
+            .map_err(|e| format!("enable launch-at-login: {e}"))?;
+    } else {
+        manager
+            .disable()
+            .map_err(|e| format!("disable launch-at-login: {e}"))?;
+    }
+    tracing::info!("[prefs] launch_at_login applied: {enabled}");
+    Ok(())
 }
 
 fn activate_long_dictation_lock(app: &tauri::AppHandle) {
@@ -4995,8 +5047,16 @@ fn get_desktop_prefs() -> said_core::prefs::DesktopPrefs {
 }
 
 #[tauri::command]
-fn set_desktop_prefs(prefs: said_core::prefs::DesktopPrefs) -> Result<(), String> {
-    said_core::prefs::save(&prefs)
+fn set_desktop_prefs(
+    app: tauri::AppHandle,
+    prefs: said_core::prefs::DesktopPrefs,
+) -> Result<(), String> {
+    let previous = said_core::prefs::load();
+    said_core::prefs::save(&prefs)?;
+    if previous.launch_at_login != prefs.launch_at_login {
+        apply_launch_at_login(&app, prefs.launch_at_login)?;
+    }
+    Ok(())
 }
 
 // ── Meeting mode commands ────────────────────────────────────────────────────
@@ -6551,6 +6611,10 @@ fn main() {
     let builder = builder.plugin(tauri_nspanel::init());
 
     builder
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![AUTOSTART_ARG]),
+        ))
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // Only one AirNote runs at a time (keyed by bundle id). A second
             // launch — e.g. opening /Applications/AirNote.app while a copy is
@@ -6572,6 +6636,12 @@ fn main() {
                     // NSPanel, so we no longer switch the whole app to Accessory.
                     app.set_activation_policy(tauri::ActivationPolicy::Regular);
                     tracing::info!("[main] macOS activation policy set to Regular (dock visible)");
+                }
+
+                let desktop_prefs = said_core::prefs::load();
+                if let Err(e) = apply_launch_at_login(app.handle(), desktop_prefs.launch_at_login)
+                {
+                    tracing::warn!("[prefs] launch_at_login sync failed: {e}");
                 }
 
                 {
@@ -7508,6 +7578,16 @@ fn main() {
             // Seatbelt: the RunEvent loop runs on the AppKit main thread, so a panic
             // here would SIGABRT the app — catch + recover.
             guard_panics("run_event", || match event {
+                tauri::RunEvent::Ready => {
+                    if launched_from_autostart() {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.hide();
+                        }
+                        tracing::info!("[main] launch-at-login startup — main window left hidden");
+                    } else {
+                        show_main_window(app);
+                    }
+                }
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen { has_visible_windows, .. } if !has_visible_windows => {
                     show_main_window(app);

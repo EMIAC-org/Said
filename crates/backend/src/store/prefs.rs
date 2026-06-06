@@ -3,6 +3,20 @@ use serde::{Deserialize, Serialize};
 
 use super::{DbPool, now_ms};
 
+fn normalize_record_hotkey(raw: &str) -> String {
+    match raw
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' '], "_")
+        .as_str()
+    {
+        "caps_lock" | "capslock" => "caps_lock".into(),
+        "right_option" | "right_alt" | "rightoption" | "rightalt" => "right_option".into(),
+        "fn" | "function" | "globe" => "fn".into(),
+        _ => "caps_lock".into(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preferences {
     pub user_id: String,
@@ -77,9 +91,10 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                 auto_paste: row.get::<_, i64>(6)? != 0,
                 edit_capture: row.get::<_, i64>(7)? != 0,
                 polish_text_hotkey: row.get(8)?,
-                record_hotkey: row
-                    .get::<_, Option<String>>(9)?
-                    .unwrap_or_else(|| "caps_lock".into()),
+                record_hotkey: normalize_record_hotkey(
+                    &row.get::<_, Option<String>>(9)?
+                        .unwrap_or_else(|| "caps_lock".into()),
+                ),
                 learning_enabled: row.get::<_, i64>(10)? != 0,
                 updated_at: row.get(11)?,
                 gateway_api_key: row.get(12)?,
@@ -165,6 +180,7 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
         .ok()?;
     }
     if let Some(v) = update.record_hotkey {
+        let v = normalize_record_hotkey(&v);
         conn.execute(
             "UPDATE preferences SET record_hotkey = ?1, updated_at = ?2 WHERE user_id = ?3",
             params![v, now, user_id],
@@ -229,4 +245,25 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
     }
 
     get_prefs(pool, user_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_record_hotkey;
+
+    #[test]
+    fn normalizes_record_hotkey_values() {
+        assert_eq!(normalize_record_hotkey("caps_lock"), "caps_lock");
+        assert_eq!(normalize_record_hotkey("Caps Lock"), "caps_lock");
+        assert_eq!(normalize_record_hotkey("right-option"), "right_option");
+        assert_eq!(normalize_record_hotkey("right_alt"), "right_option");
+        assert_eq!(normalize_record_hotkey("Function"), "fn");
+        assert_eq!(normalize_record_hotkey("globe"), "fn");
+    }
+
+    #[test]
+    fn invalid_record_hotkey_falls_back_to_caps_lock() {
+        assert_eq!(normalize_record_hotkey("space"), "caps_lock");
+        assert_eq!(normalize_record_hotkey(""), "caps_lock");
+    }
 }

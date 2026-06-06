@@ -35,6 +35,10 @@ path = "src/bin/e2e_formatter.rs"
 name = "pipeline-quality"
 path = "src/bin/pipeline_quality.rs"
 
+[[bin]]
+name = "eval-edit-learning"
+path = "src/bin/eval_edit_learning.rs"
+
 
 [lints]
 workspace = true

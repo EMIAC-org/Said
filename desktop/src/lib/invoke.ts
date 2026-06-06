@@ -965,11 +965,17 @@ export interface DesktopPrefs {
   sentry_disabled: boolean;
   update_channel: "stable" | "beta";
   message_polish_mode: boolean;
+  launch_at_login: boolean;
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
   if (!isTauriRuntime()) {
-    return { sentry_disabled: false, update_channel: "stable", message_polish_mode: false };
+    return {
+      sentry_disabled: false,
+      update_channel: "stable",
+      message_polish_mode: false,
+      launch_at_login: false,
+    };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");
 }

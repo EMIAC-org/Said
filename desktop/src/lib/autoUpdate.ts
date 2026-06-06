@@ -29,6 +29,7 @@ export async function downloadUpdate(
   if (!update) return null;
   await update.download(onProgress);
   pendingUpdate = update;
+  writeString(READY_VERSION_KEY, update.version);
   return update.version;
 }
 
@@ -42,8 +43,13 @@ export async function applyPendingUpdate(): Promise<void> {
     update = await check();
     if (update) await update.download();
   }
-  if (update) await update.install();
+  if (!update) {
+    clearStoredReadyUpdateVersion();
+    return;
+  }
+  await update.install();
   pendingUpdate = null;
+  clearStoredReadyUpdateVersion();
   await relaunch();
 }
 
@@ -73,6 +79,36 @@ function removeKey(key: string): void {
   }
 }
 
+export function getStoredReadyUpdateVersion(): string {
+  try {
+    return localStorage.getItem(READY_VERSION_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function clearStoredReadyUpdateVersion(): void {
+  removeKey(READY_VERSION_KEY);
+}
+
+export async function getPendingReadyUpdateVersion(): Promise<string> {
+  const readyVersion = getStoredReadyUpdateVersion();
+  if (!readyVersion) return "";
+
+  try {
+    const current = await getVersion();
+    if (current === readyVersion) {
+      clearStoredReadyUpdateVersion();
+      return "";
+    }
+  } catch {
+    // Keep showing the restart prompt if version lookup fails. Losing the
+    // prompt is worse than asking the user to retry a valid update.
+  }
+
+  return readyVersion;
+}
+
 async function notifyReady(version: string, reminder = false): Promise<void> {
   await emit("auto-update-ready", {
     version,
@@ -83,23 +119,8 @@ async function notifyReady(version: string, reminder = false): Promise<void> {
 }
 
 async function reconcileReadyVersion(): Promise<boolean> {
-  let readyVersion = "";
-  try {
-    readyVersion = localStorage.getItem(READY_VERSION_KEY) || "";
-  } catch {
-    readyVersion = "";
-  }
+  const readyVersion = await getPendingReadyUpdateVersion();
   if (!readyVersion) return false;
-
-  try {
-    const current = await getVersion();
-    if (current === readyVersion) {
-      removeKey(READY_VERSION_KEY);
-      return false;
-    }
-  } catch {
-    // If version lookup fails, still show the reminder below.
-  }
 
   await notifyReady(readyVersion, true);
   return true;
@@ -115,12 +136,14 @@ async function runDailyCheck(): Promise<void> {
     const now = Date.now();
     const last = readNumber(LAST_CHECK_KEY);
     if (last > 0 && now - last < DAY_MS) return;
-    writeString(LAST_CHECK_KEY, String(now));
 
     const version = await downloadUpdate();
-    if (!version) return;
+    if (!version) {
+      writeString(LAST_CHECK_KEY, String(now));
+      return;
+    }
 
-    writeString(READY_VERSION_KEY, version);
+    writeString(LAST_CHECK_KEY, String(now));
     await notifyReady(version);
   } catch (err) {
     console.warn("[auto-update] daily check failed:", err);
