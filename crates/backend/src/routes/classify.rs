@@ -1,14 +1,17 @@
 //! POST /v1/classify-edit  —  Learning Pipeline v3
 //!
-//! Deterministic edit classification with LLM fallback only for meaning
-//! generation. Replaces the v2 LLM-driven pipeline:
+//! Deterministic edit classification with a narrow LLM fallback only for
+//! complex edit interpretation and meaning generation. Replaces the v2
+//! LLM-driven pipeline:
 //!
 //!   1. **Capture gate** (cheap): reject stale / clipboard / app-switched edits
 //!   2. **Branch** — no-edit (reward active vocab), full deletion, or stale
 //!   3. **Demotion** — unconditional negative signal for removed terms
 //!   4. **Deterministic classifier** — classify hunks from diff without LLM
-//!   5. **Meaning generation** — Groq call ONLY for new STT correction terms
-//!   6. **Save** — persist learnable changes by reason type
+//!   5. **Complex edit interpreter** — Groq may propose spans, but only real
+//!      transcript/output/kept spans survive verification
+//!   6. **Meaning generation** — Groq call ONLY for new STT correction terms
+//!   7. **Save** — persist learnable changes by reason type
 
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
@@ -62,9 +65,12 @@ fn default_capture_method() -> String {
 }
 
 /// Maximum elapsed-since-paste before we treat the edit as unrelated to
-/// our paste.  30 seconds is generous (covers slow human typing, longer
-/// thinking pauses) without being unbounded.
-const CAPTURE_STALE_MS: u64 = 30_000;
+/// our paste.  Desktop edit-watch can observe for up to ~45 seconds on slow
+/// edits, so the backend gate must be slightly wider than the watcher.
+const CAPTURE_STALE_MS: u64 = 60_000;
+
+const COMPLEX_EDIT_INTERPRETER_MODEL: &str = "llama-3.1-8b-instant";
+const GROQ_CHAT_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 
 /// Stricter subset: captures whose source is an *atomic* read of a specific
 /// text element. An AX read returning a value means it came from the targeted
@@ -303,6 +309,7 @@ pub async fn classify(
         &state.pool,
         &state.default_user_id,
         &body.recording_id,
+        &body.ai_output,
         &body.user_kept,
     );
     // Surface cluster-fuzzy / ONNX reverts as negative_terms so the desktop
@@ -351,11 +358,44 @@ pub async fn classify(
         edit_hunks.len(),
     );
 
-    // For new STT terms that need meaning, batch a single Groq call
-    // No synchronous LLM call — meaning is generated iteratively in the
+    let mut analyzer_changes = det_changes;
+    let protected_insert_changes = protected_insert_changes_from_hunks(
+        &edit_hunks,
+        &body.user_kept,
+        &state.pool,
+        &state.default_user_id,
+    );
+    if !protected_insert_changes.is_empty() {
+        info!(
+            "[classify] protected insert extractor added {} change(s)",
+            protected_insert_changes.len()
+        );
+        merge_llm_changes(&mut analyzer_changes, protected_insert_changes);
+    }
+    if needs_complex_edit_interpreter(&edit_hunks, &analyzer_changes) {
+        let llm_changes = interpret_complex_edit_with_llm(
+            &state.http_client,
+            &groq_key,
+            &transcript,
+            &body.ai_output,
+            &body.user_kept,
+            &edit_hunks,
+            &state.pool,
+            &state.default_user_id,
+        )
+        .await;
+        if !llm_changes.is_empty() {
+            info!(
+                "[classify] complex edit interpreter added {} verified change(s)",
+                llm_changes.len()
+            );
+            merge_llm_changes(&mut analyzer_changes, llm_changes);
+        }
+    }
+
+    // No synchronous meaning LLM call — meaning is generated iteratively in the
     // background by spawn_vocab_embedding → spawn_meaning_refresh (GPT-5.4-mini).
     // Each sighting adds context; the meaning deepens over time.
-    let mut analyzer_changes = det_changes;
     for change in &mut analyzer_changes {
         if change.context_example.is_none() && change.should_learn {
             change.context_example = surrounding_sentence(&body.user_kept, &change.corrected);
@@ -384,6 +424,24 @@ pub async fn classify(
         let is_ambiguous_case =
             skip.contains("common word") || skip.contains("might be rephrasing");
         if !is_ambiguous_case {
+            continue;
+        }
+        let protected_terms =
+            protected_terms_in_span(&state.pool, &state.default_user_id, &change.corrected);
+        let covered_by_protected_insert = protected_terms.iter().any(|term| {
+            analyzer_changes.iter().any(|candidate| {
+                candidate.reason == ChangeReason::SttError
+                    && candidate.should_learn
+                    && candidate.original.trim().is_empty()
+                    && tier2_edit_policy::normalize_token(&candidate.corrected)
+                        == tier2_edit_policy::normalize_token(term)
+            })
+        });
+        if covered_by_protected_insert {
+            info!(
+                "[classify] ambiguous skipped — protected insert already covers {:?}",
+                change.corrected
+            );
             continue;
         }
         // Brand signal: corrected has uppercase letter (Said, React, Vite, Mac)
@@ -461,7 +519,10 @@ pub async fn classify(
             }
         } else {
             None
-        };
+        }
+        .and_then(|pair| {
+            refine_stt_pair_for_learning(pair, &state.pool, &state.default_user_id, &body.user_kept)
+        });
         if matches!(change.reason, ChangeReason::SttError) && deterministic_pair.is_none() {
             continue;
         }
@@ -787,44 +848,52 @@ pub async fn classify(
                     }
                 }
 
-                // ── STT replacement aliases ──────────────────────────────
-                let aliases_written = stt_replacements::upsert_aliases_for_language(
-                    &state.pool,
-                    &state.default_user_id,
-                    original,
-                    original,
-                    &canonical_term,
-                    1.0,
-                    &output_language,
-                );
-                if aliases_written > 0 {
-                    promoted_count += aliases_written;
-                }
-                // Approve immediately — this alias passed all safety gates
-                // (dictionary, plausibility, judge_alias_source LLM, term type).
-                // No need to wait 15min for background review.
-                let approved = stt_replacements::approve_aliases_for_term(
-                    &state.pool,
-                    &state.default_user_id,
-                    &canonical_term,
-                );
-                if approved > 0 {
-                    info!("[classify] auto-approved {approved} alias(es) for {canonical_term:?}");
-                }
+                if !original.trim().is_empty() {
+                    // ── STT replacement aliases ──────────────────────────
+                    let aliases_written = stt_replacements::upsert_aliases_for_language(
+                        &state.pool,
+                        &state.default_user_id,
+                        original,
+                        original,
+                        &canonical_term,
+                        1.0,
+                        &output_language,
+                    );
+                    if aliases_written > 0 {
+                        promoted_count += aliases_written;
+                    }
+                    // Approve immediately — this alias passed all safety gates
+                    // (dictionary, plausibility, judge_alias_source LLM, term type).
+                    // No need to wait 15min for background review.
+                    let approved = stt_replacements::approve_aliases_for_term(
+                        &state.pool,
+                        &state.default_user_id,
+                        &canonical_term,
+                    );
+                    if approved > 0 {
+                        info!(
+                            "[classify] auto-approved {approved} alias(es) for {canonical_term:?}"
+                        );
+                    }
 
-                // ── Proactive distortion seeding ────────────────────────
-                // Pre-generate 8-12 likely Deepgram distortions as aliases
-                // so the system handles novel mis-hearings immediately.
-                let proactive = stt_replacements::generate_proactive_distortions(
-                    &state.pool,
-                    &state.default_user_id,
-                    &canonical_term,
-                    original,
-                    &output_language,
-                );
-                if proactive > 0 {
+                    // ── Proactive distortion seeding ────────────────────
+                    // Pre-generate 8-12 likely Deepgram distortions as aliases
+                    // so the system handles novel mis-hearings immediately.
+                    let proactive = stt_replacements::generate_proactive_distortions(
+                        &state.pool,
+                        &state.default_user_id,
+                        &canonical_term,
+                        original,
+                        &output_language,
+                    );
+                    if proactive > 0 {
+                        info!(
+                            "[classify] seeded {proactive} proactive distortion(s) for {canonical_term:?}"
+                        );
+                    }
+                } else {
                     info!(
-                        "[classify] seeded {proactive} proactive distortion(s) for {canonical_term:?}"
+                        "[classify] learned skipped protected term {canonical_term:?} without creating an empty alias"
                     );
                 }
 
@@ -1077,6 +1146,14 @@ pub fn schedule_retrain_public(state: crate::AppState) {
 }
 
 fn schedule_onnx_retrain(state: crate::AppState) {
+    if std::env::var("AIRNOTE_DISABLE_ONNX_RETRAIN")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        info!("[retrain] skipped — AIRNOTE_DISABLE_ONNX_RETRAIN is set");
+        return;
+    }
+
     let epoch = crate::store::now_ms();
     LAST_EDIT_EPOCH.store(epoch, Ordering::SeqCst);
 
@@ -1403,6 +1480,416 @@ fn surrounding_sentence(text: &str, term: &str) -> Option<String> {
     }
 }
 
+// ── Complex edit interpreter ────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct LlmEditInterpreterResponse {
+    #[serde(default)]
+    edits: Vec<LlmEditCandidate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LlmEditCandidate {
+    #[serde(default)]
+    source_span: String,
+    #[serde(default)]
+    corrected_span: String,
+    #[serde(default)]
+    edit_type: String,
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    should_learn: bool,
+    #[serde(default)]
+    confidence: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroqChatResponse {
+    choices: Vec<GroqChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroqChoice {
+    message: GroqMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroqMessage {
+    content: String,
+}
+
+fn needs_complex_edit_interpreter(
+    hunks: &[edit_diff::Hunk],
+    deterministic_changes: &[AnalyzedChange],
+) -> bool {
+    if hunks.is_empty() {
+        return false;
+    }
+
+    let has_learnable_stt = deterministic_changes
+        .iter()
+        .any(|change| change.should_learn && matches!(change.reason, ChangeReason::SttError));
+
+    let has_complex_hunk = hunks.iter().any(|hunk| {
+        let kept_tokens = token_surfaces(&hunk.kept_window);
+        let polish_tokens = token_surfaces(&hunk.polish_window);
+
+        if kept_tokens.is_empty() {
+            return false;
+        }
+        if polish_tokens.is_empty() {
+            return true;
+        }
+        kept_tokens.len() > 4 || polish_tokens.len() > 4 || kept_tokens.len() != polish_tokens.len()
+    });
+
+    has_complex_hunk
+        || !has_learnable_stt
+            && deterministic_changes.iter().any(|change| {
+                matches!(
+                    change.reason,
+                    ChangeReason::StylePreference | ChangeReason::StructuralRewrite
+                ) && !change.should_learn
+            })
+}
+
+async fn interpret_complex_edit_with_llm(
+    http: &reqwest::Client,
+    groq_key: &str,
+    transcript: &str,
+    polished: &str,
+    user_kept: &str,
+    hunks: &[edit_diff::Hunk],
+    pool: &crate::store::DbPool,
+    user_id: &str,
+) -> Vec<AnalyzedChange> {
+    use serde_json::json;
+
+    if groq_key.trim().is_empty() {
+        info!("[classify-llm] skipped complex edit interpreter — no Groq key");
+        return Vec::new();
+    }
+
+    let prompt = build_complex_edit_prompt(transcript, polished, user_kept, hunks);
+    let body = json!({
+        "model": COMPLEX_EDIT_INTERPRETER_MODEL,
+        "temperature": 0,
+        "max_tokens": 650,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a conservative edit interpreter for a speech dictation learning pipeline. You only identify concrete spans that the user explicitly changed. Return strict JSON only."
+            },
+            { "role": "user", "content": prompt }
+        ]
+    });
+
+    let resp = match http
+        .post(GROQ_CHAT_ENDPOINT)
+        .header("Authorization", format!("Bearer {groq_key}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(7))
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(err) => {
+            warn!("[classify-llm] complex edit interpreter request failed: {err}");
+            return Vec::new();
+        }
+    };
+
+    if !resp.status().is_success() {
+        warn!(
+            "[classify-llm] complex edit interpreter returned status {}",
+            resp.status()
+        );
+        return Vec::new();
+    }
+
+    let response: GroqChatResponse = match resp.json().await {
+        Ok(response) => response,
+        Err(err) => {
+            warn!("[classify-llm] failed to parse Groq chat response: {err}");
+            return Vec::new();
+        }
+    };
+    let Some(content) = response
+        .choices
+        .first()
+        .map(|choice| choice.message.content.trim())
+    else {
+        return Vec::new();
+    };
+    let Some(payload) = parse_complex_edit_payload(content) else {
+        warn!("[classify-llm] complex edit interpreter returned invalid JSON");
+        return Vec::new();
+    };
+
+    payload
+        .edits
+        .iter()
+        .filter_map(|candidate| {
+            verified_llm_candidate_to_change(
+                candidate, transcript, polished, user_kept, hunks, pool, user_id,
+            )
+        })
+        .collect()
+}
+
+fn build_complex_edit_prompt(
+    transcript: &str,
+    polished: &str,
+    user_kept: &str,
+    hunks: &[edit_diff::Hunk],
+) -> String {
+    let hunks_json = serde_json::to_string(hunks).unwrap_or_else(|_| "[]".to_string());
+    format!(
+        "Task: identify only concrete STT correction spans from this user edit.\n\
+         Do not rewrite. Do not explain. Do not invent terms.\n\n\
+         RAW_TRANSCRIPT:\n{transcript}\n\n\
+         AIRNOTE_OUTPUT:\n{polished}\n\n\
+         USER_FINAL:\n{user_kept}\n\n\
+         DETERMINISTIC_DIFF_HUNKS_JSON:\n{hunks_json}\n\n\
+         Return JSON exactly in this shape:\n\
+         {{\"edits\":[{{\"source_span\":\"text from RAW_TRANSCRIPT or AIRNOTE_OUTPUT, empty only for missing-word insertions\",\
+         \"corrected_span\":\"text from USER_FINAL\",\
+         \"edit_type\":\"replace|insert\",\
+         \"reason\":\"stt_error|style_preference|structural_rewrite\",\
+         \"should_learn\":true,\
+         \"confidence\":0.0}}]}}\n\n\
+         Rules:\n\
+         - corrected_span must appear literally in USER_FINAL.\n\
+         - For replace, source_span must appear literally in RAW_TRANSCRIPT or AIRNOTE_OUTPUT.\n\
+         - For insert, source_span must be empty and corrected_span must be a protected name, brand, acronym, or code identifier that was likely skipped by STT.\n\
+         - If one inserted phrase contains multiple protected terms, return one edit per term, e.g. inserted \"n8n EMIAC\" becomes corrected_span \"n8n\" and corrected_span \"EMIAC\".\n\
+         - Do not mark grammar, tone, wording, or full sentence rewrites as learnable.\n\
+         - Do not learn common Hindi/Hinglish/English words like kaisa, laga, main, mein, hai, time, can, go.\n\
+         - If uncertain, return {{\"edits\":[]}}."
+    )
+}
+
+fn parse_complex_edit_payload(raw: &str) -> Option<LlmEditInterpreterResponse> {
+    serde_json::from_str(raw)
+        .ok()
+        .or_else(|| extract_json_object(raw).and_then(|json| serde_json::from_str(json).ok()))
+}
+
+fn extract_json_object(raw: &str) -> Option<&str> {
+    let start = raw.find('{')?;
+    let end = raw.rfind('}')?;
+    (start <= end).then_some(&raw[start..=end])
+}
+
+fn verified_llm_candidate_to_change(
+    candidate: &LlmEditCandidate,
+    transcript: &str,
+    polished: &str,
+    user_kept: &str,
+    hunks: &[edit_diff::Hunk],
+    pool: &crate::store::DbPool,
+    user_id: &str,
+) -> Option<AnalyzedChange> {
+    if !candidate.should_learn {
+        return None;
+    }
+    let corrected = clean_surface(&candidate.corrected_span);
+    if corrected.is_empty() || token_surfaces(&corrected).len() > 4 {
+        return None;
+    }
+    if promotion_gate::is_common_word(&corrected) {
+        return None;
+    }
+    if !contains_normalized_phrase(user_kept, &corrected) {
+        return None;
+    }
+
+    let edit_type = candidate.edit_type.trim().to_ascii_lowercase();
+    let parsed_reason =
+        parse_llm_change_reason(&candidate.reason).unwrap_or(ChangeReason::StructuralRewrite);
+    let reason = if edit_type == "insert"
+        && matches!(
+            parsed_reason,
+            ChangeReason::SttError | ChangeReason::StructuralRewrite
+        ) {
+        ChangeReason::SttError
+    } else {
+        parsed_reason
+    };
+    if !matches!(reason, ChangeReason::SttError) {
+        return None;
+    }
+    let source = clean_surface(&candidate.source_span);
+    let min_confidence = if edit_type == "insert" { 0.86 } else { 0.78 };
+    if candidate.confidence < min_confidence {
+        return None;
+    }
+
+    let original = if edit_type == "insert" {
+        if !source.is_empty() {
+            return None;
+        }
+        if !is_strong_insert_target(pool, user_id, &corrected) {
+            return None;
+        }
+        String::new()
+    } else if edit_type == "replace" {
+        if source.is_empty()
+            || !candidate_source_supported(&source, transcript, polished, hunks)
+            || tier2_edit_policy::normalize_token(&source)
+                == tier2_edit_policy::normalize_token(&corrected)
+        {
+            return None;
+        }
+        source
+    } else {
+        return None;
+    };
+
+    info!(
+        "[classify-llm] verified complex edit: {:?} -> {:?} ({edit_type}, conf={:.2})",
+        original, corrected, candidate.confidence,
+    );
+    Some(AnalyzedChange {
+        original,
+        corrected: canonicalize_corrected_surface(corrected),
+        reason,
+        meaning: None,
+        context_example: surrounding_sentence(user_kept, &candidate.corrected_span)
+            .or_else(|| surrounding_sentence(user_kept, &clean_surface(&candidate.corrected_span))),
+        should_learn: true,
+        confidence: candidate.confidence.clamp(0.0, 1.0),
+        skip_reason: None,
+        format_rule: None,
+    })
+}
+
+fn parse_llm_change_reason(raw: &str) -> Option<ChangeReason> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "stt_error" | "stt" => Some(ChangeReason::SttError),
+        "polish_error" | "polish" => Some(ChangeReason::PolishError),
+        "format_preference" | "format" => Some(ChangeReason::FormatPreference),
+        "style_preference" | "style" => Some(ChangeReason::StylePreference),
+        "structural_rewrite" | "structural" | "rewrite" => Some(ChangeReason::StructuralRewrite),
+        _ => None,
+    }
+}
+
+fn is_strong_insert_target(pool: &crate::store::DbPool, user_id: &str, corrected: &str) -> bool {
+    if protected_vocab_lookup(pool, user_id, corrected).is_some()
+        || canonical_developer_term(corrected).is_some()
+    {
+        return true;
+    }
+    if promotion_gate::is_common_word(corrected) || crate::tier2::is_in_dictionary(corrected) {
+        return false;
+    }
+    matches!(
+        vocabulary::classify_term_type(corrected),
+        "brand" | "acronym" | "proper_noun" | "code_identifier"
+    )
+}
+
+fn protected_insert_changes_from_hunks(
+    hunks: &[edit_diff::Hunk],
+    user_kept: &str,
+    pool: &crate::store::DbPool,
+    user_id: &str,
+) -> Vec<AnalyzedChange> {
+    let mut changes = Vec::new();
+    for hunk in hunks {
+        if hunk.kept_window.trim().is_empty() {
+            continue;
+        }
+        let protected_terms = protected_terms_in_span(pool, user_id, &hunk.kept_window);
+        if protected_terms.is_empty() {
+            continue;
+        }
+        let source_surface = clean_surface(&hunk.polish_window);
+        let source_is_missing = source_surface.is_empty();
+        let source_is_unsafe = !source_is_missing
+            && unsafe_stt_source_reason(pool, user_id, &source_surface).is_some();
+        if !source_is_missing && !source_is_unsafe {
+            continue;
+        }
+
+        for corrected in protected_terms {
+            if changes.iter().any(|change: &AnalyzedChange| {
+                tier2_edit_policy::normalize_token(&change.corrected)
+                    == tier2_edit_policy::normalize_token(&corrected)
+            }) {
+                continue;
+            }
+            changes.push(AnalyzedChange {
+                original: String::new(),
+                corrected: corrected.clone(),
+                reason: ChangeReason::SttError,
+                meaning: None,
+                context_example: surrounding_sentence(user_kept, &corrected),
+                should_learn: true,
+                confidence: 0.92,
+                skip_reason: None,
+                format_rule: None,
+            });
+        }
+    }
+    changes
+}
+
+fn candidate_source_supported(
+    source: &str,
+    transcript: &str,
+    polished: &str,
+    hunks: &[edit_diff::Hunk],
+) -> bool {
+    contains_normalized_phrase(transcript, source)
+        || contains_normalized_phrase(polished, source)
+        || hunks.iter().any(|hunk| {
+            contains_normalized_phrase(&hunk.transcript_window, source)
+                || contains_normalized_phrase(&hunk.polish_window, source)
+        })
+}
+
+fn contains_normalized_phrase(text: &str, needle: &str) -> bool {
+    let needle_tokens = normalized_phrase_tokens(needle);
+    if needle_tokens.is_empty() {
+        return false;
+    }
+    let text_tokens = normalized_phrase_tokens(text);
+    text_tokens
+        .windows(needle_tokens.len())
+        .any(|window| window == needle_tokens.as_slice())
+}
+
+fn normalized_phrase_tokens(text: &str) -> Vec<String> {
+    token_surfaces(text)
+        .into_iter()
+        .map(|token| tier2_edit_policy::normalize_token(&token))
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn merge_llm_changes(changes: &mut Vec<AnalyzedChange>, llm_changes: Vec<AnalyzedChange>) {
+    for llm_change in llm_changes {
+        let duplicate_idx = changes.iter().position(|existing| {
+            tier2_edit_policy::normalize_token(&existing.original)
+                == tier2_edit_policy::normalize_token(&llm_change.original)
+                && tier2_edit_policy::normalize_token(&existing.corrected)
+                    == tier2_edit_policy::normalize_token(&llm_change.corrected)
+        });
+        if let Some(idx) = duplicate_idx {
+            if !changes[idx].should_learn && llm_change.should_learn {
+                changes[idx] = llm_change;
+            }
+        } else {
+            changes.push(llm_change);
+        }
+    }
+}
+
 // ── Deterministic hunk classifier ────────────────────────────────────────────
 
 /// Classify edit hunks deterministically — no LLM needed.
@@ -1467,6 +1954,13 @@ fn deterministic_classify_hunks(
                 skip_reason: Some("large structural change".into()),
                 format_rule: None,
             });
+            continue;
+        }
+
+        if let Some(split_changes) =
+            split_known_term_hunk(&polish_tokens, &kept_tokens, user_kept, pool, user_id)
+        {
+            changes.extend(split_changes);
             continue;
         }
 
@@ -1618,6 +2112,76 @@ fn deterministic_classify_hunks(
     }
 
     changes
+}
+
+fn split_known_term_hunk(
+    polish_tokens: &[String],
+    kept_tokens: &[String],
+    user_kept: &str,
+    pool: &crate::store::DbPool,
+    user_id: &str,
+) -> Option<Vec<AnalyzedChange>> {
+    if kept_tokens.is_empty()
+        || polish_tokens.len() <= kept_tokens.len()
+        || kept_tokens.len() > 3
+        || polish_tokens.len() > 8
+    {
+        return None;
+    }
+    let kept_canonicals = kept_tokens
+        .iter()
+        .map(|token| canonicalize_corrected_surface(token.clone()))
+        .collect::<Vec<_>>();
+    if !kept_canonicals
+        .iter()
+        .all(|term| is_strong_insert_target(pool, user_id, term))
+    {
+        return None;
+    }
+
+    let groups = split_source_tokens_evenly(polish_tokens, kept_canonicals.len())?;
+    let mut changes = Vec::new();
+    for (source_tokens, corrected) in groups.into_iter().zip(kept_canonicals.into_iter()) {
+        let original = source_tokens.join(" ");
+        if original.trim().is_empty()
+            || tier2_edit_policy::normalize_token(&original)
+                == tier2_edit_policy::normalize_token(&corrected)
+        {
+            return None;
+        }
+        changes.push(AnalyzedChange {
+            original,
+            corrected: corrected.clone(),
+            reason: ChangeReason::SttError,
+            meaning: None,
+            context_example: surrounding_sentence(user_kept, &corrected),
+            should_learn: true,
+            confidence: 0.9,
+            skip_reason: None,
+            format_rule: None,
+        });
+    }
+    Some(changes)
+}
+
+fn split_source_tokens_evenly(tokens: &[String], group_count: usize) -> Option<Vec<Vec<String>>> {
+    if group_count == 0 || tokens.len() < group_count {
+        return None;
+    }
+    let mut groups = Vec::with_capacity(group_count);
+    let mut start = 0usize;
+    for idx in 0..group_count {
+        let remaining_tokens = tokens.len() - start;
+        let remaining_groups = group_count - idx;
+        let group_len = remaining_tokens.div_ceil(remaining_groups);
+        let end = (start + group_len).min(tokens.len());
+        if start >= end {
+            return None;
+        }
+        groups.push(tokens[start..end].to_vec());
+        start = end;
+    }
+    (start == tokens.len()).then_some(groups)
 }
 
 /// Classify a single token pair (extracted from a multi-token hunk).
@@ -1812,6 +2376,110 @@ struct DeterministicEditPair {
     edit_type: String,
     left_context: Vec<String>,
     right_context: Vec<String>,
+}
+
+fn refine_stt_pair_for_learning(
+    mut pair: DeterministicEditPair,
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    user_kept: &str,
+) -> Option<DeterministicEditPair> {
+    let original_correct_form = pair.correct_form.clone();
+    let exact_protected = protected_vocab_lookup(pool, user_id, &pair.correct_form)
+        .or_else(|| canonical_developer_term(&pair.correct_form).map(str::to_string));
+    if let Some(canonical) = exact_protected {
+        pair.correct_form = canonical;
+        let (left_context, right_context) =
+            context_around_kept_term(user_kept, &pair.correct_form, 3);
+        pair.left_context = left_context;
+        pair.right_context = right_context;
+        return Some(pair);
+    }
+
+    let protected_terms = protected_terms_in_span(pool, user_id, &pair.correct_form);
+    if protected_terms.len() == 1 {
+        pair.correct_form = protected_terms[0].clone();
+        let (left_context, right_context) =
+            context_around_kept_term(user_kept, &pair.correct_form, 3);
+        pair.left_context = left_context;
+        pair.right_context = right_context;
+
+        // If the user edit span was "Macobs mein" but the source side is a
+        // common/filler word, this is evidence that a protected term was added,
+        // not evidence that the filler word should become an alias.
+        if pair.edit_type == "replace"
+            && (unsafe_stt_source_reason(pool, user_id, &pair.variant_form).is_some()
+                || corrected_span_had_common_filler(&original_correct_form, &pair.correct_form))
+        {
+            pair.variant_form.clear();
+            pair.edit_type = "insert".to_string();
+        }
+        return Some(pair);
+    }
+
+    if protected_terms.len() > 1 {
+        // Multi-term spans must be split earlier by the hunk classifier or the
+        // protected insert extractor. Keeping a broad phrase here would create
+        // review cards like "Macobs mein" and noisy aliases.
+        return None;
+    }
+
+    Some(pair)
+}
+
+fn corrected_span_had_common_filler(original_span: &str, narrowed_term: &str) -> bool {
+    let narrowed_norm = tier2_edit_policy::normalize_token(narrowed_term);
+    token_surfaces(original_span).into_iter().any(|token| {
+        let norm = tier2_edit_policy::normalize_token(&token);
+        !norm.is_empty()
+            && norm != narrowed_norm
+            && (promotion_gate::is_common_word(&token)
+                || alias_safety::is_common_alias_source(&token)
+                || crate::tier2::is_in_dictionary(&token))
+    })
+}
+
+fn protected_terms_in_span(pool: &crate::store::DbPool, user_id: &str, span: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    for term in vocabulary::top_terms(pool, user_id, 1000) {
+        if !is_protected_vocab_item(&term) || !contains_normalized_phrase(span, &term.term) {
+            continue;
+        }
+        push_unique_term(&mut terms, term.term);
+    }
+    for token in token_surfaces(span) {
+        if let Some(canonical) = canonical_developer_term(&token) {
+            push_unique_term(&mut terms, canonical.to_string());
+        }
+    }
+    terms
+}
+
+fn is_protected_vocab_item(term: &vocabulary::VocabTerm) -> bool {
+    let term_type = term
+        .term_type
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| vocabulary::classify_term_type(&term.term));
+    let source = term.source.trim();
+    source == "manual"
+        || source == "starred"
+        || matches!(
+            term_type,
+            "brand" | "acronym" | "proper_noun" | "code_identifier" | "phrase"
+        )
+}
+
+fn push_unique_term(terms: &mut Vec<String>, term: String) {
+    let norm = tier2_edit_policy::normalize_token(&term);
+    if norm.is_empty()
+        || terms
+            .iter()
+            .any(|existing| tier2_edit_policy::normalize_token(existing) == norm)
+    {
+        return;
+    }
+    terms.push(term);
 }
 
 fn deterministic_stt_edit_pair(
@@ -2193,6 +2861,275 @@ mod tests {
             skip_reason: None,
             format_rule: None,
         }
+    }
+
+    fn llm_candidate(
+        source_span: &str,
+        corrected_span: &str,
+        edit_type: &str,
+        confidence: f64,
+    ) -> LlmEditCandidate {
+        LlmEditCandidate {
+            source_span: source_span.to_string(),
+            corrected_span: corrected_span.to_string(),
+            edit_type: edit_type.to_string(),
+            reason: "stt_error".to_string(),
+            should_learn: true,
+            confidence,
+        }
+    }
+
+    #[test]
+    fn complex_interpreter_needed_for_insertions() {
+        let hunks = edit_diff::diff("ka data bhejo", "ka data bhejo", "Macobs ka data bhejo");
+        let det = deterministic_classify_hunks(
+            &hunks,
+            "ka data bhejo",
+            "ka data bhejo",
+            "Macobs ka data bhejo",
+            &mem_pool(),
+            "u1",
+        );
+        assert!(needs_complex_edit_interpreter(&hunks, &det));
+    }
+
+    #[test]
+    fn complex_interpreter_not_needed_for_simple_learnable_replace() {
+        let pool = mem_pool();
+        let hunks = edit_diff::diff(
+            "mecobs ka data bhejo",
+            "mecobs ka data bhejo",
+            "Macobs ka data bhejo",
+        );
+        let det = deterministic_classify_hunks(
+            &hunks,
+            "mecobs ka data bhejo",
+            "mecobs ka data bhejo",
+            "Macobs ka data bhejo",
+            &pool,
+            "u1",
+        );
+        assert!(!needs_complex_edit_interpreter(&hunks, &det));
+    }
+
+    #[test]
+    fn normalized_phrase_matching_handles_multi_word_spans() {
+        assert!(contains_normalized_phrase("n a ten ka workflow", "n a ten"));
+        assert!(contains_normalized_phrase("Macobs ka data bhejo", "macobs"));
+        assert!(!contains_normalized_phrase("Macobs ka data bhejo", "EMIAC"));
+    }
+
+    #[test]
+    fn llm_candidate_accepts_backed_replace() {
+        let pool = mem_pool();
+        let transcript = "bimmicop ka data bhejo";
+        let polished = "bimmicop ka data bhejo";
+        let kept = "Macobs ka data bhejo";
+        let hunks = edit_diff::diff(transcript, polished, kept);
+        let change = verified_llm_candidate_to_change(
+            &llm_candidate("bimmicop", "Macobs", "replace", 0.91),
+            transcript,
+            polished,
+            kept,
+            &hunks,
+            &pool,
+            "u1",
+        )
+        .expect("backed replace should verify");
+
+        assert_eq!(change.original, "bimmicop");
+        assert_eq!(change.corrected, "Macobs");
+        assert_eq!(change.reason, ChangeReason::SttError);
+    }
+
+    #[test]
+    fn llm_candidate_rejects_invented_corrected_span() {
+        let pool = mem_pool();
+        let transcript = "bimmicop ka data bhejo";
+        let polished = "bimmicop ka data bhejo";
+        let kept = "Macobs ka data bhejo";
+        let hunks = edit_diff::diff(transcript, polished, kept);
+        let change = verified_llm_candidate_to_change(
+            &llm_candidate("bimmicop", "EMIAC", "replace", 0.95),
+            transcript,
+            polished,
+            kept,
+            &hunks,
+            &pool,
+            "u1",
+        );
+
+        assert!(change.is_none());
+    }
+
+    #[test]
+    fn llm_candidate_rejects_invented_source_span() {
+        let pool = mem_pool();
+        let transcript = "bimmicop ka data bhejo";
+        let polished = "bimmicop ka data bhejo";
+        let kept = "Macobs ka data bhejo";
+        let hunks = edit_diff::diff(transcript, polished, kept);
+        let change = verified_llm_candidate_to_change(
+            &llm_candidate("kaisa", "Macobs", "replace", 0.95),
+            transcript,
+            polished,
+            kept,
+            &hunks,
+            &pool,
+            "u1",
+        );
+
+        assert!(change.is_none());
+    }
+
+    #[test]
+    fn llm_candidate_accepts_strong_missing_term_insert() {
+        let pool = mem_pool();
+        let transcript = "ka data bhejo";
+        let polished = "ka data bhejo";
+        let kept = "Macobs ka data bhejo";
+        let hunks = edit_diff::diff(transcript, polished, kept);
+        let change = verified_llm_candidate_to_change(
+            &llm_candidate("", "Macobs", "insert", 0.92),
+            transcript,
+            polished,
+            kept,
+            &hunks,
+            &pool,
+            "u1",
+        )
+        .expect("strong missing protected term should verify");
+
+        assert_eq!(change.original, "");
+        assert_eq!(change.corrected, "Macobs");
+        assert_eq!(change.reason, ChangeReason::SttError);
+    }
+
+    #[test]
+    fn llm_candidate_rejects_weak_insert_target() {
+        let pool = mem_pool();
+        let transcript = "ka data bhejo";
+        let polished = "ka data bhejo";
+        let kept = "randomword ka data bhejo";
+        let hunks = edit_diff::diff(transcript, polished, kept);
+        let change = verified_llm_candidate_to_change(
+            &llm_candidate("", "randomword", "insert", 0.95),
+            transcript,
+            polished,
+            kept,
+            &hunks,
+            &pool,
+            "u1",
+        );
+
+        assert!(change.is_none());
+    }
+
+    #[test]
+    fn protected_insert_extractor_splits_inserted_terms() {
+        let pool = mem_pool();
+        assert!(vocabulary::upsert(&pool, "u1", "n8n", 1.0, "manual"));
+        let kept = "n8n EMIAC ka proprietary model hai";
+        let hunks = edit_diff::diff("ka proprietary model hai", "ka proprietary model hai", kept);
+        let changes = protected_insert_changes_from_hunks(&hunks, kept, &pool, "u1");
+
+        assert_eq!(changes.len(), 2);
+        assert!(changes.iter().any(|change| {
+            change.original.is_empty()
+                && change.corrected == "n8n"
+                && change.reason == ChangeReason::SttError
+                && change.should_learn
+        }));
+        assert!(changes.iter().any(|change| {
+            change.original.is_empty()
+                && change.corrected == "EMIAC"
+                && change.reason == ChangeReason::SttError
+                && change.should_learn
+        }));
+    }
+
+    #[test]
+    fn protected_insert_extractor_strips_filler_from_common_source_hunk() {
+        let pool = mem_pool();
+        assert!(vocabulary::upsert(&pool, "u1", "Macobs", 1.0, "manual"));
+        let kept = "Macobs mein data bhejo";
+        let hunks = edit_diff::diff("mujhe data bhejo", "Mujhe data bhejo", kept);
+        let changes = protected_insert_changes_from_hunks(&hunks, kept, &pool, "u1");
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].original, "");
+        assert_eq!(changes[0].corrected, "Macobs");
+        assert_eq!(changes[0].reason, ChangeReason::SttError);
+        assert!(changes[0].should_learn);
+    }
+
+    #[test]
+    fn split_known_term_hunk_separates_compound_distortions() {
+        let pool = mem_pool();
+        assert!(vocabulary::upsert(&pool, "u1", "GraphQL", 1.0, "manual"));
+        assert!(vocabulary::upsert(&pool, "u1", "Supabase", 1.0, "manual"));
+        let changes = split_known_term_hunk(
+            &[
+                "graph".to_string(),
+                "cute".to_string(),
+                "super".to_string(),
+                "base".to_string(),
+            ],
+            &["GraphQL".to_string(), "Supabase".to_string()],
+            "GraphQL Supabase ka auth flow",
+            &pool,
+            "u1",
+        )
+        .expect("known terms should split");
+
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].original, "graph cute");
+        assert_eq!(changes[0].corrected, "GraphQL");
+        assert_eq!(changes[1].original, "super base");
+        assert_eq!(changes[1].corrected, "Supabase");
+    }
+
+    #[test]
+    fn refine_pair_strips_common_filler_from_corrected_span() {
+        let pool = mem_pool();
+        assert!(vocabulary::upsert(&pool, "u1", "Macobs", 1.0, "manual"));
+        let pair = DeterministicEditPair {
+            variant_form: "mujhe".to_string(),
+            correct_form: "Macobs mein".to_string(),
+            edit_type: "replace".to_string(),
+            left_context: vec![],
+            right_context: vec![],
+        };
+
+        let refined = refine_stt_pair_for_learning(pair, &pool, "u1", "Macobs mein data bhejo")
+            .expect("protected term should survive");
+
+        assert_eq!(refined.variant_form, "");
+        assert_eq!(refined.correct_form, "Macobs");
+        assert_eq!(refined.edit_type, "insert");
+        assert_eq!(refined.right_context, vec!["mein", "data", "bhejo"]);
+    }
+
+    #[test]
+    fn refine_pair_preserves_multi_word_protected_term() {
+        let pool = mem_pool();
+        assert!(vocabulary::upsert(&pool, "u1", "Urban Aura", 1.0, "manual"));
+        let pair = DeterministicEditPair {
+            variant_form: "urbanora".to_string(),
+            correct_form: "Urban Aura mein".to_string(),
+            edit_type: "replace".to_string(),
+            left_context: vec![],
+            right_context: vec![],
+        };
+
+        let refined =
+            refine_stt_pair_for_learning(pair, &pool, "u1", "Urban Aura mein product launch karna")
+                .expect("protected phrase should be extracted");
+
+        assert_eq!(refined.variant_form, "");
+        assert_eq!(refined.correct_form, "Urban Aura");
+        assert_eq!(refined.edit_type, "insert");
+        assert_eq!(refined.right_context, vec!["mein", "product", "launch"]);
     }
 
     #[test]

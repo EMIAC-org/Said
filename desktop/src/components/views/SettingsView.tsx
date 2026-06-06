@@ -6,7 +6,7 @@ import {
   Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap,
   Languages, MessageSquareText, Loader2, RefreshCw,
   Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, Download, Activity,
-  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown,
+  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown, Power,
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
@@ -702,6 +702,7 @@ export function SettingsView({
     sentry_disabled: false,
     update_channel: "stable",
     message_polish_mode: false,
+    launch_at_login: false,
   });
   useEffect(() => {
     void getDesktopPrefs().then(setDesktopPrefsState).catch(() => {});
@@ -1162,6 +1163,45 @@ export function SettingsView({
               </p>
             )}
           </div>
+        </Section>
+        <Section title="Startup">
+          <Row
+            icon={<Power size={16} />}
+            label="Launch at login"
+            description={
+              desktopPrefs.launch_at_login
+                ? "On — AirNote starts automatically when you sign in."
+                : "Off — open AirNote manually when you need it."
+            }
+            action={
+              <button
+                type="button"
+                role="switch"
+                aria-checked={desktopPrefs.launch_at_login}
+                onClick={() => writeDesktopPrefs({
+                  ...desktopPrefs,
+                  launch_at_login: !desktopPrefs.launch_at_login,
+                })}
+                className="relative h-6 w-11 rounded-full transition-colors"
+                style={{
+                  background: desktopPrefs.launch_at_login
+                    ? "hsl(var(--primary))"
+                    : "hsl(var(--surface-4))",
+                }}
+              >
+                <span
+                  className="absolute top-1 h-4 w-4 rounded-full transition-transform"
+                  style={{
+                    left: 4,
+                    transform: desktopPrefs.launch_at_login
+                      ? "translateX(20px)"
+                      : "translateX(0)",
+                    background: "hsl(var(--foreground))",
+                  }}
+                />
+              </button>
+            }
+          />
         </Section>
         </Show>
 

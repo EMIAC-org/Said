@@ -96,6 +96,7 @@ ok "synced to $SIDECAR_DEST"
 step "Run tauri build (--target $TARGET)"
 cd "$DESKTOP_DIR"
 [ -d node_modules ] || npm ci
+[ -x "$DESKTOP_DIR/node_modules/.bin/create-dmg" ] || npm ci
 npm run tauri:build -- --target "$TARGET"
 ok "tauri build finished"
 
@@ -138,14 +139,13 @@ ok "outer bundle: Identifier=$ACTUAL_ID, signed with Developer ID"
 codesign --verify --strict "$EMBEDDED_BACKEND"
 ok "embedded sidecar verified: $(codesign -dv "$EMBEDDED_BACKEND" 2>&1 | awk -F= '/^Identifier=/ {print $2}')"
 
-# ── Build the DMG ourselves with plain hdiutil ───────────────────────────────
+# ── Build the DMG ────────────────────────────────────────────────────────────
 #
-# We don't use Tauri's DMG target because its bundle_dmg.sh shells out to
-# osascript to drive Finder for cosmetic icon layout, which fails
-# non-deterministically on recent macOS (tauri-apps/tauri#3055,
-# community#163491). CI defaults to a plain `hdiutil create -srcfolder` with an
-# /Applications symlink: drag-to-install, signature intact, no GUI dependency.
-step "Build DMG with hdiutil"
+# Prefer `create-dmg` for the polished native Finder layout (small drag-to-
+# Applications window, sane icon positions). If node dependencies are missing
+# or the helper fails, fall back to the plain `hdiutil create -srcfolder` path
+# that avoids Finder/osascript automation entirely.
+step "Build DMG"
 
 STAGING="$BUNDLE_DIR/dmg-staging"
 DMG_OUT="$BUNDLE_DIR/dmg/AirNote_${VERSION}_${ARCH_SHORT}.dmg"
@@ -155,16 +155,42 @@ VOLNAME="AirNote"
 rm -rf "$STAGING" "$DMG_OUT"
 mkdir -p "$STAGING" "$BUNDLE_DIR/dmg"
 
-# Stage: .app + /Applications symlink.
-cp -R "$APP_PATH" "$STAGING/AirNote.app"
-ln -s /Applications "$STAGING/Applications"
+CREATE_DMG_BIN="$DESKTOP_DIR/node_modules/.bin/create-dmg"
+if [ "${AIRNOTE_PLAIN_DMG:-0}" != "1" ] && [ -x "$CREATE_DMG_BIN" ]; then
+  DMG_TMP="$BUNDLE_DIR/dmg-create"
+  rm -rf "$DMG_TMP"
+  mkdir -p "$DMG_TMP"
+  if "$CREATE_DMG_BIN" "$APP_PATH" "$DMG_TMP" \
+      --overwrite \
+      --dmg-title="$VOLNAME" \
+      --no-code-sign 2>&1 | sed 's/^/  /'; then
+    CREATED_DMG="$(find "$DMG_TMP" -maxdepth 1 -type f -name "*.dmg" -print -quit)"
+    if [ -n "$CREATED_DMG" ] && [ -f "$CREATED_DMG" ]; then
+      mv "$CREATED_DMG" "$DMG_OUT"
+      ok "polished DMG layout created with create-dmg"
+    else
+      warn "create-dmg completed but produced no DMG — falling back to plain hdiutil"
+    fi
+  else
+    warn "create-dmg failed — falling back to plain hdiutil"
+  fi
+  rm -rf "$DMG_TMP"
+else
+  warn "create-dmg unavailable or AIRNOTE_PLAIN_DMG=1 — using plain hdiutil layout"
+fi
 
-hdiutil create \
-  -volname "$VOLNAME" \
-  -srcfolder "$STAGING" \
-  -ov \
-  -format UDZO \
-  "$DMG_OUT" >/dev/null
+if [ ! -f "$DMG_OUT" ]; then
+  # Stage: .app + /Applications symlink.
+  cp -R "$APP_PATH" "$STAGING/AirNote.app"
+  ln -s /Applications "$STAGING/Applications"
+
+  hdiutil create \
+    -volname "$VOLNAME" \
+    -srcfolder "$STAGING" \
+    -ov \
+    -format UDZO \
+    "$DMG_OUT" >/dev/null
+fi
 
 rm -rf "$STAGING"
 
