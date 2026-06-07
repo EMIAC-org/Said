@@ -1,0 +1,64 @@
+# Standalone workspace — mobile-gateway is intentionally NOT a member of the
+# top-level Cargo workspace. It is the iOS app's hosted runtime and deploys
+# independently; control-plane (desktop/enterprise) must have NO connection to
+# it. Like control-plane, its sqlx-postgres feature conflicts with rusqlite's
+# libsqlite3-sys in the desktop resolver graph, so it builds standalone:
+#   cd crates/mobile-gateway && cargo build
+# The empty `[workspace]` table makes this crate its own workspace root so cargo
+# does not walk up to the desktop workspace (which breaks under git worktrees).
+[workspace]
+
+[package]
+name    = "airnote-mobile-gateway"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "mobile-gateway"
+path = "src/main.rs"
+
+# Standalone-crate lint policy (mirrors the desktop workspace lints by hand).
+[lints.rust]
+unexpected_cfgs = "allow"
+dead_code       = "allow"
+
+[lints.clippy]
+collapsible_if              = "allow"
+doc_lazy_continuation       = "allow"
+doc_overindented_list_items = "allow"
+manual_char_comparison      = "allow"
+too_many_arguments          = "allow"
+type_complexity             = "allow"
+
+[dependencies]
+axum               = { version = "0.7", features = ["ws", "multipart"] }
+tokio              = { version = "1", features = ["full"] }
+serde              = { version = "1", features = ["derive"] }
+serde_json         = "1"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy            = "0.15"
+clap               = { version = "4", features = ["derive", "env"] }
+uuid               = { version = "1", features = ["v4", "serde"] }
+tower-http         = { version = "0.5", features = ["cors"] }
+
+# Postgres + async driver (runtime-checked queries — no DB needed to compile).
+sqlx = { version = "0.7", default-features = false, features = [
+    "postgres",
+    "runtime-tokio-rustls",
+    "uuid",
+    "chrono",
+    "json",
+    "macros",
+] }
+
+# Auth — argon2 password hashing (own accounts, no control-plane dependency).
+argon2 = "0.5"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Deepgram streaming STT (WebSocket) + Groq polish (SSE over HTTP).
+tokio-tungstenite = "0.24"
+futures-util      = "0.3"
+reqwest           = { version = "0.12", features = ["json", "stream"] }

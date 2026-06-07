@@ -200,21 +200,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/openai/complete", post(routes::openai::complete))
         .route("/v1/openai/status", get(routes::openai::status))
         .route("/v1/openai/disconnect", delete(routes::openai::disconnect))
-        // Runtime gateway — iOS/server runtime foundation, desktop remains untouched.
-        .route("/v1/runtime/config", get(routes::runtime::config))
-        .route(
-            "/v1/runtime/sessions",
-            post(routes::runtime::create_session),
-        )
-        .route(
-            "/v1/runtime/mobile/sessions",
-            post(routes::runtime::create_session),
-        )
-        .route("/v1/runtime/events", post(routes::runtime::ingest_event))
-        .route("/v1/runtime/voice", get(routes::runtime::voice_ws))
-        // Temporary iOS scaffold compatibility endpoints.
-        .route("/v1/mobile/sessions", post(routes::runtime::create_session))
-        .route("/v1/mobile/events", post(routes::runtime::ingest_event))
+        // The iOS/mobile runtime gateway lives in the standalone
+        // `crates/mobile-gateway` service. control-plane intentionally has NO
+        // connection to the iOS mobile app — keep mobile endpoints out of here.
         // Public OAuth redirect (browser flow — desktop app opens this URL)
         .route("/auth/lark", get(routes::lark_auth::desktop_start))
         // Admin dashboard (React SPA) — static assets first, then catch-all
