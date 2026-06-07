@@ -3,35 +3,52 @@ import AirNoteShared
 
 struct FirstDictationView: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @State private var draft = "Draft Rahul ko bhejna hai"
 
     var body: some View {
-        VStack(spacing: 18) {
-            Text("Try your first AirNote dictation")
-                .font(.title.bold())
-                .multilineTextAlignment(.center)
+        ZStack {
+            AirNoteBackground()
+            ScrollView {
+                VStack(spacing: 18) {
+                    VStack(spacing: 8) {
+                        Text("Try your first dictation")
+                            .font(.system(.title, design: .rounded).weight(.bold))
+                            .multilineTextAlignment(.center)
+                        Text("Type or dictate into this safe practice field, then mark it inserted.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.top, 12)
 
-            Text("Use the practice field, start a visible session, and insert or save the polished result.")
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+                    AirNoteCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            AirNoteSectionLabel(text: "Practice field")
+                            TextEditor(text: $draft)
+                                .frame(minHeight: 140)
+                                .scrollContentBackground(.hidden)
+                                .font(.body)
+                        }
+                    }
 
-            TextEditor(text: .constant("Draft Rahul ko bhejna hai"))
-                .frame(minHeight: 150)
-                .padding(8)
-                .overlay(RoundedRectangle(cornerRadius: AirNoteDesign.radius).stroke(.quaternary))
-
-            Button("Mark first dictation inserted") {
-                environment.dictationStore.append(
-                    DictationRecord(
-                        transcript: "kal jo macobs wala update hai",
-                        polished: "Kal jo Macobs wala update hai, usko concise bana ke Rahul ko bhej do.",
-                        outcome: .inserted
-                    )
-                )
-                environment.markSetupReady()
+                    Button {
+                        environment.dictationStore.append(
+                            DictationRecord(
+                                transcript: "kal jo macobs wala update hai",
+                                polished: "Kal jo Macobs wala update hai, usko concise bana ke Rahul ko bhej do.",
+                                outcome: .inserted
+                            )
+                        )
+                        environment.markSetupReady()
+                    } label: {
+                        Label("Mark first dictation inserted", systemImage: "checkmark.circle.fill")
+                    }
+                    .buttonStyle(AirNotePrimaryButtonStyle())
+                }
+                .padding(18)
             }
-            .buttonStyle(.borderedProminent)
         }
-        .padding()
         .navigationTitle("Practice")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

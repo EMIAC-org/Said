@@ -39,7 +39,11 @@ struct AccountSignInView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(AirNoteBackground())
+        .tint(AirNoteDesign.accent)
         .navigationTitle("Account")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -77,7 +81,11 @@ struct LanguageStyleView: View {
                 )
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(AirNoteBackground())
+        .tint(AirNoteDesign.accent)
         .navigationTitle("Language & Style")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -113,7 +121,11 @@ struct HistoryView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(AirNoteBackground())
+        .tint(AirNoteDesign.accent)
         .navigationTitle("History")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -141,7 +153,11 @@ struct VocabularyView: View {
                 AirNoteInlinePreview(title: "EMIAC", copy: "Company term from shared vocabulary.", badge: "Company")
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(AirNoteBackground())
+        .tint(AirNoteDesign.accent)
         .navigationTitle("Vocabulary")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -174,7 +190,11 @@ struct AirNoteSettingsView: View {
                 LabeledContent("Runtime", value: environment.runtimeStatus)
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(AirNoteBackground())
+        .tint(AirNoteDesign.accent)
         .navigationTitle("Settings")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -203,7 +223,11 @@ struct DiagnosticsView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(AirNoteBackground())
+        .tint(AirNoteDesign.accent)
         .navigationTitle("Diagnostics")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

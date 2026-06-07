@@ -7,79 +7,137 @@ struct RecordingSessionView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        AirNoteStatusPill(systemImage: statusIcon, text: statusText, color: statusColor)
-                        Spacer()
-                        Text(latencyText)
-                            .font(.caption.monospacedDigit())
+        ZStack {
+            AirNoteBackground(tint: isRecording ? AirNoteDesign.danger : AirNoteDesign.accent)
+
+            ScrollView {
+                VStack(spacing: 22) {
+                    header
+
+                    // ── Hero voice moment ──────────────────────────────
+                    VStack(spacing: 16) {
+                        Text(headline)
+                            .font(.system(.title, design: .rounded).weight(.bold))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+
+                        Text(detailCopy)
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
-                    }
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 8)
 
-                    Text(headline)
-                        .font(.title2.weight(.semibold))
+                        MicOrb(
+                            isRecording: isRecording,
+                            level: CGFloat(controller.level),
+                            action: { Task { await primaryAction() } }
+                        )
+                        .padding(.top, 6)
 
-                    Text(detailCopy)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        AirNoteWaveform(
+                            level: CGFloat(controller.level),
+                            active: isRecording || isProcessing,
+                            color: isRecording ? AirNoteDesign.danger : AirNoteDesign.accent
+                        )
+                        .padding(.horizontal, 20)
 
-                    LevelPreview(level: CGFloat(controller.level), reduceMotion: reduceMotion)
+                        Text(subcaption)
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(.secondary)
 
-                    if !controller.interimTranscript.isEmpty || !controller.polishPreview.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            if !controller.interimTranscript.isEmpty {
-                                PreviewRow(title: "Transcript", text: controller.interimTranscript)
-                            }
-                            if !controller.polishPreview.isEmpty {
-                                PreviewRow(title: "Polish preview", text: controller.polishPreview)
-                            }
+                        if showsCancel {
+                            Button("Cancel") { Task { await controller.cancelRecording() } }
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AirNoteDesign.danger)
+                                .padding(.top, 2)
                         }
                     }
-
-                    AirNoteActionRow(
-                        primaryTitle: primaryTitle,
-                        primarySystemImage: primaryIcon,
-                        secondaryTitle: "Cancel",
-                        secondarySystemImage: "xmark.circle",
-                        primaryAction: { Task { await primaryAction() } },
-                        secondaryAction: { Task { await controller.cancelRecording() } }
+                    .padding(.vertical, 28)
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        RoundedRectangle(cornerRadius: AirNoteDesign.cardRadius, style: .continuous)
+                            .fill(Color(.secondarySystemBackground).opacity(0.55))
                     )
-                }
-                .padding(14)
-                .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AirNoteDesign.radius, style: .continuous))
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Session health")
-                        .font(.headline)
-                    HealthRow(systemImage: "mic.fill", title: "Microphone", value: micHealth)
-                    HealthRow(systemImage: "keyboard", title: "Keyboard bridge", value: "Watching commands")
-                    HealthRow(systemImage: "network", title: "Gateway", value: BuildConfig.useMockGateway ? "Mock" : BuildConfig.gatewayBaseURL.host ?? "Configured")
-                    HealthRow(systemImage: "lock.shield", title: "Privacy", value: "Final only inserts")
+                    // ── Live transcript / polish preview ───────────────
+                    if !controller.interimTranscript.isEmpty || !controller.polishPreview.isEmpty {
+                        AirNoteCard {
+                            VStack(alignment: .leading, spacing: 12) {
+                                if !controller.interimTranscript.isEmpty {
+                                    PreviewRow(title: "Heard", text: controller.interimTranscript, tint: .secondary)
+                                }
+                                if !controller.polishPreview.isEmpty {
+                                    PreviewRow(title: "Polished", text: controller.polishPreview, tint: .primary)
+                                }
+                            }
+                        }
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
+
+                    // ── Session health ─────────────────────────────────
+                    AirNoteCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            AirNoteSectionLabel(text: "Session health")
+                            HealthRow(systemImage: "mic.fill", title: "Microphone", value: micHealth)
+                            HealthRow(systemImage: "keyboard", title: "Keyboard bridge", value: "Watching commands")
+                            HealthRow(systemImage: "network", title: "Gateway",
+                                      value: BuildConfig.useMockGateway ? "Mock" : (BuildConfig.gatewayBaseURL.host ?? "Configured"))
+                            HealthRow(systemImage: "lock.shield", title: "Privacy", value: "Final text only")
+                        }
+                    }
                 }
-                .padding(14)
-                .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AirNoteDesign.radius, style: .continuous))
+                .padding(18)
             }
-            .padding(16)
         }
         .navigationTitle("AirNote Session")
-        .background(Color(.systemGroupedBackground))
-        .onAppear {
-            controller.startCommandWatcher()
+        .navigationBarTitleDisplayMode(.inline)
+        .animation(.easeInOut(duration: 0.28), value: controller.state)
+        .onAppear { controller.startCommandWatcher() }
+        .onDisappear { controller.stopCommandWatcher() }
+    }
+
+    // MARK: header
+
+    private var header: some View {
+        HStack {
+            AirNoteStatusPill(systemImage: statusIcon, text: statusText, color: statusColor, animated: isRecording)
+            Spacer()
+            Text(latencyText)
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color(.tertiarySystemBackground), in: Capsule())
         }
-        .onDisappear {
-            controller.stopCommandWatcher()
+    }
+
+    // MARK: derived state
+
+    private var isRecording: Bool {
+        if case .recording = controller.state { return true }
+        return false
+    }
+    private var isProcessing: Bool { controller.state == .processing }
+    private var showsCancel: Bool {
+        switch controller.state {
+        case .recording, .processing, .insertReady: return true
+        default: return false
         }
+    }
+
+    private var subcaption: String {
+        if isProcessing { return "AirNote Gateway · polishing" }
+        if isRecording { return "AirNote Gateway · Hinglish" }
+        return "Tap to start · insert first, learn later"
     }
 
     private var headline: String {
         switch controller.state {
-        case .recording: return "Speak naturally"
-        case .processing: return "AirNote is polishing"
-        case .insertReady: return "Final text is ready"
-        case .retryableError: return "Recovery is available"
+        case .recording: return "Listening"
+        case .processing: return "Polishing your words"
+        case .insertReady: return "Ready to insert"
+        case .retryableError: return "Let's recover that"
         case .ready: return "Swipe back to your app"
         default: return "Start an AirNote Session"
         }
@@ -88,25 +146,27 @@ struct RecordingSessionView: View {
     private var detailCopy: String {
         switch controller.state {
         case .recording:
-            return "Audio is streaming to the independent AirNote Mobile Gateway. Stop when you are done speaking."
+            return "Speak naturally in English, Hindi, or Hinglish. Tap to stop when you're done."
         case .processing:
-            return "The server is transcribing, polishing, and applying the Hinglish guard. Only the final text can be inserted."
+            return "Transcribing, polishing, and applying the Hinglish guard. Only the final text inserts."
         case .insertReady:
-            return "Return to the keyboard to insert, copy, or save the polished final."
+            return "Return to the keyboard to insert, copy, or save the polished result."
         case .retryableError(let message):
             return message
+        case .ready:
+            return "AirNote Keyboard will record through this session. Tap the mic to begin."
         default:
-            return "AirNote Keyboard will use this visible session to record after you tap the mic. If iOS pauses this app, the keyboard asks you to restart instead of hanging."
+            return "Start a visible session, switch back to any app, then dictate with AirNote Keyboard."
         }
     }
 
     private var statusIcon: String {
         switch controller.state {
-        case .recording: return "mic.fill"
-        case .processing: return "bolt.horizontal.fill"
+        case .recording: return "waveform"
+        case .processing: return "sparkles"
         case .insertReady, .inserted: return "checkmark.circle.fill"
         case .retryableError, .stale: return "exclamationmark.triangle.fill"
-        default: return "waveform"
+        default: return "mic"
         }
     }
 
@@ -118,8 +178,8 @@ struct RecordingSessionView: View {
         case .inserted: return "Inserted"
         case .retryableError: return "Retry"
         case .stale: return "Stale"
-        case .ready: return "Session ready"
-        default: return "Session setup"
+        case .ready: return "Ready"
+        default: return "Setup"
         }
     }
 
@@ -134,9 +194,7 @@ struct RecordingSessionView: View {
     }
 
     private var latencyText: String {
-        if let latency = controller.lastLatencyMS {
-            return "\(latency) ms"
-        }
+        if let latency = controller.lastLatencyMS { return "\(latency) ms" }
         return BuildConfig.useMockGateway ? "Mock" : "Live"
     }
 
@@ -148,23 +206,7 @@ struct RecordingSessionView: View {
         }
     }
 
-    private var primaryTitle: String {
-        switch controller.state {
-        case .recording: return "Stop"
-        case .processing: return "Working"
-        case .ready, .insertReady, .inserted: return "Start recording"
-        default: return "Start session"
-        }
-    }
-
-    private var primaryIcon: String {
-        switch controller.state {
-        case .recording: return "stop.fill"
-        case .processing: return "hourglass"
-        case .ready, .insertReady, .inserted: return "mic.fill"
-        default: return "play.fill"
-        }
-    }
+    // MARK: actions
 
     private func primaryAction() async {
         switch controller.state {
@@ -201,50 +243,20 @@ struct RecordingSessionView: View {
     }
 }
 
-private struct LevelPreview: View {
-    var level: CGFloat
-    var reduceMotion: Bool
-    private let levels: [CGFloat] = [0.25, 0.58, 0.86, 0.48, 0.72, 0.34, 0.62]
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 7) {
-            ForEach(levels.indices, id: \.self) { index in
-                Capsule()
-                    .fill(level > 0.05 ? AirNoteDesign.danger : (index == 2 ? AirNoteDesign.accent : AirNoteDesign.teal.opacity(0.55)))
-                    .frame(width: 8, height: 52 * displayLevel(index))
-                    .accessibilityHidden(true)
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: 58)
-        .padding(.vertical, 8)
-        .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AirNoteDesign.radius, style: .continuous))
-        .accessibilityLabel("Microphone level preview")
-    }
-
-    private func displayLevel(_ index: Int) -> CGFloat {
-        if reduceMotion || level <= 0.05 {
-            return levels[index]
-        }
-        return min(1, max(0.16, (levels[index] + level) / 2))
-    }
-}
-
 private struct PreviewRow: View {
     var title: String
     var text: String
+    var tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 5) {
+            AirNoteSectionLabel(text: title)
             Text(text)
-                .font(.subheadline)
+                .font(.body)
+                .foregroundStyle(tint)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AirNoteDesign.radius, style: .continuous))
         .accessibilityElement(children: .combine)
     }
 }
@@ -255,10 +267,10 @@ private struct HealthRow: View {
     var value: String
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Image(systemName: systemImage)
                 .foregroundStyle(AirNoteDesign.accent)
-                .frame(width: 22)
+                .frame(width: 24)
             Text(title)
                 .font(.subheadline)
             Spacer()

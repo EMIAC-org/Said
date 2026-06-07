@@ -6,256 +6,272 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    SectionHeader(title: "Account")
-                    NavigationLink(destination: AccountSignInView()) {
-                        SettingsRow(
-                            systemImage: environment.account == nil ? "person.crop.circle.badge.plus" : "person.crop.circle.badge.checkmark",
-                            title: environment.account?.email ?? "Sign in to AirNote Mobile",
-                            subtitle: environment.account == nil ? "Use the independent mobile gateway account for iPhone dictation" : "Runtime: \(environment.runtimeStatus)"
+            ZStack {
+                AirNoteBackground()
+                ScrollView {
+                    VStack(spacing: 20) {
+                        HeroHeader(
+                            email: environment.account?.email,
+                            runtime: environment.runtimeStatus
                         )
+
+                        StartCard(statusText: environment.lastStatusMessage)
+
+                        if !environment.dictationStore.records.isEmpty {
+                            LastDictationCard(records: environment.dictationStore.records)
+                        }
+
+                        if !isReady {
+                            SetupCard(setupState: environment.setupState)
+                        }
+
+                        ExploreGrid()
                     }
-
-                    ReadinessPanel(
-                        title: environment.lastStatusMessage,
-                        sessionState: environment.sessionState
-                    ) {
-                        environment.sessionState = .ready
-                    }
-
-                    SectionHeader(title: "Today")
-                    LastDictationPanel(records: environment.dictationStore.records)
-
-                    SectionHeader(title: "Setup")
-                    SetupChecklist(setupState: environment.setupState)
-
-                    SectionHeader(title: "Shortcuts")
-                    VStack(spacing: 10) {
-                        NavigationLink(destination: LanguageStyleView()) {
-                            SettingsRow(systemImage: "slider.horizontal.3", title: "Language & style", subtitle: "Auto, English, Hindi, Hinglish and Direct, Work, Casual, Email, Notes")
-                        }
-                        NavigationLink(destination: WelcomeView()) {
-                            SettingsRow(systemImage: "checklist", title: "Run onboarding check", subtitle: "Account, privacy, mic, keyboard, and Full Access")
-                        }
-                        NavigationLink(destination: FirstDictationView()) {
-                            SettingsRow(systemImage: "keyboard.badge.ellipsis", title: "Practice first dictation", subtitle: "Use a safe in-app field before testing host apps")
-                        }
-                        NavigationLink(destination: RecordingSessionView()) {
-                            SettingsRow(systemImage: "waveform", title: "Live session screen", subtitle: "The screen users return to when the keyboard asks for AirNote")
-                        }
-                        NavigationLink(destination: HistoryView()) {
-                            SettingsRow(systemImage: "clock.arrow.circlepath", title: "History", subtitle: "Copy, retry, share, or delete previous dictations")
-                        }
-                        NavigationLink(destination: VocabularyView()) {
-                            SettingsRow(systemImage: "text.badge.plus", title: "Vocabulary", subtitle: "Add terms, aliases, and learn-spelling review")
-                        }
-                        NavigationLink(destination: AirNoteSettingsView()) {
-                            SettingsRow(systemImage: "gearshape", title: "Settings", subtitle: "Privacy, diagnostics, account, and delete data")
-                        }
-                        NavigationLink(destination: DiagnosticsView()) {
-                            SettingsRow(systemImage: "stethoscope", title: "Diagnostics", subtitle: "Gateway status, build, last session, and redacted export")
-                        }
-                    }
-                }
-                .padding(16)
-            }
-            .navigationTitle("AirNote")
-            .background(Color(.systemGroupedBackground))
-        }
-    }
-}
-
-private struct ReadinessPanel: View {
-    var title: String
-    var sessionState: SessionState
-    var action: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                AirNoteStatusPill(systemImage: statusIcon, text: statusText, color: statusColor)
-                Spacer()
-                Text("Hinglish - Work")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Text(title)
-                .font(.title2.weight(.semibold))
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("Start a visible AirNote Session, switch back to your app, then use AirNote Keyboard to record, preview, insert, copy, or save.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            AirNoteActionRow(
-                primaryTitle: "Start session",
-                primarySystemImage: "play.fill",
-                secondaryTitle: "Repair setup",
-                secondarySystemImage: "wrench.and.screwdriver",
-                primaryAction: action,
-                secondaryAction: {}
-            )
-        }
-        .padding(14)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AirNoteDesign.radius, style: .continuous))
-    }
-
-    private var statusIcon: String {
-        switch sessionState {
-        case .ready: return "checkmark.circle.fill"
-        case .recording: return "mic.fill"
-        case .processing: return "bolt.horizontal.fill"
-        case .retryableError, .stale: return "exclamationmark.triangle.fill"
-        default: return "keyboard"
-        }
-    }
-
-    private var statusText: String {
-        switch sessionState {
-        case .ready: return "Ready"
-        case .recording: return "Listening"
-        case .processing: return "Processing"
-        case .insertReady: return "Insert ready"
-        case .inserted: return "Inserted"
-        case .savedToHistory: return "Saved"
-        case .retryableError: return "Repair"
-        case .stale: return "Session stale"
-        default: return "Setup"
-        }
-    }
-
-    private var statusColor: Color {
-        switch sessionState {
-        case .ready, .recording, .processing: return AirNoteDesign.accent
-        case .inserted, .savedToHistory: return AirNoteDesign.success
-        case .retryableError, .stale: return AirNoteDesign.warning
-        default: return AirNoteDesign.teal
-        }
-    }
-}
-
-private struct LastDictationPanel: View {
-    var records: [DictationRecord]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if records.isEmpty {
-                SettingsRow(
-                    systemImage: "tray",
-                    title: "No dictations yet",
-                    subtitle: "The first inserted, copied, or saved recovery result will appear here."
-                )
-            } else {
-                ForEach(records.prefix(3)) { record in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(record.polished)
-                            .font(.body)
-                            .fixedSize(horizontal: false, vertical: true)
-                        AirNoteStatusPill(systemImage: "clock", text: record.outcome.rawValue, color: AirNoteDesign.success)
-                    }
-                    .padding(12)
-                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AirNoteDesign.radius, style: .continuous))
+                    .padding(18)
+                    .padding(.bottom, 24)
                 }
             }
-        }
-    }
-}
-
-private struct SetupChecklist: View {
-    var setupState: SetupState
-
-    var body: some View {
-        VStack(spacing: 10) {
-            SetupStep(title: "Privacy consent", isDone: isAtLeastPrivacy)
-            SetupStep(title: "Mic health check", isDone: isAtLeastMic)
-            SetupStep(title: "Keyboard enabled", isDone: isAtLeastKeyboard)
-            SetupStep(title: "Full Access verified", isDone: isReady)
-        }
-        .padding(12)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AirNoteDesign.radius, style: .continuous))
-    }
-
-    private var isAtLeastPrivacy: Bool {
-        switch setupState {
-        case .privacyAccepted, .micReady, .keyboardReady, .fullAccessReady, .ready: return true
-        default: return false
-        }
-    }
-
-    private var isAtLeastMic: Bool {
-        switch setupState {
-        case .micReady, .keyboardReady, .fullAccessReady, .ready: return true
-        default: return false
-        }
-    }
-
-    private var isAtLeastKeyboard: Bool {
-        switch setupState {
-        case .keyboardReady, .fullAccessReady, .ready: return true
-        default: return false
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
         }
     }
 
     private var isReady: Bool {
-        switch setupState {
-        case .fullAccessReady, .ready: return true
-        default: return false
-        }
+        if case .ready = environment.setupState { return true }
+        return false
     }
 }
 
-private struct SetupStep: View {
-    var title: String
-    var isDone: Bool
+// MARK: - Hero header
+
+private struct HeroHeader: View {
+    var email: String?
+    var runtime: String
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(isDone ? AirNoteDesign.success : Color.secondary)
-            Text(title)
-                .font(.subheadline)
+        HStack(spacing: 14) {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(AirNoteDesign.accentGradient)
+                .frame(width: 46, height: 46)
+                .overlay(
+                    Image(systemName: "waveform")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.white)
+                )
+                .shadow(color: AirNoteDesign.accent.opacity(0.4), radius: 12, x: 0, y: 6)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("AirNote")
+                    .font(.system(.title2, design: .rounded).weight(.bold))
+                Text(email ?? "Voice, polished — anywhere you type")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             Spacer()
+            NavigationLink(destination: AccountSignInView()) {
+                Image(systemName: email == nil ? "person.crop.circle.badge.plus" : "person.crop.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(AirNoteDesign.accent)
+            }
         }
-        .accessibilityElement(children: .combine)
+        .padding(.top, 8)
     }
 }
 
-private struct SettingsRow: View {
-    var systemImage: String
+// MARK: - Start (hero CTA)
+
+private struct StartCard: View {
+    var statusText: String
+
+    var body: some View {
+        NavigationLink(destination: RecordingSessionView()) {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    AirNoteStatusPill(systemImage: "checkmark.seal.fill", text: "Ready", color: .white)
+                        .environment(\.colorScheme, .dark)
+                    Spacer()
+                    Text("Hinglish · Work")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Start dictating")
+                        .font(.system(.title, design: .rounded).weight(.bold))
+                        .foregroundStyle(.white)
+                    Text("Speak naturally — AirNote writes it clearly.")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.9))
+                }
+
+                HStack(spacing: 10) {
+                    Image(systemName: "mic.fill")
+                        .font(.headline)
+                    Text("Open the voice session")
+                        .font(.headline)
+                    Spacer()
+                    Image(systemName: "arrow.right")
+                        .font(.headline)
+                }
+                .foregroundStyle(.white)
+                .padding(.vertical, 14)
+                .padding(.horizontal, 16)
+                .background(Color.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AirNoteDesign.accentGradient, in: RoundedRectangle(cornerRadius: AirNoteDesign.cardRadius, style: .continuous))
+            .shadow(color: AirNoteDesign.accent.opacity(0.35), radius: 22, x: 0, y: 14)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Start dictating. \(statusText)")
+    }
+}
+
+// MARK: - Last dictation
+
+private struct LastDictationCard: View {
+    var records: [DictationRecord]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            AirNoteSectionLabel(text: "Recent")
+            ForEach(records.prefix(2)) { record in
+                AirNoteCard(padding: 16) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(record.polished)
+                            .font(.body)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack {
+                            AirNoteStatusPill(systemImage: "checkmark.circle.fill",
+                                              text: record.outcome.rawValue.capitalized,
+                                              color: AirNoteDesign.success)
+                            Spacer()
+                            Text(record.createdAt, style: .time)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Setup progress
+
+private struct SetupCard: View {
+    var setupState: SetupState
+
+    var body: some View {
+        NavigationLink(destination: WelcomeView()) {
+            AirNoteCard(padding: 16) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        AirNoteSectionLabel(text: "Finish setup")
+                        Spacer()
+                        Text("\(doneCount)/4")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(AirNoteDesign.accent)
+                    }
+                    ProgressView(value: Double(doneCount), total: 4)
+                        .tint(AirNoteDesign.accent)
+                    Text(nextStep)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var doneCount: Int {
+        switch setupState {
+        case .notStarted, .blocked: return 0
+        case .accountReady: return 1
+        case .privacyAccepted: return 2
+        case .micReady: return 3
+        case .keyboardReady, .fullAccessReady: return 3
+        case .ready: return 4
+        }
+    }
+
+    private var nextStep: String {
+        switch setupState {
+        case .notStarted, .blocked: return "Create your account to begin"
+        case .accountReady: return "Review privacy & cloud processing"
+        case .privacyAccepted: return "Run the microphone health check"
+        case .micReady: return "Enable the AirNote keyboard"
+        case .keyboardReady: return "Turn on Full Access"
+        case .fullAccessReady, .ready: return "You're ready to dictate"
+        }
+    }
+}
+
+// MARK: - Explore grid
+
+private struct ExploreGrid: View {
+    private let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            AirNoteSectionLabel(text: "Explore")
+            LazyVGrid(columns: columns, spacing: 12) {
+                NavTile(icon: "slider.horizontal.3", tint: AirNoteDesign.accent,
+                        title: "Language & style", subtitle: "Auto · Hinglish · Work") { LanguageStyleView() }
+                NavTile(icon: "clock.arrow.circlepath", tint: AirNoteDesign.teal,
+                        title: "History", subtitle: "Copy, retry, share") { HistoryView() }
+                NavTile(icon: "text.badge.plus", tint: AirNoteDesign.success,
+                        title: "Vocabulary", subtitle: "Names & terms") { VocabularyView() }
+                NavTile(icon: "keyboard.badge.ellipsis", tint: AirNoteDesign.accent2,
+                        title: "Practice", subtitle: "Try a safe field") { FirstDictationView() }
+                NavTile(icon: "gearshape.fill", tint: .secondary,
+                        title: "Settings", subtitle: "Privacy & data") { AirNoteSettingsView() }
+                NavTile(icon: "stethoscope", tint: AirNoteDesign.warning,
+                        title: "Diagnostics", subtitle: "Gateway status") { DiagnosticsView() }
+            }
+        }
+    }
+}
+
+private struct NavTile<Destination: View>: View {
+    var icon: String
+    var tint: Color
     var title: String
     var subtitle: String
+    @ViewBuilder var destination: () -> Destination
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(AirNoteDesign.accent)
-                .frame(width: 24)
-            VStack(alignment: .leading, spacing: 3) {
+        NavigationLink(destination: destination()) {
+            VStack(alignment: .leading, spacing: 10) {
+                ZStack {
+                    Circle().fill(tint.opacity(0.15)).frame(width: 40, height: 40)
+                    Image(systemName: icon)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, minHeight: 108, alignment: .topLeading)
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: AirNoteDesign.tileRadius, style: .continuous)
+                    .fill(Color(.secondarySystemBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: AirNoteDesign.tileRadius, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.05), lineWidth: 1)
+            )
+            .shadow(color: AirNoteDesign.cardShadow, radius: 12, x: 0, y: 6)
         }
-        .padding(12)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AirNoteDesign.radius, style: .continuous))
-    }
-}
-
-private struct SectionHeader: View {
-    var title: String
-
-    var body: some View {
-        Text(title)
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .textCase(.uppercase)
+        .buttonStyle(.plain)
     }
 }
