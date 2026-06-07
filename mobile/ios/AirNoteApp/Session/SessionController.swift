@@ -1,14 +1,15 @@
-import Foundation
 import AirNoteShared
+import Combine
+import Foundation
 
 @MainActor
 final class SessionController: ObservableObject {
     @Published private(set) var state: SessionState = .idle
 
     private let bridge: AppGroupBridge?
-    private let gateway: MobileGatewayClient
+    private let gateway: any MobileGatewayClient
 
-    init(bridge: AppGroupBridge? = try? AppGroupBridge(), gateway: MobileGatewayClient = MockMobileGatewayClient()) {
+    init(bridge: AppGroupBridge? = try? AppGroupBridge(), gateway: any MobileGatewayClient = GatewayEnvironment.makeClient()) {
         self.bridge = bridge
         self.gateway = gateway
     }

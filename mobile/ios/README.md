@@ -16,8 +16,19 @@ The source skeleton is in place for Phase 0:
 - Main app session controller and SwiftUI shell with readiness, setup, recovery, and live-session surfaces.
 - Keyboard state machine and UIKit keyboard controller skeleton with voice bar, waveform/status states, manual QWERTY fallback, result preview, insert/copy/save acknowledgements, and stale-result suppression.
 - Shared gateway/event/vocab/recovery models.
+- XcodeGen project spec for app, keyboard extension, and shared framework targets.
+- App/keyboard plist and App Group entitlement files.
+- Debug/Staging/Release gateway config files.
 
-The `.xcodeproj` should be generated after the senior-dev iOS plan confirms bundle IDs, signing team, minimum iOS version, and whether the first spike is app-owned mic only or includes a direct keyboard-extension audio experiment.
+Generate the `.xcodeproj` with:
+
+```bash
+cd mobile/ios
+xcodegen generate --spec project.yml
+open AirNote.xcodeproj
+```
+
+The project spec is intentionally generated, not hand-written, so signing/settings stay reviewable.
 
 ## Verification Available Before Xcode Project Generation
 
@@ -26,6 +37,12 @@ The `.xcodeproj` should be generated after the senior-dev iOS plan confirms bund
 - JSON/JSONL fixture parse for `mobile/shared/schemas` and `mobile/shared/fixtures`
 
 Full app and keyboard builds require full Xcode with the iOS SDK plus generated app, extension, test, and signing targets.
+
+## iPhone Testing
+
+See `TESTING.md`.
+
+Use direct Xcode install first. Use the manual GitHub `iOS TestFlight` workflow only after direct device archive/export is working.
 
 ## Bundle Plan
 

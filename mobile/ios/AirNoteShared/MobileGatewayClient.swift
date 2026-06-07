@@ -45,6 +45,15 @@ public protocol MobileGatewayClient {
     func sendEvent(_ event: MobileEvent) async throws
 }
 
+public enum GatewayEnvironment {
+    public static func makeClient() -> any MobileGatewayClient {
+        if BuildConfig.useMockGateway {
+            return MockMobileGatewayClient()
+        }
+        return HTTPMobileGatewayClient(baseURL: BuildConfig.gatewayBaseURL)
+    }
+}
+
 public struct MockMobileGatewayClient: MobileGatewayClient {
     public init() {}
 
@@ -59,4 +68,47 @@ public struct MockMobileGatewayClient: MobileGatewayClient {
     }
 
     public func sendEvent(_ event: MobileEvent) async throws {}
+}
+
+public final class HTTPMobileGatewayClient: MobileGatewayClient {
+    private let baseURL: URL
+    private let session: URLSession
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
+
+    public init(baseURL: URL, session: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.session = session
+        self.encoder = JSONEncoder()
+        self.decoder = JSONDecoder()
+        self.encoder.dateEncodingStrategy = .iso8601
+        self.decoder.dateDecodingStrategy = .iso8601
+    }
+
+    public func createSession(_ request: MobileSessionRequest) async throws -> MobileSessionResponse {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/mobile/sessions"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try encoder.encode(request)
+
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(response: response)
+        return try decoder.decode(MobileSessionResponse.self, from: data)
+    }
+
+    public func sendEvent(_ event: MobileEvent) async throws {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/mobile/events"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try encoder.encode(event)
+
+        let (_, response) = try await session.data(for: urlRequest)
+        try Self.validate(response: response)
+    }
+
+    private static func validate(response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+    }
 }

@@ -1,0 +1,95 @@
+name: AirNote
+options:
+  bundleIdPrefix: com.emiac.airnote
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+configs:
+  Debug: debug
+  Staging: release
+  Release: release
+configFiles:
+  Debug: Config/Debug.xcconfig
+  Staging: Config/Staging.xcconfig
+  Release: Config/Release.xcconfig
+settings:
+  base:
+    DEVELOPMENT_TEAM: 96ZQGP7L3B
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED: YES
+packages: {}
+targets:
+  AirNoteShared:
+    type: framework
+    platform: iOS
+    sources:
+      - path: AirNoteShared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.emiac.airnote.ios.shared
+        SKIP_INSTALL: YES
+
+  AirNoteKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: AirNoteKeyboard
+    dependencies:
+      - target: AirNoteShared
+        embed: true
+    info:
+      path: AirNoteKeyboard/Resources/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.emiac.airnote.ios.keyboard
+        CODE_SIGN_ENTITLEMENTS: AirNoteKeyboard/Resources/AirNoteKeyboard.entitlements
+        INFOPLIST_FILE: AirNoteKeyboard/Resources/Info.plist
+        APPLICATION_EXTENSION_API_ONLY: YES
+
+  AirNote:
+    type: application
+    platform: iOS
+    sources:
+      - path: AirNoteApp
+    dependencies:
+      - target: AirNoteShared
+        embed: true
+      - target: AirNoteKeyboard
+        embed: true
+    info:
+      path: AirNoteApp/Resources/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.emiac.airnote.ios
+        CODE_SIGN_ENTITLEMENTS: AirNoteApp/Resources/AirNoteApp.entitlements
+        INFOPLIST_FILE: AirNoteApp/Resources/Info.plist
+
+schemes:
+  AirNote:
+    build:
+      targets:
+        AirNote: all
+        AirNoteKeyboard: all
+        AirNoteShared: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    archive:
+      config: Release
+
+  AirNote-Staging:
+    build:
+      targets:
+        AirNote: all
+        AirNoteKeyboard: all
+        AirNoteShared: all
+    run:
+      config: Staging
+    archive:
+      config: Staging

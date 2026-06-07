@@ -1,5 +1,6 @@
-import Foundation
 import AirNoteShared
+import Combine
+import Foundation
 
 @MainActor
 final class AppEnvironment: ObservableObject {
@@ -11,7 +12,11 @@ final class AppEnvironment: ObservableObject {
 
     let dictationStore = DictationStore()
     let eventQueue = EventQueue()
-    let gateway: MobileGatewayClient = MockMobileGatewayClient()
+    let gateway: any MobileGatewayClient
+
+    init(gateway: (any MobileGatewayClient)? = nil) {
+        self.gateway = gateway ?? GatewayEnvironment.makeClient()
+    }
 
     func markSetupReady() {
         setupState = .ready

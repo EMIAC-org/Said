@@ -1,0 +1,120 @@
+name: iOS TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: "Build configuration"
+        required: true
+        default: Staging
+        type: choice
+        options:
+          - Staging
+          - Release
+      upload_to_testflight:
+        description: "Upload the exported IPA to TestFlight"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_NAME: AirNote
+  IOS_PROJECT: mobile/ios/AirNote.xcodeproj
+  IOS_SPEC: mobile/ios/project.yml
+  IOS_ARCHIVE: ${{ runner.temp }}/AirNote.xcarchive
+  IOS_EXPORT_PATH: ${{ runner.temp }}/airnote-ios-export
+
+jobs:
+  archive:
+    name: Archive iOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec "$IOS_SPEC"
+
+      - name: Prepare App Store Connect API key
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          : "${ASC_KEY_ID:?APP_STORE_CONNECT_API_KEY_ID secret is required}"
+          : "${ASC_ISSUER_ID:?APP_STORE_CONNECT_API_ISSUER_ID secret is required}"
+          : "${ASC_PRIVATE_KEY:?APP_STORE_CONNECT_API_PRIVATE_KEY secret is required}"
+
+          mkdir -p "$HOME/.private_keys"
+          KEY_PATH="$HOME/.private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s' "$ASC_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "ASC_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Archive
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          CONFIGURATION: ${{ inputs.configuration }}
+        run: |
+          set -euo pipefail
+          SCHEME="AirNote"
+          if [ "$CONFIGURATION" = "Staging" ]; then
+            SCHEME="AirNote-Staging"
+          fi
+
+          xcodebuild archive \
+            -project "$IOS_PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -destination "generic/platform=iOS" \
+            -archivePath "$IOS_ARCHIVE" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Export IPA
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$IOS_ARCHIVE" \
+            -exportPath "$IOS_EXPORT_PATH" \
+            -exportOptionsPlist mobile/ios/Config/ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+          find "$IOS_EXPORT_PATH" -maxdepth 1 -name "*.ipa" -print
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: airnote-ios-ipa
+          path: ${{ env.IOS_EXPORT_PATH }}/*.ipa
+          retention-days: 7
+
+      - name: Upload to TestFlight
+        if: ${{ inputs.upload_to_testflight }}
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          IPA_PATH="$(find "$IOS_EXPORT_PATH" -maxdepth 1 -name "*.ipa" -print -quit)"
+          test -n "$IPA_PATH"
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$IPA_PATH" \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
