@@ -59,6 +59,10 @@ struct Cli {
     #[arg(long, env = "DEEPGRAM_API_KEY", default_value = "")]
     deepgram_api_key: String,
 
+    /// LLM (Groq) key for server-side runtime polish
+    #[arg(long, env = "GATEWAY_API_KEY", default_value = "")]
+    gateway_api_key: String,
+
     /// Divo agent backend base URL (AirNote ⇄ Divo proxy target)
     #[arg(
         long,
@@ -111,6 +115,7 @@ async fn main() {
         lark,
         hub,
         deepgram_api_key: cli.deepgram_api_key,
+        gateway_api_key: cli.gateway_api_key,
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
         divo_base_url: cli.divo_base_url,
     };

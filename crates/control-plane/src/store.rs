@@ -24,6 +24,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/010_company_vocab.sql"),
     include_str!("../migrations/011_email_auth_source.sql"),
     include_str!("../migrations/012_diagnostics_events.sql"),
+    include_str!("../migrations/013_runtime_gateway.sql"),
+    include_str!("../migrations/014_runtime_personal_memory.sql"),
 ];
 
 /// Connect to Postgres and apply the schema.

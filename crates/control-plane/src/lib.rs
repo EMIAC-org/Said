@@ -11,6 +11,7 @@ pub mod lark_sync;
 pub mod meeting_hub;
 pub mod notification_worker;
 pub mod routes;
+pub mod runtime;
 pub mod store;
 pub mod vocab_worker;
 
@@ -45,6 +46,8 @@ pub struct AppState {
     pub lark: LarkConfig,
     pub hub: Arc<meeting_hub::MeetingHub>,
     pub deepgram_api_key: String,
+    /// LLM (Groq) key for server-side runtime polish — GATEWAY_API_KEY.
+    pub gateway_api_key: String,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
     /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
     pub divo_base_url: String,
@@ -200,9 +203,29 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/openai/complete", post(routes::openai::complete))
         .route("/v1/openai/status", get(routes::openai::status))
         .route("/v1/openai/disconnect", delete(routes::openai::disconnect))
-        // The iOS/mobile runtime gateway lives in the standalone
-        // `crates/mobile-gateway` service. control-plane intentionally has NO
-        // connection to the iOS mobile app — keep mobile endpoints out of here.
+        // Server-side runtime gateway (Lark unified-runtime plan): authenticated
+        // session bootstrap, privacy-safe events, and the voice WebSocket.
+        .route("/v1/runtime/config", get(routes::runtime::config))
+        .route(
+            "/v1/runtime/sessions",
+            post(routes::runtime::create_session),
+        )
+        .route(
+            "/v1/runtime/mobile/sessions",
+            post(routes::runtime::create_session),
+        )
+        .route("/v1/runtime/events", post(routes::runtime::ingest_event))
+        .route("/v1/runtime/voice", get(routes::runtime::voice_ws))
+        .route(
+            "/v1/runtime/voice/batch",
+            post(routes::runtime::dictate_batch),
+        )
+        .route("/v1/runtime/feedback", post(routes::runtime::feedback))
+        // Mobile client compatibility aliases.
+        .route("/v1/mobile/sessions", post(routes::runtime::create_session))
+        .route("/v1/mobile/events", post(routes::runtime::ingest_event))
+        .route("/v1/mobile/dictate", post(routes::runtime::dictate_batch))
+        .route("/v1/mobile/feedback", post(routes::runtime::feedback))
         // Public OAuth redirect (browser flow — desktop app opens this URL)
         .route("/auth/lark", get(routes::lark_auth::desktop_start))
         // Admin dashboard (React SPA) — static assets first, then catch-all

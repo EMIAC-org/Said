@@ -32,7 +32,7 @@ type_complexity             = "allow"
 # ── Dependencies ──────────────────────────────────────────────────────────────
 
 [dependencies]
-axum               = { version = "0.7", features = ["ws"] }
+axum               = { version = "0.7", features = ["ws", "multipart"] }
 tokio              = { version = "1", features = ["full"] }
 serde              = { version = "1", features = ["derive"] }
 serde_json         = "1"
