@@ -20,7 +20,10 @@ concurrency:
 jobs:
   rust:
     name: Rust workspace (fmt, clippy, test)
-    runs-on: macos-latest
+    # ScreenCaptureKit pulls apple-metal's Swift bridge, which now references
+    # macOS 26 SDK symbols. Keep the Rust workspace gate on an SDK that can
+    # compile that bridge instead of relying on the slower-moving latest alias.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
