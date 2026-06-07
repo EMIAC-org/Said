@@ -72,25 +72,77 @@ pub async fn add_term(
 pub struct FeedbackBody {
     #[serde(default)]
     pub action: Option<String>,
+    /// The text AirNote produced (enables edit-event learning).
+    #[serde(default)]
+    pub original: Option<String>,
+    /// The text the user kept after editing.
     #[serde(default)]
     pub user_kept: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<uuid::Uuid>,
 }
 
-/// Explicit learning entry point. Only `learn_spelling` mutates vocab in v1.
+/// Explicit learning entry point (Wave 5). Only `learn_spelling` mutates memory.
+/// If both `original` and `user_kept` are present, the changed span is extracted
+/// and safety-gated before becoming a personal STT replacement (or a block);
+/// otherwise `user_kept` is stored as an explicit vocab term. Learning never
+/// blocks insertion — this runs after the result is already inserted.
 pub async fn feedback(
     State(state): State<AppState>,
     user: AuthUser,
     Json(body): Json<FeedbackBody>,
 ) -> ApiResult<Json<Value>> {
     let action = body.action.unwrap_or_default();
-    if action == "learn_spelling" {
-        if let Some(kept) = body.user_kept.as_deref() {
-            let term = clean_required(kept, 120, "user_kept")?;
-            upsert_term(&state, user.account_id, &term, &[], None).await?;
-            return Ok(Json(json!({ "ok": true, "learned": term })));
+    if action != "learn_spelling" {
+        return Ok(Json(json!({ "ok": true, "learned": Value::Null })));
+    }
+    let account_id = user.account_id;
+    let run_id = body.run_id;
+
+    // Edit-event path: derive a safe alias from original -> kept.
+    if let (Some(original), Some(kept)) = (body.original.as_deref(), body.user_kept.as_deref()) {
+        if !original.trim().is_empty() && !kept.trim().is_empty() {
+            match runtime::learning::analyze_edit(original, kept) {
+                runtime::learning::LearnDecision::Learn { spoken, canonical } => {
+                    runtime::vocab::record_replacement(
+                        &state.db, account_id, &spoken, &canonical, "edit",
+                    )
+                    .await;
+                    upsert_term(&state, account_id, &canonical, &[], None).await?;
+                    runtime::vocab::record_learning_event(
+                        &state.db, account_id, run_id, "learned_replacement",
+                    )
+                    .await;
+                    return Ok(Json(json!({ "ok": true, "learned": canonical, "from": spoken })));
+                }
+                runtime::learning::LearnDecision::Block { spoken } => {
+                    runtime::vocab::record_blocked(&state.db, account_id, &spoken, "common_word")
+                        .await;
+                    runtime::vocab::record_learning_event(
+                        &state.db, account_id, run_id, "blocked_unsafe",
+                    )
+                    .await;
+                    return Ok(Json(json!({ "ok": true, "learned": Value::Null, "blocked": spoken })));
+                }
+                runtime::learning::LearnDecision::Ignore => {
+                    runtime::vocab::record_learning_event(
+                        &state.db, account_id, run_id, "ignored_formatting",
+                    )
+                    .await;
+                    return Ok(Json(json!({ "ok": true, "learned": Value::Null })));
+                }
+            }
         }
     }
-    // Other feedback actions are accepted but not acted on in v1.
+
+    // Explicit-term path: store the kept text as a personal vocab term.
+    if let Some(kept) = body.user_kept.as_deref() {
+        let term = clean_required(kept, 120, "user_kept")?;
+        upsert_term(&state, account_id, &term, &[], None).await?;
+        runtime::vocab::record_learning_event(&state.db, account_id, run_id, "explicit_term").await;
+        return Ok(Json(json!({ "ok": true, "learned": term })));
+    }
+
     Ok(Json(json!({ "ok": true, "learned": Value::Null })))
 }
 

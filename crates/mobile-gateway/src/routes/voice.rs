@@ -354,7 +354,11 @@ async fn handle_voice_socket(
             .await;
     }
 
-    let polished = runtime::script::apply_script_guard(polished_raw.trim(), &language);
+    let guarded = runtime::script::apply_script_guard(polished_raw.trim(), &language);
+    // Wave 6: deterministic protected-term resolver over the final text.
+    let replacements = runtime::vocab::load_replacements(&state.db, account_id).await;
+    let blocked = runtime::vocab::load_blocked(&state.db, account_id).await;
+    let polished = runtime::resolver::apply_resolver(&guarded, &replacements, &blocked);
     let latency_ms = started.elapsed().as_millis() as i64;
 
     finalize_success(
@@ -539,7 +543,11 @@ pub async fn dictate_batch(
         }
     };
     let polish_ms = polish_started.elapsed().as_millis() as i64;
-    let polished = runtime::script::apply_script_guard(polished_raw.trim(), &language);
+    let guarded = runtime::script::apply_script_guard(polished_raw.trim(), &language);
+    // Wave 6: deterministic protected-term resolver over the final text.
+    let replacements = runtime::vocab::load_replacements(&state.db, user.account_id).await;
+    let blocked = runtime::vocab::load_blocked(&state.db, user.account_id).await;
+    let polished = runtime::resolver::apply_resolver(&guarded, &replacements, &blocked);
     let latency_ms = started.elapsed().as_millis() as i64;
 
     finalize_success(

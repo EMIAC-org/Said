@@ -10,7 +10,10 @@ use tracing::info;
 
 pub type Db = PgPool;
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_personal_memory.sql"),
+];
 
 /// Connect to Postgres and apply the schema.
 pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
@@ -20,15 +23,19 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
         .await?;
 
     info!("[store] applying schema");
+    // Advisory locks are session-scoped, so the lock, the migrations, and the
+    // unlock must all run on ONE pinned connection — running them on `&pool`
+    // could dispatch each to a different backend, making the lock a no-op.
+    let mut conn = pool.acquire().await?;
     sqlx::query("SELECT pg_advisory_lock(hashtext('airnote_mobile_gateway_migrations'))")
-        .execute(&pool)
+        .execute(&mut *conn)
         .await?;
     let migration_result = async {
         for migration in MIGRATIONS {
             for stmt in migration.split(';') {
                 let trimmed = stmt.trim();
                 if !trimmed.is_empty() {
-                    sqlx::query(trimmed).execute(&pool).await?;
+                    sqlx::query(trimmed).execute(&mut *conn).await?;
                 }
             }
         }
@@ -37,8 +44,9 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
     .await;
     let unlock_result =
         sqlx::query("SELECT pg_advisory_unlock(hashtext('airnote_mobile_gateway_migrations'))")
-            .execute(&pool)
+            .execute(&mut *conn)
             .await;
+    drop(conn);
     migration_result?;
     unlock_result?;
     info!("[store] schema OK");
