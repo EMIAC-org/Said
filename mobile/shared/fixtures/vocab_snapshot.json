@@ -1,0 +1,25 @@
+{
+  "hash": "etag-v43",
+  "terms": [
+    {
+      "term": "Macobs",
+      "spoken_aliases": ["mac obs", "macops"],
+      "term_type": "product",
+      "scope": "personal",
+      "priority": 0.91
+    },
+    {
+      "term": "Rahul",
+      "spoken_aliases": [],
+      "term_type": "person",
+      "scope": "personal",
+      "priority": 0.8
+    }
+  ],
+  "style_defaults": {
+    "default_style": "work",
+    "language_hint": "hinglish"
+  },
+  "stt_replacements_version": 12,
+  "prompt_hints_version": 9
+}

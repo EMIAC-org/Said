@@ -1,0 +1,4 @@
+{"id":"safe_multiline_insert","field_hint":"multiline","selected_text":"","expected_policy":"insert_at_cursor","learning_allowed":true}
+{"id":"selected_text_replace","field_hint":"multiline","selected_text":"old draft","expected_policy":"replace_selected_text","learning_allowed":true}
+{"id":"password_suppressed","field_hint":"password","selected_text":"","expected_policy":"suppress_voice","learning_allowed":false}
+{"id":"unsupported_copy_only","field_hint":"unsupported_app","selected_text":"","expected_policy":"copy_only","learning_allowed":false}

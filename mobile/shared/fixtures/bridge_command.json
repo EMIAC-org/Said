@@ -1,0 +1,17 @@
+{
+  "schema": "airnote.ios.bridge.command.v1",
+  "command_id": "bridge-command-0019",
+  "command_seq": 19,
+  "kind": "start_recording",
+  "created_at": "2026-06-07T08:00:05Z",
+  "keyboard_context": {
+    "before_text": "Draft Rahul ko bhejna hai",
+    "after_text": "",
+    "selected_text": "",
+    "host_app_label": "Slack",
+    "field_hint": "multiline"
+  },
+  "language_hint": "hinglish",
+  "style": "work",
+  "client_request_id": "client-request-0001"
+}

@@ -1,0 +1,18 @@
+{
+  "event_id": "mobile-event-0001",
+  "schema": "airnote.mobile.event.v1",
+  "occurred_at": "2026-06-07T08:00:11Z",
+  "device_id": "ios-device-0001",
+  "session_id": "ios-session-0001",
+  "client_request_id": "client-request-0001",
+  "build": "0.1.0(42)",
+  "platform": "ios",
+  "surface": "ios_keyboard",
+  "event_type": "insert_succeeded",
+  "redacted_context": {
+    "host_app_label": "Slack",
+    "field_hint": "multiline",
+    "network_type": "wifi",
+    "latency_ms": 1840
+  }
+}

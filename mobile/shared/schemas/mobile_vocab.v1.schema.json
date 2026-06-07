@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://airnote.example/schemas/mobile_vocab.v1.schema.json",
+  "title": "AirNote Mobile Vocabulary Snapshot v1",
+  "type": "object",
+  "required": ["hash", "terms", "style_defaults", "stt_replacements_version", "prompt_hints_version"],
+  "additionalProperties": false,
+  "properties": {
+    "hash": { "type": "string" },
+    "terms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["term", "spoken_aliases", "term_type", "scope", "priority"],
+        "additionalProperties": false,
+        "properties": {
+          "term": { "type": "string", "minLength": 1 },
+          "spoken_aliases": { "type": "array", "items": { "type": "string" } },
+          "term_type": { "type": "string" },
+          "scope": { "type": "string", "enum": ["personal", "org"] },
+          "priority": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "style_defaults": {
+      "type": "object",
+      "required": ["default_style", "language_hint"],
+      "additionalProperties": false,
+      "properties": {
+        "default_style": { "type": "string" },
+        "language_hint": { "type": "string" }
+      }
+    },
+    "stt_replacements_version": { "type": "integer", "minimum": 0 },
+    "prompt_hints_version": { "type": "integer", "minimum": 0 }
+  }
+}

@@ -1,0 +1,3 @@
+{"id":"hinglish_macobs","language_hint":"hinglish","spoken":"kal jo macobs wala update hai usko concise bana ke rahul ko bhej do","expected":"Kal jo Macobs wala update hai, usko concise bana ke Rahul ko bhej do.","must_remain_roman":true}
+{"id":"english_direct","language_hint":"en","spoken":"send a short follow up after the launch call","expected":"Send a short follow-up after the launch call.","must_remain_roman":true}
+{"id":"hindi_roman","language_hint":"hinglish","spoken":"aaj sham tak invoice bhej dena","expected":"Aaj sham tak invoice bhej dena.","must_remain_roman":true}

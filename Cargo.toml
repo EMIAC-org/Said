@@ -6,6 +6,7 @@ members = [
     "crates/hotkey",
     "crates/backend",
     "crates/said",
+    "crates/mobile-core",
     "desktop/src-tauri",
 ]
 # control-plane excluded: it deploys to Fly.io and uses sqlx-postgres which

@@ -1,0 +1,17 @@
+{
+  "schema": "airnote.ios.bridge.result.v1",
+  "result_seq": 20,
+  "session_id": "ios-session-0001",
+  "client_request_id": "client-request-0001",
+  "request_id": "gateway-request-0001",
+  "state": "final",
+  "transcript": "kal jo macobs wala update hai usko concise bana ke rahul ko bhej do",
+  "polished": "Kal jo Macobs wala update hai, usko concise bana ke Rahul ko bhej do.",
+  "language": "hinglish",
+  "style": "work",
+  "latency_ms": 1840,
+  "created_at": "2026-06-07T08:00:10Z",
+  "expires_at": "2026-06-07T08:05:10Z",
+  "insert_policy": "insert_at_cursor",
+  "learning_allowed": true
+}

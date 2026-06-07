@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://airnote.example/schemas/airnote_ios_bridge.v1.schema.json",
+  "title": "AirNote iOS App Group Bridge v1",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/session" },
+    { "$ref": "#/$defs/command" },
+    { "$ref": "#/$defs/result" },
+    { "$ref": "#/$defs/ack" },
+    { "$ref": "#/$defs/health" }
+  ],
+  "$defs": {
+    "languageHint": {
+      "type": "string",
+      "enum": ["auto", "en", "hi", "hinglish"]
+    },
+    "style": {
+      "type": "string",
+      "enum": ["direct", "work", "casual", "email", "notes"]
+    },
+    "surface": {
+      "type": "string",
+      "enum": ["ios_keyboard", "ios_action_button"]
+    },
+    "keyboardContext": {
+      "type": "object",
+      "required": ["before_text", "after_text", "selected_text", "host_app_label", "field_hint"],
+      "additionalProperties": false,
+      "properties": {
+        "before_text": { "type": "string", "maxLength": 2000 },
+        "after_text": { "type": "string", "maxLength": 2000 },
+        "selected_text": { "type": "string", "maxLength": 2000 },
+        "host_app_label": { "type": "string", "maxLength": 120 },
+        "field_hint": { "type": "string", "maxLength": 80 }
+      }
+    },
+    "session": {
+      "type": "object",
+      "required": ["schema", "session_id", "device_id", "state", "started_at", "expires_at", "heartbeat_at", "language_hint", "style", "surface", "gateway_region", "result_seq", "command_seq"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "const": "airnote.ios.bridge.session.v1" },
+        "session_id": { "type": "string" },
+        "device_id": { "type": "string" },
+        "state": {
+          "type": "string",
+          "enum": ["not_configured", "needs_full_access", "needs_main_app_session", "session_start_requested", "ready", "recording", "processing", "insert_ready", "inserted", "error", "stale_session"]
+        },
+        "started_at": { "type": "string", "format": "date-time" },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "heartbeat_at": { "type": "string", "format": "date-time" },
+        "language_hint": { "$ref": "#/$defs/languageHint" },
+        "style": { "$ref": "#/$defs/style" },
+        "surface": { "$ref": "#/$defs/surface" },
+        "gateway_region": { "type": "string" },
+        "result_seq": { "type": "integer", "minimum": 0 },
+        "command_seq": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "command": {
+      "type": "object",
+      "required": ["schema", "command_id", "command_seq", "kind", "created_at", "keyboard_context", "language_hint", "style", "client_request_id"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "const": "airnote.ios.bridge.command.v1" },
+        "command_id": { "type": "string" },
+        "command_seq": { "type": "integer", "minimum": 1 },
+        "kind": {
+          "type": "string",
+          "enum": ["start_session", "start_recording", "stop_recording", "cancel_recording", "request_insert", "clear_state"]
+        },
+        "created_at": { "type": "string", "format": "date-time" },
+        "keyboard_context": { "$ref": "#/$defs/keyboardContext" },
+        "language_hint": { "$ref": "#/$defs/languageHint" },
+        "style": { "$ref": "#/$defs/style" },
+        "client_request_id": { "type": "string" }
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": ["schema", "result_seq", "session_id", "client_request_id", "request_id", "state", "transcript", "polished", "language", "style", "latency_ms", "created_at", "expires_at", "insert_policy", "learning_allowed"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "const": "airnote.ios.bridge.result.v1" },
+        "result_seq": { "type": "integer", "minimum": 1 },
+        "session_id": { "type": "string" },
+        "client_request_id": { "type": "string" },
+        "request_id": { "type": "string" },
+        "state": { "type": "string", "enum": ["partial", "final", "error", "expired"] },
+        "transcript": { "type": "string" },
+        "polished": { "type": "string" },
+        "language": { "$ref": "#/$defs/languageHint" },
+        "style": { "$ref": "#/$defs/style" },
+        "latency_ms": { "type": "integer", "minimum": 0 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "insert_policy": { "type": "string", "enum": ["insert_at_cursor", "replace_selected_text", "copy_only", "save_to_history"] },
+        "learning_allowed": { "type": "boolean" }
+      }
+    },
+    "ack": {
+      "type": "object",
+      "required": ["schema", "result_seq", "session_id", "client_request_id", "outcome", "acknowledged_at"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "const": "airnote.ios.bridge.ack.v1" },
+        "result_seq": { "type": "integer", "minimum": 1 },
+        "session_id": { "type": "string" },
+        "client_request_id": { "type": "string" },
+        "outcome": { "type": "string", "enum": ["inserted", "copied", "saved_to_history", "canceled", "failed", "expired"] },
+        "acknowledged_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "health": {
+      "type": "object",
+      "required": ["schema", "keyboard_seen_at", "full_access_ready", "app_group_ready"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "const": "airnote.ios.bridge.health.v1" },
+        "keyboard_seen_at": { "type": "string", "format": "date-time" },
+        "full_access_ready": { "type": "boolean" },
+        "app_group_ready": { "type": "boolean" }
+      }
+    }
+  }
+}

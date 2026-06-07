@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://airnote.example/schemas/mobile_voice.v1.schema.json",
+  "title": "AirNote Mobile Voice v1",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/sessionRequest" },
+    { "$ref": "#/$defs/sessionResponse" },
+    { "$ref": "#/$defs/clientVoiceEvent" },
+    { "$ref": "#/$defs/serverVoiceEvent" }
+  ],
+  "$defs": {
+    "platform": { "type": "string", "enum": ["ios", "android"] },
+    "surface": { "type": "string", "enum": ["ios_keyboard", "ios_action_button", "android_keyboard", "android_bubble"] },
+    "languageHint": { "type": "string", "enum": ["auto", "en", "hi", "hinglish"] },
+    "style": { "type": "string", "enum": ["direct", "work", "casual", "email", "notes"] },
+    "cursorContext": {
+      "type": "object",
+      "required": ["before_text", "after_text", "selected_text"],
+      "additionalProperties": false,
+      "properties": {
+        "before_text": { "type": "string", "maxLength": 2000 },
+        "after_text": { "type": "string", "maxLength": 2000 },
+        "selected_text": { "type": "string", "maxLength": 2000 }
+      }
+    },
+    "targetApp": {
+      "type": "object",
+      "required": ["label", "field_hint"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string", "maxLength": 120 },
+        "bundle_id": { "type": ["string", "null"], "maxLength": 200 },
+        "field_hint": { "type": "string", "maxLength": 80 }
+      }
+    },
+    "sessionRequest": {
+      "type": "object",
+      "required": ["client_request_id", "device_id", "platform", "surface", "language_hint", "style", "target_app", "cursor_context"],
+      "additionalProperties": false,
+      "properties": {
+        "client_request_id": { "type": "string" },
+        "device_id": { "type": "string" },
+        "platform": { "$ref": "#/$defs/platform" },
+        "surface": { "$ref": "#/$defs/surface" },
+        "language_hint": { "$ref": "#/$defs/languageHint" },
+        "style": { "$ref": "#/$defs/style" },
+        "target_app": { "$ref": "#/$defs/targetApp" },
+        "cursor_context": { "$ref": "#/$defs/cursorContext" },
+        "vocab_snapshot_hash": { "type": ["string", "null"] }
+      }
+    },
+    "sessionResponse": {
+      "type": "object",
+      "required": ["session_id", "voice_ws_url", "batch_url", "session_token", "expires_at", "max_recording_seconds", "streaming_enabled", "current_vocab_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "session_id": { "type": "string" },
+        "voice_ws_url": { "type": "string" },
+        "batch_url": { "type": "string" },
+        "session_token": { "type": "string" },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "max_recording_seconds": { "type": "integer", "minimum": 1 },
+        "streaming_enabled": { "type": "boolean" },
+        "current_vocab_hash": { "type": "string" }
+      }
+    },
+    "clientVoiceEvent": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "type": "string", "enum": ["session_start", "session_stop", "cancel"] }
+      }
+    },
+    "serverVoiceEvent": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["session_ready", "stt_interim", "stt_final", "polish_started", "polish_delta", "guard_warning", "final", "error"]
+        }
+      }
+    }
+  }
+}

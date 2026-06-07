@@ -1,0 +1,15 @@
+{
+  "schema": "airnote.ios.bridge.session.v1",
+  "session_id": "ios-session-0001",
+  "device_id": "ios-device-0001",
+  "state": "ready",
+  "started_at": "2026-06-07T08:00:00Z",
+  "expires_at": "2026-06-07T08:15:00Z",
+  "heartbeat_at": "2026-06-07T08:00:04Z",
+  "language_hint": "hinglish",
+  "style": "work",
+  "surface": "ios_keyboard",
+  "gateway_region": "ap-south-1",
+  "result_seq": 12,
+  "command_seq": 18
+}

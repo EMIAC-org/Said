@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://airnote.example/schemas/mobile_events.v1.schema.json",
+  "title": "AirNote Mobile Events v1",
+  "type": "object",
+  "required": ["event_id", "schema", "occurred_at", "device_id", "build", "platform", "surface", "event_type", "redacted_context"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": { "type": "string" },
+    "schema": { "const": "airnote.mobile.event.v1" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "device_id": { "type": "string" },
+    "session_id": { "type": ["string", "null"] },
+    "client_request_id": { "type": ["string", "null"] },
+    "build": { "type": "string" },
+    "platform": { "type": "string", "enum": ["ios", "android"] },
+    "surface": { "type": "string", "enum": ["ios_keyboard", "ios_action_button", "android_keyboard", "android_bubble"] },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "setup_started",
+        "setup_account_ready",
+        "setup_privacy_acknowledged",
+        "setup_mic_ready",
+        "setup_keyboard_enabled",
+        "setup_full_access_ready",
+        "setup_first_dictation_done",
+        "permission_mic_denied",
+        "permission_mic_revoked",
+        "permission_full_access_missing",
+        "permission_full_access_revoked",
+        "session_created",
+        "session_ready",
+        "session_stale",
+        "session_canceled",
+        "session_expired",
+        "session_app_killed",
+        "audio_started",
+        "audio_first_frame_sent",
+        "audio_route_changed",
+        "audio_interrupted",
+        "audio_stopped",
+        "audio_upload_failed",
+        "gateway_ws_connected",
+        "gateway_ws_failed",
+        "gateway_batch_fallback_used",
+        "gateway_provider_timeout",
+        "gateway_provider_error",
+        "insert_ready",
+        "insert_succeeded",
+        "insert_failed",
+        "insert_copied",
+        "insert_saved_to_history",
+        "insert_duplicate_suppressed",
+        "correction_learn_spelling_tapped",
+        "correction_feedback_submitted",
+        "correction_review_queued"
+      ]
+    },
+    "redacted_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host_app_label": { "type": ["string", "null"] },
+        "field_hint": { "type": ["string", "null"] },
+        "network_type": { "type": ["string", "null"] },
+        "latency_ms": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    }
+  }
+}
