@@ -11,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -369,20 +370,22 @@ private fun FooterActions(
     onBack: () -> Unit,
     onPrimary: () -> Unit,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
         if (step.ordinal > 0) {
             OutlinedButton(
                 onClick = onBack,
                 modifier = Modifier
-                    .weight(0.34f)
+                    .width(58.dp)
                     .height(44.dp),
                 shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.ForegroundFixed),
                 border = BorderStroke(1.dp, AirNotePalette.BorderStrong),
+                contentPadding = PaddingValues(0.dp),
             ) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Back", fontWeight = FontWeight.SemiBold)
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
             }
         }
 
