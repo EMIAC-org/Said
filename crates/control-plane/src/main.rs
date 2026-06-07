@@ -63,6 +63,10 @@ struct Cli {
     #[arg(long, env = "GATEWAY_API_KEY", default_value = "")]
     gateway_api_key: String,
 
+    /// Master key for encrypting BYOK provider credentials at rest
+    #[arg(long, env = "RUNTIME_SECRET_KEY", default_value = "")]
+    runtime_secret_key: String,
+
     /// Divo agent backend base URL (AirNote ⇄ Divo proxy target)
     #[arg(
         long,
@@ -116,6 +120,9 @@ async fn main() {
         hub,
         deepgram_api_key: cli.deepgram_api_key,
         gateway_api_key: cli.gateway_api_key,
+        runtime_secret_key: said_control_plane::runtime::crypto::parse_master_key(
+            &cli.runtime_secret_key,
+        ),
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
         divo_base_url: cli.divo_base_url,
     };

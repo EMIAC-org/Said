@@ -7,7 +7,7 @@
 use axum::{
     Json,
     extract::{
-        Multipart, Query, State, WebSocketUpgrade,
+        Multipart, Path, Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::StatusCode,
@@ -384,7 +384,8 @@ pub async fn voice_ws(
     let st = state.clone();
     Ok(ws.on_upgrade(move |socket| {
         handle_voice_socket(
-            st, socket, account_id, session_id, run_id, device_id, language, style, vocab_terms,
+            st, socket, account_id, org_id, session_id, run_id, device_id, language, style,
+            vocab_terms,
         )
     }))
 }
@@ -397,6 +398,7 @@ async fn handle_voice_socket(
     state: AppState,
     socket: WebSocket,
     account_id: Uuid,
+    org_id: Option<Uuid>,
     session_id: Uuid,
     run_id: Uuid,
     device_id: String,
@@ -416,7 +418,11 @@ async fn handle_voice_socket(
         ))
         .await;
 
-    let mock = state.deepgram_api_key.trim().is_empty() || state.gateway_api_key.trim().is_empty();
+    let (dg_key, dg_cred) =
+        effective_provider_key(&state, account_id, org_id, "deepgram", &state.deepgram_api_key).await;
+    let (llm_key, llm_cred) =
+        effective_provider_key(&state, account_id, org_id, "groq", &state.gateway_api_key).await;
+    let mock = dg_key.trim().is_empty() || llm_key.trim().is_empty();
 
     // ── Phase 1: audio → transcript ──────────────────────────────────────────
     let mut transcript = String::new();
@@ -439,7 +445,7 @@ async fn handle_voice_socket(
         }
         transcript = mock_transcript(&language);
     } else {
-        let dg = match runtime::stt::connect_stream(&state.deepgram_api_key, &language).await {
+        let dg = match runtime::stt::connect_stream(&dg_key, &language).await {
             Ok(s) => s,
             Err(e) => {
                 warn!("[runtime-ws] deepgram connect failed: {e}");
@@ -547,7 +553,7 @@ async fn handle_voice_socket(
     let polished_raw = if mock {
         mock_polish(&transcript)
     } else {
-        match runtime::polish::polish_once(&http, &state.gateway_api_key, LLM_BASE_URL, LLM_MODEL, &sys, &user).await {
+        match runtime::polish::polish_once(&http, &llm_key, LLM_BASE_URL, LLM_MODEL, &sys, &user).await {
             Ok(p) if !p.trim().is_empty() => p,
             _ => transcript.clone(),
         }
@@ -570,7 +576,7 @@ async fn handle_voice_socket(
         total_ms,
     )
     .await;
-    record_usage(&state.db, account_id, run_id, bytes, &user, &output).await;
+    record_usage(&state.db, account_id, run_id, bytes, &user, &output, dg_cred, llm_cred).await;
 
     let _ = sink
         .send(Message::Text(
@@ -650,7 +656,12 @@ pub async fn dictate_batch(
     }
 
     let started = Instant::now();
-    let mock = state.deepgram_api_key.trim().is_empty() || state.gateway_api_key.trim().is_empty();
+    let org_id = resolve_org_optional(&state, user.account_id).await?;
+    let (dg_key, dg_cred) =
+        effective_provider_key(&state, user.account_id, org_id, "deepgram", &state.deepgram_api_key).await;
+    let (llm_key, llm_cred) =
+        effective_provider_key(&state, user.account_id, org_id, "groq", &state.gateway_api_key).await;
+    let mock = dg_key.trim().is_empty() || llm_key.trim().is_empty();
     let audio_bytes = audio.len() as i32;
     let http = reqwest::Client::new();
 
@@ -668,7 +679,7 @@ pub async fn dictate_batch(
     let transcript = if mock {
         mock_transcript(&language)
     } else {
-        match runtime::stt::transcribe_batch(&http, &state.deepgram_api_key, audio, &audio_ct, &language)
+        match runtime::stt::transcribe_batch(&http, &dg_key, audio, &audio_ct, &language)
             .await
         {
             Ok(t) => t,
@@ -697,7 +708,7 @@ pub async fn dictate_batch(
     let polished_raw = if mock {
         mock_polish(&transcript)
     } else {
-        match runtime::polish::polish_once(&http, &state.gateway_api_key, LLM_BASE_URL, LLM_MODEL, &sys, &user_msg)
+        match runtime::polish::polish_once(&http, &llm_key, LLM_BASE_URL, LLM_MODEL, &sys, &user_msg)
             .await
         {
             Ok(p) if !p.trim().is_empty() => p,
@@ -720,7 +731,7 @@ pub async fn dictate_batch(
         total_ms,
     )
     .await;
-    record_usage(&state.db, user.account_id, run_id, audio_bytes, &user_msg, &output).await;
+    record_usage(&state.db, user.account_id, run_id, audio_bytes, &user_msg, &output, dg_cred, llm_cred).await;
 
     Ok(Json(json!({
         "schema":"airnote.runtime.dictate.v1","request_id":run_id,"session_id":session_id,
@@ -785,6 +796,239 @@ pub async fn feedback(
     }
 
     Ok(Json(json!({ "ok": true, "learned": Value::Null })))
+}
+
+// ── BYOK provider credential vault (Wave 1) ──────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SaveCredentialBody {
+    pub provider: String,
+    pub secret: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+/// `POST /v1/runtime/credentials` — encrypt + store a provider key (BYOK).
+pub async fn save_credential(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(body): Json<SaveCredentialBody>,
+) -> ApiResult<Json<Value>> {
+    let provider = normalize_choice(
+        Some(&body.provider),
+        &["deepgram", "groq", "openai", "gemini"],
+        "deepgram",
+    );
+    let secret = body.secret.trim();
+    if secret.is_empty() {
+        return Err(bad_req("secret required"));
+    }
+    if state.runtime_secret_key.len() != 32 {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "credential vault not configured (RUNTIME_SECRET_KEY unset)"})),
+        ));
+    }
+    let Some(encrypted) = runtime::crypto::encrypt(secret, &state.runtime_secret_key) else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "encryption failed"})),
+        ));
+    };
+    let secret_digest = runtime::crypto::digest(secret);
+    let scope = normalize_choice(body.scope.as_deref(), &["account", "org"], "account");
+    let org_id = if scope == "org" {
+        match resolve_org_optional(&state, user.account_id).await? {
+            Some(o) => Some(o),
+            None => return Err(bad_req("no org for org-scoped credential")),
+        }
+    } else {
+        None
+    };
+    let label = trim_optional(body.label, MAX_LABEL_LEN);
+
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO runtime_provider_credentials
+            (owner_scope, account_id, org_id, provider, label, encrypted_secret, secret_digest,
+             status, validation_status, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'active','untested',$8)
+         RETURNING id",
+    )
+    .bind(&scope)
+    .bind(user.account_id)
+    .bind(org_id)
+    .bind(&provider)
+    .bind(label)
+    .bind(encrypted)
+    .bind(secret_digest)
+    .bind(user.account_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    Ok(Json(json!({
+        "id": id, "provider": provider, "scope": scope,
+        "status": "active", "validation_status": "untested"
+    })))
+}
+
+/// `GET /v1/runtime/credentials` — status list (never returns plaintext).
+pub async fn list_credentials(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<Value>> {
+    let org_id = resolve_org_optional(&state, user.account_id).await?;
+    let rows: Vec<(Uuid, String, Option<String>, String, String, String, Option<DateTime<Utc>>)> =
+        sqlx::query_as(
+            "SELECT id, provider, label, owner_scope, status, validation_status, last_validated_at
+               FROM runtime_provider_credentials
+              WHERE revoked_at IS NULL
+                AND ((owner_scope = 'account' AND account_id = $1)
+                  OR (owner_scope = 'org' AND org_id = $2))
+              ORDER BY created_at DESC",
+        )
+        .bind(user.account_id)
+        .bind(org_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(db_err)?;
+
+    let items: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, provider, label, scope, status, vstatus, last_validated)| {
+            json!({
+                "id": id, "provider": provider, "label": label, "scope": scope,
+                "status": status, "validation_status": vstatus, "last_validated_at": last_validated
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "credentials": items })))
+}
+
+/// `POST /v1/runtime/credentials/:id/validate` — decrypt + live-check the key.
+pub async fn validate_credential(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    let org_id = resolve_org_optional(&state, user.account_id).await?;
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT provider, encrypted_secret FROM runtime_provider_credentials
+          WHERE id = $1 AND revoked_at IS NULL AND encrypted_secret IS NOT NULL
+            AND ((owner_scope = 'account' AND account_id = $2)
+              OR (owner_scope = 'org' AND org_id = $3))",
+    )
+    .bind(id)
+    .bind(user.account_id)
+    .bind(org_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    let Some((provider, encrypted)) = row else {
+        return Err((StatusCode::NOT_FOUND, Json(json!({"error": "credential not found"}))));
+    };
+    let Some(secret) = runtime::crypto::decrypt(&encrypted, &state.runtime_secret_key) else {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "decrypt failed"}))));
+    };
+
+    let http = reqwest::Client::new();
+    let valid = validate_provider_secret(&http, &provider, &secret).await;
+    let vstatus = if valid { "valid" } else { "invalid" };
+    let _ = sqlx::query(
+        "UPDATE runtime_provider_credentials
+            SET validation_status = $2, last_validated_at = now(), updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(id)
+    .bind(vstatus)
+    .execute(&state.db)
+    .await;
+
+    Ok(Json(json!({ "id": id, "provider": provider, "validation_status": vstatus })))
+}
+
+/// `DELETE /v1/runtime/credentials/:id` — revoke (soft delete).
+pub async fn revoke_credential(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    let org_id = resolve_org_optional(&state, user.account_id).await?;
+    let res = sqlx::query(
+        "UPDATE runtime_provider_credentials
+            SET status = 'revoked', revoked_at = now(), updated_at = now()
+          WHERE id = $1 AND revoked_at IS NULL
+            AND ((owner_scope = 'account' AND account_id = $2)
+              OR (owner_scope = 'org' AND org_id = $3))",
+    )
+    .bind(id)
+    .bind(user.account_id)
+    .bind(org_id)
+    .execute(&state.db)
+    .await
+    .map_err(db_err)?;
+    if res.rows_affected() == 0 {
+        return Err((StatusCode::NOT_FOUND, Json(json!({"error": "credential not found"}))));
+    }
+    Ok(Json(json!({ "id": id, "status": "revoked" })))
+}
+
+/// Select the effective provider key for a run: the user's (then org's) active
+/// BYOK credential if present, else the server's own key. Returns the plaintext
+/// key + the credential id used (for usage attribution).
+async fn effective_provider_key(
+    state: &AppState,
+    account_id: Uuid,
+    org_id: Option<Uuid>,
+    provider: &str,
+    fallback: &str,
+) -> (String, Option<Uuid>) {
+    if state.runtime_secret_key.len() == 32 {
+        let row: Option<(Uuid, String)> = sqlx::query_as(
+            "SELECT id, encrypted_secret FROM runtime_provider_credentials
+              WHERE provider = $1 AND status = 'active' AND revoked_at IS NULL
+                AND encrypted_secret IS NOT NULL
+                AND ((owner_scope = 'account' AND account_id = $2)
+                  OR (owner_scope = 'org' AND org_id = $3))
+              ORDER BY (owner_scope = 'account') DESC, updated_at DESC
+              LIMIT 1",
+        )
+        .bind(provider)
+        .bind(account_id)
+        .bind(org_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+        if let Some((id, encrypted)) = row {
+            if let Some(plaintext) = runtime::crypto::decrypt(&encrypted, &state.runtime_secret_key) {
+                return (plaintext, Some(id));
+            }
+        }
+    }
+    (fallback.to_string(), None)
+}
+
+async fn validate_provider_secret(http: &reqwest::Client, provider: &str, secret: &str) -> bool {
+    let request = match provider {
+        "deepgram" => http
+            .get("https://api.deepgram.com/v1/projects")
+            .header("Authorization", format!("Token {secret}")),
+        "groq" => http
+            .get("https://api.groq.com/openai/v1/models")
+            .header("Authorization", format!("Bearer {secret}")),
+        "openai" => http
+            .get("https://api.openai.com/v1/models")
+            .header("Authorization", format!("Bearer {secret}")),
+        _ => return false,
+    };
+    matches!(
+        request.timeout(std::time::Duration::from_secs(10)).send().await,
+        Ok(resp) if resp.status().is_success()
+    )
 }
 
 // ── runtime pipeline helpers ──────────────────────────────────────────────────
@@ -911,6 +1155,7 @@ async fn finalize_run_failed(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn record_usage(
     db: &sqlx::PgPool,
     account_id: Uuid,
@@ -918,13 +1163,16 @@ async fn record_usage(
     audio_bytes: i32,
     user_message: &str,
     output: &str,
+    deepgram_credential: Option<Uuid>,
+    groq_credential: Option<Uuid>,
 ) {
     let audio_seconds = (audio_bytes as i64) / 32_000;
     let _ = sqlx::query(
         "INSERT INTO runtime_provider_usage
-            (account_id, run_id, provider, operation, input_units, output_units, cost_micros)
-         VALUES ($1, $2, 'deepgram', 'stt', $3, 0, $4)",
+            (provider_credential_id, account_id, run_id, provider, operation, input_units, output_units, cost_micros)
+         VALUES ($1, $2, $3, 'deepgram', 'stt', $4, 0, $5)",
     )
+    .bind(deepgram_credential)
     .bind(account_id)
     .bind(run_id)
     .bind(audio_seconds as i32)
@@ -936,9 +1184,10 @@ async fn record_usage(
     let output_tokens = (output.len() / 4) as i32;
     let _ = sqlx::query(
         "INSERT INTO runtime_provider_usage
-            (account_id, run_id, provider, operation, input_units, output_units, cost_micros)
-         VALUES ($1, $2, 'groq', 'polish', $3, $4, $5)",
+            (provider_credential_id, account_id, run_id, provider, operation, input_units, output_units, cost_micros)
+         VALUES ($1, $2, $3, 'groq', 'polish', $4, $5, $6)",
     )
+    .bind(groq_credential)
     .bind(account_id)
     .bind(run_id)
     .bind(input_tokens)

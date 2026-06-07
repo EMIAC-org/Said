@@ -47,6 +47,7 @@ impl TestServer {
             hub,
             deepgram_api_key: String::new(),
             gateway_api_key: String::new(),
+            runtime_secret_key: Vec::new(),
             diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
             divo_base_url: String::new(),
         };

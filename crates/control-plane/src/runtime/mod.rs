@@ -4,6 +4,7 @@
 //! (Groq) → Hinglish script guard → protected-term resolver, plus per-user
 //! personal-memory learning. Clients stay thin (capture audio, insert result).
 
+pub mod crypto;
 pub mod learning;
 pub mod memory;
 pub mod polish;

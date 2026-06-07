@@ -48,6 +48,8 @@ pub struct AppState {
     pub deepgram_api_key: String,
     /// LLM (Groq) key for server-side runtime polish — GATEWAY_API_KEY.
     pub gateway_api_key: String,
+    /// 32-byte master key (parsed) for BYOK provider-credential encryption.
+    pub runtime_secret_key: Vec<u8>,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
     /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
     pub divo_base_url: String,
@@ -221,6 +223,19 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::runtime::dictate_batch),
         )
         .route("/v1/runtime/feedback", post(routes::runtime::feedback))
+        // BYOK provider credential vault (Wave 1).
+        .route(
+            "/v1/runtime/credentials",
+            get(routes::runtime::list_credentials).post(routes::runtime::save_credential),
+        )
+        .route(
+            "/v1/runtime/credentials/:id/validate",
+            post(routes::runtime::validate_credential),
+        )
+        .route(
+            "/v1/runtime/credentials/:id",
+            delete(routes::runtime::revoke_credential),
+        )
         // Mobile client compatibility aliases.
         .route("/v1/mobile/sessions", post(routes::runtime::create_session))
         .route("/v1/mobile/events", post(routes::runtime::ingest_event))
