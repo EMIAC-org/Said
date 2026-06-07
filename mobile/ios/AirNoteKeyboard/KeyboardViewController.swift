@@ -20,6 +20,9 @@ final class KeyboardViewController: UIInputViewController {
     private func refreshBridgeState() {
         let session = try? bridge?.read(BridgeSession.self, from: .session)
         stateMachine.apply(session: session)
+        if TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField {
+            stateMachine.markUnsupportedSecureField()
+        }
         if let result = try? bridge?.read(BridgeResult.self, from: .result) {
             _ = stateMachine.apply(result: result)
         }
@@ -68,7 +71,14 @@ final class KeyboardViewController: UIInputViewController {
 
     private func insertCurrentResult() {
         guard case .insertReady(let result) = stateMachine.state else { return }
-        TextInsertion(documentProxy: textDocumentProxy).insert(result)
+        let inserter = TextInsertion(documentProxy: textDocumentProxy)
+        guard inserter.insert(result) else {
+            pasteboard.string = result.polished
+            acknowledge(result: result, outcome: .copied)
+            stateMachine.acknowledgeCopied(resultSeq: result.resultSeq)
+            renderCurrentState()
+            return
+        }
         acknowledge(result: result, outcome: .inserted)
         stateMachine.acknowledgeInserted(resultSeq: result.resultSeq)
         renderCurrentState()

@@ -8,6 +8,15 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    SectionHeader(title: "Account")
+                    NavigationLink(destination: AccountSignInView()) {
+                        SettingsRow(
+                            systemImage: environment.account == nil ? "person.crop.circle.badge.plus" : "person.crop.circle.badge.checkmark",
+                            title: environment.account?.email ?? "Sign in to AirNote Mobile",
+                            subtitle: environment.account == nil ? "Use the independent mobile gateway account for iPhone dictation" : "Runtime: \(environment.runtimeStatus)"
+                        )
+                    }
+
                     ReadinessPanel(
                         title: environment.lastStatusMessage,
                         sessionState: environment.sessionState
@@ -23,6 +32,9 @@ struct HomeView: View {
 
                     SectionHeader(title: "Shortcuts")
                     VStack(spacing: 10) {
+                        NavigationLink(destination: LanguageStyleView()) {
+                            SettingsRow(systemImage: "slider.horizontal.3", title: "Language & style", subtitle: "Auto, English, Hindi, Hinglish and Direct, Work, Casual, Email, Notes")
+                        }
                         NavigationLink(destination: WelcomeView()) {
                             SettingsRow(systemImage: "checklist", title: "Run onboarding check", subtitle: "Account, privacy, mic, keyboard, and Full Access")
                         }
@@ -31,6 +43,18 @@ struct HomeView: View {
                         }
                         NavigationLink(destination: RecordingSessionView()) {
                             SettingsRow(systemImage: "waveform", title: "Live session screen", subtitle: "The screen users return to when the keyboard asks for AirNote")
+                        }
+                        NavigationLink(destination: HistoryView()) {
+                            SettingsRow(systemImage: "clock.arrow.circlepath", title: "History", subtitle: "Copy, retry, share, or delete previous dictations")
+                        }
+                        NavigationLink(destination: VocabularyView()) {
+                            SettingsRow(systemImage: "text.badge.plus", title: "Vocabulary", subtitle: "Add terms, aliases, and learn-spelling review")
+                        }
+                        NavigationLink(destination: AirNoteSettingsView()) {
+                            SettingsRow(systemImage: "gearshape", title: "Settings", subtitle: "Privacy, diagnostics, account, and delete data")
+                        }
+                        NavigationLink(destination: DiagnosticsView()) {
+                            SettingsRow(systemImage: "stethoscope", title: "Diagnostics", subtitle: "Gateway status, build, last session, and redacted export")
                         }
                     }
                 }

@@ -301,7 +301,7 @@ final class RecordingPadView: UIView {
         case .processing: return "bolt.circle.fill"
         case .insertReady: return "text.badge.checkmark"
         case .inserted, .copied, .savedToHistory: return "checkmark.circle.fill"
-        case .staleSession, .needsFullAccess, .needsMainAppSession, .error: return "exclamationmark.triangle.fill"
+        case .staleSession, .needsFullAccess, .needsMainAppSession, .error, .unsupportedSecureField: return "exclamationmark.triangle.fill"
         default: return "keyboard"
         }
     }
@@ -310,7 +310,7 @@ final class RecordingPadView: UIView {
         switch state {
         case .ready, .recording, .processing, .insertReady: return KeyboardTheme.accent
         case .inserted, .copied, .savedToHistory: return KeyboardTheme.success
-        case .staleSession, .needsFullAccess, .needsMainAppSession, .error: return KeyboardTheme.warning
+        case .staleSession, .needsFullAccess, .needsMainAppSession, .error, .unsupportedSecureField: return KeyboardTheme.warning
         default: return KeyboardTheme.teal
         }
     }
@@ -325,6 +325,7 @@ final class RecordingPadView: UIView {
         case .staleSession: return "Session expired"
         case .needsFullAccess: return "Full Access needed"
         case .needsMainAppSession: return "Start AirNote Session"
+        case .unsupportedSecureField: return "Secure field"
         case .error: return "AirNote needs attention"
         default: return "AirNote Keyboard"
         }
@@ -338,6 +339,7 @@ final class RecordingPadView: UIView {
         case .insertReady: return "Review, insert, copy, or save."
         case .staleSession: return "Open AirNote to restart the session."
         case .needsFullAccess: return "Turn on Full Access to use voice dictation."
+        case .unsupportedSecureField: return "AirNote will not insert into password, OTP, payment, or secure fields."
         case .inserted: return "Inserted into the current field."
         case .copied: return "Copied to clipboard."
         case .savedToHistory: return "Saved to AirNote history."
@@ -355,6 +357,7 @@ final class RecordingPadView: UIView {
         case .inserted, .copied, .savedToHistory: return "Start recording"
         case .staleSession, .needsMainAppSession: return "Open AirNote"
         case .needsFullAccess: return "Repair setup"
+        case .unsupportedSecureField: return "Copy only"
         case .error: return "Retry"
         default: return "AirNote"
         }
@@ -368,6 +371,7 @@ final class RecordingPadView: UIView {
         case .inserted, .copied, .savedToHistory: return "mic.fill"
         case .staleSession, .needsMainAppSession: return "arrow.up.forward.app"
         case .needsFullAccess: return "wrench.and.screwdriver"
+        case .unsupportedSecureField: return "doc.on.doc"
         case .error: return "arrow.clockwise"
         default: return "keyboard"
         }
@@ -419,6 +423,8 @@ final class RecordingPadView: UIView {
             return "Start AirNote Session in the app before recording from the keyboard."
         case .staleSession:
             return "Session expired. Restart AirNote before recording again."
+        case .unsupportedSecureField:
+            return "This looks like a secure field. Manual typing remains available, but AirNote will only copy final text here."
         case .error(let message):
             return message
         default:
@@ -434,6 +440,8 @@ final class RecordingPadView: UIView {
             onInsert?()
         case .staleSession, .needsMainAppSession, .needsFullAccess:
             onOpenApp?()
+        case .unsupportedSecureField:
+            onCopy?()
         default:
             onStart?()
         }

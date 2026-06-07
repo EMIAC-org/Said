@@ -14,6 +14,7 @@ public enum KeyboardState: Equatable {
     case savedToHistory
     case error(String)
     case staleSession
+    case unsupportedSecureField
 }
 
 public struct KeyboardStateMachine {
@@ -63,5 +64,9 @@ public struct KeyboardStateMachine {
     public mutating func acknowledgeSaved(resultSeq: UInt64) {
         lastInsertedResultSeq = max(lastInsertedResultSeq, resultSeq)
         state = .savedToHistory
+    }
+
+    public mutating func markUnsupportedSecureField() {
+        state = .unsupportedSecureField
     }
 }

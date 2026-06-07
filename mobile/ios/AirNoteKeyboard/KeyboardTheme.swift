@@ -1,8 +1,8 @@
 import UIKit
 
 enum KeyboardTheme {
-    static let accent = UIColor(red: 0.0, green: 0.45, blue: 0.74, alpha: 1.0)
-    static let teal = UIColor(red: 0.0, green: 0.57, blue: 0.55, alpha: 1.0)
+    static let accent = UIColor(red: 0.31, green: 0.40, blue: 0.92, alpha: 1.0)
+    static let teal = UIColor(red: 0.07, green: 0.62, blue: 0.85, alpha: 1.0)
     static let success = UIColor(red: 0.05, green: 0.52, blue: 0.30, alpha: 1.0)
     static let warning = UIColor(red: 0.82, green: 0.46, blue: 0.0, alpha: 1.0)
     static let danger = UIColor(red: 0.78, green: 0.17, blue: 0.14, alpha: 1.0)

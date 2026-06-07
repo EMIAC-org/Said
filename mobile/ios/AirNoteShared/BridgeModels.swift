@@ -48,6 +48,11 @@ public struct BridgeSession: Codable, Equatable {
     public var gatewayRegion: String
     public var resultSeq: UInt64
     public var commandSeq: UInt64
+    public var sessionToken: String?
+    public var voiceWSURL: String?
+    public var batchURL: String?
+    public var currentVocabHash: String?
+    public var maxRecordingSeconds: Int?
 
     public init(
         schema: String = "airnote.ios.bridge.session.v1",
@@ -62,7 +67,12 @@ public struct BridgeSession: Codable, Equatable {
         surface: MobileSurface,
         gatewayRegion: String,
         resultSeq: UInt64,
-        commandSeq: UInt64
+        commandSeq: UInt64,
+        sessionToken: String? = nil,
+        voiceWSURL: String? = nil,
+        batchURL: String? = nil,
+        currentVocabHash: String? = nil,
+        maxRecordingSeconds: Int? = nil
     ) {
         self.schema = schema
         self.sessionID = sessionID
@@ -77,6 +87,11 @@ public struct BridgeSession: Codable, Equatable {
         self.gatewayRegion = gatewayRegion
         self.resultSeq = resultSeq
         self.commandSeq = commandSeq
+        self.sessionToken = sessionToken
+        self.voiceWSURL = voiceWSURL
+        self.batchURL = batchURL
+        self.currentVocabHash = currentVocabHash
+        self.maxRecordingSeconds = maxRecordingSeconds
     }
 
     enum CodingKeys: String, CodingKey {
@@ -93,6 +108,11 @@ public struct BridgeSession: Codable, Equatable {
         case gatewayRegion = "gateway_region"
         case resultSeq = "result_seq"
         case commandSeq = "command_seq"
+        case sessionToken = "session_token"
+        case voiceWSURL = "voice_ws_url"
+        case batchURL = "batch_url"
+        case currentVocabHash = "current_vocab_hash"
+        case maxRecordingSeconds = "max_recording_seconds"
     }
 }
 
@@ -195,6 +215,40 @@ public struct BridgeResult: Codable, Equatable {
     public var expiresAt: Date
     public var insertPolicy: InsertPolicy
     public var learningAllowed: Bool
+
+    public init(
+        schema: String = "airnote.ios.bridge.result.v1",
+        resultSeq: UInt64,
+        sessionID: String,
+        clientRequestID: String,
+        requestID: String,
+        state: BridgeResultState,
+        transcript: String,
+        polished: String,
+        language: LanguageHint,
+        style: DictationStyle,
+        latencyMS: Int,
+        createdAt: Date = Date(),
+        expiresAt: Date,
+        insertPolicy: InsertPolicy,
+        learningAllowed: Bool
+    ) {
+        self.schema = schema
+        self.resultSeq = resultSeq
+        self.sessionID = sessionID
+        self.clientRequestID = clientRequestID
+        self.requestID = requestID
+        self.state = state
+        self.transcript = transcript
+        self.polished = polished
+        self.language = language
+        self.style = style
+        self.latencyMS = latencyMS
+        self.createdAt = createdAt
+        self.expiresAt = expiresAt
+        self.insertPolicy = insertPolicy
+        self.learningAllowed = learningAllowed
+    }
 
     enum CodingKeys: String, CodingKey {
         case schema
