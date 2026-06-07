@@ -32,7 +32,6 @@ struct HomeView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -56,6 +55,7 @@ private struct AppHeader: View {
             Spacer()
             VStack(alignment: .trailing, spacing: 6) {
                 AirNoteStatusPill(systemImage: "bolt.fill", text: runtime == "Preview" ? "Preview" : "Live")
+                AirNoteAppearanceToggle()
                 Button(action: onReset) {
                     Text("Replay setup")
                         .font(.caption2.weight(.bold))

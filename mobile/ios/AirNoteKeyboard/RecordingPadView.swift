@@ -93,7 +93,7 @@ final class RecordingPadView: UIView {
         let title = UILabel()
         title.font = .preferredFont(forTextStyle: .headline)
         title.adjustsFontForContentSizeCategory = true
-        title.textColor = .white
+        title.textColor = KeyboardTheme.foreground
         title.text = titleText
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -116,7 +116,7 @@ final class RecordingPadView: UIView {
         let label = UILabel()
         label.font = .preferredFont(forTextStyle: .caption1)
         label.adjustsFontForContentSizeCategory = true
-        label.textColor = UIColor.white.withAlphaComponent(0.62)
+        label.textColor = KeyboardTheme.muted
         label.text = subtitleText
         label.numberOfLines = 1
 
@@ -160,7 +160,7 @@ final class RecordingPadView: UIView {
         label.font = .preferredFont(forTextStyle: .subheadline)
         label.adjustsFontForContentSizeCategory = true
         label.numberOfLines = 2
-        label.textColor = .white
+        label.textColor = KeyboardTheme.foreground
         label.backgroundColor = KeyboardTheme.secondarySurface
         label.layer.cornerRadius = KeyboardTheme.radius
         label.layer.masksToBounds = true
@@ -284,7 +284,7 @@ final class RecordingPadView: UIView {
         config.title = title
         config.image = UIImage(systemName: systemImage)
         config.imagePadding = 6
-        config.baseForegroundColor = color == KeyboardTheme.accent ? KeyboardTheme.primaryButtonForeground : .white
+        config.baseForegroundColor = color == KeyboardTheme.accent ? KeyboardTheme.primaryButtonForeground : KeyboardTheme.secondaryButtonForeground
         config.baseBackgroundColor = color == KeyboardTheme.accent ? KeyboardTheme.primaryButtonBackground : KeyboardTheme.secondarySurface
         config.background.cornerRadius = KeyboardTheme.radius
         config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)

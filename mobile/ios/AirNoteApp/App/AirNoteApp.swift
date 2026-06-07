@@ -14,7 +14,7 @@ struct AirNoteApp: App {
                 }
             }
             .environmentObject(environment)
-            .preferredColorScheme(.dark)
+            .airNotePreferredAppearance()
         }
     }
 }

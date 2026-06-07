@@ -1,7 +1,9 @@
 package com.emiac.airnote.android
 
+import android.app.Activity
 import android.content.Intent
 import android.provider.Settings
+import android.view.View
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -34,10 +36,12 @@ import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Person
@@ -55,13 +59,17 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -72,8 +80,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -81,39 +91,112 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private object AirNotePalette {
-    val Background = Color(0xFF060609)
-    val Background2 = Color(0xFF09090C)
-    val Surface = Color(0xFF0E0E13)
-    val SurfaceRaised = Color(0xFF16161C)
-    val SurfaceHover = Color(0xFF1F1F28)
-    val ForegroundFixed = Color(0xFFEDEDF5)
-    val Muted = Color(0xFF9396A3)
-    val Border = Color.White.copy(alpha = 0.07f)
-    val BorderStrong = Color.White.copy(alpha = 0.12f)
-    val Accent = Color(0xFF9EB3FA)
-    val Success = Color(0xFF87D19B)
-    val Danger = Color(0xFFF04D5C)
-    val Ink = Color(0xFF0B0B0F)
-}
-
-private val AirNoteColorScheme = darkColorScheme(
-    background = AirNotePalette.Background,
-    surface = AirNotePalette.Surface,
-    primary = AirNotePalette.Accent,
-    onPrimary = AirNotePalette.Ink,
-    onSurface = AirNotePalette.ForegroundFixed,
+private data class AirNoteColors(
+    val background: Color,
+    val background2: Color,
+    val surface: Color,
+    val surfaceRaised: Color,
+    val surfaceHover: Color,
+    val foreground: Color,
+    val muted: Color,
+    val border: Color,
+    val borderStrong: Color,
+    val accent: Color,
+    val success: Color,
+    val danger: Color,
+    val ink: Color,
+    val primaryButtonFill: Color,
+    val primaryButtonContent: Color,
+    val keyboardWell: Color,
 )
+
+private val DarkAirNoteColors = AirNoteColors(
+    background = Color(0xFF060609),
+    background2 = Color(0xFF09090C),
+    surface = Color(0xFF0E0E13),
+    surfaceRaised = Color(0xFF16161C),
+    surfaceHover = Color(0xFF1F1F28),
+    foreground = Color(0xFFEDEDF5),
+    muted = Color(0xFF9396A3),
+    border = Color.White.copy(alpha = 0.07f),
+    borderStrong = Color.White.copy(alpha = 0.12f),
+    accent = Color(0xFF9EB3FA),
+    success = Color(0xFF87D19B),
+    danger = Color(0xFFF04D5C),
+    ink = Color(0xFF0B0B0F),
+    primaryButtonFill = Color.White.copy(alpha = 0.98f),
+    primaryButtonContent = Color(0xFF0B0B0F),
+    keyboardWell = Color(0xFF09090D),
+)
+
+private val LightAirNoteColors = AirNoteColors(
+    background = Color(0xFFF5F6FA),
+    background2 = Color(0xFFFCFCFE),
+    surface = Color.White,
+    surfaceRaised = Color(0xFFEFF2F8),
+    surfaceHover = Color(0xFFE1E6F0),
+    foreground = Color(0xFF12131A),
+    muted = Color(0xFF676D7C),
+    border = Color(0x1712131A),
+    borderStrong = Color(0x2612131A),
+    accent = Color(0xFF5B6FD6),
+    success = Color(0xFF2F8D4E),
+    danger = Color(0xFFD83A4B),
+    ink = Color(0xFF0B0B0F),
+    primaryButtonFill = Color(0xFF0B0B0F),
+    primaryButtonContent = Color.White,
+    keyboardWell = Color(0xFFE3E7F0),
+)
+
+private val LocalAirNoteColors = staticCompositionLocalOf { DarkAirNoteColors }
+
+private object AirNotePalette {
+    val Background: Color
+        @Composable get() = LocalAirNoteColors.current.background
+    val Background2: Color
+        @Composable get() = LocalAirNoteColors.current.background2
+    val Surface: Color
+        @Composable get() = LocalAirNoteColors.current.surface
+    val SurfaceRaised: Color
+        @Composable get() = LocalAirNoteColors.current.surfaceRaised
+    val SurfaceHover: Color
+        @Composable get() = LocalAirNoteColors.current.surfaceHover
+    val ForegroundFixed: Color
+        @Composable get() = LocalAirNoteColors.current.foreground
+    val Muted: Color
+        @Composable get() = LocalAirNoteColors.current.muted
+    val Border: Color
+        @Composable get() = LocalAirNoteColors.current.border
+    val BorderStrong: Color
+        @Composable get() = LocalAirNoteColors.current.borderStrong
+    val Accent: Color
+        @Composable get() = LocalAirNoteColors.current.accent
+    val Success: Color
+        @Composable get() = LocalAirNoteColors.current.success
+    val Danger: Color
+        @Composable get() = LocalAirNoteColors.current.danger
+    val Ink: Color
+        @Composable get() = LocalAirNoteColors.current.ink
+    val PrimaryButtonFill: Color
+        @Composable get() = LocalAirNoteColors.current.primaryButtonFill
+    val PrimaryButtonContent: Color
+        @Composable get() = LocalAirNoteColors.current.primaryButtonContent
+    val KeyboardWell: Color
+        @Composable get() = LocalAirNoteColors.current.keyboardWell
+}
 
 @Composable
 fun AirNoteAndroidApp() {
     var setupComplete by rememberSaveable { mutableStateOf(false) }
+    var lightMode by rememberSaveable { mutableStateOf(false) }
     val recent = remember { mutableStateListOf<String>() }
 
-    AirNoteTheme {
+    AirNoteTheme(lightMode = lightMode) {
         if (setupComplete) {
             HomeScreen(
                 recent = recent,
+                lightMode = lightMode,
+                onLightModeChange = { lightMode = it },
                 onReplaySetup = {
                     recent.clear()
                     setupComplete = false
@@ -121,6 +204,8 @@ fun AirNoteAndroidApp() {
             )
         } else {
             SetupFlowScreen(
+                lightMode = lightMode,
+                onLightModeChange = { lightMode = it },
                 onFinish = {
                     recent.add("Kal ka update concise bana ke Rahul ko bhej do.")
                     setupComplete = true
@@ -131,11 +216,50 @@ fun AirNoteAndroidApp() {
 }
 
 @Composable
-private fun AirNoteTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = AirNoteColorScheme,
-        content = content,
-    )
+private fun AirNoteTheme(
+    lightMode: Boolean = false,
+    content: @Composable () -> Unit,
+) {
+    val palette = if (lightMode) LightAirNoteColors else DarkAirNoteColors
+    val colorScheme = if (lightMode) {
+        lightColorScheme(
+            background = palette.background,
+            surface = palette.surface,
+            primary = palette.accent,
+            onPrimary = palette.primaryButtonContent,
+            onSurface = palette.foreground,
+        )
+    } else {
+        darkColorScheme(
+            background = palette.background,
+            surface = palette.surface,
+            primary = palette.accent,
+            onPrimary = palette.primaryButtonContent,
+            onSurface = palette.foreground,
+        )
+    }
+
+    val view = LocalView.current
+    SideEffect {
+        if (!view.isInEditMode) {
+            (view.context as? Activity)?.window?.let { window ->
+                window.statusBarColor = palette.background.toArgb()
+                window.navigationBarColor = palette.background.toArgb()
+                window.decorView.systemUiVisibility = if (lightMode) {
+                    View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                } else {
+                    0
+                }
+            }
+        }
+    }
+
+    CompositionLocalProvider(LocalAirNoteColors provides palette) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            content = content,
+        )
+    }
 }
 
 @Composable
@@ -160,7 +284,11 @@ private fun AirNoteBackground(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun SetupFlowScreen(onFinish: () -> Unit) {
+private fun SetupFlowScreen(
+    lightMode: Boolean,
+    onLightModeChange: (Boolean) -> Unit,
+    onFinish: () -> Unit,
+) {
     var step by rememberSaveable { mutableStateOf(AndroidSetupStep.Welcome) }
     var privacyAccepted by rememberSaveable { mutableStateOf(false) }
     var micChecked by rememberSaveable { mutableStateOf(false) }
@@ -185,7 +313,11 @@ private fun SetupFlowScreen(onFinish: () -> Unit) {
                 .padding(top = 18.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            AppHeader(label = if (BuildConfig.USE_MOCK_GATEWAY) "Preview" else "Live")
+            AppHeader(
+                label = if (BuildConfig.USE_MOCK_GATEWAY) "Preview" else "Live",
+                lightMode = lightMode,
+                onLightModeChange = onLightModeChange,
+            )
             ProgressRail(step = step)
 
             AirNoteCard(padding = 18.dp) {
@@ -397,10 +529,10 @@ private fun FooterActions(
                 .height(44.dp),
             shape = RoundedCornerShape(10.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = Color.White.copy(alpha = 0.98f),
-                contentColor = AirNotePalette.Ink,
-                disabledContainerColor = Color.White.copy(alpha = 0.42f),
-                disabledContentColor = AirNotePalette.Ink.copy(alpha = 0.62f),
+                containerColor = AirNotePalette.PrimaryButtonFill,
+                contentColor = AirNotePalette.PrimaryButtonContent,
+                disabledContainerColor = AirNotePalette.PrimaryButtonFill.copy(alpha = 0.42f),
+                disabledContentColor = AirNotePalette.PrimaryButtonContent.copy(alpha = 0.62f),
             ),
         ) {
             val icon = when (step) {
@@ -428,6 +560,8 @@ private fun primaryTitle(step: AndroidSetupStep, micChecked: Boolean): String =
 @Composable
 private fun HomeScreen(
     recent: List<String>,
+    lightMode: Boolean,
+    onLightModeChange: (Boolean) -> Unit,
     onReplaySetup: () -> Unit,
 ) {
     AirNoteBackground {
@@ -441,7 +575,11 @@ private fun HomeScreen(
                 .padding(top = 18.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            AppHeader(label = "Preview", trailing = {
+            AppHeader(
+                label = "Preview",
+                lightMode = lightMode,
+                onLightModeChange = onLightModeChange,
+                trailing = {
                 Text(
                     text = "Replay setup",
                     color = AirNotePalette.Muted,
@@ -473,8 +611,8 @@ private fun HomeScreen(
                             .height(44.dp),
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White.copy(alpha = 0.98f),
-                            contentColor = AirNotePalette.Ink,
+                            containerColor = AirNotePalette.PrimaryButtonFill,
+                            contentColor = AirNotePalette.PrimaryButtonContent,
                         ),
                     ) {
                         Icon(Icons.Rounded.Mic, contentDescription = null)
@@ -538,6 +676,8 @@ private fun HomeScreen(
 @Composable
 private fun AppHeader(
     label: String,
+    lightMode: Boolean,
+    onLightModeChange: (Boolean) -> Unit,
     trailing: @Composable (() -> Unit)? = null,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -548,8 +688,32 @@ private fun AppHeader(
         }
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
             StatusPill(Icons.Rounded.Bolt, label, AirNotePalette.Accent)
+            AppearanceToggle(lightMode = lightMode, onLightModeChange = onLightModeChange)
             trailing?.invoke()
         }
+    }
+}
+
+@Composable
+private fun AppearanceToggle(
+    lightMode: Boolean,
+    onLightModeChange: (Boolean) -> Unit,
+) {
+    OutlinedButton(
+        onClick = { onLightModeChange(!lightMode) },
+        modifier = Modifier.height(32.dp),
+        shape = RoundedCornerShape(7.dp),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.Accent),
+        border = BorderStroke(1.dp, AirNotePalette.Accent.copy(alpha = 0.20f)),
+        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp),
+    ) {
+        Icon(
+            if (lightMode) Icons.Rounded.DarkMode else Icons.Rounded.LightMode,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(if (lightMode) "Dark" else "Light", fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -606,7 +770,7 @@ private fun SetupRow(
         Box(
             modifier = Modifier
                 .size(34.dp)
-                .background(Color.White.copy(alpha = 0.045f), RoundedCornerShape(8.dp))
+                .background(AirNotePalette.ForegroundFixed.copy(alpha = 0.045f), RoundedCornerShape(8.dp))
                 .border(1.dp, AirNotePalette.Border, RoundedCornerShape(8.dp)),
             contentAlignment = Alignment.Center,
         ) {
@@ -678,6 +842,7 @@ private fun StatusPill(
 
 @Composable
 private fun LogoTile(tileSize: Dp) {
+    val markColor = AirNotePalette.ForegroundFixed
     Box(
         modifier = Modifier
             .size(tileSize)
@@ -697,7 +862,7 @@ private fun LogoTile(tileSize: Dp) {
             heights.forEach { fraction ->
                 val h = this.size.height * fraction
                 drawRoundRect(
-                    color = AirNotePalette.ForegroundFixed,
+                    color = markColor,
                     topLeft = Offset(x, (this.size.height - h) / 2f),
                     size = Size(barWidth, h),
                     cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
@@ -724,6 +889,7 @@ private fun Waveform(
     active: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val waveColor = AirNotePalette.Accent.copy(alpha = if (active) 0.95f else 0.48f)
     Canvas(
         modifier = modifier
             .fillMaxWidth()
@@ -738,7 +904,7 @@ private fun Waveform(
             val base = 12 + ((index * 7) % 20)
             val h = if (active) base + level * 26f else base.toFloat()
             drawRoundRect(
-                color = AirNotePalette.Accent.copy(alpha = if (active) 0.95f else 0.48f),
+                color = waveColor,
                 topLeft = Offset(x, (size.height - h) / 2f),
                 size = Size(width, h),
                 cornerRadius = CornerRadius(width / 2f, width / 2f),
@@ -764,7 +930,7 @@ private fun SegmentedPreviewControl(
         AndroidPreviewState.entries.forEach { item ->
             val selected = item == state
             val color by animateColorAsState(
-                targetValue = if (selected) Color.White.copy(alpha = 0.34f) else Color.Transparent,
+                targetValue = if (selected) AirNotePalette.ForegroundFixed.copy(alpha = 0.16f) else Color.Transparent,
                 label = "segment-color",
             )
             Box(
@@ -792,7 +958,7 @@ private fun AndroidBubbleKeyboardPreview(state: AndroidPreviewState) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF09090D), RoundedCornerShape(16.dp))
+            .background(AirNotePalette.KeyboardWell, RoundedCornerShape(16.dp))
             .border(1.dp, AirNotePalette.BorderStrong, RoundedCornerShape(16.dp))
             .padding(10.dp),
     ) {
@@ -996,7 +1162,7 @@ private fun ToolRow(
         Box(
             modifier = Modifier
                 .size(34.dp)
-                .background(Color.White.copy(alpha = 0.045f), RoundedCornerShape(8.dp))
+                .background(AirNotePalette.ForegroundFixed.copy(alpha = 0.045f), RoundedCornerShape(8.dp))
                 .border(1.dp, AirNotePalette.Border, RoundedCornerShape(8.dp)),
             contentAlignment = Alignment.Center,
         ) {
@@ -1014,7 +1180,7 @@ private fun ToolRow(
 @Composable
 private fun SetupPreview() {
     AirNoteTheme {
-        SetupFlowScreen(onFinish = {})
+        SetupFlowScreen(lightMode = false, onLightModeChange = {}, onFinish = {})
     }
 }
 

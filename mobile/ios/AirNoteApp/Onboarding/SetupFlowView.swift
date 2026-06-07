@@ -95,7 +95,6 @@ struct SetupFlowView: View {
                 .padding(.bottom, 28)
             }
         }
-        .preferredColorScheme(.dark)
     }
 
     private var header: some View {
@@ -110,7 +109,10 @@ struct SetupFlowView: View {
                     .foregroundStyle(AirNoteDesign.muted)
             }
             Spacer()
-            AirNoteStatusPill(systemImage: "bolt.fill", text: BuildConfig.useMockGateway ? "Preview" : "Live")
+            VStack(alignment: .trailing, spacing: 6) {
+                AirNoteStatusPill(systemImage: "bolt.fill", text: BuildConfig.useMockGateway ? "Preview" : "Live")
+                AirNoteAppearanceToggle()
+            }
         }
     }
 
@@ -376,7 +378,7 @@ struct KeyboardPreviewPanel: View {
             }
         }
         .padding(8)
-        .background(Color(red: 0.035, green: 0.035, blue: 0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(AirNoteDesign.keyboardWell, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(AirNoteDesign.borderStrong, lineWidth: 1)
@@ -446,14 +448,14 @@ struct KeyboardPreviewPanel: View {
     private func previewAction(_ text: String, icon: String, primary: Bool) -> some View {
         Label(text, systemImage: icon)
             .font(.caption.weight(.semibold))
-            .foregroundStyle(primary ? AirNoteDesign.ink : AirNoteDesign.foreground)
+            .foregroundStyle(primary ? AirNoteDesign.primaryButtonForeground : AirNoteDesign.foreground)
             .frame(maxWidth: .infinity)
             .frame(height: 34)
-            .background(primary ? Color.white.opacity(0.96) : AirNoteDesign.surfaceRaised,
+            .background(primary ? AirNoteDesign.primaryButtonFill.opacity(0.96) : AirNoteDesign.surfaceRaised,
                         in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(primary ? Color.white.opacity(0.5) : AirNoteDesign.border, lineWidth: 1)
+                    .strokeBorder(primary ? AirNoteDesign.borderStrong : AirNoteDesign.border, lineWidth: 1)
             )
     }
 

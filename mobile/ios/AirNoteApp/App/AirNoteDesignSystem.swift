@@ -1,17 +1,46 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 // MARK: - Desktop-aligned design tokens
 
 enum AirNoteDesign {
-    static let background = Color(red: 0.025, green: 0.025, blue: 0.035)
-    static let surface = Color(red: 0.055, green: 0.055, blue: 0.075)
-    static let surfaceRaised = Color(red: 0.085, green: 0.085, blue: 0.110)
-    static let surfaceHover = Color(red: 0.120, green: 0.120, blue: 0.150)
-    static let foreground = Color(red: 0.930, green: 0.930, blue: 0.950)
-    static let muted = Color(red: 0.580, green: 0.590, blue: 0.640)
-    static let border = Color.white.opacity(0.070)
-    static let borderStrong = Color.white.opacity(0.115)
+    static let background = adaptiveColor(
+        dark: UIColor(red: 0.025, green: 0.025, blue: 0.035, alpha: 1),
+        light: UIColor(red: 0.962, green: 0.966, blue: 0.980, alpha: 1)
+    )
+    static let background2 = adaptiveColor(
+        dark: UIColor(red: 0.035, green: 0.035, blue: 0.048, alpha: 1),
+        light: UIColor(red: 0.988, green: 0.990, blue: 0.996, alpha: 1)
+    )
+    static let surface = adaptiveColor(
+        dark: UIColor(red: 0.055, green: 0.055, blue: 0.075, alpha: 1),
+        light: UIColor(red: 1.000, green: 1.000, blue: 1.000, alpha: 1)
+    )
+    static let surfaceRaised = adaptiveColor(
+        dark: UIColor(red: 0.085, green: 0.085, blue: 0.110, alpha: 1),
+        light: UIColor(red: 0.930, green: 0.940, blue: 0.968, alpha: 1)
+    )
+    static let surfaceHover = adaptiveColor(
+        dark: UIColor(red: 0.120, green: 0.120, blue: 0.150, alpha: 1),
+        light: UIColor(red: 0.875, green: 0.890, blue: 0.930, alpha: 1)
+    )
+    static let foreground = adaptiveColor(
+        dark: UIColor(red: 0.930, green: 0.930, blue: 0.950, alpha: 1),
+        light: UIColor(red: 0.070, green: 0.075, blue: 0.100, alpha: 1)
+    )
+    static let muted = adaptiveColor(
+        dark: UIColor(red: 0.580, green: 0.590, blue: 0.640, alpha: 1),
+        light: UIColor(red: 0.420, green: 0.440, blue: 0.520, alpha: 1)
+    )
+    static let border = adaptiveColor(
+        dark: UIColor.white.withAlphaComponent(0.070),
+        light: UIColor(red: 0.070, green: 0.075, blue: 0.100, alpha: 0.090)
+    )
+    static let borderStrong = adaptiveColor(
+        dark: UIColor.white.withAlphaComponent(0.115),
+        light: UIColor(red: 0.070, green: 0.075, blue: 0.100, alpha: 0.145)
+    )
 
     static let accent = Color(red: 0.620, green: 0.700, blue: 0.980)
     static let accent2 = accent
@@ -20,6 +49,18 @@ enum AirNoteDesign {
     static let warning = Color(red: 0.980, green: 0.700, blue: 0.300)
     static let danger = Color(red: 0.940, green: 0.300, blue: 0.360)
     static let ink = Color(red: 0.045, green: 0.045, blue: 0.060)
+    static let primaryButtonFill = adaptiveColor(
+        dark: UIColor(white: 0.98, alpha: 1),
+        light: UIColor(red: 0.045, green: 0.045, blue: 0.060, alpha: 1)
+    )
+    static let primaryButtonForeground = adaptiveColor(
+        dark: UIColor(red: 0.045, green: 0.045, blue: 0.060, alpha: 1),
+        light: UIColor.white
+    )
+    static let keyboardWell = adaptiveColor(
+        dark: UIColor(red: 0.035, green: 0.035, blue: 0.045, alpha: 1),
+        light: UIColor(red: 0.885, green: 0.895, blue: 0.930, alpha: 1)
+    )
 
     static let radius: CGFloat = 8
     static let cardRadius: CGFloat = 12
@@ -38,7 +79,78 @@ enum AirNoteDesign {
     }
 
     static var softCardFill: Color { surfaceRaised }
-    static let cardShadow = Color.black.opacity(0.38)
+    static let cardShadow = adaptiveColor(
+        dark: UIColor.black.withAlphaComponent(0.38),
+        light: UIColor(red: 0.060, green: 0.070, blue: 0.110, alpha: 0.12)
+    )
+
+    private static func adaptiveColor(dark: UIColor, light: UIColor) -> Color {
+        Color(UIColor { traits in
+            traits.userInterfaceStyle == .dark ? dark : light
+        })
+    }
+}
+
+enum AirNoteAppearance: String {
+    case dark
+    case light
+
+    var colorScheme: ColorScheme {
+        switch self {
+        case .dark: return .dark
+        case .light: return .light
+        }
+    }
+
+    var next: AirNoteAppearance {
+        switch self {
+        case .dark: return .light
+        case .light: return .dark
+        }
+    }
+}
+
+private struct AirNoteAppearanceModifier: ViewModifier {
+    @AppStorage("airnotePreferredAppearance") private var appearance = AirNoteAppearance.dark.rawValue
+
+    func body(content: Content) -> some View {
+        let mode = AirNoteAppearance(rawValue: appearance) ?? .dark
+        content.preferredColorScheme(mode.colorScheme)
+    }
+}
+
+extension View {
+    func airNotePreferredAppearance() -> some View {
+        modifier(AirNoteAppearanceModifier())
+    }
+}
+
+struct AirNoteAppearanceToggle: View {
+    @AppStorage("airnotePreferredAppearance") private var appearance = AirNoteAppearance.dark.rawValue
+
+    var body: some View {
+        let mode = AirNoteAppearance(rawValue: appearance) ?? .dark
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                appearance = mode.next.rawValue
+            }
+        } label: {
+            Label(mode == .dark ? "Light" : "Dark",
+                  systemImage: mode == .dark ? "sun.max.fill" : "moon.fill")
+                .font(.caption2.weight(.bold))
+                .labelStyle(.titleAndIcon)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .foregroundStyle(AirNoteDesign.accent)
+                .background(AirNoteDesign.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(AirNoteDesign.accent.opacity(0.20), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(mode == .dark ? "Switch to light mode" : "Switch to dark mode")
+    }
 }
 
 // MARK: - Background
@@ -51,14 +163,14 @@ struct AirNoteBackground: View {
             LinearGradient(
                 colors: [
                     AirNoteDesign.background,
-                    Color(red: 0.035, green: 0.035, blue: 0.048),
+                    AirNoteDesign.background2,
                     AirNoteDesign.background
                 ],
                 startPoint: .topTrailing,
                 endPoint: .bottomLeading
             )
             LinearGradient(
-                colors: [Color.white.opacity(0.020), .clear],
+                colors: [AirNoteDesign.surface.opacity(0.16), .clear],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -134,14 +246,14 @@ struct AirNotePrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(.subheadline, design: .default).weight(.semibold))
-            .foregroundStyle(AirNoteDesign.ink)
+            .foregroundStyle(AirNoteDesign.primaryButtonForeground)
             .frame(maxWidth: .infinity)
             .frame(height: 44)
-            .background(Color.white.opacity(configuration.isPressed ? 0.88 : 0.98),
+            .background(AirNoteDesign.primaryButtonFill.opacity(configuration.isPressed ? 0.88 : 1),
                         in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.70), lineWidth: 1)
+                    .strokeBorder(AirNoteDesign.borderStrong, lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(configuration.isPressed ? 0.18 : 0.30),
                     radius: configuration.isPressed ? 6 : 16,
