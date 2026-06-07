@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AirNote</string>
+    <string name="accessibility_service_label">AirNote Bubble</string>
+    <string name="accessibility_service_description">Shows the AirNote floating voice bubble above text fields and keyboards.</string>
+</resources>

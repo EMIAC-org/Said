@@ -28,6 +28,12 @@ __pycache__/
 # macOS
 .DS_Store
 
+# Mobile generated/build artifacts
+mobile/ios/AirNote.xcodeproj/
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/**/build/
+
 # Temp audio
 *.wav
 
