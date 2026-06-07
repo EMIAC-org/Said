@@ -174,6 +174,12 @@ final class SessionController: ObservableObject {
         case .status(let status):
             if status == "ready_for_audio" {
                 state = .recording(startedAt: Date())
+            } else if status == "audio_interrupted" {
+                state = .processing
+                writeProcessingState("Paused by iOS")
+            } else if status == "audio_route_changed" {
+                state = .processing
+                writeProcessingState("Microphone route changed")
             } else {
                 state = .processing
             }

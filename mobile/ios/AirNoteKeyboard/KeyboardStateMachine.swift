@@ -9,6 +9,7 @@ public enum KeyboardState: Equatable {
     case recording
     case processing(String)
     case insertReady(BridgeResult)
+    case secureCopyReady(BridgeResult)
     case inserted
     case copied
     case savedToHistory
@@ -30,24 +31,41 @@ public struct KeyboardStateMachine {
         }
 
         switch session.state {
+        case .notConfigured:
+            state = .notConfigured
+        case .needsFullAccess:
+            state = .needsFullAccess
+        case .needsMainAppSession:
+            state = .needsMainAppSession
+        case .sessionStartRequested:
+            state = .processing("Opening AirNote Session")
         case .ready:
             state = .ready
         case .recording:
             state = .recording
         case .processing:
             state = .processing("Preparing insert")
+        case .insertReady:
+            switch state {
+            case .inserted, .copied, .savedToHistory:
+                break
+            default:
+                state = .processing("Preparing insert")
+            }
+        case .inserted:
+            state = .inserted
+        case .error:
+            state = .error("Retry available from AirNote.")
         case .staleSession:
             state = .staleSession
-        default:
-            state = .needsMainAppSession
         }
     }
 
-    public mutating func apply(result: BridgeResult) -> Bool {
+    public mutating func apply(result: BridgeResult, secureField: Bool = false) -> Bool {
         guard result.resultSeq > lastInsertedResultSeq else {
             return false
         }
-        state = .insertReady(result)
+        state = secureField ? .secureCopyReady(result) : .insertReady(result)
         return true
     }
 
@@ -67,6 +85,10 @@ public struct KeyboardStateMachine {
     }
 
     public mutating func markUnsupportedSecureField() {
-        state = .unsupportedSecureField
+        if case .insertReady(let result) = state {
+            state = .secureCopyReady(result)
+        } else {
+            state = .unsupportedSecureField
+        }
     }
 }

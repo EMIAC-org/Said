@@ -60,6 +60,7 @@ public final class VoiceStreamingClient {
     private let audioSession: AVAudioSession
     private let audioEngine = AVAudioEngine()
     private let audioQueue = DispatchQueue(label: "com.emiac.airnote.voice-stream.audio")
+    private let stateQueue = DispatchQueue(label: "com.emiac.airnote.voice-stream.state")
 
     private var webSocket: URLSessionWebSocketTask?
     private var converter: AVAudioConverter?
@@ -67,6 +68,8 @@ public final class VoiceStreamingClient {
     private var maxDurationTask: Task<Void, Never>?
     private var receiveTask: Task<Void, Never>?
     private var isStopping = false
+    private var didReceiveTerminalEvent = false
+    private var interruptionObservers: [NSObjectProtocol] = []
 
     public init(
         baseURL: URL = BuildConfig.gatewayBaseURL,
@@ -84,18 +87,22 @@ public final class VoiceStreamingClient {
             throw VoiceStreamError(code: "missing_voice_ws_url", retryable: true, message: "Runtime session is missing its voice socket.")
         }
 
-        isStopping = false
         let socketURL = try websocketURL(relativeOrAbsolute: voiceWSURL)
         let task = urlSession.webSocketTask(with: socketURL)
-        webSocket = task
+        prepareForStart(task: task)
         task.resume()
 
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
         }
 
-        try await task.send(.string("{\"type\":\"voice.start\"}"))
-        try await startAudioEngine()
+        do {
+            try await task.send(.string("{\"type\":\"voice.start\"}"))
+            try await startAudioEngine()
+        } catch {
+            await cancel()
+            throw error
+        }
 
         let maxSeconds = session.maxRecordingSeconds ?? BuildConfig.maxRecordingSeconds
         maxDurationTask = Task { [weak self] in
@@ -105,23 +112,22 @@ public final class VoiceStreamingClient {
     }
 
     public func stop() async {
-        guard !isStopping else { return }
-        isStopping = true
+        guard markStopping() else { return }
         stopAudioEngine()
         maxDurationTask?.cancel()
         maxDurationTask = nil
-        try? await webSocket?.send(.string("{\"type\":\"audio.end\"}"))
+        try? await currentWebSocket()?.send(.string("{\"type\":\"audio.end\"}"))
     }
 
     public func cancel() async {
-        isStopping = true
+        setStopping()
         stopAudioEngine()
         maxDurationTask?.cancel()
         maxDurationTask = nil
         receiveTask?.cancel()
         receiveTask = nil
-        webSocket?.cancel(with: .goingAway, reason: nil)
-        webSocket = nil
+        currentWebSocket()?.cancel(with: .goingAway, reason: nil)
+        setWebSocket(nil)
     }
 
     public var isRecording: Bool {
@@ -155,9 +161,11 @@ public final class VoiceStreamingClient {
 
         audioEngine.prepare()
         try audioEngine.start()
+        installAudioObservers()
     }
 
     private func stopAudioEngine() {
+        removeAudioObservers()
         if audioEngine.isRunning {
             audioEngine.inputNode.removeTap(onBus: 0)
             audioEngine.stop()
@@ -195,9 +203,9 @@ public final class VoiceStreamingClient {
         }
 
         emit(.level(averageLevel(buffer)))
-        let task = webSocket
+        guard let task = audioSendTarget() else { return }
         Task {
-            try? await task?.send(.data(data))
+            try? await task.send(.data(data))
         }
     }
 
@@ -225,20 +233,26 @@ public final class VoiceStreamingClient {
     private func receiveLoop() async {
         while !Task.isCancelled {
             do {
-                guard let message = try await webSocket?.receive() else {
-                    emit(.done)
+                guard let message = try await currentWebSocket()?.receive() else {
+                    if markTerminalEvent() {
+                        emit(.done)
+                    }
                     return
                 }
                 switch message {
                 case .string(let text):
-                    handleServerText(text)
+                    guard handleServerText(text) else {
+                        stopAudioEngine()
+                        return
+                    }
                 case .data:
                     break
                 @unknown default:
                     break
                 }
             } catch {
-                if !isStopping {
+                stopAudioEngine()
+                if !shouldSuppressDisconnectError, markTerminalEvent() {
                     emit(.error(VoiceStreamError(code: "ws_disconnected", retryable: true, message: "AirNote lost the voice connection.")))
                 }
                 return
@@ -246,12 +260,12 @@ public final class VoiceStreamingClient {
         }
     }
 
-    private func handleServerText(_ text: String) {
+    private func handleServerText(_ text: String) -> Bool {
         guard
             let data = text.data(using: .utf8),
             let envelope = try? JSONDecoder().decode(ServerEnvelope.self, from: data)
         else {
-            return
+            return true
         }
 
         switch envelope.type {
@@ -287,14 +301,23 @@ public final class VoiceStreamingClient {
                 emit(.final(event))
             }
         case "runtime.done":
-            emit(.done)
+            if markTerminalEvent() {
+                emit(.done)
+            }
+            return false
         case "error":
             if let event = try? JSONDecoder().decode(ErrorEvent.self, from: data) {
-                emit(.error(VoiceStreamError(code: event.code, retryable: event.retryable, message: event.message)))
+                if markTerminalEvent() {
+                    emit(.error(VoiceStreamError(code: event.code, retryable: event.retryable, message: event.message)))
+                }
+            } else if markTerminalEvent() {
+                emit(.error(VoiceStreamError(code: "server_error", retryable: true, message: "AirNote could not finish this recording.")))
             }
+            return false
         default:
             break
         }
+        return true
     }
 
     private func websocketURL(relativeOrAbsolute: String) throws -> URL {
@@ -323,6 +346,147 @@ public final class VoiceStreamingClient {
         DispatchQueue.main.async { [onUpdate] in
             onUpdate?(update)
         }
+    }
+
+    private func prepareForStart(task: URLSessionWebSocketTask) {
+        stateQueue.sync {
+            webSocket = task
+            isStopping = false
+            didReceiveTerminalEvent = false
+        }
+    }
+
+    private func currentWebSocket() -> URLSessionWebSocketTask? {
+        stateQueue.sync {
+            webSocket
+        }
+    }
+
+    private func setWebSocket(_ task: URLSessionWebSocketTask?) {
+        stateQueue.sync {
+            webSocket = task
+        }
+    }
+
+    private func audioSendTarget() -> URLSessionWebSocketTask? {
+        stateQueue.sync {
+            guard !isStopping, !didReceiveTerminalEvent else { return nil }
+            return webSocket
+        }
+    }
+
+    @discardableResult
+    private func markStopping() -> Bool {
+        stateQueue.sync {
+            if isStopping {
+                return false
+            }
+            isStopping = true
+            return true
+        }
+    }
+
+    private func setStopping() {
+        stateQueue.sync {
+            isStopping = true
+        }
+    }
+
+    @discardableResult
+    private func markTerminalEvent() -> Bool {
+        stateQueue.sync {
+            if didReceiveTerminalEvent {
+                return false
+            }
+            didReceiveTerminalEvent = true
+            return true
+        }
+    }
+
+    private var shouldSuppressDisconnectError: Bool {
+        stateQueue.sync {
+            isStopping || didReceiveTerminalEvent
+        }
+    }
+
+    private func installAudioObservers() {
+        let center = NotificationCenter.default
+        let interruption = center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: audioSession,
+            queue: .main
+        ) { [weak self] notification in
+            self?.handleAudioInterruption(notification)
+        }
+        let routeChange = center.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: audioSession,
+            queue: .main
+        ) { [weak self] notification in
+            self?.handleRouteChange(notification)
+        }
+
+        let newObservers = [interruption, routeChange]
+        let observersToRemove = stateQueue.sync {
+            let staleObservers = interruptionObservers
+            guard !isStopping, !didReceiveTerminalEvent else {
+                interruptionObservers.removeAll()
+                return staleObservers + newObservers
+            }
+            interruptionObservers = newObservers
+            return staleObservers
+        }
+        observersToRemove.forEach { center.removeObserver($0) }
+    }
+
+    private func removeAudioObservers() {
+        let center = NotificationCenter.default
+        let observers = stateQueue.sync {
+            let observers = interruptionObservers
+            interruptionObservers.removeAll()
+            return observers
+        }
+        observers.forEach { center.removeObserver($0) }
+    }
+
+    private func handleAudioInterruption(_ notification: Notification) {
+        guard
+            let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+            let type = AVAudioSession.InterruptionType(rawValue: rawType),
+            type == .began
+        else {
+            return
+        }
+        Task { [weak self] in
+            await self?.stopAfterAudioSystemChange(status: "audio_interrupted")
+        }
+    }
+
+    private func handleRouteChange(_ notification: Notification) {
+        guard
+            let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+            let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason)
+        else {
+            return
+        }
+
+        switch reason {
+        case .oldDeviceUnavailable, .newDeviceAvailable, .noSuitableRouteForCategory, .routeConfigurationChange:
+            Task { [weak self] in
+                await self?.stopAfterAudioSystemChange(status: "audio_route_changed")
+            }
+        default:
+            break
+        }
+    }
+
+    private func stopAfterAudioSystemChange(status: String) async {
+        guard markStopping() else { return }
+        emit(.status(status))
+        stopAudioEngine()
+        maxDurationTask?.cancel()
+        maxDurationTask = nil
+        try? await currentWebSocket()?.send(.string("{\"type\":\"audio.end\"}"))
     }
 }
 #else

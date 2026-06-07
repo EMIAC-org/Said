@@ -6,11 +6,28 @@ final class KeyboardViewController: UIInputViewController {
     private var bridge: AppGroupBridge?
     private let commandHandler = KeyboardCommandHandler()
     private let pasteboard = UIPasteboard.general
+    private var refreshTimer: Timer?
 
     override func viewDidLoad() {
         super.viewDidLoad()
         bridge = try? AppGroupBridge()
-        renderCurrentState()
+        refreshBridgeState()
+        startBridgeRefreshTimer()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        refreshBridgeState()
+        startBridgeRefreshTimer()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        stopBridgeRefreshTimer()
+    }
+
+    deinit {
+        stopBridgeRefreshTimer()
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -18,13 +35,18 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func refreshBridgeState() {
+        let previousState = stateMachine.state
         let session = try? bridge?.read(BridgeSession.self, from: .session)
         stateMachine.apply(session: session)
-        if TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField {
+        let isSecureField = TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField
+        if let result = try? bridge?.read(BridgeResult.self, from: .result) {
+            _ = stateMachine.apply(result: result, secureField: isSecureField)
+        } else if isSecureField {
             stateMachine.markUnsupportedSecureField()
         }
-        if let result = try? bridge?.read(BridgeResult.self, from: .result) {
-            _ = stateMachine.apply(result: result)
+
+        guard stateMachine.state != previousState else {
+            return
         }
         renderCurrentState()
     }
@@ -70,13 +92,15 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func insertCurrentResult() {
-        guard case .insertReady(let result) = stateMachine.state else { return }
+        guard let result = currentResult else { return }
+        if case .secureCopyReady = stateMachine.state {
+            copy(result)
+            return
+        }
+
         let inserter = TextInsertion(documentProxy: textDocumentProxy)
         guard inserter.insert(result) else {
-            pasteboard.string = result.polished
-            acknowledge(result: result, outcome: .copied)
-            stateMachine.acknowledgeCopied(resultSeq: result.resultSeq)
-            renderCurrentState()
+            copy(result)
             return
         }
         acknowledge(result: result, outcome: .inserted)
@@ -85,17 +109,42 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func copyCurrentResult() {
-        guard case .insertReady(let result) = stateMachine.state else { return }
-        pasteboard.string = result.polished
-        acknowledge(result: result, outcome: .copied)
-        stateMachine.acknowledgeCopied(resultSeq: result.resultSeq)
-        renderCurrentState()
+        guard let result = currentResult else { return }
+        copy(result)
     }
 
     private func saveCurrentResult() {
-        guard case .insertReady(let result) = stateMachine.state else { return }
+        guard let result = currentResult else { return }
         acknowledge(result: result, outcome: .savedToHistory)
         stateMachine.acknowledgeSaved(resultSeq: result.resultSeq)
+        renderCurrentState()
+    }
+
+    private func startBridgeRefreshTimer() {
+        guard refreshTimer == nil else { return }
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
+            self?.refreshBridgeState()
+        }
+    }
+
+    private func stopBridgeRefreshTimer() {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+    }
+
+    private var currentResult: BridgeResult? {
+        switch stateMachine.state {
+        case .insertReady(let result), .secureCopyReady(let result):
+            return result
+        default:
+            return nil
+        }
+    }
+
+    private func copy(_ result: BridgeResult) {
+        pasteboard.string = result.polished
+        acknowledge(result: result, outcome: .copied)
+        stateMachine.acknowledgeCopied(resultSeq: result.resultSeq)
         renderCurrentState()
     }
 

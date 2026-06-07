@@ -182,6 +182,20 @@ final class RecordingPadView: UIView {
     }
 
     private func makeResultActions() -> UIView {
+        if isCopyOnlyResult {
+            let copy = actionButton(title: "Copy", systemImage: "doc.on.doc", color: KeyboardTheme.accent)
+            copy.addTarget(self, action: #selector(copyTapped), for: .touchUpInside)
+
+            let save = actionButton(title: "Save", systemImage: "tray.and.arrow.down", color: .secondaryLabel)
+            save.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
+
+            let row = UIStackView(arrangedSubviews: [copy, save])
+            row.axis = .horizontal
+            row.spacing = 8
+            row.distribution = .fillEqually
+            return row
+        }
+
         let insert = actionButton(title: "Insert", systemImage: "text.insert", color: KeyboardTheme.accent)
         insert.addTarget(self, action: #selector(insertTapped), for: .touchUpInside)
 
@@ -300,6 +314,7 @@ final class RecordingPadView: UIView {
         case .recording: return "waveform.circle.fill"
         case .processing: return "bolt.circle.fill"
         case .insertReady: return "text.badge.checkmark"
+        case .secureCopyReady: return "doc.on.doc.fill"
         case .inserted, .copied, .savedToHistory: return "checkmark.circle.fill"
         case .staleSession, .needsFullAccess, .needsMainAppSession, .error, .unsupportedSecureField: return "exclamationmark.triangle.fill"
         default: return "keyboard"
@@ -308,7 +323,7 @@ final class RecordingPadView: UIView {
 
     private var statusColor: UIColor {
         switch state {
-        case .ready, .recording, .processing, .insertReady: return KeyboardTheme.accent
+        case .ready, .recording, .processing, .insertReady, .secureCopyReady: return KeyboardTheme.accent
         case .inserted, .copied, .savedToHistory: return KeyboardTheme.success
         case .staleSession, .needsFullAccess, .needsMainAppSession, .error, .unsupportedSecureField: return KeyboardTheme.warning
         default: return KeyboardTheme.teal
@@ -321,6 +336,7 @@ final class RecordingPadView: UIView {
         case .recording: return "Listening"
         case .processing: return "Processing"
         case .insertReady: return "Ready to insert"
+        case .secureCopyReady: return "Copy ready"
         case .inserted: return "Inserted"
         case .staleSession: return "Session expired"
         case .needsFullAccess: return "Full Access needed"
@@ -337,6 +353,7 @@ final class RecordingPadView: UIView {
         case .recording: return "Speak naturally. Tap stop when done."
         case .processing(let phase): return phase
         case .insertReady: return "Review, insert, copy, or save."
+        case .secureCopyReady: return "Secure field detected. Copy polished text instead."
         case .staleSession: return "Open AirNote to restart the session."
         case .needsFullAccess: return "Turn on Full Access to use voice dictation."
         case .unsupportedSecureField: return "AirNote will not insert into password, OTP, payment, or secure fields."
@@ -354,6 +371,7 @@ final class RecordingPadView: UIView {
         case .recording: return "Stop"
         case .processing: return "Working"
         case .insertReady: return "Insert"
+        case .secureCopyReady: return "Copy"
         case .inserted, .copied, .savedToHistory: return "Start recording"
         case .staleSession, .needsMainAppSession: return "Open AirNote"
         case .needsFullAccess: return "Repair setup"
@@ -368,6 +386,7 @@ final class RecordingPadView: UIView {
         case .ready: return "mic.fill"
         case .recording: return "stop.fill"
         case .insertReady: return "text.insert"
+        case .secureCopyReady: return "doc.on.doc"
         case .inserted, .copied, .savedToHistory: return "mic.fill"
         case .staleSession, .needsMainAppSession: return "arrow.up.forward.app"
         case .needsFullAccess: return "wrench.and.screwdriver"
@@ -379,7 +398,7 @@ final class RecordingPadView: UIView {
 
     private var primaryActionColor: UIColor {
         switch state {
-        case .ready, .insertReady: return KeyboardTheme.accent
+        case .ready, .insertReady, .secureCopyReady: return KeyboardTheme.accent
         case .recording: return KeyboardTheme.danger
         default: return .secondaryLabel
         }
@@ -396,14 +415,14 @@ final class RecordingPadView: UIView {
         switch state {
         case .recording: return [12, 24, 36, 20, 30, 18, 34, 22]
         case .processing: return [16, 16, 26, 26, 16, 16, 26, 26]
-        case .insertReady: return [14, 22, 28, 22, 14, 22, 28, 22]
+        case .insertReady, .secureCopyReady: return [14, 22, 28, 22, 14, 22, 28, 22]
         default: return [8, 12, 18, 12, 8, 12, 18, 12]
         }
     }
 
     private var isActiveWaveform: Bool {
         switch state {
-        case .recording, .processing, .insertReady: return true
+        case .recording, .processing, .insertReady, .secureCopyReady: return true
         default: return false
         }
     }
@@ -412,7 +431,17 @@ final class RecordingPadView: UIView {
         if case .insertReady(let result) = state {
             return result.polished
         }
+        if case .secureCopyReady(let result) = state {
+            return result.polished
+        }
         return nil
+    }
+
+    private var isCopyOnlyResult: Bool {
+        if case .secureCopyReady = state {
+            return true
+        }
+        return false
     }
 
     private var recoveryMessage: String? {
@@ -438,6 +467,8 @@ final class RecordingPadView: UIView {
             onStop?()
         case .insertReady:
             onInsert?()
+        case .secureCopyReady:
+            onCopy?()
         case .staleSession, .needsMainAppSession, .needsFullAccess:
             onOpenApp?()
         case .unsupportedSecureField:
