@@ -70,3 +70,9 @@ private struct FeatureRow: View {
         }
     }
 }
+
+#Preview("Welcome") {
+    NavigationStack {
+        WelcomeView()
+    }
+}

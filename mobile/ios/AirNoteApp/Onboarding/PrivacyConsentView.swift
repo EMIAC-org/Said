@@ -24,3 +24,9 @@ struct PrivacyConsentView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 }
+
+#Preview("Privacy") {
+    NavigationStack {
+        PrivacyConsentView(accepted: .constant(false))
+    }
+}

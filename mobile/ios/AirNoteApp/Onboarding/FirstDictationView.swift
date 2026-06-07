@@ -52,3 +52,10 @@ struct FirstDictationView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 }
+
+#Preview("Practice") {
+    NavigationStack {
+        FirstDictationView()
+            .environmentObject(AppEnvironment())
+    }
+}

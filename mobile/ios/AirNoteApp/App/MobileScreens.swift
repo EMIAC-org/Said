@@ -257,3 +257,27 @@ private struct AirNoteInlinePreview: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+#Preview("Account") {
+    NavigationStack { AccountSignInView().environmentObject(AppEnvironment()) }
+}
+
+#Preview("Language & Style") {
+    NavigationStack { LanguageStyleView().environmentObject(AppEnvironment()) }
+}
+
+#Preview("History") {
+    NavigationStack { HistoryView().environmentObject(AppEnvironment()) }
+}
+
+#Preview("Vocabulary") {
+    NavigationStack { VocabularyView() }
+}
+
+#Preview("Settings") {
+    NavigationStack { AirNoteSettingsView().environmentObject(AppEnvironment()) }
+}
+
+#Preview("Diagnostics") {
+    NavigationStack { DiagnosticsView().environmentObject(AppEnvironment()) }
+}

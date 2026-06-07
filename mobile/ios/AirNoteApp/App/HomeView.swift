@@ -275,3 +275,8 @@ private struct NavTile<Destination: View>: View {
         .buttonStyle(.plain)
     }
 }
+
+#Preview("Home") {
+    HomeView()
+        .environmentObject(AppEnvironment())
+}

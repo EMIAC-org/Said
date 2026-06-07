@@ -281,3 +281,9 @@ private struct HealthRow: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+#Preview("Recording Session") {
+    NavigationStack {
+        RecordingSessionView()
+    }
+}
