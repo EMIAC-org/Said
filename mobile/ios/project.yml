@@ -32,6 +32,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.emiac.airnote.ios.shared
+        GENERATE_INFOPLIST_FILE: YES
         SKIP_INSTALL: YES
 
   AirNoteKeyboard:
@@ -42,8 +43,6 @@ targets:
     dependencies:
       - target: AirNoteShared
         embed: true
-    info:
-      path: AirNoteKeyboard/Resources/Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.emiac.airnote.ios.keyboard
@@ -61,8 +60,6 @@ targets:
         embed: true
       - target: AirNoteKeyboard
         embed: true
-    info:
-      path: AirNoteApp/Resources/Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.emiac.airnote.ios

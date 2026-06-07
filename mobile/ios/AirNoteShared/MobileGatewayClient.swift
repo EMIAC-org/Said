@@ -41,6 +41,12 @@ public struct MobileAccount: Codable, Equatable {
     public var email: String
     public var licenseTier: String
 
+    public init(id: String, email: String, licenseTier: String) {
+        self.id = id
+        self.email = email
+        self.licenseTier = licenseTier
+    }
+
     enum CodingKeys: String, CodingKey {
         case id
         case email

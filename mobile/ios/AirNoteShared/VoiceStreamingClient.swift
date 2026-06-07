@@ -27,6 +27,26 @@ public struct VoiceFinalResult: Codable, Equatable {
     public var latencyMS: Int
     public var mock: Bool
 
+    public init(
+        requestID: String,
+        sessionID: String?,
+        transcript: String,
+        polished: String,
+        language: LanguageHint,
+        style: DictationStyle,
+        latencyMS: Int,
+        mock: Bool
+    ) {
+        self.requestID = requestID
+        self.sessionID = sessionID
+        self.transcript = transcript
+        self.polished = polished
+        self.language = language
+        self.style = style
+        self.latencyMS = latencyMS
+        self.mock = mock
+    }
+
     enum CodingKeys: String, CodingKey {
         case requestID = "request_id"
         case sessionID = "session_id"

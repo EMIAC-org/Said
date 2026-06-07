@@ -1,59 +1,76 @@
 import Foundation
 import SwiftUI
 
-// MARK: - Design tokens
+// MARK: - Desktop-aligned design tokens
 
 enum AirNoteDesign {
-    // Brand palette — light-mode first. Indigo → cyan is the AirNote signature.
-    static let accent = Color(red: 0.36, green: 0.40, blue: 0.96)   // indigo
-    static let accent2 = Color(red: 0.10, green: 0.66, blue: 0.91)  // cyan
-    static let teal = Color(red: 0.07, green: 0.62, blue: 0.85)
-    static let success = Color(red: 0.10, green: 0.62, blue: 0.40)
-    static let warning = Color(red: 0.92, green: 0.55, blue: 0.10)
-    static let danger = Color(red: 0.94, green: 0.28, blue: 0.33)   // recording red
-    static let ink = Color(red: 0.09, green: 0.10, blue: 0.16)
+    static let background = Color(red: 0.025, green: 0.025, blue: 0.035)
+    static let surface = Color(red: 0.055, green: 0.055, blue: 0.075)
+    static let surfaceRaised = Color(red: 0.085, green: 0.085, blue: 0.110)
+    static let surfaceHover = Color(red: 0.120, green: 0.120, blue: 0.150)
+    static let foreground = Color(red: 0.930, green: 0.930, blue: 0.950)
+    static let muted = Color(red: 0.580, green: 0.590, blue: 0.640)
+    static let border = Color.white.opacity(0.070)
+    static let borderStrong = Color.white.opacity(0.115)
+
+    static let accent = Color(red: 0.620, green: 0.700, blue: 0.980)
+    static let accent2 = accent
+    static let teal = Color(red: 0.620, green: 0.700, blue: 0.980)
+    static let success = Color(red: 0.530, green: 0.820, blue: 0.610)
+    static let warning = Color(red: 0.980, green: 0.700, blue: 0.300)
+    static let danger = Color(red: 0.940, green: 0.300, blue: 0.360)
+    static let ink = Color(red: 0.045, green: 0.045, blue: 0.060)
 
     static let radius: CGFloat = 8
-    static let cardRadius: CGFloat = 22
-    static let tileRadius: CGFloat = 18
+    static let cardRadius: CGFloat = 12
+    static let tileRadius: CGFloat = 10
 
     static var accentGradient: LinearGradient {
-        LinearGradient(colors: [accent, accent2], startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: [accent.opacity(0.95), accent.opacity(0.72)],
+                       startPoint: .topLeading,
+                       endPoint: .bottomTrailing)
     }
+
     static var recordingGradient: LinearGradient {
         LinearGradient(colors: [Color(red: 0.98, green: 0.38, blue: 0.45), danger],
-                       startPoint: .top, endPoint: .bottom)
+                       startPoint: .top,
+                       endPoint: .bottom)
     }
-    static var softCardFill: Color { Color(.secondarySystemBackground) }
 
-    static let cardShadow = Color.black.opacity(0.06)
+    static var softCardFill: Color { surfaceRaised }
+    static let cardShadow = Color.black.opacity(0.38)
 }
 
-// MARK: - Ambient background (calm, premium, light-first)
+// MARK: - Background
 
 struct AirNoteBackground: View {
     var tint: Color = AirNoteDesign.accent
 
     var body: some View {
         ZStack {
-            Color(.systemBackground)
-            RadialGradient(
-                colors: [tint.opacity(0.16), .clear],
-                center: .topTrailing, startRadius: 8, endRadius: 460
+            LinearGradient(
+                colors: [
+                    AirNoteDesign.background,
+                    Color(red: 0.035, green: 0.035, blue: 0.048),
+                    AirNoteDesign.background
+                ],
+                startPoint: .topTrailing,
+                endPoint: .bottomLeading
             )
-            RadialGradient(
-                colors: [AirNoteDesign.accent2.opacity(0.12), .clear],
-                center: .bottomLeading, startRadius: 8, endRadius: 420
+            LinearGradient(
+                colors: [Color.white.opacity(0.020), .clear],
+                startPoint: .top,
+                endPoint: .bottom
             )
         }
         .ignoresSafeArea()
     }
 }
 
-// MARK: - Card
+// MARK: - Shared surfaces
 
 struct AirNoteCard<Content: View>: View {
-    var padding: CGFloat = 18
+    var padding: CGFloat = 16
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -62,55 +79,98 @@ struct AirNoteCard<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: AirNoteDesign.cardRadius, style: .continuous)
-                    .fill(Color(.secondarySystemBackground))
+                    .fill(AirNoteDesign.surface.opacity(0.92))
+                    .shadow(color: AirNoteDesign.cardShadow, radius: 22, x: 0, y: 12)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: AirNoteDesign.cardRadius, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.05), lineWidth: 1)
+                    .strokeBorder(AirNoteDesign.border, lineWidth: 1)
             )
-            .shadow(color: AirNoteDesign.cardShadow, radius: 18, x: 0, y: 10)
+    }
+}
+
+struct AirNoteLogoTile: View {
+    var size: CGFloat = 44
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [AirNoteDesign.surfaceRaised, AirNoteDesign.surface],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .frame(width: size, height: size)
+            .overlay(AirNoteWaveMark(size: size * 0.46))
+            .overlay(
+                RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+                    .strokeBorder(AirNoteDesign.borderStrong, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.35), radius: 18, x: 0, y: 10)
+    }
+}
+
+struct AirNoteWaveMark: View {
+    var size: CGFloat = 22
+    private let heights: [CGFloat] = [0.38, 0.78, 0.55, 0.92]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: size * 0.11) {
+            ForEach(0..<heights.count, id: \.self) { index in
+                Capsule()
+                    .fill(AirNoteDesign.foreground)
+                    .frame(width: size * 0.15, height: size * heights[index])
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }
 
 // MARK: - Buttons
 
 struct AirNotePrimaryButtonStyle: ButtonStyle {
-    var gradient: LinearGradient = AirNoteDesign.accentGradient
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.headline)
-            .foregroundStyle(.white)
+            .font(.system(.subheadline, design: .default).weight(.semibold))
+            .foregroundStyle(AirNoteDesign.ink)
             .frame(maxWidth: .infinity)
-            .frame(height: 52)
-            .background(gradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .shadow(color: AirNoteDesign.accent.opacity(configuration.isPressed ? 0.18 : 0.32),
-                    radius: configuration.isPressed ? 8 : 16, x: 0, y: 8)
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+            .frame(height: 44)
+            .background(Color.white.opacity(configuration.isPressed ? 0.88 : 0.98),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.70), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(configuration.isPressed ? 0.18 : 0.30),
+                    radius: configuration.isPressed ? 6 : 16,
+                    x: 0,
+                    y: configuration.isPressed ? 3 : 8)
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
 struct AirNoteGhostButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.headline)
-            .foregroundStyle(AirNoteDesign.ink)
+            .font(.system(.subheadline, design: .default).weight(.semibold))
+            .foregroundStyle(AirNoteDesign.foreground)
             .frame(maxWidth: .infinity)
-            .frame(height: 52)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color(.tertiarySystemBackground))
-            )
+            .frame(height: 44)
+            .background(AirNoteDesign.surfaceRaised.opacity(configuration.isPressed ? 0.72 : 0.52),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(AirNoteDesign.borderStrong, lineWidth: 1)
             )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
-// MARK: - Status pill
+// MARK: - Status + rows
 
 struct AirNoteStatusPill: View {
     var systemImage: String
@@ -121,25 +181,32 @@ struct AirNoteStatusPill: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+                .opacity(animated && pulse ? 0.45 : 1)
             Image(systemName: systemImage)
                 .imageScale(.small)
-                .opacity(animated && pulse ? 0.4 : 1)
             Text(text)
         }
-        .font(.caption.weight(.bold))
+        .font(.caption2.weight(.bold))
         .foregroundStyle(color)
-        .padding(.horizontal, 11)
+        .padding(.horizontal, 9)
         .padding(.vertical, 6)
-        .background(color.opacity(0.14), in: Capsule())
+        .background(color.opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(color.opacity(0.20), lineWidth: 1)
+        )
         .onAppear {
             guard animated else { return }
-            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { pulse = true }
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
         }
         .accessibilityElement(children: .combine)
     }
 }
-
-// MARK: - Action row (primary + secondary)
 
 struct AirNoteActionRow: View {
     var primaryTitle: String
@@ -150,7 +217,7 @@ struct AirNoteActionRow: View {
     var secondaryAction: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Button(action: primaryAction) {
                 Label(primaryTitle, systemImage: primarySystemImage)
             }
@@ -160,17 +227,63 @@ struct AirNoteActionRow: View {
                 Label(secondaryTitle, systemImage: secondarySystemImage)
             }
             .buttonStyle(AirNoteGhostButtonStyle())
-            .frame(maxWidth: 140)
+            .frame(maxWidth: 132)
         }
     }
 }
 
-// MARK: - Mic orb (the hero voice control)
+struct AirNoteSetupRow: View {
+    var icon: String
+    var title: String
+    var subtitle: String
+    var status: String?
+    var tint: Color = AirNoteDesign.accent
+
+    var body: some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.045))
+                .frame(width: 34, height: 34)
+                .overlay(Image(systemName: icon).font(.system(size: 14, weight: .semibold)).foregroundStyle(tint))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(AirNoteDesign.border, lineWidth: 1)
+                )
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AirNoteDesign.foreground)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(AirNoteDesign.muted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            if let status {
+                Text(status)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            }
+        }
+        .padding(12)
+        .background(AirNoteDesign.surfaceRaised.opacity(0.52), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(AirNoteDesign.border, lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Mic orb + waveform
 
 struct MicOrb: View {
     var isRecording: Bool
     var level: CGFloat = 0
-    var size: CGFloat = 116
+    var size: CGFloat = 104
     var action: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulse = false
@@ -178,34 +291,29 @@ struct MicOrb: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                // expanding glow rings while recording
                 if isRecording && !reduceMotion {
                     Circle()
                         .stroke(AirNoteDesign.danger.opacity(0.35), lineWidth: 2)
                         .frame(width: size, height: size)
-                        .scaleEffect(pulse ? 1.6 : 1.0)
+                        .scaleEffect(pulse ? 1.55 : 1.0)
                         .opacity(pulse ? 0 : 0.8)
-                    Circle()
-                        .stroke(AirNoteDesign.danger.opacity(0.25), lineWidth: 2)
-                        .frame(width: size, height: size)
-                        .scaleEffect(pulse ? 1.35 : 1.0)
-                        .opacity(pulse ? 0 : 0.6)
                 }
                 Circle()
-                    .fill(isRecording ? AirNoteDesign.recordingGradient : AirNoteDesign.accentGradient)
+                    .fill(isRecording ? AirNoteDesign.recordingGradient : LinearGradient(colors: [Color.white, Color.white.opacity(0.88)], startPoint: .top, endPoint: .bottom))
                     .frame(width: size, height: size)
-                    .shadow(color: (isRecording ? AirNoteDesign.danger : AirNoteDesign.accent).opacity(0.45),
-                            radius: 26, x: 0, y: 12)
+                    .shadow(color: Color.black.opacity(0.42), radius: 24, x: 0, y: 12)
                     .scaleEffect(isRecording ? 1.0 + min(0.08, level * 0.12) : 1.0)
                 Image(systemName: isRecording ? "stop.fill" : "mic.fill")
-                    .font(.system(size: size * 0.32, weight: .bold))
-                    .foregroundStyle(.white)
+                    .font(.system(size: size * 0.30, weight: .bold))
+                    .foregroundStyle(isRecording ? .white : AirNoteDesign.ink)
             }
         }
         .buttonStyle(.plain)
         .onChange(of: isRecording) { _, recording in
             if recording && !reduceMotion {
-                withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) { pulse = true }
+                withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) {
+                    pulse = true
+                }
             } else {
                 pulse = false
             }
@@ -213,8 +321,6 @@ struct MicOrb: View {
         .accessibilityLabel(isRecording ? "Stop recording" : "Start recording")
     }
 }
-
-// MARK: - Waveform (reacts to level; reduce-motion aware)
 
 struct AirNoteWaveform: View {
     var level: CGFloat
@@ -238,7 +344,7 @@ struct AirNoteWaveform: View {
                 }
             }
         }
-        .frame(height: 56)
+        .frame(height: 48)
         .frame(maxWidth: .infinity)
         .accessibilityHidden(true)
     }
@@ -246,33 +352,33 @@ struct AirNoteWaveform: View {
     private var staticBars: some View {
         HStack(spacing: 6) {
             ForEach(0..<barCount, id: \.self) { i in
-                bar(height: 14 + CGFloat((i * 7) % 22))
+                bar(height: 12 + CGFloat((i * 7) % 20))
             }
         }
     }
 
     private func bar(height: CGFloat) -> some View {
         Capsule()
-            .fill(color)
-            .frame(width: 7, height: max(8, height))
+            .fill(color.opacity(active ? 0.95 : 0.48))
+            .frame(width: 6, height: max(8, height))
     }
 
     private func animatedHeight(_ i: Int, _ t: Double) -> CGFloat {
         let phase = Double(i) * 0.55
-        let wave = (sin(t * 6 + phase) + 1) / 2          // 0...1
-        let amp = 16 + level * 36                          // louder = taller
-        return 10 + CGFloat(wave) * amp
+        let wave = (sin(t * 6 + phase) + 1) / 2
+        let amp = 14 + level * 34
+        return 9 + CGFloat(wave) * amp
     }
 }
 
-// MARK: - Section label
+// MARK: - Typography
 
 struct AirNoteSectionLabel: View {
     var text: String
     var body: some View {
         Text(text.uppercased())
-            .font(.caption.weight(.bold))
-            .tracking(0.6)
-            .foregroundStyle(.secondary)
+            .font(.caption2.weight(.bold))
+            .tracking(0.9)
+            .foregroundStyle(AirNoteDesign.muted)
     }
 }

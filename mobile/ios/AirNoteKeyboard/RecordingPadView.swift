@@ -53,7 +53,7 @@ final class RecordingPadView: UIView {
         surface.backgroundColor = KeyboardTheme.surfaceBackground
         surface.layer.cornerRadius = KeyboardTheme.radius
         surface.layer.borderWidth = 1
-        surface.layer.borderColor = UIColor.separator.withAlphaComponent(0.35).cgColor
+        surface.layer.borderColor = KeyboardTheme.border.cgColor
 
         let stack = UIStackView()
         stack.axis = .vertical
@@ -93,6 +93,7 @@ final class RecordingPadView: UIView {
         let title = UILabel()
         title.font = .preferredFont(forTextStyle: .headline)
         title.adjustsFontForContentSizeCategory = true
+        title.textColor = .white
         title.text = titleText
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -109,13 +110,13 @@ final class RecordingPadView: UIView {
 
     private func makeWaveform() -> UIView {
         let container = UIView()
-        container.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.75)
+        container.backgroundColor = KeyboardTheme.secondarySurface
         container.layer.cornerRadius = KeyboardTheme.radius
 
         let label = UILabel()
         label.font = .preferredFont(forTextStyle: .caption1)
         label.adjustsFontForContentSizeCategory = true
-        label.textColor = .secondaryLabel
+        label.textColor = UIColor.white.withAlphaComponent(0.62)
         label.text = subtitleText
         label.numberOfLines = 1
 
@@ -159,8 +160,8 @@ final class RecordingPadView: UIView {
         label.font = .preferredFont(forTextStyle: .subheadline)
         label.adjustsFontForContentSizeCategory = true
         label.numberOfLines = 2
-        label.textColor = .label
-        label.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.75)
+        label.textColor = .white
+        label.backgroundColor = KeyboardTheme.secondarySurface
         label.layer.cornerRadius = KeyboardTheme.radius
         label.layer.masksToBounds = true
         label.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
@@ -242,7 +243,7 @@ final class RecordingPadView: UIView {
         let delete = UIButton(type: .system)
         var config = UIButton.Configuration.filled()
         config.image = UIImage(systemName: "delete.left")
-        config.baseForegroundColor = .label
+        config.baseForegroundColor = .white
         config.baseBackgroundColor = KeyboardTheme.keyBackground
         config.background.cornerRadius = KeyboardTheme.radius
         delete.configuration = config
@@ -263,7 +264,7 @@ final class RecordingPadView: UIView {
         let button = UIButton(type: .system)
         var config = UIButton.Configuration.filled()
         config.title = key
-        config.baseForegroundColor = .label
+        config.baseForegroundColor = .white
         config.baseBackgroundColor = KeyboardTheme.keyBackground
         config.background.cornerRadius = KeyboardTheme.radius
         config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
@@ -283,8 +284,8 @@ final class RecordingPadView: UIView {
         config.title = title
         config.image = UIImage(systemName: systemImage)
         config.imagePadding = 6
-        config.baseForegroundColor = color == KeyboardTheme.accent ? .white : .label
-        config.baseBackgroundColor = color == KeyboardTheme.accent ? color : UIColor.secondarySystemBackground
+        config.baseForegroundColor = color == KeyboardTheme.accent ? KeyboardTheme.primaryButtonForeground : .white
+        config.baseBackgroundColor = color == KeyboardTheme.accent ? KeyboardTheme.primaryButtonBackground : KeyboardTheme.secondarySurface
         config.background.cornerRadius = KeyboardTheme.radius
         config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
         button.configuration = config

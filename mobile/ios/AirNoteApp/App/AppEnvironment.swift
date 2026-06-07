@@ -10,7 +10,7 @@ final class AppEnvironment: ObservableObject {
     @Published var style: DictationStyle = .work
     @Published var lastStatusMessage: String = "AirNote is ready"
     @Published private(set) var account: MobileAccount?
-    @Published private(set) var runtimeStatus: String = BuildConfig.useMockGateway ? "mock_pipeline" : "unknown"
+    @Published private(set) var runtimeStatus: String = BuildConfig.useMockGateway ? "Preview" : "Unknown"
 
     let dictationStore = DictationStore()
     let eventQueue = EventQueue()
@@ -25,6 +25,36 @@ final class AppEnvironment: ObservableObject {
     func markSetupReady() {
         setupState = .ready
         lastStatusMessage = "Keyboard, mic, and Gateway are ready"
+    }
+
+    func markMockAccountReady() {
+        account = MobileAccount(id: "preview-account", email: "anugra@airnote.preview", licenseTier: "test")
+        setupState = .accountReady
+        runtimeStatus = "Preview"
+        lastStatusMessage = "Account and Gateway are ready"
+    }
+
+    func markPrivacyAccepted() {
+        setupState = .privacyAccepted
+        lastStatusMessage = "Privacy reviewed"
+    }
+
+    func markMicReady() {
+        setupState = .micReady
+        lastStatusMessage = "Microphone check passed"
+    }
+
+    func markKeyboardReady(fullAccess: Bool = false) {
+        setupState = fullAccess ? .fullAccessReady : .keyboardReady
+        lastStatusMessage = fullAccess ? "Keyboard and Full Access are ready" : "Keyboard setup previewed"
+    }
+
+    func resetMockSetup() {
+        account = nil
+        setupState = .notStarted
+        runtimeStatus = BuildConfig.useMockGateway ? "Preview" : "Unknown"
+        lastStatusMessage = "AirNote is ready"
+        dictationStore.clear()
     }
 
     func authenticate(email: String, password: String, signup: Bool) async {

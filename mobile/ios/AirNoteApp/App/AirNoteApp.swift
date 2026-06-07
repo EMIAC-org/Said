@@ -6,8 +6,15 @@ struct AirNoteApp: App {
 
     var body: some Scene {
         WindowGroup {
-            HomeView()
-                .environmentObject(environment)
+            Group {
+                if case .ready = environment.setupState {
+                    HomeView()
+                } else {
+                    SetupFlowView()
+                }
+            }
+            .environmentObject(environment)
+            .preferredColorScheme(.dark)
         }
     }
 }

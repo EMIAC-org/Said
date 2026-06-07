@@ -1,3 +1,3 @@
-# Xcode treats // as a comment in xcconfig values. The $() trick preserves the final URL as https://...
+// The $() trick preserves the final URL as https://... in xcconfig values.
 AIRNOTE_GATEWAY_BASE_URL = https:/$()/airnote.emiactech.com
 AIRNOTE_USE_MOCK_GATEWAY = NO

@@ -27,4 +27,8 @@ public final class DictationStore: ObservableObject {
     public func append(_ record: DictationRecord) {
         records.insert(record, at: 0)
     }
+
+    public func clear() {
+        records.removeAll()
+    }
 }

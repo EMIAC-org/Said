@@ -206,7 +206,7 @@ struct DiagnosticsView: View {
             Section("Build") {
                 LabeledContent("App", value: "0.1.0(1)")
                 LabeledContent("Gateway", value: BuildConfig.gatewayBaseURL.absoluteString)
-                LabeledContent("Mode", value: BuildConfig.useMockGateway ? "Mock" : "Live")
+                LabeledContent("Mode", value: BuildConfig.useMockGateway ? "Preview" : "Live")
             }
 
             Section("Runtime") {
