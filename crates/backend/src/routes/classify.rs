@@ -15,6 +15,7 @@
 
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use crate::{
@@ -26,7 +27,7 @@ use crate::{
     },
     store::{
         corrections, email_memory, history, pending_promotions, prefs::get_prefs, stt_replacements,
-        tier2_edit_policy, vectors, vocab_embeddings, vocab_fts, vocabulary,
+        tier2_edit_policy, users, vectors, vocab_embeddings, vocab_fts, vocabulary,
     },
 };
 
@@ -62,6 +63,269 @@ pub struct ClassifyBody {
 
 fn default_capture_method() -> String {
     "ax".to_string()
+}
+
+fn hash_text(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn post_runtime_client_event(
+    state: AppState,
+    event_type: &'static str,
+    recording_id: String,
+    classification: String,
+    ai_output_hash: String,
+    user_kept_hash: String,
+    payload: serde_json::Value,
+) {
+    tokio::spawn(async move {
+        let Some(user) = users::get_user(&state.pool, &state.default_user_id) else {
+            return;
+        };
+        let Some(token) = user.cloud_token.filter(|t| !t.trim().is_empty()) else {
+            return;
+        };
+        let base_url = user
+            .enterprise_server_url
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+        let url = format!(
+            "{}/v1/runtime/client-events",
+            base_url.trim_end_matches('/')
+        );
+        let body = serde_json::json!({
+            "event_type": event_type,
+            "recording_id": recording_id,
+            "classification": classification,
+            "input_hash": ai_output_hash,
+            "corrected_hash": user_kept_hash,
+            "payload": payload,
+        });
+        match state
+            .http_client
+            .post(url)
+            .bearer_auth(token)
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                info!("[classify] runtime client event uploaded");
+            }
+            Ok(resp) => {
+                warn!(
+                    "[classify] runtime client event upload failed: {}",
+                    resp.status()
+                );
+            }
+            Err(e) => {
+                warn!("[classify] runtime client event upload failed: {e}");
+            }
+        }
+    });
+}
+
+async fn refine_review_candidates_with_server(
+    state: &AppState,
+    recording_id: &str,
+    transcript: &str,
+    ai_output: &str,
+    user_kept: &str,
+    candidates: Vec<ReviewCandidate>,
+) -> Vec<ReviewCandidate> {
+    if candidates.is_empty() {
+        return candidates;
+    }
+    let fallback = candidates.clone();
+    let Some(user) = users::get_user(&state.pool, &state.default_user_id) else {
+        return fallback;
+    };
+    let Some(token) = user.cloud_token.filter(|t| !t.trim().is_empty()) else {
+        return fallback;
+    };
+    let base_url = user
+        .enterprise_server_url
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+    let url = format!(
+        "{}/v1/runtime/learning/analyze-edit",
+        base_url.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "recording_id": recording_id,
+        "transcript": transcript,
+        "ai_output": ai_output,
+        "user_kept": user_kept,
+        "candidates": candidates,
+    });
+    match state
+        .http_client
+        .post(url)
+        .bearer_auth(token)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(value) => serde_json::from_value::<Vec<ReviewCandidate>>(
+                value
+                    .get("candidates")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([])),
+            )
+            .unwrap_or(fallback),
+            Err(e) => {
+                warn!("[classify] server review analyzer parse failed: {e}");
+                fallback
+            }
+        },
+        Ok(resp) => {
+            warn!(
+                "[classify] server review analyzer failed: {}",
+                resp.status()
+            );
+            fallback
+        }
+        Err(e) => {
+            warn!("[classify] server review analyzer failed: {e}");
+            fallback
+        }
+    }
+}
+
+async fn server_review_candidates_from_raw(
+    state: &AppState,
+    recording_id: &str,
+    transcript: &str,
+    ai_output: &str,
+    user_kept: &str,
+) -> Option<Vec<ReviewCandidate>> {
+    let user = users::get_user(&state.pool, &state.default_user_id)?;
+    let token = user.cloud_token.filter(|t| !t.trim().is_empty())?;
+    let base_url = user
+        .enterprise_server_url
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+    let url = format!(
+        "{}/v1/runtime/learning/analyze-edit",
+        base_url.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "recording_id": recording_id,
+        "transcript": transcript,
+        "ai_output": ai_output,
+        "user_kept": user_kept,
+        "candidates": [],
+    });
+    match state
+        .http_client
+        .post(url)
+        .bearer_auth(token)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(value) => {
+                let candidates = value
+                    .get("candidates")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]));
+                match serde_json::from_value::<Vec<ReviewCandidate>>(candidates) {
+                    Ok(candidates) => Some(candidates),
+                    Err(e) => {
+                        warn!("[classify] server raw learning judge parse failed: {e}");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("[classify] server raw learning judge response parse failed: {e}");
+                None
+            }
+        },
+        Ok(resp) => {
+            warn!(
+                "[classify] server raw learning judge failed: {}",
+                resp.status()
+            );
+            None
+        }
+        Err(e) => {
+            warn!("[classify] server raw learning judge failed: {e}");
+            None
+        }
+    }
+}
+
+async fn server_validate_direct_candidate(
+    state: &AppState,
+    recording_id: &str,
+    transcript: &str,
+    ai_output: &str,
+    user_kept: &str,
+    candidate: ReviewCandidate,
+) -> Option<ReviewCandidate> {
+    let user = users::get_user(&state.pool, &state.default_user_id)?;
+    let token = user.cloud_token.filter(|t| !t.trim().is_empty())?;
+    let base_url = user
+        .enterprise_server_url
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+    let url = format!(
+        "{}/v1/runtime/learning/analyze-edit",
+        base_url.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "recording_id": recording_id,
+        "transcript": transcript,
+        "ai_output": ai_output,
+        "user_kept": user_kept,
+        "candidates": [candidate],
+    });
+    match state
+        .http_client
+        .post(url)
+        .bearer_auth(token)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(value) => {
+                let candidates = value
+                    .get("candidates")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]));
+                serde_json::from_value::<Vec<ReviewCandidate>>(candidates)
+                    .ok()
+                    .and_then(|candidates| {
+                        candidates.into_iter().find(|candidate| candidate.learnable)
+                    })
+            }
+            Err(e) => {
+                warn!("[classify] server direct learning validation parse failed: {e}");
+                None
+            }
+        },
+        Ok(resp) => {
+            warn!(
+                "[classify] server direct learning validation failed: {}",
+                resp.status()
+            );
+            None
+        }
+        Err(e) => {
+            warn!("[classify] server direct learning validation failed: {e}");
+            None
+        }
+    }
 }
 
 /// Maximum elapsed-since-paste before we treat the edit as unrelated to
@@ -121,7 +385,7 @@ pub struct NegativeTerm {
 }
 
 /// A candidate change the user should review before learning.
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct ReviewCandidate {
     pub original: String,
     pub corrected: String,
@@ -466,6 +730,73 @@ pub async fn classify(
         overall_class,
     };
 
+    if let Some(server_candidates) = server_review_candidates_from_raw(
+        &state,
+        &body.recording_id,
+        &transcript,
+        &body.ai_output,
+        &body.user_kept,
+    )
+    .await
+    {
+        let learnable_count = server_candidates.iter().filter(|c| c.learnable).count();
+        if learnable_count > 0 {
+            let change_count = analyzer_output.changes.len();
+            info!(
+                "[classify] server raw learning judge returned {} candidate(s), learnable={} — local alias learning bypassed",
+                server_candidates.len(),
+                learnable_count
+            );
+            post_runtime_client_event(
+                state.clone(),
+                "classify_edit_result",
+                body.recording_id.clone(),
+                analyzer_output.overall_class.clone(),
+                hash_text(&body.ai_output),
+                hash_text(&body.user_kept),
+                serde_json::json!({
+                    "learned": false,
+                    "notify": false,
+                    "promoted_count": 0,
+                    "promoted_term_count": 0,
+                    "learned_email_count": learned_emails.len(),
+                    "queued_term_count": 0,
+                    "negative_count": negative_terms.len(),
+                    "review_candidate_count": server_candidates.len(),
+                    "change_count": change_count,
+                    "capture_method": body.capture_method,
+                    "source": "server_raw_learning_judge",
+                    "memory": {
+                        "accepted_terms": [],
+                        "accepted_aliases": [],
+                    },
+                }),
+            );
+            return (
+                StatusCode::OK,
+                Json(ClassifyResponse {
+                    class: analyzer_output.overall_class,
+                    reason: format!(
+                        "server learning judge identified {} review candidate(s)",
+                        server_candidates.len()
+                    ),
+                    pending_id: None,
+                    learned: false,
+                    notify: false,
+                    promoted_count: 0,
+                    is_repeat: false,
+                    promoted_terms: vec![],
+                    learned_emails,
+                    queued_terms: vec![],
+                    changes: analyzer_output.changes,
+                    ambiguous_terms,
+                    negative_terms,
+                    review_candidates: server_candidates,
+                }),
+            );
+        }
+    }
+
     // ── Codex token — only needed for embedding/meaning refresh, not classification
     let codex_token = {
         let pool_tok = state.pool.clone();
@@ -492,6 +823,8 @@ pub async fn classify(
     let mut review_candidates: Vec<ReviewCandidate> = Vec::new();
     let mut has_repeat = false;
     let mut learned = false;
+    let mut server_memory_terms: Vec<serde_json::Value> = Vec::new();
+    let mut server_memory_aliases: Vec<serde_json::Value> = Vec::new();
 
     for change in &analyzer_output.changes {
         // Build edit pair directly from the deterministic change (which already
@@ -633,7 +966,9 @@ pub async fn classify(
                     .as_ref()
                     .and_then(|existing| existing.term_type.as_deref())
                     .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| vocabulary::classify_term_type(canonical_for_policy));
+                    .unwrap_or_else(|| vocabulary::classify_term_type(canonical_for_policy))
+                    .to_string();
+                let term_type = term_type.as_str();
                 if existing_protected.is_none() && matches!(term_type, "phrase" | "other") {
                     info!(
                         "[classify] STT_ERROR skipped — not a proper noun (type={term_type}): {corrected:?}"
@@ -707,6 +1042,36 @@ pub async fn classify(
                     );
                     continue;
                 }
+
+                let proposed_direct_candidate = ReviewCandidate {
+                    original: original.to_string(),
+                    corrected: canonical_for_policy.to_string(),
+                    term_type: term_type.to_string(),
+                    learnable: true,
+                    tag: "local_direct_candidate".to_string(),
+                };
+                let Some(server_validated_candidate) = server_validate_direct_candidate(
+                    &state,
+                    &body.recording_id,
+                    &transcript,
+                    &body.ai_output,
+                    &body.user_kept,
+                    proposed_direct_candidate,
+                )
+                .await
+                else {
+                    info!(
+                        "[classify] STT_ERROR direct learn blocked — server LLM did not validate {:?} -> {:?}",
+                        original, canonical_for_policy
+                    );
+                    continue;
+                };
+                info!(
+                    "[classify] STT_ERROR direct learn server-validated: {:?} -> {:?} tag={}",
+                    server_validated_candidate.original,
+                    server_validated_candidate.corrected,
+                    server_validated_candidate.tag
+                );
 
                 // Single change path — decide auto-learn vs review
                 if existing_term.is_some() {
@@ -836,6 +1201,13 @@ pub async fn classify(
                     }
                 }
 
+                server_memory_terms.push(serde_json::json!({
+                    "term": canonical_term,
+                    "term_type": term_type,
+                    "weight": weight_bump,
+                    "source": "local_classify_accepted",
+                }));
+
                 // ── Update meaning if provided ───────────────────────────
                 if let Some(ref meaning) = change.meaning {
                     if !meaning.trim().is_empty() {
@@ -891,6 +1263,16 @@ pub async fn classify(
                             "[classify] seeded {proactive} proactive distortion(s) for {canonical_term:?}"
                         );
                     }
+                    server_memory_aliases.push(serde_json::json!({
+                        "transcript_form": original,
+                        "correct_form": canonical_term,
+                        "edit_type": deterministic_pair
+                            .as_ref()
+                            .map(|pair| pair.edit_type.as_str())
+                            .unwrap_or("replace"),
+                        "term_type": term_type,
+                        "source": "local_classify_accepted",
+                    }));
                 } else {
                     info!(
                         "[classify] learned skipped protected term {canonical_term:?} without creating an empty alias"
@@ -976,6 +1358,22 @@ pub async fn classify(
     }
 
     let has_negatives = !negative_terms.is_empty();
+    if !review_candidates.is_empty() {
+        let local_count = review_candidates.len();
+        review_candidates = refine_review_candidates_with_server(
+            &state,
+            &body.recording_id,
+            &transcript,
+            &body.ai_output,
+            &body.user_kept,
+            review_candidates,
+        )
+        .await;
+        info!(
+            "[classify] server-refined review candidates: {local_count} -> {}",
+            review_candidates.len()
+        );
+    }
     let has_review = !review_candidates.is_empty();
 
     // Invalidate after any corrections, stt_replacements, or Tier 2 policy writes.
@@ -994,11 +1392,12 @@ pub async fn classify(
     }
     let notify = (learned && (promoted_count > 0 || policy_touched)) || !learned_emails.is_empty();
 
+    let change_count = analyzer_output.changes.len();
     info!(
         "[classify] {} overall={} changes={} promoted={} notify={} learned={} negatives={} review={}",
         body.recording_id,
         analyzer_output.overall_class,
-        analyzer_output.changes.len(),
+        change_count,
         promoted_count,
         notify,
         learned,
@@ -1006,14 +1405,38 @@ pub async fn classify(
         review_candidates.len(),
     );
 
+    if learned || notify || has_negatives || has_review || !queued_terms.is_empty() {
+        post_runtime_client_event(
+            state.clone(),
+            "classify_edit_result",
+            body.recording_id.clone(),
+            analyzer_output.overall_class.clone(),
+            hash_text(&body.ai_output),
+            hash_text(&body.user_kept),
+            serde_json::json!({
+                "learned": learned,
+                "notify": notify,
+                "promoted_count": promoted_count,
+                "promoted_term_count": promoted_terms.len(),
+                "learned_email_count": learned_emails.len(),
+                "queued_term_count": queued_terms.len(),
+                "negative_count": negative_terms.len(),
+                "review_candidate_count": review_candidates.len(),
+                "change_count": change_count,
+                "capture_method": body.capture_method,
+                "memory": {
+                    "accepted_terms": server_memory_terms,
+                    "accepted_aliases": server_memory_aliases,
+                },
+            }),
+        );
+    }
+
     (
         StatusCode::OK,
         Json(ClassifyResponse {
             class: analyzer_output.overall_class,
-            reason: format!(
-                "analyzer identified {} change(s)",
-                analyzer_output.changes.len()
-            ),
+            reason: format!("analyzer identified {} change(s)", change_count),
             pending_id: None,
             learned,
             notify,
@@ -2393,6 +2816,7 @@ fn refine_stt_pair_for_learning(
             context_around_kept_term(user_kept, &pair.correct_form, 3);
         pair.left_context = left_context;
         pair.right_context = right_context;
+        trim_common_source_edges(&mut pair);
         return Some(pair);
     }
 
@@ -2403,6 +2827,7 @@ fn refine_stt_pair_for_learning(
             context_around_kept_term(user_kept, &pair.correct_form, 3);
         pair.left_context = left_context;
         pair.right_context = right_context;
+        trim_common_source_edges(&mut pair);
 
         // If the user edit span was "Macobs mein" but the source side is a
         // common/filler word, this is evidence that a protected term was added,
@@ -2425,6 +2850,40 @@ fn refine_stt_pair_for_learning(
     }
 
     Some(pair)
+}
+
+fn trim_common_source_edges(pair: &mut DeterministicEditPair) {
+    if pair.edit_type != "replace" {
+        return;
+    }
+    let tokens = token_surfaces(&pair.variant_form);
+    if tokens.len() <= 1 {
+        return;
+    }
+
+    let mut start = 0usize;
+    let mut end = tokens.len();
+    while start < end && is_common_source_edge_token(&tokens[start]) {
+        start += 1;
+    }
+    while end > start && is_common_source_edge_token(&tokens[end - 1]) {
+        end -= 1;
+    }
+
+    if start == 0 && end == tokens.len() {
+        return;
+    }
+    if start >= end {
+        pair.variant_form.clear();
+        pair.edit_type = "insert".to_string();
+        return;
+    }
+
+    pair.variant_form = tokens[start..end].join(" ");
+}
+
+fn is_common_source_edge_token(token: &str) -> bool {
+    promotion_gate::is_common_word(token) || alias_safety::is_common_alias_source(token)
 }
 
 fn corrected_span_had_common_filler(original_span: &str, narrowed_term: &str) -> bool {
@@ -3108,6 +3567,29 @@ mod tests {
         assert_eq!(refined.correct_form, "Macobs");
         assert_eq!(refined.edit_type, "insert");
         assert_eq!(refined.right_context, vec!["mein", "data", "bhejo"]);
+    }
+
+    #[test]
+    fn refine_pair_trims_common_edge_from_source_span() {
+        let pool = mem_pool();
+        assert!(vocabulary::upsert(&pool, "u1", "Macobs", 1.0, "manual"));
+        let pair = DeterministicEditPair {
+            variant_form: "main Gops".to_string(),
+            correct_form: "Macobs".to_string(),
+            edit_type: "replace".to_string(),
+            left_context: vec![],
+            right_context: vec![],
+        };
+
+        let refined =
+            refine_stt_pair_for_learning(pair, &pool, "u1", "hello bhai Macobs ka IPO aa gaya kya")
+                .expect("protected term should survive");
+
+        assert_eq!(refined.variant_form, "Gops");
+        assert_eq!(refined.correct_form, "Macobs");
+        assert_eq!(refined.edit_type, "replace");
+        assert_eq!(refined.left_context, vec!["hello", "bhai"]);
+        assert_eq!(refined.right_context, vec!["ka", "IPO", "aa"]);
     }
 
     #[test]

@@ -13,6 +13,7 @@ mod enterprise_oauth;
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
 mod recovery; // crash-safe dictation audio capture + relaunch recovery
+mod server_runtime_stream;
 mod speaker_suppression;
 
 use std::io::{Read, Seek, SeekFrom};
@@ -20,12 +21,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures::{SinkExt, StreamExt};
 use serde::Serialize;
 use tauri::{
     Emitter, Manager, State,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
+use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use tokio_util::sync::CancellationToken;
 
 use backend::BackendEndpoint;
@@ -2029,6 +2032,103 @@ fn present_status_bar(app: tauri::AppHandle, reason: Option<String>) -> Result<(
     present_status_bar_native(&app, &reason, false)
 }
 
+fn start_runtime_notification_listener(app: tauri::AppHandle, ep: BackendEndpoint) {
+    tauri::async_runtime::spawn(async move {
+        let mut retry_delay = Duration::from_secs(5);
+        loop {
+            let config = match api::get_runtime_notification_config(&ep).await {
+                Ok(config) => config,
+                Err(e) => {
+                    tracing::debug!("[runtime-notify] notification config unavailable: {e}");
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(Duration::from_secs(60));
+                    continue;
+                }
+            };
+            let Some(ws_url) = config.notifications_ws_url else {
+                tracing::debug!(
+                    "[runtime-notify] notification config missing ws_url (no cloud token?)"
+                );
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            };
+            tracing::info!(
+                "[runtime-notify] notification config loaded; connecting to server notifications WS"
+            );
+
+            let socket = match connect_async(&ws_url).await {
+                Ok((socket, _)) => socket,
+                Err(e) => {
+                    tracing::warn!("[runtime-notify] WS connect failed: {e}");
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(Duration::from_secs(60));
+                    continue;
+                }
+            };
+            retry_delay = Duration::from_secs(5);
+            tracing::info!("[runtime-notify] notification WS connected");
+            let (mut sink, mut stream) = socket.split();
+            let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+
+            loop {
+                tokio::select! {
+                    _ = heartbeat.tick() => {
+                        let _ = sink.send(WsMessage::Text(serde_json::json!({"type":"ping"}).to_string())).await;
+                    }
+                    msg = stream.next() => {
+                        let Some(msg) = msg else { break };
+                        let Ok(msg) = msg else { break };
+                        let WsMessage::Text(text) = msg else { continue };
+                        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                            continue;
+                        };
+                        let Some(event_name) = value.get("type").and_then(serde_json::Value::as_str) else {
+                            continue;
+                        };
+                        if matches!(event_name, "notification.connected" | "pong") {
+                            tracing::debug!("[runtime-notify] server event {event_name}");
+                            continue;
+                        }
+                        if !is_status_bar_notification_event(event_name) {
+                            tracing::info!("[runtime-notify] ignored server event {event_name}");
+                            continue;
+                        }
+                        let payload = value
+                            .get("payload")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        tracing::info!("[runtime-notify] forwarding event {event_name} to status bar");
+                        let _ = present_status_bar_native(&app, event_name, false);
+                        if let Err(e) = app.emit(event_name, payload) {
+                            tracing::warn!("[runtime-notify] emit {event_name} failed: {e}");
+                        }
+                    }
+                }
+            }
+
+            tracing::warn!("[runtime-notify] notification WS disconnected; will reconnect");
+            tokio::time::sleep(retry_delay).await;
+        }
+    });
+}
+
+fn is_status_bar_notification_event(event_name: &str) -> bool {
+    matches!(
+        event_name,
+        "vocab-learned"
+            | "email-learned"
+            | "vocab-queued"
+            | "vocab-confirm"
+            | "vocab-review"
+            | "vocab-negative"
+            | "vocab-wrong-fixed"
+            | "retrain-status"
+            | "auto-update-ready"
+            | "message-polish-mode"
+            | "learning_saved"
+    )
+}
+
 #[tauri::command]
 fn set_status_bar_persistent(
     app: tauri::AppHandle,
@@ -3099,6 +3199,10 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
 
         let backend_for_pe = Arc::clone(&app.state::<BackendState>().0);
         let session_tx = app.state::<DeepgramSessionState>().0.clone();
+        let backend_ep_for_server_runtime = backend_for_pe.lock().ok().and_then(|g| g.clone());
+        let screen_context_for_server_runtime = app
+            .try_state::<ScreenContextState>()
+            .and_then(|ctx| ctx.0.lock().ok()?.clone());
         let echo_gate = app.try_state::<MeetingModeState>().and_then(|meeting| {
             if meeting.capture_enabled() {
                 Some(Arc::clone(&meeting.echo_gate))
@@ -3125,11 +3229,19 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 }
                 return;
             }
+            let server_runtime_mirror = backend_ep_for_server_runtime.and_then(|ep| {
+                server_runtime_stream::maybe_spawn_live_audio_mirror(
+                    recording_id.clone(),
+                    ep,
+                    screen_context_for_server_runtime,
+                )
+            });
             dg_stream::spawn_audio_bridge_with_echo_gate(
                 recording_id,
                 chunk_recv,
                 session_tx,
                 echo_gate,
+                server_runtime_mirror,
             );
         });
     } else {
@@ -3206,6 +3318,7 @@ fn do_finish_recording(
     let session_end = app
         .try_state::<RecordingSessionState>()
         .and_then(|session| session.end());
+    let client_run_id = session_end.as_ref().map(|(_, id)| id.clone());
     let session_tag = session_end
         .as_ref()
         .map(|(generation, id)| format!("id={id} generation={generation}"))
@@ -3438,6 +3551,7 @@ fn do_finish_recording(
             &back_arc2,
             wav,
             None,
+            client_run_id,
             pre_transcript,
             None,
             screen_context,
@@ -3672,6 +3786,7 @@ async fn recover_transcribe(ep: &BackendEndpoint, wav: Vec<u8>) -> Result<api::P
         None,
         None,
         None,
+        None,
         false,
         |_event: api::PolishEvent| {},
     )
@@ -3685,6 +3800,7 @@ async fn run_voice_polish_sse(
     back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
     wav: Vec<u8>,
     target_app: Option<String>,
+    client_run_id: Option<String>,
     pre_transcript: Option<dg_stream::StreamingTranscript>,
     repair_mode: Option<String>,
     screen_context: Option<String>,
@@ -3857,6 +3973,7 @@ async fn run_voice_polish_sse(
             &ep,
             wav,
             target_app,
+            client_run_id,
             Some(transcript.transcript),
             Some(transcript.meta),
             repair_mode,
@@ -3870,6 +3987,7 @@ async fn run_voice_polish_sse(
             &ep,
             wav,
             target_app,
+            client_run_id,
             None,
             None,
             repair_mode,
@@ -4559,6 +4677,7 @@ fn retry_recording_spawn(
             wav,
             None,
             None,
+            None,
             Some("preserve_recall".into()),
             None, // no screen context for re-polish
             &app2,
@@ -4764,7 +4883,7 @@ async fn confirm_batch(
     backend: State<'_, BackendState>,
     items: Vec<serde_json::Value>,
     recording_id: Option<String>,
-) -> Result<usize, String> {
+) -> Result<api::ConfirmBatchResponse, String> {
     let ep = get_endpoint(&backend)?;
     let pairs: Vec<(String, String)> = items
         .iter()
@@ -4777,11 +4896,12 @@ async fn confirm_batch(
     let result = api::confirm_batch(&ep, &pairs, recording_id.as_deref()).await?;
     let _ = app.emit("vocabulary-changed", ());
     tracing::info!(
-        "[confirm-batch] user confirmed {} term(s): {:?}",
+        "[confirm-batch] user confirmed {} term(s) server_owned={}: {:?}",
         result.learned_count,
+        result.server_owned,
         result.learned_terms,
     );
-    Ok(result.learned_count)
+    Ok(result)
 }
 
 #[tauri::command]
@@ -6722,6 +6842,8 @@ fn main() {
                         let ep  = handle.endpoint();
                         let ep2 = handle.endpoint();
                         let ep_recovery = handle.endpoint();
+                        let ep_notifications = handle.endpoint();
+                        let ep_runtime_ws = handle.endpoint();
                         if let Some(pid) = handle.pid() {
                             backend_guard::write_pid_file(pid);
                         }
@@ -6735,6 +6857,12 @@ fn main() {
                             *h = Some(handle);
                         }
                         tracing::info!("[main] backend daemon ready");
+
+                        start_runtime_notification_listener(
+                            app.handle().clone(),
+                            ep_notifications,
+                        );
+                        server_runtime_stream::start_persistent_runtime_connection(ep_runtime_ws);
 
                         // ── Crash recovery ─────────────────────────────────────
                         // If a previous run died mid-dictation, its audio is still on

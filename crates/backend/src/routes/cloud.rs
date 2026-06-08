@@ -45,6 +45,14 @@ pub async fn store_token(
             body.email.as_deref(),
         );
     }
+    let state2 = state.clone();
+    tokio::spawn(async move {
+        if let Err(err) =
+            crate::routes::runtime_credentials::sync_saved_provider_credentials(state2).await
+        {
+            tracing::warn!("[runtime-credentials] post-login vault sync failed: {err}");
+        }
+    });
     StatusCode::NO_CONTENT
 }
 

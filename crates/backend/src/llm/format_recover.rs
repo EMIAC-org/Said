@@ -166,7 +166,7 @@ fn is_email_stop_word(word: &str) -> bool {
             | "could" | "should" | "may" | "might" | "must" | "shall"
             // Hindi/Hinglish function words
             | "ko" | "ka" | "ki" | "ke" | "hai" | "ho" | "hain" | "tha"
-            | "the" | "thi" | "kya" | "kaise" | "kab" | "par" | "se"
+            | "thi" | "kya" | "kaise" | "kab" | "par" | "se"
             | "ne" | "bhi" | "toh" | "aur" | "lekin" | "yaar" | "bhai"
             | "mein" | "main" | "hum" | "tum" | "woh" | "yeh" | "ye"
             | "ab" | "jab" | "tab" | "sab" | "kuch" | "bahut" | "bohot"
@@ -175,7 +175,7 @@ fn is_email_stop_word(word: &str) -> bool {
             | "isko" | "usko" | "apna" | "apne" | "apni" | "unka"
             | "uska" | "iski" | "inhe" | "unhe" | "mera" | "tera"
             | "tumhara" | "hamara" | "diya" | "hua" | "liya" | "dena"
-            | "lena" | "raha" | "rahe" | "rahi" | "ek" | "do" | "teen"
+            | "lena" | "raha" | "rahe" | "rahi" | "ek" | "teen"
             | "please" | "kindly" | "check" | "open" | "see" | "look"
     )
 }

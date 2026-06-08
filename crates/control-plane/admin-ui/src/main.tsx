@@ -11,6 +11,8 @@ import { NewMeetingPage } from './pages/NewMeetingPage'
 import { TeamPage } from './pages/TeamPage'
 import { DesktopPage } from './pages/DesktopPage'
 import { VocabularyPage } from './pages/VocabularyPage'
+import { RuntimePage } from './pages/RuntimePage'
+import { RuntimeUserPage } from './pages/RuntimeUserPage'
 import { BugsPage } from './pages/BugsPage'
 import { DiagnosticsPage } from './pages/DiagnosticsPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -26,6 +28,13 @@ createRoot(document.getElementById('app')!).render(
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/onboarding" element={<OnboardingPage />} />
+          {/* Runtime is a self-contained mockup (no API calls) — viewable
+              without login. Move it under the guarded group when the data
+              feeder wave wires real /v1/runtime/admin endpoints. */}
+          <Route element={<Layout requireAuth={false} />}>
+            <Route path="runtime" element={<RuntimePage />} />
+            <Route path="runtime/users/:id" element={<RuntimeUserPage />} />
+          </Route>
           <Route element={<Layout />}>
             <Route index element={<DashboardPage />} />
             <Route path="meetings" element={<MeetingsPage />} />

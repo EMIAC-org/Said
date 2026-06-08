@@ -18,6 +18,8 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
+    install_rustls_crypto_provider();
+
     // ── Sentry — must init before the tracing subscriber so the panic hook
     //   it installs runs before any other panic handler. Held until main returns.
     let _sentry_guard = said_core::telemetry::init("airnote-backend");
@@ -89,10 +91,34 @@ async fn main() {
         default_user_id: std::sync::Arc::new(user_id.clone()),
         prefs_cache: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         lexicon_cache: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+        live_server_runtime_cache: std::sync::Arc::new(tokio::sync::RwLock::new(
+            std::collections::HashMap::new(),
+        )),
         http_client,
         watchdog: wd.clone(),
     };
     said_backend::routes::vocabulary::spawn_prompt_artifact_repair(state.clone());
+    {
+        let state2 = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            match said_backend::routes::runtime_credentials::sync_saved_provider_credentials(state2)
+                .await
+            {
+                Ok(summary) => {
+                    if summary.synced > 0 || summary.failed > 0 {
+                        info!(
+                            "[runtime-credentials] startup vault sync synced={} failed={} reason={:?}",
+                            summary.synced, summary.failed, summary.reason
+                        );
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("[runtime-credentials] startup vault sync failed: {err}");
+                }
+            }
+        });
+    }
 
     #[cfg(feature = "local-stt")]
     {
@@ -195,6 +221,10 @@ async fn main() {
         .expect("server error");
 
     info!("airnote-backend stopped");
+}
+
+fn install_rustls_crypto_provider() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
 #[cfg(target_os = "macos")]

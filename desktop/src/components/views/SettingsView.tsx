@@ -3,7 +3,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { getVersion } from "@tauri-apps/api/app";
 import {
-  Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap,
+  Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap, Cloud,
   Languages, MessageSquareText, Loader2, RefreshCw,
   Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, Download, Activity,
   RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown, Power,
@@ -1766,6 +1766,49 @@ export function SettingsView({
                 );
               })}
             </div>
+          </div>
+
+          <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+
+          <div className="px-5 py-4">
+            <div className="flex items-center gap-4">
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
+                style={{ background: "hsl(var(--surface-4))" }}
+              >
+                <Cloud size={16} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-medium text-foreground">Server polish runtime</p>
+                <p className="text-[12px] text-muted-foreground mt-0.5">
+                  Keeps Deepgram on this Mac, then sends the finished transcript to airnote.emiactech.com for polish.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={!!prefs?.server_runtime_enabled}
+                onClick={() => void patch({ server_runtime_enabled: !prefs?.server_runtime_enabled })}
+                className="relative w-11 h-6 rounded-full transition-colors shrink-0"
+                style={{
+                  background: prefs?.server_runtime_enabled
+                    ? "hsl(var(--primary))"
+                    : "hsl(var(--surface-4))",
+                }}
+              >
+                <span
+                  className="absolute top-1 w-4 h-4 rounded-full transition-transform"
+                  style={{
+                    left: 4,
+                    transform: prefs?.server_runtime_enabled
+                      ? "translateX(20px)"
+                      : "translateX(0)",
+                    background: "hsl(var(--foreground))",
+                  }}
+                />
+              </button>
+            </div>
+
           </div>
         </Section>
 

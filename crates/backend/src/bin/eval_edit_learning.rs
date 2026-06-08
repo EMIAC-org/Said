@@ -188,6 +188,7 @@ async fn main() -> anyhow::Result<()> {
         default_user_id: Arc::new(user_id.clone()),
         prefs_cache: Arc::new(RwLock::new(None)),
         lexicon_cache: Arc::new(RwLock::new(None)),
+        live_server_runtime_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
         http_client: reqwest::Client::builder()
             .pool_max_idle_per_host(2)
             .pool_idle_timeout(Duration::from_secs(60))

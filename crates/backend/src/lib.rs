@@ -6,6 +6,7 @@ use axum::{
     routing::{get, patch, post},
 };
 use reqwest::Client;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -90,6 +91,7 @@ pub async fn invalidate_prefs_cache(cache: &PrefsCache) {
 // TTL = 60 s; invalidated immediately on any write (classify / feedback routes).
 
 const LEXICON_CACHE_TTL: Duration = Duration::from_secs(60);
+const LIVE_SERVER_RUNTIME_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Clone)]
 pub struct CachedLexicon {
@@ -99,6 +101,24 @@ pub struct CachedLexicon {
 }
 
 pub type LexiconCache = Arc<RwLock<Option<CachedLexicon>>>;
+
+#[derive(Clone, Debug)]
+pub struct LiveServerRuntimeLatency {
+    pub stt: i64,
+    pub polish: i64,
+    pub total: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct LiveServerRuntimeResult {
+    pub transcript: String,
+    pub output: String,
+    pub model_used: String,
+    pub latency_ms: LiveServerRuntimeLatency,
+    pub stored_at: Instant,
+}
+
+pub type LiveServerRuntimeCache = Arc<RwLock<HashMap<String, LiveServerRuntimeResult>>>;
 
 /// Read corrections + stt_replacements from cache, or SQLite on miss.
 /// On a miss, both reads run in parallel on blocking threads.
@@ -148,6 +168,29 @@ pub async fn invalidate_lexicon_cache(cache: &LexiconCache) {
     tracing::info!("[lexicon-cache] invalidated");
 }
 
+pub async fn put_live_server_runtime_result(
+    cache: &LiveServerRuntimeCache,
+    client_run_id: String,
+    result: LiveServerRuntimeResult,
+) {
+    let mut guard = cache.write().await;
+    guard.retain(|_, entry| entry.stored_at.elapsed() < LIVE_SERVER_RUNTIME_TTL);
+    guard.insert(client_run_id, result);
+}
+
+pub async fn take_live_server_runtime_result(
+    cache: &LiveServerRuntimeCache,
+    client_run_id: &str,
+) -> Option<LiveServerRuntimeResult> {
+    let mut guard = cache.write().await;
+    guard.retain(|_, entry| entry.stored_at.elapsed() < LIVE_SERVER_RUNTIME_TTL);
+    let result = guard.remove(client_run_id)?;
+    if result.stored_at.elapsed() >= LIVE_SERVER_RUNTIME_TTL {
+        return None;
+    }
+    Some(result)
+}
+
 // ── Application state ─────────────────────────────────────────────────────────
 
 /// Tracks how many fire-and-forget background tasks (embedding, meaning,
@@ -177,6 +220,8 @@ pub struct AppState {
     pub prefs_cache: PrefsCache,
     /// Lexicon hot-cache — corrections + stt_replacements together.
     pub lexicon_cache: LexiconCache,
+    /// Short-lived cache of live server-runtime results keyed by recording/session id.
+    pub live_server_runtime_cache: LiveServerRuntimeCache,
     /// Shared HTTP client — keeps TCP/TLS connections alive across all requests.
     pub http_client: Client,
     /// Watchdog health state — shared with the bare-thread watchdog.
@@ -237,6 +282,20 @@ pub fn router_with_state(state: AppState) -> Router {
     let authenticated = Router::new()
         .route("/v1/pre-embed", post(routes::pre_embed::handler))
         .route("/v1/voice/polish", post(routes::voice::polish))
+        .route("/v1/runtime/live/config", get(routes::runtime_live::config))
+        .route(
+            "/v1/runtime/notifications/config",
+            get(routes::runtime_live::notifications_config),
+        )
+        .route(
+            "/v1/runtime/credentials/sync",
+            post(routes::runtime_credentials::sync),
+        )
+        .route(
+            "/v1/runtime/live/result",
+            post(routes::runtime_live::cache_result),
+        )
+        .route("/v1/runtime/live/ws", get(routes::runtime_live::ws))
         .route(
             "/v1/voice/polish-transcript",
             post(routes::voice::polish_transcript),
@@ -399,6 +458,7 @@ pub fn router() -> Router {
         default_user_id: Arc::new(user_id),
         prefs_cache: Arc::new(RwLock::new(None)),
         lexicon_cache: Arc::new(RwLock::new(None)),
+        live_server_runtime_cache: Arc::new(RwLock::new(HashMap::new())),
         http_client,
         watchdog: wd.clone(),
     };

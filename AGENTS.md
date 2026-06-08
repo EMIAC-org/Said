@@ -201,11 +201,18 @@ Said
 | URLs & Access | `Kz2kdSj4to19vVxqbSGlx9HVgFf` | `DhHdwfy0aiBOoAkL68OlqwX0ggd` |
 | Reviews & MoMs | `ZApkdhSbpo83jVxhVYWl6t5wgvc` | `Hh5Zw6GKgixy4vku4bKlCM6Gg6g` |
 | Said — Weekly Updates (parent) | `I6TMdmYLForup1x6KTCl2KUngJq` | `E62IweE40i6z0WkvDBNloyVngwc` |
+| Active Plans | `MUSjdE7ydoiG3yxS8npl7z4ngah` | `J2uAwNDJUixmaTkfRAllViZ0gkc` |
+| Server-Side Runtime Migration & Unification | `GDnRdAhIMo7L0JxN75ol50u1gDd` | `Z5P5w1pItiGvXaknRrzlPBcQg5b` |
+| Server-Side Runtime Migration & Unification — Plan | `J3lRdhjYHosmefxBZXGl8alYgqh` | `L06iw3hxGiqupxkH0m5lLH9Wguc` |
+| Server-Side Runtime Migration & Unification — Progress | `KRZUdtKCOobJ3xxxnRTlSecegCd` | `S10iwUlKxiPr4RkUy9ClBWO2gxd` |
+| Server-Side Runtime Migration & Unification — Updates | `RWqqdrJvboVLhaxUCwWl5iPZgQd` | `SAugw2LMYiOfPeknt5LlrM9Bgec` |
+| Server-Side Runtime Migration & Unification — References | `IGyxdeMXBoCZRxxbPKTlCgwrgKZ` | `VqhpwHYMbiKwqTkocj5lRlWygYc` |
 | Bug: Status Bar + Hang Fixes | `Z54Id6iGCoCJpwxT4Zcldez9gTg` | `VKZcwT45yinWx9kjZmmlqsQOgUh` |
 | AGENTS.md | `FuKWd2RZDow8mcx3MvCl5wvygNc` | `RNFVwgB2biyXqbknUa2lShSDgkc` |
 | Said — References (parent) | `SvH9d91uookUiFx9NVWl9JXGgce` | `QwyRwm2L8iBfKEkpA5ulfSa6gyc` |
 | Enterprise Model | `Zl40dVev0oN1ndx1s7BlR0t8gXb` | `Z6LywFsFziSzfAk7ZPol72Xvgyc` |
 | Enterprise Plan | `MEqKdyP0IoxvSQxXX9LlaPNMgXb` | `AtfxwQWHRiq4lzk3NnjlHNxngag` |
+| Prompting Small LLMs for Faithful Dictation | `JlP9dbMkdoCNyNxRJA6l0lp2gmr` | `Yy6bwFgNeiSwFUkDPArlFxalgTb` |
 
 **Wiki space ID:** `7635896570625396443` (Tech Hub)
 

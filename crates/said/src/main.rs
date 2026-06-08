@@ -114,6 +114,8 @@ struct RunnerState {
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
+    install_rustls_crypto_provider();
+
     setup_logging()?;
     let cli = Cli::parse();
     let ctx = open_ctx()?;
@@ -131,6 +133,10 @@ async fn main() -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+fn install_rustls_crypto_provider() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
 fn setup_logging() -> Result<(), String> {

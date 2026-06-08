@@ -31,10 +31,13 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                             jwt_secret: String::new(),
                         },
                         hub: crate::meeting_hub::MeetingHub::new(db.clone()),
+                        notifications: crate::notification_hub::NotificationHub::new(),
                         deepgram_api_key: String::new(),
+                        groq_api_key: String::new(),
                         diagnostics_rate_limit:
                             routes::diagnostics::DiagnosticsRateLimiter::default(),
                         divo_base_url: String::new(),
+                        runtime_credentials_key: String::new(),
                     };
                     match routes::vocab::aggregate_all_orgs(&state).await {
                         Ok((terms, aliases)) => {
