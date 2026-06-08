@@ -1,0 +1,195 @@
+import AirNoteShared
+import Combine
+import Foundation
+import UIKit
+
+struct DictationResult: Equatable {
+    var transcript: String
+    var polished: String
+    var latencyMS: Int
+
+    var displayText: String {
+        let trimmed = polished.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? transcript : trimmed
+    }
+}
+
+/// Drives an in-app dictation: requests mic → opens the runtime session →
+/// streams 16 kHz audio to the server → surfaces live transcript + polished
+/// output. This is the app's primary, fully-working dictation surface.
+@MainActor
+final class DictationController: ObservableObject {
+    enum Phase: Equatable {
+        case idle
+        case preparing
+        case recording
+        case processing
+        case completed
+        case failed
+        case micDenied
+        case unavailable   // server has no provider credentials yet
+    }
+
+    @Published private(set) var phase: Phase = .idle
+    @Published private(set) var interim = ""
+    @Published private(set) var polishPreview = ""
+    @Published private(set) var level: Float = 0
+    @Published private(set) var lastLatencyMS: Int?
+    @Published private(set) var errorMessage: String?
+    @Published private(set) var result: DictationResult?
+
+    // Strong reference: the controller is owned by a transient view while the
+    // environment lives for the whole app, so this never creates a cycle and is
+    // safe to touch from async stream callbacks.
+    private let env: AppEnvironment
+    private let streamer = VoiceStreamingClient()
+    private var session: MobileSessionResponse?
+    private var runID = ""
+
+    init(env: AppEnvironment) {
+        self.env = env
+        streamer.onUpdate = { [weak self] update in
+            Task { @MainActor in self?.handle(update) }
+        }
+    }
+
+    var isBusy: Bool {
+        switch phase {
+        case .preparing, .recording, .processing: return true
+        default: return false
+        }
+    }
+
+    var isRecording: Bool { phase == .recording }
+
+    func toggle() async {
+        switch phase {
+        case .recording:
+            await stop()
+        case .idle, .completed, .failed, .micDenied, .unavailable:
+            await start()
+        case .preparing, .processing:
+            break
+        }
+    }
+
+    func start() async {
+        guard !isBusy else { return }
+        errorMessage = nil
+        result = nil
+        interim = ""
+        polishPreview = ""
+        phase = .preparing
+
+        // Just-in-time microphone permission (Wispr-style: ask at first use).
+        let granted = await env.permissions.requestMic()
+        guard granted else {
+            phase = .micDenied
+            errorMessage = "Enable microphone access in Settings to dictate."
+            return
+        }
+
+        runID = RequestId.make()
+        let request = MobileSessionRequest(
+            clientRequestID: runID,
+            deviceID: AppInfo.deviceID,
+            languageHint: env.outputLanguage == "english" ? .en : .hinglish,
+            style: .work,
+            keyboardContext: KeyboardContext(beforeText: "", afterText: "", selectedText: "", hostAppLabel: "AirNote", fieldHint: "app"),
+            surface: .iosActionButton
+        )
+
+        do {
+            let session = try await env.gateway.createSession(request)
+            self.session = session
+            try await streamer.start(session: session, config: env.dictationConfig(runID: runID))
+            phase = .recording
+            env.track(.audioStarted)
+        } catch let error as VoiceStreamError {
+            failOrUnavailable(error.isCredentialMissing, message: error.message)
+        } catch let error as GatewayError {
+            if error.isUnauthorized {
+                phase = .idle
+                env.signOut()
+                return
+            }
+            failOrUnavailable(error.isCredentialMissing, message: error.userMessage)
+        } catch {
+            failOrUnavailable(false, message: "Couldn't start dictation. Try again.")
+        }
+    }
+
+    func stop() async {
+        guard phase == .recording else { return }
+        phase = .processing
+        env.track(.audioStopped)
+        await streamer.stop()
+    }
+
+    func cancel() async {
+        await streamer.cancel()
+        reset()
+    }
+
+    func reset() {
+        phase = .idle
+        interim = ""
+        polishPreview = ""
+        result = nil
+        errorMessage = nil
+        level = 0
+    }
+
+    private func failOrUnavailable(_ unavailable: Bool, message: String) {
+        if unavailable {
+            phase = .unavailable
+            errorMessage = "Dictation isn't available on this workspace yet. It'll work automatically once the workspace is set up."
+        } else {
+            phase = .failed
+            errorMessage = message
+        }
+    }
+
+    private func handle(_ update: VoiceStreamUpdate) {
+        switch update {
+        case .level(let value):
+            level = value
+        case .status:
+            if phase == .recording { /* keep */ }
+        case .interimTranscript(let text):
+            interim = text
+        case .finalTranscript(let text):
+            interim = text
+            if phase == .recording { phase = .processing }
+        case .polishStarted:
+            polishPreview = ""
+            phase = .processing
+        case .polishDelta(let token):
+            polishPreview += token
+            phase = .processing
+        case .final(let final):
+            finish(transcript: final.transcript, polished: final.polished, latencyMS: final.latencyMS)
+        case .done:
+            if phase != .completed, !polishPreview.isEmpty {
+                finish(transcript: interim, polished: polishPreview, latencyMS: lastLatencyMS ?? 0)
+            }
+        case .error(let error):
+            level = 0
+            failOrUnavailable(error.isCredentialMissing, message: error.message)
+        case .sessionReady, .guardWarning:
+            break
+        }
+    }
+
+    private func finish(transcript: String, polished: String, latencyMS: Int) {
+        let value = DictationResult(transcript: transcript, polished: polished, latencyMS: latencyMS)
+        result = value
+        polishPreview = polished
+        lastLatencyMS = latencyMS
+        level = 0
+        phase = .completed
+        UIPasteboard.general.string = value.displayText
+        // The server persists completed runtime sessions; pull the latest history.
+        Task { await env.refreshHistory() }
+    }
+}

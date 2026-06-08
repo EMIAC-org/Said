@@ -1,3 +1,4 @@
-// The $() trick preserves the final URL as http://... in xcconfig values.
-AIRNOTE_GATEWAY_BASE_URL = http:/$()/192.168.1.142:3100
-AIRNOTE_USE_MOCK_GATEWAY = NO
+// The $() trick preserves the final URL as https://... in xcconfig values.
+// Debug points at the production gateway so the app is always wired to the real
+// backend. To test against a local server, override AIRNOTE_GATEWAY_BASE_URL.
+AIRNOTE_GATEWAY_BASE_URL = https:/$()/airnote.emiactech.com

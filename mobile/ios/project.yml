@@ -34,6 +34,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.emiac.airnote.ios.shared
         GENERATE_INFOPLIST_FILE: YES
         SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
 
   AirNoteKeyboard:
     type: app-extension
@@ -66,6 +67,19 @@ targets:
         CODE_SIGN_ENTITLEMENTS: AirNoteApp/Resources/AirNoteApp.entitlements
         INFOPLIST_FILE: AirNoteApp/Resources/Info.plist
 
+  AirNoteUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: AirNoteUITests
+    dependencies:
+      - target: AirNote
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.emiac.airnote.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: AirNote
+
 schemes:
   AirNote:
     build:
@@ -77,6 +91,8 @@ schemes:
       config: Debug
     test:
       config: Debug
+      targets:
+        - AirNoteUITests
     archive:
       config: Release
 

@@ -97,8 +97,8 @@ final class RecordingPadView: UIView {
         title.text = titleText
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let styleChip = makeChip("Work")
-        let languageChip = makeChip("Hinglish")
+        let styleChip = makeChip(SharedStore.tonePreset.capitalized)
+        let languageChip = makeChip(SharedStore.outputLanguage.capitalized)
 
         let row = UIStackView(arrangedSubviews: [icon, title, UIView(), styleChip, languageChip])
         row.axis = .horizontal
@@ -341,7 +341,7 @@ final class RecordingPadView: UIView {
         case .inserted: return "Inserted"
         case .staleSession: return "Session expired"
         case .needsFullAccess: return "Full Access needed"
-        case .needsMainAppSession: return "Start AirNote Session"
+        case .needsMainAppSession: return "Open AirNote"
         case .unsupportedSecureField: return "Secure field"
         case .error: return "AirNote needs attention"
         default: return "AirNote Keyboard"
@@ -350,7 +350,8 @@ final class RecordingPadView: UIView {
 
     private var subtitleText: String {
         switch state {
-        case .ready: return "Style: Work - Hinglish"
+        case .ready: return "\(SharedStore.tonePreset.capitalized) · \(SharedStore.outputLanguage.capitalized)"
+        case .needsMainAppSession: return "Open AirNote and sign in to dictate."
         case .recording: return "Speak naturally. Tap stop when done."
         case .processing(let phase): return phase
         case .insertReady: return "Review, insert, copy, or save."
@@ -450,7 +451,7 @@ final class RecordingPadView: UIView {
         case .needsFullAccess:
             return "Full Access is off. Manual typing still works; turn it on for cloud dictation and polish."
         case .needsMainAppSession:
-            return "Start AirNote Session in the app before recording from the keyboard."
+            return "Open AirNote and sign in once — then dictate from the keyboard in any app."
         case .staleSession:
             return "Session expired. Restart AirNote before recording again."
         case .unsupportedSecureField:

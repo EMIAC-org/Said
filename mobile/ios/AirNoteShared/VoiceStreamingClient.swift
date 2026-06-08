@@ -69,6 +69,65 @@ public struct VoiceStreamError: Error, Equatable {
         self.retryable = retryable
         self.message = message
     }
+
+    /// True when the server reported it has no provider credentials provisioned.
+    public var isCredentialMissing: Bool {
+        GatewayError.credentialMissingCodes.contains(code)
+    }
+}
+
+/// Parameters sent with `voice.start` so the server runs STT/polish with the
+/// user's chosen model, output language, and personal vocab hints.
+public struct VoiceStreamConfig: Equatable {
+    public var runID: String?
+    public var selectedModel: String
+    public var outputLanguage: String
+    public var safeVocabTerms: [String]
+    public var screenContext: String?
+    public var platform: String
+    public var appVersion: String
+
+    public init(
+        runID: String? = nil,
+        selectedModel: String = "fast",
+        outputLanguage: String = "hinglish",
+        safeVocabTerms: [String] = [],
+        screenContext: String? = nil,
+        platform: String = "ios",
+        appVersion: String = "0.1.0"
+    ) {
+        self.runID = runID
+        self.selectedModel = selectedModel
+        self.outputLanguage = outputLanguage
+        self.safeVocabTerms = safeVocabTerms
+        self.screenContext = screenContext
+        self.platform = platform
+        self.appVersion = appVersion
+    }
+
+    func startPayloadJSON(sampleRate: Int) -> String {
+        var payload: [String: Any] = [
+            "type": "voice.start",
+            "mode": "normal_voice",
+            "selected_model": selectedModel,
+            "output_language": outputLanguage,
+            "platform": platform,
+            "app_version": appVersion,
+            "audio": ["sample_rate": sampleRate],
+        ]
+        if let runID, !runID.isEmpty { payload["run_id"] = runID }
+        if !safeVocabTerms.isEmpty { payload["safe_vocab_terms"] = Array(safeVocabTerms.prefix(30)) }
+        if let screenContext, !screenContext.isEmpty {
+            payload["screen_context"] = String(screenContext.prefix(500))
+        }
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: payload),
+            let json = String(data: data, encoding: .utf8)
+        else {
+            return "{\"type\":\"voice.start\"}"
+        }
+        return json
+    }
 }
 
 #if os(iOS)
@@ -103,7 +162,7 @@ public final class VoiceStreamingClient {
         self.audioSession = audioSession
     }
 
-    public func start(session: MobileSessionResponse) async throws {
+    public func start(session: MobileSessionResponse, config: VoiceStreamConfig = VoiceStreamConfig()) async throws {
         guard !isRecording else { return }
         guard let voiceWSURL = session.voiceWSURL else {
             throw VoiceStreamError(code: "missing_voice_ws_url", retryable: true, message: "Runtime session is missing its voice socket.")
@@ -121,7 +180,7 @@ public final class VoiceStreamingClient {
         }
 
         do {
-            try await task.send(.string("{\"type\":\"voice.start\"}"))
+            try await task.send(.string(config.startPayloadJSON(sampleRate: 16_000)))
             try await startAudioEngine()
         } catch {
             await cancel()
@@ -260,7 +319,10 @@ public final class VoiceStreamingClient {
         while !Task.isCancelled {
             do {
                 guard let message = try await currentWebSocket()?.receive() else {
-                    if markTerminalEvent() {
+                    // The socket is only nil here because stop()/cancel() cleared
+                    // it. If we're stopping or already finished, stay silent — do
+                    // NOT report a spurious success for a cancelled recording.
+                    if !shouldSuppressDisconnectError, markTerminalEvent() {
                         emit(.done)
                     }
                     return
@@ -523,7 +585,7 @@ public final class VoiceStreamingClient {
 
     public init(baseURL: URL = BuildConfig.gatewayBaseURL, urlSession: URLSession = .shared) {}
 
-    public func start(session: MobileSessionResponse) async throws {
+    public func start(session: MobileSessionResponse, config: VoiceStreamConfig = VoiceStreamConfig()) async throws {
         throw VoiceStreamError(
             code: "ios_audio_unavailable",
             retryable: false,

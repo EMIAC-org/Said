@@ -4,8 +4,6 @@
 <dict>
 	<key>AIRNOTE_GATEWAY_BASE_URL</key>
 	<string>$(AIRNOTE_GATEWAY_BASE_URL)</string>
-	<key>AIRNOTE_USE_MOCK_GATEWAY</key>
-	<string>$(AIRNOTE_USE_MOCK_GATEWAY)</string>
 	<key>CFBundleDisplayName</key>
 	<string>AirNote Keyboard</string>
 	<key>CFBundleExecutable</key>
@@ -22,6 +20,8 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>AirNote Keyboard records only while you hold the mic so it can transcribe and polish your dictation.</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>

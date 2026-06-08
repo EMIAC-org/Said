@@ -31,6 +31,9 @@ public final class GatewayAuthTokenBox {
         if let data = try? encoder.encode(account) {
             try? store.write(data, for: Key.account)
         }
+        // Mirror into the App Group so the keyboard extension can stream directly.
+        SharedStore.accessToken = accessToken
+        SharedStore.accountEmail = account.email
     }
 
     public func clear() {
@@ -38,6 +41,7 @@ public final class GatewayAuthTokenBox {
         account = nil
         try? store.delete(Key.accessToken)
         try? store.delete(Key.account)
+        SharedStore.clearAuth()
     }
 
     public static func savedAccessToken(store: SecureStore = KeychainSecureStore()) -> String? {
@@ -298,6 +302,26 @@ public struct MobileSessionResponse: Codable, Equatable {
     public var batchURL: String?
     public var maxRecordingSeconds: Int?
 
+    public init(
+        sessionID: String,
+        sessionToken: String,
+        expiresAt: Date,
+        streamingEnabled: Bool,
+        currentVocabHash: String,
+        voiceWSURL: String? = nil,
+        batchURL: String? = nil,
+        maxRecordingSeconds: Int? = nil
+    ) {
+        self.sessionID = sessionID
+        self.sessionToken = sessionToken
+        self.expiresAt = expiresAt
+        self.streamingEnabled = streamingEnabled
+        self.currentVocabHash = currentVocabHash
+        self.voiceWSURL = voiceWSURL
+        self.batchURL = batchURL
+        self.maxRecordingSeconds = maxRecordingSeconds
+    }
+
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case sessionToken = "session_token"
@@ -453,16 +477,76 @@ public struct RuntimeLearningConfirmResult: Codable, Equatable {
     }
 }
 
+/// Partial update for runtime settings. Only non-nil fields are sent (PATCH semantics).
+public struct RuntimeSettingsPatch: Codable, Equatable {
+    public var selectedModel: String?
+    public var outputLanguage: String?
+    public var tonePreset: String?
+    public var autoPaste: Bool?
+    public var editCapture: Bool?
+    public var learningEnabled: Bool?
+    public var messagePolishMode: Bool?
+
+    public init(
+        selectedModel: String? = nil,
+        outputLanguage: String? = nil,
+        tonePreset: String? = nil,
+        autoPaste: Bool? = nil,
+        editCapture: Bool? = nil,
+        learningEnabled: Bool? = nil,
+        messagePolishMode: Bool? = nil
+    ) {
+        self.selectedModel = selectedModel
+        self.outputLanguage = outputLanguage
+        self.tonePreset = tonePreset
+        self.autoPaste = autoPaste
+        self.editCapture = editCapture
+        self.learningEnabled = learningEnabled
+        self.messagePolishMode = messagePolishMode
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case selectedModel = "selected_model"
+        case outputLanguage = "output_language"
+        case tonePreset = "tone_preset"
+        case autoPaste = "auto_paste"
+        case editCapture = "edit_capture"
+        case learningEnabled = "learning_enabled"
+        case messagePolishMode = "message_polish_mode"
+    }
+}
+
+/// A learned-memory event surfaced on the Vocabulary screen (from GET /v1/runtime/learning-events).
+public struct RuntimeLearningEvent: Codable, Equatable, Identifiable {
+    public var id: String
+    public var eventType: String
+    public var classification: String?
+    public var createdAt: Date
+    /// Terms learned by this event, extracted from the payload where present.
+    public var learnedTerms: [String]
+
+    public init(id: String, eventType: String, classification: String?, createdAt: Date, learnedTerms: [String]) {
+        self.id = id
+        self.eventType = eventType
+        self.classification = classification
+        self.createdAt = createdAt
+        self.learnedTerms = learnedTerms
+    }
+}
+
 public protocol MobileGatewayClient {
     func bootstrap() async throws -> MobileBootstrap
     func authenticate(_ request: MobileAuthRequest) async throws -> MobileAuthResponse
     func restoreSession(token: String) async throws -> MobileAuthResponse
     func runtimeStatus() async throws -> RuntimeStatusResponse
     func runtimeSettings() async throws -> RuntimeSettingsResponse
+    func updateSettings(_ patch: RuntimeSettingsPatch) async throws -> RuntimeSettingsResponse
     func createSession(_ request: MobileSessionRequest) async throws -> MobileSessionResponse
     func dictateBatch(audio: Data, sessionID: String?, deviceID: String, languageHint: LanguageHint, style: DictationStyle) async throws -> MobileDictationResponse
     func listHistory(limit: Int) async throws -> [RuntimeHistoryItem]
     func deleteHistory(id: String) async throws
+    func listLearningEvents(limit: Int) async throws -> [RuntimeLearningEvent]
+    func addVocabulary(terms: [String], aliases: [(heard: String, correct: String)]) async throws -> RuntimeLearningConfirmResult
     func analyzeEdit(recordingID: String, transcript: String, aiOutput: String, userKept: String) async throws -> RuntimeLearningAnalysis
     func confirmLearning(recordingID: String, items: [RuntimeLearningCandidate]) async throws -> RuntimeLearningConfirmResult
     func sendEvent(_ event: MobileEvent) async throws
@@ -471,165 +555,76 @@ public protocol MobileGatewayClient {
 public typealias GatewayAuthTokenProvider = () -> String?
 
 public enum GatewayEnvironment {
+    /// Always returns the live HTTP gateway client. The app talks only to the
+    /// real server backend — there is no mock path in shipping builds.
     public static func makeClient(authTokenProvider: GatewayAuthTokenProvider? = nil) -> any MobileGatewayClient {
-        if BuildConfig.useMockGateway {
-            return MockMobileGatewayClient()
-        }
-        return HTTPMobileGatewayClient(
+        HTTPMobileGatewayClient(
             baseURL: BuildConfig.gatewayBaseURL,
-            authTokenProvider: authTokenProvider ?? { GatewayAuthTokenBox.savedAccessToken() }
+            authTokenProvider: authTokenProvider ?? { GatewayAuthTokenBox.savedAccessToken() ?? SharedStore.accessToken }
         )
     }
 }
 
-public struct MockMobileGatewayClient: MobileGatewayClient {
+#if DEBUG
+/// SwiftUI `#Preview`-only client. Returns small, neutral placeholder values so
+/// canvas previews render without a network. Never used in a running app build.
+public struct PreviewMobileGatewayClient: MobileGatewayClient {
     public init() {}
 
     public func bootstrap() async throws -> MobileBootstrap {
         MobileBootstrap(
             schema: "airnote.mobile.bootstrap.v1",
-            gatewayRegion: "mock",
+            gatewayRegion: "preview",
             minSupportedIOSVersion: "17.0",
             minSupportedAppVersion: "0.1.0",
-            features: [
-                "ios_keyboard": true,
-                "ios_action_button": true,
-                "streaming_voice": true,
-                "batch_fallback": true,
-                "explicit_learning": true
-            ],
+            features: ["ios_keyboard": true, "streaming_voice": true],
             limits: MobileLimits(maxRecordingSeconds: BuildConfig.maxRecordingSeconds, maxAudioBytes: 15_728_640)
         )
     }
 
     public func authenticate(_ request: MobileAuthRequest) async throws -> MobileAuthResponse {
-        MobileAuthResponse(
-            token: "mock-access-token",
-            account: MobileAccount(id: "mock-account", email: request.email, licenseTier: "free"),
-            refreshToken: nil,
-            policy: MobilePolicy(
-                mobileEnabled: true,
-                maxRecordingSeconds: BuildConfig.maxRecordingSeconds,
-                streamingEnabled: true,
-                audioRetentionSeconds: 0,
-                rawTextRetention: "none",
-                learningMode: "insert_first_learn_later",
-                allowTranscriptHistory: true
-            )
-        )
+        MobileAuthResponse(token: "preview", account: MobileAccount(id: "preview", email: request.email, licenseTier: "free"), refreshToken: nil, policy: nil)
     }
 
     public func restoreSession(token: String) async throws -> MobileAuthResponse {
-        MobileAuthResponse(
-            token: token,
-            account: MobileAccount(id: "mock-account", email: "anugra@airnote.preview", licenseTier: "free"),
-            refreshToken: nil,
-            policy: nil
-        )
+        MobileAuthResponse(token: token, account: MobileAccount(id: "preview", email: "you@example.com", licenseTier: "free"), refreshToken: nil, policy: nil)
     }
 
     public func runtimeStatus() async throws -> RuntimeStatusResponse {
-        RuntimeStatusResponse(
-            credentialEncryptionConfigured: true,
-            activeCredentialCount: 2,
-            runtimeSessionCount: 0,
-            learningEventCount: 0,
-            personalReplacementCount: 0,
-            personalVocabCount: 0,
-            personalAliasCount: 0,
-            activeEditPolicyCount: 0,
-            serverMemoryReady: false
-        )
+        RuntimeStatusResponse(credentialEncryptionConfigured: true, activeCredentialCount: 1, runtimeSessionCount: 4, learningEventCount: 2, personalReplacementCount: 1, personalVocabCount: 3, personalAliasCount: 1, activeEditPolicyCount: 0, serverMemoryReady: true)
     }
 
     public func runtimeSettings() async throws -> RuntimeSettingsResponse {
-        RuntimeSettingsResponse(
-            selectedModel: "fast",
-            outputLanguage: "hinglish",
-            tonePreset: "work",
-            autoPaste: true,
-            editCapture: true,
-            learningEnabled: true,
-            serverRuntimeEnabled: true,
-            serverAudioRuntimeEnabled: true,
-            messagePolishMode: true,
-            version: 1
-        )
+        RuntimeSettingsResponse(selectedModel: "fast", outputLanguage: "hinglish", tonePreset: "work", autoPaste: true, editCapture: true, learningEnabled: true, serverRuntimeEnabled: true, serverAudioRuntimeEnabled: true, messagePolishMode: true, version: 1)
+    }
+
+    public func updateSettings(_ patch: RuntimeSettingsPatch) async throws -> RuntimeSettingsResponse {
+        try await runtimeSettings()
     }
 
     public func createSession(_ request: MobileSessionRequest) async throws -> MobileSessionResponse {
-        MobileSessionResponse(
-            sessionID: "mock-ios-session",
-            sessionToken: "mock-session-token",
-            expiresAt: Date().addingTimeInterval(15 * 60),
-            streamingEnabled: true,
-            currentVocabHash: "mock-vocab-v1",
-            voiceWSURL: "/v1/runtime/voice/ws?token=mock-access-token",
-            batchURL: "/v1/runtime/voice/wav",
-            maxRecordingSeconds: BuildConfig.maxRecordingSeconds
-        )
+        MobileSessionResponse(sessionID: request.clientRequestID, sessionToken: "preview", expiresAt: Date().addingTimeInterval(1800), streamingEnabled: true, currentVocabHash: "preview", voiceWSURL: nil, batchURL: nil, maxRecordingSeconds: BuildConfig.maxRecordingSeconds)
     }
 
     public func dictateBatch(audio: Data, sessionID: String?, deviceID: String, languageHint: LanguageHint, style: DictationStyle) async throws -> MobileDictationResponse {
-        MobileDictationResponse(
-            requestID: RequestId.make(),
-            sessionID: sessionID,
-            transcript: "kal ka update concise banake rahul ko bhej do",
-            polished: "Kal ka update concise bana ke Rahul ko bhej do.",
-            language: languageHint == .auto ? .hinglish : languageHint,
-            style: style,
-            latencyMS: 420,
-            mock: true
-        )
+        MobileDictationResponse(requestID: RequestId.make(), sessionID: sessionID, transcript: "", polished: "", language: languageHint, style: style, latencyMS: 0, mock: false)
     }
 
-    public func listHistory(limit: Int) async throws -> [RuntimeHistoryItem] {
-        [
-            RuntimeHistoryItem(
-                id: "mock-history-1",
-                runID: "mock-run-1",
-                clientRunID: "mock-client-1",
-                transcript: "kal ka update concise banake rahul ko bhej do",
-                polishedOutput: "Kal ka update concise bana ke Rahul ko bhej do.",
-                finalText: "Kal ka update concise bana ke Rahul ko bhej do.",
-                source: "server_wav",
-                platform: "ios",
-                createdAt: Date()
-            )
-        ].prefix(max(1, min(limit, 200))).map { $0 }
-    }
-
+    public func listHistory(limit: Int) async throws -> [RuntimeHistoryItem] { [] }
     public func deleteHistory(id: String) async throws {}
-
+    public func listLearningEvents(limit: Int) async throws -> [RuntimeLearningEvent] { [] }
+    public func addVocabulary(terms: [String], aliases: [(heard: String, correct: String)]) async throws -> RuntimeLearningConfirmResult {
+        RuntimeLearningConfirmResult(learnedCount: terms.count, blockedCount: 0, learnedTerms: terms, status: "accepted")
+    }
     public func analyzeEdit(recordingID: String, transcript: String, aiOutput: String, userKept: String) async throws -> RuntimeLearningAnalysis {
-        let trimmedKept = userKept.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedOutput = aiOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let changed = trimmedKept != trimmedOutput
-        let candidate = RuntimeLearningCandidate(
-            original: String((trimmedOutput.isEmpty ? transcript : trimmedOutput).prefix(24)),
-            corrected: String(trimmedKept.prefix(32)),
-            termType: "proper_noun",
-            learnable: changed && !trimmedKept.isEmpty,
-            tag: "mock_mobile_edit"
-        )
-        return RuntimeLearningAnalysis(
-            candidates: candidate.learnable ? [candidate] : [],
-            changed: changed,
-            source: "mock_mobile_learning"
-        )
+        RuntimeLearningAnalysis(candidates: [], changed: false, source: "preview")
     }
-
     public func confirmLearning(recordingID: String, items: [RuntimeLearningCandidate]) async throws -> RuntimeLearningConfirmResult {
-        RuntimeLearningConfirmResult(
-            learnedCount: items.filter(\.learnable).count,
-            blockedCount: 0,
-            learnedTerms: items.map(\.corrected),
-            status: "accepted"
-        )
+        RuntimeLearningConfirmResult(learnedCount: items.count, blockedCount: 0, learnedTerms: items.map(\.corrected), status: "accepted")
     }
-
     public func sendEvent(_ event: MobileEvent) async throws {}
 }
+#endif
 
 public final class HTTPMobileGatewayClient: MobileGatewayClient {
     private let baseURL: URL
@@ -674,7 +669,7 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         urlRequest.httpBody = try encoder.encode(AuthBody(email: request.email, password: request.password))
 
         let (data, response) = try await session.data(for: urlRequest)
-        try Self.validate(response: response)
+        try Self.validate(data, response: response)
         return try decoder.decode(MobileAuthResponse.self, from: data)
     }
 
@@ -684,7 +679,7 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
         let (data, response) = try await session.data(for: urlRequest)
-        try Self.validate(response: response)
+        try Self.validate(data, response: response)
         let decoded = try decoder.decode(MeResponse.self, from: data)
         return MobileAuthResponse(
             token: token,
@@ -704,7 +699,7 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         authorize(&urlRequest)
 
         let (data, response) = try await session.data(for: urlRequest)
-        try Self.validate(response: response)
+        try Self.validate(data, response: response)
         return try decoder.decode(RuntimeStatusResponse.self, from: data)
     }
 
@@ -714,7 +709,7 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         authorize(&urlRequest)
 
         let (data, response) = try await session.data(for: urlRequest)
-        try Self.validate(response: response)
+        try Self.validate(data, response: response)
         return try decoder.decode(RuntimeSettingsResponse.self, from: data)
     }
 
@@ -752,7 +747,7 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         urlRequest.httpBody = try encoder.encode(body)
 
         let (data, response) = try await session.data(for: urlRequest)
-        try Self.validate(response: response)
+        try Self.validate(data, response: response)
         let decoded = try decoder.decode(RuntimeVoiceWavResponse.self, from: data)
         return MobileDictationResponse(
             requestID: decoded.runID,
@@ -773,8 +768,8 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         authorize(&urlRequest)
         urlRequest.httpBody = try encoder.encode(event)
 
-        let (_, response) = try await session.data(for: urlRequest)
-        try Self.validate(response: response)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
     }
 
     public func listHistory(limit: Int) async throws -> [RuntimeHistoryItem] {
@@ -789,7 +784,7 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         authorize(&urlRequest)
 
         let (data, response) = try await session.data(for: urlRequest)
-        try Self.validate(response: response)
+        try Self.validate(data, response: response)
         return try decoder.decode([RuntimeHistoryItem].self, from: data)
     }
 
@@ -798,8 +793,8 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         urlRequest.httpMethod = "DELETE"
         authorize(&urlRequest)
 
-        let (_, response) = try await session.data(for: urlRequest)
-        try Self.validate(response: response)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
     }
 
     public func analyzeEdit(recordingID: String, transcript: String, aiOutput: String, userKept: String) async throws -> RuntimeLearningAnalysis {
@@ -816,7 +811,7 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         ))
 
         let (data, response) = try await session.data(for: urlRequest)
-        try Self.validate(response: response)
+        try Self.validate(data, response: response)
         return try decoder.decode(RuntimeLearningAnalysis.self, from: data)
     }
 
@@ -831,13 +826,74 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         urlRequest.httpBody = try encoder.encode(RuntimeLearningConfirmBody(recordingID: recordingID, items: encodedItems))
 
         let (data, response) = try await session.data(for: urlRequest)
-        try Self.validate(response: response)
+        try Self.validate(data, response: response)
         let decoded = try decoder.decode(RuntimeLearningConfirmResponse.self, from: data)
         return RuntimeLearningConfirmResult(
             learnedCount: decoded.learnedCount,
             blockedCount: decoded.blockedCount,
             learnedTerms: decoded.learnedTerms,
             status: decoded.serverJudgment?.status ?? "unknown"
+        )
+    }
+
+    public func updateSettings(_ patch: RuntimeSettingsPatch) async throws -> RuntimeSettingsResponse {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/runtime/settings"))
+        urlRequest.httpMethod = "PATCH"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&urlRequest)
+        urlRequest.httpBody = try encoder.encode(patch)
+
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode(RuntimeSettingsResponse.self, from: data)
+    }
+
+    public func listLearningEvents(limit: Int) async throws -> [RuntimeLearningEvent] {
+        let clamped = max(1, min(limit, 200))
+        var components = URLComponents(url: baseURL.appendingPathComponent("v1/runtime/learning-events"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "limit", value: String(clamped))]
+        guard let url = components?.url else { throw GatewayError.invalidResponse }
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "GET"
+        authorize(&urlRequest)
+
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        let rows = try decoder.decode([LearningEventRow].self, from: data)
+        return rows.map { $0.toEvent() }
+    }
+
+    public func addVocabulary(terms: [String], aliases: [(heard: String, correct: String)]) async throws -> RuntimeLearningConfirmResult {
+        let vocabItems = terms
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { MemoryVocabItem(term: $0, termType: "proper_noun", weight: 1.0) }
+        let aliasItems = aliases
+            .map { (heard: $0.heard.trimmingCharacters(in: .whitespacesAndNewlines), correct: $0.correct.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .filter { !$0.heard.isEmpty && !$0.correct.isEmpty }
+            .map { MemoryAliasItem(transcriptForm: $0.heard, correctForm: $0.correct, editType: "replace") }
+
+        guard !vocabItems.isEmpty || !aliasItems.isEmpty else {
+            return RuntimeLearningConfirmResult(learnedCount: 0, blockedCount: 0, learnedTerms: [], status: "empty")
+        }
+
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/runtime/memory/sync"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&urlRequest)
+        urlRequest.httpBody = try encoder.encode(MemorySyncBody(vocabTerms: vocabItems, sttReplacements: aliasItems))
+
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        let decoded = try decoder.decode(MemorySyncResponseBody.self, from: data)
+        let learned = decoded.acceptedVocab + decoded.acceptedAliases
+        let blocked = decoded.blockedVocab + decoded.blockedAliases
+        let learnedTerms = vocabItems.map(\.term) + aliasItems.map(\.correctForm)
+        return RuntimeLearningConfirmResult(
+            learnedCount: learned,
+            blockedCount: blocked,
+            learnedTerms: learnedTerms,
+            status: learned > 0 ? "accepted" : "blocked"
         )
     }
 
@@ -970,10 +1026,120 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         var total: Int
     }
 
-    private static func validate(response: URLResponse) throws {
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw URLError(.badServerResponse)
+    private struct MemoryVocabItem: Encodable {
+        var term: String
+        var termType: String
+        var weight: Double
+        enum CodingKeys: String, CodingKey {
+            case term
+            case termType = "term_type"
+            case weight
         }
+    }
+
+    private struct MemoryAliasItem: Encodable {
+        var transcriptForm: String
+        var correctForm: String
+        var editType: String
+        enum CodingKeys: String, CodingKey {
+            case transcriptForm = "transcript_form"
+            case correctForm = "correct_form"
+            case editType = "edit_type"
+        }
+    }
+
+    private struct MemorySyncBody: Encodable {
+        var vocabTerms: [MemoryVocabItem]
+        var sttReplacements: [MemoryAliasItem]
+        enum CodingKeys: String, CodingKey {
+            case vocabTerms = "vocab_terms"
+            case sttReplacements = "stt_replacements"
+        }
+    }
+
+    private struct MemorySyncResponseBody: Decodable {
+        var acceptedVocab: Int
+        var acceptedAliases: Int
+        var blockedVocab: Int
+        var blockedAliases: Int
+        enum CodingKeys: String, CodingKey {
+            case acceptedVocab = "accepted_vocab"
+            case acceptedAliases = "accepted_aliases"
+            case blockedVocab = "blocked_vocab"
+            case blockedAliases = "blocked_aliases"
+        }
+    }
+
+    /// Raw learning-event row. We only surface the learned terms (from the
+    /// confirm payload's `memory` block) plus light metadata.
+    private struct LearningEventRow: Decodable {
+        var id: String
+        var eventType: String
+        var classification: String?
+        var createdAt: Date
+        var payloadJson: PayloadBlock?
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case eventType = "event_type"
+            case classification
+            case createdAt = "created_at"
+            case payloadJson = "payload_json"
+        }
+
+        struct PayloadBlock: Decodable {
+            var memory: MemoryBlock?
+            struct MemoryBlock: Decodable {
+                var acceptedTerms: [TermEntry]?
+                var acceptedAliases: [AliasEntry]?
+                enum CodingKeys: String, CodingKey {
+                    case acceptedTerms = "accepted_terms"
+                    case acceptedAliases = "accepted_aliases"
+                }
+            }
+            struct TermEntry: Decodable { var term: String? }
+            struct AliasEntry: Decodable {
+                var correctForm: String?
+                enum CodingKeys: String, CodingKey { case correctForm = "correct_form" }
+            }
+        }
+
+        func toEvent() -> RuntimeLearningEvent {
+            var terms: [String] = []
+            if let memory = payloadJson?.memory {
+                terms.append(contentsOf: (memory.acceptedTerms ?? []).compactMap { $0.term })
+                terms.append(contentsOf: (memory.acceptedAliases ?? []).compactMap { $0.correctForm })
+            }
+            // De-dupe while preserving order.
+            var seen = Set<String>()
+            let unique = terms.filter { seen.insert($0.lowercased()).inserted && !$0.isEmpty }
+            return RuntimeLearningEvent(
+                id: id,
+                eventType: eventType,
+                classification: classification,
+                createdAt: createdAt,
+                learnedTerms: unique
+            )
+        }
+    }
+
+    private static func validate(_ data: Data, response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw GatewayError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let (code, message) = parseError(data)
+            throw GatewayError.from(status: http.statusCode, code: code, message: message)
+        }
+    }
+
+    private static func parseError(_ data: Data) -> (code: String?, message: String?) {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (nil, nil)
+        }
+        let code = (object["code"] as? String) ?? (object["error_code"] as? String)
+        let message = (object["error"] as? String) ?? (object["message"] as? String)
+        return (code, message)
     }
 }
 

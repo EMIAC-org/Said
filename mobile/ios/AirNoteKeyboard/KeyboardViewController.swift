@@ -1,66 +1,91 @@
+import AVFoundation
 import UIKit
 import AirNoteShared
 
+/// AirNote's custom keyboard. With Full Access it records and streams audio
+/// directly to the server (no dependency on the main app being open), then
+/// inserts the polished text at the cursor.
 final class KeyboardViewController: UIInputViewController {
-    private var stateMachine = KeyboardStateMachine()
-    private var bridge: AppGroupBridge?
-    private let commandHandler = KeyboardCommandHandler()
+    private let streamer = VoiceStreamingClient()
     private let pasteboard = UIPasteboard.general
-    private var refreshTimer: Timer?
+
+    private var state: KeyboardState = .ready
+    private var currentResult: BridgeResult?
+    private var resultSeq: UInt64 = 0
+    private var isRecording = false
+
+    // MARK: Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        bridge = try? AppGroupBridge()
-        refreshBridgeState()
-        startBridgeRefreshTimer()
+        streamer.onUpdate = { [weak self] update in
+            self?.handle(update)
+        }
+        reportHealth()
+        recomputeIdleState()
+        render()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        refreshBridgeState()
-        startBridgeRefreshTimer()
+        reportHealth()
+        if !isRecording { recomputeIdleState(); render() }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        stopBridgeRefreshTimer()
+        if isRecording {
+            isRecording = false
+            // cancel() does its real work (stop audio, tear down the socket)
+            // synchronously before the first suspension, so audio is released
+            // promptly even though this is a detached task.
+            Task { [streamer] in await streamer.cancel() }
+        }
     }
 
     deinit {
-        stopBridgeRefreshTimer()
+        streamer.onUpdate = nil
+        Task { [streamer] in await streamer.cancel() }
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
-        refreshBridgeState()
+        // Re-evaluate the secure-field gate when focus moves, but never disturb
+        // an in-flight recording or a pending result.
+        guard !isRecording, currentResult == nil else { return }
+        recomputeIdleState()
+        render()
     }
 
-    private func refreshBridgeState() {
-        let previousState = stateMachine.state
-        let session = try? bridge?.read(BridgeSession.self, from: .session)
-        stateMachine.apply(session: session)
-        let isSecureField = TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField
-        if let result = try? bridge?.read(BridgeResult.self, from: .result) {
-            _ = stateMachine.apply(result: result, secureField: isSecureField)
-        } else if isSecureField {
-            stateMachine.markUnsupportedSecureField()
-        }
+    // MARK: Health handshake (lets the main app know the keyboard is enabled + Full Access)
 
-        guard stateMachine.state != previousState else {
-            return
-        }
-        renderCurrentState()
+    private func reportHealth() {
+        SharedStore.recordKeyboardHealth(hasFullAccess: hasFullAccess, at: Date())
     }
 
-    private func renderCurrentState() {
+    // MARK: State
+
+    private func recomputeIdleState() {
+        if !hasFullAccess {
+            state = .needsFullAccess
+        } else if SharedStore.accessToken == nil {
+            state = .needsMainAppSession   // "Open AirNote to sign in"
+        } else if TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField {
+            state = .unsupportedSecureField
+        } else {
+            state = .ready
+        }
+    }
+
+    private func render() {
         view.subviews.forEach { $0.removeFromSuperview() }
-        let pad = RecordingPadView(state: stateMachine.state)
+        let pad = RecordingPadView(state: state)
         pad.translatesAutoresizingMaskIntoConstraints = false
-        pad.onStart = { [weak self] in self?.startRecordingCommand() }
-        pad.onStop = { [weak self] in self?.stopRecordingCommand() }
-        pad.onInsert = { [weak self] in self?.insertCurrentResult() }
-        pad.onCopy = { [weak self] in self?.copyCurrentResult() }
-        pad.onSave = { [weak self] in self?.saveCurrentResult() }
-        pad.onOpenApp = { [weak self] in self?.requestMainAppSession() }
+        pad.onStart = { [weak self] in self?.startRecording() }
+        pad.onStop = { [weak self] in self?.stopRecording() }
+        pad.onInsert = { [weak self] in self?.insertResult() }
+        pad.onCopy = { [weak self] in self?.copyResult() }
+        pad.onSave = { [weak self] in self?.saveResult() }
+        pad.onOpenApp = { [weak self] in self?.openMainApp() }
         pad.onKeyTap = { [weak self] text in self?.textDocumentProxy.insertText(text) }
         pad.onDelete = { [weak self] in self?.textDocumentProxy.deleteBackward() }
         pad.onNextKeyboard = { [weak self] in self?.advanceToNextInputMode() }
@@ -73,88 +98,175 @@ final class KeyboardViewController: UIInputViewController {
         ])
     }
 
-    private func startRecordingCommand() {
-        let context = ContextReader(documentProxy: textDocumentProxy).read()
-        let command = commandHandler.makeStartRecordingCommand(context: context)
-        try? bridge?.write(command, to: .command)
+    private func setState(_ newState: KeyboardState) {
+        guard newState != state else { return }
+        state = newState
+        render()
     }
 
-    private func stopRecordingCommand() {
-        let context = ContextReader(documentProxy: textDocumentProxy).read()
-        let command = commandHandler.makeStopRecordingCommand(context: context)
-        try? bridge?.write(command, to: .command)
-    }
+    // MARK: Recording
 
-    private func requestMainAppSession() {
-        let context = ContextReader(documentProxy: textDocumentProxy).read()
-        let command = commandHandler.makeStartSessionCommand(context: context)
-        try? bridge?.write(command, to: .command)
-    }
-
-    private func insertCurrentResult() {
-        guard let result = currentResult else { return }
-        if case .secureCopyReady = stateMachine.state {
-            copy(result)
+    private func startRecording() {
+        guard hasFullAccess else { setState(.needsFullAccess); return }
+        guard let token = SharedStore.accessToken, !token.isEmpty else {
+            setState(.needsMainAppSession)
+            return
+        }
+        // The keyboard cannot itself prompt for the mic — only the container app
+        // can. If it isn't granted yet, send the user to AirNote to grant it.
+        guard AVAudioApplication.shared.recordPermission == .granted else {
+            setState(.error("Open AirNote once to allow the microphone."))
             return
         }
 
-        let inserter = TextInsertion(documentProxy: textDocumentProxy)
-        guard inserter.insert(result) else {
-            copy(result)
-            return
-        }
-        acknowledge(result: result, outcome: .inserted)
-        stateMachine.acknowledgeInserted(resultSeq: result.resultSeq)
-        renderCurrentState()
-    }
+        currentResult = nil
+        isRecording = true
+        setState(.recording)
 
-    private func copyCurrentResult() {
-        guard let result = currentResult else { return }
-        copy(result)
-    }
-
-    private func saveCurrentResult() {
-        guard let result = currentResult else { return }
-        acknowledge(result: result, outcome: .savedToHistory)
-        stateMachine.acknowledgeSaved(resultSeq: result.resultSeq)
-        renderCurrentState()
-    }
-
-    private func startBridgeRefreshTimer() {
-        guard refreshTimer == nil else { return }
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
-            self?.refreshBridgeState()
-        }
-    }
-
-    private func stopBridgeRefreshTimer() {
-        refreshTimer?.invalidate()
-        refreshTimer = nil
-    }
-
-    private var currentResult: BridgeResult? {
-        switch stateMachine.state {
-        case .insertReady(let result), .secureCopyReady(let result):
-            return result
-        default:
-            return nil
-        }
-    }
-
-    private func copy(_ result: BridgeResult) {
-        pasteboard.string = result.polished
-        acknowledge(result: result, outcome: .copied)
-        stateMachine.acknowledgeCopied(resultSeq: result.resultSeq)
-        renderCurrentState()
-    }
-
-    private func acknowledge(result: BridgeResult, outcome: TerminalOutcome) {
-        let ack = BridgeAck(
-            resultSeq: result.resultSeq,
-            sessionID: result.sessionID,
-            clientRequestID: result.clientRequestID,
-            outcome: outcome
+        let runID = RequestId.make()
+        let session = MobileSessionResponse(
+            sessionID: runID,
+            sessionToken: token,
+            expiresAt: Date().addingTimeInterval(15 * 60),
+            streamingEnabled: true,
+            currentVocabHash: "keyboard",
+            voiceWSURL: "/v1/runtime/voice/ws?token=\(token)",
+            batchURL: "/v1/runtime/voice/wav",
+            maxRecordingSeconds: BuildConfig.maxRecordingSeconds
         )
-        try? bridge?.write(ack, to: .ack)
+        let config = VoiceStreamConfig(
+            runID: runID,
+            selectedModel: SharedStore.selectedModel,
+            outputLanguage: SharedStore.outputLanguage,
+            safeVocabTerms: [],
+            screenContext: ContextReader(documentProxy: textDocumentProxy).read().fieldHint
+        )
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.streamer.start(session: session, config: config)
+            } catch let error as VoiceStreamError {
+                await MainActor.run { self.handleStreamError(error) }
+            } catch {
+                await MainActor.run {
+                    self.isRecording = false
+                    self.setState(.error("Couldn't start recording. Try again."))
+                }
+            }
+        }
+    }
+
+    private func stopRecording() {
+        guard isRecording else { return }
+        isRecording = false
+        setState(.processing("Polishing"))
+        Task { await streamer.stop() }
+    }
+
+    // MARK: Streaming updates
+
+    private func handle(_ update: VoiceStreamUpdate) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            switch update {
+            case .interimTranscript:
+                if self.isRecording { self.setState(.recording) }
+            case .finalTranscript:
+                self.setState(.processing("Polishing"))
+            case .polishStarted, .polishDelta:
+                self.setState(.processing("Polishing"))
+            case .final(let final):
+                self.finish(transcript: final.transcript, polished: final.polished)
+            case .done:
+                break
+            case .error(let error):
+                self.handleStreamError(error)
+            case .status, .sessionReady, .guardWarning, .level:
+                break
+            }
+        }
+    }
+
+    private func finish(transcript: String, polished: String) {
+        isRecording = false
+        resultSeq += 1
+        let secure = TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField
+        let result = BridgeResult(
+            resultSeq: resultSeq,
+            sessionID: "keyboard",
+            clientRequestID: RequestId.make(),
+            requestID: RequestId.make(),
+            state: .final,
+            transcript: transcript,
+            polished: polished.isEmpty ? transcript : polished,
+            language: SharedStore.outputLanguage == "english" ? .en : .hinglish,
+            style: .work,
+            latencyMS: 0,
+            expiresAt: Date().addingTimeInterval(10 * 60),
+            insertPolicy: secure ? .copyOnly : .insertAtCursor,
+            learningAllowed: true
+        )
+        currentResult = result
+        setState(secure ? .secureCopyReady(result) : .insertReady(result))
+    }
+
+    private func handleStreamError(_ error: VoiceStreamError) {
+        isRecording = false
+        currentResult = nil
+        if error.isCredentialMissing {
+            setState(.error("Dictation isn't set up on this workspace yet."))
+        } else {
+            setState(.error(error.message))
+        }
+    }
+
+    // MARK: Result actions
+
+    private func insertResult() {
+        guard let result = currentResult else { return }
+        if case .secureCopyReady = state {
+            copyResult()
+            return
+        }
+        let inserter = TextInsertion(documentProxy: textDocumentProxy)
+        if inserter.insert(result) {
+            currentResult = nil
+            setState(.inserted)
+        } else {
+            copyResult()
+        }
+    }
+
+    private func copyResult() {
+        guard let result = currentResult else { return }
+        pasteboard.string = result.polished
+        currentResult = nil
+        setState(.copied)
+    }
+
+    private func saveResult() {
+        // The server already persists completed runtime sessions to history, so
+        // "save" simply acknowledges and clears the pending result.
+        currentResult = nil
+        setState(.savedToHistory)
+    }
+
+    // MARK: Open container app
+
+    private func openMainApp() {
+        guard let url = URL(string: "airnote://open") else { return }
+        // Keyboard extensions are built with APPLICATION_EXTENSION_API_ONLY, so
+        // UIApplication.open isn't callable directly. Walk the responder chain and
+        // invoke the openURL: selector dynamically — the standard extension hack.
+        let selector = NSSelectorFromString("openURL:")
+        var responder: UIResponder? = self
+        while let current = responder {
+            if current.responds(to: selector) {
+                current.perform(selector, with: url)
+                return
+            }
+            responder = current.next
+        }
     }
 }
