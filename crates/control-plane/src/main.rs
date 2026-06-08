@@ -14,8 +14,8 @@ use clap::Parser;
 use tracing::info;
 
 use said_control_plane::{
-    AppState, LarkConfig, ai_worker, build_router, meeting_hub, notification_worker, routes, store,
-    vocab_worker,
+    AppState, LarkConfig, ai_worker, build_router, meeting_hub, notification_hub,
+    notification_worker, routes, store, vocab_worker,
 };
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -59,6 +59,14 @@ struct Cli {
     #[arg(long, env = "DEEPGRAM_API_KEY", default_value = "")]
     deepgram_api_key: String,
 
+    /// Groq API key for server-runtime polish latency probes
+    #[arg(long, env = "GROQ_API_KEY", default_value = "")]
+    groq_api_key: String,
+
+    /// Legacy gateway key fallback for server-runtime polish latency probes
+    #[arg(long, env = "GATEWAY_API_KEY", default_value = "")]
+    gateway_api_key: String,
+
     /// Divo agent backend base URL (AirNote ⇄ Divo proxy target)
     #[arg(
         long,
@@ -66,12 +74,18 @@ struct Cli {
         default_value = "https://divo.outreachdeal.com"
     )]
     divo_base_url: String,
+
+    /// Secret used to encrypt runtime/BYOK provider credentials at rest.
+    #[arg(long, env = "RUNTIME_CREDENTIALS_KEY", default_value = "")]
+    runtime_credentials_key: String,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() {
+    install_rustls_crypto_provider();
+
     let _ = dotenvy::dotenv();
 
     tracing_subscriber::fmt()
@@ -95,6 +109,7 @@ async fn main() {
     };
 
     let hub = meeting_hub::MeetingHub::new(db.clone());
+    let notifications = notification_hub::NotificationHub::new();
 
     // Start the AI background worker (processes closed meeting slots).
     ai_worker::start_ai_worker(db.clone(), hub.clone());
@@ -110,9 +125,16 @@ async fn main() {
         started_at: Arc::new(Instant::now()),
         lark,
         hub,
+        notifications,
         deepgram_api_key: cli.deepgram_api_key,
+        groq_api_key: if cli.groq_api_key.trim().is_empty() {
+            cli.gateway_api_key
+        } else {
+            cli.groq_api_key
+        },
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
         divo_base_url: cli.divo_base_url,
+        runtime_credentials_key: cli.runtime_credentials_key,
     };
 
     let app = build_router(state);
@@ -148,4 +170,8 @@ async fn main() {
         .with_graceful_shutdown(shutdown)
         .await
         .expect("server failed");
+}
+
+fn install_rustls_crypto_provider() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }

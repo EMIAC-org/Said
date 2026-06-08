@@ -37,6 +37,11 @@ pub async fn patch_prefs(
     State(state): State<AppState>,
     Json(update): Json<PrefsUpdate>,
 ) -> Result<Json<Preferences>, StatusCode> {
+    let provider_key_updated = update.gateway_api_key.is_some()
+        || update.deepgram_api_key.is_some()
+        || update.gemini_api_key.is_some()
+        || update.groq_api_key.is_some()
+        || update.cerebras_api_key.is_some();
     info!(
         "[patch_prefs] backend received: llm_provider={:?} selected_model={:?} gateway_key_set={} gemini_key_set={} groq_key_set={}",
         update.llm_provider,
@@ -66,5 +71,15 @@ pub async fn patch_prefs(
         "[patch_prefs] after update: llm_provider={:?}",
         prefs.llm_provider
     );
+    if provider_key_updated {
+        let state2 = state.clone();
+        tokio::spawn(async move {
+            if let Err(err) =
+                crate::routes::runtime_credentials::sync_saved_provider_credentials(state2).await
+            {
+                tracing::warn!("[runtime-credentials] post-prefs vault sync failed: {err}");
+            }
+        });
+    }
     Ok(Json(prefs))
 }

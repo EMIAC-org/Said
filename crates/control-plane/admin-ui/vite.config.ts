@@ -20,6 +20,8 @@ function adminTrailingSlash(): Plugin {
   }
 }
 
+const API_TARGET = process.env.VITE_API_TARGET || 'https://airnote.emiactech.com'
+
 export default defineConfig({
   plugins: [adminTrailingSlash(), react(), tailwindcss()],
   base: '/admin/',
@@ -41,8 +43,11 @@ export default defineConfig({
   server: {
     port: 5174,
     proxy: {
-      '/v1': 'http://localhost:3100',
-      '/preview': 'http://localhost:3100',
+      // Point the local dev server at the DEPLOYED control plane by default so
+      // auth / orgs / real endpoints resolve against production. Override with
+      // VITE_API_TARGET=http://localhost:3100 to hit a local control plane.
+      '/v1': { target: API_TARGET, changeOrigin: true, secure: true },
+      '/preview': { target: API_TARGET, changeOrigin: true, secure: true },
     },
   },
 })

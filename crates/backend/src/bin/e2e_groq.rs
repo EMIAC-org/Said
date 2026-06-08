@@ -272,6 +272,8 @@ fn make_test_prefs() -> Preferences {
         polish_text_hotkey: "".to_string(),
         record_hotkey: "".to_string(),
         learning_enabled: true,
+        server_runtime_enabled: false,
+        server_audio_runtime_enabled: false,
         updated_at: 0,
         gateway_api_key: None,
         deepgram_api_key: None,

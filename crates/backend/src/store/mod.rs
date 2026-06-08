@@ -60,6 +60,8 @@ const MIGRATION_031: &str = include_str!("migrations/031_alias_safety_judgments.
 const MIGRATION_032: &str = include_str!("migrations/032_enterprise_server_url.sql");
 const MIGRATION_033: &str = include_str!("migrations/033_email_memory.sql");
 const MIGRATION_034: &str = include_str!("migrations/034_company_vocab.sql");
+const MIGRATION_035: &str = include_str!("migrations/035_server_runtime_probe.sql");
+const MIGRATION_036: &str = include_str!("migrations/036_server_audio_runtime_probe.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -382,6 +384,22 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 34")
             .expect("failed to set user_version to 34");
     }
+
+    if version < 35 {
+        info!("running migration 035_server_runtime_probe");
+        conn.execute_batch(MIGRATION_035)
+            .expect("migration 035 failed");
+        conn.execute_batch("PRAGMA user_version = 35")
+            .expect("failed to set user_version to 35");
+    }
+
+    if version < 36 {
+        info!("running migration 036_server_audio_runtime_probe");
+        conn.execute_batch(MIGRATION_036)
+            .expect("migration 036 failed");
+        conn.execute_batch("PRAGMA user_version = 36")
+            .expect("failed to set user_version to 36");
+    }
 }
 
 /// Return the default database path. Delegates to `paths::default_db_path()`
@@ -421,8 +439,8 @@ pub fn ensure_default_user(pool: &DbPool) -> String {
     // Create default preferences
     conn.execute(
         "INSERT INTO preferences (user_id, selected_model, tone_preset, language,
-         auto_paste, edit_capture, polish_text_hotkey, record_hotkey, updated_at)
-         VALUES (?1, 'smart', 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', ?2)",
+         auto_paste, edit_capture, polish_text_hotkey, record_hotkey, server_runtime_enabled, updated_at)
+         VALUES (?1, 'smart', 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', 0, ?2)",
         params![id, now_ms],
     )
     .expect("failed to create default preferences");

@@ -13,5 +13,6 @@ pub mod meetings;
 pub mod metering;
 pub mod openai;
 pub mod orgs;
+pub mod runtime;
 pub mod vocab;
 pub mod ws;

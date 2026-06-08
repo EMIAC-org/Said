@@ -77,7 +77,7 @@ fn maybe_upgrade_seed_default(
         .query_row(
             "SELECT COUNT(*)
              FROM prompt_template_events
-             WHERE user_id = ?1 AND kind = ?2 AND event_type != 'seed'",
+             WHERE user_id = ?1 AND kind = ?2 AND event_type NOT IN ('seed', 'upgrade_default')",
             params![user_id, default_prompt.kind],
             |row| row.get(0),
         )

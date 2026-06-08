@@ -13,6 +13,8 @@ pub mod pending_edits;
 pub mod pre_embed;
 pub mod prefs;
 pub mod prompts;
+pub mod runtime_credentials;
+pub mod runtime_live;
 pub mod stt;
 pub mod text;
 pub mod tier2;
