@@ -149,6 +149,25 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::runtime::voice_dry_run),
         )
         .route("/v1/runtime/voice/ws", get(routes::runtime::voice_ws))
+        // History
+        .route(
+            "/v1/runtime/history",
+            get(routes::runtime_history::list_history),
+        )
+        .route(
+            "/v1/runtime/history/sync",
+            post(routes::runtime_history::sync_history),
+        )
+        .route(
+            "/v1/runtime/history/:id",
+            get(routes::runtime_history::get_history_item)
+                .patch(routes::runtime_history::patch_history_item)
+                .delete(routes::runtime_history::delete_history_item),
+        )
+        .route(
+            "/v1/runtime/memory/sync",
+            post(routes::runtime_history::sync_memory),
+        )
         .route("/v1/license/check", get(routes::license::check))
         .route("/v1/metering/report", post(routes::metering::report))
         // Enterprise — Desktop clients

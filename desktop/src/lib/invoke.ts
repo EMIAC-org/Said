@@ -1140,6 +1140,66 @@ export const onDivoError = (h: (p: { message: string }) => void) =>
 export const onDivoPending = (h: (p: { message: string }) => void) =>
   divoListener("divo-pending", h);
 
+// ── Server migration ──────────────────────────────────────────────────────────
+
+export interface ServerMigrationStatus {
+  status: "not_started" | "running" | "partial" | "completed" | "failed";
+  migration_version: number;
+  uploaded_history_count: number;
+  uploaded_vocab_count: number;
+  uploaded_alias_count: number;
+  uploaded_email_count: number;
+  uploaded_credentials_count: number;
+  last_error?: string | null;
+  last_attempt_at_ms?: number | null;
+  completed_at_ms?: number | null;
+  server_url?: string | null;
+  signed_in: boolean;
+}
+
+async function backendFetch(path: string, opts: RequestInit = {}): Promise<Response | null> {
+  try {
+    const endpoint = await getBackendEndpoint();
+    if (!endpoint?.url || !endpoint.secret) return null;
+    const headers: Record<string, string> = {
+      ...(opts.headers as Record<string, string> | undefined),
+      Authorization: `Bearer ${endpoint.secret}`,
+    };
+    if (opts.body && !(headers["Content-Type"])) headers["Content-Type"] = "application/json";
+    return fetch(`${endpoint.url}${path}`, { ...opts, headers });
+  } catch {
+    return null;
+  }
+}
+
+export async function getMigrationStatus(): Promise<ServerMigrationStatus | null> {
+  try {
+    const res = await backendFetch("/v1/server-migration/status");
+    if (!res?.ok) return null;
+    return await res.json() as ServerMigrationStatus;
+  } catch {
+    return null;
+  }
+}
+
+export async function runMigration(): Promise<{ started: boolean; reason?: string } | null> {
+  try {
+    const res = await backendFetch("/v1/server-migration/run", { method: "POST", body: "{}" });
+    if (!res) return null;
+    return await res.json() as { started: boolean; reason?: string };
+  } catch {
+    return null;
+  }
+}
+
+export async function cancelMigration(): Promise<void> {
+  try {
+    await backendFetch("/v1/server-migration/cancel", { method: "POST", body: "{}" });
+  } catch {
+    // best-effort
+  }
+}
+
 // Suppress unused-import warnings for types only used in exported signatures
 export type {
   CloudAuthResponse,

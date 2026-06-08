@@ -292,6 +292,18 @@ pub fn router_with_state(state: AppState) -> Router {
             post(routes::runtime_credentials::sync),
         )
         .route(
+            "/v1/server-migration/status",
+            get(routes::server_migration::status),
+        )
+        .route(
+            "/v1/server-migration/run",
+            post(routes::server_migration::run),
+        )
+        .route(
+            "/v1/server-migration/cancel",
+            post(routes::server_migration::cancel),
+        )
+        .route(
             "/v1/runtime/live/result",
             post(routes::runtime_live::cache_result),
         )
