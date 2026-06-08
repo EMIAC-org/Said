@@ -279,10 +279,16 @@ struct VocabularyView: View {
 
 struct AirNoteSettingsView: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @AppStorage("airnotePreferredAppearance") private var appearance = AirNoteAppearance.system.rawValue
     @State private var diagnosticsEnabled = true
 
     var body: some View {
         Form {
+            Section("Appearance") {
+                AirNoteAppearancePicker()
+                LabeledContent("Current choice", value: (AirNoteAppearance(rawValue: appearance) ?? .system).detail)
+            }
+
             Section("Privacy") {
                 LabeledContent("History", value: "Server")
                 LabeledContent("Raw audio", value: "Not stored")

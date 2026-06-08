@@ -91,30 +91,43 @@ enum AirNoteDesign {
     }
 }
 
-enum AirNoteAppearance: String {
+enum AirNoteAppearance: String, CaseIterable, Identifiable {
+    case system
     case dark
     case light
 
-    var colorScheme: ColorScheme {
+    var id: String { rawValue }
+
+    var colorScheme: ColorScheme? {
         switch self {
+        case .system: return nil
         case .dark: return .dark
         case .light: return .light
         }
     }
 
-    var next: AirNoteAppearance {
+    var label: String {
         switch self {
-        case .dark: return .light
-        case .light: return .dark
+        case .system: return "Phone"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .system: return "Match iPhone theme"
+        case .light: return "Keep AirNote light"
+        case .dark: return "Keep AirNote dark"
         }
     }
 }
 
 private struct AirNoteAppearanceModifier: ViewModifier {
-    @AppStorage("airnotePreferredAppearance") private var appearance = AirNoteAppearance.dark.rawValue
+    @AppStorage("airnotePreferredAppearance") private var appearance = AirNoteAppearance.system.rawValue
 
     func body(content: Content) -> some View {
-        let mode = AirNoteAppearance(rawValue: appearance) ?? .dark
+        let mode = AirNoteAppearance(rawValue: appearance) ?? .system
         content.preferredColorScheme(mode.colorScheme)
     }
 }
@@ -125,31 +138,20 @@ extension View {
     }
 }
 
-struct AirNoteAppearanceToggle: View {
-    @AppStorage("airnotePreferredAppearance") private var appearance = AirNoteAppearance.dark.rawValue
+struct AirNoteAppearancePicker: View {
+    @AppStorage("airnotePreferredAppearance") private var appearance = AirNoteAppearance.system.rawValue
 
     var body: some View {
-        let mode = AirNoteAppearance(rawValue: appearance) ?? .dark
-        Button {
-            withAnimation(.easeInOut(duration: 0.18)) {
-                appearance = mode.next.rawValue
+        Picker("Theme", selection: Binding(
+            get: { AirNoteAppearance(rawValue: appearance) ?? .system },
+            set: { appearance = $0.rawValue }
+        )) {
+            ForEach(AirNoteAppearance.allCases) { mode in
+                Text(mode.label).tag(mode)
             }
-        } label: {
-            Label(mode == .dark ? "Light" : "Dark",
-                  systemImage: mode == .dark ? "sun.max.fill" : "moon.fill")
-                .font(.caption2.weight(.bold))
-                .labelStyle(.titleAndIcon)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .foregroundStyle(AirNoteDesign.accent)
-                .background(AirNoteDesign.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(AirNoteDesign.accent.opacity(0.20), lineWidth: 1)
-                )
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(mode == .dark ? "Switch to light mode" : "Switch to dark mode")
+        .pickerStyle(.segmented)
+        .accessibilityLabel("AirNote appearance")
     }
 }
 

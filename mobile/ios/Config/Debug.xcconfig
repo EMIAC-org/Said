@@ -1,3 +1,3 @@
 // The $() trick preserves the final URL as http://... in xcconfig values.
-AIRNOTE_GATEWAY_BASE_URL = http:/$()/192.168.1.10:3100
-AIRNOTE_USE_MOCK_GATEWAY = YES
+AIRNOTE_GATEWAY_BASE_URL = http:/$()/192.168.1.142:3100
+AIRNOTE_USE_MOCK_GATEWAY = NO

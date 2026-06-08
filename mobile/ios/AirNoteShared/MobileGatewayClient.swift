@@ -456,6 +456,7 @@ public struct RuntimeLearningConfirmResult: Codable, Equatable {
 public protocol MobileGatewayClient {
     func bootstrap() async throws -> MobileBootstrap
     func authenticate(_ request: MobileAuthRequest) async throws -> MobileAuthResponse
+    func restoreSession(token: String) async throws -> MobileAuthResponse
     func runtimeStatus() async throws -> RuntimeStatusResponse
     func runtimeSettings() async throws -> RuntimeSettingsResponse
     func createSession(_ request: MobileSessionRequest) async throws -> MobileSessionResponse
@@ -515,6 +516,15 @@ public struct MockMobileGatewayClient: MobileGatewayClient {
                 learningMode: "insert_first_learn_later",
                 allowTranscriptHistory: true
             )
+        )
+    }
+
+    public func restoreSession(token: String) async throws -> MobileAuthResponse {
+        MobileAuthResponse(
+            token: token,
+            account: MobileAccount(id: "mock-account", email: "anugra@airnote.preview", licenseTier: "free"),
+            refreshToken: nil,
+            policy: nil
         )
     }
 
@@ -666,6 +676,26 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         let (data, response) = try await session.data(for: urlRequest)
         try Self.validate(response: response)
         return try decoder.decode(MobileAuthResponse.self, from: data)
+    }
+
+    public func restoreSession(token: String) async throws -> MobileAuthResponse {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/auth/me"))
+        urlRequest.httpMethod = "GET"
+        urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(response: response)
+        let decoded = try decoder.decode(MeResponse.self, from: data)
+        return MobileAuthResponse(
+            token: token,
+            account: MobileAccount(
+                id: decoded.account.id,
+                email: decoded.account.email,
+                licenseTier: decoded.license.tier
+            ),
+            refreshToken: nil,
+            policy: nil
+        )
     }
 
     public func runtimeStatus() async throws -> RuntimeStatusResponse {
@@ -824,6 +854,20 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
     private struct AuthBody: Encodable {
         var email: String
         var password: String
+    }
+
+    private struct MeResponse: Decodable {
+        var account: MeAccount
+        var license: MeLicense
+    }
+
+    private struct MeAccount: Decodable {
+        var id: String
+        var email: String
+    }
+
+    private struct MeLicense: Decodable {
+        var tier: String
     }
 
     private struct RuntimeLearningAnalyzeBody: Encodable {

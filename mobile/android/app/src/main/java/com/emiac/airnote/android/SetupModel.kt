@@ -13,7 +13,7 @@ enum class AndroidSetupStep(
     Account(
         eyebrow = "Account",
         title = "Account",
-        subtitle = "Use the local preview profile for this build.",
+        subtitle = "Connect your AirNote workspace before recording.",
     ),
     Privacy(
         eyebrow = "Privacy",

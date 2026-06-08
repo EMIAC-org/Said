@@ -67,7 +67,6 @@ private struct AppHeader: View {
             Spacer()
             VStack(alignment: .trailing, spacing: 6) {
                 AirNoteStatusPill(systemImage: "bolt.fill", text: runtime == "Preview" ? "Preview" : "Live")
-                AirNoteAppearanceToggle()
                 Button(action: onReset) {
                     Text("Replay setup")
                         .font(.caption2.weight(.bold))
@@ -154,7 +153,7 @@ private struct SetupSummary: View {
                         .font(.caption.weight(.bold))
                         .foregroundStyle(AirNoteDesign.accent)
                 }
-                AirNoteSetupRow(icon: "person.crop.circle", title: "Account", subtitle: "Mobile account ready.", status: "Done")
+                AirNoteSetupRow(icon: "person.crop.circle", title: "Workspace", subtitle: "AirNote workspace ready.", status: "Done")
                 AirNoteSetupRow(icon: "mic.fill", title: "Microphone", subtitle: "Health check completed.", status: "Done")
                 AirNoteSetupRow(icon: "keyboard", title: "Keyboard", subtitle: "Full Access completed.", status: "Done")
                 Button(action: onReset) {

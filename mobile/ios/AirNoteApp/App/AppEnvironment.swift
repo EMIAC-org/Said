@@ -91,6 +91,31 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    func handleAuthCallback(_ url: URL) async {
+        guard
+            url.scheme == "airnote",
+            url.host == "auth",
+            url.path == "/callback",
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            let token = components.queryItems?.first(where: { $0.name == "token" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !token.isEmpty
+        else {
+            return
+        }
+
+        do {
+            let response = try await gateway.restoreSession(token: token)
+            authTokens.persist(accessToken: response.token, account: response.account)
+            account = response.account
+            setupState = .accountReady
+            lastStatusMessage = "Lark workspace connected"
+            await refreshRuntimeConfig()
+            await refreshHistory()
+        } catch {
+            setupState = .blocked("Could not finish Lark sign-in. Try again from setup.")
+        }
+    }
+
     func refreshRuntimeConfig() async {
         do {
             let status = try await gateway.runtimeStatus()

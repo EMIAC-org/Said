@@ -18,6 +18,17 @@
 	<string>AirNote</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.emiac.airnote.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>airnote</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>

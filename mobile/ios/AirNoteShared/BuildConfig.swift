@@ -20,7 +20,7 @@ public enum BuildConfig {
 
     public static var useMockGateway: Bool {
         guard let raw = Bundle.main.object(forInfoDictionaryKey: "AIRNOTE_USE_MOCK_GATEWAY") as? String else {
-            return true
+            return false
         }
         return ["1", "true", "yes", "YES"].contains(raw)
     }

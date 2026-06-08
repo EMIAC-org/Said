@@ -15,6 +15,11 @@ struct AirNoteApp: App {
             }
             .environmentObject(environment)
             .airNotePreferredAppearance()
+            .onOpenURL { url in
+                Task {
+                    await environment.handleAuthCallback(url)
+                }
+            }
         }
     }
 }

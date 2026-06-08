@@ -95,6 +95,7 @@ data class RuntimeLearningConfirmResult(
 
 interface GatewayClient {
     suspend fun authenticate(email: String, password: String, signup: Boolean): GatewayAuthResponse
+    suspend fun restoreSession(token: String): GatewayAuthResponse
     suspend fun runtimeStatus(): RuntimeStatus
     suspend fun runtimeSettings(): RuntimeSettings
     suspend fun listHistory(limit: Int = 20): List<RuntimeHistoryItem>
@@ -125,6 +126,16 @@ class MockGatewayClient : GatewayClient {
             account = GatewayAccount(
                 id = "mock-account",
                 email = email.ifBlank { "anugra@airnote.preview" },
+                licenseTier = "free",
+            ),
+        )
+
+    override suspend fun restoreSession(token: String): GatewayAuthResponse =
+        GatewayAuthResponse(
+            token = token,
+            account = GatewayAccount(
+                id = "mock-account",
+                email = "anugra@airnote.preview",
                 licenseTier = "free",
             ),
         )
@@ -232,6 +243,20 @@ class HttpGatewayClient(
                 id = account.getString("id"),
                 email = account.getString("email"),
                 licenseTier = account.optString("license_tier", "free"),
+            ),
+        )
+    }
+
+    override suspend fun restoreSession(token: String): GatewayAuthResponse {
+        val json = requestJson("/v1/auth/me", method = "GET", authorized = true, tokenOverride = token)
+        val account = json.getJSONObject("account")
+        val license = json.optJSONObject("license")
+        return GatewayAuthResponse(
+            token = token,
+            account = GatewayAccount(
+                id = account.getString("id"),
+                email = account.getString("email"),
+                licenseTier = license?.optString("tier", "free") ?: "free",
             ),
         )
     }
@@ -352,22 +377,25 @@ class HttpGatewayClient(
         method: String,
         body: JSONObject? = null,
         authorized: Boolean,
+        tokenOverride: String? = null,
     ): JSONObject =
-        JSONObject(requestText(path = path, method = method, body = body, authorized = authorized).ifBlank { "{}" })
+        JSONObject(requestText(path = path, method = method, body = body, authorized = authorized, tokenOverride = tokenOverride).ifBlank { "{}" })
 
     private suspend fun requestJsonArray(
         path: String,
         method: String,
         body: JSONObject? = null,
         authorized: Boolean,
+        tokenOverride: String? = null,
     ): JSONArray =
-        JSONArray(requestText(path = path, method = method, body = body, authorized = authorized).ifBlank { "[]" })
+        JSONArray(requestText(path = path, method = method, body = body, authorized = authorized, tokenOverride = tokenOverride).ifBlank { "[]" })
 
     private suspend fun requestText(
         path: String,
         method: String,
         body: JSONObject? = null,
         authorized: Boolean,
+        tokenOverride: String? = null,
     ): String = withContext(Dispatchers.IO) {
         val connection = (URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
@@ -375,7 +403,7 @@ class HttpGatewayClient(
             readTimeout = 30_000
             setRequestProperty("Accept", "application/json")
             if (authorized) {
-                val token = tokenProvider()?.trim().orEmpty()
+                val token = tokenOverride?.trim().takeUnless { it.isNullOrEmpty() } ?: tokenProvider()?.trim().orEmpty()
                 require(token.isNotEmpty()) { "Missing AirNote Gateway token" }
                 setRequestProperty("Authorization", "Bearer $token")
             }

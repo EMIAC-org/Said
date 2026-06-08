@@ -36,7 +36,7 @@ enum MockSetupStep: Int, CaseIterable, Hashable {
         case .welcome:
             return "Account, privacy, microphone, and keyboard in one guided pass."
         case .account:
-            return "Use the local preview profile for this build."
+            return BuildConfig.useMockGateway ? "Use the local preview profile for this build." : "Connect your AirNote workspace before recording."
         case .privacy:
             return "Review storage and recovery defaults before recording."
         case .microphone:
@@ -51,6 +51,7 @@ enum MockSetupStep: Int, CaseIterable, Hashable {
 
 struct SetupFlowView: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.openURL) private var openURL
     @State private var step: MockSetupStep
     @State private var privacyAccepted = false
     @State private var micChecked = false
@@ -115,7 +116,6 @@ struct SetupFlowView: View {
             Spacer()
             VStack(alignment: .trailing, spacing: 6) {
                 AirNoteStatusPill(systemImage: "bolt.fill", text: BuildConfig.useMockGateway ? "Preview" : "Live")
-                AirNoteAppearanceToggle()
             }
         }
     }
@@ -136,15 +136,15 @@ struct SetupFlowView: View {
         switch step {
         case .welcome:
             VStack(spacing: 10) {
-                AirNoteSetupRow(icon: "person.crop.circle.badge.checkmark", title: "Account", subtitle: "Preview profile and mobile runtime.", status: "Ready")
+                AirNoteSetupRow(icon: "person.crop.circle.badge.checkmark", title: "Workspace", subtitle: "AirNote account, Lark identity, and mobile runtime.", status: "Ready")
                 AirNoteSetupRow(icon: "mic.fill", title: "Microphone", subtitle: "Recording surface and route check.", status: "Ready")
                 AirNoteSetupRow(icon: "keyboard", title: "Keyboard", subtitle: "Insert, copy, save, and recover.", status: "Ready")
             }
 
         case .account:
             VStack(spacing: 10) {
-                AirNoteSetupRow(icon: "person.crop.circle.badge.checkmark", title: BuildConfig.useMockGateway ? "Preview account" : "Mobile account", subtitle: environment.account?.email ?? "Sign in to AirNote Gateway.", status: environment.account == nil ? "Required" : "Signed")
-                AirNoteSetupRow(icon: "server.rack", title: "Mobile Gateway", subtitle: "Standalone iOS runtime, independent from desktop.", status: environment.runtimeStatus)
+                AirNoteSetupRow(icon: "person.crop.circle.badge.checkmark", title: BuildConfig.useMockGateway ? "Preview workspace" : "AirNote workspace", subtitle: environment.account?.email ?? "Sign in with your AirNote or Lark workspace account.", status: environment.account == nil ? "Required" : "Signed")
+                AirNoteSetupRow(icon: "server.rack", title: "Runtime Gateway", subtitle: "Same control-plane runtime contract as desktop.", status: environment.runtimeStatus)
                 if !BuildConfig.useMockGateway && environment.account == nil {
                     VStack(spacing: 10) {
                         TextField("Email", text: $email)
@@ -159,6 +159,13 @@ struct SetupFlowView: View {
                                 .foregroundStyle(AirNoteDesign.foreground)
                         }
                         .tint(AirNoteDesign.accent)
+                        Button {
+                            openURL(BuildConfig.gatewayBaseURL.appendingPathComponent("auth/lark"))
+                        } label: {
+                            Label("Continue with Lark", systemImage: "person.crop.circle.badge.checkmark")
+                        }
+                        .buttonStyle(AirNoteGhostButtonStyle())
+                        .disabled(authWorking)
                         Button {
                             authWorking = true
                             Task {

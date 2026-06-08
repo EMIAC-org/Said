@@ -6,6 +6,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.net.Uri
 import android.provider.Settings
 import android.view.View
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -92,6 +94,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -200,15 +203,34 @@ private object AirNotePalette {
         @Composable get() = LocalAirNoteColors.current.keyboardWell
 }
 
+private enum class AndroidAppearanceMode(val label: String, val detail: String) {
+    System("Phone", "Match the phone theme"),
+    Light("Light", "Keep AirNote light"),
+    Dark("Dark", "Keep AirNote dark"),
+}
+
 @Composable
-fun AirNoteAndroidApp() {
+fun AirNoteAndroidApp(
+    oauthToken: String? = null,
+    onOAuthTokenConsumed: () -> Unit = {},
+) {
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
     val sessionStore = remember { AndroidSecureSessionStore(context.applicationContext) }
     val recorder = remember { AndroidVoiceRecorder() }
     val scope = rememberCoroutineScope()
     var gatewaySession by remember { mutableStateOf(sessionStore.read()) }
     var setupComplete by rememberSaveable { mutableStateOf(false) }
-    var lightMode by rememberSaveable { mutableStateOf(false) }
+    var appearanceModeRaw by rememberSaveable { mutableStateOf(AndroidAppearanceMode.System.name) }
+    val appearanceMode = AndroidAppearanceMode.entries
+        .firstOrNull { it.name == appearanceModeRaw }
+        ?: AndroidAppearanceMode.System
+    val systemDark = (configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    val lightMode = when (appearanceMode) {
+        AndroidAppearanceMode.System -> !systemDark
+        AndroidAppearanceMode.Light -> true
+        AndroidAppearanceMode.Dark -> false
+    }
     var runtimeStatus by rememberSaveable { mutableStateOf(if (BuildConfig.USE_MOCK_GATEWAY) "Preview" else "Unknown") }
     var voicePhase by rememberSaveable { mutableStateOf(AndroidVoicePhase.Idle) }
     var voiceMessage by rememberSaveable { mutableStateOf("Tap to record a short dictation.") }
@@ -363,6 +385,23 @@ fun AirNoteAndroidApp() {
         }
     }
 
+    LaunchedEffect(oauthToken) {
+        val token = oauthToken?.trim().orEmpty()
+        if (token.isEmpty()) return@LaunchedEffect
+        val result = runCatching { gateway.restoreSession(token) }
+        result.onSuccess { response ->
+            val saved = GatewaySession(response.token, response.account)
+            sessionStore.write(saved)
+            gatewaySession = saved
+            runtimeStatus = runCatching { gateway.runtimeStatus().readinessLabel }
+                .getOrElse { "unreachable" }
+            refreshHistory()
+        }.onFailure {
+            runtimeStatus = "auth_failed"
+        }
+        onOAuthTokenConsumed()
+    }
+
     fun beginVoiceRecording() {
         voiceResult = null
         voiceMessage = "Listening. Speak naturally, then tap Stop."
@@ -453,8 +492,8 @@ fun AirNoteAndroidApp() {
                 voiceMessage = voiceMessage,
                 voiceLevel = voiceLevel,
                 voiceResult = voiceResult,
-                lightMode = lightMode,
-                onLightModeChange = { lightMode = it },
+                appearanceMode = appearanceMode,
+                onAppearanceModeChange = { appearanceModeRaw = it.name },
                 onVoiceAction = ::handleVoiceAction,
                 onCancelVoice = ::cancelVoiceRecording,
                 onRefreshHistory = ::refreshHistory,
@@ -483,8 +522,6 @@ fun AirNoteAndroidApp() {
             SetupFlowScreen(
                 accountEmail = gatewaySession?.account?.email,
                 runtimeStatus = runtimeStatus,
-                lightMode = lightMode,
-                onLightModeChange = { lightMode = it },
                 onAuthenticate = { email, password, signup ->
                     runCatching {
                         val response = gateway.authenticate(email, password, signup)
@@ -577,8 +614,6 @@ private fun AirNoteBackground(content: @Composable () -> Unit) {
 private fun SetupFlowScreen(
     accountEmail: String?,
     runtimeStatus: String,
-    lightMode: Boolean,
-    onLightModeChange: (Boolean) -> Unit,
     onAuthenticate: suspend (String, String, Boolean) -> Result<GatewayAuthResponse>,
     onFinish: () -> Unit,
 ) {
@@ -615,8 +650,6 @@ private fun SetupFlowScreen(
         ) {
             AppHeader(
                 label = if (BuildConfig.USE_MOCK_GATEWAY) "Preview" else "Live",
-                lightMode = lightMode,
-                onLightModeChange = onLightModeChange,
             )
             ProgressRail(step = step)
 
@@ -658,6 +691,10 @@ private fun SetupFlowScreen(
                                 authError = null
                             },
                             onSignupChange = { signup = it },
+                            onOpenLarkAuth = {
+                                val url = BuildConfig.GATEWAY_BASE_URL.trimEnd('/') + "/auth/lark"
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                            },
                             onAuthenticate = {
                                 authWorking = true
                                 authError = null
@@ -730,7 +767,7 @@ private fun SetupFlowScreen(
 @Composable
 private fun WelcomeStep() {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        SetupRow(Icons.Rounded.Person, "Account", "Preview profile and mobile runtime.", "Ready")
+        SetupRow(Icons.Rounded.Person, "Workspace", "AirNote account, Lark identity, and mobile runtime.", "Ready")
         SetupRow(Icons.Rounded.Mic, "Microphone", "Recording surface and route check.", "Ready")
         SetupRow(Icons.Rounded.Keyboard, "Floating bubble", "Dictate above your existing keyboard.", "Ready")
     }
@@ -748,16 +785,17 @@ private fun AccountStep(
     onEmailChange: (String) -> Unit,
     onPasswordChange: (String) -> Unit,
     onSignupChange: (Boolean) -> Unit,
+    onOpenLarkAuth: () -> Unit,
     onAuthenticate: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SetupRow(
             Icons.Rounded.AccountCircle,
-            if (BuildConfig.USE_MOCK_GATEWAY) "Preview account" else "Mobile account",
-            accountEmail ?: "Sign in to AirNote Gateway.",
+            if (BuildConfig.USE_MOCK_GATEWAY) "Preview workspace" else "AirNote workspace",
+            accountEmail ?: "Sign in with your AirNote or Lark workspace account.",
             if (accountEmail == null) "Required" else "Signed",
         )
-        SetupRow(Icons.Rounded.Bolt, "Mobile Gateway", "Standalone Android runtime, independent from desktop.", runtimeStatus)
+        SetupRow(Icons.Rounded.Bolt, "Runtime Gateway", "Same control-plane runtime contract as desktop.", runtimeStatus)
         if (!BuildConfig.USE_MOCK_GATEWAY && accountEmail == null) {
             Column(
                 modifier = Modifier
@@ -795,6 +833,20 @@ private fun AccountStep(
                     checked = signup,
                     onCheckedChange = onSignupChange,
                 )
+                OutlinedButton(
+                    onClick = onOpenLarkAuth,
+                    enabled = !authWorking,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.Accent),
+                    border = BorderStroke(1.dp, AirNotePalette.Accent.copy(alpha = 0.30f)),
+                ) {
+                    Icon(Icons.Rounded.AccountCircle, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Continue with Lark", fontWeight = FontWeight.SemiBold)
+                }
                 if (authError != null) {
                     Text(
                         text = authError,
@@ -1031,8 +1083,8 @@ private fun HomeScreen(
     voiceMessage: String,
     voiceLevel: Float,
     voiceResult: String?,
-    lightMode: Boolean,
-    onLightModeChange: (Boolean) -> Unit,
+    appearanceMode: AndroidAppearanceMode,
+    onAppearanceModeChange: (AndroidAppearanceMode) -> Unit,
     onVoiceAction: () -> Unit,
     onCancelVoice: () -> Unit,
     onRefreshHistory: () -> Unit,
@@ -1064,8 +1116,6 @@ private fun HomeScreen(
         ) {
             AppHeader(
                 label = if (BuildConfig.USE_MOCK_GATEWAY) "Preview" else "Live",
-                lightMode = lightMode,
-                onLightModeChange = onLightModeChange,
                 trailing = {
                 Text(
                     text = "Replay setup",
@@ -1163,11 +1213,31 @@ private fun HomeScreen(
             AirNoteCard(padding = 14.dp) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        SectionLabel("Settings")
+                        Spacer(Modifier.weight(1f))
+                        Text(appearanceMode.detail, color = AirNotePalette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    SetupRow(
+                        Icons.Rounded.Settings,
+                        "Appearance",
+                        "Match the phone theme or choose AirNote's theme.",
+                        appearanceMode.label,
+                    )
+                    AppearancePreferenceControl(
+                        selected = appearanceMode,
+                        onSelected = onAppearanceModeChange,
+                    )
+                }
+            }
+
+            AirNoteCard(padding = 14.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         SectionLabel("Setup")
                         Spacer(Modifier.weight(1f))
                         Text("4/4", color = AirNotePalette.Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
-                    SetupRow(Icons.Rounded.Person, "Account", "Mobile account ready.", "Done")
+                    SetupRow(Icons.Rounded.Person, "Workspace", "AirNote workspace ready.", "Done")
                     SetupRow(Icons.Rounded.Mic, "Microphone", "Health check completed.", "Done")
                     SetupRow(Icons.Rounded.Keyboard, "Floating bubble", "Accessibility preview completed.", "Done")
                     OutlinedButton(
@@ -1457,8 +1527,6 @@ private fun LearningReviewPanel(
 @Composable
 private fun AppHeader(
     label: String,
-    lightMode: Boolean,
-    onLightModeChange: (Boolean) -> Unit,
     trailing: @Composable (() -> Unit)? = null,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1469,34 +1537,46 @@ private fun AppHeader(
         }
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
             StatusPill(Icons.Rounded.Bolt, label, AirNotePalette.Accent)
-            AppearanceToggle(lightMode = lightMode, onLightModeChange = onLightModeChange)
             trailing?.invoke()
         }
     }
 }
 
 @Composable
-private fun AppearanceToggle(
-    lightMode: Boolean,
-    onLightModeChange: (Boolean) -> Unit,
+private fun AppearancePreferenceControl(
+    selected: AndroidAppearanceMode,
+    onSelected: (AndroidAppearanceMode) -> Unit,
 ) {
-    OutlinedButton(
-        onClick = { onLightModeChange(!lightMode) },
-        modifier = Modifier.height(32.dp),
-        shape = RoundedCornerShape(7.dp),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.Accent),
-        border = BorderStroke(1.dp, AirNotePalette.Accent.copy(alpha = 0.20f)),
-        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp),
-    ) {
-        Icon(
-            if (lightMode) Icons.Rounded.DarkMode else Icons.Rounded.LightMode,
-            contentDescription = null,
-            modifier = Modifier.size(14.dp),
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(if (lightMode) "Dark" else "Light", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        AndroidAppearanceMode.entries.forEach { mode ->
+            val active = mode == selected
+            OutlinedButton(
+                onClick = { onSelected(mode) },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(38.dp),
+                shape = RoundedCornerShape(9.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = if (active) AirNotePalette.PrimaryButtonContent else AirNotePalette.ForegroundFixed,
+                    containerColor = if (active) AirNotePalette.PrimaryButtonFill else Color.Transparent,
+                ),
+                border = BorderStroke(1.dp, if (active) AirNotePalette.PrimaryButtonFill else AirNotePalette.BorderStrong),
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+            ) {
+                Icon(appearanceIcon(mode), contentDescription = null, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(5.dp))
+                Text(mode.label, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            }
+        }
     }
 }
+
+private fun appearanceIcon(mode: AndroidAppearanceMode): ImageVector =
+    when (mode) {
+        AndroidAppearanceMode.System -> Icons.Rounded.Settings
+        AndroidAppearanceMode.Light -> Icons.Rounded.LightMode
+        AndroidAppearanceMode.Dark -> Icons.Rounded.DarkMode
+    }
 
 @Composable
 private fun ProgressRail(step: AndroidSetupStep) {
@@ -1964,8 +2044,6 @@ private fun SetupPreview() {
         SetupFlowScreen(
             accountEmail = "anugra@airnote.preview",
             runtimeStatus = "Preview",
-            lightMode = false,
-            onLightModeChange = {},
             onAuthenticate = { _, _, _ -> Result.success(MockGatewayClient().authenticate("anugra@airnote.preview", "preview-password", false)) },
             onFinish = {},
         )

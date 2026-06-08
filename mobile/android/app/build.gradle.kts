@@ -15,12 +15,14 @@ android {
         versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        manifestPlaceholders["usesCleartextTraffic"] = "false"
     }
 
     buildTypes {
         debug {
-            buildConfigField("Boolean", "USE_MOCK_GATEWAY", "true")
-            buildConfigField("String", "GATEWAY_BASE_URL", "\"http://10.0.2.2:3100\"")
+            buildConfigField("Boolean", "USE_MOCK_GATEWAY", "false")
+            buildConfigField("String", "GATEWAY_BASE_URL", "\"http://192.168.1.142:3100\"")
+            manifestPlaceholders["usesCleartextTraffic"] = "true"
         }
         release {
             isMinifyEnabled = false
