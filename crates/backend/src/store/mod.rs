@@ -15,6 +15,7 @@ pub mod pending_promotions;
 pub mod prefs;
 pub mod prompt_templates;
 pub mod server_migration;
+pub mod server_settings;
 pub mod stt_replacements;
 pub mod tier2_edit_policy;
 pub mod tier2_model;
@@ -64,6 +65,7 @@ const MIGRATION_034: &str = include_str!("migrations/034_company_vocab.sql");
 const MIGRATION_035: &str = include_str!("migrations/035_server_runtime_probe.sql");
 const MIGRATION_036: &str = include_str!("migrations/036_server_audio_runtime_probe.sql");
 const MIGRATION_037: &str = include_str!("migrations/037_server_migration_state.sql");
+const MIGRATION_038: &str = include_str!("migrations/038_server_settings_state.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -409,6 +411,14 @@ fn run_migrations(pool: &DbPool) {
             .expect("migration 037 failed");
         conn.execute_batch("PRAGMA user_version = 37")
             .expect("failed to set user_version to 37");
+    }
+
+    if version < 38 {
+        info!("running migration 038_server_settings_state");
+        conn.execute_batch(MIGRATION_038)
+            .expect("migration 038 failed");
+        conn.execute_batch("PRAGMA user_version = 38")
+            .expect("failed to set user_version to 38");
     }
 }
 

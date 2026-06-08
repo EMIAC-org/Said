@@ -42,6 +42,15 @@ pub async fn patch_prefs(
         || update.gemini_api_key.is_some()
         || update.groq_api_key.is_some()
         || update.cerebras_api_key.is_some();
+    let cross_device_updated = update.selected_model.is_some()
+        || update.output_language.is_some()
+        || update.tone_preset.is_some()
+        || update.custom_prompt.is_some()
+        || update.auto_paste.is_some()
+        || update.edit_capture.is_some()
+        || update.learning_enabled.is_some()
+        || update.server_runtime_enabled.is_some()
+        || update.server_audio_runtime_enabled.is_some();
     info!(
         "[patch_prefs] backend received: llm_provider={:?} selected_model={:?} gateway_key_set={} gemini_key_set={} groq_key_set={}",
         update.llm_provider,
@@ -79,6 +88,25 @@ pub async fn patch_prefs(
             {
                 tracing::warn!("[runtime-credentials] post-prefs vault sync failed: {err}");
             }
+        });
+    }
+    if cross_device_updated {
+        let state3 = state.clone();
+        let p = prefs.clone();
+        tokio::spawn(async move {
+            crate::routes::server_settings::push_cross_device_settings_to_server(
+                state3,
+                p.selected_model,
+                p.output_language,
+                p.tone_preset,
+                p.custom_prompt,
+                p.auto_paste,
+                p.edit_capture,
+                p.learning_enabled,
+                p.server_runtime_enabled,
+                p.server_audio_runtime_enabled,
+            )
+            .await;
         });
     }
     Ok(Json(prefs))

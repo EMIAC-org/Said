@@ -32,8 +32,8 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser};
 use crate::notification_hub::DesktopNotification;
+use crate::{AppState, auth::AuthUser};
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL_FAST: &str = "llama-3.1-8b-instant";
@@ -666,7 +666,8 @@ pub async fn status(
         personal_vocab_count,
         personal_alias_count,
         active_edit_policy_count,
-        server_memory_ready: personal_vocab_count + personal_alias_count + active_edit_policy_count > 0,
+        server_memory_ready: personal_vocab_count + personal_alias_count + active_edit_policy_count
+            > 0,
     }))
 }
 
@@ -960,10 +961,7 @@ pub async fn confirm_learning_batch(
         let term_label = if learned_terms.len() == 1 {
             learned_terms[0].clone()
         } else {
-            format!(
-                "{} corrections",
-                learned_count
-            )
+            format!("{} corrections", learned_count)
         };
         let message = format!(
             "Saved {} correction{}",
@@ -972,22 +970,28 @@ pub async fn confirm_learning_batch(
         );
         tracing::info!(
             "[runtime] notify vocab-learned account={} learned={} blocked={}",
-            user.account_id, learned_count, blocked_count
-        );
-        state.notifications.emit(
             user.account_id,
-            DesktopNotification {
-                kind: "vocab-learned".to_string(),
-                payload: json!({
-                    "term": term_label,
-                    "message": message,
-                }),
-            },
-        ).await;
+            learned_count,
+            blocked_count
+        );
+        state
+            .notifications
+            .emit(
+                user.account_id,
+                DesktopNotification {
+                    kind: "vocab-learned".to_string(),
+                    payload: json!({
+                        "term": term_label,
+                        "message": message,
+                    }),
+                },
+            )
+            .await;
     } else {
         tracing::info!(
             "[runtime] no notification — all {} item(s) blocked account={}",
-            req.items.len(), user.account_id
+            req.items.len(),
+            user.account_id
         );
     }
 
@@ -1006,7 +1010,10 @@ pub async fn client_event(
 ) -> Result<Json<ClientEventResponse>, (StatusCode, Json<Value>)> {
     let event_type = req.event_type.trim();
     if event_type.is_empty() {
-        return Err(json_error(StatusCode::BAD_REQUEST, "event_type is required"));
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "event_type is required",
+        ));
     }
 
     let org_id = primary_org_id(&state, user.account_id).await?;
@@ -1039,9 +1046,10 @@ pub async fn client_event(
         None
     };
 
-    let server_judgment = judge_and_upsert_client_learning_event(&state, &user, org_id, run_id, &req)
-        .await
-        .map_err(db_err)?;
+    let server_judgment =
+        judge_and_upsert_client_learning_event(&state, &user, org_id, run_id, &req)
+            .await
+            .map_err(db_err)?;
 
     sqlx::query(
         "INSERT INTO runtime_learning_events
@@ -1065,7 +1073,10 @@ pub async fn client_event(
     .map_err(db_err)?;
 
     let notified = if let Some(notification) = req.notification {
-        state.notifications.emit(user.account_id, notification).await;
+        state
+            .notifications
+            .emit(user.account_id, notification)
+            .await;
         true
     } else {
         false
@@ -3291,9 +3302,8 @@ fn restore_numeric_literal_tokens(transcript: &str, output: &str) -> String {
 }
 
 fn numeric_literal_core(token: &str) -> Option<String> {
-    let core = token.trim_matches(|c: char| {
-        !(c.is_ascii_digit() || matches!(c, '$' | '₹' | '%' | '.' | ','))
-    });
+    let core = token
+        .trim_matches(|c: char| !(c.is_ascii_digit() || matches!(c, '$' | '₹' | '%' | '.' | ',')));
     if core.is_empty() || !core.chars().any(|c| c.is_ascii_digit()) {
         return None;
     }
@@ -3554,18 +3564,123 @@ fn normalize_learning_text(text: &str) -> String {
 
 fn is_common_learning_term(norm: &str) -> bool {
     const COMMON: &[&str] = &[
-        "kaisa", "kaisi", "kaise", "aisa", "aisi", "aise", "laga", "lagi", "lage",
-        "main", "mein", "hai", "hain", "tha", "thi", "the", "time", "can", "go", "do",
-        "this", "for", "me", "one thing", "ek baar", "char log", "kaam", "kya", "kyun",
-        "aur", "batao", "bolo", "karo", "karna", "kar", "bhejo", "dikhao", "kholo",
-        "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has",
-        "had", "does", "did", "will", "would", "could", "should", "may", "might",
-        "must", "shall", "and", "or", "but", "if", "in", "on", "at", "to", "of",
-        "it", "its", "that", "which", "who", "not", "no", "yes", "ok", "okay",
-        "yeah", "yep", "nope", "open", "close", "send", "return", "source", "schema",
-        "resolver", "chart", "bank", "smallcap", "small", "cap", "one", "two", "three",
-        "four", "five", "six", "seven", "eight", "nine", "ten", "ek", "do", "teen",
-        "char", "panch", "paanch", "ka", "ke", "ki", "ko", "se", "par", "pe",
+        "kaisa",
+        "kaisi",
+        "kaise",
+        "aisa",
+        "aisi",
+        "aise",
+        "laga",
+        "lagi",
+        "lage",
+        "main",
+        "mein",
+        "hai",
+        "hain",
+        "tha",
+        "thi",
+        "the",
+        "time",
+        "can",
+        "go",
+        "do",
+        "this",
+        "for",
+        "me",
+        "one thing",
+        "ek baar",
+        "char log",
+        "kaam",
+        "kya",
+        "kyun",
+        "aur",
+        "batao",
+        "bolo",
+        "karo",
+        "karna",
+        "kar",
+        "bhejo",
+        "dikhao",
+        "kholo",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "and",
+        "or",
+        "but",
+        "if",
+        "in",
+        "on",
+        "at",
+        "to",
+        "of",
+        "it",
+        "its",
+        "that",
+        "which",
+        "who",
+        "not",
+        "no",
+        "yes",
+        "ok",
+        "okay",
+        "yeah",
+        "yep",
+        "nope",
+        "open",
+        "close",
+        "send",
+        "return",
+        "source",
+        "schema",
+        "resolver",
+        "chart",
+        "bank",
+        "smallcap",
+        "small",
+        "cap",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "ek",
+        "do",
+        "teen",
+        "char",
+        "panch",
+        "paanch",
+        "ka",
+        "ke",
+        "ki",
+        "ko",
+        "se",
+        "par",
+        "pe",
     ];
     if COMMON.contains(&norm) {
         return true;
@@ -4054,9 +4169,7 @@ fn extract_user_edit_spans(pasted_output: &str, user_kept: &str) -> Vec<UserEdit
     spans
 }
 
-fn deterministic_user_edit_span_candidates(
-    spans: &[UserEditSpan],
-) -> Vec<LearningReviewCandidate> {
+fn deterministic_user_edit_span_candidates(spans: &[UserEditSpan]) -> Vec<LearningReviewCandidate> {
     spans
         .iter()
         .filter_map(|span| {
@@ -4149,12 +4262,7 @@ fn raw_surface_for_normalized_span(text: &str, span: &str) -> Option<String> {
     let haystack_tokens = normalized_tokens(text);
     haystack_tokens
         .windows(target_tokens.len())
-        .find(|window| {
-            window
-                .iter()
-                .map(|(_, norm)| norm)
-                .eq(target_tokens.iter())
-        })
+        .find(|window| window.iter().map(|(_, norm)| norm).eq(target_tokens.iter()))
         .map(|window| {
             window
                 .iter()
@@ -4165,10 +4273,14 @@ fn raw_surface_for_normalized_span(text: &str, span: &str) -> Option<String> {
 }
 
 fn token_overlap_ratio(left: &str, right: &str) -> f32 {
-    let left_tokens: std::collections::HashSet<_> =
-        normalize_learning_text(left).split_whitespace().map(str::to_string).collect();
-    let right_tokens: std::collections::HashSet<_> =
-        normalize_learning_text(right).split_whitespace().map(str::to_string).collect();
+    let left_tokens: std::collections::HashSet<_> = normalize_learning_text(left)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let right_tokens: std::collections::HashSet<_> = normalize_learning_text(right)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
     if left_tokens.is_empty() || right_tokens.is_empty() {
         return 0.0;
     }
@@ -4352,7 +4464,9 @@ fn deterministic_learning_candidates(
         }
         if pasted_tokens
             .get(kept_index)
-            .map(|(_, pasted_norm)| compact_learning_text(pasted_norm) == compact_learning_text(target_norm))
+            .map(|(_, pasted_norm)| {
+                compact_learning_text(pasted_norm) == compact_learning_text(target_norm)
+            })
             .unwrap_or(false)
         {
             continue;
@@ -4377,7 +4491,9 @@ fn deterministic_learning_candidates(
                 let span_norm_tokens: Vec<&str> = span_norm.split_whitespace().collect();
                 if span_norm.is_empty()
                     || is_common_learning_term(&span_norm)
-                    || span_norm_tokens.iter().any(|token| is_learning_action_token(token))
+                    || span_norm_tokens
+                        .iter()
+                        .any(|token| is_learning_action_token(token))
                     || span
                         .iter()
                         .any(|(surface, _)| looks_like_protected_target(surface))
@@ -4395,14 +4511,17 @@ fn deterministic_learning_candidates(
                 if !enough_signal {
                     continue;
                 }
-                let rank =
-                    similarity + if compact_join || spelled_symbol { 0.20 } else { 0.0 };
+                let rank = similarity
+                    + if compact_join || spelled_symbol {
+                        0.20
+                    } else {
+                        0.0
+                    };
                 if best
                     .as_ref()
                     .map(|(best_rank, best_start, best_end)| {
                         let best_len = best_end - best_start;
-                        rank > *best_rank
-                            || ((rank - *best_rank).abs() < 0.01 && len > best_len)
+                        rank > *best_rank || ((rank - *best_rank).abs() < 0.01 && len > best_len)
                     })
                     .unwrap_or(true)
                 {
@@ -4412,7 +4531,8 @@ fn deterministic_learning_candidates(
         }
 
         if let Some((_, start, end)) = best {
-            let (start, end) = expand_learning_source_span(&raw_tokens, start, end, &target_compact);
+            let (start, end) =
+                expand_learning_source_span(&raw_tokens, start, end, &target_compact);
             let original = raw_tokens[start..end]
                 .iter()
                 .map(|(surface, _)| surface.as_str())
@@ -4442,10 +4562,7 @@ fn merge_learning_candidates(
         }) {
             continue;
         }
-        let candidate_key = (
-            normalize_learning_text(&candidate.original),
-            corrected_norm,
-        );
+        let candidate_key = (normalize_learning_text(&candidate.original), corrected_norm);
         if base.iter().any(|existing| {
             (
                 normalize_learning_text(&existing.original),
@@ -4611,7 +4728,12 @@ fn normalized_tokens(text: &str) -> Vec<(String, String)> {
             if norm.is_empty() {
                 None
             } else {
-                Some((surface.trim_matches(|c: char| !c.is_alphanumeric()).to_string(), norm))
+                Some((
+                    surface
+                        .trim_matches(|c: char| !c.is_alphanumeric())
+                        .to_string(),
+                    norm,
+                ))
             }
         })
         .collect()
@@ -4648,7 +4770,11 @@ fn infer_source_for_corrected(
                     } else {
                         1
                     };
-                if best.as_ref().map(|(best_score, _)| score < *best_score).unwrap_or(true) {
+                if best
+                    .as_ref()
+                    .map(|(best_score, _)| score < *best_score)
+                    .unwrap_or(true)
+                {
                     best = Some((score, surface.clone()));
                 }
             }
@@ -4702,8 +4828,7 @@ fn apply_exact_resolver(
         let correct_norm = normalize_learning_text(correct_form);
 
         // Skip if output already contains the correct form
-        if contains_normalized_phrase(&result, &correct_norm)
-        {
+        if contains_normalized_phrase(&result, &correct_norm) {
             skipped += 1;
             continue;
         }
@@ -4751,7 +4876,9 @@ fn is_runtime_exact_alias_safe(source: &str, correct: &str) -> bool {
     // look like a protected/custom term, not an ordinary lowercase word.
     let target_has_protected_shape = correct.chars().any(|c| c.is_ascii_uppercase())
         || correct.chars().any(|c| c.is_ascii_digit())
-        || correct.chars().any(|c| matches!(c, '_' | '-' | '.' | '@' | '/'));
+        || correct
+            .chars()
+            .any(|c| matches!(c, '_' | '-' | '.' | '@' | '/'));
     target_has_protected_shape || count_words(&source_norm) > 1
 }
 
@@ -4806,7 +4933,11 @@ fn replace_exact_phrase(text: &str, source: &str, correct: &str) -> String {
         }
     }
 
-    if changed { output_words.join(" ") } else { text.to_string() }
+    if changed {
+        output_words.join(" ")
+    } else {
+        text.to_string()
+    }
 }
 
 fn replace_phrase_core(first_word: &str, last_word: &str, correct: &str) -> String {
@@ -5191,10 +5322,8 @@ mod tests {
 
     #[test]
     fn restores_numeric_literal_punctuation() {
-        let output = restore_numeric_literal_tokens(
-            "Plan $19.99 yearly hai.",
-            "Plan ₹19.99 yearly hai.",
-        );
+        let output =
+            restore_numeric_literal_tokens("Plan $19.99 yearly hai.", "Plan ₹19.99 yearly hai.");
         assert_eq!(output, "Plan $19.99 yearly hai.");
     }
 
@@ -5202,10 +5331,7 @@ mod tests {
     fn restores_currency_after_post_formatter_if_model_changed_unit_word() {
         let formatted_transcript =
             crate::number_format::apply("monthly five dollar dena padega aur twenty percent off");
-        assert_eq!(
-            formatted_transcript,
-            "monthly $5 dena padega aur 20% off"
-        );
+        assert_eq!(formatted_transcript, "monthly $5 dena padega aur 20% off");
 
         let model_output = "monthly 5 rupaye dena padega aur 20% off";
         let post_formatted = crate::number_format::apply(model_output);
@@ -5368,8 +5494,9 @@ mod tests {
         };
         let spans = extract_user_edit_spans(&polish_revert.ai_output, &polish_revert.user_kept);
         assert_eq!(spans.len(), 1);
-        assert!(deterministic_user_edit_span_candidates_for_request(&polish_revert, &spans)
-            .is_empty());
+        assert!(
+            deterministic_user_edit_span_candidates_for_request(&polish_revert, &spans).is_empty()
+        );
 
         let entity_swap = AnalyzeEditLearningRequest {
             recording_id: Some("rec-2".to_string()),
@@ -5380,8 +5507,9 @@ mod tests {
         };
         let spans = extract_user_edit_spans(&entity_swap.ai_output, &entity_swap.user_kept);
         assert_eq!(spans.len(), 1);
-        assert!(deterministic_user_edit_span_candidates_for_request(&entity_swap, &spans)
-            .is_empty());
+        assert!(
+            deterministic_user_edit_span_candidates_for_request(&entity_swap, &spans).is_empty()
+        );
 
         let llm_candidate = AnalyzeEditLearningRequest {
             candidates: vec![LearningReviewCandidate {
@@ -5415,10 +5543,7 @@ mod tests {
 
     #[test]
     fn exact_edit_spans_handle_three_word_swap_as_one_hunk() {
-        let spans = extract_user_edit_spans(
-            "please send mef ka ipo",
-            "please send EMIAC ka ipo",
-        );
+        let spans = extract_user_edit_spans("please send mef ka ipo", "please send EMIAC ka ipo");
 
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].pasted_span, "mef");
@@ -5427,10 +5552,7 @@ mod tests {
 
     #[test]
     fn exact_edit_spans_do_not_make_grammar_edits_learning_candidates() {
-        let spans = extract_user_edit_spans(
-            "Macobs kaisa laga",
-            "Macobs kaise laga",
-        );
+        let spans = extract_user_edit_spans("Macobs kaisa laga", "Macobs kaise laga");
 
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].pasted_span, "kaisa");
@@ -5447,10 +5569,8 @@ mod tests {
         assert!(!email_spans.is_empty());
         assert!(deterministic_user_edit_span_candidates(&email_spans).is_empty());
 
-        let number_spans = extract_user_edit_spans(
-            "pachas hazaar ka invoice bhejo",
-            "50000 ka invoice bhejo",
-        );
+        let number_spans =
+            extract_user_edit_spans("pachas hazaar ka invoice bhejo", "50000 ka invoice bhejo");
         assert_eq!(number_spans.len(), 1);
         assert_eq!(number_spans[0].pasted_span, "pachas hazaar");
         assert_eq!(number_spans[0].kept_span, "50000");
@@ -5557,16 +5677,8 @@ mod tests {
                 "kal Macobs ke IPO mein invest karna hai",
                 vec![("", "Macobs")],
             ),
-            (
-                "Macobs kaisa laga",
-                "Macobs kaise laga",
-                vec![],
-            ),
-            (
-                "pachas percent discount hai",
-                "50% discount hai",
-                vec![],
-            ),
+            ("Macobs kaisa laga", "Macobs kaise laga", vec![]),
+            ("pachas percent discount hai", "50% discount hai", vec![]),
             (
                 "five hundred dollars ka invoice bhejo",
                 "$500 ka invoice bhejo",
@@ -5582,11 +5694,7 @@ mod tests {
                 "mera email vabhi.verma@gmail.com hai",
                 vec![],
             ),
-            (
-                "hello world",
-                "Hello, world!",
-                vec![],
-            ),
+            ("hello world", "Hello, world!", vec![]),
             (
                 "client ko bol do kaam ho gaya",
                 "Aaron ko update bhej do, Hermes integration complete ho chuka hai",
