@@ -30,6 +30,8 @@ pub struct Preferences {
     pub polish_text_hotkey: String,
     pub record_hotkey: String,
     pub learning_enabled: bool,
+    pub server_runtime_enabled: bool,
+    pub server_audio_runtime_enabled: bool,
     pub updated_at: i64,
     // API keys — stored in SQLite, never leave the device
     pub gateway_api_key: Option<String>,
@@ -56,6 +58,8 @@ pub struct PrefsUpdate {
     pub polish_text_hotkey: Option<String>,
     pub record_hotkey: Option<String>,
     pub learning_enabled: Option<bool>,
+    pub server_runtime_enabled: Option<bool>,
+    pub server_audio_runtime_enabled: Option<bool>,
     // API keys — Some(None) = clear; None = don't touch; Some(Some(s)) = set
     pub gateway_api_key: Option<Option<String>>,
     pub deepgram_api_key: Option<Option<String>>,
@@ -73,7 +77,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
     conn.query_row(
         "SELECT user_id, selected_model, tone_preset, custom_prompt, language,
                 output_language, auto_paste, edit_capture, polish_text_hotkey, record_hotkey,
-                learning_enabled, updated_at,
+                learning_enabled, server_runtime_enabled, server_audio_runtime_enabled, updated_at,
                 gateway_api_key, deepgram_api_key, gemini_api_key, llm_provider, groq_api_key,
                 cerebras_api_key, stt_provider
          FROM preferences WHERE user_id = ?1",
@@ -96,22 +100,24 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                         .unwrap_or_else(|| "caps_lock".into()),
                 ),
                 learning_enabled: row.get::<_, i64>(10)? != 0,
-                updated_at: row.get(11)?,
-                gateway_api_key: row.get(12)?,
-                deepgram_api_key: row.get(13)?,
-                gemini_api_key: row.get(14)?,
+                server_runtime_enabled: row.get::<_, i64>(11)? != 0,
+                server_audio_runtime_enabled: row.get::<_, i64>(12)? != 0,
+                updated_at: row.get(13)?,
+                gateway_api_key: row.get(14)?,
+                deepgram_api_key: row.get(15)?,
+                gemini_api_key: row.get(16)?,
                 llm_provider: {
-                    let raw = row.get::<_, Option<String>>(15)?.unwrap_or_default();
+                    let raw = row.get::<_, Option<String>>(17)?.unwrap_or_default();
                     if raw.is_empty() || raw == "gateway" {
                         "groq".into()
                     } else {
                         raw
                     }
                 },
-                groq_api_key: row.get(16)?,
-                cerebras_api_key: row.get(17)?,
+                groq_api_key: row.get(18)?,
+                cerebras_api_key: row.get(19)?,
                 stt_provider: row
-                    .get::<_, Option<String>>(18)?
+                    .get::<_, Option<String>>(20)?
                     .unwrap_or_else(|| "deepgram".into()),
             })
         },
@@ -190,6 +196,20 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
     if let Some(v) = update.learning_enabled {
         conn.execute(
             "UPDATE preferences SET learning_enabled = ?1, updated_at = ?2 WHERE user_id = ?3",
+            params![v as i64, now, user_id],
+        )
+        .ok()?;
+    }
+    if let Some(v) = update.server_runtime_enabled {
+        conn.execute(
+            "UPDATE preferences SET server_runtime_enabled = ?1, updated_at = ?2 WHERE user_id = ?3",
+            params![v as i64, now, user_id],
+        )
+        .ok()?;
+    }
+    if let Some(v) = update.server_audio_runtime_enabled {
+        conn.execute(
+            "UPDATE preferences SET server_audio_runtime_enabled = ?1, updated_at = ?2 WHERE user_id = ?3",
             params![v as i64, now, user_id],
         )
         .ok()?;

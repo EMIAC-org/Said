@@ -29,6 +29,10 @@ pub struct Preferences {
     pub record_hotkey: String,
     #[serde(default = "default_learning_enabled")]
     pub learning_enabled: bool,
+    #[serde(default)]
+    pub server_runtime_enabled: bool,
+    #[serde(default)]
+    pub server_audio_runtime_enabled: bool,
     // API keys (stored in SQLite; None if not set yet)
     #[serde(default)]
     pub deepgram_api_key: Option<String>,
@@ -75,6 +79,10 @@ pub struct PrefsUpdate {
     pub record_hotkey: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub learning_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_runtime_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_audio_runtime_enabled: Option<bool>,
     // API keys — Some(Some(value)) = set; Some(None) = clear; None = don't touch
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway_api_key: Option<Option<String>>,
@@ -238,6 +246,7 @@ pub async fn stream_voice_polish<F>(
     ep: &BackendEndpoint,
     wav_data: Vec<u8>,
     target_app: Option<String>,
+    client_run_id: Option<String>,
     pre_transcript: Option<String>,
     pre_transcript_meta: Option<TranscriptMeta>,
     repair_mode: Option<String>,
@@ -263,6 +272,9 @@ where
     }
     if let Some(app) = target_app {
         form = form.text("target_app", app);
+    }
+    if let Some(client_run_id) = client_run_id {
+        form = form.text("client_run_id", client_run_id);
     }
     // P5: forward pre-transcribed text so backend can skip Deepgram HTTP call
     if let Some(transcript) = pre_transcript {
@@ -804,6 +816,38 @@ pub struct EnterpriseStatus {
     pub email: Option<String>,
     pub server_url: Option<String>,
     pub org_name: Option<String>,
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeLiveConfig {
+    pub enabled: bool,
+    pub connected: bool,
+    pub server_url: Option<String>,
+    pub runtime_ws_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeNotificationConfig {
+    pub connected: bool,
+    pub server_url: Option<String>,
+    pub notifications_ws_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeLiveLatency {
+    pub stt: i64,
+    pub polish: i64,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeLiveResultUpload {
+    pub client_run_id: String,
+    pub transcript: String,
+    pub output: String,
+    pub model_used: String,
+    pub latency_ms: RuntimeLiveLatency,
 }
 
 /// POST /v1/auth/signup on the cloud control plane.
@@ -959,6 +1003,55 @@ pub async fn get_enterprise_status(ep: &BackendEndpoint) -> Result<EnterpriseSta
         .map_err(|e| format!("parse enterprise status: {e}"))
 }
 
+pub async fn get_runtime_live_config(ep: &BackendEndpoint) -> Result<RuntimeLiveConfig, String> {
+    let url = format!("{}/v1/runtime/live/config", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("runtime live config failed: {e}"))?
+        .json::<RuntimeLiveConfig>()
+        .await
+        .map_err(|e| format!("parse runtime live config: {e}"))
+}
+
+pub async fn get_runtime_notification_config(
+    ep: &BackendEndpoint,
+) -> Result<RuntimeNotificationConfig, String> {
+    let url = format!("{}/v1/runtime/notifications/config", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("runtime notification config failed: {e}"))?
+        .json::<RuntimeNotificationConfig>()
+        .await
+        .map_err(|e| format!("parse runtime notification config: {e}"))
+}
+
+pub async fn cache_runtime_live_result(
+    ep: &BackendEndpoint,
+    result: RuntimeLiveResultUpload,
+) -> Result<(), String> {
+    let url = format!("{}/v1/runtime/live/result", ep.url);
+    let status = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&result)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("cache runtime live result failed: {e}"))?
+        .status();
+    if status.is_success() || status.as_u16() == 204 {
+        Ok(())
+    } else {
+        Err(format!("cache runtime live result error: {status}"))
+    }
+}
+
 fn extract_error(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
@@ -1091,6 +1184,10 @@ pub struct ReviewCandidateResponse {
 pub struct ConfirmBatchResponse {
     pub learned_count: usize,
     pub learned_terms: Vec<String>,
+    #[serde(default)]
+    pub blocked_count: usize,
+    #[serde(default)]
+    pub server_owned: bool,
 }
 
 pub async fn confirm_batch(

@@ -271,7 +271,7 @@ async fn connect_deepgram(
     WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Box<dyn std::error::Error + Send + Sync>,
 > {
-    let url = "wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&smart_format=true&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&endpointing=1000&utterance_end_ms=2000";
+    let url = "wss://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&endpointing=1000&utterance_end_ms=2000";
     let mut request = url.into_client_request()?;
     request
         .headers_mut()

@@ -105,7 +105,7 @@ pub async fn polish(
     if !missing.is_empty() {
         return crate::routes::key_guard::missing_api_keys_response(missing);
     }
-    let (word_corrections_cached, stt_replacement_rules) =
+    let (word_corrections_cached, _stt_replacement_rules) =
         crate::get_lexicon_cached(&state.lexicon_cache, &pool, &user_id).await;
     let vocab_full = vocab_task.await.unwrap_or_default();
     let http_client = state.http_client.clone();

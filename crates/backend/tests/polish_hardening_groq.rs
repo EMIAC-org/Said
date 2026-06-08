@@ -64,6 +64,8 @@ fn prefs(output_language: &str, custom_prompt: Option<&str>) -> Preferences {
         edit_capture: true,
         polish_text_hotkey: "cmd+shift+p".into(),
         record_hotkey: "caps_lock".into(),
+        server_runtime_enabled: false,
+        server_audio_runtime_enabled: false,
         deepgram_api_key: None,
         gemini_api_key: None,
         learning_enabled: true,

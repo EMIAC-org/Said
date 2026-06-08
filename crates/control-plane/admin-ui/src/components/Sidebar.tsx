@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router'
-import { Activity, BookOpenText, Bug, LayoutDashboard, Video, Users, Monitor, Settings, LogOut } from 'lucide-react'
+import { Activity, BookOpenText, Bug, LayoutDashboard, Video, Users, Monitor, Settings, LogOut, LogIn, Gauge } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { Avatar } from './Avatar'
 
@@ -8,6 +8,7 @@ const nav = [
   { to: '/meetings', icon: Video, label: 'Meetings' },
   { to: '/team', icon: Users, label: 'Team' },
   { to: '/desktop', icon: Monitor, label: 'Desktop' },
+  { to: '/runtime', icon: Gauge, label: 'Runtime' },
   { to: '/vocabulary', icon: BookOpenText, label: 'Vocabulary' },
   { to: '/bugs', icon: Bug, label: 'Bugs' },
   { to: '/diagnostics', icon: Activity, label: 'Diagnostics' },
@@ -15,7 +16,7 @@ const nav = [
 ]
 
 export function Sidebar() {
-  const { user, logout } = useAuth()
+  const { user, logout, token } = useAuth()
   const email = user?.account?.email || ''
   const name = email.split('@')[0] || 'Admin'
   const display = name.charAt(0).toUpperCase() + name.slice(1)
@@ -70,12 +71,21 @@ export function Sidebar() {
 
       {/* Bottom */}
       <div className="px-3 pb-4 mt-auto">
-        <button
-          onClick={logout}
-          className="flex items-center gap-2 w-full px-2.5 py-[6px] text-[11px] text-fg-4 hover:text-fg-3 rounded-md hover:bg-[rgba(255,255,255,0.03)] transition-colors"
-        >
-          <LogOut size={13} strokeWidth={1.6} /> Sign out
-        </button>
+        {token ? (
+          <button
+            onClick={logout}
+            className="flex items-center gap-2 w-full px-2.5 py-[6px] text-[11px] text-fg-4 hover:text-fg-3 rounded-md hover:bg-[rgba(255,255,255,0.03)] transition-colors"
+          >
+            <LogOut size={13} strokeWidth={1.6} /> Sign out
+          </button>
+        ) : (
+          <NavLink
+            to="/login"
+            className="flex items-center gap-2 w-full px-2.5 py-[6px] text-[11px] text-accent hover:text-accent-hover rounded-md hover:bg-[rgba(255,255,255,0.03)] transition-colors"
+          >
+            <LogIn size={13} strokeWidth={1.6} /> Sign in
+          </NavLink>
+        )}
       </div>
     </aside>
   )

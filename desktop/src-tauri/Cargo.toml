@@ -25,6 +25,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 # Async HTTP for backend SSE consumption (Phase E)
 reqwest  = { workspace = true, features = ["blocking"] }
 futures  = "0.3"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 bytes    = "1"
 tracing  = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }

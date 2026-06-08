@@ -11,6 +11,8 @@ import { NewMeetingPage } from './pages/NewMeetingPage'
 import { TeamPage } from './pages/TeamPage'
 import { DesktopPage } from './pages/DesktopPage'
 import { VocabularyPage } from './pages/VocabularyPage'
+import { RuntimePage } from './pages/RuntimePage'
+import { RuntimeUserPage } from './pages/RuntimeUserPage'
 import { BugsPage } from './pages/BugsPage'
 import { DiagnosticsPage } from './pages/DiagnosticsPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -34,6 +36,8 @@ createRoot(document.getElementById('app')!).render(
             <Route path="meetings/:id/live" element={<LiveMeetingPage />} />
             <Route path="team" element={<TeamPage />} />
             <Route path="desktop" element={<DesktopPage />} />
+            <Route path="runtime" element={<RuntimePage />} />
+            <Route path="runtime/users/:id" element={<RuntimeUserPage />} />
             <Route path="vocabulary" element={<VocabularyPage />} />
             <Route path="bugs" element={<BugsPage />} />
             <Route path="diagnostics" element={<DiagnosticsPage />} />

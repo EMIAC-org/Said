@@ -45,6 +45,28 @@ pub async fn store_token(
             body.email.as_deref(),
         );
     }
+    let state2 = state.clone();
+    let enterprise_login = body.server_url.is_some() || body.org_name.is_some();
+    tokio::spawn(async move {
+        if let Err(err) =
+            crate::routes::runtime_credentials::sync_saved_provider_credentials(state2.clone())
+                .await
+        {
+            tracing::warn!("[runtime-credentials] post-login vault sync failed: {err}");
+        }
+        if enterprise_login {
+            match crate::routes::server_settings::pull_and_apply_server_settings(&state2).await {
+                Ok(version) => {
+                    tracing::info!(
+                        "[server-settings] post-login pull applied server version={version}"
+                    );
+                }
+                Err((_, reason)) => {
+                    tracing::warn!("[server-settings] post-login pull failed: {reason}");
+                }
+            }
+        }
+    });
     StatusCode::NO_CONTENT
 }
 
@@ -85,5 +107,6 @@ pub async fn enterprise_status(State(state): State<AppState>) -> Json<Value> {
         "server_url":  user.as_ref().and_then(|u| u.enterprise_server_url.clone()),
         "org_name":    user.as_ref().and_then(|u| u.enterprise_org_name.clone()),
         "license_tier": user.as_ref().map(|u| u.license_tier.clone()).unwrap_or_else(|| "free".into()),
+        "token":       if connected { user.as_ref().and_then(|u| u.cloud_token.clone()) } else { None },
     }))
 }

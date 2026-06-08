@@ -21,6 +21,7 @@
 //
 // AI agents: to switch STT provider, change ONLY this line. Nothing else.
 const STT_PROVIDER_OVERRIDE: &str = "deepgram";
+const SERVER_STT_PROBE_ENV: &str = "AIRNOTE_ENABLE_SERVER_STT_PROBE";
 
 use axum::{
     Json,
@@ -31,14 +32,31 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
 };
+use base64::{Engine as _, engine::general_purpose};
+use futures::{SinkExt, StreamExt};
 use said_core::deepgram::{BiasPackage, TranscriptMeta};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::convert::Infallible;
 use std::time::Instant;
 use tokio::sync::mpsc;
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message as WsMessage, client::IntoClientRequest},
+};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
+
+fn server_stt_probe_enabled() -> bool {
+    matches!(
+        std::env::var(SERVER_STT_PROBE_ENV)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
 
 // ── Audio file helpers ────────────────────────────────────────────────────────
 
@@ -152,6 +170,56 @@ struct VoicePolishInput {
     repair_mode: Option<String>,
     screen_context: Option<String>,
     message_polish_mode: bool,
+    client_run_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ServerRuntimeVoiceRequest {
+    transcript: String,
+    output_language: String,
+    selected_model: String,
+    screen_context: Option<String>,
+    safe_vocab_terms: Vec<String>,
+    client_run_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerRuntimeVoiceResponse {
+    output: String,
+    model_used: String,
+    latency_ms: ServerRuntimeLatency,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerRuntimeLatency {
+    total: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct ServerRuntimeVoiceWavRequest {
+    wav_b64: String,
+    output_language: String,
+    selected_model: String,
+    screen_context: Option<String>,
+    safe_vocab_terms: Vec<String>,
+    client_run_id: Option<String>,
+    platform: Option<String>,
+    app_version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerRuntimeVoiceWavResponse {
+    transcript: String,
+    output: String,
+    model_used: String,
+    latency_ms: ServerRuntimeAudioLatency,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerRuntimeAudioLatency {
+    stt: i64,
+    polish: i64,
+    total: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -192,6 +260,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
     let mut repair_mode: Option<String> = None;
     let mut screen_context: Option<String> = None;
     let mut message_polish_mode = false;
+    let mut client_run_id: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name() {
@@ -234,6 +303,9 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
                     .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
                     .unwrap_or(false);
             }
+            Some("client_run_id") => {
+                client_run_id = field.text().await.ok().filter(|s| !s.trim().is_empty());
+            }
             _ => {}
         }
     }
@@ -248,6 +320,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             repair_mode,
             screen_context,
             message_polish_mode,
+            client_run_id,
         },
     )
     .await
@@ -281,6 +354,7 @@ pub async fn polish_transcript(
             repair_mode: None,
             screen_context: None,
             message_polish_mode: false,
+            client_run_id: None,
         },
     )
     .await
@@ -611,6 +685,578 @@ async fn run_message_polish_pass(
     result.map(|r| (r, groq::GROQ_MODEL_70B.to_string()))
 }
 
+async fn run_server_runtime_voice_probe(
+    http_client: &reqwest::Client,
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    client_run_id: Option<&str>,
+    transcript: &str,
+    output_language: &str,
+    selected_model: &str,
+    screen_context: Option<&str>,
+    vocab_entries: &[VocabEntry],
+) -> Result<(crate::llm::PolishResult, String), String> {
+    let Some(user) = crate::store::users::get_user(pool, user_id) else {
+        return Err("local user not found".to_string());
+    };
+    let token = user
+        .cloud_token
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "server runtime requires AirNote sign-in".to_string())?;
+    let base_url = user
+        .enterprise_server_url
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+
+    let safe_vocab_terms = vocab_entries
+        .iter()
+        .map(|entry| entry.term.trim().to_string())
+        .filter(|term| !term.is_empty())
+        .take(20)
+        .collect::<Vec<_>>();
+
+    let req = ServerRuntimeVoiceRequest {
+        transcript: transcript.to_string(),
+        output_language: output_language.to_string(),
+        selected_model: selected_model.to_string(),
+        screen_context: screen_context.map(|s| s.chars().take(500).collect()),
+        safe_vocab_terms,
+        client_run_id: client_run_id
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+            .or_else(|| Some(Uuid::new_v4().to_string())),
+    };
+
+    let url = format!("{}/v1/runtime/voice/polish", base_url.trim_end_matches('/'));
+    let start = Instant::now();
+    let resp = http_client
+        .post(&url)
+        .bearer_auth(token)
+        .json(&req)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| format!("server runtime request failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "server runtime returned {status}: {}",
+            &body[..body.len().min(240)]
+        ));
+    }
+
+    let parsed = resp
+        .json::<ServerRuntimeVoiceResponse>()
+        .await
+        .map_err(|e| format!("server runtime response parse failed: {e}"))?;
+    let measured_ms = start.elapsed().as_millis() as u64;
+    let server_ms = parsed.latency_ms.total.max(0) as u64;
+    let polish_ms = measured_ms.max(server_ms);
+
+    Ok((
+        crate::llm::PolishResult {
+            polished: parsed.output,
+            polish_ms,
+        },
+        format!("server-runtime:{}", parsed.model_used),
+    ))
+}
+
+async fn run_local_voice_polish_no_stream(
+    http_client: reqwest::Client,
+    pool: crate::store::DbPool,
+    user_id: String,
+    llm_provider: String,
+    selected_model: String,
+    gateway_key: String,
+    gemini_key: String,
+    groq_key: String,
+    cerebras_key: String,
+    system_prompt: String,
+    user_message: String,
+) -> Result<(crate::llm::PolishResult, String), String> {
+    let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
+        let pool_tok = pool.clone();
+        let uid_tok = user_id.clone();
+        let tok = tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
+            .await
+            .unwrap_or(None);
+        (
+            openai_codex::MODEL_MINI.to_string(),
+            tok.map(|t| t.access_token),
+        )
+    } else if llm_provider == "gemini_direct" {
+        (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
+    } else if llm_provider == "groq" {
+        (
+            if selected_model == "smart" {
+                groq::GROQ_MODEL_SMART
+            } else {
+                groq::GROQ_MODEL_FAST
+            }
+            .to_string(),
+            None,
+        )
+    } else if llm_provider == "cerebras" {
+        (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
+    } else {
+        (said_core::resolve_model(&selected_model).to_string(), None)
+    };
+
+    let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
+    let drain = tokio::spawn(async move { while token_rx.recv().await.is_some() {} });
+
+    let result = if llm_provider == "openai_codex" {
+        let access_token = openai_token_opt.as_deref().unwrap_or("");
+        if access_token.is_empty() {
+            return Err(
+                "OpenAI not connected — go to Settings to connect your account".to_string(),
+            );
+        }
+        openai_codex::stream_polish(
+            &http_client,
+            access_token,
+            &model_for_llm,
+            &system_prompt,
+            &user_message,
+            token_tx,
+        )
+        .await
+    } else if llm_provider == "gemini_direct" {
+        gemini_direct::stream_polish(
+            &http_client,
+            &gemini_key,
+            &model_for_llm,
+            &system_prompt,
+            &user_message,
+            token_tx,
+        )
+        .await
+    } else if llm_provider == "groq" {
+        groq::stream_polish(
+            &http_client,
+            &groq_key,
+            &model_for_llm,
+            &system_prompt,
+            &user_message,
+            token_tx,
+        )
+        .await
+    } else if llm_provider == "cerebras" {
+        cerebras::stream_polish(
+            &http_client,
+            &cerebras_key,
+            &model_for_llm,
+            &system_prompt,
+            &user_message,
+            token_tx,
+        )
+        .await
+    } else {
+        gateway::stream_polish(
+            &http_client,
+            &gateway_key,
+            &model_for_llm,
+            &system_prompt,
+            &user_message,
+            token_tx,
+        )
+        .await
+    };
+
+    let _ = drain.await;
+    result.map(|r| (r, model_for_llm))
+}
+
+async fn run_server_runtime_voice_wav_probe(
+    http_client: &reqwest::Client,
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    wav_data: &[u8],
+    output_language: &str,
+    selected_model: &str,
+    screen_context: Option<&str>,
+    safe_vocab_terms: Vec<String>,
+) -> Result<
+    (
+        String,
+        crate::llm::PolishResult,
+        String,
+        ServerRuntimeAudioLatency,
+    ),
+    String,
+> {
+    let Some(user) = crate::store::users::get_user(pool, user_id) else {
+        return Err("local user not found".to_string());
+    };
+    let token = user
+        .cloud_token
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "server audio runtime requires AirNote sign-in".to_string())?;
+    let base_url = user
+        .enterprise_server_url
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+
+    let req = ServerRuntimeVoiceWavRequest {
+        wav_b64: general_purpose::STANDARD.encode(wav_data),
+        output_language: output_language.to_string(),
+        selected_model: selected_model.to_string(),
+        screen_context: screen_context.map(|s| s.chars().take(500).collect()),
+        safe_vocab_terms,
+        client_run_id: Some(Uuid::new_v4().to_string()),
+        platform: Some(std::env::consts::OS.to_string()),
+        app_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
+    };
+
+    let url = format!("{}/v1/runtime/voice/wav", base_url.trim_end_matches('/'));
+    let start = Instant::now();
+    let resp = http_client
+        .post(&url)
+        .bearer_auth(token)
+        .json(&req)
+        .timeout(std::time::Duration::from_secs(45))
+        .send()
+        .await
+        .map_err(|e| format!("server audio runtime request failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "server audio runtime returned {status}: {}",
+            &body[..body.len().min(240)]
+        ));
+    }
+
+    let parsed = resp
+        .json::<ServerRuntimeVoiceWavResponse>()
+        .await
+        .map_err(|e| format!("server audio runtime response parse failed: {e}"))?;
+    let measured_ms = start.elapsed().as_millis() as u64;
+    let server_ms = parsed.latency_ms.total.max(0) as u64;
+    let polish_ms = measured_ms.max(server_ms);
+
+    Ok((
+        parsed.transcript,
+        crate::llm::PolishResult {
+            polished: parsed.output,
+            polish_ms,
+        },
+        format!("server-audio-runtime:{}", parsed.model_used),
+        parsed.latency_ms,
+    ))
+}
+
+async fn run_server_runtime_voice_ws_probe(
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    wav_data: &[u8],
+    output_language: &str,
+    selected_model: &str,
+    screen_context: Option<&str>,
+    safe_vocab_terms: Vec<String>,
+) -> Result<
+    (
+        String,
+        crate::llm::PolishResult,
+        String,
+        ServerRuntimeAudioLatency,
+    ),
+    String,
+> {
+    let Some(user) = crate::store::users::get_user(pool, user_id) else {
+        return Err("local user not found".to_string());
+    };
+    let token = user
+        .cloud_token
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "server audio runtime requires AirNote sign-in".to_string())?;
+    let base_url = user
+        .enterprise_server_url
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+
+    let wav = extract_pcm16_wav(wav_data)?;
+    let ws_url = build_server_runtime_ws_url(&base_url, &token);
+    let mut request = ws_url
+        .into_client_request()
+        .map_err(|e| format!("server audio runtime WS URL failed: {e}"))?;
+    request.headers_mut().insert(
+        "User-Agent",
+        "AirNote local backend server-audio-runtime-probe"
+            .parse()
+            .map_err(|e| format!("server audio runtime WS header failed: {e}"))?,
+    );
+
+    let start = Instant::now();
+    let (socket, _) = connect_async(request)
+        .await
+        .map_err(|e| format!("server audio runtime WS connect failed: {e}"))?;
+    let (mut sink, mut stream) = socket.split();
+    let trace_id = Uuid::new_v4().to_string();
+    let start_msg = json!({
+        "type": "voice.start",
+        "run_id": trace_id,
+        "mode": "normal_voice",
+        "selected_model": selected_model,
+        "output_language": output_language,
+        "source": "local_backend_ws_probe",
+        "platform": std::env::consts::OS,
+        "app_version": option_env!("CARGO_PKG_VERSION"),
+        "screen_context": screen_context.map(|s| s.chars().take(500).collect::<String>()),
+        "safe_vocab_terms": safe_vocab_terms,
+        "audio": {
+            "encoding": "linear16",
+            "sample_rate": wav.sample_rate,
+            "channels": 1,
+        }
+    });
+    sink.send(WsMessage::Text(start_msg.to_string()))
+        .await
+        .map_err(|e| format!("server audio runtime WS start failed: {e}"))?;
+
+    let frame_bytes = ((wav.sample_rate as usize * 2) / 10).max(2);
+    for chunk in wav.pcm.chunks(frame_bytes) {
+        sink.send(WsMessage::Binary(chunk.to_vec()))
+            .await
+            .map_err(|e| format!("server audio runtime WS audio send failed: {e}"))?;
+    }
+    sink.send(WsMessage::Text(
+        json!({"type": "audio.end", "run_id": trace_id}).to_string(),
+    ))
+    .await
+    .map_err(|e| format!("server audio runtime WS end failed: {e}"))?;
+
+    let mut transcript = String::new();
+    let mut output = None;
+    let mut model_used = "server-audio-runtime:ws".to_string();
+    let mut server_latency: Option<ServerRuntimeAudioLatency> = None;
+    let first_transcript_deadline =
+        tokio::time::Instant::now() + tokio::time::Duration::from_secs(20);
+    let overall_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(55);
+    let mut saw_transcript = false;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= overall_deadline {
+            return Err(format!(
+                "server audio runtime WS timed out waiting for done trace_id={trace_id}"
+            ));
+        }
+        if !saw_transcript && now >= first_transcript_deadline {
+            return Err(format!(
+                "server audio runtime WS first_transcript_timeout trace_id={trace_id}"
+            ));
+        }
+
+        let next_deadline = if saw_transcript {
+            overall_deadline
+        } else if first_transcript_deadline < overall_deadline {
+            first_transcript_deadline
+        } else {
+            overall_deadline
+        };
+        let remaining = next_deadline.saturating_duration_since(now);
+        let maybe_msg = tokio::time::timeout(remaining, stream.next())
+            .await
+            .map_err(|_| {
+                if saw_transcript {
+                    format!(
+                        "server audio runtime WS timed out waiting for done trace_id={trace_id}"
+                    )
+                } else {
+                    format!("server audio runtime WS first_transcript_timeout trace_id={trace_id}")
+                }
+            })?;
+        let Some(msg) = maybe_msg else {
+            break;
+        };
+        let msg = msg.map_err(|e| format!("server audio runtime WS read failed: {e}"))?;
+        let text = match msg {
+            WsMessage::Text(text) => text,
+            WsMessage::Close(_) => break,
+            _ => continue,
+        };
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("server audio runtime WS JSON failed: {e}"))?;
+        match value.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+            "transcript.partial" => {
+                saw_transcript = true;
+            }
+            "transcript.final" => {
+                saw_transcript = true;
+                if let Some(t) = value.get("text").and_then(|v| v.as_str()) {
+                    transcript = t.to_string();
+                }
+            }
+            "runtime.done" => {
+                output = value
+                    .get("output")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                server_latency = value.get("latency_ms").cloned().and_then(|latency| {
+                    serde_json::from_value::<ServerRuntimeAudioLatency>(latency).ok()
+                });
+                if let Some(model) = value
+                    .get("model_used")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| value.get("model").and_then(|v| v.as_str()))
+                {
+                    model_used = format!("server-audio-runtime:{model}");
+                }
+                break;
+            }
+            "runtime.error" => {
+                let error_kind = value
+                    .get("error_kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown_runtime_error");
+                let status = value.get("status").and_then(|v| v.as_i64()).unwrap_or(0);
+                let message = value
+                    .get("message")
+                    .or_else(|| value.get("error"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("server runtime websocket error");
+                return Err(format!(
+                    "server audio runtime WS returned {error_kind} status={status} trace_id={trace_id}: {}",
+                    &message[..message.len().min(240)]
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    let output = output
+        .ok_or_else(|| format!("server audio runtime WS ended without done trace_id={trace_id}"))?;
+    let measured_total_ms = start.elapsed().as_millis() as i64;
+    let latency = server_latency.unwrap_or(ServerRuntimeAudioLatency {
+        stt: 0,
+        polish: measured_total_ms,
+        total: measured_total_ms,
+    });
+    Ok((
+        transcript,
+        crate::llm::PolishResult {
+            polished: output,
+            polish_ms: latency.polish.max(0) as u64,
+        },
+        model_used,
+        latency,
+    ))
+}
+
+struct PcmWav {
+    pcm: Vec<u8>,
+    sample_rate: u32,
+}
+
+fn build_server_runtime_ws_url(base_url: &str, token: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let ws_base = if let Some(rest) = base.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        format!("wss://{base}")
+    };
+    format!("{ws_base}/v1/runtime/voice/ws?token={token}")
+}
+
+fn extract_pcm16_wav(wav: &[u8]) -> Result<PcmWav, String> {
+    if wav.len() < 44 || wav.get(0..4) != Some(b"RIFF") || wav.get(8..12) != Some(b"WAVE") {
+        return Err("server audio runtime WS requires a RIFF/WAVE file".to_string());
+    }
+
+    let mut offset = 12usize;
+    let mut channels = None;
+    let mut sample_rate = None;
+    let mut bits_per_sample = None;
+    let mut audio_format = None;
+    let mut data = None;
+
+    while offset + 8 <= wav.len() {
+        let id = &wav[offset..offset + 4];
+        let size = u32::from_le_bytes([
+            wav[offset + 4],
+            wav[offset + 5],
+            wav[offset + 6],
+            wav[offset + 7],
+        ]) as usize;
+        let start = offset + 8;
+        let end = start
+            .checked_add(size)
+            .ok_or_else(|| "invalid WAV chunk size".to_string())?;
+        if end > wav.len() {
+            return Err("invalid WAV chunk length".to_string());
+        }
+
+        if id == b"fmt " {
+            if size < 16 {
+                return Err("invalid WAV fmt chunk".to_string());
+            }
+            audio_format = Some(u16::from_le_bytes([wav[start], wav[start + 1]]));
+            channels = Some(u16::from_le_bytes([wav[start + 2], wav[start + 3]]));
+            sample_rate = Some(u32::from_le_bytes([
+                wav[start + 4],
+                wav[start + 5],
+                wav[start + 6],
+                wav[start + 7],
+            ]));
+            bits_per_sample = Some(u16::from_le_bytes([wav[start + 14], wav[start + 15]]));
+        } else if id == b"data" {
+            data = Some(wav[start..end].to_vec());
+        }
+
+        offset = end + (size % 2);
+    }
+
+    let channels = channels.ok_or_else(|| "WAV missing channel count".to_string())?;
+    let sample_rate = sample_rate.ok_or_else(|| "WAV missing sample rate".to_string())?;
+    let bits_per_sample = bits_per_sample.ok_or_else(|| "WAV missing bit depth".to_string())?;
+    let audio_format = audio_format.ok_or_else(|| "WAV missing audio format".to_string())?;
+    let data = data.ok_or_else(|| "WAV missing data chunk".to_string())?;
+
+    if audio_format != 1 {
+        return Err(format!(
+            "only PCM WAV is supported, got format {audio_format}"
+        ));
+    }
+    if bits_per_sample != 16 {
+        return Err(format!(
+            "only 16-bit PCM WAV is supported, got {bits_per_sample}"
+        ));
+    }
+    match channels {
+        1 => Ok(PcmWav {
+            pcm: data,
+            sample_rate,
+        }),
+        2 => Ok(PcmWav {
+            pcm: downmix_stereo_i16_to_mono(&data)?,
+            sample_rate,
+        }),
+        _ => Err(format!(
+            "only mono/stereo WAV is supported, got {channels} channels"
+        )),
+    }
+}
+
+fn downmix_stereo_i16_to_mono(data: &[u8]) -> Result<Vec<u8>, String> {
+    if data.len() % 4 != 0 {
+        return Err("invalid stereo PCM byte length".to_string());
+    }
+    let mut out = Vec::with_capacity(data.len() / 2);
+    for frame in data.chunks_exact(4) {
+        let left = i16::from_le_bytes([frame[0], frame[1]]) as i32;
+        let right = i16::from_le_bytes([frame[2], frame[3]]) as i32;
+        let mixed = ((left + right) / 2).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        out.extend_from_slice(&mixed.to_le_bytes());
+    }
+    Ok(out)
+}
+
 async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response {
     let VoicePolishInput {
         wav_data,
@@ -620,6 +1266,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         repair_mode,
         screen_context,
         message_polish_mode,
+        client_run_id,
     } = input;
 
     // Allow empty WAV when the caller supplied a pre_transcript (P5 / WS path).
@@ -763,6 +1410,172 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         );
         if !stt_bias_package.keyterms.is_empty() {
             info!("[pipeline] keyterms={:?}", stt_bias_package.keyterms);
+        }
+
+        if prefs.server_audio_runtime_enabled
+            && server_stt_probe_enabled()
+            && !wav_data.is_empty()
+            && !message_polish_mode
+            && repair_mode.is_none()
+        {
+            let server_audio_transport = std::env::var("AIRNOTE_SERVER_AUDIO_RUNTIME_TRANSPORT")
+                .unwrap_or_else(|_| "http".to_string())
+                .trim()
+                .to_ascii_lowercase();
+            let live_cached_result = if server_audio_transport == "ws" {
+                match client_run_id.as_deref() {
+                    Some(run_id) => {
+                        crate::take_live_server_runtime_result(&state.live_server_runtime_cache, run_id)
+                            .await
+                    }
+                    None => None,
+                }
+            } else {
+                None
+            };
+            if live_cached_result.is_none() {
+                yield Ok(Event::default().event("status")
+                    .data(json!({"phase": "server_transcribing"}).to_string()));
+            }
+
+            let server_audio_result = if let Some(cached) = live_cached_result {
+                info!(
+                    "[voice] using cached live server runtime result run_id={:?} transcript={} chars output={} chars",
+                    client_run_id,
+                    cached.transcript.len(),
+                    cached.output.len(),
+                );
+                Ok((
+                    cached.transcript,
+                    crate::llm::PolishResult {
+                        polished: cached.output,
+                        polish_ms: cached.latency_ms.polish.max(0) as u64,
+                    },
+                    format!("server-audio-runtime-live:{}", cached.model_used),
+                    ServerRuntimeAudioLatency {
+                        stt: cached.latency_ms.stt,
+                        polish: cached.latency_ms.polish,
+                        total: cached.latency_ms.total,
+                    },
+                ))
+            } else {
+                let safe_vocab_terms = vocab_full
+                    .iter()
+                    .map(|term| term.term.trim().to_string())
+                    .filter(|term| !term.is_empty())
+                    .take(30)
+                    .collect::<Vec<_>>();
+                if server_audio_transport == "ws" {
+                    run_server_runtime_voice_ws_probe(
+                        &pool,
+                        &user_id,
+                        &wav_data,
+                        &prefs.output_language,
+                        &prefs.selected_model,
+                        screen_context.as_deref(),
+                        safe_vocab_terms,
+                    )
+                    .await
+                } else {
+                    run_server_runtime_voice_wav_probe(
+                        &http_client,
+                        &pool,
+                        &user_id,
+                        &wav_data,
+                        &prefs.output_language,
+                        &prefs.selected_model,
+                        screen_context.as_deref(),
+                        safe_vocab_terms,
+                    )
+                    .await
+                }
+            };
+
+            match server_audio_result
+            {
+                Ok((server_transcript, server_result, server_model, server_latency)) => {
+                    let total_ms = total_start.elapsed().as_millis() as i64;
+                    let server_source = if server_model.starts_with("server-audio-runtime-live:") {
+                        "server_audio_runtime_live"
+                    } else {
+                        "server_audio_runtime"
+                    };
+                    info!(
+                        "[voice] server audio runtime returned transcript={} chars output={} chars model={} total={}ms",
+                        server_transcript.len(),
+                        server_result.polished.len(),
+                        server_model,
+                        server_latency.total,
+                    );
+
+                    let recording_id = Uuid::new_v4().to_string();
+                    let recording_id_for_store = recording_id.clone();
+                    let transcript_for_store = server_transcript.clone();
+                    let polished_for_store = server_result.polished.clone();
+                    let model_for_store = server_model.clone();
+                    let target_app_for_store = target_app.clone();
+                    let audio_id_for_store = saved_audio_id.clone();
+                    let pool_store = pool.clone();
+                    let user_id_store = user_id.clone();
+                    let word_count = polished_for_store.split_whitespace().count() as i64;
+                    tokio::spawn(async move {
+                        insert_recording(&pool_store, InsertRecording {
+                            id: &recording_id_for_store,
+                            user_id: &user_id_store,
+                            transcript: &transcript_for_store,
+                            polished: &polished_for_store,
+                            word_count,
+                            recording_seconds: estimated_secs(word_count),
+                            model_used: &model_for_store,
+                            confidence: None,
+                            transcribe_ms: Some(server_latency.stt),
+                            embed_ms: None,
+                            polish_ms: Some(server_latency.polish),
+                            target_app: target_app_for_store.as_deref(),
+                            source: server_source,
+                            audio_id: audio_id_for_store.as_deref(),
+                            enriched_transcript: Some(&transcript_for_store),
+                            raw_transcript: Some(&transcript_for_store),
+                            local_corrected_transcript: Some(&transcript_for_store),
+                            polished_output: Some(&polished_for_store),
+                        });
+                    });
+
+                    yield Ok(Event::default().event("done").data(
+                        json!({
+                            "recording_id": recording_id,
+                            "transcript": server_transcript,
+                            "polished": server_result.polished,
+                            "model_used": server_model,
+                            "confidence": null,
+                            "audio_id": aid,
+                            "source": server_source,
+                            "target_app": target_app,
+                            "output_language": prefs.output_language,
+                            "latency_ms": {
+                                "transcribe": server_latency.stt,
+                                "embed": 0,
+                                "retrieve": 0,
+                                "polish": server_result.polish_ms,
+                                "total": total_ms,
+                            },
+                            "examples_used": 0,
+                            "server_audio_runtime": true,
+                        }).to_string()
+                    ));
+                    return;
+                }
+                Err(e) => {
+                    warn!("[voice] server audio runtime failed; falling back to local pipeline: {e}");
+                    yield Ok(Event::default().event("status")
+                        .data(json!({"phase": "server_audio_fallback"}).to_string()));
+                }
+            }
+        }
+        if prefs.server_audio_runtime_enabled && !server_stt_probe_enabled() {
+            debug!(
+                "[voice] server audio runtime probe disabled; using local Deepgram STT + polish path"
+            );
         }
 
         // ── STEP 1: STT ───────────────────────────────────────────────────────────
@@ -1210,130 +2023,217 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             base_system_prompt
         };
 
-        // ── STEP 5: LLM stream (single pass) ─────────────────────────────────────
-        let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
-        let sys_p       = system_prompt.clone();
-        let usr_m       = user_message.clone();
-        let client_c    = http_client.clone();
-
-        let llm_provider = prefs.llm_provider.clone();
-        let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
-            let pool_tok = pool.clone();
-            let uid_tok  = user_id.clone();
-            let tok = tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
-                .await
-                .unwrap_or(None);
-            (openai_codex::MODEL_MINI.to_string(), tok.map(|t| t.access_token))
-        } else if llm_provider == "gemini_direct" {
-            (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
-        } else if llm_provider == "groq" {
-            (
-                if prefs.selected_model == "smart" {
-                    groq::GROQ_MODEL_SMART
-                } else {
-                    groq::GROQ_MODEL_FAST
-                }
-                .to_string(),
-                None,
-            )
-        } else if llm_provider == "cerebras" {
-            (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
-        } else {
-            (said_core::resolve_model(&prefs.selected_model).to_string(), None)
-        };
-        let llm_provider_for_task = llm_provider.clone();
-
-        let gk          = gateway_key.clone();
-        let gk_gemini   = gemini_key.clone();
-        let gk_groq     = groq_key.clone();
-        let gk_cerebras = cerebras_key.clone();
-        let groq_key_for_recovery = groq_key.clone();
-
-        let llm_start = Instant::now();
-        info!("[timing] LLM start — provider={llm_provider:?} model={model_for_llm:?}");
-        let mut actual_model_used = model_for_llm.clone();
-
-        let llm_task = tokio::spawn(async move {
-            if llm_provider_for_task == "openai_codex" {
-                let access_token = openai_token_opt.as_deref().unwrap_or("");
-                if access_token.is_empty() {
-                    return Err("OpenAI not connected — go to Settings to connect your account".to_string());
-                }
-                openai_codex::stream_polish(
-                    &client_c, access_token, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else if llm_provider_for_task == "gemini_direct" {
-                gemini_direct::stream_polish(
-                    &client_c, &gk_gemini, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else if llm_provider_for_task == "groq" {
-                groq::stream_polish(
-                    &client_c, &gk_groq, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else if llm_provider_for_task == "cerebras" {
-                cerebras::stream_polish(
-                    &client_c, &gk_cerebras, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else {
-                gateway::stream_polish(&client_c, &gk, &model_for_llm, &sys_p, &usr_m, token_tx).await
-            }
-        });
-
+        // ── STEP 5: LLM polish ───────────────────────────────────────────────────
         let enforce_roman_hinglish = prefs.output_language == "hinglish";
-        let mut stream_filter =
-            StreamSafetyFilter::new(StreamProvider::from_llm_provider(&llm_provider), &resolved_transcript);
-
-        // Yield each token as an SSE event. For Hinglish we defensively
-        // romanize any Devanagari before it reaches the desktop's live typing
-        // path; otherwise a bad model token can already be pasted before the
-        // final result is scrubbed.
+        let groq_key_for_recovery = groq_key.clone();
+        let llm_start = Instant::now();
         let mut saw_script_rewrite = false;
-        while let Some(raw_token) = token_rx.recv().await {
-            let filtered = stream_filter.push_token(raw_token);
-            if filtered.unsafe_detected {
-                warn!("[voice] stream safety disabled live typing for provider={llm_provider}");
-            }
-            for token in filtered.tokens {
-                let token = if enforce_roman_hinglish && token != STREAM_RESET_SENTINEL {
-                    let mut t = token;
-                    if script::contains_devanagari(&t) {
-                        if !saw_script_rewrite {
-                            saw_script_rewrite = true;
-                            yield Ok(Event::default().event("token")
-                                .data(json!({"token": STREAM_RESET_SENTINEL}).to_string()));
-                        }
-                        t = script::enforce_roman_hinglish(&t);
-                    }
-                    script::strip_non_latin_scripts(&t)
-                } else {
-                    token
-                };
-                yield Ok(Event::default().event("token")
-                    .data(json!({"token": token}).to_string()));
-            }
-        }
+        let (mut llm_result, mut actual_model_used, stream_filter) = if prefs.server_runtime_enabled {
+            yield Ok(Event::default().event("status")
+                .data(json!({"phase": "server_polishing", "transcript": &resolved_transcript}).to_string()));
+            info!("[timing] LLM start — provider=server_runtime selected_model={:?}", prefs.selected_model);
+            match run_server_runtime_voice_probe(
+                &http_client,
+                &pool,
+                &user_id,
+                client_run_id.as_deref(),
+                &resolved_transcript,
+                &prefs.output_language,
+                &prefs.selected_model,
+                screen_context.as_deref(),
+                &vocab_entries,
+            )
+            .await {
+                Ok((result, model)) => {
+                    info!(
+                        "[voice] server runtime probe returned {} chars using {model}",
+                        result.polished.len()
+                    );
+                    (
+                        result,
+                        model,
+                        StreamSafetyFilter::new(StreamProvider::from_llm_provider("server_runtime"), &resolved_transcript),
+                    )
+                }
+                Err(e) => {
+                    warn!("[voice] server runtime probe failed; falling back to local polish: {e}");
+                    yield Ok(Event::default().event("status")
+                        .data(json!({"phase": "server_runtime_fallback", "transcript": &resolved_transcript}).to_string()));
 
-        let mut llm_result = match llm_task.await {
-            Ok(Ok(r))   => r,
-            Ok(Err(e))  => {
-                let message = if invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e) {
-                    "OpenAI not connected — go to Settings to connect your account".to_string()
+                    let fallback_provider = prefs.llm_provider.clone();
+                    match run_local_voice_polish_no_stream(
+                        http_client.clone(),
+                        pool.clone(),
+                        user_id.clone(),
+                        fallback_provider.clone(),
+                        prefs.selected_model.clone(),
+                        gateway_key.clone(),
+                        gemini_key.clone(),
+                        groq_key.clone(),
+                        cerebras_key.clone(),
+                        system_prompt.clone(),
+                        user_message.clone(),
+                    )
+                    .await {
+                        Ok((result, model)) => {
+                            info!(
+                                "[voice] server runtime fallback succeeded locally using {model} ({} chars)",
+                                result.polished.len()
+                            );
+                            (
+                                result,
+                                format!("server-runtime-fallback:{model}"),
+                                StreamSafetyFilter::new(
+                                    StreamProvider::from_llm_provider(&fallback_provider),
+                                    &resolved_transcript,
+                                ),
+                            )
+                        }
+                        Err(local_e) => {
+                            let message = if invalidate_openai_session_on_auth_error(
+                                &pool,
+                                &user_id,
+                                &fallback_provider,
+                                &local_e,
+                            ) {
+                                "OpenAI not connected — go to Settings to connect your account"
+                                    .to_string()
+                            } else {
+                                format!(
+                                    "server runtime failed ({e}); local fallback failed ({local_e})"
+                                )
+                            };
+                            warn!("[voice] server runtime fallback failed: {local_e}");
+                            yield Ok(Event::default().event("error").data(
+                                json!({"message": message, "audio_id": aid}).to_string()
+                            ));
+                            return;
+                        }
+                    }
+                }
+            }
+        } else {
+            let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
+            let sys_p       = system_prompt.clone();
+            let usr_m       = user_message.clone();
+            let client_c    = http_client.clone();
+
+            let llm_provider = prefs.llm_provider.clone();
+            let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
+                let pool_tok = pool.clone();
+                let uid_tok  = user_id.clone();
+                let tok = tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
+                    .await
+                    .unwrap_or(None);
+                (openai_codex::MODEL_MINI.to_string(), tok.map(|t| t.access_token))
+            } else if llm_provider == "gemini_direct" {
+                (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
+            } else if llm_provider == "groq" {
+                (
+                    if prefs.selected_model == "smart" {
+                        groq::GROQ_MODEL_SMART
+                    } else {
+                        groq::GROQ_MODEL_FAST
+                    }
+                    .to_string(),
+                    None,
+                )
+            } else if llm_provider == "cerebras" {
+                (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
+            } else {
+                (said_core::resolve_model(&prefs.selected_model).to_string(), None)
+            };
+            let llm_provider_for_task = llm_provider.clone();
+
+            let gk          = gateway_key.clone();
+            let gk_gemini   = gemini_key.clone();
+            let gk_groq     = groq_key.clone();
+            let gk_cerebras = cerebras_key.clone();
+
+            info!("[timing] LLM start — provider={llm_provider:?} model={model_for_llm:?}");
+            let actual_model_used = model_for_llm.clone();
+
+            let llm_task = tokio::spawn(async move {
+                if llm_provider_for_task == "openai_codex" {
+                    let access_token = openai_token_opt.as_deref().unwrap_or("");
+                    if access_token.is_empty() {
+                        return Err("OpenAI not connected — go to Settings to connect your account".to_string());
+                    }
+                    openai_codex::stream_polish(
+                        &client_c, access_token, &model_for_llm, &sys_p, &usr_m, token_tx,
+                    ).await
+                } else if llm_provider_for_task == "gemini_direct" {
+                    gemini_direct::stream_polish(
+                        &client_c, &gk_gemini, &model_for_llm, &sys_p, &usr_m, token_tx,
+                    ).await
+                } else if llm_provider_for_task == "groq" {
+                    groq::stream_polish(
+                        &client_c, &gk_groq, &model_for_llm, &sys_p, &usr_m, token_tx,
+                    ).await
+                } else if llm_provider_for_task == "cerebras" {
+                    cerebras::stream_polish(
+                        &client_c, &gk_cerebras, &model_for_llm, &sys_p, &usr_m, token_tx,
+                    ).await
                 } else {
-                    e.clone()
-                };
-                warn!("[voice] LLM error: {e}");
-                yield Ok(Event::default().event("error").data(
-                    json!({"message": message, "audio_id": aid}).to_string()
-                ));
-                return;
+                    gateway::stream_polish(&client_c, &gk, &model_for_llm, &sys_p, &usr_m, token_tx).await
+                }
+            });
+
+            let mut stream_filter =
+                StreamSafetyFilter::new(StreamProvider::from_llm_provider(&llm_provider), &resolved_transcript);
+
+            // Yield each token as an SSE event. For Hinglish we defensively
+            // romanize any Devanagari before it reaches the desktop's live typing
+            // path; otherwise a bad model token can already be pasted before the
+            // final result is scrubbed.
+            while let Some(raw_token) = token_rx.recv().await {
+                let filtered = stream_filter.push_token(raw_token);
+                if filtered.unsafe_detected {
+                    warn!("[voice] stream safety disabled live typing for provider={llm_provider}");
+                }
+                for token in filtered.tokens {
+                    let token = if enforce_roman_hinglish && token != STREAM_RESET_SENTINEL {
+                        let mut t = token;
+                        if script::contains_devanagari(&t) {
+                            if !saw_script_rewrite {
+                                saw_script_rewrite = true;
+                                yield Ok(Event::default().event("token")
+                                    .data(json!({"token": STREAM_RESET_SENTINEL}).to_string()));
+                            }
+                            t = script::enforce_roman_hinglish(&t);
+                        }
+                        script::strip_non_latin_scripts(&t)
+                    } else {
+                        token
+                    };
+                    yield Ok(Event::default().event("token")
+                        .data(json!({"token": token}).to_string()));
+                }
             }
-            Err(e) => {
-                warn!("[voice] LLM task panicked: {e}");
-                yield Ok(Event::default().event("error").data(
-                    json!({"message": "internal error", "audio_id": aid}).to_string()
-                ));
-                return;
-            }
+
+            let llm_result = match llm_task.await {
+                Ok(Ok(r))   => r,
+                Ok(Err(e))  => {
+                    let message = if invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e) {
+                        "OpenAI not connected — go to Settings to connect your account".to_string()
+                    } else {
+                        e.clone()
+                    };
+                    warn!("[voice] LLM error: {e}");
+                    yield Ok(Event::default().event("error").data(
+                        json!({"message": message, "audio_id": aid}).to_string()
+                    ));
+                    return;
+                }
+                Err(e) => {
+                    warn!("[voice] LLM task panicked: {e}");
+                    yield Ok(Event::default().event("error").data(
+                        json!({"message": "internal error", "audio_id": aid}).to_string()
+                    ));
+                    return;
+                }
+            };
+            (llm_result, actual_model_used, stream_filter)
         };
 
         // Defensive scrub: the LLM is told NOT to emit [word?XX%] confidence
@@ -2268,7 +3168,29 @@ mod scrub_tests {
 
 #[cfg(test)]
 mod audio_tests {
-    use super::{estimated_secs, wav_duration_secs};
+    use super::{estimated_secs, extract_pcm16_wav, wav_duration_secs};
+
+    fn pcm_wav(channels: u16, sample_rate: u32, data: &[u8]) -> Vec<u8> {
+        let byte_rate = sample_rate * channels as u32 * 2;
+        let block_align = channels * 2;
+        let chunk_size = 36 + data.len() as u32;
+        let mut wav = Vec::with_capacity(44 + data.len());
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&chunk_size.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&byte_rate.to_le_bytes());
+        wav.extend_from_slice(&block_align.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(data);
+        wav
+    }
 
     /// Buffer shorter than a WAV header (44 bytes) must return 0.0, not panic.
     #[test]
@@ -2330,5 +3252,30 @@ mod audio_tests {
     #[test]
     fn estimated_secs_65_words_is_30s() {
         assert!((estimated_secs(65) - 30.0_f64).abs() < 1e-9);
+    }
+
+    #[test]
+    fn server_ws_wav_parser_extracts_mono_pcm_without_header() {
+        let pcm = [1u8, 0, 2, 0, 3, 0, 4, 0];
+        let wav = pcm_wav(1, 16_000, &pcm);
+        let parsed = extract_pcm16_wav(&wav).expect("valid mono wav");
+        assert_eq!(parsed.sample_rate, 16_000);
+        assert_eq!(parsed.pcm, pcm);
+    }
+
+    #[test]
+    fn server_ws_wav_parser_downmixes_stereo_pcm() {
+        let mut pcm = Vec::new();
+        pcm.extend_from_slice(&1000i16.to_le_bytes());
+        pcm.extend_from_slice(&3000i16.to_le_bytes());
+        pcm.extend_from_slice(&(-2000i16).to_le_bytes());
+        pcm.extend_from_slice(&1000i16.to_le_bytes());
+        let wav = pcm_wav(2, 48_000, &pcm);
+        let parsed = extract_pcm16_wav(&wav).expect("valid stereo wav");
+        assert_eq!(parsed.sample_rate, 48_000);
+        assert_eq!(
+            parsed.pcm,
+            [2000i16.to_le_bytes(), (-500i16).to_le_bytes()].concat()
+        );
     }
 }
