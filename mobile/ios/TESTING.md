@@ -49,9 +49,15 @@ After the app installs:
 5. Turn on `Allow Full Access`.
 6. Open Notes or Messages and switch to AirNote Keyboard.
 
-## Testing With Your Mac Backend On LAN
+## Testing With The Gateway
 
-Your iPhone cannot use `localhost` to reach your Mac. It needs your Mac LAN IP.
+Release and Staging builds should use the hosted mobile Gateway:
+
+```text
+https://airnote.emiactech.com
+```
+
+Debug builds can stay in mock mode for UI review. If you need a local Gateway from an iPhone, the iPhone cannot use `localhost` to reach your Mac. It needs your Mac LAN IP.
 
 Example:
 
@@ -78,6 +84,13 @@ For real LAN gateway testing, change it to:
 
 ```text
 AIRNOTE_USE_MOCK_GATEWAY = NO
+```
+
+For production-like testing, use `Staging` or `Release`; both set:
+
+```text
+AIRNOTE_USE_MOCK_GATEWAY = NO
+AIRNOTE_GATEWAY_BASE_URL = https:/$()/airnote.emiactech.com
 ```
 
 ## TestFlight Later
@@ -120,7 +133,10 @@ upload_to_testflight = true
 4. AirNote Keyboard opens in Notes.
 5. Next keyboard globe button works.
 6. Manual keys type.
-7. AirNote voice bar shows ready/repair states.
+7. Live setup requires Gateway sign-in in Staging/Release.
 8. App and keyboard share App Group session files.
-9. Mock result can be inserted once.
-10. Same result cannot insert twice.
+9. Start a live AirNote Session from the keyboard, speak once, and confirm the server sends `runtime.done`.
+10. The polished result can be inserted once.
+11. The same result cannot insert twice.
+12. Secure or unsupported fields use copy/recovery instead of unsafe insertion.
+13. Control-plane runtime/history shows the iOS run.

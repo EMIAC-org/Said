@@ -1,9 +1,15 @@
 package com.emiac.airnote.android
 
+import android.Manifest
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.provider.Settings
 import android.view.View
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -28,6 +34,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -53,6 +60,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -62,11 +70,13 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -85,11 +95,16 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.util.UUID
+import kotlinx.coroutines.launch
 
 private data class AirNoteColors(
     val background: Color,
@@ -187,28 +202,303 @@ private object AirNotePalette {
 
 @Composable
 fun AirNoteAndroidApp() {
+    val context = LocalContext.current
+    val sessionStore = remember { AndroidSecureSessionStore(context.applicationContext) }
+    val recorder = remember { AndroidVoiceRecorder() }
+    val scope = rememberCoroutineScope()
+    var gatewaySession by remember { mutableStateOf(sessionStore.read()) }
     var setupComplete by rememberSaveable { mutableStateOf(false) }
     var lightMode by rememberSaveable { mutableStateOf(false) }
-    val recent = remember { mutableStateListOf<String>() }
+    var runtimeStatus by rememberSaveable { mutableStateOf(if (BuildConfig.USE_MOCK_GATEWAY) "Preview" else "Unknown") }
+    var voicePhase by rememberSaveable { mutableStateOf(AndroidVoicePhase.Idle) }
+    var voiceMessage by rememberSaveable { mutableStateOf("Tap to record a short dictation.") }
+    var voiceLevel by rememberSaveable { mutableStateOf(0f) }
+    var voiceResult by rememberSaveable { mutableStateOf<String?>(null) }
+    var historyMessage by rememberSaveable { mutableStateOf(if (BuildConfig.USE_MOCK_GATEWAY) "Preview history" else "History not loaded") }
+    val history = remember { mutableStateListOf<RuntimeHistoryItem>() }
+    var learningItem by remember { mutableStateOf<RuntimeHistoryItem?>(null) }
+    var learningText by rememberSaveable { mutableStateOf("") }
+    var learningMessage by rememberSaveable { mutableStateOf("Pick a saved dictation to review an edit.") }
+    var learningWorking by rememberSaveable { mutableStateOf(false) }
+    val learningCandidates = remember { mutableStateListOf<RuntimeLearningCandidate>() }
+    val gateway = remember(gatewaySession?.token) {
+        if (BuildConfig.USE_MOCK_GATEWAY) {
+            MockGatewayClient()
+        } else {
+            HttpGatewayClient(BuildConfig.GATEWAY_BASE_URL) {
+                gatewaySession?.token ?: sessionStore.read()?.token
+            }
+        }
+    }
+
+    fun cancelLearningReview() {
+        learningItem = null
+        learningText = ""
+        learningMessage = "Pick a saved dictation to review an edit."
+        learningCandidates.clear()
+        learningWorking = false
+    }
+
+    fun startLearningReview(item: RuntimeHistoryItem) {
+        learningItem = item
+        learningText = item.displayText
+        learningMessage = "Edit the kept text, then analyze the correction."
+        learningCandidates.clear()
+        learningWorking = false
+    }
+
+    fun analyzeLearning() {
+        val item = learningItem ?: return
+        val kept = learningText.trim()
+        if (kept.isBlank()) {
+            learningMessage = "Kept text cannot be empty."
+            return
+        }
+        scope.launch {
+            learningWorking = true
+            learningCandidates.clear()
+            val result = runCatching {
+                gateway.analyzeEdit(
+                    recordingId = item.learningRecordingId(),
+                    transcript = item.transcript,
+                    aiOutput = item.learningAiOutput(),
+                    userKept = kept,
+                )
+            }
+            result.fold(
+                onSuccess = { analysis ->
+                    learningCandidates.addAll(analysis.candidates.filter { it.learnable })
+                    learningMessage = when {
+                        !analysis.changed -> "No edit detected."
+                        learningCandidates.isEmpty() -> "No safe learning candidates found."
+                        else -> "${learningCandidates.size} learning candidate${if (learningCandidates.size == 1) "" else "s"} ready."
+                    }
+                },
+                onFailure = { error ->
+                    learningMessage = error.message ?: "Could not analyze this correction."
+                },
+            )
+            learningWorking = false
+        }
+    }
+
+    fun confirmLearning() {
+        val item = learningItem ?: return
+        val items = learningCandidates.filter { it.learnable }
+        if (items.isEmpty()) {
+            learningMessage = "Analyze a correction before confirming."
+            return
+        }
+        scope.launch {
+            learningWorking = true
+            val result = runCatching {
+                gateway.confirmLearning(
+                    recordingId = item.learningRecordingId(),
+                    items = items,
+                )
+            }
+            result.fold(
+                onSuccess = { confirmation ->
+                    learningMessage = "Learned ${confirmation.learnedCount}, blocked ${confirmation.blockedCount}. ${confirmation.status}"
+                    learningCandidates.clear()
+                },
+                onFailure = { error ->
+                    learningMessage = error.message ?: "Could not confirm learning."
+                },
+            )
+            learningWorking = false
+        }
+    }
+
+    fun refreshHistory() {
+        scope.launch {
+            if (!BuildConfig.USE_MOCK_GATEWAY && gatewaySession?.token == null) {
+                history.clear()
+                historyMessage = "Sign in to sync server history."
+                return@launch
+            }
+            val result = runCatching { gateway.listHistory(limit = 20) }
+            result.fold(
+                onSuccess = { rows ->
+                    history.clear()
+                    history.addAll(rows)
+                    historyMessage = if (rows.isEmpty()) "No server history yet." else "Server history synced."
+                },
+                onFailure = { error ->
+                    historyMessage = error.message ?: "Could not load server history."
+                },
+            )
+        }
+    }
+
+    fun deleteHistory(item: RuntimeHistoryItem) {
+        scope.launch {
+            val result = runCatching { gateway.deleteHistory(item.id) }
+            result.fold(
+                onSuccess = {
+                    history.removeAll { it.id == item.id }
+                    if (learningItem?.id == item.id) {
+                        cancelLearningReview()
+                    }
+                    historyMessage = "Deleted from server history."
+                },
+                onFailure = { error ->
+                    historyMessage = error.message ?: "Could not delete history item."
+                },
+            )
+        }
+    }
+
+    LaunchedEffect(gatewaySession?.token) {
+        if (BuildConfig.USE_MOCK_GATEWAY) {
+            runtimeStatus = "Preview"
+            refreshHistory()
+        } else if (gatewaySession?.token != null) {
+            runtimeStatus = runCatching { gateway.runtimeStatus().readinessLabel }
+                .getOrElse { "unreachable" }
+            refreshHistory()
+        } else {
+            history.clear()
+            historyMessage = "Sign in to sync server history."
+        }
+    }
+
+    fun beginVoiceRecording() {
+        voiceResult = null
+        voiceMessage = "Listening. Speak naturally, then tap Stop."
+        val started = recorder.start(context.applicationContext, scope) { level ->
+            scope.launch { voiceLevel = level }
+        }
+        if (started) {
+            voicePhase = AndroidVoicePhase.Recording
+        } else {
+            voicePhase = AndroidVoicePhase.Error
+            voiceMessage = "Microphone is unavailable. Check Android permissions."
+        }
+    }
+
+    fun finishVoiceRecording() {
+        if (!recorder.isRecording) {
+            return
+        }
+        scope.launch {
+            voicePhase = AndroidVoicePhase.Uploading
+            voiceMessage = "Sending audio to AirNote Gateway."
+            voiceLevel = 0f
+            val result = runCatching {
+                val wav = recorder.stop()
+                require(wav.size > 44) { "No audio was captured. Try again." }
+                gateway.polishWav(
+                    wavBytes = wav,
+                    clientRunId = "android-${UUID.randomUUID()}",
+                    deviceId = androidDeviceId(context.applicationContext),
+                )
+            }
+            result.fold(
+                onSuccess = { response ->
+                    voicePhase = AndroidVoicePhase.Complete
+                    voiceResult = response.output
+                    voiceMessage = "Polished in ${response.totalLatencyMs.takeIf { it > 0 } ?: 0} ms."
+                    refreshHistory()
+                },
+                onFailure = { error ->
+                    voicePhase = AndroidVoicePhase.Error
+                    voiceResult = null
+                    voiceMessage = error.message ?: "AirNote could not finish this recording."
+                },
+            )
+        }
+    }
+
+    fun cancelVoiceRecording() {
+        recorder.cancel()
+        voicePhase = AndroidVoicePhase.Idle
+        voiceMessage = "Recording cancelled."
+        voiceLevel = 0f
+    }
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            beginVoiceRecording()
+        } else {
+            voicePhase = AndroidVoicePhase.Error
+            voiceMessage = "Microphone permission is required for dictation."
+        }
+    }
+
+    fun handleVoiceAction() {
+        when (voicePhase) {
+            AndroidVoicePhase.Recording -> finishVoiceRecording()
+            AndroidVoicePhase.Uploading -> Unit
+            else -> {
+                if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    beginVoiceRecording()
+                } else {
+                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            }
+        }
+    }
 
     AirNoteTheme(lightMode = lightMode) {
         if (setupComplete) {
             HomeScreen(
-                recent = recent,
+                history = history,
+                historyMessage = historyMessage,
+                accountEmail = gatewaySession?.account?.email,
+                runtimeStatus = runtimeStatus,
+                voicePhase = voicePhase,
+                voiceMessage = voiceMessage,
+                voiceLevel = voiceLevel,
+                voiceResult = voiceResult,
                 lightMode = lightMode,
                 onLightModeChange = { lightMode = it },
+                onVoiceAction = ::handleVoiceAction,
+                onCancelVoice = ::cancelVoiceRecording,
+                onRefreshHistory = ::refreshHistory,
+                onDeleteHistory = ::deleteHistory,
+                learningItem = learningItem,
+                learningText = learningText,
+                learningMessage = learningMessage,
+                learningCandidates = learningCandidates,
+                learningWorking = learningWorking,
+                onLearningTextChange = { learningText = it },
+                onStartLearningReview = ::startLearningReview,
+                onAnalyzeLearning = ::analyzeLearning,
+                onConfirmLearning = ::confirmLearning,
+                onCancelLearningReview = ::cancelLearningReview,
                 onReplaySetup = {
-                    recent.clear()
+                    history.clear()
+                    cancelLearningReview()
+                    cancelVoiceRecording()
+                    sessionStore.clear()
+                    gatewaySession = null
+                    runtimeStatus = if (BuildConfig.USE_MOCK_GATEWAY) "Preview" else "Unknown"
                     setupComplete = false
                 },
             )
         } else {
             SetupFlowScreen(
+                accountEmail = gatewaySession?.account?.email,
+                runtimeStatus = runtimeStatus,
                 lightMode = lightMode,
                 onLightModeChange = { lightMode = it },
+                onAuthenticate = { email, password, signup ->
+                    runCatching {
+                        val response = gateway.authenticate(email, password, signup)
+                        val saved = GatewaySession(response.token, response.account)
+                        sessionStore.write(saved)
+                        gatewaySession = saved
+                        runtimeStatus = runCatching { gateway.runtimeStatus().readinessLabel }
+                            .getOrElse { "unreachable" }
+                        response
+                    }
+                },
                 onFinish = {
-                    recent.add("Kal ka update concise bana ke Rahul ko bhej do.")
                     setupComplete = true
+                    refreshHistory()
                 },
             )
         }
@@ -285,18 +575,28 @@ private fun AirNoteBackground(content: @Composable () -> Unit) {
 
 @Composable
 private fun SetupFlowScreen(
+    accountEmail: String?,
+    runtimeStatus: String,
     lightMode: Boolean,
     onLightModeChange: (Boolean) -> Unit,
+    onAuthenticate: suspend (String, String, Boolean) -> Result<GatewayAuthResponse>,
     onFinish: () -> Unit,
 ) {
     var step by rememberSaveable { mutableStateOf(AndroidSetupStep.Welcome) }
+    var email by rememberSaveable { mutableStateOf("") }
+    var password by rememberSaveable { mutableStateOf("") }
+    var signup by rememberSaveable { mutableStateOf(false) }
+    var authWorking by rememberSaveable { mutableStateOf(false) }
+    var authError by rememberSaveable { mutableStateOf<String?>(null) }
     var privacyAccepted by rememberSaveable { mutableStateOf(false) }
     var micChecked by rememberSaveable { mutableStateOf(false) }
     var bubbleEnabled by rememberSaveable { mutableStateOf(false) }
     var previewState by rememberSaveable { mutableStateOf(AndroidPreviewState.Ready) }
 
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val canContinue = when (step) {
+        AndroidSetupStep.Account -> BuildConfig.USE_MOCK_GATEWAY || accountEmail != null
         AndroidSetupStep.Privacy -> privacyAccepted
         AndroidSetupStep.Bubble -> bubbleEnabled
         else -> true
@@ -341,7 +641,33 @@ private fun SetupFlowScreen(
 
                     when (step) {
                         AndroidSetupStep.Welcome -> WelcomeStep()
-                        AndroidSetupStep.Account -> AccountStep()
+                        AndroidSetupStep.Account -> AccountStep(
+                            accountEmail = accountEmail,
+                            runtimeStatus = runtimeStatus,
+                            email = email,
+                            password = password,
+                            signup = signup,
+                            authWorking = authWorking,
+                            authError = authError,
+                            onEmailChange = {
+                                email = it
+                                authError = null
+                            },
+                            onPasswordChange = {
+                                password = it
+                                authError = null
+                            },
+                            onSignupChange = { signup = it },
+                            onAuthenticate = {
+                                authWorking = true
+                                authError = null
+                                scope.launch {
+                                    val result = onAuthenticate(email, password, signup)
+                                    authWorking = false
+                                    authError = result.exceptionOrNull()?.message
+                                }
+                            },
+                        )
                         AndroidSetupStep.Privacy -> PrivacyStep(
                             accepted = privacyAccepted,
                             onAcceptedChange = { privacyAccepted = it },
@@ -372,10 +698,20 @@ private fun SetupFlowScreen(
                 onPrimary = {
                     when (step) {
                         AndroidSetupStep.Welcome,
-                        AndroidSetupStep.Account,
                         AndroidSetupStep.Privacy,
                         AndroidSetupStep.Bubble,
                         -> step.next()?.let { step = it }
+                        AndroidSetupStep.Account -> {
+                            if (BuildConfig.USE_MOCK_GATEWAY) {
+                                scope.launch {
+                                    val result = onAuthenticate("anugra@airnote.preview", "preview-password", false)
+                                    authError = result.exceptionOrNull()?.message
+                                    if (result.isSuccess) step.next()?.let { step = it }
+                                }
+                            } else if (accountEmail != null) {
+                                step.next()?.let { step = it }
+                            }
+                        }
                         AndroidSetupStep.Microphone -> {
                             if (micChecked) {
                                 step.next()?.let { step = it }
@@ -401,10 +737,90 @@ private fun WelcomeStep() {
 }
 
 @Composable
-private fun AccountStep() {
+private fun AccountStep(
+    accountEmail: String?,
+    runtimeStatus: String,
+    email: String,
+    password: String,
+    signup: Boolean,
+    authWorking: Boolean,
+    authError: String?,
+    onEmailChange: (String) -> Unit,
+    onPasswordChange: (String) -> Unit,
+    onSignupChange: (Boolean) -> Unit,
+    onAuthenticate: () -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        SetupRow(Icons.Rounded.AccountCircle, "Preview account", "anugra@airnote.preview", "Signed")
-        SetupRow(Icons.Rounded.Bolt, "Mobile Gateway", "Standalone Android runtime, independent from desktop.", "Preview")
+        SetupRow(
+            Icons.Rounded.AccountCircle,
+            if (BuildConfig.USE_MOCK_GATEWAY) "Preview account" else "Mobile account",
+            accountEmail ?: "Sign in to AirNote Gateway.",
+            if (accountEmail == null) "Required" else "Signed",
+        )
+        SetupRow(Icons.Rounded.Bolt, "Mobile Gateway", "Standalone Android runtime, independent from desktop.", runtimeStatus)
+        if (!BuildConfig.USE_MOCK_GATEWAY && accountEmail == null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(AirNotePalette.SurfaceRaised.copy(alpha = 0.52f), RoundedCornerShape(10.dp))
+                    .border(1.dp, AirNotePalette.Border, RoundedCornerShape(10.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = onEmailChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Email") },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Email,
+                        imeAction = ImeAction.Next,
+                    ),
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = onPasswordChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Password") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        imeAction = ImeAction.Done,
+                    ),
+                )
+                ToggleRow(
+                    label = "Create new account",
+                    checked = signup,
+                    onCheckedChange = onSignupChange,
+                )
+                if (authError != null) {
+                    Text(
+                        text = authError,
+                        color = AirNotePalette.Danger,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                    )
+                }
+                Button(
+                    onClick = onAuthenticate,
+                    enabled = !authWorking && email.isNotBlank() && password.length >= 8,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = AirNotePalette.PrimaryButtonFill,
+                        contentColor = AirNotePalette.PrimaryButtonContent,
+                    ),
+                ) {
+                    Icon(Icons.Rounded.AccountCircle, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (authWorking) "Connecting" else if (signup) "Create account" else "Sign in", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
     }
 }
 
@@ -557,13 +973,84 @@ private fun primaryTitle(step: AndroidSetupStep, micChecked: Boolean): String =
         AndroidSetupStep.Preview -> "Finish setup"
     }
 
+private fun voiceHeadline(phase: AndroidVoicePhase): String =
+    when (phase) {
+        AndroidVoicePhase.Idle -> "Ready to dictate"
+        AndroidVoicePhase.Recording -> "Listening"
+        AndroidVoicePhase.Uploading -> "Polishing your words"
+        AndroidVoicePhase.Complete -> "Ready to insert"
+        AndroidVoicePhase.Error -> "Let's recover that"
+    }
+
+private fun voiceButtonTitle(phase: AndroidVoicePhase): String =
+    when (phase) {
+        AndroidVoicePhase.Recording -> "Stop and polish"
+        AndroidVoicePhase.Uploading -> "Polishing..."
+        AndroidVoicePhase.Complete -> "Record another"
+        AndroidVoicePhase.Error -> "Retry voice session"
+        AndroidVoicePhase.Idle -> "Open voice session"
+    }
+
+private fun voiceStatusIcon(phase: AndroidVoicePhase): ImageVector =
+    when (phase) {
+        AndroidVoicePhase.Recording -> Icons.Rounded.Stop
+        AndroidVoicePhase.Uploading -> Icons.Rounded.Bolt
+        AndroidVoicePhase.Complete -> Icons.Rounded.CheckCircle
+        AndroidVoicePhase.Error -> Icons.Rounded.Lock
+        AndroidVoicePhase.Idle -> Icons.Rounded.Mic
+    }
+
+@Composable
+private fun voiceStatusColor(phase: AndroidVoicePhase): Color =
+    when (phase) {
+        AndroidVoicePhase.Recording -> AirNotePalette.Danger
+        AndroidVoicePhase.Uploading -> AirNotePalette.Accent
+        AndroidVoicePhase.Complete -> AirNotePalette.Success
+        AndroidVoicePhase.Error -> AirNotePalette.Danger
+        AndroidVoicePhase.Idle -> AirNotePalette.Accent
+    }
+
+private fun androidDeviceId(context: android.content.Context): String =
+    Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+        ?.takeIf { it.isNotBlank() }
+        ?: "android-${UUID.randomUUID()}"
+
+private fun RuntimeHistoryItem.learningRecordingId(): String =
+    clientRunId ?: runId ?: id
+
+private fun RuntimeHistoryItem.learningAiOutput(): String =
+    finalText.ifBlank { displayText }
+
 @Composable
 private fun HomeScreen(
-    recent: List<String>,
+    history: List<RuntimeHistoryItem>,
+    historyMessage: String,
+    accountEmail: String?,
+    runtimeStatus: String,
+    voicePhase: AndroidVoicePhase,
+    voiceMessage: String,
+    voiceLevel: Float,
+    voiceResult: String?,
     lightMode: Boolean,
     onLightModeChange: (Boolean) -> Unit,
+    onVoiceAction: () -> Unit,
+    onCancelVoice: () -> Unit,
+    onRefreshHistory: () -> Unit,
+    onDeleteHistory: (RuntimeHistoryItem) -> Unit,
+    learningItem: RuntimeHistoryItem?,
+    learningText: String,
+    learningMessage: String,
+    learningCandidates: List<RuntimeLearningCandidate>,
+    learningWorking: Boolean,
+    onLearningTextChange: (String) -> Unit,
+    onStartLearningReview: (RuntimeHistoryItem) -> Unit,
+    onAnalyzeLearning: () -> Unit,
+    onConfirmLearning: () -> Unit,
+    onCancelLearningReview: () -> Unit,
     onReplaySetup: () -> Unit,
 ) {
+    val context = LocalContext.current
+
     AirNoteBackground {
         Column(
             modifier = Modifier
@@ -576,7 +1063,7 @@ private fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             AppHeader(
-                label = "Preview",
+                label = if (BuildConfig.USE_MOCK_GATEWAY) "Preview" else "Live",
                 lightMode = lightMode,
                 onLightModeChange = onLightModeChange,
                 trailing = {
@@ -594,18 +1081,56 @@ private fun HomeScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(verticalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.weight(1f)) {
                             SectionLabel("Dashboard")
-                            Text("Ready to dictate", color = AirNotePalette.ForegroundFixed, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
-                            Text("Bubble, mic, and Gateway are ready", color = AirNotePalette.Muted, fontSize = 15.sp)
+                            Text(voiceHeadline(voicePhase), color = AirNotePalette.ForegroundFixed, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
+                            Text(accountEmail ?: "Bubble, mic, and Gateway are ready", color = AirNotePalette.Muted, fontSize = 15.sp)
                         }
-                        StatusPill(Icons.Rounded.CheckCircle, "Ready", AirNotePalette.Success)
+                        StatusPill(voiceStatusIcon(voicePhase), voicePhase.label, voiceStatusColor(voicePhase))
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        MiniStat("Runtime", "Preview", Modifier.weight(1f))
+                        MiniStat("Runtime", runtimeStatus, Modifier.weight(1f))
                         MiniStat("Style", "Work", Modifier.weight(1f))
                         MiniStat("Lang", "Hinglish", Modifier.weight(1f))
                     }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(AirNotePalette.SurfaceRaised.copy(alpha = 0.52f), RoundedCornerShape(10.dp))
+                            .border(1.dp, AirNotePalette.Border, RoundedCornerShape(10.dp))
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                StatusPill(voiceStatusIcon(voicePhase), voicePhase.label, voiceStatusColor(voicePhase))
+                                Spacer(Modifier.weight(1f))
+                                Text("16 kHz WAV", color = AirNotePalette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            Waveform(level = voiceLevel.coerceAtLeast(if (voicePhase == AndroidVoicePhase.Recording) 0.08f else 0f), active = voicePhase == AndroidVoicePhase.Recording)
+                            Text(
+                                text = voiceMessage,
+                                color = if (voicePhase == AndroidVoicePhase.Error) AirNotePalette.Danger else AirNotePalette.Muted,
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp,
+                            )
+                            if (!voiceResult.isNullOrBlank()) {
+                                Text(
+                                    text = voiceResult,
+                                    color = AirNotePalette.ForegroundFixed,
+                                    fontSize = 15.sp,
+                                    lineHeight = 21.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(AirNotePalette.SurfaceRaised, RoundedCornerShape(10.dp))
+                                        .border(1.dp, AirNotePalette.Border, RoundedCornerShape(10.dp))
+                                        .padding(10.dp),
+                                )
+                            }
+                        }
+                    }
                     Button(
-                        onClick = {},
+                        onClick = onVoiceAction,
+                        enabled = voicePhase != AndroidVoicePhase.Uploading,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(44.dp),
@@ -615,9 +1140,22 @@ private fun HomeScreen(
                             contentColor = AirNotePalette.PrimaryButtonContent,
                         ),
                     ) {
-                        Icon(Icons.Rounded.Mic, contentDescription = null)
+                        Icon(if (voicePhase == AndroidVoicePhase.Recording) Icons.Rounded.Stop else Icons.Rounded.Mic, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Open voice session", fontWeight = FontWeight.SemiBold)
+                        Text(voiceButtonTitle(voicePhase), fontWeight = FontWeight.SemiBold)
+                    }
+                    if (voicePhase == AndroidVoicePhase.Recording) {
+                        OutlinedButton(
+                            onClick = onCancelVoice,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(40.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.Danger),
+                            border = BorderStroke(1.dp, AirNotePalette.Danger.copy(alpha = 0.35f)),
+                        ) {
+                            Text("Cancel recording", fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 }
             }
@@ -648,16 +1186,78 @@ private fun HomeScreen(
                 }
             }
 
-            if (recent.isNotEmpty()) {
+            AirNoteCard(padding = 14.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SectionLabel("Server History")
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            text = if (history.isEmpty()) "0" else history.size.toString(),
+                            color = AirNotePalette.Accent,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    Text(
+                        text = historyMessage,
+                        color = AirNotePalette.Muted,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                    )
+                    if (history.isEmpty()) {
+                        SetupRow(Icons.Rounded.History, "No saved dictations", "Server-retained results appear here after dictation.", "Empty")
+                    } else {
+                        if (learningItem != null) {
+                            LearningReviewPanel(
+                                item = learningItem,
+                                text = learningText,
+                                message = learningMessage,
+                                candidates = learningCandidates,
+                                working = learningWorking,
+                                onTextChange = onLearningTextChange,
+                                onAnalyze = onAnalyzeLearning,
+                                onConfirm = onConfirmLearning,
+                                onCancel = onCancelLearningReview,
+                            )
+                        }
+                        history.take(3).forEach { item ->
+                            HistoryRow(
+                                item = item,
+                                onCopy = {
+                                    val clipboard = context.getSystemService(ClipboardManager::class.java)
+                                    clipboard?.setPrimaryClip(ClipData.newPlainText("AirNote", item.displayText))
+                                },
+                                onLearn = { onStartLearningReview(item) },
+                                onDelete = { onDeleteHistory(item) },
+                            )
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = onRefreshHistory,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.ForegroundFixed),
+                        border = BorderStroke(1.dp, AirNotePalette.BorderStrong),
+                    ) {
+                        Icon(Icons.Rounded.History, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Refresh server history", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+
+            if (history.isNotEmpty()) {
                 SectionLabel("Recent")
-                recent.take(2).forEach { text ->
+                history.take(2).forEach { item ->
                     AirNoteCard(padding = 14.dp) {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(text, color = AirNotePalette.ForegroundFixed, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                            Text(item.displayText, color = AirNotePalette.ForegroundFixed, fontSize = 15.sp, fontWeight = FontWeight.Medium)
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                StatusPill(Icons.Rounded.CheckCircle, "Inserted", AirNotePalette.Success)
+                                StatusPill(Icons.Rounded.CheckCircle, item.source, AirNotePalette.Success)
                                 Spacer(Modifier.weight(1f))
-                                Text("Now", color = AirNotePalette.Muted, fontSize = 12.sp)
+                                Text(item.createdAt.ifBlank { "Server" }, color = AirNotePalette.Muted, fontSize = 12.sp)
                             }
                         }
                     }
@@ -669,6 +1269,187 @@ private fun HomeScreen(
             ToolRow(Icons.Rounded.History, "History", "Copy, retry, and recover")
             ToolRow(Icons.Rounded.Language, "Vocabulary", "Names, aliases, and terms")
             ToolRow(Icons.Rounded.Settings, "Settings", "Privacy, Gateway, diagnostics")
+        }
+    }
+}
+
+@Composable
+private fun HistoryRow(
+    item: RuntimeHistoryItem,
+    onCopy: () -> Unit,
+    onLearn: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(AirNotePalette.SurfaceRaised.copy(alpha = 0.52f), RoundedCornerShape(10.dp))
+            .border(1.dp, AirNotePalette.Border, RoundedCornerShape(10.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = item.displayText,
+            color = AirNotePalette.ForegroundFixed,
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
+            fontWeight = FontWeight.Medium,
+        )
+        if (item.transcript.isNotBlank() && item.transcript != item.displayText) {
+            Text(
+                text = item.transcript,
+                color = AirNotePalette.Muted,
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StatusPill(Icons.Rounded.CheckCircle, item.platform.ifBlank { "mobile" }, AirNotePalette.Success)
+            Text(item.createdAt.ifBlank { "Server" }, color = AirNotePalette.Muted, fontSize = 11.sp, modifier = Modifier.weight(1f))
+            OutlinedButton(
+                onClick = onCopy,
+                modifier = Modifier.height(32.dp),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.ForegroundFixed),
+                border = BorderStroke(1.dp, AirNotePalette.BorderStrong),
+                contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp),
+            ) {
+                Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(15.dp))
+            }
+            OutlinedButton(
+                onClick = onLearn,
+                modifier = Modifier.height(32.dp),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.Accent),
+                border = BorderStroke(1.dp, AirNotePalette.Accent.copy(alpha = 0.30f)),
+                contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp),
+            ) {
+                Icon(Icons.Rounded.CheckCircle, contentDescription = "Review learning", modifier = Modifier.size(15.dp))
+            }
+            OutlinedButton(
+                onClick = onDelete,
+                modifier = Modifier.height(32.dp),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.Danger),
+                border = BorderStroke(1.dp, AirNotePalette.Danger.copy(alpha = 0.35f)),
+                contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp),
+            ) {
+                Icon(Icons.Rounded.Delete, contentDescription = "Delete", modifier = Modifier.size(15.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun LearningReviewPanel(
+    item: RuntimeHistoryItem,
+    text: String,
+    message: String,
+    candidates: List<RuntimeLearningCandidate>,
+    working: Boolean,
+    onTextChange: (String) -> Unit,
+    onAnalyze: () -> Unit,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(AirNotePalette.SurfaceRaised.copy(alpha = 0.52f), RoundedCornerShape(10.dp))
+            .border(1.dp, AirNotePalette.BorderStrong, RoundedCornerShape(10.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "Learning review",
+                    color = AirNotePalette.ForegroundFixed,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = item.createdAt.ifBlank { item.learningRecordingId() },
+                    color = AirNotePalette.Muted,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            StatusPill(Icons.Rounded.Bolt, if (working) "Working" else "Review", AirNotePalette.Accent)
+        }
+        OutlinedTextField(
+            value = text,
+            onValueChange = onTextChange,
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 3,
+            label = { Text("Kept text") },
+        )
+        if (item.transcript.isNotBlank() && item.transcript != item.displayText) {
+            Text(
+                text = item.transcript,
+                color = AirNotePalette.Muted,
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            text = message,
+            color = if (message.startsWith("Could not") || message.startsWith("Kept")) AirNotePalette.Danger else AirNotePalette.Muted,
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
+        )
+        candidates.forEach { candidate ->
+            SetupRow(
+                icon = Icons.Rounded.CheckCircle,
+                title = candidate.corrected.ifBlank { "Candidate" },
+                subtitle = "${candidate.original} -> ${candidate.termType}",
+                status = if (candidate.learnable) "Ready" else "Blocked",
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = onCancel,
+                enabled = !working,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(40.dp),
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.ForegroundFixed),
+                border = BorderStroke(1.dp, AirNotePalette.BorderStrong),
+            ) {
+                Text("Close", fontWeight = FontWeight.SemiBold)
+            }
+            OutlinedButton(
+                onClick = onAnalyze,
+                enabled = !working,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(40.dp),
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.Accent),
+                border = BorderStroke(1.dp, AirNotePalette.Accent.copy(alpha = 0.30f)),
+            ) {
+                Text(if (working) "Analyzing" else "Analyze", fontWeight = FontWeight.SemiBold)
+            }
+            Button(
+                onClick = onConfirm,
+                enabled = !working && candidates.any { it.learnable },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(40.dp),
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = AirNotePalette.PrimaryButtonFill,
+                    contentColor = AirNotePalette.PrimaryButtonContent,
+                ),
+            ) {
+                Text("Learn", fontWeight = FontWeight.SemiBold)
+            }
         }
     }
 }
@@ -1180,7 +1961,14 @@ private fun ToolRow(
 @Composable
 private fun SetupPreview() {
     AirNoteTheme {
-        SetupFlowScreen(lightMode = false, onLightModeChange = {}, onFinish = {})
+        SetupFlowScreen(
+            accountEmail = "anugra@airnote.preview",
+            runtimeStatus = "Preview",
+            lightMode = false,
+            onLightModeChange = {},
+            onAuthenticate = { _, _, _ -> Result.success(MockGatewayClient().authenticate("anugra@airnote.preview", "preview-password", false)) },
+            onFinish = {},
+        )
     }
 }
 

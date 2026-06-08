@@ -14,13 +14,22 @@ struct HomeView: View {
                                   runtime: environment.runtimeStatus,
                                   onReset: environment.resetMockSetup)
 
-                        SessionPanel(statusText: environment.lastStatusMessage)
+                        SessionPanel(statusText: environment.lastStatusMessage,
+                                     runtime: environment.runtimeStatus)
 
                         SetupSummary(setupState: environment.setupState,
                                      onReset: environment.resetMockSetup)
 
-                        if !environment.dictationStore.records.isEmpty {
-                            RecentDictations(records: environment.dictationStore.records)
+                        RecentDictations(
+                            records: environment.serverHistory,
+                            status: environment.historyStatus,
+                            onRefresh: { Task { await environment.refreshHistory() } },
+                            onLearn: { environment.startLearningReview($0) },
+                            onDelete: { item in Task { await environment.deleteHistoryItem(item) } }
+                        )
+
+                        if environment.learningItem != nil {
+                            DashboardLearningReview()
                         }
 
                         ExploreList()
@@ -31,6 +40,9 @@ struct HomeView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
+            .task {
+                await environment.refreshHistory()
+            }
         }
     }
 }
@@ -68,6 +80,7 @@ private struct AppHeader: View {
 
 private struct SessionPanel: View {
     var statusText: String
+    var runtime: String
 
     var body: some View {
         AirNoteCard(padding: 18) {
@@ -89,7 +102,7 @@ private struct SessionPanel: View {
                 }
 
                 HStack(spacing: 10) {
-                    MiniStat(title: "Runtime", value: "Preview")
+                    MiniStat(title: "Runtime", value: runtime)
                     MiniStat(title: "Style", value: "Work")
                     MiniStat(title: "Lang", value: "Hinglish")
                 }
@@ -153,27 +166,155 @@ private struct SetupSummary: View {
     }
 }
 
+private struct DashboardLearningReview: View {
+    @EnvironmentObject private var environment: AppEnvironment
+
+    var body: some View {
+        AirNoteCard(padding: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    AirNoteSectionLabel(text: "Learning Review")
+                    Spacer()
+                    AirNoteStatusPill(
+                        systemImage: environment.learningWorking ? "bolt.fill" : "checkmark.seal",
+                        text: environment.learningWorking ? "Working" : "Review",
+                        color: AirNoteDesign.accent
+                    )
+                }
+
+                TextEditor(text: $environment.learningDraftText)
+                    .frame(minHeight: 86)
+                    .font(.body)
+                    .padding(6)
+                    .background(AirNoteDesign.surfaceRaised.opacity(0.52), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(AirNoteDesign.border, lineWidth: 1)
+                    )
+
+                if let item = environment.learningItem,
+                   !item.transcript.isEmpty,
+                   item.transcript != item.displayText {
+                    Text(item.transcript)
+                        .font(.caption)
+                        .foregroundStyle(AirNoteDesign.muted)
+                        .lineLimit(2)
+                }
+
+                Text(environment.learningStatus)
+                    .font(.caption)
+                    .foregroundStyle(environment.learningStatus.hasPrefix("Could not") ? AirNoteDesign.danger : AirNoteDesign.muted)
+
+                ForEach(environment.learningCandidates) { candidate in
+                    AirNoteSetupRow(
+                        icon: "checkmark.circle.fill",
+                        title: candidate.corrected.isEmpty ? "Candidate" : candidate.corrected,
+                        subtitle: "\(candidate.original) -> \(candidate.termType)",
+                        status: candidate.learnable ? "Ready" : "Blocked"
+                    )
+                }
+
+                HStack(spacing: 8) {
+                    Button {
+                        environment.cancelLearningReview()
+                    } label: {
+                        Label("Close", systemImage: "xmark")
+                    }
+                    .buttonStyle(AirNoteGhostButtonStyle())
+                    .disabled(environment.learningWorking)
+
+                    Button {
+                        Task { await environment.analyzeLearningEdit() }
+                    } label: {
+                        Label(environment.learningWorking ? "Analyzing" : "Analyze", systemImage: "magnifyingglass")
+                    }
+                    .buttonStyle(AirNoteGhostButtonStyle())
+                    .disabled(environment.learningWorking)
+
+                    Button {
+                        Task { await environment.confirmLearning() }
+                    } label: {
+                        Label("Learn", systemImage: "checkmark.seal.fill")
+                    }
+                    .buttonStyle(AirNotePrimaryButtonStyle())
+                    .disabled(environment.learningWorking || environment.learningCandidates.isEmpty)
+                }
+                .font(.caption.weight(.semibold))
+            }
+        }
+    }
+}
+
 private struct RecentDictations: View {
-    var records: [DictationRecord]
+    var records: [RuntimeHistoryItem]
+    var status: String
+    var onRefresh: () -> Void
+    var onLearn: (RuntimeHistoryItem) -> Void
+    var onDelete: (RuntimeHistoryItem) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            AirNoteSectionLabel(text: "Recent")
-            ForEach(records.prefix(2)) { record in
-                AirNoteCard(padding: 14) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(record.polished)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(AirNoteDesign.foreground)
-                            .fixedSize(horizontal: false, vertical: true)
-                        HStack {
-                            AirNoteStatusPill(systemImage: "checkmark.circle.fill",
-                                              text: record.outcome.rawValue.capitalized,
-                                              color: AirNoteDesign.success)
-                            Spacer()
-                            Text(record.createdAt, style: .time)
-                                .font(.caption)
-                                .foregroundStyle(AirNoteDesign.muted)
+            HStack {
+                AirNoteSectionLabel(text: "Server History")
+                Spacer()
+                Button(action: onRefresh) {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                        .labelStyle(.iconOnly)
+                }
+                .foregroundStyle(AirNoteDesign.accent)
+            }
+
+            AirNoteCard(padding: 14) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(AirNoteDesign.muted)
+                    if records.isEmpty {
+                        AirNoteSetupRow(
+                            icon: "clock.arrow.circlepath",
+                            title: "No saved dictations",
+                            subtitle: "Server-retained results appear here after dictation.",
+                            status: "Empty"
+                        )
+                    } else {
+                        ForEach(records.prefix(3)) { record in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(record.displayText)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(AirNoteDesign.foreground)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if !record.transcript.isEmpty && record.transcript != record.displayText {
+                                    Text(record.transcript)
+                                        .font(.caption)
+                                        .foregroundStyle(AirNoteDesign.muted)
+                                        .lineLimit(2)
+                                }
+                                HStack {
+                                    AirNoteStatusPill(systemImage: "checkmark.circle.fill",
+                                                      text: record.source,
+                                                      color: AirNoteDesign.success)
+                                    Spacer()
+                                    Text(record.createdAt, style: .time)
+                                        .font(.caption)
+                                        .foregroundStyle(AirNoteDesign.muted)
+                                    Button {
+                                        onLearn(record)
+                                    } label: {
+                                        Image(systemName: "checkmark.seal")
+                                            .font(.caption.weight(.bold))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(AirNoteDesign.accent)
+                                    Button(role: .destructive) {
+                                        onDelete(record)
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .font(.caption.weight(.bold))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.vertical, 4)
                         }
                     }
                 }

@@ -70,9 +70,18 @@ enum class AndroidPreviewState(
     );
 }
 
+enum class AndroidVoicePhase(
+    val label: String,
+) {
+    Idle("Ready"),
+    Recording("Listening"),
+    Uploading("Polishing"),
+    Complete("Ready"),
+    Error("Retry");
+}
+
 fun AndroidSetupStep.next(): AndroidSetupStep? =
     AndroidSetupStep.ordered.getOrNull(ordinal + 1)
 
 fun AndroidSetupStep.previous(): AndroidSetupStep? =
     AndroidSetupStep.ordered.getOrNull(ordinal - 1)
-

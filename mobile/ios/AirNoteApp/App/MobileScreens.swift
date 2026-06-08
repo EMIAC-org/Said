@@ -1,5 +1,6 @@
 import AirNoteShared
 import SwiftUI
+import UIKit
 
 struct AccountSignInView: View {
     @EnvironmentObject private var environment: AppEnvironment
@@ -94,22 +95,37 @@ struct HistoryView: View {
 
     var body: some View {
         List {
-            if environment.dictationStore.records.isEmpty {
+            Section {
+                Button {
+                    Task { await environment.refreshHistory() }
+                } label: {
+                    Label("Refresh server history", systemImage: "arrow.clockwise")
+                }
+                LabeledContent("Status", value: environment.historyStatus)
+            }
+
+            if environment.learningItem != nil {
+                LearningReviewSection()
+            }
+
+            if environment.serverHistory.isEmpty {
                 ContentUnavailableView(
                     "No dictations yet",
                     systemImage: "clock.arrow.circlepath",
                     description: Text("Inserted, copied, and saved results appear here for recovery.")
                 )
             } else {
-                ForEach(environment.dictationStore.records) { record in
+                ForEach(environment.serverHistory) { record in
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(record.polished)
+                        Text(record.displayText)
                             .font(.body)
-                        Text(record.transcript)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if !record.transcript.isEmpty && record.transcript != record.displayText {
+                            Text(record.transcript)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         HStack {
-                            Label(record.outcome.rawValue, systemImage: "checkmark.circle")
+                            Label(record.source, systemImage: "checkmark.circle")
                             Spacer()
                             Text(record.createdAt, style: .time)
                         }
@@ -118,6 +134,28 @@ struct HistoryView: View {
                     }
                     .padding(.vertical, 6)
                     .accessibilityElement(children: .combine)
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            Task { await environment.deleteHistoryItem(record) }
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
+                    .swipeActions(edge: .leading) {
+                        Button {
+                            environment.startLearningReview(record)
+                        } label: {
+                            Label("Learn", systemImage: "checkmark.seal")
+                        }
+                        .tint(AirNoteDesign.success)
+
+                        Button {
+                            UIPasteboard.general.string = record.displayText
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+                        .tint(AirNoteDesign.accent)
+                    }
                 }
             }
         }
@@ -126,6 +164,84 @@ struct HistoryView: View {
         .tint(AirNoteDesign.accent)
         .navigationTitle("History")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await environment.refreshHistory()
+        }
+    }
+}
+
+private struct LearningReviewSection: View {
+    @EnvironmentObject private var environment: AppEnvironment
+
+    var body: some View {
+        Section("Learning review") {
+            TextEditor(text: $environment.learningDraftText)
+                .frame(minHeight: 92)
+                .font(.body)
+                .overlay(alignment: .topLeading) {
+                    if environment.learningDraftText.isEmpty {
+                        Text("Kept text")
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 8)
+                            .padding(.leading, 5)
+                    }
+                }
+
+            if let item = environment.learningItem,
+               !item.transcript.isEmpty,
+               item.transcript != item.displayText {
+                Text(item.transcript)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(environment.learningStatus)
+                .font(.caption)
+                .foregroundStyle(environment.learningStatus.hasPrefix("Could not") ? AirNoteDesign.danger : AirNoteDesign.muted)
+
+            ForEach(environment.learningCandidates) { candidate in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(candidate.corrected.isEmpty ? "Candidate" : candidate.corrected)
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text(candidate.termType)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AirNoteDesign.accent)
+                    }
+                    Text(candidate.original)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
+
+            HStack {
+                Button {
+                    environment.cancelLearningReview()
+                } label: {
+                    Label("Close", systemImage: "xmark")
+                }
+                .disabled(environment.learningWorking)
+
+                Spacer()
+
+                Button {
+                    Task { await environment.analyzeLearningEdit() }
+                } label: {
+                    Label(environment.learningWorking ? "Analyzing" : "Analyze", systemImage: "magnifyingglass")
+                }
+                .disabled(environment.learningWorking)
+
+                Button {
+                    Task { await environment.confirmLearning() }
+                } label: {
+                    Label("Learn", systemImage: "checkmark.seal.fill")
+                }
+                .disabled(environment.learningWorking || environment.learningCandidates.isEmpty)
+            }
+            .font(.caption.weight(.semibold))
+        }
     }
 }
 
@@ -164,12 +280,11 @@ struct VocabularyView: View {
 struct AirNoteSettingsView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @State private var diagnosticsEnabled = true
-    @State private var localHistoryEnabled = true
 
     var body: some View {
         Form {
             Section("Privacy") {
-                Toggle("Local history", isOn: $localHistoryEnabled)
+                LabeledContent("History", value: "Server")
                 LabeledContent("Raw audio", value: "Not stored")
                 LabeledContent("Raw server text", value: "Not stored by default")
                 Button(role: .destructive) {

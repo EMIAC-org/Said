@@ -56,6 +56,10 @@ struct SetupFlowView: View {
     @State private var micChecked = false
     @State private var fullAccessMock = false
     @State private var keyboardPreviewState: KeyboardPreviewState = .ready
+    @State private var email = ""
+    @State private var password = ""
+    @State private var signup = false
+    @State private var authWorking = false
 
     init(initialStep: MockSetupStep? = nil) {
         _step = State(initialValue: initialStep ?? MockSetupStep.debugLaunchStep ?? .welcome)
@@ -139,8 +143,38 @@ struct SetupFlowView: View {
 
         case .account:
             VStack(spacing: 10) {
-                AirNoteSetupRow(icon: "person.crop.circle.badge.checkmark", title: "Preview account", subtitle: environment.account?.email ?? "anugra@airnote.preview", status: environment.account == nil ? "Ready" : "Signed")
+                AirNoteSetupRow(icon: "person.crop.circle.badge.checkmark", title: BuildConfig.useMockGateway ? "Preview account" : "Mobile account", subtitle: environment.account?.email ?? "Sign in to AirNote Gateway.", status: environment.account == nil ? "Required" : "Signed")
                 AirNoteSetupRow(icon: "server.rack", title: "Mobile Gateway", subtitle: "Standalone iOS runtime, independent from desktop.", status: environment.runtimeStatus)
+                if !BuildConfig.useMockGateway && environment.account == nil {
+                    VStack(spacing: 10) {
+                        TextField("Email", text: $email)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.emailAddress)
+                            .textContentType(.emailAddress)
+                        SecureField("Password", text: $password)
+                            .textContentType(signup ? .newPassword : .password)
+                        Toggle(isOn: $signup) {
+                            Text("Create new account")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AirNoteDesign.foreground)
+                        }
+                        .tint(AirNoteDesign.accent)
+                        Button {
+                            authWorking = true
+                            Task {
+                                await environment.authenticate(email: email, password: password, signup: signup)
+                                await MainActor.run { authWorking = false }
+                            }
+                        } label: {
+                            Label(authWorking ? "Connecting" : signup ? "Create account" : "Sign in", systemImage: "person.crop.circle.badge.checkmark")
+                        }
+                        .buttonStyle(AirNoteGhostButtonStyle())
+                        .disabled(authWorking || email.isEmpty || password.count < 8)
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .padding(12)
+                    .background(AirNoteDesign.surfaceRaised.opacity(0.52), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
             }
 
         case .privacy:
@@ -257,6 +291,7 @@ struct SetupFlowView: View {
         switch step {
         case .privacy: return privacyAccepted
         case .keyboard: return fullAccessMock
+        case .account: return BuildConfig.useMockGateway || environment.account != nil
         default: return true
         }
     }
@@ -267,7 +302,11 @@ struct SetupFlowView: View {
             step = .account
         case .account:
             if environment.account == nil {
-                environment.markMockAccountReady()
+                if BuildConfig.useMockGateway {
+                    environment.markMockAccountReady()
+                } else {
+                    return
+                }
             }
             step = .privacy
         case .privacy:
@@ -286,13 +325,15 @@ struct SetupFlowView: View {
             environment.markKeyboardReady(fullAccess: fullAccessMock)
             step = .preview
         case .preview:
-            environment.dictationStore.append(
-                DictationRecord(
-                    transcript: "kal ka update concise banake rahul ko bhej do",
-                    polished: "Kal ka update concise bana ke Rahul ko bhej do.",
-                    outcome: .inserted
+            if BuildConfig.useMockGateway {
+                environment.dictationStore.append(
+                    DictationRecord(
+                        transcript: "kal ka update concise banake rahul ko bhej do",
+                        polished: "Kal ka update concise bana ke Rahul ko bhej do.",
+                        outcome: .inserted
+                    )
                 )
-            )
+            }
             environment.markSetupReady()
         }
     }

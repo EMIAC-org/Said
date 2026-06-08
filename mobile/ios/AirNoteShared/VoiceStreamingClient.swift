@@ -90,6 +90,8 @@ public final class VoiceStreamingClient {
     private var isStopping = false
     private var didReceiveTerminalEvent = false
     private var interruptionObservers: [NSObjectProtocol] = []
+    private var currentSession: MobileSessionResponse?
+    private var latestTranscript = ""
 
     public init(
         baseURL: URL = BuildConfig.gatewayBaseURL,
@@ -109,6 +111,8 @@ public final class VoiceStreamingClient {
 
         let socketURL = try websocketURL(relativeOrAbsolute: voiceWSURL)
         let task = urlSession.webSocketTask(with: socketURL)
+        currentSession = session
+        latestTranscript = ""
         prepareForStart(task: task)
         task.resume()
 
@@ -146,6 +150,8 @@ public final class VoiceStreamingClient {
         maxDurationTask = nil
         receiveTask?.cancel()
         receiveTask = nil
+        currentSession = nil
+        latestTranscript = ""
         currentWebSocket()?.cancel(with: .goingAway, reason: nil)
         setWebSocket(nil)
     }
@@ -295,14 +301,15 @@ public final class VoiceStreamingClient {
             }
         case "runtime.status":
             if let event = try? JSONDecoder().decode(StatusEvent.self, from: data) {
-                emit(.status(event.status))
+                emit(.status(event.statusText))
             }
-        case "stt.interim":
+        case "stt.interim", "transcript.partial":
             if let event = try? JSONDecoder().decode(TextEvent.self, from: data) {
                 emit(.interimTranscript(event.text))
             }
-        case "stt.final":
+        case "stt.final", "transcript.final":
             if let event = try? JSONDecoder().decode(TextEvent.self, from: data) {
+                latestTranscript = event.text
                 emit(.finalTranscript(event.text))
             }
         case "polish.started":
@@ -321,7 +328,8 @@ public final class VoiceStreamingClient {
                 emit(.final(event))
             }
         case "runtime.done":
-            if markTerminalEvent() {
+            if markTerminalEvent(), let event = try? JSONDecoder().decode(RuntimeDoneEvent.self, from: data) {
+                emit(.final(event.finalResult(session: currentSession, transcript: latestTranscript)))
                 emit(.done)
             }
             return false
@@ -548,7 +556,12 @@ private struct SessionReadyEvent: Decodable {
 }
 
 private struct StatusEvent: Decodable {
-    var status: String
+    var status: String?
+    var phase: String?
+
+    var statusText: String {
+        status ?? phase ?? "processing"
+    }
 }
 
 private struct TextEvent: Decodable {
@@ -557,6 +570,41 @@ private struct TextEvent: Decodable {
 
 private struct DeltaEvent: Decodable {
     var token: String
+}
+
+private struct RuntimeDoneEvent: Decodable {
+    var runID: String
+    var clientRunID: String?
+    var output: String
+    var modelUsed: String?
+    var latencyMS: RuntimeDoneLatency?
+
+    enum CodingKeys: String, CodingKey {
+        case runID = "run_id"
+        case clientRunID = "client_run_id"
+        case output
+        case modelUsed = "model_used"
+        case latencyMS = "latency_ms"
+    }
+
+    func finalResult(session: MobileSessionResponse?, transcript: String) -> VoiceFinalResult {
+        VoiceFinalResult(
+            requestID: clientRunID ?? runID,
+            sessionID: session?.sessionID,
+            transcript: transcript,
+            polished: output,
+            language: .hinglish,
+            style: .work,
+            latencyMS: latencyMS?.total ?? 0,
+            mock: false
+        )
+    }
+}
+
+private struct RuntimeDoneLatency: Decodable {
+    var stt: Int?
+    var polish: Int?
+    var total: Int?
 }
 
 private struct PolishStartedEvent: Decodable {
