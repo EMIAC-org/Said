@@ -1231,6 +1231,67 @@ export async function syncServerSettings(): Promise<{ synced: boolean; reason?: 
   }
 }
 
+// ── Runtime credential vault (local keys → server DB) ─────────────────────────
+
+export interface RuntimeCredentialSummary {
+  id: string;
+  provider: string;
+  scope: string;
+  display_name: string;
+  secret_last4: string;
+  status: string;
+  updated_at?: string | null;
+}
+
+export interface CredentialVaultStatus {
+  signed_in: boolean;
+  server_url?: string | null;
+  encryption_configured: boolean;
+  server_credentials: RuntimeCredentialSummary[];
+  local_providers: string[];
+}
+
+export interface CredentialSyncResult {
+  provider: string;
+  action: string;
+  error?: string | null;
+}
+
+export interface CredentialSyncResponse {
+  connected: boolean;
+  server_url?: string | null;
+  attempted: number;
+  synced: number;
+  skipped: number;
+  failed: number;
+  revoked: number;
+  reason?: string | null;
+  results?: CredentialSyncResult[];
+}
+
+export async function getCredentialVaultStatus(): Promise<CredentialVaultStatus | null> {
+  try {
+    const res = await backendFetch("/v1/runtime/credentials/status");
+    if (!res?.ok) return null;
+    return await res.json() as CredentialVaultStatus;
+  } catch {
+    return null;
+  }
+}
+
+export async function syncCredentialVault(): Promise<CredentialSyncResponse | null> {
+  try {
+    const res = await backendFetch("/v1/runtime/credentials/sync", {
+      method: "POST",
+      body: "{}",
+    });
+    if (!res) return null;
+    return await res.json() as CredentialSyncResponse;
+  } catch {
+    return null;
+  }
+}
+
 // Suppress unused-import warnings for types only used in exported signatures
 export type {
   CloudAuthResponse,

@@ -28,13 +28,6 @@ createRoot(document.getElementById('app')!).render(
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/onboarding" element={<OnboardingPage />} />
-          {/* Runtime is a self-contained mockup (no API calls) — viewable
-              without login. Move it under the guarded group when the data
-              feeder wave wires real /v1/runtime/admin endpoints. */}
-          <Route element={<Layout requireAuth={false} />}>
-            <Route path="runtime" element={<RuntimePage />} />
-            <Route path="runtime/users/:id" element={<RuntimeUserPage />} />
-          </Route>
           <Route element={<Layout />}>
             <Route index element={<DashboardPage />} />
             <Route path="meetings" element={<MeetingsPage />} />
@@ -43,6 +36,8 @@ createRoot(document.getElementById('app')!).render(
             <Route path="meetings/:id/live" element={<LiveMeetingPage />} />
             <Route path="team" element={<TeamPage />} />
             <Route path="desktop" element={<DesktopPage />} />
+            <Route path="runtime" element={<RuntimePage />} />
+            <Route path="runtime/users/:id" element={<RuntimeUserPage />} />
             <Route path="vocabulary" element={<VocabularyPage />} />
             <Route path="bugs" element={<BugsPage />} />
             <Route path="diagnostics" element={<DiagnosticsPage />} />

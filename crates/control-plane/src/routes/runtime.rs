@@ -3080,8 +3080,21 @@ async fn runtime_provider_secret(
     .await
     .map_err(db_err)?;
 
+    let env_fallback_present = match provider {
+        "deepgram" => !state.deepgram_api_key.trim().is_empty(),
+        "groq" => !state.groq_api_key.trim().is_empty(),
+        _ => false,
+    };
+
     if let Some(row) = row {
         let secret = decrypt_secret(state, &row.secret_ciphertext, &row.secret_nonce)?;
+        tracing::info!(
+            "[runtime] credential resolved provider={} account_id={} vault_row=true env_fallback_present={} selected_scope={}",
+            provider,
+            account_id,
+            env_fallback_present,
+            row.scope,
+        );
         return Ok(RuntimeProviderSecret {
             credential_id: Some(row.id),
             scope: row.scope,
@@ -3095,6 +3108,11 @@ async fn runtime_provider_secret(
         _ => "",
     };
     if !fallback.is_empty() {
+        tracing::info!(
+            "[runtime] credential resolved provider={} account_id={} vault_row=false env_fallback_present=true selected_scope=airnote_env",
+            provider,
+            account_id,
+        );
         return Ok(RuntimeProviderSecret {
             credential_id: None,
             scope: "airnote_env".to_string(),
@@ -3102,6 +3120,11 @@ async fn runtime_provider_secret(
         });
     }
 
+    tracing::warn!(
+        "[runtime] credential missing provider={} account_id={} vault_row=false env_fallback_present=false",
+        provider,
+        account_id,
+    );
     Err(json_error(
         StatusCode::SERVICE_UNAVAILABLE,
         &format!("{provider} provider credential is not configured"),

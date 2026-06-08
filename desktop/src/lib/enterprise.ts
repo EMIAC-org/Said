@@ -519,6 +519,11 @@ async function persistEnterpriseConnection(
     await ensureDesktopRegistered(conn.serverUrl, sessionToken);
     await syncCompanyVocab(true);
     await uploadUserVocabSummary(true);
+    const { syncCredentialVault } = await import("./invoke");
+    const vault = await syncCredentialVault();
+    if (vault?.failed) {
+      console.warn("[enterprise] credential vault sync partial failure", vault);
+    }
   } catch (err) {
     console.warn("[enterprise] desktop registration deferred until next heartbeat", err);
   }

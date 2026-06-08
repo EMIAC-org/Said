@@ -120,6 +120,18 @@ async fn main() {
     // Build privacy-safe org vocabulary suggestions once daily.
     vocab_worker::start_vocab_aggregation_worker(db.clone());
 
+    let groq_api_key = if cli.groq_api_key.trim().is_empty() {
+        cli.gateway_api_key.clone()
+    } else {
+        cli.groq_api_key.clone()
+    };
+    info!(
+        "[cp] runtime credential env present: deepgram={} groq={} runtime_credentials_key={}",
+        !cli.deepgram_api_key.trim().is_empty(),
+        !groq_api_key.trim().is_empty(),
+        !cli.runtime_credentials_key.trim().is_empty(),
+    );
+
     let state = AppState {
         db,
         started_at: Arc::new(Instant::now()),
@@ -127,11 +139,7 @@ async fn main() {
         hub,
         notifications,
         deepgram_api_key: cli.deepgram_api_key,
-        groq_api_key: if cli.groq_api_key.trim().is_empty() {
-            cli.gateway_api_key
-        } else {
-            cli.groq_api_key
-        },
+        groq_api_key,
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
         divo_base_url: cli.divo_base_url,
         runtime_credentials_key: cli.runtime_credentials_key,

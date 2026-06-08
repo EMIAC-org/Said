@@ -83,10 +83,27 @@ pub async fn patch_prefs(
     if provider_key_updated {
         let state2 = state.clone();
         tokio::spawn(async move {
-            if let Err(err) =
-                crate::routes::runtime_credentials::sync_saved_provider_credentials(state2).await
+            match crate::routes::runtime_credentials::sync_saved_provider_credentials(state2).await
             {
-                tracing::warn!("[runtime-credentials] post-prefs vault sync failed: {err}");
+                Ok(summary) if summary.failed > 0 => {
+                    tracing::warn!(
+                        "[runtime-credentials] post-prefs vault sync partial failure synced={} failed={} results={:?}",
+                        summary.synced,
+                        summary.failed,
+                        summary.results
+                    );
+                }
+                Ok(summary) if summary.synced > 0 || summary.revoked > 0 => {
+                    tracing::info!(
+                        "[runtime-credentials] post-prefs vault sync ok synced={} revoked={}",
+                        summary.synced,
+                        summary.revoked
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!("[runtime-credentials] post-prefs vault sync failed: {err}");
+                }
+                _ => {}
             }
         });
     }

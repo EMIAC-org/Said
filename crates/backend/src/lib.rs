@@ -292,6 +292,10 @@ pub fn router_with_state(state: AppState) -> Router {
             post(routes::runtime_credentials::sync),
         )
         .route(
+            "/v1/runtime/credentials/status",
+            get(routes::runtime_credentials::status),
+        )
+        .route(
             "/v1/server-settings/status",
             get(routes::server_settings::status),
         )

@@ -28,6 +28,9 @@ import {
   getDesktopPrefs, setDesktopPrefs,
   openaiConnect, openaiStatus, openaiDisconnect,
   getServerSettingsStatus,
+  getCredentialVaultStatus,
+  syncCredentialVault,
+  type CredentialVaultStatus,
   type DebugLogs,
   type NotifPermission,
   type DesktopPrefs,
@@ -698,7 +701,7 @@ export function SettingsView({
   // ── Server settings sync indicator ──────────────────────────────────────────
   const [serverSyncState, setServerSyncState] = useState<SyncBadgeState>("idle");
   useEffect(() => {
-    if (!isOn("models") && !isOn("api-keys")) return;
+    if (!isOn("models")) return;
     void getServerSettingsStatus().then((s: ServerSettingsStatus | null) => {
       if (!s || !s.signed_in) { setServerSyncState("idle"); return; }
       if (s.last_error)        { setServerSyncState("failed");  return; }
@@ -706,6 +709,42 @@ export function SettingsView({
       setServerSyncState("offline");
     }).catch(() => setServerSyncState("idle"));
   }, [currentSection]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Credential vault sync (local API keys → server DB) ─────────────────────
+  const [vaultStatus, setVaultStatus] = useState<CredentialVaultStatus | null>(null);
+  const [vaultSyncState, setVaultSyncState] = useState<SyncBadgeState>("idle");
+
+  const refreshVaultStatus = useCallback(async () => {
+    const status = await getCredentialVaultStatus();
+    setVaultStatus(status);
+    if (!status?.signed_in) {
+      setVaultSyncState("idle");
+      return;
+    }
+    if (!status.encryption_configured) {
+      setVaultSyncState("failed");
+      return;
+    }
+    const local = new Set(status.local_providers);
+    const serverActive = status.server_credentials.filter(
+      (c) => c.scope === "user" && c.status === "active",
+    );
+    const server = new Set(serverActive.map((c) => c.provider));
+    if (local.size > 0 && [...local].every((p) => server.has(p))) {
+      setVaultSyncState("synced");
+    } else if (local.size > 0 && server.size === 0) {
+      setVaultSyncState("failed");
+    } else if (server.size > 0) {
+      setVaultSyncState("synced");
+    } else {
+      setVaultSyncState("offline");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isOn("api-keys")) return;
+    void refreshVaultStatus();
+  }, [currentSection, refreshVaultStatus]);
 
   // ── Prefs state ─────────────────────────────────────────────────────────────
   const [prefs,        setPrefs]        = useState<Preferences | null>(null);
@@ -959,10 +998,19 @@ export function SettingsView({
 
       const updated = await patchPreferences(update);
       if (!updated) throw new Error("preferences update returned no data");
-      if (updated) {
-        setPrefs(updated);
-        syncApiKeyInputs(updated);
+      setPrefs(updated);
+      syncApiKeyInputs(updated);
+
+      setVaultSyncState("syncing");
+      const vault = await syncCredentialVault();
+      await refreshVaultStatus();
+      if (vault?.failed) {
+        const firstErr = vault.results?.find((r) => r.error)?.error;
+        throw new Error(
+          firstErr ?? "Keys saved locally but server vault sync failed — check you're signed in",
+        );
       }
+
       setKeySaved(true);
       if (keySaveTimer.current) clearTimeout(keySaveTimer.current);
       keySaveTimer.current = setTimeout(() => setKeySaved(false), 2500);
@@ -2095,11 +2143,43 @@ export function SettingsView({
         {/* ── API Keys ──────────────────────────────────── */}
         <Show when={isOn("api-keys")}>
         <div className="mb-7">
-          <p className="section-label px-1 mb-2.5 flex items-center gap-2">API Keys<SyncBadge state={serverSyncState} /></p>
+          <p className="section-label px-1 mb-2.5 flex items-center gap-2">API Keys<SyncBadge state={vaultSyncState} /></p>
           <div className="panel p-5 space-y-3">
             <p className="text-[12px] text-muted-foreground leading-relaxed">
-              Stored only on this {isWindows ? "PC" : "Mac"}. Open a group only when you need to edit that key.
+              {vaultStatus?.signed_in
+                ? "Keys are saved on this device and synced to your AirNote account vault for server-side polish."
+                : `Stored on this ${isWindows ? "PC" : "Mac"} until you sign in — then they sync to your account vault.`}
             </p>
+            {vaultStatus?.signed_in && (
+              <div
+                className="rounded-lg border px-3 py-2.5 space-y-1.5"
+                style={{ borderColor: "hsl(var(--border))", background: "hsl(var(--surface-3))" }}
+              >
+                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+                  Server vault
+                </p>
+                {!vaultStatus.encryption_configured ? (
+                  <p className="text-[12px]" style={{ color: "hsl(0 75% 75%)" }}>
+                    Server encryption is not configured — contact your admin.
+                  </p>
+                ) : vaultStatus.server_credentials.filter((c) => c.scope === "user" && c.status === "active").length === 0 ? (
+                  <p className="text-[12px] text-muted-foreground">
+                    No keys in server vault yet — save keys above to sync.
+                  </p>
+                ) : (
+                  vaultStatus.server_credentials
+                    .filter((c) => c.scope === "user" && c.status === "active")
+                    .map((c) => (
+                      <div key={c.id} className="flex items-center justify-between text-[12px]">
+                        <span className="capitalize text-muted-foreground">{c.provider}</span>
+                        <span style={{ color: "hsl(145 70% 65%)" }}>
+                          ••••{c.secret_last4}
+                        </span>
+                      </div>
+                    ))
+                )}
+              </div>
+            )}
 
             <SettingsDisclosure
               title="Required for dictation"

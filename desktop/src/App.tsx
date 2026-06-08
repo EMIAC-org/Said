@@ -37,6 +37,8 @@ import {
   revealDownloadedFile,
   getMigrationStatus,
   runMigration,
+  syncServerSettings,
+  syncCredentialVault,
   type NotifPermission,
   type VocabToastPayload,
   type ServerMigrationStatus,
@@ -303,7 +305,11 @@ export default function App() {
       if (status === "connected") {
         setEnterpriseGate("connected");
         const conn = getConnection() ?? restored;
-        if (conn) void ensureDesktopRegistered(conn.serverUrl, conn.jwt);
+        if (conn) {
+          void ensureDesktopRegistered(conn.serverUrl, conn.jwt);
+          void syncServerSettings();
+          void syncCredentialVault();
+        }
       } else {
         setEnterpriseGate("required");
       }
@@ -321,6 +327,8 @@ export default function App() {
       const conn = getConnection();
       if (!conn?.serverUrl || !conn.jwt) return;
       void ensureDesktopRegistered(conn.serverUrl, conn.jwt);
+      void syncServerSettings();
+      void syncCredentialVault();
       void syncCompanyVocab(false);
       void uploadUserVocabSummary();
     };
@@ -332,6 +340,8 @@ export default function App() {
   const handleEnterpriseConnected = useCallback((conn: EnterpriseConnection) => {
     setEnterpriseGate("connected");
     void ensureDesktopRegistered(conn.serverUrl, conn.jwt);
+    void syncServerSettings();
+    void syncCredentialVault();
     void syncCompanyVocab(true);
     void uploadUserVocabSummary(true);
   }, []);
