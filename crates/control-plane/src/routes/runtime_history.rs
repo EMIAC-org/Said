@@ -672,7 +672,7 @@ async fn primary_org_id(
     account_id: Uuid,
 ) -> Result<Option<Uuid>, (StatusCode, Json<Value>)> {
     sqlx::query_scalar::<_, Option<Uuid>>(
-        "SELECT org_id FROM org_members WHERE account_id=$1 ORDER BY created_at ASC LIMIT 1",
+        "SELECT org_id FROM org_members WHERE account_id=$1 ORDER BY joined_at ASC LIMIT 1",
     )
     .bind(account_id)
     .fetch_optional(&state.db)
