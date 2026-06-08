@@ -176,7 +176,7 @@ async fn run_migration_task(
     // Step 1: Sync credentials
     // The sync route posts each provider key from local prefs to the server vault.
     // We re-use the existing credential sync helper.
-    let cred_count = upload_credentials(&pool, &http, base, &token).await;
+    let cred_count = upload_credentials(&pool, &http, base, &token, &user_id).await;
     mig_store::update_counts(
         &pool,
         &user_id,
@@ -242,9 +242,10 @@ async fn upload_credentials(
     http: &reqwest::Client,
     base: &str,
     token: &str,
+    user_id: &str,
 ) -> i64 {
     let url = format!("{base}/v1/runtime/credentials");
-    let Some(prefs) = crate::store::prefs::get_prefs(pool, "default") else {
+    let Some(prefs) = crate::store::prefs::get_prefs(pool, user_id) else {
         return 0;
     };
     let secrets: Vec<(&str, &str, String)> = {

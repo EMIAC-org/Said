@@ -10,8 +10,11 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use crate::{
-    AppState,
-    store::{server_settings, users},
+    AppState, invalidate_prefs_cache,
+    store::{
+        prefs::{PrefsUpdate, update_prefs},
+        server_settings, users,
+    },
 };
 
 const SYNC_TIMEOUT_SECS: u64 = 10;
@@ -67,23 +70,27 @@ pub async fn status(State(state): State<AppState>) -> Json<ServerSettingsStatus>
 // ── POST /v1/server-settings/sync ────────────────────────────────────────────
 
 pub async fn sync(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    match pull_and_apply_server_settings(&state).await {
+        Ok(version) => (
+            StatusCode::OK,
+            Json(json!({"synced": true, "version": version})),
+        ),
+        Err((status, reason)) => (status, Json(json!({"synced": false, "reason": reason}))),
+    }
+}
+
+/// Pull cross-device runtime settings from the control-plane and mirror them
+/// into local SQLite prefs. Called from the sync route and after enterprise login.
+pub async fn pull_and_apply_server_settings(state: &AppState) -> Result<i64, (StatusCode, String)> {
     let uid = state.default_user_id.to_string();
     let user = users::get_user(&state.pool, &uid);
 
-    let token = match user
+    let token = user
         .as_ref()
         .and_then(|u| u.cloud_token.as_deref())
         .filter(|t| !t.trim().is_empty())
         .map(str::to_string)
-    {
-        Some(t) => t,
-        None => {
-            return (
-                StatusCode::PRECONDITION_FAILED,
-                Json(json!({"synced": false, "reason": "not signed in"})),
-            );
-        }
-    };
+        .ok_or((StatusCode::PRECONDITION_FAILED, "not signed in".to_string()))?;
 
     let server_url = user
         .as_ref()
@@ -92,17 +99,11 @@ pub async fn sync(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .or_else(|| std::env::var("AIRNOTE_CONTROL_PLANE_URL").ok())
-        .or_else(|| std::env::var("CLOUD_API_URL").ok());
-
-    let base = match server_url {
-        Some(u) => u,
-        None => {
-            return (
-                StatusCode::PRECONDITION_FAILED,
-                Json(json!({"synced": false, "reason": "server URL not configured"})),
-            );
-        }
-    };
+        .or_else(|| std::env::var("CLOUD_API_URL").ok())
+        .ok_or((
+            StatusCode::PRECONDITION_FAILED,
+            "server URL not configured".to_string(),
+        ))?;
 
     let server_account_id = user
         .as_ref()
@@ -110,63 +111,105 @@ pub async fn sync(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
         .filter(|e| !e.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let get_url = format!("{}/v1/runtime/settings", base.trim_end_matches('/'));
+    let get_url = format!("{}/v1/runtime/settings", server_url.trim_end_matches('/'));
 
-    match state
+    let resp = state
         .http_client
         .get(&get_url)
         .bearer_auth(&token)
         .timeout(std::time::Duration::from_secs(SYNC_TIMEOUT_SECS))
         .send()
         .await
-    {
-        Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
-            Ok(body) => {
-                let version = body.get("version").and_then(Value::as_i64).unwrap_or(1);
-                let settings_str = serde_json::to_string(&body).unwrap_or_default();
-                server_settings::put(
-                    &state.pool,
-                    &uid,
-                    &server_account_id,
-                    &settings_str,
-                    version,
-                );
-                info!("[server-settings] synced from server version={version}");
-                (
-                    StatusCode::OK,
-                    Json(json!({"synced": true, "version": version})),
-                )
-            }
-            Err(e) => {
-                let msg = format!("parse error: {e}");
-                warn!("[server-settings] {msg}");
-                server_settings::set_error(&state.pool, &uid, &server_account_id, &msg);
-                (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({"synced": false, "reason": msg})),
-                )
-            }
-        },
-        Ok(resp) => {
-            let code = resp.status().as_u16();
-            let msg = format!("server returned {code}");
-            warn!("[server-settings] {msg}");
-            server_settings::set_error(&state.pool, &uid, &server_account_id, &msg);
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({"synced": false, "reason": msg})),
-            )
-        }
-        Err(e) => {
+        .map_err(|e| {
             let msg = format!("request failed: {e}");
             warn!("[server-settings] {msg}");
             server_settings::set_error(&state.pool, &uid, &server_account_id, &msg);
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"synced": false, "reason": msg})),
-            )
+            (StatusCode::SERVICE_UNAVAILABLE, msg)
+        })?;
+
+    if !resp.status().is_success() {
+        let msg = format!("server returned {}", resp.status().as_u16());
+        warn!("[server-settings] {msg}");
+        server_settings::set_error(&state.pool, &uid, &server_account_id, &msg);
+        return Err((StatusCode::BAD_GATEWAY, msg));
+    }
+
+    let body = resp.json::<Value>().await.map_err(|e| {
+        let msg = format!("parse error: {e}");
+        warn!("[server-settings] {msg}");
+        server_settings::set_error(&state.pool, &uid, &server_account_id, &msg);
+        (StatusCode::BAD_GATEWAY, msg)
+    })?;
+
+    let version = body.get("version").and_then(Value::as_i64).unwrap_or(1);
+    let settings_str = serde_json::to_string(&body).unwrap_or_default();
+    server_settings::put(
+        &state.pool,
+        &uid,
+        &server_account_id,
+        &settings_str,
+        version,
+    );
+
+    if let Some(update) = prefs_update_from_server_settings(&body) {
+        if update_prefs(&state.pool, &uid, update).is_some() {
+            invalidate_prefs_cache(&state.prefs_cache).await;
+            info!("[server-settings] applied cross-device prefs from server version={version}");
         }
     }
+
+    info!("[server-settings] synced from server version={version}");
+    Ok(version)
+}
+
+fn prefs_update_from_server_settings(body: &Value) -> Option<PrefsUpdate> {
+    let mut update = PrefsUpdate::default();
+    let mut changed = false;
+
+    if let Some(v) = body.get("selected_model").and_then(Value::as_str) {
+        update.selected_model = Some(v.to_string());
+        changed = true;
+    }
+    if let Some(v) = body.get("output_language").and_then(Value::as_str) {
+        update.output_language = Some(v.to_string());
+        changed = true;
+    }
+    if let Some(v) = body.get("tone_preset").and_then(Value::as_str) {
+        update.tone_preset = Some(v.to_string());
+        changed = true;
+    }
+    if body.get("custom_prompt").is_some() {
+        update.custom_prompt = Some(
+            body.get("custom_prompt")
+                .and_then(|v| v.as_str().map(str::to_string)),
+        );
+        changed = true;
+    }
+    if let Some(v) = body.get("auto_paste").and_then(Value::as_bool) {
+        update.auto_paste = Some(v);
+        changed = true;
+    }
+    if let Some(v) = body.get("edit_capture").and_then(Value::as_bool) {
+        update.edit_capture = Some(v);
+        changed = true;
+    }
+    if let Some(v) = body.get("learning_enabled").and_then(Value::as_bool) {
+        update.learning_enabled = Some(v);
+        changed = true;
+    }
+    if let Some(v) = body.get("server_runtime_enabled").and_then(Value::as_bool) {
+        update.server_runtime_enabled = Some(v);
+        changed = true;
+    }
+    if let Some(v) = body
+        .get("server_audio_runtime_enabled")
+        .and_then(Value::as_bool)
+    {
+        update.server_audio_runtime_enabled = Some(v);
+        changed = true;
+    }
+
+    changed.then_some(update)
 }
 
 // ── Cross-device push (called from prefs PATCH for server-owned fields) ───────
@@ -234,5 +277,37 @@ pub async fn push_cross_device_settings_to_server(
         .await
     {
         warn!("[server-settings] push after prefs patch failed: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefs_update_from_server_settings_maps_cross_device_fields() {
+        let body = json!({
+            "selected_model": "smart",
+            "output_language": "english",
+            "tone_preset": "professional",
+            "custom_prompt": "keep it short",
+            "auto_paste": true,
+            "edit_capture": false,
+            "learning_enabled": true,
+            "server_runtime_enabled": true,
+            "server_audio_runtime_enabled": false,
+            "version": 3
+        });
+
+        let update = prefs_update_from_server_settings(&body).expect("update");
+        assert_eq!(update.selected_model.as_deref(), Some("smart"));
+        assert_eq!(update.output_language.as_deref(), Some("english"));
+        assert_eq!(update.tone_preset.as_deref(), Some("professional"));
+        assert_eq!(update.custom_prompt, Some(Some("keep it short".into())));
+        assert_eq!(update.auto_paste, Some(true));
+        assert_eq!(update.edit_capture, Some(false));
+        assert_eq!(update.learning_enabled, Some(true));
+        assert_eq!(update.server_runtime_enabled, Some(true));
+        assert_eq!(update.server_audio_runtime_enabled, Some(false));
     }
 }

@@ -46,11 +46,25 @@ pub async fn store_token(
         );
     }
     let state2 = state.clone();
+    let enterprise_login = body.server_url.is_some() || body.org_name.is_some();
     tokio::spawn(async move {
         if let Err(err) =
-            crate::routes::runtime_credentials::sync_saved_provider_credentials(state2).await
+            crate::routes::runtime_credentials::sync_saved_provider_credentials(state2.clone())
+                .await
         {
             tracing::warn!("[runtime-credentials] post-login vault sync failed: {err}");
+        }
+        if enterprise_login {
+            match crate::routes::server_settings::pull_and_apply_server_settings(&state2).await {
+                Ok(version) => {
+                    tracing::info!(
+                        "[server-settings] post-login pull applied server version={version}"
+                    );
+                }
+                Err((_, reason)) => {
+                    tracing::warn!("[server-settings] post-login pull failed: {reason}");
+                }
+            }
         }
     });
     StatusCode::NO_CONTENT

@@ -66,6 +66,7 @@ const MIGRATION_035: &str = include_str!("migrations/035_server_runtime_probe.sq
 const MIGRATION_036: &str = include_str!("migrations/036_server_audio_runtime_probe.sql");
 const MIGRATION_037: &str = include_str!("migrations/037_server_migration_state.sql");
 const MIGRATION_038: &str = include_str!("migrations/038_server_settings_state.sql");
+const MIGRATION_039: &str = include_str!("migrations/039_enable_server_runtime_for_signed_in.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -419,6 +420,14 @@ fn run_migrations(pool: &DbPool) {
             .expect("migration 038 failed");
         conn.execute_batch("PRAGMA user_version = 38")
             .expect("failed to set user_version to 38");
+    }
+
+    if version < 39 {
+        info!("running migration 039_enable_server_runtime_for_signed_in");
+        conn.execute_batch(MIGRATION_039)
+            .expect("migration 039 failed");
+        conn.execute_batch("PRAGMA user_version = 39")
+            .expect("failed to set user_version to 39");
     }
 }
 
