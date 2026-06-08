@@ -1,5 +1,5 @@
 -- Cross-device runtime settings per AirNote user.
--- Secrets stay in runtime_provider_credentials; this table stores only behaviour prefs.
+-- Secrets stay in runtime_provider_credentials. This table stores only behaviour prefs.
 
 CREATE TABLE IF NOT EXISTS runtime_user_settings (
     account_id                   UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
