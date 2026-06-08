@@ -2280,6 +2280,23 @@ pub async fn voice_wav(
     } else {
         GROQ_MODEL_FAST
     };
+
+    let org_id_for_history = primary_org_id(&state, user.account_id).await.ok().flatten();
+    crate::routes::runtime_history::write_history_from_runtime(
+        &state,
+        user.account_id,
+        org_id_for_history,
+        run_id,
+        req.client_run_id.as_deref(),
+        &transcript,
+        &output,
+        model,
+        "server_wav",
+        Some(stt_ms),
+        Some(polish_ms),
+    )
+    .await;
+
     Ok(Json(VoiceWavResponse {
         run_id: run_id.to_string(),
         transcript_hash: content_hash(&transcript),
@@ -2502,6 +2519,22 @@ pub async fn voice_polish(
     )
     .await?;
     mark_runtime_session(&state, run_id, "completed", None).await?;
+
+    let org_id_for_history = primary_org_id(&state, user.account_id).await.ok().flatten();
+    crate::routes::runtime_history::write_history_from_runtime(
+        &state,
+        user.account_id,
+        org_id_for_history,
+        run_id,
+        req.client_run_id.as_deref(),
+        transcript,
+        &output,
+        model,
+        "server_polish",
+        None,
+        Some(model_ms),
+    )
+    .await;
 
     tracing::info!(
         "[runtime] voice polish done account={} run_id={} model={} output_chars={} model_ms={} total_ms={}",

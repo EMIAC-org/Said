@@ -35,8 +35,11 @@ import {
   deleteVocabularyTerm,
   checkNotificationPermission,
   revealDownloadedFile,
+  getMigrationStatus,
+  runMigration,
   type NotifPermission,
   type VocabToastPayload,
+  type ServerMigrationStatus,
 } from "@/lib/invoke";
 import {
   checkConnection,
@@ -114,6 +117,61 @@ function recordingToHistoryItem(r: Recording): HistoryItem {
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
+// ── Setup loader (shown while first-launch migration runs) ───────────────────
+
+const SETUP_STEPS = [
+  "Restoring account",
+  "Syncing API keys",
+  "Uploading history",
+  "Uploading vocabulary and corrections",
+  "Preparing server memory",
+];
+
+function SetupLoader({ status }: { status: ServerMigrationStatus | null }) {
+  const counts = status
+    ? [
+        status.uploaded_credentials_count,
+        status.uploaded_credentials_count,
+        status.uploaded_history_count,
+        status.uploaded_vocab_count + status.uploaded_alias_count + status.uploaded_email_count,
+        status.uploaded_vocab_count + status.uploaded_alias_count,
+      ]
+    : SETUP_STEPS.map(() => 0);
+
+  const isRunning = !status || status.status === "running";
+
+  return (
+    <div className="flex h-screen w-screen items-center justify-center bg-[#0f0f10]">
+      <div className="w-[340px] space-y-6">
+        <div className="space-y-1">
+          <p className="text-[15px] font-semibold text-white">Setting up your AirNote workspace</p>
+          <p className="text-[12px] text-white/40">This only happens once and runs in the background.</p>
+        </div>
+        <div className="space-y-3">
+          {SETUP_STEPS.map((step, i) => {
+            const count = counts[i] ?? 0;
+            const done = !isRunning || (status && count > 0);
+            return (
+              <div key={step} className="flex items-center gap-3">
+                <div className={`w-4 h-4 rounded-full shrink-0 flex items-center justify-center text-[9px] font-bold ${done ? "bg-emerald-500/20 text-emerald-400" : "bg-white/10 text-white/30"}`}>
+                  {done ? "✓" : String(i + 1)}
+                </div>
+                <span className={`text-[12px] ${done ? "text-white/70" : "text-white/30"}`}>{step}</span>
+                {count > 0 && <span className="text-[11px] text-white/30 tabular-nums ml-auto">{count}</span>}
+              </div>
+            );
+          })}
+        </div>
+        {status?.status === "failed" && (
+          <p className="text-[11px] text-amber-400/70 pt-1">
+            Some data could not be uploaded. You can retry later in Settings.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [snapshot,    setSnapshot]    = useState<AppSnapshot | null>(null);
   const [history,     setHistory]     = useState<HistoryItem[]>([]);
@@ -172,6 +230,11 @@ export default function App() {
   );
 
   const [_notifPerm,      setNotifPerm]       = useState<NotifPermission>("unknown"); // eslint-disable-line @typescript-eslint/no-unused-vars
+
+  // ── First-launch server migration setup loader ─────────────────────────────
+  type SetupLoaderState = "idle" | "running" | "done";
+  const [setupLoader, setSetupLoader] = useState<SetupLoaderState>("idle");
+  const [setupStatus, setSetupStatus] = useState<ServerMigrationStatus | null>(null);
 
   // Theme (light/dark) — persisted in localStorage, applied to <html>
   const { theme, toggle: toggleTheme } = useTheme();
@@ -272,6 +335,40 @@ export default function App() {
     void syncCompanyVocab(true);
     void uploadUserVocabSummary(true);
   }, []);
+
+  // ── Trigger migration once after enterprise connects ──────────────────────
+  useEffect(() => {
+    if (enterpriseGate !== "connected") return;
+    let alive = true;
+    (async () => {
+      const currentStatus = await getMigrationStatus();
+      if (!alive) return;
+      if (currentStatus?.status === "completed") {
+        setSetupLoader("done");
+        return;
+      }
+      if (!currentStatus?.signed_in) {
+        setSetupLoader("done");
+        return;
+      }
+      setSetupLoader("running");
+      await runMigration();
+      // Poll until done or failed
+      for (let i = 0; i < 60; i++) {
+        if (!alive) return;
+        await new Promise((r) => setTimeout(r, 1500));
+        const s = await getMigrationStatus();
+        if (!alive) return;
+        setSetupStatus(s);
+        if (s?.status === "completed" || s?.status === "failed" || s?.status === "partial") {
+          break;
+        }
+      }
+      if (alive) setSetupLoader("done");
+    })();
+    return () => { alive = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enterpriseGate]);
 
   const handleEnterpriseDisconnect = useCallback(() => {
     setSettingsOpen(false);
@@ -572,6 +669,10 @@ export default function App() {
         onFinish={handleOnboardingFinish}
       />
     );
+  }
+
+  if (setupLoader === "running") {
+    return <SetupLoader status={setupStatus} />;
   }
 
   /* ── Render ─────────────────────────────────────────────────────────────── */
