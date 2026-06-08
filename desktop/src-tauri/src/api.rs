@@ -816,6 +816,7 @@ pub struct EnterpriseStatus {
     pub email: Option<String>,
     pub server_url: Option<String>,
     pub org_name: Option<String>,
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

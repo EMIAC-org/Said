@@ -43,6 +43,7 @@ import {
   getConnection,
   isConnected,
   ensureDesktopRegistered,
+  restoreConnectionFromLocalBackend,
   syncCompanyVocab,
   uploadUserVocabSummary,
   type EnterpriseConnection,
@@ -224,14 +225,21 @@ export default function App() {
   }, [refreshHistory]);
 
   useEffect(() => {
-    if (!isConnected()) return;
     let alive = true;
     (async () => {
+      let restored: EnterpriseConnection | null = null;
+      if (!isConnected()) {
+        restored = await restoreConnectionFromLocalBackend();
+      }
+      if (!isConnected() && !restored) {
+        if (alive) setEnterpriseGate("required");
+        return;
+      }
       const status = await checkConnection();
       if (!alive) return;
       if (status === "connected") {
         setEnterpriseGate("connected");
-        const conn = getConnection();
+        const conn = getConnection() ?? restored;
         if (conn) void ensureDesktopRegistered(conn.serverUrl, conn.jwt);
       } else {
         setEnterpriseGate("required");
