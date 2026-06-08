@@ -168,6 +168,15 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/runtime/memory/sync",
             post(routes::runtime_history::sync_memory),
         )
+        .route(
+            "/v1/runtime/settings",
+            get(routes::runtime_settings::get_settings)
+                .patch(routes::runtime_settings::patch_settings),
+        )
+        .route(
+            "/v1/runtime/settings/sync",
+            post(routes::runtime_settings::sync_settings),
+        )
         .route("/v1/license/check", get(routes::license::check))
         .route("/v1/metering/report", post(routes::metering::report))
         // Enterprise — Desktop clients

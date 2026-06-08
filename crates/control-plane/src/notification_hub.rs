@@ -27,10 +27,7 @@ impl NotificationHub {
         Arc::new(Self::default())
     }
 
-    pub async fn join(
-        &self,
-        account_id: Uuid,
-    ) -> mpsc::UnboundedReceiver<DesktopNotification> {
+    pub async fn join(&self, account_id: Uuid) -> mpsc::UnboundedReceiver<DesktopNotification> {
         let (tx, rx) = mpsc::unbounded_channel();
         let mut rooms = self.rooms.write().await;
         rooms

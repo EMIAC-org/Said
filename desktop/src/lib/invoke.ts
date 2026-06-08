@@ -1200,6 +1200,37 @@ export async function cancelMigration(): Promise<void> {
   }
 }
 
+// ── Server settings sync ──────────────────────────────────────────────────────
+
+export interface ServerSettingsStatus {
+  synced: boolean;
+  server_version: number;
+  last_synced_at_ms?: number | null;
+  last_error?: string | null;
+  settings?: Record<string, unknown> | null;
+  signed_in: boolean;
+}
+
+export async function getServerSettingsStatus(): Promise<ServerSettingsStatus | null> {
+  try {
+    const res = await backendFetch("/v1/server-settings/status");
+    if (!res?.ok) return null;
+    return await res.json() as ServerSettingsStatus;
+  } catch {
+    return null;
+  }
+}
+
+export async function syncServerSettings(): Promise<{ synced: boolean; reason?: string } | null> {
+  try {
+    const res = await backendFetch("/v1/server-settings/sync", { method: "POST", body: "{}" });
+    if (!res) return null;
+    return await res.json() as { synced: boolean; reason?: string };
+  } catch {
+    return null;
+  }
+}
+
 // Suppress unused-import warnings for types only used in exported signatures
 export type {
   CloudAuthResponse,

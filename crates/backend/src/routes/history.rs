@@ -29,8 +29,217 @@ pub async fn list(
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<Vec<Recording>>, StatusCode> {
     let user_id = state.default_user_id.clone();
-    let items = crate::store::history::list_recordings(&state.pool, &user_id, q.limit, q.before);
+    let items = match try_list_server_history(&state, &user_id, &q).await {
+        Some(items) => items,
+        None => crate::store::history::list_recordings(&state.pool, &user_id, q.limit, q.before),
+    };
     Ok(Json(items))
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeHistoryItem {
+    id: Uuid,
+    recording_id: Option<String>,
+    source: String,
+    raw_transcript: Option<String>,
+    transcript: Option<String>,
+    local_corrected_transcript: Option<String>,
+    polished_output: Option<String>,
+    final_text: Option<String>,
+    model_used: Option<String>,
+    word_count: Option<i64>,
+    recording_seconds: Option<f64>,
+    transcribe_ms: Option<i64>,
+    embed_ms: Option<i64>,
+    polish_ms: Option<i64>,
+    target_app: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+async fn try_list_server_history(
+    state: &AppState,
+    user_id: &str,
+    q: &HistoryQuery,
+) -> Option<Vec<Recording>> {
+    let user = crate::store::users::get_user(&state.pool, user_id)?;
+    let token = user.cloud_token.filter(|s| !s.trim().is_empty())?;
+    let base_url = user
+        .enterprise_server_url
+        .filter(|s| !s.trim().is_empty())?;
+    let url = format!("{}/v1/runtime/history", base_url.trim_end_matches('/'));
+
+    let mut query = vec![("limit", q.limit.to_string())];
+    if let Some(before_ms) = q.before {
+        if let Some(before) = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(before_ms)
+            .map(|ts| ts.to_rfc3339())
+        {
+            query.push(("before", before));
+        }
+    }
+
+    let resp = match state
+        .http_client
+        .get(&url)
+        .bearer_auth(token)
+        .query(&query)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            warn!("[history] server history unavailable, using local history: {e}");
+            return None;
+        }
+    };
+
+    let status = resp.status();
+    if !status.is_success() {
+        warn!("[history] server history returned {status}, using local history");
+        return None;
+    }
+
+    match resp.json::<Vec<RuntimeHistoryItem>>().await {
+        Ok(rows) => Some(
+            rows.into_iter()
+                .map(|row| server_row_to_recording(row, user_id))
+                .collect(),
+        ),
+        Err(e) => {
+            warn!("[history] server history decode failed, using local history: {e}");
+            None
+        }
+    }
+}
+
+fn server_row_to_recording(row: RuntimeHistoryItem, user_id: &str) -> Recording {
+    let transcript = first_non_empty([
+        row.transcript.as_deref(),
+        row.local_corrected_transcript.as_deref(),
+        row.raw_transcript.as_deref(),
+    ])
+    .unwrap_or_default();
+    let polished = first_non_empty([
+        row.final_text.as_deref(),
+        row.polished_output.as_deref(),
+        Some(transcript.as_str()),
+    ])
+    .unwrap_or_default();
+    let word_count = row
+        .word_count
+        .unwrap_or_else(|| count_words(row.final_text.as_deref().unwrap_or(&polished)));
+
+    Recording {
+        id: row
+            .recording_id
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| row.id.to_string()),
+        user_id: user_id.to_string(),
+        timestamp_ms: row.created_at.timestamp_millis(),
+        transcript,
+        polished,
+        final_text: row.final_text,
+        word_count,
+        recording_seconds: row.recording_seconds.unwrap_or(0.0),
+        model_used: row
+            .model_used
+            .unwrap_or_else(|| "server_runtime".to_string()),
+        confidence: None,
+        transcribe_ms: row.transcribe_ms,
+        embed_ms: row.embed_ms,
+        polish_ms: row.polish_ms,
+        target_app: row.target_app,
+        edit_count: 0,
+        source: row.source,
+        audio_id: None,
+        enriched_transcript: None,
+        raw_transcript: row.raw_transcript,
+        local_corrected_transcript: row.local_corrected_transcript,
+        polished_output: row.polished_output,
+    }
+}
+
+fn first_non_empty<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
+    values
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn count_words(text: &str) -> i64 {
+    text.split_whitespace().count() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runtime_row() -> RuntimeHistoryItem {
+        RuntimeHistoryItem {
+            id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            recording_id: Some("local-rec-1".to_string()),
+            source: "voice".to_string(),
+            raw_transcript: Some("raw words".to_string()),
+            transcript: Some("corrected words".to_string()),
+            local_corrected_transcript: Some("local corrected words".to_string()),
+            polished_output: Some("polished words".to_string()),
+            final_text: Some("final words kept".to_string()),
+            model_used: Some("server-model".to_string()),
+            word_count: Some(3),
+            recording_seconds: Some(2.5),
+            transcribe_ms: Some(100),
+            embed_ms: Some(20),
+            polish_ms: Some(300),
+            target_app: Some("Notes".to_string()),
+            created_at: chrono::DateTime::parse_from_rfc3339("2026-06-08T12:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        }
+    }
+
+    #[test]
+    fn server_row_maps_to_local_recording_shape() {
+        let rec = server_row_to_recording(runtime_row(), "user-1");
+
+        assert_eq!(rec.id, "local-rec-1");
+        assert_eq!(rec.user_id, "user-1");
+        assert_eq!(rec.timestamp_ms, 1780920000000);
+        assert_eq!(rec.transcript, "corrected words");
+        assert_eq!(rec.polished, "final words kept");
+        assert_eq!(rec.final_text.as_deref(), Some("final words kept"));
+        assert_eq!(rec.word_count, 3);
+        assert_eq!(rec.recording_seconds, 2.5);
+        assert_eq!(rec.model_used, "server-model");
+        assert_eq!(rec.transcribe_ms, Some(100));
+        assert_eq!(rec.embed_ms, Some(20));
+        assert_eq!(rec.polish_ms, Some(300));
+        assert_eq!(rec.target_app.as_deref(), Some("Notes"));
+        assert_eq!(rec.edit_count, 0);
+        assert!(rec.audio_id.is_none());
+    }
+
+    #[test]
+    fn server_row_falls_back_for_missing_optional_fields() {
+        let mut row = runtime_row();
+        row.recording_id = None;
+        row.transcript = None;
+        row.polished_output = None;
+        row.final_text = Some("kept final words".to_string());
+        row.model_used = None;
+        row.word_count = None;
+        row.recording_seconds = None;
+
+        let rec = server_row_to_recording(row, "default");
+
+        assert_eq!(rec.id, "11111111-1111-1111-1111-111111111111");
+        assert_eq!(rec.transcript, "local corrected words");
+        assert_eq!(rec.polished, "kept final words");
+        assert_eq!(rec.word_count, 3);
+        assert_eq!(rec.recording_seconds, 0.0);
+        assert_eq!(rec.model_used, "server_runtime");
+    }
 }
 
 pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {

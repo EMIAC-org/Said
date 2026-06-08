@@ -27,10 +27,12 @@ import {
   requestNotifications, checkNotificationPermission,
   getDesktopPrefs, setDesktopPrefs,
   openaiConnect, openaiStatus, openaiDisconnect,
+  getServerSettingsStatus,
   type DebugLogs,
   type NotifPermission,
   type DesktopPrefs,
   type OpenAIStatus,
+  type ServerSettingsStatus,
 } from "@/lib/invoke";
 
 // ── Tone presets ──────────────────────────────────────────────────────────────
@@ -58,7 +60,37 @@ const LANGUAGES = [
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+type SyncBadgeState = "idle" | "syncing" | "synced" | "offline" | "failed";
+
+function SyncBadge({ state }: { state: SyncBadgeState }) {
+  if (state === "idle") return null;
+  const configs: Record<Exclude<SyncBadgeState, "idle">, [string, string]> = {
+    synced:  ["hsl(145 60% 50%)", "Synced"],
+    syncing: ["hsl(38 90% 55%)",  "Syncing…"],
+    offline: ["hsl(38 70% 55%)",  "Offline cache"],
+    failed:  ["hsl(0 65% 55%)",   "Sync failed"],
+  };
+  const [color, label] = configs[state as Exclude<SyncBadgeState, "idle">] ?? ["hsl(var(--muted-foreground))", ""];
+  return (
+    <span className="ml-1 flex items-center gap-1" style={{ fontSize: "10px", color, opacity: 0.85 }}>
+      <span
+        className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+        style={{ background: color }}
+      />
+      {label}
+    </span>
+  );
+}
+
+function Section({
+  title,
+  extra,
+  children,
+}: {
+  title: string;
+  extra?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <div className="mb-7">
       <p className="section-label px-1 mb-2.5 flex items-center gap-2">
@@ -67,6 +99,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
           style={{ background: "hsl(var(--accent-violet))" }}
         />
         {title}
+        {extra}
       </p>
       <div className="panel overflow-hidden">
         {children}
@@ -661,6 +694,18 @@ export function SettingsView({
   const [notifPerm, setNotifPerm] = useState<NotifPermission>("unknown");
   const [notifBusy, setNotifBusy] = useState(false);
   const axSupported = snapshot?.auto_paste_supported    ?? false;
+
+  // ── Server settings sync indicator ──────────────────────────────────────────
+  const [serverSyncState, setServerSyncState] = useState<SyncBadgeState>("idle");
+  useEffect(() => {
+    if (!isOn("models") && !isOn("api-keys")) return;
+    void getServerSettingsStatus().then((s: ServerSettingsStatus | null) => {
+      if (!s || !s.signed_in) { setServerSyncState("idle"); return; }
+      if (s.last_error)        { setServerSyncState("failed");  return; }
+      if (s.synced)            { setServerSyncState("synced");  return; }
+      setServerSyncState("offline");
+    }).catch(() => setServerSyncState("idle"));
+  }, [currentSection]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Prefs state ─────────────────────────────────────────────────────────────
   const [prefs,        setPrefs]        = useState<Preferences | null>(null);
@@ -1695,7 +1740,7 @@ export function SettingsView({
 
         {/* ── Models ───────────────────────────────────── */}
         <Show when={isOn("models")}>
-        <Section title="Dictation Model">
+        <Section title="Dictation Model" extra={<SyncBadge state={serverSyncState} />}>
           <div className="px-5 py-4">
             <div className="flex items-center gap-4 mb-3">
               <div
@@ -2050,7 +2095,7 @@ export function SettingsView({
         {/* ── API Keys ──────────────────────────────────── */}
         <Show when={isOn("api-keys")}>
         <div className="mb-7">
-          <p className="section-label px-1 mb-2.5">API Keys</p>
+          <p className="section-label px-1 mb-2.5 flex items-center gap-2">API Keys<SyncBadge state={serverSyncState} /></p>
           <div className="panel p-5 space-y-3">
             <p className="text-[12px] text-muted-foreground leading-relaxed">
               Stored only on this {isWindows ? "PC" : "Mac"}. Open a group only when you need to edit that key.

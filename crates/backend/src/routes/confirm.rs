@@ -98,6 +98,27 @@ pub async fn confirm_term(
     let user_id = state.default_user_id.as_str();
 
     if body.action == "learn" {
+        let server_confirm = ConfirmBatchBody {
+            items: vec![ConfirmBatchItem {
+                original: body.original.clone(),
+                corrected: body.term.clone(),
+            }],
+            recording_id: body.recording_id.clone(),
+        };
+        if let Some(server_response) = confirm_batch_with_server(&state, &server_confirm).await {
+            info!(
+                "[confirm] server-owned confirm learned {}/1 term(s) for {:?}",
+                server_response.learned_count, body.term,
+            );
+            return (
+                StatusCode::OK,
+                Json(ConfirmResponse {
+                    confirmed: server_response.learned_count > 0,
+                    term: body.term,
+                }),
+            );
+        }
+
         // ── Resolve output language from preferences ─────────────────────────
         let prefs = get_prefs(&state.pool, user_id);
         let language = prefs

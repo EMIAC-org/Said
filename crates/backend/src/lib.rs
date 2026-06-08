@@ -292,6 +292,14 @@ pub fn router_with_state(state: AppState) -> Router {
             post(routes::runtime_credentials::sync),
         )
         .route(
+            "/v1/server-settings/status",
+            get(routes::server_settings::status),
+        )
+        .route(
+            "/v1/server-settings/sync",
+            post(routes::server_settings::sync),
+        )
+        .route(
             "/v1/server-migration/status",
             get(routes::server_migration::status),
         )

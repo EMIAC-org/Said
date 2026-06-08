@@ -184,15 +184,20 @@ pub async fn list_history(
                   WHERE account_id = $1 AND created_at < $2
                   ORDER BY created_at DESC LIMIT $3",
             )
-            .bind(user.account_id).bind(ts).bind(limit)
-            .fetch_all(&state.db).await
+            .bind(user.account_id)
+            .bind(ts)
+            .bind(limit)
+            .fetch_all(&state.db)
+            .await
         } else {
             sqlx::query_as::<_, RuntimeHistoryItem>(
                 "SELECT * FROM runtime_history_items
                   WHERE account_id = $1 ORDER BY created_at DESC LIMIT $2",
             )
-            .bind(user.account_id).bind(limit)
-            .fetch_all(&state.db).await
+            .bind(user.account_id)
+            .bind(limit)
+            .fetch_all(&state.db)
+            .await
         }
     } else if let Some(before) = query.before.as_deref() {
         let ts = parse_ts(before)?;
@@ -201,16 +206,21 @@ pub async fn list_history(
               WHERE account_id = $1 AND deleted_at IS NULL AND created_at < $2
               ORDER BY created_at DESC LIMIT $3",
         )
-        .bind(user.account_id).bind(ts).bind(limit)
-        .fetch_all(&state.db).await
+        .bind(user.account_id)
+        .bind(ts)
+        .bind(limit)
+        .fetch_all(&state.db)
+        .await
     } else {
         sqlx::query_as::<_, RuntimeHistoryItem>(
             "SELECT * FROM runtime_history_items
               WHERE account_id = $1 AND deleted_at IS NULL
               ORDER BY created_at DESC LIMIT $2",
         )
-        .bind(user.account_id).bind(limit)
-        .fetch_all(&state.db).await
+        .bind(user.account_id)
+        .bind(limit)
+        .fetch_all(&state.db)
+        .await
     };
 
     rows.map(Json).map_err(|e| {
@@ -227,8 +237,10 @@ pub async fn get_history_item(
     let row = sqlx::query_as::<_, RuntimeHistoryItem>(
         "SELECT * FROM runtime_history_items WHERE id = $1 AND account_id = $2",
     )
-    .bind(id).bind(user.account_id)
-    .fetch_optional(&state.db).await
+    .bind(id)
+    .bind(user.account_id)
+    .fetch_optional(&state.db)
+    .await
     .map_err(|_| herr("database error"))?
     .ok_or_else(|| json_err(StatusCode::NOT_FOUND, "history item not found"))?;
 
@@ -244,8 +256,10 @@ pub async fn patch_history_item(
     let owned: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM runtime_history_items WHERE id=$1 AND account_id=$2)",
     )
-    .bind(id).bind(user.account_id)
-    .fetch_one(&state.db).await
+    .bind(id)
+    .bind(user.account_id)
+    .fetch_one(&state.db)
+    .await
     .map_err(|_| herr("database error"))?;
 
     if !owned {
@@ -253,29 +267,37 @@ pub async fn patch_history_item(
     }
 
     if let Some(text) = &req.final_text {
-        sqlx::query(
-            "UPDATE runtime_history_items SET final_text=$2, updated_at=now() WHERE id=$1",
-        )
-        .bind(id).bind(text)
-        .execute(&state.db).await.map_err(|_| herr("database error"))?;
+        sqlx::query("UPDATE runtime_history_items SET final_text=$2, updated_at=now() WHERE id=$1")
+            .bind(id)
+            .bind(text)
+            .execute(&state.db)
+            .await
+            .map_err(|_| herr("database error"))?;
     }
 
     if let Some(fb) = &req.edit_feedback_json {
         sqlx::query(
             "UPDATE runtime_history_items SET edit_feedback_json=$2, updated_at=now() WHERE id=$1",
         )
-        .bind(id).bind(fb)
-        .execute(&state.db).await.map_err(|_| herr("database error"))?;
+        .bind(id)
+        .bind(fb)
+        .execute(&state.db)
+        .await
+        .map_err(|_| herr("database error"))?;
     }
 
     if let Some(deleted) = req.deleted {
-        let ts: Option<chrono::DateTime<chrono::Utc>> =
-            if deleted { Some(chrono::Utc::now()) } else { None };
-        sqlx::query(
-            "UPDATE runtime_history_items SET deleted_at=$2, updated_at=now() WHERE id=$1",
-        )
-        .bind(id).bind(ts)
-        .execute(&state.db).await.map_err(|_| herr("database error"))?;
+        let ts: Option<chrono::DateTime<chrono::Utc>> = if deleted {
+            Some(chrono::Utc::now())
+        } else {
+            None
+        };
+        sqlx::query("UPDATE runtime_history_items SET deleted_at=$2, updated_at=now() WHERE id=$1")
+            .bind(id)
+            .bind(ts)
+            .execute(&state.db)
+            .await
+            .map_err(|_| herr("database error"))?;
     }
 
     get_history_item(State(state), user, Path(id)).await
@@ -291,8 +313,10 @@ pub async fn delete_history_item(
             SET deleted_at=now(), updated_at=now()
           WHERE id=$1 AND account_id=$2 AND deleted_at IS NULL",
     )
-    .bind(id).bind(user.account_id)
-    .execute(&state.db).await
+    .bind(id)
+    .bind(user.account_id)
+    .execute(&state.db)
+    .await
     .map_err(|_| herr("database error"))?
     .rows_affected();
 
@@ -310,7 +334,11 @@ pub async fn sync_history(
     Json(req): Json<HistorySyncRequest>,
 ) -> Result<Json<HistorySyncResponse>, (StatusCode, Json<Value>)> {
     if req.items.is_empty() {
-        return Ok(Json(HistorySyncResponse { accepted: 0, skipped: 0, failed: 0 }));
+        return Ok(Json(HistorySyncResponse {
+            accepted: 0,
+            skipped: 0,
+            failed: 0,
+        }));
     }
 
     let org_id = primary_org_id(&state, user.account_id).await?;
@@ -320,14 +348,20 @@ pub async fn sync_history(
 
     for item in &req.items {
         let created_at = item
-            .created_at.as_deref()
+            .created_at
+            .as_deref()
             .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok())
             .unwrap_or_else(chrono::Utc::now);
 
-        let source = item.source.as_deref().filter(|s| !s.is_empty()).unwrap_or("desktop_sync");
+        let source = item
+            .source
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("desktop_sync");
 
         let word_count = item.word_count.or_else(|| {
-            item.final_text.as_deref()
+            item.final_text
+                .as_deref()
                 .or(item.polished_output.as_deref())
                 .map(|t| t.split_whitespace().count() as i32)
         });
@@ -382,7 +416,11 @@ pub async fn sync_history(
         }
     }
 
-    Ok(Json(HistorySyncResponse { accepted, skipped, failed }))
+    Ok(Json(HistorySyncResponse {
+        accepted,
+        skipped,
+        failed,
+    }))
 }
 
 // ── Memory: POST /sync ────────────────────────────────────────────────────────
@@ -404,7 +442,10 @@ pub async fn sync_memory(
 
     for item in &req.vocab_terms {
         let term = item.term.trim();
-        if term.is_empty() { skipped += 1; continue; }
+        if term.is_empty() {
+            skipped += 1;
+            continue;
+        }
         let term_type = item.term_type.as_deref().unwrap_or("proper_noun");
         let weight = item.weight.unwrap_or(1.0).clamp(0.1, 10.0);
         let term_norm = norm(term);
@@ -423,21 +464,38 @@ pub async fn sync_memory(
                  weight=GREATEST(personal_vocab_terms.weight,EXCLUDED.weight),
                  status='active', last_seen_at=now(), updated_at=now()",
         )
-        .bind(user.account_id).bind(org_id).bind(term).bind(&term_norm)
-        .bind(term_type).bind(weight)
-        .execute(&state.db).await;
+        .bind(user.account_id)
+        .bind(org_id)
+        .bind(term)
+        .bind(&term_norm)
+        .bind(term_type)
+        .bind(weight)
+        .execute(&state.db)
+        .await;
 
-        if res.is_ok() { accepted_vocab += 1; } else { skipped += 1; }
+        if res.is_ok() {
+            accepted_vocab += 1;
+        } else {
+            skipped += 1;
+        }
     }
 
     for item in &req.stt_replacements {
         let src = item.transcript_form.trim();
         let dst = item.correct_form.trim();
-        if src.is_empty() || dst.is_empty() { skipped += 1; continue; }
+        if src.is_empty() || dst.is_empty() {
+            skipped += 1;
+            continue;
+        }
         let sn = norm(src);
         let dn = norm(dst);
 
-        if sn == dn || is_common(&sn) || is_common(&dn) || word_count(&sn) > 4 || word_count(&dn) > 4 {
+        if sn == dn
+            || is_common(&sn)
+            || is_common(&dn)
+            || word_count(&sn) > 4
+            || word_count(&dn) > 4
+        {
             blocked_aliases += 1;
             continue;
         }
@@ -453,10 +511,19 @@ pub async fn sync_memory(
                  positive_count=personal_stt_replacements.positive_count+1,
                  status='active', last_seen_at=now(), updated_at=now()",
         )
-        .bind(user.account_id).bind(org_id).bind(src).bind(&sn).bind(dst).bind(&dn)
-        .execute(&state.db).await;
+        .bind(user.account_id)
+        .bind(org_id)
+        .bind(src)
+        .bind(&sn)
+        .bind(dst)
+        .bind(&dn)
+        .execute(&state.db)
+        .await;
 
-        if r1.is_err() { skipped += 1; continue; }
+        if r1.is_err() {
+            skipped += 1;
+            continue;
+        }
 
         let _ = sqlx::query(
             "INSERT INTO personal_edit_policy_rules
@@ -467,8 +534,15 @@ pub async fn sync_memory(
                  positive_count=personal_edit_policy_rules.positive_count+1,
                  status='active', last_seen_at=now(), updated_at=now()",
         )
-        .bind(user.account_id).bind(org_id).bind(src).bind(&sn).bind(dst).bind(&dn).bind(edit_type)
-        .execute(&state.db).await;
+        .bind(user.account_id)
+        .bind(org_id)
+        .bind(src)
+        .bind(&sn)
+        .bind(dst)
+        .bind(&dn)
+        .bind(edit_type)
+        .execute(&state.db)
+        .await;
 
         accepted_aliases += 1;
     }
@@ -476,10 +550,18 @@ pub async fn sync_memory(
     for item in &req.edit_policy_rules {
         let src = item.variant_form.trim();
         let dst = item.correct_form.trim();
-        if src.is_empty() || dst.is_empty() { skipped += 1; continue; }
+        if src.is_empty() || dst.is_empty() {
+            skipped += 1;
+            continue;
+        }
         let sn = norm(src);
         let dn = norm(dst);
-        if sn == dn || is_common(&sn) || is_common(&dn) || word_count(&sn) > 4 || word_count(&dn) > 4 {
+        if sn == dn
+            || is_common(&sn)
+            || is_common(&dn)
+            || word_count(&sn) > 4
+            || word_count(&dn) > 4
+        {
             skipped += 1;
             continue;
         }
@@ -493,14 +575,24 @@ pub async fn sync_memory(
                  positive_count=personal_edit_policy_rules.positive_count+1,
                  status='active', last_seen_at=now(), updated_at=now()",
         )
-        .bind(user.account_id).bind(org_id).bind(src).bind(&sn).bind(dst).bind(&dn).bind(edit_type)
-        .execute(&state.db).await;
+        .bind(user.account_id)
+        .bind(org_id)
+        .bind(src)
+        .bind(&sn)
+        .bind(dst)
+        .bind(&dn)
+        .bind(edit_type)
+        .execute(&state.db)
+        .await;
         accepted_policies += 1;
     }
 
     for item in &req.email_memory {
         let email = item.email.trim().to_lowercase();
-        if email.is_empty() || !email.contains('@') { skipped += 1; continue; }
+        if email.is_empty() || !email.contains('@') {
+            skipped += 1;
+            continue;
+        }
         let n = norm(&email);
         let _ = sqlx::query(
             "INSERT INTO personal_vocab_terms
@@ -510,8 +602,12 @@ pub async fn sync_memory(
                  positive_count=personal_vocab_terms.positive_count+1,
                  status='active', last_seen_at=now(), updated_at=now()",
         )
-        .bind(user.account_id).bind(org_id).bind(&email).bind(&n)
-        .execute(&state.db).await;
+        .bind(user.account_id)
+        .bind(org_id)
+        .bind(&email)
+        .bind(&n)
+        .execute(&state.db)
+        .await;
         accepted_emails += 1;
     }
 
@@ -594,7 +690,13 @@ fn norm(text: &str) -> String {
     text.trim()
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.') { c } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.') {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -603,15 +705,86 @@ fn norm(text: &str) -> String {
 
 fn is_common(n: &str) -> bool {
     const COMMON: &[&str] = &[
-        "kaisa","kaisi","kaise","aisa","aisi","aise","laga","lagi","lage",
-        "main","mein","hai","hain","tha","thi","the","time","can","go","do",
-        "this","for","me","one thing","ek baar","char log","kaam","kya","kyun",
-        "aur","batao","bolo","a","an","is","are","was","were","be","been","being",
-        "have","has","had","does","did","will","would","could","should","may",
-        "might","must","shall","and","or","but","if","in","on","at","to","of",
-        "it","its","that","which","who","not","no","yes","ok","okay","yeah","yep","nope",
+        "kaisa",
+        "kaisi",
+        "kaise",
+        "aisa",
+        "aisi",
+        "aise",
+        "laga",
+        "lagi",
+        "lage",
+        "main",
+        "mein",
+        "hai",
+        "hain",
+        "tha",
+        "thi",
+        "the",
+        "time",
+        "can",
+        "go",
+        "do",
+        "this",
+        "for",
+        "me",
+        "one thing",
+        "ek baar",
+        "char log",
+        "kaam",
+        "kya",
+        "kyun",
+        "aur",
+        "batao",
+        "bolo",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "and",
+        "or",
+        "but",
+        "if",
+        "in",
+        "on",
+        "at",
+        "to",
+        "of",
+        "it",
+        "its",
+        "that",
+        "which",
+        "who",
+        "not",
+        "no",
+        "yes",
+        "ok",
+        "okay",
+        "yeah",
+        "yep",
+        "nope",
     ];
-    if COMMON.contains(&n) { return true; }
+    if COMMON.contains(&n) {
+        return true;
+    }
     let tokens: Vec<_> = n.split_whitespace().collect();
     !tokens.is_empty() && tokens.iter().all(|t| COMMON.contains(t))
 }

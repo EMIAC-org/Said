@@ -16,6 +16,7 @@ pub mod prompts;
 pub mod runtime_credentials;
 pub mod runtime_live;
 pub mod server_migration;
+pub mod server_settings;
 pub mod stt;
 pub mod text;
 pub mod tier2;
