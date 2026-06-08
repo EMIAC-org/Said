@@ -2339,14 +2339,6 @@ pub async fn voice_polish(
         ));
     }
 
-    let groq_key = state.groq_api_key.trim();
-    if groq_key.is_empty() {
-        return Err(json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "server runtime Groq key is not configured",
-        ));
-    }
-
     let server_memory = load_runtime_memory(&state, user.account_id)
         .await
         .unwrap_or_default();
@@ -2400,12 +2392,36 @@ pub async fn voice_polish(
     } else {
         GROQ_MODEL_FAST
     };
+    let credential = match runtime_provider_secret(&state, user.account_id, "groq").await {
+        Ok(credential) => credential,
+        Err(err) => {
+            let _ = insert_stage_event(
+                &state,
+                run_id,
+                "credential_lookup",
+                "error",
+                None,
+                Some("provider_credential_missing"),
+                json!({"provider": "groq"}),
+            )
+            .await;
+            let _ = mark_runtime_session(
+                &state,
+                run_id,
+                "failed",
+                Some("provider_credential_missing"),
+            )
+            .await;
+            return Err(err);
+        }
+    };
 
     tracing::info!(
-        "[runtime] voice polish start account={} run_id={} model={} transcript_chars={} vocab_hints={}",
+        "[runtime] voice polish start account={} run_id={} model={} credential_scope={} transcript_chars={} vocab_hints={}",
         user.account_id,
         run_id,
         model,
+        credential.scope,
         transcript.len(),
         merged_vocab.len(),
     );
@@ -2422,12 +2438,33 @@ pub async fn voice_polish(
     .await?;
 
     let model_start = Instant::now();
-    let output = call_groq(&state, groq_key, model, &system_prompt, &user_message).await;
+    let output = call_groq(
+        &state,
+        &credential.secret,
+        model,
+        &system_prompt,
+        &user_message,
+    )
+    .await;
     let model_ms = model_start.elapsed().as_millis() as i64;
     let total_ms = total_start.elapsed().as_millis() as i64;
 
     let output = match output {
-        Ok(output) => output,
+        Ok(output) => {
+            let _ = update_credential_used(&state, credential.credential_id).await;
+            insert_provider_usage(
+                &state,
+                run_id,
+                &credential,
+                "groq",
+                Some(model),
+                Some(model_ms),
+                "ok",
+                None,
+            )
+            .await?;
+            output
+        }
         Err(err) => {
             let _ = insert_stage_event(
                 &state,
@@ -2437,6 +2474,17 @@ pub async fn voice_polish(
                 Some(model_ms),
                 Some("model_failed"),
                 json!({}),
+            )
+            .await;
+            let _ = insert_provider_usage(
+                &state,
+                run_id,
+                &credential,
+                "groq",
+                Some(model),
+                Some(model_ms),
+                "error",
+                Some("model_failed"),
             )
             .await;
             let _ = mark_runtime_session(&state, run_id, "failed", Some("model_failed")).await;
