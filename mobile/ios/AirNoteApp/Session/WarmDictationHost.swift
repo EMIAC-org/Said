@@ -27,8 +27,13 @@ final class WarmDictationHost: ObservableObject {
     private var lastLoudAt: Date?
     private var observing = false
 
-    /// How long the mic stays warm after the last dictation (extends on each use).
-    private let warmWindow: TimeInterval = 300
+    /// How long the mic stays warm after the last dictation (extends on each use),
+    /// from the user's session-duration setting. -1 minutes = "until I stop it".
+    private var warmWindow: TimeInterval {
+        let m = SharedStore.sessionDurationMinutes
+        return m < 0 ? .infinity : TimeInterval(max(1, m) * 60)
+    }
+    private var neverExpires: Bool { SharedStore.sessionDurationMinutes < 0 }
     private let silenceAutoStop: TimeInterval = 2.6
     private let speechLevelThreshold: Float = 0.05
 
@@ -172,12 +177,25 @@ final class WarmDictationHost: ObservableObject {
     // MARK: Warm window
 
     private func extendWarmWindow() {
-        let until = Date().addingTimeInterval(warmWindow)
+        warmWindowTask?.cancel()
+        warmWindowTask = nil
+
+        // "Until I stop it": keep warm with no auto-expiry. We still stamp a
+        // far-future warmUntil so the keyboard's `isSessionWarm` check passes;
+        // the session ends only on explicit End, interruption, or app kill.
+        if neverExpires {
+            let until = Date().addingTimeInterval(60 * 60 * 24 * 30)
+            SharedStore.sessionWarmUntil = until
+            warmUntil = until
+            return
+        }
+
+        let window = warmWindow
+        let until = Date().addingTimeInterval(window)
         SharedStore.sessionWarmUntil = until
         warmUntil = until
-        warmWindowTask?.cancel()
         warmWindowTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(self?.warmWindow ?? 90) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(window) * 1_000_000_000)
             guard let self, !Task.isCancelled, !self.isStreaming else { return }
             self.endWarmSession()
         }

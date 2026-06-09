@@ -5,6 +5,7 @@ struct SettingsScreen: View {
     @EnvironmentObject private var env: AppEnvironment
     @AppStorage("airnotePreferredAppearance") private var appearance = AirNoteAppearance.system.rawValue
     @State private var confirmSignOut = false
+    @State private var sessionMinutes = SharedStore.sessionDurationMinutes
 
     var body: some View {
         NavigationStack {
@@ -25,6 +26,7 @@ struct SettingsScreen: View {
             .tint(AirNoteDesign.accent)
             .task {
                 env.permissions.refreshAll()
+                sessionMinutes = SharedStore.sessionDurationMinutes
                 if !env.settingsLoaded { await env.loadSettings() }
             }
         }
@@ -86,10 +88,19 @@ struct SettingsScreen: View {
                 }
             }
             Toggle("Personalize from my corrections", isOn: learningBinding)
+            Picker("Keyboard session", selection: $sessionMinutes) {
+                Text("5 minutes").tag(5)
+                Text("15 minutes").tag(15)
+                Text("1 hour").tag(60)
+                Text("Until I stop it").tag(-1)
+            }
+            .onChange(of: sessionMinutes) { _, value in
+                SharedStore.sessionDurationMinutes = value
+            }
         } header: {
             Text("Dictation")
         } footer: {
-            Text("AirNote applies the names and corrections you teach it (in History → review an edit, or Vocabulary) to future dictations. Settings sync across your devices.")
+            Text("AirNote applies the names and corrections you teach it (in History → review an edit, or Vocabulary) to future dictations. The keyboard session is how long the mic stays warm in the background after you dictate — longer means fewer “Start session” taps, at no extra server cost (the mic only streams while you actually speak). Settings sync across your devices.")
         }
     }
 

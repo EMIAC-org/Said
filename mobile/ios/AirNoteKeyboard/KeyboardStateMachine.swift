@@ -14,6 +14,8 @@ public enum KeyboardState: Equatable {
     case inserted
     case copied
     case savedToHistory
+    case teaching          // sending the user's in-place correction to learn
+    case learned(String)   // confirmation / info after a teach attempt
     case error(String)
     case staleSession
     case unsupportedSecureField

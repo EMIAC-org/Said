@@ -8,6 +8,7 @@ import AirNoteShared
 final class KeyboardViewController: UIInputViewController {
     private let streamer = VoiceStreamingClient()
     private let pasteboard = UIPasteboard.general
+    private lazy var gateway = GatewayEnvironment.makeClient()
 
     private var state: KeyboardState = .ready
     private var currentResult: BridgeResult?
@@ -17,6 +18,26 @@ final class KeyboardViewController: UIInputViewController {
     private var warmActive = false
     private var gotAck = false
     private var ackTimer: Timer?
+
+    // MARK: In-place "Teach a fix"
+    //
+    // iOS won't let the keyboard read other apps' text in general, but while
+    // AirNote's keyboard IS the active keyboard it can read the text around the
+    // cursor (textDocumentProxy). So after we insert a result, if the user fixes
+    // a word using this keyboard, we can diff what we inserted against the
+    // corrected text and teach it — the only correction path iOS permits outside
+    // the app. Edits made after switching keyboards/apps remain invisible.
+    private var lastInsertedText: String?
+    private var insertPrefix: String?
+    private var teachExpiry: Date?
+    private var teachTimer: Timer?
+    /// How long the "Teach a fix" affordance stays available after an insertion.
+    private let teachWindow: TimeInterval = 120
+
+    private var canTeachFix: Bool {
+        guard lastInsertedText != nil, let expiry = teachExpiry else { return false }
+        return expiry > Date()
+    }
 
     // MARK: Lifecycle
 
@@ -60,6 +81,8 @@ final class KeyboardViewController: UIInputViewController {
         ackTimer = nil
         finalizeTimer?.invalidate()
         finalizeTimer = nil
+        teachTimer?.invalidate()
+        teachTimer = nil
         streamer.hardStop()
     }
 
@@ -67,6 +90,7 @@ final class KeyboardViewController: UIInputViewController {
         // Clear the callback first so no event can fire on a deallocating self,
         // then tear down synchronously.
         finalizeTimer?.invalidate()
+        teachTimer?.invalidate()
         streamer.onUpdate = nil
         streamer.hardStop()
     }
@@ -75,6 +99,9 @@ final class KeyboardViewController: UIInputViewController {
         // Re-evaluate the secure-field gate when focus moves, but never disturb
         // an in-flight recording or a pending result.
         guard !isRecording, currentResult == nil else { return }
+        // While a fresh insertion is still teachable, hold the post-insert state
+        // so the "Teach a fix" affordance stays put as the user edits the text.
+        if canTeachFix { return }
         recomputeIdleState()
         render()
     }
@@ -101,13 +128,14 @@ final class KeyboardViewController: UIInputViewController {
 
     private func render() {
         view.subviews.forEach { $0.removeFromSuperview() }
-        let pad = RecordingPadView(state: state)
+        let pad = RecordingPadView(state: state, canTeachFix: canTeachFix)
         pad.translatesAutoresizingMaskIntoConstraints = false
         pad.onStart = { [weak self] in self?.requestAppDictation() }
         pad.onStop = { [weak self] in self?.stopRecording() }
         pad.onInsert = { [weak self] in self?.insertResult() }
         pad.onCopy = { [weak self] in self?.copyResult() }
         pad.onSave = { [weak self] in self?.saveResult() }
+        pad.onTeachFix = { [weak self] in self?.teachLastFix() }
         pad.onOpenApp = { [weak self] in self?.openMainApp() }
         pad.onKeyTap = { [weak self] text in self?.textDocumentProxy.insertText(text) }
         pad.onDelete = { [weak self] in self?.textDocumentProxy.deleteBackward() }
@@ -131,6 +159,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func startRecording() {
         cancelFinalizeTimer()
+        clearTeachable()
         guard hasFullAccess else { setState(.needsFullAccess); return }
         guard let token = SharedStore.accessToken, !token.isEmpty else {
             setState(.needsMainAppSession)
@@ -287,9 +316,11 @@ final class KeyboardViewController: UIInputViewController {
             copyResult()
             return
         }
+        let prefix = textDocumentProxy.documentContextBeforeInput ?? ""
         let inserter = TextInsertion(documentProxy: textDocumentProxy)
         if inserter.insert(result) {
             currentResult = nil
+            captureTeachable(insertedText: result.polished, prefix: prefix)
             setState(.inserted)
         } else {
             copyResult()
@@ -310,6 +341,98 @@ final class KeyboardViewController: UIInputViewController {
         setState(.savedToHistory)
     }
 
+    // MARK: In-place "Teach a fix"
+
+    private func captureTeachable(insertedText: String, prefix: String) {
+        let trimmed = insertedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { clearTeachable(); return }
+        lastInsertedText = insertedText
+        insertPrefix = prefix
+        teachExpiry = Date().addingTimeInterval(teachWindow)
+        teachTimer?.invalidate()
+        teachTimer = Timer.scheduledTimer(withTimeInterval: teachWindow, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.clearTeachable()
+            // Drop the now-stale "Teach a fix" affordance if we're still idle.
+            if !self.isRecording, self.currentResult == nil {
+                self.recomputeIdleState()
+                self.render()
+            }
+        }
+    }
+
+    private func clearTeachable() {
+        lastInsertedText = nil
+        insertPrefix = nil
+        teachExpiry = nil
+        teachTimer?.invalidate()
+        teachTimer = nil
+    }
+
+    /// Diff what we inserted against the text the user edited in-place (read via
+    /// textDocumentProxy while AirNote's keyboard is active) and teach the fix.
+    private func teachLastFix() {
+        guard let inserted = lastInsertedText else { return }
+        let currentBefore = textDocumentProxy.documentContextBeforeInput ?? ""
+        let edited: String
+        switch TeachFixDiff.evaluate(
+            insertedText: inserted,
+            insertPrefix: insertPrefix ?? "",
+            currentBeforeCursor: currentBefore
+        ) {
+        case .empty:
+            setState(.learned("Fix the text first, then tap Teach a fix."))
+            return
+        case .unchanged:
+            setState(.learned("No change to teach — it looks the same."))
+            return
+        case .edited(let corrected):
+            edited = corrected
+        }
+        let original = inserted.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        setState(.teaching)
+        let recordingID = RequestId.make()
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let analysis = try await self.gateway.analyzeEdit(
+                    recordingID: recordingID,
+                    transcript: original,
+                    aiOutput: original,
+                    userKept: edited
+                )
+                let learnable = analysis.candidates.filter(\.learnable)
+                guard !learnable.isEmpty else {
+                    await MainActor.run {
+                        self.clearTeachable()
+                        self.setState(.learned("Nothing new to teach in that edit."))
+                    }
+                    return
+                }
+                let result = try await self.gateway.confirmLearning(recordingID: recordingID, items: learnable)
+                await MainActor.run {
+                    self.clearTeachable()
+                    if result.learnedCount > 0 {
+                        let terms = result.learnedTerms.isEmpty
+                            ? "\(result.learnedCount) correction\(result.learnedCount == 1 ? "" : "s")"
+                            : result.learnedTerms.joined(separator: ", ")
+                        self.setState(.learned("Learned \(terms) — AirNote will use it next time."))
+                    } else if result.blockedCount > 0 {
+                        self.setState(.learned("That's too common to learn as a custom word."))
+                    } else {
+                        self.setState(.learned("Nothing new to teach here."))
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    // Keep the insertion teachable so the user can retry.
+                    self.setState(.learned("Couldn't teach that just now — try again."))
+                }
+            }
+        }
+    }
+
     // MARK: App-handoff dictation
     //
     // iOS does not permit microphone capture inside a keyboard extension (the OS
@@ -319,6 +442,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func requestAppDictation() {
         cancelFinalizeTimer()
+        clearTeachable()
         guard hasFullAccess else { setState(.needsFullAccess); return }
         guard let token = SharedStore.accessToken, !token.isEmpty else {
             setState(.needsMainAppSession)
@@ -408,14 +532,20 @@ final class KeyboardViewController: UIInputViewController {
 
         if secure {
             setState(.secureCopyReady(result))
-        } else if TextInsertion(documentProxy: textDocumentProxy).insert(result) {
-            currentResult = nil
-            setState(.inserted)
         } else {
-            // Insertion failed (no proxy / restricted) — fall back to clipboard.
-            pasteboard.string = text
-            currentResult = nil
-            setState(.copied)
+            // Capture the text already before the cursor so a later "Teach a fix"
+            // can isolate the user's edited version of just our insertion.
+            let prefix = textDocumentProxy.documentContextBeforeInput ?? ""
+            if TextInsertion(documentProxy: textDocumentProxy).insert(result) {
+                currentResult = nil
+                captureTeachable(insertedText: text, prefix: prefix)
+                setState(.inserted)
+            } else {
+                // Insertion failed (no proxy / restricted) — fall back to clipboard.
+                pasteboard.string = text
+                currentResult = nil
+                setState(.copied)
+            }
         }
         return true
     }

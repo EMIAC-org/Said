@@ -27,6 +27,15 @@ public enum SharedStore {
         static let pendingKbdText = "airnote.shared.pending_kbd_text"
         static let pendingKbdTextAt = "airnote.shared.pending_kbd_text_at"
         static let sessionWarmUntil = "airnote.shared.session_warm_until"
+        static let sessionDurationMinutes = "airnote.shared.session_duration_minutes"
+    }
+
+    /// How long a keyboard session stays warm after the last dictation, in
+    /// minutes. -1 means "until I stop it / the app is killed". Default 5, like
+    /// Wispr's shortest option.
+    public static var sessionDurationMinutes: Int {
+        get { (defaults?.object(forKey: Key.sessionDurationMinutes) as? Int) ?? 5 }
+        set { defaults?.set(newValue, forKey: Key.sessionDurationMinutes) }
     }
 
     /// Until when the app is holding the mic warm in the background. While this is
