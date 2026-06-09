@@ -18,7 +18,10 @@ struct AirNoteApp: App {
                     Task { await environment.handleDeepLink(url) }
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { environment.permissions.refreshAll() }
+                    if phase == .active {
+                        environment.permissions.refreshAll()
+                        environment.checkKeyboardHandoffRequest()
+                    }
                 }
         }
     }

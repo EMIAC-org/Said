@@ -203,6 +203,18 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    /// When the app comes to the foreground, check whether the keyboard just
+    /// asked to dictate (it can't open the app itself on iOS, so the user opens
+    /// it). If so, auto-start the dictation handoff. Called on scenePhase .active.
+    func checkKeyboardHandoffRequest() {
+        guard account != nil, keyboardHandoff == nil,
+              let requestedAt = SharedStore.keyboardDictationRequestedAt,
+              Date().timeIntervalSince(requestedAt) < 120
+        else { return }
+        SharedStore.keyboardDictationRequestedAt = nil   // consume
+        keyboardHandoff = KeyboardHandoff()
+    }
+
     /// Persists a finished dictation for the keyboard to insert when the user
     /// swipes back to their app.
     func deliverKeyboardDictation(_ text: String) {

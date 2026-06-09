@@ -348,10 +348,13 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func coldHandoff() {
+        // The request timestamp is already written by requestAppDictation. iOS
+        // usually won't let a keyboard open its app, so this is best-effort; if it
+        // doesn't open, the user opens AirNote and it auto-starts from the
+        // pending request. Either way, the first dictation establishes the warm
+        // session and the rest are in-place.
         setState(.dictatingInApp)
-        if !openURLInApp("airnote://dictate") {
-            setState(.error("Open the AirNote app once from your Home Screen, then tap the mic again."))
-        }
+        openURLInApp("airnote://dictate")
     }
 
     private func handleWarmResult() {

@@ -22,8 +22,8 @@ final class WarmDictationHost {
     private var lastLoudAt: Date?
     private var observing = false
 
-    /// How long the mic stays warm after the last dictation.
-    private let warmWindow: TimeInterval = 90
+    /// How long the mic stays warm after the last dictation (extends on each use).
+    private let warmWindow: TimeInterval = 300
     private let silenceAutoStop: TimeInterval = 2.6
     private let speechLevelThreshold: Float = 0.05
 

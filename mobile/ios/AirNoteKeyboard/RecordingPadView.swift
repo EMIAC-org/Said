@@ -336,7 +336,7 @@ final class RecordingPadView: UIView {
         switch state {
         case .ready: return "AirNote ready"
         case .recording: return "Listening"
-        case .dictatingInApp: return "Dictating in AirNote"
+        case .dictatingInApp: return "Open AirNote to dictate"
         case .processing: return "Processing"
         case .insertReady: return "Ready to insert"
         case .secureCopyReady: return "Copy ready"
@@ -355,7 +355,7 @@ final class RecordingPadView: UIView {
         case .ready: return "\(SharedStore.tonePreset.capitalized) · \(SharedStore.outputLanguage.capitalized)"
         case .needsMainAppSession: return "Open AirNote and sign in to dictate."
         case .recording: return "Speak naturally. Tap stop when done."
-        case .dictatingInApp: return "Speak in AirNote, then swipe back here to insert."
+        case .dictatingInApp: return "Open the AirNote app — it starts recording. Speak, then come back here. (After once, you can dictate right here.)"
         case .processing(let phase): return phase
         case .insertReady: return "Review, insert, copy, or save."
         case .secureCopyReady: return "Secure field detected. Copy polished text instead."
