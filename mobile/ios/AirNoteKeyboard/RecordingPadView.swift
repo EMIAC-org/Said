@@ -243,8 +243,8 @@ final class RecordingPadView: UIView {
         let delete = UIButton(type: .system)
         var config = UIButton.Configuration.filled()
         config.image = UIImage(systemName: "delete.left")
-        config.baseForegroundColor = .white
-        config.baseBackgroundColor = KeyboardTheme.keyBackground
+        config.baseForegroundColor = KeyboardTheme.foreground
+        config.baseBackgroundColor = KeyboardTheme.secondarySurface
         config.background.cornerRadius = KeyboardTheme.radius
         delete.configuration = config
         delete.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
@@ -264,12 +264,12 @@ final class RecordingPadView: UIView {
         let button = UIButton(type: .system)
         var config = UIButton.Configuration.filled()
         config.title = key
-        config.baseForegroundColor = .white
+        config.baseForegroundColor = KeyboardTheme.foreground   // adaptive — was always-white (invisible in light mode)
         config.baseBackgroundColor = KeyboardTheme.keyBackground
         config.background.cornerRadius = KeyboardTheme.radius
         config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
         button.configuration = config
-        button.titleLabel?.font = .preferredFont(forTextStyle: .body)
+        button.titleLabel?.font = .systemFont(ofSize: 22, weight: .regular)
         button.heightAnchor.constraint(equalToConstant: KeyboardTheme.keyHeight).isActive = true
         button.addAction(UIAction { [weak self] _ in
             self?.onKeyTap?(key.lowercased())

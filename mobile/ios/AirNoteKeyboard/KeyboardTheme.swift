@@ -41,29 +41,29 @@ enum KeyboardTheme {
 
     static var keyboardBackground: UIColor {
         adaptiveColor(
-            dark: UIColor(red: 0.025, green: 0.025, blue: 0.035, alpha: 1.0),
-            light: UIColor(red: 0.962, green: 0.966, blue: 0.980, alpha: 1.0)
+            dark: UIColor(red: 0.110, green: 0.110, blue: 0.125, alpha: 1.0),
+            light: UIColor(red: 0.820, green: 0.831, blue: 0.859, alpha: 1.0)
         )
     }
 
     static var surfaceBackground: UIColor {
         adaptiveColor(
-            dark: UIColor(red: 0.055, green: 0.055, blue: 0.075, alpha: 1.0),
+            dark: UIColor(red: 0.165, green: 0.165, blue: 0.185, alpha: 1.0),
             light: UIColor.white
         )
     }
 
     static var keyBackground: UIColor {
         adaptiveColor(
-            dark: UIColor(red: 0.125, green: 0.125, blue: 0.155, alpha: 1.0),
-            light: UIColor(red: 0.930, green: 0.940, blue: 0.968, alpha: 1.0)
+            dark: UIColor(red: 0.302, green: 0.302, blue: 0.337, alpha: 1.0),
+            light: UIColor.white
         )
     }
 
     static var secondarySurface: UIColor {
         adaptiveColor(
-            dark: UIColor(red: 0.085, green: 0.085, blue: 0.110, alpha: 1.0),
-            light: UIColor(red: 0.930, green: 0.940, blue: 0.968, alpha: 1.0)
+            dark: UIColor(red: 0.204, green: 0.204, blue: 0.235, alpha: 1.0),
+            light: UIColor(red: 0.706, green: 0.722, blue: 0.761, alpha: 1.0)
         )
     }
 
