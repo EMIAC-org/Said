@@ -19,7 +19,8 @@ settings:
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "5.9"
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "2"
+    TARGETED_DEVICE_FAMILY: "1"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED: YES
 packages: {}
@@ -42,14 +43,21 @@ targets:
     sources:
       - path: AirNoteKeyboard
     dependencies:
+      # Link, but DO NOT embed — the extension finds AirNoteShared in the host
+      # app's Frameworks at runtime. Embedding it here produced a forbidden
+      # Frameworks folder + duplicate bundle-id in the .appex (App Store reject).
       - target: AirNoteShared
-        embed: true
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.emiac.airnote.ios.keyboard
         CODE_SIGN_ENTITLEMENTS: AirNoteKeyboard/Resources/AirNoteKeyboard.entitlements
         INFOPLIST_FILE: AirNoteKeyboard/Resources/Info.plist
         APPLICATION_EXTENSION_API_ONLY: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../../Frameworks"
 
   AirNote:
     type: application
@@ -66,6 +74,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.emiac.airnote.ios
         CODE_SIGN_ENTITLEMENTS: AirNoteApp/Resources/AirNoteApp.entitlements
         INFOPLIST_FILE: AirNoteApp/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
 
   AirNoteUITests:
     type: bundle.ui-testing
