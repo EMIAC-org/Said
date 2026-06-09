@@ -19,6 +19,7 @@ struct AirNoteApp: App {
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active {
+                        WarmDictationHost.shared.startObserving()
                         environment.permissions.refreshAll()
                         environment.checkKeyboardHandoffRequest()
                     }

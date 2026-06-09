@@ -243,14 +243,16 @@ public final class VoiceStreamingClient {
     public func startWarmEngine() async throws {
         keepEngineWarm = true
         if !audioEngine.isRunning {
-            try await startAudioEngine()
+            do { try await startAudioEngine() }
+            catch { keepEngineWarm = false; throw error }
         }
     }
 
     public func beginStreaming(session: MobileSessionResponse, config: VoiceStreamConfig) async throws {
         keepEngineWarm = true
         if !audioEngine.isRunning {
-            try await startAudioEngine()
+            do { try await startAudioEngine() }
+            catch { keepEngineWarm = false; throw error }
         }
         guard let voiceWSURL = session.voiceWSURL else {
             throw VoiceStreamError(code: "missing_voice_ws_url", retryable: true, message: "Runtime session is missing its voice socket.")
@@ -648,6 +650,10 @@ public final class VoiceStreamingClient {
 
     private func stopAfterAudioSystemChange(status: String) async {
         guard markStopping() else { return }
+        // An interruption (call, other app's audio) tears down the mic; iOS won't
+        // let us restart it from the background, so drop warm mode — the keyboard
+        // will fall back to the foreground handoff and re-establish the session.
+        keepEngineWarm = false
         emit(.status(status))
         stopAudioEngine()
         maxDurationTask?.cancel()

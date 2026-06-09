@@ -3,6 +3,7 @@ import SwiftUI
 
 struct DashboardScreen: View {
     @EnvironmentObject private var env: AppEnvironment
+    @ObservedObject private var warmHost = WarmDictationHost.shared
     @State private var showDictation = false
 
     private var stats: DictationStats { DictationStats(items: env.history) }
@@ -15,6 +16,9 @@ struct DashboardScreen: View {
                     VStack(spacing: 16) {
                         header
                         recordCard
+                        if env.permissions.keyboard == .ready && env.dictationAvailable {
+                            keyboardSessionCard
+                        }
                         if !env.missingRequiredProviders.isEmpty {
                             voiceKeysNudge
                         }
@@ -83,6 +87,49 @@ struct DashboardScreen: View {
                     Label("Start dictation", systemImage: "mic.fill")
                 }
                 .buttonStyle(AirNotePrimaryButtonStyle())
+            }
+        }
+    }
+
+    private var isSessionWarm: Bool {
+        if let until = warmHost.warmUntil { return until > Date() }
+        return false
+    }
+
+    private var keyboardSessionCard: some View {
+        AirNoteCard(padding: 18) {
+            VStack(alignment: .leading, spacing: 12) {
+                AirNoteSectionLabel(text: "Keyboard session")
+                if isSessionWarm {
+                    HStack(spacing: 8) {
+                        Image(systemName: "dot.radiowaves.left.and.right")
+                            .foregroundStyle(AirNoteDesign.success)
+                        Text("Keyboard ready — dictate in any app")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AirNoteDesign.foreground)
+                    }
+                    Text("Switch to any app, tap the AirNote keyboard mic, and speak — no need to come back here. Auto-extends as you use it.")
+                        .font(.caption)
+                        .foregroundStyle(AirNoteDesign.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        WarmDictationHost.shared.endWarmSession()
+                    } label: {
+                        Label("End session", systemImage: "stop.circle")
+                    }
+                    .buttonStyle(AirNoteGhostButtonStyle())
+                } else {
+                    Text("Start a session, then dictate hands-free from the AirNote keyboard in any app — no switching back. (The mic stays ready in the background.)")
+                        .font(.subheadline)
+                        .foregroundStyle(AirNoteDesign.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        WarmDictationHost.shared.warmUp()
+                    } label: {
+                        Label("Start keyboard session", systemImage: "dot.radiowaves.left.and.right")
+                    }
+                    .buttonStyle(AirNotePrimaryButtonStyle())
+                }
             }
         }
     }

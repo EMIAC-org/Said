@@ -15,7 +15,11 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: env.phase)
-        .fullScreenCover(item: $env.keyboardHandoff) { _ in
+        .fullScreenCover(item: $env.keyboardHandoff, onDismiss: {
+            // Keep the mic warm after the handoff regardless of outcome, so the
+            // next keyboard dictation is in-place.
+            WarmDictationHost.shared.warmUp()
+        }) { _ in
             NavigationStack {
                 DictationSheet(env: env, showsDoneButton: false, handoffMode: true) { result in
                     env.deliverKeyboardDictation(result.polished)

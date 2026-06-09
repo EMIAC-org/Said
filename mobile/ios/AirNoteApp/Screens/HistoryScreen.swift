@@ -125,10 +125,14 @@ private struct HistoryCard: View {
                     Button {
                         env.startLearningReview(item)
                     } label: {
-                        Image(systemName: "checkmark.seal")
+                        Label("Teach", systemImage: "checkmark.seal")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption.weight(.bold))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(AirNoteDesign.accent)
+                    .accessibilityLabel("Teach a correction")
+                    .accessibilityHint("Fix this dictation to teach AirNote the right spelling")
                     Button(role: .destructive) {
                         Task { await env.deleteHistoryItem(item) }
                     } label: {

@@ -12,8 +12,11 @@ import UIKit
 /// it over Darwin notifications for each subsequent dictation, and we drop the
 /// polished text in the App Group for the keyboard to insert.
 @MainActor
-final class WarmDictationHost {
+final class WarmDictationHost: ObservableObject {
     static let shared = WarmDictationHost()
+
+    /// When the warm session expires (drives the in-app "keyboard ready" status).
+    @Published private(set) var warmUntil: Date?
 
     private let streamer = VoiceStreamingClient()
     private let gateway = GatewayEnvironment.makeClient()
@@ -66,6 +69,7 @@ final class WarmDictationHost {
         warmWindowTask = nil
         isStreaming = false
         SharedStore.sessionWarmUntil = nil
+        warmUntil = nil
         streamer.stopWarmEngine()
     }
 
@@ -139,7 +143,10 @@ final class WarmDictationHost {
         case .error:
             isStreaming = false
             DarwinSignal.shared.post(DarwinSignal.dictationFailed)
-            extendWarmWindow()
+            // If the engine is still warm it was a transient stream error — keep
+            // the session; if the engine died (e.g. interruption), end it cleanly
+            // so the keyboard falls back to the handoff.
+            if streamer.isWarmEngineRunning { extendWarmWindow() } else { endWarmSession() }
         default:
             break
         }
@@ -165,7 +172,9 @@ final class WarmDictationHost {
     // MARK: Warm window
 
     private func extendWarmWindow() {
-        SharedStore.sessionWarmUntil = Date().addingTimeInterval(warmWindow)
+        let until = Date().addingTimeInterval(warmWindow)
+        SharedStore.sessionWarmUntil = until
+        warmUntil = until
         warmWindowTask?.cancel()
         warmWindowTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(self?.warmWindow ?? 90) * 1_000_000_000)

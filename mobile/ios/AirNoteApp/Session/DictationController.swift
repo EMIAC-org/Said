@@ -280,5 +280,8 @@ final class DictationController: ObservableObject {
             try? await env.gateway.syncHistory(clientRunID: runID, transcript: transcript, polished: polished, source: "ios_app")
             await env.refreshHistory()
         }
+        // Re-arm the warm mic so the keyboard can dictate in-place next (this
+        // foreground dictation released it via start()).
+        WarmDictationHost.shared.warmUp()
     }
 }
