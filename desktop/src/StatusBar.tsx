@@ -4,7 +4,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, ListChecks, Mic, Pencil, Plus, RotateCcw, Send, Sparkles, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
-import { APPLY_UPDATE_FAILED_EVENT, getPendingReadyUpdateVersion, requestApplyPendingUpdate } from "./lib/autoUpdate";
+import {
+  APPLY_UPDATE_FAILED_EVENT,
+  getPendingReadyUpdateReminder,
+  requestApplyPendingUpdate,
+  snoozeReadyUpdateReminder,
+} from "./lib/autoUpdate";
 import { divoListThreads, type DivoThreadSummary } from "./lib/invoke";
 import { Markdown } from "./components/Markdown";
 
@@ -669,7 +674,7 @@ export default function StatusBar() {
 
   useEffect(() => {
     let alive = true;
-    void getPendingReadyUpdateVersion().then((version) => {
+    void getPendingReadyUpdateReminder().then((version) => {
       if (!alive || !version) return;
       showPinnedUpdate({
         kind: "update_ready",
@@ -1803,6 +1808,7 @@ export default function StatusBar() {
               type="button"
               className="sb-survey-skip"
               onClick={async () => {
+                snoozeReadyUpdateReminder();
                 await clearPinnedUpdate("auto-update-later");
                 setBar({ kind: "idle" });
                 invoke("dismiss_status_bar").catch(() => {});

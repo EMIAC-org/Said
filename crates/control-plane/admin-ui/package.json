@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "vite",
+    "dev:prod": "VITE_API_TARGET=https://airnote.emiactech.com vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit"
   },
