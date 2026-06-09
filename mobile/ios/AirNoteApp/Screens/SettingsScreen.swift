@@ -64,6 +64,14 @@ struct SettingsScreen: View {
 
     private var dictationSection: some View {
         Section {
+            NavigationLink(destination: ProviderKeysView()) {
+                HStack {
+                    Label("Voice keys", systemImage: "key")
+                    Spacer()
+                    statusChip(env.dictationAvailable ? "On" : "Add keys",
+                               color: env.dictationAvailable ? AirNoteDesign.success : AirNoteDesign.warning)
+                }
+            }
             Picker("Language", selection: languageBinding) {
                 Text("Hinglish").tag("hinglish")
                 Text("English").tag("english")

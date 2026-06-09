@@ -29,7 +29,7 @@ __pycache__/
 .DS_Store
 
 # Mobile generated/build artifacts
-mobile/ios/AirNote.xcodeproj/
+mobile/ios/*.xcodeproj/
 mobile/ios/build/
 mobile/android/.gradle/
 mobile/android/local.properties

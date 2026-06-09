@@ -10,7 +10,7 @@ struct HistoryScreen: View {
         let calendar = Calendar.current
         let filtered = env.history.filter { item in
             search.isEmpty || item.displayText.localizedCaseInsensitiveContains(search)
-                || item.transcript.localizedCaseInsensitiveContains(search)
+                || item.transcriptText.localizedCaseInsensitiveContains(search)
         }
         let dict = Dictionary(grouping: filtered) { calendar.startOfDay(for: $0.createdAt) }
         return dict.keys.sorted(by: >).map { ($0, dict[$0]!.sorted { $0.createdAt > $1.createdAt }) }
@@ -104,8 +104,8 @@ private struct HistoryCard: View {
                     .foregroundStyle(AirNoteDesign.foreground)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                if !item.transcript.isEmpty, item.transcript != item.displayText {
-                    Text(item.transcript)
+                if !item.transcriptText.isEmpty, item.transcriptText != item.displayText {
+                    Text(item.transcriptText)
                         .font(.caption)
                         .foregroundStyle(AirNoteDesign.muted)
                         .lineLimit(2)
@@ -163,8 +163,8 @@ struct LearningReviewSheet: View {
                                 .padding(8)
                                 .background(AirNoteDesign.surfaceRaised.opacity(0.52), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(AirNoteDesign.border, lineWidth: 1))
-                            if let item = env.learningItem, !item.transcript.isEmpty, item.transcript != item.displayText {
-                                Text("Heard: \(item.transcript)")
+                            if let item = env.learningItem, !item.transcriptText.isEmpty, item.transcriptText != item.displayText {
+                                Text("Heard: \(item.transcriptText)")
                                     .font(.caption)
                                     .foregroundStyle(AirNoteDesign.muted)
                             }

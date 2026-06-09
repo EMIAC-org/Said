@@ -15,8 +15,11 @@ struct DashboardScreen: View {
                     VStack(spacing: 16) {
                         header
                         recordCard
-                        statsGrid
-                        if !stats.activity.isEmpty {
+                        if !env.missingRequiredProviders.isEmpty {
+                            voiceKeysNudge
+                        }
+                        if !env.history.isEmpty {
+                            statsGrid
                             activityCard
                         }
                         if env.permissions.keyboard != .ready {
@@ -71,7 +74,7 @@ struct DashboardScreen: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Text(env.dictationAvailable
                      ? "English, Hindi, or Hinglish — polished on AirNote's servers."
-                     : "Dictation turns on automatically once your workspace finishes setup.")
+                     : "Add your Deepgram + Groq keys to turn on dictation.")
                     .font(.subheadline)
                     .foregroundStyle(AirNoteDesign.muted)
                 Button {
@@ -99,6 +102,32 @@ struct DashboardScreen: View {
                 ActivityChart(values: stats.activity, labels: stats.activityLabels)
             }
         }
+    }
+
+    private var voiceKeysNudge: some View {
+        NavigationLink(destination: ProviderKeysView()) {
+            HStack(spacing: 12) {
+                Image(systemName: "key.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(AirNoteDesign.accent)
+                    .frame(width: 34, height: 34)
+                    .background(AirNoteDesign.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Connect your voice")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AirNoteDesign.foreground)
+                    Text("Add your free Deepgram + Groq keys to start dictating.")
+                        .font(.caption)
+                        .foregroundStyle(AirNoteDesign.muted)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(AirNoteDesign.muted)
+            }
+            .padding(14)
+            .background(AirNoteDesign.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(AirNoteDesign.accent.opacity(0.35), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 
     private var keyboardNudge: some View {
@@ -203,8 +232,11 @@ struct DictationStats {
         totalWords = items.reduce(0) { $0 + $1.displayText.wordCount }
 
         let today = calendar.startOfDay(for: now)
-        let activeDays: Set<Int> = Set(items.compactMap { item in
-            calendar.dateComponents([.day], from: calendar.startOfDay(for: item.createdAt), to: today).day
+        let activeDays: Set<Int> = Set(items.compactMap { item -> Int? in
+            // Ignore future-dated items (clock skew) so they can't corrupt the streak.
+            guard let delta = calendar.dateComponents([.day], from: calendar.startOfDay(for: item.createdAt), to: today).day,
+                  delta >= 0 else { return nil }
+            return delta
         })
 
         // Streak: consecutive days back from today (or yesterday) with activity.

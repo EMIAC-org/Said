@@ -360,26 +360,30 @@ public struct RuntimeHistoryItem: Codable, Equatable, Identifiable {
     public var id: String
     public var runID: String?
     public var clientRunID: String?
-    public var transcript: String
+    // Server-nullable: the runtime may persist a record without a raw transcript.
+    public var transcript: String?
     public var polishedOutput: String?
     public var finalText: String?
     public var source: String
     public var platform: String?
     public var createdAt: Date
 
+    /// Raw transcript text, never nil for callers.
+    public var transcriptText: String { transcript ?? "" }
+
     public var displayText: String {
         let final = finalText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !final.isEmpty { return final }
         let polished = polishedOutput?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !polished.isEmpty { return polished }
-        return transcript
+        return transcriptText
     }
 
     public init(
         id: String,
         runID: String? = nil,
         clientRunID: String? = nil,
-        transcript: String,
+        transcript: String? = nil,
         polishedOutput: String? = nil,
         finalText: String? = nil,
         source: String,
@@ -534,6 +538,35 @@ public struct RuntimeLearningEvent: Codable, Equatable, Identifiable {
     }
 }
 
+/// A stored provider credential (BYOK) — the server returns only metadata and
+/// the last 4 chars, never the secret.
+public struct RuntimeCredential: Codable, Equatable, Identifiable {
+    public var id: String
+    public var provider: String
+    public var scope: String
+    public var displayName: String
+    public var secretLast4: String
+    public var status: String
+
+    public init(id: String, provider: String, scope: String, displayName: String, secretLast4: String, status: String) {
+        self.id = id
+        self.provider = provider
+        self.scope = scope
+        self.displayName = displayName
+        self.secretLast4 = secretLast4
+        self.status = status
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case provider
+        case scope
+        case displayName = "display_name"
+        case secretLast4 = "secret_last4"
+        case status
+    }
+}
+
 public protocol MobileGatewayClient {
     func bootstrap() async throws -> MobileBootstrap
     func authenticate(_ request: MobileAuthRequest) async throws -> MobileAuthResponse
@@ -541,6 +574,9 @@ public protocol MobileGatewayClient {
     func runtimeStatus() async throws -> RuntimeStatusResponse
     func runtimeSettings() async throws -> RuntimeSettingsResponse
     func updateSettings(_ patch: RuntimeSettingsPatch) async throws -> RuntimeSettingsResponse
+    func listCredentials() async throws -> [RuntimeCredential]
+    func saveCredential(provider: String, secret: String) async throws -> RuntimeCredential
+    func deleteCredential(id: String) async throws
     func createSession(_ request: MobileSessionRequest) async throws -> MobileSessionResponse
     func dictateBatch(audio: Data, sessionID: String?, deviceID: String, languageHint: LanguageHint, style: DictationStyle) async throws -> MobileDictationResponse
     func listHistory(limit: Int) async throws -> [RuntimeHistoryItem]
@@ -601,6 +637,12 @@ public struct PreviewMobileGatewayClient: MobileGatewayClient {
     public func updateSettings(_ patch: RuntimeSettingsPatch) async throws -> RuntimeSettingsResponse {
         try await runtimeSettings()
     }
+
+    public func listCredentials() async throws -> [RuntimeCredential] { [] }
+    public func saveCredential(provider: String, secret: String) async throws -> RuntimeCredential {
+        RuntimeCredential(id: "preview", provider: provider, scope: "user", displayName: provider.capitalized, secretLast4: "1234", status: "active")
+    }
+    public func deleteCredential(id: String) async throws {}
 
     public func createSession(_ request: MobileSessionRequest) async throws -> MobileSessionResponse {
         MobileSessionResponse(sessionID: request.clientRequestID, sessionToken: "preview", expiresAt: Date().addingTimeInterval(1800), streamingEnabled: true, currentVocabHash: "preview", voiceWSURL: nil, batchURL: nil, maxRecordingSeconds: BuildConfig.maxRecordingSeconds)
@@ -848,6 +890,38 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         return try decoder.decode(RuntimeSettingsResponse.self, from: data)
     }
 
+    public func listCredentials() async throws -> [RuntimeCredential] {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/runtime/credentials"))
+        urlRequest.httpMethod = "GET"
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode([RuntimeCredential].self, from: data)
+    }
+
+    public func saveCredential(provider: String, secret: String) async throws -> RuntimeCredential {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/runtime/credentials"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&urlRequest)
+        urlRequest.httpBody = try encoder.encode(SaveCredentialBody(
+            provider: provider.lowercased(),
+            secret: secret.trimmingCharacters(in: .whitespacesAndNewlines),
+            scope: "user"
+        ))
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode(RuntimeCredential.self, from: data)
+    }
+
+    public func deleteCredential(id: String) async throws {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/runtime/credentials/\(id)"))
+        urlRequest.httpMethod = "DELETE"
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+    }
+
     public func listLearningEvents(limit: Int) async throws -> [RuntimeLearningEvent] {
         let clamped = max(1, min(limit, 200))
         var components = URLComponents(url: baseURL.appendingPathComponent("v1/runtime/learning-events"), resolvingAgainstBaseURL: false)
@@ -1024,6 +1098,12 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         var stt: Int
         var polish: Int
         var total: Int
+    }
+
+    private struct SaveCredentialBody: Encodable {
+        var provider: String
+        var secret: String
+        var scope: String
     }
 
     private struct MemoryVocabItem: Encodable {

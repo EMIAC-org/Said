@@ -5,7 +5,7 @@ struct OnboardingFlow: View {
     @EnvironmentObject private var env: AppEnvironment
 
     enum Step: Int, CaseIterable {
-        case welcome, account, privacy, microphone, keyboard, firstDictation, personalize
+        case welcome, account, privacy, microphone, keyboard, voiceKeys, firstDictation, personalize
     }
 
     @State private var step: Step = .welcome
@@ -48,6 +48,8 @@ struct OnboardingFlow: View {
             MicrophoneStep(onContinue: advance)
         case .keyboard:
             KeyboardStep(onContinue: advance)
+        case .voiceKeys:
+            VoiceKeysStep(onContinue: advance)
         case .firstDictation:
             FirstDictationStep(onContinue: advance)
         case .personalize:
@@ -406,6 +408,60 @@ private struct KeyboardStep: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { env.permissions.refreshKeyboard() }
         }
+    }
+}
+
+// MARK: - Voice keys (BYOK)
+
+private struct VoiceKeysStep: View {
+    @EnvironmentObject private var env: AppEnvironment
+    var onContinue: () -> Void
+
+    var body: some View {
+        OnboardingScaffold(
+            eyebrow: "Voice keys",
+            title: "Connect your voice",
+            subtitle: "Add your own Deepgram and Groq keys so AirNote can transcribe and polish. Both have free tiers — stored encrypted on AirNote's servers under your account."
+        ) {
+            VStack(spacing: 12) {
+                ProviderKeyCard(
+                    provider: "deepgram",
+                    name: "Deepgram",
+                    role: "Speech-to-text",
+                    badge: "D",
+                    color: Color(red: 0.04, green: 0.55, blue: 0.54),
+                    getKeyURL: URL(string: "https://console.deepgram.com/signup")!,
+                    placeholder: "Paste your Deepgram key"
+                )
+                ProviderKeyCard(
+                    provider: "groq",
+                    name: "Groq",
+                    role: "AI polish",
+                    badge: "G",
+                    color: Color(red: 0.96, green: 0.31, blue: 0.21),
+                    getKeyURL: URL(string: "https://console.groq.com/keys")!,
+                    placeholder: "gsk_…"
+                )
+                if !env.credentialStatus.isEmpty {
+                    Text(env.credentialStatus)
+                        .font(.caption)
+                        .foregroundStyle(env.credentialStatus.hasPrefix("Couldn't") || env.credentialStatus.contains("too short") ? AirNoteDesign.danger : AirNoteDesign.success)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        } footer: {
+            if env.dictationAvailable {
+                Label("Dictation is ready", systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AirNoteDesign.success)
+                    .frame(maxWidth: .infinity)
+            }
+            Button(action: onContinue) {
+                Label(env.dictationAvailable ? "Continue" : "I'll add keys later", systemImage: "arrow.right")
+            }
+            .buttonStyle(AirNotePrimaryButtonStyle())
+        }
+        .task { await env.refreshCredentials() }
     }
 }
 

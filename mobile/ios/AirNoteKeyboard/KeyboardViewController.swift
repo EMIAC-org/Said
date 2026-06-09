@@ -36,16 +36,18 @@ final class KeyboardViewController: UIInputViewController {
         super.viewWillDisappear(animated)
         if isRecording {
             isRecording = false
-            // cancel() does its real work (stop audio, tear down the socket)
-            // synchronously before the first suspension, so audio is released
-            // promptly even though this is a detached task.
-            Task { [streamer] in await streamer.cancel() }
+            // Synchronous teardown — the system can unload the keyboard process
+            // the instant it disappears, so we must release audio + the socket
+            // now, not in a detached Task that might never run.
+            streamer.hardStop()
         }
     }
 
     deinit {
+        // Clear the callback first so no event can fire on a deallocating self,
+        // then tear down synchronously.
         streamer.onUpdate = nil
-        Task { [streamer] in await streamer.cancel() }
+        streamer.hardStop()
     }
 
     override func textDidChange(_ textInput: UITextInput?) {

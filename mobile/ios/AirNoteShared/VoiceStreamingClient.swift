@@ -203,6 +203,13 @@ public final class VoiceStreamingClient {
     }
 
     public func cancel() async {
+        hardStop()
+    }
+
+    /// Fully synchronous teardown — safe to call from `deinit` or a view's
+    /// `viewWillDisappear`, where spawning a Task is not guaranteed to run
+    /// (especially in a keyboard extension the system may unload immediately).
+    public func hardStop() {
         setStopping()
         stopAudioEngine()
         maxDurationTask?.cancel()
@@ -596,6 +603,8 @@ public final class VoiceStreamingClient {
     public func stop() async {}
 
     public func cancel() async {}
+
+    public func hardStop() {}
 
     public var isRecording: Bool {
         false

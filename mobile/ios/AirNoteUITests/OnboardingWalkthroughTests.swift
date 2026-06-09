@@ -59,6 +59,11 @@ final class OnboardingWalkthroughTests: XCTestCase {
         snap("05-keyboard")
         tapPrimary("I'll do this later", fallback: "Continue")
 
+        // 5b. Voice keys (BYOK) — skip in the test (no real provider keys)
+        XCTAssertTrue(waitForAny(["I'll add keys later", "Continue"], timeout: 10), "Voice keys step should appear")
+        snap("05b-voice-keys")
+        tapPrimary("I'll add keys later", fallback: "Continue")
+
         // 6. First dictation — test account has no provider creds, so "Continue"
         XCTAssertTrue(waitForAny(["Continue", "Try a dictation", "Skip for now"], timeout: 10), "First dictation step")
         snap("06-first-dictation")

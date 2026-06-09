@@ -32,6 +32,15 @@ final class AppEnvironment: ObservableObject {
     @Published private(set) var dictationAvailable = false
     @Published private(set) var runtimeStatusLabel = "Checking workspace…"
 
+    // MARK: Provider credentials (BYOK — user's own Deepgram/Groq keys, server-vaulted)
+
+    @Published private(set) var credentials: [RuntimeCredential] = []
+    @Published private(set) var credentialStatus = ""
+    @Published private(set) var credentialWorking = false
+
+    /// Providers the runtime needs for end-to-end dictation.
+    static let requiredProviders = ["deepgram", "groq"]
+
     // MARK: Settings (server-backed, cross-device)
 
     @Published private(set) var outputLanguage = SharedStore.outputLanguage   // "hinglish" | "english"
@@ -201,8 +210,10 @@ final class AppEnvironment: ObservableObject {
         dictationAvailable = false
         runtimeStatusLabel = "Signed out"
         settingsLoaded = false
+        settingsVersion = 0
         history = []
         learnedEvents = []
+        credentials = []
         vocabTermCount = 0
         vocabAliasCount = 0
         cancelLearningReview()
@@ -213,6 +224,9 @@ final class AppEnvironment: ObservableObject {
     @discardableResult
     private func handleUnauthorized(_ error: Error) -> Bool {
         if let gatewayError = error as? GatewayError, gatewayError.isUnauthorized {
+            // Only the first 401 signs out; ignore stale/concurrent 401s that
+            // arrive after the user has already signed out or re-authenticated.
+            guard account != nil else { return true }
             signOut()
             authError = "Your session expired. Please sign in again."
             return true
@@ -223,10 +237,15 @@ final class AppEnvironment: ObservableObject {
     // MARK: Workspace bootstrap (after auth)
 
     private func loadWorkspaceState() async {
+        // Fresh account → discard any cached settings-version watermark so the new
+        // account's (possibly lower-versioned) settings actually apply.
+        settingsVersion = 0
         async let status: Void = refreshRuntimeStatus()
         async let settings: Void = loadSettings()
         async let history: Void = refreshHistory()
-        _ = await (status, settings, history)
+        async let credentials: Void = refreshCredentials()
+        async let vocabulary: Void = refreshVocabulary()
+        _ = await (status, settings, history, credentials, vocabulary)
     }
 
     func refreshRuntimeStatus() async {
@@ -353,6 +372,64 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    // MARK: Provider credentials (BYOK)
+
+    func hasCredential(_ provider: String) -> Bool {
+        credentials.contains { $0.provider.lowercased() == provider.lowercased() && $0.status.lowercased() != "revoked" }
+    }
+
+    /// Required providers (deepgram, groq) that the user hasn't added yet.
+    var missingRequiredProviders: [String] {
+        Self.requiredProviders.filter { !hasCredential($0) }
+    }
+
+    func refreshCredentials() async {
+        guard account != nil else { credentials = []; return }
+        do {
+            credentials = try await gateway.listCredentials()
+        } catch {
+            _ = handleUnauthorized(error)
+        }
+    }
+
+    @discardableResult
+    func saveProviderKey(provider: String, secret: String) async -> Bool {
+        let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 8 else {
+            credentialStatus = "That key looks too short."
+            return false
+        }
+        credentialWorking = true
+        defer { credentialWorking = false }
+        do {
+            _ = try await gateway.saveCredential(provider: provider, secret: trimmed)
+            credentialStatus = "\(provider.capitalized) key saved"
+            await refreshCredentials()
+            await refreshRuntimeStatus()   // flips dictationAvailable once both keys exist
+            return true
+        } catch let error as GatewayError {
+            if error.isUnauthorized { signOut(); return false }
+            credentialStatus = "Couldn't save the \(provider.capitalized) key."
+            return false
+        } catch {
+            credentialStatus = "Couldn't save the \(provider.capitalized) key."
+            return false
+        }
+    }
+
+    func deleteCredential(_ credential: RuntimeCredential) async {
+        let snapshot = credentials
+        credentials.removeAll { $0.id == credential.id }
+        do {
+            try await gateway.deleteCredential(id: credential.id)
+            await refreshRuntimeStatus()
+        } catch {
+            if handleUnauthorized(error) { return }
+            credentials = snapshot
+            credentialStatus = "Couldn't remove that key."
+        }
+    }
+
     // MARK: Learning review
 
     func startLearningReview(_ item: RuntimeHistoryItem) {
@@ -384,7 +461,7 @@ final class AppEnvironment: ObservableObject {
         do {
             let analysis = try await gateway.analyzeEdit(
                 recordingID: item.learningRecordingID,
-                transcript: item.transcript,
+                transcript: item.transcriptText,
                 aiOutput: item.learningAIOutput,
                 userKept: kept
             )
