@@ -368,9 +368,17 @@ final class AppEnvironment: ObservableObject {
         let aliases: [(heard: String, correct: String)] = alias.isEmpty ? [] : [(alias, trimmedTerm)]
         do {
             let result = try await gateway.addVocabulary(terms: [trimmedTerm], aliases: aliases)
-            vocabStatus = result.learnedCount > 0 ? "Added \(trimmedTerm)" : "Couldn't add that term"
-            await refreshVocabulary()
-            return result.learnedCount > 0
+            if result.learnedCount > 0 {
+                vocabStatus = "Added \(trimmedTerm)"
+                await refreshVocabulary()
+                return true
+            } else if result.blockedCount > 0 {
+                vocabStatus = "“\(trimmedTerm)” is too common to add as a custom term."
+                return false
+            } else {
+                vocabStatus = "Couldn't add that term"
+                return false
+            }
         } catch {
             if handleUnauthorized(error) { return false }
             vocabStatus = "Couldn't add that term"
@@ -454,11 +462,12 @@ final class AppEnvironment: ObservableObject {
         learningWorking = false
     }
 
-    func analyzeLearningEdit() async {
+    func analyzeLearningEdit(kept rawKept: String) async {
         guard let item = learningItem else { return }
-        let kept = learningDraftText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let kept = rawKept.trimmingCharacters(in: .whitespacesAndNewlines)
+        learningDraftText = kept
         guard !kept.isEmpty else {
-            learningStatus = "Kept text cannot be empty"
+            learningStatus = "The corrected text can't be empty"
             return
         }
         learningWorking = true
@@ -472,12 +481,15 @@ final class AppEnvironment: ObservableObject {
                 userKept: kept
             )
             learningCandidates = analysis.candidates.filter(\.learnable)
-            if !analysis.changed {
-                learningStatus = "No edit detected"
-            } else if learningCandidates.isEmpty {
-                learningStatus = "No safe learning candidates found"
+            // Base the message on the actual candidates — the server's `changed`
+            // flag means "candidates were refined", not "an edit was detected",
+            // so candidates can come back with changed=false.
+            if !learningCandidates.isEmpty {
+                learningStatus = "\(learningCandidates.count) correction\(learningCandidates.count == 1 ? "" : "s") ready to learn"
+            } else if analysis.changed {
+                learningStatus = "No safe corrections found in that edit"
             } else {
-                learningStatus = "\(learningCandidates.count) learning candidate\(learningCandidates.count == 1 ? "" : "s") ready"
+                learningStatus = "No change detected — edit the kept text, then analyze"
             }
         } catch {
             if handleUnauthorized(error) { return }
@@ -485,22 +497,33 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
-    func confirmLearning() async {
+    func confirmLearning(selectedIDs: Set<String>) async {
         guard let item = learningItem else { return }
-        let items = learningCandidates.filter(\.learnable)
+        let items = learningCandidates.filter { $0.learnable && selectedIDs.contains($0.id) }
         guard !items.isEmpty else {
-            learningStatus = "Analyze a correction before confirming"
+            learningStatus = "Select at least one correction to learn"
             return
         }
         learningWorking = true
         defer { learningWorking = false }
         do {
             let result = try await gateway.confirmLearning(recordingID: item.learningRecordingID, items: items)
-            learningStatus = result.learnedCount > 0
-                ? "Learned \(result.learnedCount) correction\(result.learnedCount == 1 ? "" : "s")"
-                : "Nothing new to learn here"
-            learningCandidates = []
-            await refreshVocabulary()
+            if result.learnedCount > 0 {
+                learningStatus = "✓ Learned \(result.learnedTerms.isEmpty ? "\(result.learnedCount) correction\(result.learnedCount == 1 ? "" : "s")" : result.learnedTerms.joined(separator: ", "))"
+                learningCandidates = []
+                await refreshVocabulary()
+                // Show the success briefly, then close the sheet (if still open).
+                let reviewedID = item.id
+                try? await Task.sleep(nanoseconds: 1_100_000_000)
+                if learningItem?.id == reviewedID { cancelLearningReview() }
+            } else if result.blockedCount > 0 {
+                // The server blocks corrections that are too common or unsafe.
+                learningStatus = "That's too common to learn as a custom term."
+                learningCandidates = []
+            } else {
+                learningStatus = "Nothing new to learn here"
+                learningCandidates = []
+            }
         } catch {
             if handleUnauthorized(error) { return }
             learningStatus = "Could not confirm learning"

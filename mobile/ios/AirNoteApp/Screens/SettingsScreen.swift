@@ -85,11 +85,11 @@ struct SettingsScreen: View {
                     Text(tone.label).tag(tone.key)
                 }
             }
-            Toggle("Learn from my edits", isOn: learningBinding)
+            Toggle("Personalize from my corrections", isOn: learningBinding)
         } header: {
             Text("Dictation")
         } footer: {
-            Text("These sync across your AirNote devices.")
+            Text("AirNote applies the names and corrections you teach it (in History → review an edit, or Vocabulary) to future dictations. Settings sync across your devices.")
         }
     }
 

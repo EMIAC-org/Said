@@ -148,6 +148,17 @@ private struct HistoryCard: View {
 struct LearningReviewSheet: View {
     @EnvironmentObject private var env: AppEnvironment
     @Environment(\.dismiss) private var dismiss
+    @State private var draftText = ""
+    @State private var selectedIDs: Set<String> = []
+
+    private var learningStatusColor: Color {
+        let status = env.learningStatus
+        if status.hasPrefix("✓") { return AirNoteDesign.success }
+        if status.hasPrefix("Could") || status.contains("cannot") || status.contains("too common") {
+            return AirNoteDesign.warning
+        }
+        return AirNoteDesign.muted
+    }
 
     var body: some View {
         ZStack {
@@ -156,9 +167,19 @@ struct LearningReviewSheet: View {
                 VStack(spacing: 16) {
                     AirNoteCard {
                         VStack(alignment: .leading, spacing: 12) {
-                            AirNoteSectionLabel(text: "Kept text")
-                            TextEditor(text: $env.learningDraftText)
-                                .frame(minHeight: 100)
+                            if let item = env.learningItem {
+                                Text("AirNote wrote")
+                                    .font(.caption2.weight(.bold)).tracking(0.9)
+                                    .foregroundStyle(AirNoteDesign.muted)
+                                Text(item.displayText)
+                                    .font(.subheadline)
+                                    .foregroundStyle(AirNoteDesign.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Divider().overlay(AirNoteDesign.border)
+                            }
+                            AirNoteSectionLabel(text: "Fix it — what should it have said?")
+                            TextEditor(text: $draftText)
+                                .frame(minHeight: 90)
                                 .scrollContentBackground(.hidden)
                                 .padding(8)
                                 .background(AirNoteDesign.surfaceRaised.opacity(0.52), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -170,30 +191,42 @@ struct LearningReviewSheet: View {
                             }
                             Text(env.learningStatus)
                                 .font(.caption)
-                                .foregroundStyle(env.learningStatus.hasPrefix("Could not") ? AirNoteDesign.danger : AirNoteDesign.muted)
+                                .foregroundStyle(learningStatusColor)
                         }
                     }
 
                     if !env.learningCandidates.isEmpty {
                         AirNoteCard {
                             VStack(alignment: .leading, spacing: 10) {
-                                AirNoteSectionLabel(text: "AirNote will learn")
+                                HStack {
+                                    AirNoteSectionLabel(text: "Teach AirNote")
+                                    Spacer()
+                                    Text("\(selectedIDs.count) of \(env.learningCandidates.count)")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(AirNoteDesign.muted)
+                                }
                                 ForEach(env.learningCandidates) { candidate in
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(candidate.corrected.isEmpty ? "Correction" : candidate.corrected)
-                                                .font(.subheadline.weight(.semibold))
-                                                .foregroundStyle(AirNoteDesign.foreground)
-                                            if !candidate.original.isEmpty {
-                                                Text("heard as \(candidate.original)")
-                                                    .font(.caption)
-                                                    .foregroundStyle(AirNoteDesign.muted)
+                                    Button { toggle(candidate.id) } label: {
+                                        HStack(spacing: 10) {
+                                            Image(systemName: selectedIDs.contains(candidate.id) ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(selectedIDs.contains(candidate.id) ? AirNoteDesign.accent : AirNoteDesign.muted)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(candidate.corrected.isEmpty ? "Correction" : candidate.corrected)
+                                                    .font(.subheadline.weight(.semibold))
+                                                    .foregroundStyle(AirNoteDesign.foreground)
+                                                if !candidate.original.isEmpty {
+                                                    Text("heard as “\(candidate.original)”")
+                                                        .font(.caption)
+                                                        .foregroundStyle(AirNoteDesign.muted)
+                                                }
                                             }
+                                            Spacer()
+                                            AirNoteChip(text: candidate.termType.replacingOccurrences(of: "_", with: " "))
                                         }
-                                        Spacer()
-                                        AirNoteChip(text: candidate.termType.replacingOccurrences(of: "_", with: " "))
+                                        .contentShape(Rectangle())
                                     }
-                                    .padding(.vertical, 2)
+                                    .buttonStyle(.plain)
+                                    .padding(.vertical, 3)
                                 }
                             }
                         }
@@ -201,20 +234,20 @@ struct LearningReviewSheet: View {
 
                     HStack(spacing: 10) {
                         Button {
-                            Task { await env.analyzeLearningEdit() }
+                            Task { await env.analyzeLearningEdit(kept: draftText) }
                         } label: {
                             Label(env.learningWorking ? "Analyzing…" : "Analyze", systemImage: "magnifyingglass")
                         }
                         .buttonStyle(AirNoteGhostButtonStyle())
-                        .disabled(env.learningWorking)
+                        .disabled(env.learningWorking || draftText.trimmingCharacters(in: .whitespaces).isEmpty)
 
                         Button {
-                            Task { await env.confirmLearning() }
+                            Task { await env.confirmLearning(selectedIDs: selectedIDs) }
                         } label: {
                             Label("Learn", systemImage: "checkmark.seal.fill")
                         }
                         .buttonStyle(AirNotePrimaryButtonStyle())
-                        .disabled(env.learningWorking || env.learningCandidates.isEmpty)
+                        .disabled(env.learningWorking || selectedIDs.isEmpty)
                     }
                 }
                 .padding(18)
@@ -224,8 +257,17 @@ struct LearningReviewSheet: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button("Close") { env.cancelLearningReview(); dismiss() }
+                Button("Close") { dismiss() }
             }
         }
+        .onAppear { draftText = env.learningDraftText }
+        .onChange(of: env.learningCandidates) { _, candidates in
+            // Pre-select every safe candidate; the user can deselect any.
+            selectedIDs = Set(candidates.filter(\.learnable).map(\.id))
+        }
+    }
+
+    private func toggle(_ id: String) {
+        if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
     }
 }
