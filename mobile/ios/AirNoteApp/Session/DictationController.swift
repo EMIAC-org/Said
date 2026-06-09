@@ -37,8 +37,13 @@ final class DictationController: ObservableObject {
     private var maxLevel: Float = 0
     private var recordingStartedAt: Date?
     private var lastLoudAt: Date?
-    /// Auto-stop after this much silence once the user has actually spoken.
-    var silenceAutoStopSeconds: Double = 1.8
+    /// Auto-stop after this much *continuous* silence once the user has actually
+    /// spoken. Generous enough to ride over natural between-sentence pauses so it
+    /// never clips words; the user can still tap stop to end sooner.
+    var silenceAutoStopSeconds: Double = 2.6
+    /// Level above which we consider the user to be speaking (forgiving of quiet
+    /// speech so soft talkers aren't cut off).
+    private let speechLevelThreshold: Float = 0.05
     @Published private(set) var lastLatencyMS: Int?
     @Published private(set) var errorMessage: String?
     @Published private(set) var result: DictationResult?
@@ -210,9 +215,9 @@ final class DictationController: ObservableObject {
             level = value
             maxLevel = max(maxLevel, value)
             // Hands-free: once the user has spoken, auto-stop after a short silence.
-            if value > 0.07 {
+            if value > speechLevelThreshold {
                 lastLoudAt = Date()
-            } else if phase == .recording, maxLevel > 0.07, let last = lastLoudAt,
+            } else if phase == .recording, maxLevel > speechLevelThreshold, let last = lastLoudAt,
                       Date().timeIntervalSince(last) > silenceAutoStopSeconds {
                 lastLoudAt = nil
                 Task { [weak self] in await self?.stop() }

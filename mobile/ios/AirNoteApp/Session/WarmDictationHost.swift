@@ -24,7 +24,8 @@ final class WarmDictationHost {
 
     /// How long the mic stays warm after the last dictation.
     private let warmWindow: TimeInterval = 90
-    private let silenceAutoStop: TimeInterval = 1.8
+    private let silenceAutoStop: TimeInterval = 2.6
+    private let speechLevelThreshold: Float = 0.05
 
     private init() {
         streamer.onUpdate = { [weak self] update in
@@ -120,9 +121,9 @@ final class WarmDictationHost {
         switch update {
         case .level(let value):
             maxLevel = max(maxLevel, value)
-            if value > 0.07 {
+            if value > speechLevelThreshold {
                 lastLoudAt = Date()
-            } else if isStreaming, maxLevel > 0.07, let last = lastLoudAt,
+            } else if isStreaming, maxLevel > speechLevelThreshold, let last = lastLoudAt,
                       Date().timeIntervalSince(last) > silenceAutoStop {
                 lastLoudAt = nil
                 Task { @MainActor in await self.stopDictation() }

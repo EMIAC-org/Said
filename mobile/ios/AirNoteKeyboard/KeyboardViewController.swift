@@ -349,7 +349,9 @@ final class KeyboardViewController: UIInputViewController {
 
     private func coldHandoff() {
         setState(.dictatingInApp)
-        openURLInApp("airnote://dictate")
+        if !openURLInApp("airnote://dictate") {
+            setState(.error("Open the AirNote app once from your Home Screen, then tap the mic again."))
+        }
     }
 
     private func handleWarmResult() {
@@ -421,19 +423,35 @@ final class KeyboardViewController: UIInputViewController {
         openURLInApp("airnote://open")
     }
 
-    private func openURLInApp(_ string: String) {
-        guard let url = URL(string: string) else { return }
+    @discardableResult
+    private func openURLInApp(_ string: String) -> Bool {
+        guard let url = URL(string: string) else { return false }
         // Keyboard extensions are built with APPLICATION_EXTENSION_API_ONLY, so
         // UIApplication.open isn't callable directly. Walk the responder chain and
-        // invoke the openURL: selector dynamically — the standard extension hack.
-        let selector = NSSelectorFromString("openURL:")
+        // dynamically invoke an open selector — the standard extension hack. Try
+        // the modern open:options:completionHandler: first, then legacy openURL:.
+        let openURL = NSSelectorFromString("openURL:")
+        let openOptions = NSSelectorFromString("open:options:completionHandler:")
         var responder: UIResponder? = self
         while let current = responder {
-            if current.responds(to: selector) {
-                current.perform(selector, with: url)
-                return
+            if let app = current as? UIApplication {
+                app.perform(openURL, with: url)
+                NSLog("AirNoteKeyboard: opened via UIApplication in responder chain")
+                return true
+            }
+            if current.responds(to: openOptions) {
+                _ = current.perform(openOptions, with: url, with: [:])
+                NSLog("AirNoteKeyboard: opened via open:options: on %@", String(describing: type(of: current)))
+                return true
+            }
+            if current.responds(to: openURL) {
+                current.perform(openURL, with: url)
+                NSLog("AirNoteKeyboard: opened via openURL: on %@", String(describing: type(of: current)))
+                return true
             }
             responder = current.next
         }
+        NSLog("AirNoteKeyboard: NO responder could open %@ — manual open required", string)
+        return false
     }
 }
