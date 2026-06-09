@@ -188,6 +188,15 @@ export interface EnterpriseConnection {
   authSource?: "lark" | "email";
 }
 
+interface LocalEnterpriseStatus {
+  connected: boolean;
+  license_tier?: string;
+  email?: string | null;
+  server_url?: string | null;
+  org_name?: string | null;
+  token?: string | null;
+}
+
 export type ConnectionStatus = "connected" | "missing" | "expired";
 
 /** Check if connected to an enterprise server */
@@ -225,6 +234,35 @@ export function saveConnection(conn: EnterpriseConnection): void {
 /** Clear connection (disconnect) */
 export function disconnect(): void {
   localStorage.removeItem(STORAGE_KEY);
+}
+
+export async function restoreConnectionFromLocalBackend(): Promise<EnterpriseConnection | null> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const status = await invoke<LocalEnterpriseStatus>("get_enterprise_status");
+    if (!status.connected || !status.token || !status.server_url || !status.email) {
+      return null;
+    }
+    const existing = getConnection();
+    if (existing?.jwt === status.token && existing.serverUrl === status.server_url) {
+      return existing;
+    }
+    const conn: EnterpriseConnection = {
+      serverUrl: status.server_url,
+      jwt: status.token,
+      accountId: existing?.accountId ?? "local-backend",
+      email: status.email,
+      orgName: status.org_name ?? undefined,
+      larkName: existing?.larkName,
+      larkAvatarUrl: existing?.larkAvatarUrl,
+      authSource: existing?.authSource ?? "email",
+    };
+    saveConnection(conn);
+    return conn;
+  } catch (err) {
+    console.warn("[enterprise] restore from local backend failed", err);
+    return null;
+  }
 }
 
 /** Remember server URL across OAuth round-trip */
@@ -481,6 +519,11 @@ async function persistEnterpriseConnection(
     await ensureDesktopRegistered(conn.serverUrl, sessionToken);
     await syncCompanyVocab(true);
     await uploadUserVocabSummary(true);
+    const { syncCredentialVault } = await import("./invoke");
+    const vault = await syncCredentialVault();
+    if (vault?.failed) {
+      console.warn("[enterprise] credential vault sync partial failure", vault);
+    }
   } catch (err) {
     console.warn("[enterprise] desktop registration deferred until next heartbeat", err);
   }

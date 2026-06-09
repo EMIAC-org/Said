@@ -1,8 +1,10 @@
 //! Deterministic structural diff between (transcript, polish, user_kept).
 //!
 //! This is the **foundation** of the learning pipeline.  Every learnable
-//! candidate must come from a real hunk in this diff — the LLM is never
-//! allowed to invent terms.  That single architectural decision eliminates
+//! candidate must be backed by real text from the transcript, AirNote output,
+//! or user-kept text.  A narrow LLM fallback may propose spans for complex
+//! edits, but the classifier verifies those spans against this diff/input
+//! before anything can be learned.  That architectural decision eliminates
 //! by construction the entire class of hallucination bugs (e.g. proposing
 //! Devanagari "corrections" the user never typed).
 //!
@@ -20,8 +22,9 @@
 //!      transcript window as the full transcript (the LLM will
 //!      disambiguate).
 //!
-//! Output is a `Vec<Hunk>` ready to hand to the classifier as a fixed
-//! candidate list.  The LLM only labels each hunk; it cannot fabricate one.
+//! Output is a `Vec<Hunk>` ready to hand to the classifier as the fixed
+//! evidence set.  The LLM may only help interpret complex edits; it cannot
+//! fabricate learnable spans outside the transcript/output/kept evidence.
 
 use serde::{Deserialize, Serialize};
 

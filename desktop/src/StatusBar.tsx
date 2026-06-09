@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, ListChecks, Mic, Pencil, Plus, RotateCcw, Send, Sparkles, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
-import { APPLY_UPDATE_EVENT } from "./lib/autoUpdate";
+import { APPLY_UPDATE_FAILED_EVENT, getPendingReadyUpdateVersion, requestApplyPendingUpdate } from "./lib/autoUpdate";
 import { divoListThreads, type DivoThreadSummary } from "./lib/invoke";
 import { Markdown } from "./components/Markdown";
 
@@ -236,6 +236,9 @@ function pillSize(
 
 function processingLabel(phase: string): string {
   const p = phase.toLowerCase();
+  if (p.includes("server_audio_fallback")) return "Using local runtime";
+  if (p.includes("server_transcrib") || p.includes("server-audio")) return "Server transcribing";
+  if (p.includes("server_polish") || p.includes("server-polish") || p.includes("server_polishing")) return "Server polish";
   if (p.includes("message_polish") || p.includes("message-polish")) return "Polishing message";
   if (p.includes("polish") || p.includes("llm") || p.includes("enhanc")) return "Enhancing";
   if (p.includes("paste")) return "Pasting";
@@ -280,6 +283,7 @@ export default function StatusBar() {
   const [divoThreads, setDivoThreads] = useState<DivoThreadSummary[]>([]);
   const divoDraftRef = useRef<HTMLTextAreaElement | null>(null);
   const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const serverNotifyPendingRef = useRef(false);
   const audioLevelRef = useRef(0);
   const pinnedUpdateRef = useRef<UpdateReadyState | null>(null);
   const barTargets = useRef<number[]>(new Array(15).fill(0));
@@ -664,6 +668,23 @@ export default function StatusBar() {
   }, []);
 
   useEffect(() => {
+    let alive = true;
+    void getPendingReadyUpdateVersion().then((version) => {
+      if (!alive || !version) return;
+      showPinnedUpdate({
+        kind: "update_ready",
+        version,
+        message: `Update ${version} is ready. Restart AirNote to use it.`,
+      }, "auto-update-ready-restored");
+    }).catch((err) => {
+      console.warn("[status-bar] failed to restore pending update", err);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
     const subs: Array<() => void> = [];
 
     listen<{ reason?: string; state?: string }>("status-bar-resync", (e) => {
@@ -847,6 +868,7 @@ export default function StatusBar() {
 
     // ── Learning notifications ────────────────────────────────────────
     listen<{ term: string; message: string }>("vocab-learned", (e) => {
+      serverNotifyPendingRef.current = false; // cancel deferred fallback toast
       if (!notifEnabled("learned")) return;
       console.info("[status-bar] vocab-learned", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
@@ -979,6 +1001,18 @@ export default function StatusBar() {
         version: e.payload.version,
         message: e.payload.message || `Update ${e.payload.version} downloaded. Restart AirNote to use it.`,
       }, "auto-update-ready");
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch(() => {});
+
+    listen<{ message?: string }>(APPLY_UPDATE_FAILED_EVENT, (e) => {
+      if (!notifEnabled("updates")) return;
+      const version = pinnedUpdateRef.current?.version || "the update";
+      showPinnedUpdate({
+        kind: "update_ready",
+        version,
+        message: `Restart failed. Try again from Settings. ${e.payload?.message || ""}`.trim(),
+      }, "auto-update-restart-failed");
     }).then((fn) => {
       subs.push(fn);
     }).catch(() => {});
@@ -1539,11 +1573,31 @@ export default function StatusBar() {
         .map((c) => ({ original: c.original, corrected: c.corrected }));
       if (items.length === 0) return;
       try {
-        const n = await invoke<number>("confirm_batch", { items, recordingId: bar.recordingId });
-        playSound("levelUp");
-        setBar({ kind: "learned", term: `${n} correction${n > 1 ? "s" : ""}`, message: `Learned ${n} correction${n > 1 ? "s" : ""}` });
-        if (doneTimer.current) clearTimeout(doneTimer.current);
-        doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 3000);
+        const result = await invoke<{ learned_count: number; server_owned?: boolean }>("confirm_batch", { items, recordingId: bar.recordingId });
+        const n = result.learned_count;
+        if (result.server_owned) {
+          // Server-owned: defer toast and let the WS vocab-learned notification take over.
+          // Fallback after 1.5s if WS event does not arrive.
+          serverNotifyPendingRef.current = true;
+          if (doneTimer.current) clearTimeout(doneTimer.current);
+          doneTimer.current = setTimeout(() => {
+            if (!serverNotifyPendingRef.current) return;
+            serverNotifyPendingRef.current = false;
+            if (n > 0) {
+              playSound("levelUp");
+              setBar({ kind: "learned", term: `${n} correction${n > 1 ? "s" : ""}`, message: `Saved ${n} correction${n > 1 ? "s" : ""}` });
+              doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 3000);
+            } else {
+              setBar({ kind: "idle" });
+              invoke("dismiss_status_bar").catch(() => {});
+            }
+          }, 1500);
+        } else {
+          playSound("levelUp");
+          setBar({ kind: "learned", term: `${n} correction${n > 1 ? "s" : ""}`, message: `Learned ${n} correction${n > 1 ? "s" : ""}` });
+          if (doneTimer.current) clearTimeout(doneTimer.current);
+          doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 3000);
+        }
       } catch (e) { console.error("[review] confirm_batch failed", e); }
     };
     const handleSkip = () => {
@@ -1760,8 +1814,19 @@ export default function StatusBar() {
               type="button"
               className="sb-survey-next"
               onClick={async () => {
-                await clearPinnedUpdate("auto-update-restart");
-                void emit(APPLY_UPDATE_EVENT);
+                try {
+                  showPinnedUpdate({
+                    ...bar,
+                    message: `Applying update ${bar.version}…`,
+                  }, "auto-update-restart-requested");
+                  await requestApplyPendingUpdate();
+                } catch (err) {
+                  const message = err instanceof Error ? err.message : String(err);
+                  showPinnedUpdate({
+                    ...bar,
+                    message: `Restart failed. Try again, or open Settings > About. ${message}`,
+                  }, "auto-update-restart-failed");
+                }
               }}
             >
               Restart

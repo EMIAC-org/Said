@@ -45,9 +45,12 @@ impl TestServer {
                 jwt_secret: "test-secret".into(),
             },
             hub,
+            notifications: said_control_plane::notification_hub::NotificationHub::new(),
             deepgram_api_key: String::new(),
+            groq_api_key: String::new(),
             diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
             divo_base_url: String::new(),
+            runtime_credentials_key: "test-runtime-credentials-key".into(),
         };
 
         let app = build_router(state);

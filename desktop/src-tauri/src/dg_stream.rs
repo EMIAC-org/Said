@@ -10,6 +10,7 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use crate::echo_gate::EchoGateShared;
+use crate::server_runtime_stream::AudioMirrorCommand;
 
 use deepgram::{
     Deepgram,
@@ -911,7 +912,7 @@ pub fn spawn_audio_bridge(
     chunk_recv: ChunkReceiver,
     session_tx: SessionSender,
 ) {
-    spawn_audio_bridge_with_echo_gate(recording_id, chunk_recv, session_tx, None);
+    spawn_audio_bridge_with_echo_gate(recording_id, chunk_recv, session_tx, None, None);
 }
 
 pub fn spawn_audio_bridge_with_echo_gate(
@@ -919,6 +920,7 @@ pub fn spawn_audio_bridge_with_echo_gate(
     chunk_recv: ChunkReceiver,
     session_tx: SessionSender,
     echo_gate: Option<Arc<EchoGateShared>>,
+    mirror_tx: Option<tokio::sync::mpsc::UnboundedSender<AudioMirrorCommand>>,
 ) {
     std::thread::spawn(move || {
         let native_rate = chunk_recv.native_rate;
@@ -956,6 +958,9 @@ pub fn spawn_audio_bridge_with_echo_gate(
             // mid-dictation doesn't lose the user's words. No-op unless a capture
             // session is active (non-meeting recordings only).
             crate::recovery::append_pcm(&pcm);
+            if let Some(mirror_tx) = &mirror_tx {
+                let _ = mirror_tx.send(AudioMirrorCommand::Pcm(pcm.clone()));
+            }
             if session_tx
                 .blocking_send(SessionCommand::Audio {
                     id: recording_id.clone(),
@@ -966,6 +971,9 @@ pub fn spawn_audio_bridge_with_echo_gate(
                 break;
             }
             bridged_chunks += 1;
+        }
+        if let Some(mirror_tx) = &mirror_tx {
+            let _ = mirror_tx.send(AudioMirrorCommand::Finalize);
         }
         let _ = session_tx.blocking_send(SessionCommand::Finalize {
             id: recording_id.clone(),

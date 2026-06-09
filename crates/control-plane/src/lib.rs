@@ -6,10 +6,13 @@
 pub mod ai_worker;
 pub mod auth;
 pub mod codex_client;
+pub mod format_recover;
 pub mod lark_client;
 pub mod lark_sync;
 pub mod meeting_hub;
+pub mod notification_hub;
 pub mod notification_worker;
+pub mod number_format;
 pub mod routes;
 pub mod store;
 pub mod vocab_worker;
@@ -44,10 +47,14 @@ pub struct AppState {
     pub started_at: Arc<Instant>,
     pub lark: LarkConfig,
     pub hub: Arc<meeting_hub::MeetingHub>,
+    pub notifications: Arc<notification_hub::NotificationHub>,
     pub deepgram_api_key: String,
+    pub groq_api_key: String,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
     /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
     pub divo_base_url: String,
+    /// Secret used to encrypt BYOK provider credentials before storing them.
+    pub runtime_credentials_key: String,
 }
 
 // ── Router constructor ───────────────────────────────────────────────────────
@@ -97,6 +104,79 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/divo/chat", post(routes::divo::chat))
         .route("/v1/divo/threads", get(routes::divo::list_threads))
         .route("/v1/divo/threads/:id", get(routes::divo::thread))
+        .route(
+            "/v1/runtime/voice/polish",
+            post(routes::runtime::voice_polish),
+        )
+        .route("/v1/runtime/voice/wav", post(routes::runtime::voice_wav))
+        .route("/v1/runtime/status", get(routes::runtime::status))
+        .route("/v1/runtime/runs", get(routes::runtime::list_runs))
+        .route("/v1/runtime/runs/:id", get(routes::runtime::run_detail))
+        .route(
+            "/v1/runtime/learning-events",
+            get(routes::runtime::list_learning_events),
+        )
+        .route(
+            "/v1/runtime/client-events",
+            post(routes::runtime::client_event),
+        )
+        .route(
+            "/v1/runtime/learning/analyze-edit",
+            post(routes::runtime::analyze_edit_learning),
+        )
+        .route(
+            "/v1/runtime/learning/confirm-batch",
+            post(routes::runtime::confirm_learning_batch),
+        )
+        .route(
+            "/v1/runtime/notifications/ws",
+            get(routes::runtime::notifications_ws),
+        )
+        .route(
+            "/v1/runtime/credentials",
+            get(routes::runtime::list_credentials).post(routes::runtime::save_credential),
+        )
+        .route(
+            "/v1/runtime/credentials/:id/validate",
+            post(routes::runtime::validate_credential),
+        )
+        .route(
+            "/v1/runtime/credentials/:id",
+            delete(routes::runtime::revoke_credential),
+        )
+        .route(
+            "/v1/runtime/voice/dry-run",
+            post(routes::runtime::voice_dry_run),
+        )
+        .route("/v1/runtime/voice/ws", get(routes::runtime::voice_ws))
+        // History
+        .route(
+            "/v1/runtime/history",
+            get(routes::runtime_history::list_history),
+        )
+        .route(
+            "/v1/runtime/history/sync",
+            post(routes::runtime_history::sync_history),
+        )
+        .route(
+            "/v1/runtime/history/:id",
+            get(routes::runtime_history::get_history_item)
+                .patch(routes::runtime_history::patch_history_item)
+                .delete(routes::runtime_history::delete_history_item),
+        )
+        .route(
+            "/v1/runtime/memory/sync",
+            post(routes::runtime_history::sync_memory),
+        )
+        .route(
+            "/v1/runtime/settings",
+            get(routes::runtime_settings::get_settings)
+                .patch(routes::runtime_settings::patch_settings),
+        )
+        .route(
+            "/v1/runtime/settings/sync",
+            post(routes::runtime_settings::sync_settings),
+        )
         .route("/v1/license/check", get(routes::license::check))
         .route("/v1/metering/report", post(routes::metering::report))
         // Enterprise — Desktop clients

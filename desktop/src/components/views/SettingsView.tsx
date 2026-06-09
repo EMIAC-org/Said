@@ -3,13 +3,13 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { getVersion } from "@tauri-apps/api/app";
 import {
-  Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap,
+  Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap, Cloud,
   Languages, MessageSquareText, Loader2, RefreshCw,
   Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, Download, Activity,
-  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown,
+  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown, Power,
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
-import { applyPendingUpdate, downloadUpdate } from "@/lib/autoUpdate";
+import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
 import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
 
@@ -28,10 +28,15 @@ import {
   getDesktopPrefs, setDesktopPrefs,
   readBackendLog, backendLogLocation, openLogFolder,
   openaiConnect, openaiStatus, openaiDisconnect,
+  getServerSettingsStatus,
+  getCredentialVaultStatus,
+  syncCredentialVault,
+  type CredentialVaultStatus,
   type DebugLogs,
   type NotifPermission,
   type DesktopPrefs,
   type OpenAIStatus,
+  type ServerSettingsStatus,
 } from "@/lib/invoke";
 
 // ── Tone presets ──────────────────────────────────────────────────────────────
@@ -59,7 +64,37 @@ const LANGUAGES = [
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+type SyncBadgeState = "idle" | "syncing" | "synced" | "offline" | "failed";
+
+function SyncBadge({ state }: { state: SyncBadgeState }) {
+  if (state === "idle") return null;
+  const configs: Record<Exclude<SyncBadgeState, "idle">, [string, string]> = {
+    synced:  ["hsl(145 60% 50%)", "Synced"],
+    syncing: ["hsl(38 90% 55%)",  "Syncing…"],
+    offline: ["hsl(38 70% 55%)",  "Offline cache"],
+    failed:  ["hsl(0 65% 55%)",   "Sync failed"],
+  };
+  const [color, label] = configs[state as Exclude<SyncBadgeState, "idle">] ?? ["hsl(var(--muted-foreground))", ""];
+  return (
+    <span className="ml-1 flex items-center gap-1" style={{ fontSize: "10px", color, opacity: 0.85 }}>
+      <span
+        className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+        style={{ background: color }}
+      />
+      {label}
+    </span>
+  );
+}
+
+function Section({
+  title,
+  extra,
+  children,
+}: {
+  title: string;
+  extra?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <div className="mb-7">
       <p className="section-label px-1 mb-2.5 flex items-center gap-2">
@@ -68,6 +103,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
           style={{ background: "hsl(var(--accent-violet))" }}
         />
         {title}
+        {extra}
       </p>
       <div className="panel overflow-hidden">
         {children}
@@ -321,6 +357,7 @@ function ChatGPTSection() {
 export type SettingsSection =
   | "appearance"
   | "writing"
+  | "hotkeys"
   | "models"
   | "notifications"
   | "permissions"
@@ -330,6 +367,7 @@ export type SettingsSection =
   | "about";
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
+  { id: "hotkeys",      label: "Hotkeys"      },
   { id: "models",         label: "Models"         },
   { id: "notifications",  label: "Notifications"  },
   { id: "permissions",    label: "Permissions"     },
@@ -661,6 +699,54 @@ export function SettingsView({
   const [notifBusy, setNotifBusy] = useState(false);
   const axSupported = snapshot?.auto_paste_supported    ?? false;
 
+  // ── Server settings sync indicator ──────────────────────────────────────────
+  const [serverSyncState, setServerSyncState] = useState<SyncBadgeState>("idle");
+  useEffect(() => {
+    if (!isOn("models")) return;
+    void getServerSettingsStatus().then((s: ServerSettingsStatus | null) => {
+      if (!s || !s.signed_in) { setServerSyncState("idle"); return; }
+      if (s.last_error)        { setServerSyncState("failed");  return; }
+      if (s.synced)            { setServerSyncState("synced");  return; }
+      setServerSyncState("offline");
+    }).catch(() => setServerSyncState("idle"));
+  }, [currentSection]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Credential vault sync (local API keys → server DB) ─────────────────────
+  const [vaultStatus, setVaultStatus] = useState<CredentialVaultStatus | null>(null);
+  const [vaultSyncState, setVaultSyncState] = useState<SyncBadgeState>("idle");
+
+  const refreshVaultStatus = useCallback(async () => {
+    const status = await getCredentialVaultStatus();
+    setVaultStatus(status);
+    if (!status?.signed_in) {
+      setVaultSyncState("idle");
+      return;
+    }
+    if (!status.encryption_configured) {
+      setVaultSyncState("failed");
+      return;
+    }
+    const local = new Set(status.local_providers);
+    const serverActive = status.server_credentials.filter(
+      (c) => c.scope === "user" && c.status === "active",
+    );
+    const server = new Set(serverActive.map((c) => c.provider));
+    if (local.size > 0 && [...local].every((p) => server.has(p))) {
+      setVaultSyncState("synced");
+    } else if (local.size > 0 && server.size === 0) {
+      setVaultSyncState("failed");
+    } else if (server.size > 0) {
+      setVaultSyncState("synced");
+    } else {
+      setVaultSyncState("offline");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isOn("api-keys")) return;
+    void refreshVaultStatus();
+  }, [currentSection, refreshVaultStatus]);
+
   // ── Prefs state ─────────────────────────────────────────────────────────────
   const [prefs,        setPrefs]        = useState<Preferences | null>(null);
   const [saving,       setSaving]       = useState(false);
@@ -701,6 +787,7 @@ export function SettingsView({
     sentry_disabled: false,
     update_channel: "stable",
     message_polish_mode: false,
+    launch_at_login: false,
   });
   useEffect(() => {
     void getDesktopPrefs().then(setDesktopPrefsState).catch(() => {});
@@ -715,7 +802,7 @@ export function SettingsView({
 
   // ── Auto-update state ─────────────────────────────────────────────────────
   const [appVersion, setAppVersion] = useState("…");
-  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "ready" | "up-to-date" | "error">("idle");
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "ready" | "applying" | "up-to-date" | "error">("idle");
   const [updateVersion, setUpdateVersion] = useState("");
   const [updateError, setUpdateError] = useState("");
 
@@ -776,8 +863,23 @@ export function SettingsView({
           setDownloadProgress(100);
         }
       });
-      if (!version) return;
+      if (!version) {
+        setUpdateStatus("up-to-date");
+        return;
+      }
+      setUpdateVersion(version);
       setUpdateStatus("ready");
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+      setUpdateStatus("error");
+    }
+  }, []);
+
+  const relaunchToApplyUpdate = useCallback(async () => {
+    setUpdateStatus("applying");
+    setUpdateError("");
+    try {
+      await applyPendingUpdate();
     } catch (err) {
       setUpdateError(err instanceof Error ? err.message : String(err));
       setUpdateStatus("error");
@@ -804,6 +906,14 @@ export function SettingsView({
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion("?"));
+  }, []);
+
+  useEffect(() => {
+    void getPendingReadyUpdateVersion().then((version) => {
+      if (!version) return;
+      setUpdateVersion(version);
+      setUpdateStatus("ready");
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -907,10 +1017,19 @@ export function SettingsView({
 
       const updated = await patchPreferences(update);
       if (!updated) throw new Error("preferences update returned no data");
-      if (updated) {
-        setPrefs(updated);
-        syncApiKeyInputs(updated);
+      setPrefs(updated);
+      syncApiKeyInputs(updated);
+
+      setVaultSyncState("syncing");
+      const vault = await syncCredentialVault();
+      await refreshVaultStatus();
+      if (vault?.failed) {
+        const firstErr = vault.results?.find((r) => r.error)?.error;
+        throw new Error(
+          firstErr ?? "Keys saved locally but server vault sync failed — check you're signed in",
+        );
       }
+
       setKeySaved(true);
       if (keySaveTimer.current) clearTimeout(keySaveTimer.current);
       keySaveTimer.current = setTimeout(() => setKeySaved(false), 2500);
@@ -1109,6 +1228,104 @@ export function SettingsView({
           <div className="mb-7">
             <AppearanceSection />
           </div>
+        </Show>
+
+        {/* ── Hotkeys ─────────────────────────────────── */}
+        <Show when={isOn("hotkeys")}>
+        <Section title="Voice Hotkey">
+          <div className="px-5 py-4">
+            <div className="flex items-center gap-4">
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
+                style={{ background: "hsl(var(--surface-4))" }}
+              >
+                <Key size={16} />
+              </div>
+              <div className="flex-1">
+                <p className="text-[13px] font-medium text-foreground mb-1">Hold-to-speak key</p>
+                <p className="text-[12px] text-muted-foreground">
+                  Choose the key AirNote listens for when you speak. Changes apply immediately.
+                </p>
+              </div>
+            </div>
+            <div
+              className="flex mt-3 rounded-xl p-0.5 gap-0.5"
+              style={{ background: "hsl(var(--surface-4))" }}
+            >
+              {([
+                { key: "caps_lock", label: "Caps Lock" },
+                { key: "right_option", label: isWindows ? "Right Alt" : "Right Option" },
+                ...(!isWindows ? [{ key: "fn", label: "Fn / Globe" }] : []),
+              ] as { key: "caps_lock" | "right_option" | "fn"; label: string }[]).map((opt) => {
+                const isActive = recordHotkey === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    aria-pressed={isActive}
+                    disabled={saving}
+                    onClick={() => patch({ record_hotkey: opt.key })}
+                    className="flex-1 text-[13px] font-medium rounded-[10px] py-1.5 transition-all disabled:opacity-60"
+                    style={{
+                      background: isActive ? "hsl(var(--surface-1))" : "transparent",
+                      color: isActive ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
+                      boxShadow: isActive ? "0 1px 3px rgba(0,0,0,0.25)" : "none",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
+              Current: {recordHotkeyLabel}. macOS requires Input Monitoring for global hotkeys.
+            </p>
+            {saveError && (
+              <p className="text-[11px] mt-2" style={{ color: "hsl(var(--destructive))" }}>
+                {saveError}
+              </p>
+            )}
+          </div>
+        </Section>
+        <Section title="Startup">
+          <Row
+            icon={<Power size={16} />}
+            label="Launch at login"
+            description={
+              desktopPrefs.launch_at_login
+                ? "On — AirNote starts automatically when you sign in."
+                : "Off — open AirNote manually when you need it."
+            }
+            action={
+              <button
+                type="button"
+                role="switch"
+                aria-checked={desktopPrefs.launch_at_login}
+                onClick={() => writeDesktopPrefs({
+                  ...desktopPrefs,
+                  launch_at_login: !desktopPrefs.launch_at_login,
+                })}
+                className="relative h-6 w-11 rounded-full transition-colors"
+                style={{
+                  background: desktopPrefs.launch_at_login
+                    ? "hsl(var(--primary))"
+                    : "hsl(var(--surface-4))",
+                }}
+              >
+                <span
+                  className="absolute top-1 h-4 w-4 rounded-full transition-transform"
+                  style={{
+                    left: 4,
+                    transform: desktopPrefs.launch_at_login
+                      ? "translateX(20px)"
+                      : "translateX(0)",
+                    background: "hsl(var(--foreground))",
+                  }}
+                />
+              </button>
+            }
+          />
+        </Section>
         </Show>
 
         {/* ── Tone & Persona ───────────────────────────── */}
@@ -1590,7 +1807,7 @@ export function SettingsView({
 
         {/* ── Models ───────────────────────────────────── */}
         <Show when={isOn("models")}>
-        <Section title="Dictation Model">
+        <Section title="Dictation Model" extra={<SyncBadge state={serverSyncState} />}>
           <div className="px-5 py-4">
             <div className="flex items-center gap-4 mb-3">
               <div
@@ -1661,6 +1878,49 @@ export function SettingsView({
                 );
               })}
             </div>
+          </div>
+
+          <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+
+          <div className="px-5 py-4">
+            <div className="flex items-center gap-4">
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
+                style={{ background: "hsl(var(--surface-4))" }}
+              >
+                <Cloud size={16} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-medium text-foreground">Server polish runtime</p>
+                <p className="text-[12px] text-muted-foreground mt-0.5">
+                  Keeps Deepgram on this Mac, then sends the finished transcript to airnote.emiactech.com for polish.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={!!prefs?.server_runtime_enabled}
+                onClick={() => void patch({ server_runtime_enabled: !prefs?.server_runtime_enabled })}
+                className="relative w-11 h-6 rounded-full transition-colors shrink-0"
+                style={{
+                  background: prefs?.server_runtime_enabled
+                    ? "hsl(var(--primary))"
+                    : "hsl(var(--surface-4))",
+                }}
+              >
+                <span
+                  className="absolute top-1 w-4 h-4 rounded-full transition-transform"
+                  style={{
+                    left: 4,
+                    transform: prefs?.server_runtime_enabled
+                      ? "translateX(20px)"
+                      : "translateX(0)",
+                    background: "hsl(var(--foreground))",
+                  }}
+                />
+              </button>
+            </div>
+
           </div>
         </Section>
 
@@ -1902,11 +2162,43 @@ export function SettingsView({
         {/* ── API Keys ──────────────────────────────────── */}
         <Show when={isOn("api-keys")}>
         <div className="mb-7">
-          <p className="section-label px-1 mb-2.5">API Keys</p>
+          <p className="section-label px-1 mb-2.5 flex items-center gap-2">API Keys<SyncBadge state={vaultSyncState} /></p>
           <div className="panel p-5 space-y-3">
             <p className="text-[12px] text-muted-foreground leading-relaxed">
-              Stored only on this {isWindows ? "PC" : "Mac"}. Open a group only when you need to edit that key.
+              {vaultStatus?.signed_in
+                ? "Keys are saved on this device and synced to your AirNote account vault for server-side polish."
+                : `Stored on this ${isWindows ? "PC" : "Mac"} until you sign in — then they sync to your account vault.`}
             </p>
+            {vaultStatus?.signed_in && (
+              <div
+                className="rounded-lg border px-3 py-2.5 space-y-1.5"
+                style={{ borderColor: "hsl(var(--border))", background: "hsl(var(--surface-3))" }}
+              >
+                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+                  Server vault
+                </p>
+                {!vaultStatus.encryption_configured ? (
+                  <p className="text-[12px]" style={{ color: "hsl(0 75% 75%)" }}>
+                    Server encryption is not configured — contact your admin.
+                  </p>
+                ) : vaultStatus.server_credentials.filter((c) => c.scope === "user" && c.status === "active").length === 0 ? (
+                  <p className="text-[12px] text-muted-foreground">
+                    No keys in server vault yet — save keys above to sync.
+                  </p>
+                ) : (
+                  vaultStatus.server_credentials
+                    .filter((c) => c.scope === "user" && c.status === "active")
+                    .map((c) => (
+                      <div key={c.id} className="flex items-center justify-between text-[12px]">
+                        <span className="capitalize text-muted-foreground">{c.provider}</span>
+                        <span style={{ color: "hsl(145 70% 65%)" }}>
+                          ••••{c.secret_last4}
+                        </span>
+                      </div>
+                    ))
+                )}
+              </div>
+            )}
 
             <SettingsDisclosure
               title="Required for dictation"
@@ -2225,6 +2517,7 @@ export function SettingsView({
               updateStatus === "checking" ? "Checking for updates…" :
               updateStatus === "available" ? `Version ${updateVersion} is available` :
               updateStatus === "downloading" ? `Downloading update… ${downloadProgress}%` :
+              updateStatus === "applying" ? "Applying update…" :
               updateStatus === "ready" ? "Update downloaded — relaunch to finish" :
               updateStatus === "up-to-date" ? "You're on the latest version" :
               updateStatus === "error" ? (updateError || "Update check failed") :
@@ -2233,7 +2526,7 @@ export function SettingsView({
             last
             action={
               <div className="flex items-center gap-2">
-                {updateStatus === "checking" || updateStatus === "downloading" ? (
+                {updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "applying" ? (
                   <Loader2 size={14} className="animate-spin text-muted-foreground" />
                 ) : updateStatus === "available" ? (
                   <button
@@ -2245,7 +2538,8 @@ export function SettingsView({
                   </button>
                 ) : updateStatus === "ready" ? (
                   <button
-                    onClick={() => void applyPendingUpdate()}
+                    type="button"
+                    onClick={() => void relaunchToApplyUpdate()}
                     className="px-3 py-1 rounded-md text-[11px] font-medium border border-transparent text-background"
                     style={{ background: "hsl(var(--primary))" }}
                   >

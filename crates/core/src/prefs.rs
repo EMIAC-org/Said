@@ -13,6 +13,8 @@
 //!     ready.
 //!   - `message_polish_mode` — read synchronously by the desktop recording
 //!     pipeline before it sends a voice request to the backend.
+//!   - `launch_at_login` — applied by the desktop shell itself, before the
+//!     backend exists.
 //!
 //! Everything else (the rich preferences struct: hotkey choice, custom
 //! prompts, language, lexicon, etc.) lives in the backend's SQLite DB and is
@@ -45,6 +47,11 @@ pub struct DesktopPrefs {
     /// message-polish pass and pastes only the final result.
     #[serde(default)]
     pub message_polish_mode: bool,
+
+    /// When true, the desktop shell registers AirNote as a login item so it
+    /// starts automatically when the user signs in.
+    #[serde(default)]
+    pub launch_at_login: bool,
 }
 
 fn default_channel() -> String {
@@ -57,6 +64,7 @@ impl Default for DesktopPrefs {
             sentry_disabled: false,
             update_channel: default_channel(),
             message_polish_mode: false,
+            launch_at_login: false,
         }
     }
 }
@@ -104,6 +112,7 @@ mod tests {
             "Sentry is opt-out (on by default) per the v3.0 locked decision"
         );
         assert_eq!(d.update_channel, "stable");
+        assert!(!d.launch_at_login);
     }
 
     #[test]
@@ -114,12 +123,14 @@ mod tests {
         assert!(!p.sentry_disabled);
         assert_eq!(p.update_channel, "stable");
         assert!(!p.message_polish_mode);
+        assert!(!p.launch_at_login);
 
         let partial = r#"{ "sentry_disabled": true }"#;
         let p: DesktopPrefs = serde_json::from_str(partial).unwrap();
         assert!(p.sentry_disabled);
         assert_eq!(p.update_channel, "stable");
         assert!(!p.message_polish_mode);
+        assert!(!p.launch_at_login);
     }
 
     #[test]
@@ -128,11 +139,13 @@ mod tests {
             sentry_disabled: true,
             update_channel: "beta".into(),
             message_polish_mode: true,
+            launch_at_login: true,
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: DesktopPrefs = serde_json::from_str(&json).unwrap();
         assert!(back.sentry_disabled);
         assert_eq!(back.update_channel, "beta");
         assert!(back.message_polish_mode);
+        assert!(back.launch_at_login);
     }
 }

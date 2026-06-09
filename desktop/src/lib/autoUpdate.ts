@@ -10,6 +10,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Event the status-bar window emits when the user clicks Restart. The main
  * window owns the downloaded `Update` handle, so the apply must happen here. */
 export const APPLY_UPDATE_EVENT = "airnote://apply-update";
+export const APPLY_UPDATE_FAILED_EVENT = "airnote://apply-update-failed";
 
 let running = false;
 
@@ -29,6 +30,7 @@ export async function downloadUpdate(
   if (!update) return null;
   await update.download(onProgress);
   pendingUpdate = update;
+  writeString(READY_VERSION_KEY, update.version);
   return update.version;
 }
 
@@ -42,9 +44,25 @@ export async function applyPendingUpdate(): Promise<void> {
     update = await check();
     if (update) await update.download();
   }
-  if (update) await update.install();
+  if (!update) {
+    clearStoredReadyUpdateVersion();
+    throw new Error("No downloaded update is available. Please check for updates and download it again.");
+  }
+  await update.install();
   pendingUpdate = null;
+  clearStoredReadyUpdateVersion();
   await relaunch();
+}
+
+/** Ask the main app webview to apply the pending update.
+ *
+ * The downloaded `Update` handle belongs to the webview that performed the
+ * download. Secondary windows, especially the status-bar HUD, cannot reliably
+ * hold that handle. Emitting one shared event keeps every Restart/Relaunch
+ * button on the same code path.
+ */
+export async function requestApplyPendingUpdate(): Promise<void> {
+  await emit(APPLY_UPDATE_EVENT, { requestedAt: Date.now() });
 }
 
 function readNumber(key: string): number {
@@ -73,6 +91,36 @@ function removeKey(key: string): void {
   }
 }
 
+export function getStoredReadyUpdateVersion(): string {
+  try {
+    return localStorage.getItem(READY_VERSION_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function clearStoredReadyUpdateVersion(): void {
+  removeKey(READY_VERSION_KEY);
+}
+
+export async function getPendingReadyUpdateVersion(): Promise<string> {
+  const readyVersion = getStoredReadyUpdateVersion();
+  if (!readyVersion) return "";
+
+  try {
+    const current = await getVersion();
+    if (current === readyVersion) {
+      clearStoredReadyUpdateVersion();
+      return "";
+    }
+  } catch {
+    // Keep showing the restart prompt if version lookup fails. Losing the
+    // prompt is worse than asking the user to retry a valid update.
+  }
+
+  return readyVersion;
+}
+
 async function notifyReady(version: string, reminder = false): Promise<void> {
   await emit("auto-update-ready", {
     version,
@@ -83,23 +131,8 @@ async function notifyReady(version: string, reminder = false): Promise<void> {
 }
 
 async function reconcileReadyVersion(): Promise<boolean> {
-  let readyVersion = "";
-  try {
-    readyVersion = localStorage.getItem(READY_VERSION_KEY) || "";
-  } catch {
-    readyVersion = "";
-  }
+  const readyVersion = await getPendingReadyUpdateVersion();
   if (!readyVersion) return false;
-
-  try {
-    const current = await getVersion();
-    if (current === readyVersion) {
-      removeKey(READY_VERSION_KEY);
-      return false;
-    }
-  } catch {
-    // If version lookup fails, still show the reminder below.
-  }
 
   await notifyReady(readyVersion, true);
   return true;
@@ -115,12 +148,14 @@ async function runDailyCheck(): Promise<void> {
     const now = Date.now();
     const last = readNumber(LAST_CHECK_KEY);
     if (last > 0 && now - last < DAY_MS) return;
-    writeString(LAST_CHECK_KEY, String(now));
 
     const version = await downloadUpdate();
-    if (!version) return;
+    if (!version) {
+      writeString(LAST_CHECK_KEY, String(now));
+      return;
+    }
 
-    writeString(READY_VERSION_KEY, version);
+    writeString(LAST_CHECK_KEY, String(now));
     await notifyReady(version);
   } catch (err) {
     console.warn("[auto-update] daily check failed:", err);
@@ -155,7 +190,11 @@ export function startDailyAutoUpdateCheck(): () => void {
   // The status-bar runs in a separate webview and cannot hold the downloaded
   // `Update` handle, so its Restart button emits this event for us to apply.
   const unlistenApply = listen(APPLY_UPDATE_EVENT, () => {
-    void applyPendingUpdate();
+    void applyPendingUpdate().catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[auto-update] apply failed:", err);
+      void emit(APPLY_UPDATE_FAILED_EVENT, { message });
+    });
   });
 
   return () => {

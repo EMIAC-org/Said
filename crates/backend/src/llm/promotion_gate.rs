@@ -27,6 +27,16 @@ pub fn appears_in_user_kept(term: &str, user_kept: &str) -> bool {
     if term.is_empty() {
         return false;
     }
+    let term_tokens = gate_tokens(term);
+    if term_tokens.is_empty() {
+        return false;
+    }
+    let kept_tokens = gate_tokens(user_kept);
+    if term_tokens.len() > 1 {
+        return kept_tokens
+            .windows(term_tokens.len())
+            .any(|window| window == term_tokens.as_slice());
+    }
     // Whole-word containment.  We split on Unicode whitespace + punctuation
     // boundaries and check each token.
     user_kept
@@ -37,6 +47,21 @@ pub fn appears_in_user_kept(term: &str, user_kept: &str) -> bool {
                 && (tok == term
                     || (tok.is_ascii() && term.is_ascii() && tok.eq_ignore_ascii_case(term)))
         })
+}
+
+fn gate_tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| c.is_whitespace() || (c.is_ascii_punctuation() && c != '_' && c != '-'))
+        .filter_map(|tok| {
+            let tok = tok.trim();
+            if tok.is_empty() {
+                None
+            } else if tok.is_ascii() {
+                Some(tok.to_ascii_lowercase())
+            } else {
+                Some(tok.to_string())
+            }
+        })
+        .collect()
 }
 
 /// True if `term`'s script matches `output_language`.
@@ -315,6 +340,22 @@ mod tests {
         assert!(appears_in_user_kept(
             "n8n",
             "Use [n8n](https://n8n.io) today."
+        ));
+    }
+
+    #[test]
+    fn appears_finds_multi_word_phrase() {
+        assert!(appears_in_user_kept(
+            "Urban Aura",
+            "uska naam Urban Aura hai"
+        ));
+        assert!(appears_in_user_kept(
+            "urban aura",
+            "Uska naam URBAN AURA hai"
+        ));
+        assert!(!appears_in_user_kept(
+            "Urban Aura",
+            "Urban product aur Aura brand dono alag hain"
         ));
     }
 

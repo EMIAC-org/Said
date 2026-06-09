@@ -35,21 +35,29 @@ path = "src/bin/e2e_formatter.rs"
 name = "pipeline-quality"
 path = "src/bin/pipeline_quality.rs"
 
+[[bin]]
+name = "eval-edit-learning"
+path = "src/bin/eval_edit_learning.rs"
+
 
 [lints]
 workspace = true
 
 [dependencies]
-axum               = { version = "0.7", features = ["multipart"] }
+axum               = { version = "0.7", features = ["multipart", "ws"] }
 async-stream       = "0.3"
 tokio              = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
+base64            = "0.22"
 tracing            = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap               = { version = "4", features = ["derive"] }
 uuid               = { workspace = true }
 reqwest            = { workspace = true }
+chrono             = { version = "0.4", features = ["serde"] }
+tokio-tungstenite  = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+rustls             = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 
 # SQLite
 rusqlite    = { version = "0.31", features = ["bundled"] }

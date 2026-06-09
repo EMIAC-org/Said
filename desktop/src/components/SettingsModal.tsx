@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   X, RefreshCw, CloudCheck,
-  Wand2, ShieldCheck, Key, Info, Bug, Palette, Link, Bell, Brain,
+  Wand2, ShieldCheck, Key, Info, Bug, Palette, Link, Bell, Brain, Keyboard,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -20,6 +20,7 @@ import type { AppSnapshot } from "@/types";
 const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
   "appearance":    <Palette      size={14} />,
   "writing":       <Wand2        size={14} />,
+  "hotkeys":       <Keyboard     size={14} />,
   "models":        <Brain        size={14} />,
   "notifications": <Bell         size={14} />,
   "permissions":   <ShieldCheck  size={14} />,
@@ -32,6 +33,7 @@ const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
 const SECTION_TITLES: Record<SettingsSection, string> = {
   "appearance":    "Appearance",
   "writing":       "Writing style",
+  "hotkeys":       "Hotkeys",
   "models":        "Models",
   "notifications": "Notifications",
   "permissions":   "Permissions",
@@ -44,6 +46,7 @@ const SECTION_TITLES: Record<SettingsSection, string> = {
 const SECTION_SUBTITLES: Record<SettingsSection, string> = {
   "appearance":    "Choose how the dashboard surfaces your activity.",
   "writing":       "Advanced voice prompt controls.",
+  "hotkeys":       "Choose the key AirNote listens for while you speak.",
   "models":        "Dictation speed, quality, and ChatGPT connection.",
   "notifications": "Control which status bar alerts you see.",
   "permissions":   "Accessibility, input monitoring, notifications.",

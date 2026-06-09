@@ -84,8 +84,6 @@ pub fn delete_token(pool: &DbPool, user_id: &str) {
         Ok(c) => c,
         Err(_) => return,
     };
-    let now = super::now_ms();
-
     conn.execute(
         "DELETE FROM openai_oauth WHERE user_id = ?1",
         params![user_id],

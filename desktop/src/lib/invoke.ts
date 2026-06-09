@@ -965,11 +965,17 @@ export interface DesktopPrefs {
   sentry_disabled: boolean;
   update_channel: "stable" | "beta";
   message_polish_mode: boolean;
+  launch_at_login: boolean;
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
   if (!isTauriRuntime()) {
-    return { sentry_disabled: false, update_channel: "stable", message_polish_mode: false };
+    return {
+      sentry_disabled: false,
+      update_channel: "stable",
+      message_polish_mode: false,
+      launch_at_login: false,
+    };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");
 }
@@ -1150,6 +1156,158 @@ export const onDivoError = (h: (p: { message: string }) => void) =>
   divoListener("divo-error", h);
 export const onDivoPending = (h: (p: { message: string }) => void) =>
   divoListener("divo-pending", h);
+
+// ── Server migration ──────────────────────────────────────────────────────────
+
+export interface ServerMigrationStatus {
+  status: "not_started" | "running" | "partial" | "completed" | "failed";
+  migration_version: number;
+  uploaded_history_count: number;
+  uploaded_vocab_count: number;
+  uploaded_alias_count: number;
+  uploaded_email_count: number;
+  uploaded_credentials_count: number;
+  last_error?: string | null;
+  last_attempt_at_ms?: number | null;
+  completed_at_ms?: number | null;
+  server_url?: string | null;
+  signed_in: boolean;
+}
+
+async function backendFetch(path: string, opts: RequestInit = {}): Promise<Response | null> {
+  try {
+    const endpoint = await getBackendEndpoint();
+    if (!endpoint?.url || !endpoint.secret) return null;
+    const headers: Record<string, string> = {
+      ...(opts.headers as Record<string, string> | undefined),
+      Authorization: `Bearer ${endpoint.secret}`,
+    };
+    if (opts.body && !(headers["Content-Type"])) headers["Content-Type"] = "application/json";
+    return fetch(`${endpoint.url}${path}`, { ...opts, headers });
+  } catch {
+    return null;
+  }
+}
+
+export async function getMigrationStatus(): Promise<ServerMigrationStatus | null> {
+  try {
+    const res = await backendFetch("/v1/server-migration/status");
+    if (!res?.ok) return null;
+    return await res.json() as ServerMigrationStatus;
+  } catch {
+    return null;
+  }
+}
+
+export async function runMigration(): Promise<{ started: boolean; reason?: string } | null> {
+  try {
+    const res = await backendFetch("/v1/server-migration/run", { method: "POST", body: "{}" });
+    if (!res) return null;
+    return await res.json() as { started: boolean; reason?: string };
+  } catch {
+    return null;
+  }
+}
+
+export async function cancelMigration(): Promise<void> {
+  try {
+    await backendFetch("/v1/server-migration/cancel", { method: "POST", body: "{}" });
+  } catch {
+    // best-effort
+  }
+}
+
+// ── Server settings sync ──────────────────────────────────────────────────────
+
+export interface ServerSettingsStatus {
+  synced: boolean;
+  server_version: number;
+  last_synced_at_ms?: number | null;
+  last_error?: string | null;
+  settings?: Record<string, unknown> | null;
+  signed_in: boolean;
+}
+
+export async function getServerSettingsStatus(): Promise<ServerSettingsStatus | null> {
+  try {
+    const res = await backendFetch("/v1/server-settings/status");
+    if (!res?.ok) return null;
+    return await res.json() as ServerSettingsStatus;
+  } catch {
+    return null;
+  }
+}
+
+export async function syncServerSettings(): Promise<{ synced: boolean; reason?: string } | null> {
+  try {
+    const res = await backendFetch("/v1/server-settings/sync", { method: "POST", body: "{}" });
+    if (!res) return null;
+    return await res.json() as { synced: boolean; reason?: string };
+  } catch {
+    return null;
+  }
+}
+
+// ── Runtime credential vault (local keys → server DB) ─────────────────────────
+
+export interface RuntimeCredentialSummary {
+  id: string;
+  provider: string;
+  scope: string;
+  display_name: string;
+  secret_last4: string;
+  status: string;
+  updated_at?: string | null;
+}
+
+export interface CredentialVaultStatus {
+  signed_in: boolean;
+  server_url?: string | null;
+  encryption_configured: boolean;
+  server_credentials: RuntimeCredentialSummary[];
+  local_providers: string[];
+}
+
+export interface CredentialSyncResult {
+  provider: string;
+  action: string;
+  error?: string | null;
+}
+
+export interface CredentialSyncResponse {
+  connected: boolean;
+  server_url?: string | null;
+  attempted: number;
+  synced: number;
+  skipped: number;
+  failed: number;
+  revoked: number;
+  reason?: string | null;
+  results?: CredentialSyncResult[];
+}
+
+export async function getCredentialVaultStatus(): Promise<CredentialVaultStatus | null> {
+  try {
+    const res = await backendFetch("/v1/runtime/credentials/status");
+    if (!res?.ok) return null;
+    return await res.json() as CredentialVaultStatus;
+  } catch {
+    return null;
+  }
+}
+
+export async function syncCredentialVault(): Promise<CredentialSyncResponse | null> {
+  try {
+    const res = await backendFetch("/v1/runtime/credentials/sync", {
+      method: "POST",
+      body: "{}",
+    });
+    if (!res) return null;
+    return await res.json() as CredentialSyncResponse;
+  } catch {
+    return null;
+  }
+}
 
 // Suppress unused-import warnings for types only used in exported signatures
 export type {
