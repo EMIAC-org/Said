@@ -8,14 +8,19 @@ import UIKit
 struct DictationSheet: View {
     @StateObject private var controller: DictationController
     @Environment(\.dismiss) private var dismiss
+    @State private var didAutoStart = false
     private let env: AppEnvironment
     private var onComplete: ((DictationResult) -> Void)?
     private var showsDoneButton: Bool
+    /// True when launched by the keyboard (airnote://dictate): auto-starts and
+    /// tells the user to swipe back so the keyboard can insert the result.
+    private var handoffMode: Bool
 
-    init(env: AppEnvironment, showsDoneButton: Bool = true, onComplete: ((DictationResult) -> Void)? = nil) {
+    init(env: AppEnvironment, showsDoneButton: Bool = true, handoffMode: Bool = false, onComplete: ((DictationResult) -> Void)? = nil) {
         self.env = env
         self.onComplete = onComplete
         self.showsDoneButton = showsDoneButton
+        self.handoffMode = handoffMode
         _controller = StateObject(wrappedValue: DictationController(env: env))
     }
 
@@ -46,6 +51,13 @@ struct DictationSheet: View {
         }
         .animation(.easeInOut(duration: 0.26), value: controller.phase)
         .onDisappear { Task { await controller.cancel() } }
+        .task {
+            // Keyboard handoff: the app is foreground, so start recording right away.
+            if handoffMode, !didAutoStart {
+                didAutoStart = true
+                await controller.start()
+            }
+        }
     }
 
     // MARK: Hero
@@ -114,6 +126,19 @@ struct DictationSheet: View {
     private func resultCard(_ result: DictationResult) -> some View {
         AirNoteCard {
             VStack(alignment: .leading, spacing: 14) {
+                if handoffMode {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.uturn.backward.circle.fill")
+                            .foregroundStyle(AirNoteDesign.accent)
+                        Text("Swipe back to your app — AirNote will paste this at your cursor.")
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(AirNoteDesign.foreground)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AirNoteDesign.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
                 HStack {
                     AirNoteStatusPill(systemImage: "checkmark.circle.fill", text: "Polished", color: AirNoteDesign.success)
                     Spacer()

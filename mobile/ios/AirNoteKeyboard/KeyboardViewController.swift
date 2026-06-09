@@ -30,6 +30,9 @@ final class KeyboardViewController: UIInputViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         reportHealth()
+        // Returning from an app-handoff dictation? Insert the result the app left
+        // for us, then we're done.
+        if consumePendingDictation() { return }
         if !isRecording { recomputeIdleState(); render() }
     }
 
@@ -84,7 +87,7 @@ final class KeyboardViewController: UIInputViewController {
         view.subviews.forEach { $0.removeFromSuperview() }
         let pad = RecordingPadView(state: state)
         pad.translatesAutoresizingMaskIntoConstraints = false
-        pad.onStart = { [weak self] in self?.startRecording() }
+        pad.onStart = { [weak self] in self?.requestAppDictation() }
         pad.onStop = { [weak self] in self?.stopRecording() }
         pad.onInsert = { [weak self] in self?.insertResult() }
         pad.onCopy = { [weak self] in self?.copyResult() }
@@ -284,10 +287,81 @@ final class KeyboardViewController: UIInputViewController {
         setState(.savedToHistory)
     }
 
+    // MARK: App-handoff dictation
+    //
+    // iOS does not permit microphone capture inside a keyboard extension (the OS
+    // denies AVAudioEngine.start with "extension doesn't have entitlements to
+    // record audio"). So we ask the main app to record; it polishes the text and
+    // leaves it in the App Group for us to insert when the user swipes back.
+
+    private func requestAppDictation() {
+        cancelFinalizeTimer()
+        guard hasFullAccess else { setState(.needsFullAccess); return }
+        guard let token = SharedStore.accessToken, !token.isEmpty else {
+            setState(.needsMainAppSession)
+            return
+        }
+        SharedStore.clearKeyboardDictation()
+        SharedStore.keyboardDictationRequestedAt = Date()
+        currentResult = nil
+        setState(.dictatingInApp)
+        openURLInApp("airnote://dictate")
+    }
+
+    /// On returning to the keyboard, insert any polished text the app produced for
+    /// a request newer than ours. Returns true if a result was handled.
+    @discardableResult
+    private func consumePendingDictation() -> Bool {
+        guard
+            let raw = SharedStore.pendingKeyboardText, !raw.isEmpty,
+            let producedAt = SharedStore.pendingKeyboardTextAt,
+            let requestedAt = SharedStore.keyboardDictationRequestedAt,
+            producedAt >= requestedAt
+        else { return false }
+
+        SharedStore.clearKeyboardDictation()
+        let text = HinglishScript.enforceRomanHinglish(raw)
+        let secure = TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField
+        resultSeq += 1
+        let result = BridgeResult(
+            resultSeq: resultSeq,
+            sessionID: "keyboard",
+            clientRequestID: RequestId.make(),
+            requestID: RequestId.make(),
+            state: .final,
+            transcript: text,
+            polished: text,
+            language: SharedStore.outputLanguage == "english" ? .en : .hinglish,
+            style: .work,
+            latencyMS: 0,
+            expiresAt: Date().addingTimeInterval(10 * 60),
+            insertPolicy: secure ? .copyOnly : .insertAtCursor,
+            learningAllowed: true
+        )
+        currentResult = result
+
+        if secure {
+            setState(.secureCopyReady(result))
+        } else if TextInsertion(documentProxy: textDocumentProxy).insert(result) {
+            currentResult = nil
+            setState(.inserted)
+        } else {
+            // Insertion failed (no proxy / restricted) — fall back to clipboard.
+            pasteboard.string = text
+            currentResult = nil
+            setState(.copied)
+        }
+        return true
+    }
+
     // MARK: Open container app
 
     private func openMainApp() {
-        guard let url = URL(string: "airnote://open") else { return }
+        openURLInApp("airnote://open")
+    }
+
+    private func openURLInApp(_ string: String) {
+        guard let url = URL(string: string) else { return }
         // Keyboard extensions are built with APPLICATION_EXTENSION_API_ONLY, so
         // UIApplication.open isn't callable directly. Walk the responder chain and
         // invoke the openURL: selector dynamically — the standard extension hack.

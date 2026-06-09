@@ -15,6 +15,13 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: env.phase)
+        .fullScreenCover(item: $env.keyboardHandoff) { _ in
+            NavigationStack {
+                DictationSheet(env: env, showsDoneButton: false, handoffMode: true) { result in
+                    env.deliverKeyboardDictation(result.polished)
+                }
+            }
+        }
     }
 }
 

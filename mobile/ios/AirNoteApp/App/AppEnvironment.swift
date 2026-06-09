@@ -3,6 +3,12 @@ import Combine
 import Foundation
 import UIKit
 
+/// Identifies one keyboard→app dictation handoff. A new value each time forces
+/// the dictation sheet to re-present fresh.
+struct KeyboardHandoff: Identifiable {
+    let id = UUID()
+}
+
 /// Single source of truth for the AirNote app: authentication, runtime/dictation
 /// availability, cross-device settings, history, and personal vocabulary — all
 /// against the real server backend. There is no mock/preview path in the app.
@@ -17,6 +23,9 @@ final class AppEnvironment: ObservableObject {
     // MARK: Top-level routing
 
     @Published private(set) var phase: Phase = .launching
+    /// Non-nil while the keyboard handed off a dictation (airnote://dictate). A
+    /// fresh token each time forces a clean dictation sheet to re-present.
+    @Published var keyboardHandoff: KeyboardHandoff?
 
     // MARK: Account / auth
 
@@ -177,6 +186,29 @@ final class AppEnvironment: ObservableObject {
         case .network: return "No internet connection. Check your network and try again."
         default: return error.userMessage
         }
+    }
+
+    /// Routes incoming `airnote://` deep links. `airnote://dictate` is the
+    /// keyboard handoff (record here, then the keyboard inserts on return).
+    func handleDeepLink(_ url: URL) async {
+        guard url.scheme == "airnote" else { return }
+        switch url.host {
+        case "dictate":
+            // Only run a handoff if signed in; the keyboard guards this too.
+            if account != nil { keyboardHandoff = KeyboardHandoff() }
+        case "auth":
+            await handleAuthCallback(url)
+        default:
+            break   // airnote://open just foregrounds the app
+        }
+    }
+
+    /// Persists a finished dictation for the keyboard to insert when the user
+    /// swipes back to their app.
+    func deliverKeyboardDictation(_ text: String) {
+        let clean = HinglishScript.enforceRomanHinglish(text)
+        guard !clean.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        SharedStore.putPendingKeyboardText(clean, at: Date())
     }
 
     /// Handles the `airnote://auth/callback?token=…` deep link from Lark sign-in.

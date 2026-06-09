@@ -313,6 +313,7 @@ final class RecordingPadView: UIView {
         switch state {
         case .ready: return "mic.circle.fill"
         case .recording: return "waveform.circle.fill"
+        case .dictatingInApp: return "arrow.up.forward.app.fill"
         case .processing: return "bolt.circle.fill"
         case .insertReady: return "text.badge.checkmark"
         case .secureCopyReady: return "doc.on.doc.fill"
@@ -324,7 +325,7 @@ final class RecordingPadView: UIView {
 
     private var statusColor: UIColor {
         switch state {
-        case .ready, .recording, .processing, .insertReady, .secureCopyReady: return KeyboardTheme.accent
+        case .ready, .recording, .dictatingInApp, .processing, .insertReady, .secureCopyReady: return KeyboardTheme.accent
         case .inserted, .copied, .savedToHistory: return KeyboardTheme.success
         case .staleSession, .needsFullAccess, .needsMainAppSession, .error, .unsupportedSecureField: return KeyboardTheme.warning
         default: return KeyboardTheme.teal
@@ -335,6 +336,7 @@ final class RecordingPadView: UIView {
         switch state {
         case .ready: return "AirNote ready"
         case .recording: return "Listening"
+        case .dictatingInApp: return "Dictating in AirNote"
         case .processing: return "Processing"
         case .insertReady: return "Ready to insert"
         case .secureCopyReady: return "Copy ready"
@@ -353,6 +355,7 @@ final class RecordingPadView: UIView {
         case .ready: return "\(SharedStore.tonePreset.capitalized) · \(SharedStore.outputLanguage.capitalized)"
         case .needsMainAppSession: return "Open AirNote and sign in to dictate."
         case .recording: return "Speak naturally. Tap stop when done."
+        case .dictatingInApp: return "Speak in AirNote, then swipe back here to insert."
         case .processing(let phase): return phase
         case .insertReady: return "Review, insert, copy, or save."
         case .secureCopyReady: return "Secure field detected. Copy polished text instead."
@@ -371,6 +374,7 @@ final class RecordingPadView: UIView {
         switch state {
         case .ready: return "Start recording"
         case .recording: return "Stop"
+        case .dictatingInApp: return "Open AirNote"
         case .processing: return "Working"
         case .insertReady: return "Insert"
         case .secureCopyReady: return "Copy"
@@ -387,6 +391,7 @@ final class RecordingPadView: UIView {
         switch state {
         case .ready: return "mic.fill"
         case .recording: return "stop.fill"
+        case .dictatingInApp: return "arrow.up.forward.app"
         case .insertReady: return "text.insert"
         case .secureCopyReady: return "doc.on.doc"
         case .inserted, .copied, .savedToHistory: return "mic.fill"
@@ -400,7 +405,7 @@ final class RecordingPadView: UIView {
 
     private var primaryActionColor: UIColor {
         switch state {
-        case .ready, .insertReady, .secureCopyReady: return KeyboardTheme.accent
+        case .ready, .dictatingInApp, .insertReady, .secureCopyReady: return KeyboardTheme.accent
         case .recording: return KeyboardTheme.danger
         default: return .secondaryLabel
         }

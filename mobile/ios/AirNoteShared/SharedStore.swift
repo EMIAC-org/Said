@@ -23,6 +23,9 @@ public enum SharedStore {
         static let keyboardHasFullAccess = "airnote.shared.keyboard_full_access"
         static let keyboardHealthAt = "airnote.shared.keyboard_health_at"
         static let onboardingComplete = "airnote.shared.onboarding_complete"
+        static let kbdDictationRequestedAt = "airnote.shared.kbd_dictation_requested_at"
+        static let pendingKbdText = "airnote.shared.pending_kbd_text"
+        static let pendingKbdTextAt = "airnote.shared.pending_kbd_text_at"
     }
 
     /// Onboarding-complete flag, in the App Group so it survives a reinstall
@@ -93,6 +96,49 @@ public enum SharedStore {
     public static func recordKeyboardHealth(hasFullAccess: Bool, at date: Date) {
         keyboardHasFullAccess = hasFullAccess
         keyboardLastSeen = date
+    }
+
+    // MARK: Keyboard ⇄ app dictation handoff
+    //
+    // iOS forbids microphone capture inside a keyboard extension. So the keyboard
+    // asks the main app to record (via the airnote://dictate deep link); the app
+    // records + polishes, drops the result here, and the keyboard inserts it when
+    // the user swipes back.
+
+    /// When the keyboard last asked the app to dictate.
+    public static var keyboardDictationRequestedAt: Date? {
+        get {
+            let ts = defaults?.double(forKey: Key.kbdDictationRequestedAt) ?? 0
+            return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
+        }
+        set { defaults?.set(newValue?.timeIntervalSince1970 ?? 0, forKey: Key.kbdDictationRequestedAt) }
+    }
+
+    /// The polished text the app produced for the keyboard to insert.
+    public static var pendingKeyboardText: String? {
+        get { string(Key.pendingKbdText) }
+        set { set(Key.pendingKbdText, newValue) }
+    }
+
+    /// When `pendingKeyboardText` was written (so the keyboard only inserts a
+    /// result that is newer than its request).
+    public static var pendingKeyboardTextAt: Date? {
+        get {
+            let ts = defaults?.double(forKey: Key.pendingKbdTextAt) ?? 0
+            return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
+        }
+        set { defaults?.set(newValue?.timeIntervalSince1970 ?? 0, forKey: Key.pendingKbdTextAt) }
+    }
+
+    public static func putPendingKeyboardText(_ text: String, at date: Date) {
+        pendingKeyboardText = text
+        pendingKeyboardTextAt = date
+    }
+
+    public static func clearKeyboardDictation() {
+        pendingKeyboardText = nil
+        set(Key.pendingKbdTextAt, nil)
+        set(Key.kbdDictationRequestedAt, nil)
     }
 
     public static func clearAuth() {

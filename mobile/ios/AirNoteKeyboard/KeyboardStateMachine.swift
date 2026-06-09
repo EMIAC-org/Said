@@ -7,6 +7,7 @@ public enum KeyboardState: Equatable {
     case needsMainAppSession
     case ready
     case recording
+    case dictatingInApp   // app is recording (handoff); user should swipe back
     case processing(String)
     case insertReady(BridgeResult)
     case secureCopyReady(BridgeResult)

@@ -12,7 +12,7 @@ struct AirNoteApp: App {
                 .airNotePreferredAppearance()
                 .task { await environment.bootstrap() }
                 .onOpenURL { url in
-                    Task { await environment.handleAuthCallback(url) }
+                    Task { await environment.handleDeepLink(url) }
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { environment.permissions.refreshAll() }
