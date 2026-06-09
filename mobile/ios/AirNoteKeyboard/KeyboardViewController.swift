@@ -175,7 +175,9 @@ final class KeyboardViewController: UIInputViewController {
             case .interimTranscript:
                 if self.isRecording { self.setState(.recording) }
             case .finalTranscript:
-                self.setState(.processing("Polishing"))
+                // A per-utterance final mid-recording doesn't mean the user is
+                // done — keep recording until they tap stop (which sets .processing).
+                if !self.isRecording { self.setState(.processing("Polishing")) }
             case .polishStarted, .polishDelta:
                 self.setState(.processing("Polishing"))
             case .final(let final):

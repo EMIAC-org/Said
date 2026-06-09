@@ -45,6 +45,7 @@ final class DictationController: ObservableObject {
     private let streamer = VoiceStreamingClient()
     private var session: MobileSessionResponse?
     private var runID = ""
+    private var finalizeTimeout: Task<Void, Never>?
 
     init(env: AppEnvironment) {
         self.env = env
@@ -124,6 +125,25 @@ final class DictationController: ObservableObject {
         phase = .processing
         env.track(.audioStopped)
         await streamer.stop()
+        startFinalizeTimeout()
+    }
+
+    /// Guarantees the UI never hangs on "Polishing…": if no final result or error
+    /// arrives within the window, surface a recoverable error.
+    private func startFinalizeTimeout() {
+        finalizeTimeout?.cancel()
+        finalizeTimeout = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+            guard let self, !Task.isCancelled, self.phase == .processing else { return }
+            await self.streamer.cancel()
+            self.phase = .failed
+            self.errorMessage = "That took too long. Tap the mic to try again."
+        }
+    }
+
+    private func cancelFinalizeTimeout() {
+        finalizeTimeout?.cancel()
+        finalizeTimeout = nil
     }
 
     func cancel() async {
@@ -132,6 +152,7 @@ final class DictationController: ObservableObject {
     }
 
     func reset() {
+        cancelFinalizeTimeout()
         phase = .idle
         interim = ""
         polishPreview = ""
@@ -141,6 +162,7 @@ final class DictationController: ObservableObject {
     }
 
     private func failOrUnavailable(_ unavailable: Bool, message: String) {
+        cancelFinalizeTimeout()
         if unavailable {
             phase = .unavailable
             errorMessage = "Dictation isn't available on this workspace yet. It'll work automatically once the workspace is set up."
@@ -159,8 +181,11 @@ final class DictationController: ObservableObject {
         case .interimTranscript(let text):
             interim = text
         case .finalTranscript(let text):
+            // Deepgram emits a "final" for each finished utterance WHILE the user
+            // is still speaking. That does NOT mean recording is over — keep the
+            // mic live (and the stop button enabled). Only stop() moves us to
+            // .processing once the user actually sends audio.end.
             interim = text
-            if phase == .recording { phase = .processing }
         case .polishStarted:
             polishPreview = ""
             phase = .processing
@@ -182,6 +207,7 @@ final class DictationController: ObservableObject {
     }
 
     private func finish(transcript: String, polished: String, latencyMS: Int) {
+        cancelFinalizeTimeout()
         let value = DictationResult(transcript: transcript, polished: polished, latencyMS: latencyMS)
         result = value
         polishPreview = polished
