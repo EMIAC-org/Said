@@ -29,6 +29,13 @@ struct OnboardingFlow: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: step)
+        .onAppear {
+            // A restored session (e.g. after reinstall) is already signed in —
+            // don't make them re-enter the account step.
+            if env.account != nil, step.rawValue <= Step.account.rawValue {
+                step = .privacy
+            }
+        }
         .onChange(of: env.account?.id) { _, id in
             // Advance off the account screen as soon as sign-in succeeds.
             if id != nil, step == .account { advance() }

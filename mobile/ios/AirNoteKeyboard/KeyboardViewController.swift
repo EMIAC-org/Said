@@ -13,6 +13,7 @@ final class KeyboardViewController: UIInputViewController {
     private var currentResult: BridgeResult?
     private var resultSeq: UInt64 = 0
     private var isRecording = false
+    private var finalizeTimer: Timer?
 
     // MARK: Lifecycle
 
@@ -34,18 +35,19 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        if isRecording {
-            isRecording = false
-            // Synchronous teardown — the system can unload the keyboard process
-            // the instant it disappears, so we must release audio + the socket
-            // now, not in a detached Task that might never run.
-            streamer.hardStop()
-        }
+        // Tear down whether recording OR mid-polish (.processing) — the system can
+        // unload the keyboard process the instant it disappears, so release audio
+        // + the socket now, synchronously.
+        isRecording = false
+        finalizeTimer?.invalidate()
+        finalizeTimer = nil
+        streamer.hardStop()
     }
 
     deinit {
         // Clear the callback first so no event can fire on a deallocating self,
         // then tear down synchronously.
+        finalizeTimer?.invalidate()
         streamer.onUpdate = nil
         streamer.hardStop()
     }
@@ -109,6 +111,7 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: Recording
 
     private func startRecording() {
+        cancelFinalizeTimer()
         guard hasFullAccess else { setState(.needsFullAccess); return }
         guard let token = SharedStore.accessToken, !token.isEmpty else {
             setState(.needsMainAppSession)
@@ -163,7 +166,26 @@ final class KeyboardViewController: UIInputViewController {
         guard isRecording else { return }
         isRecording = false
         setState(.processing("Polishing"))
+        startFinalizeTimer()
         Task { await streamer.stop() }
+    }
+
+    /// Never let the keyboard hang on "Polishing" if the server goes silent.
+    private func startFinalizeTimer() {
+        finalizeTimer?.invalidate()
+        finalizeTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            if case .processing = self.state {
+                self.streamer.hardStop()
+                self.currentResult = nil
+                self.setState(.error("That took too long. Tap to try again."))
+            }
+        }
+    }
+
+    private func cancelFinalizeTimer() {
+        finalizeTimer?.invalidate()
+        finalizeTimer = nil
     }
 
     // MARK: Streaming updates
@@ -193,8 +215,13 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func finish(transcript: String, polished: String) {
+        cancelFinalizeTimer()
         isRecording = false
         resultSeq += 1
+        // Guarantee Roman Hinglish before inserting into the host app (including
+        // the raw-transcript fallback when polish came back empty).
+        let polished = HinglishScript.enforceRomanHinglish(polished)
+        let transcript = HinglishScript.enforceRomanHinglish(transcript)
         let secure = TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField
         let result = BridgeResult(
             resultSeq: resultSeq,
@@ -216,6 +243,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func handleStreamError(_ error: VoiceStreamError) {
+        cancelFinalizeTimer()
         isRecording = false
         currentResult = nil
         if error.isCredentialMissing {

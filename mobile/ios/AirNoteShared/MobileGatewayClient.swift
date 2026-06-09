@@ -22,6 +22,15 @@ public final class GatewayAuthTokenBox {
         if account == nil {
             self.account = Self.readJSON(MobileAccount.self, key: Key.account, from: store)
         }
+        // Fall back to the App Group (survives reinstall when the Keychain doesn't).
+        if self.accessToken == nil {
+            self.accessToken = SharedStore.accessToken
+        }
+        if self.account == nil,
+           let json = SharedStore.accountJSON,
+           let data = json.data(using: .utf8) {
+            self.account = try? JSONDecoder().decode(MobileAccount.self, from: data)
+        }
     }
 
     public func persist(accessToken: String, account: MobileAccount) {
@@ -31,9 +40,11 @@ public final class GatewayAuthTokenBox {
         if let data = try? encoder.encode(account) {
             try? store.write(data, for: Key.account)
         }
-        // Mirror into the App Group so the keyboard extension can stream directly.
+        // Mirror into the App Group so the keyboard extension can stream directly,
+        // and so the session survives a reinstall when the Keychain is dropped.
         SharedStore.accessToken = accessToken
         SharedStore.accountEmail = account.email
+        SharedStore.accountJSON = (try? encoder.encode(account)).flatMap { String(data: $0, encoding: .utf8) }
     }
 
     public func clear() {
@@ -45,7 +56,7 @@ public final class GatewayAuthTokenBox {
     }
 
     public static func savedAccessToken(store: SecureStore = KeychainSecureStore()) -> String? {
-        readString(Key.accessToken, from: store)
+        readString(Key.accessToken, from: store) ?? SharedStore.accessToken
     }
 
     private static func readString(_ key: String, from store: SecureStore) -> String? {
@@ -372,11 +383,13 @@ public struct RuntimeHistoryItem: Codable, Equatable, Identifiable {
     public var transcriptText: String { transcript ?? "" }
 
     public var displayText: String {
+        // Final/polished output is guaranteed Roman Hinglish; the raw transcript
+        // (transcriptText) is left untouched and shown separately as "Heard".
         let final = finalText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !final.isEmpty { return final }
+        if !final.isEmpty { return HinglishScript.enforceRomanHinglish(final) }
         let polished = polishedOutput?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !polished.isEmpty { return polished }
-        return transcriptText
+        if !polished.isEmpty { return HinglishScript.enforceRomanHinglish(polished) }
+        return HinglishScript.enforceRomanHinglish(transcriptText)
     }
 
     public init(

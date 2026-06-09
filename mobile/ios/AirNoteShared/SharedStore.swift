@@ -16,11 +16,20 @@ public enum SharedStore {
     private enum Key {
         static let accessToken = "airnote.shared.access_token"
         static let accountEmail = "airnote.shared.account_email"
+        static let accountJSON = "airnote.shared.account_json"
         static let outputLanguage = "airnote.shared.output_language"
         static let selectedModel = "airnote.shared.selected_model"
         static let tonePreset = "airnote.shared.tone_preset"
         static let keyboardHasFullAccess = "airnote.shared.keyboard_full_access"
         static let keyboardHealthAt = "airnote.shared.keyboard_health_at"
+        static let onboardingComplete = "airnote.shared.onboarding_complete"
+    }
+
+    /// Onboarding-complete flag, in the App Group so it survives a reinstall
+    /// together with the restored session.
+    public static var onboardingComplete: Bool {
+        get { defaults?.bool(forKey: Key.onboardingComplete) ?? false }
+        set { defaults?.set(newValue, forKey: Key.onboardingComplete) }
     }
 
     // MARK: Auth (read by the keyboard extension to stream directly)
@@ -33,6 +42,14 @@ public enum SharedStore {
     public static var accountEmail: String? {
         get { string(Key.accountEmail) }
         set { set(Key.accountEmail, newValue) }
+    }
+
+    /// Full account (id/email/tier) as JSON. The App Group container survives an
+    /// app reinstall on unsigned simulator builds (unlike the Keychain), so this
+    /// lets the session restore even when the Keychain token was dropped.
+    public static var accountJSON: String? {
+        get { string(Key.accountJSON) }
+        set { set(Key.accountJSON, newValue) }
     }
 
     // MARK: Dictation preferences (so the keyboard can request the right model/language)
@@ -81,6 +98,7 @@ public enum SharedStore {
     public static func clearAuth() {
         set(Key.accessToken, nil)
         set(Key.accountEmail, nil)
+        set(Key.accountJSON, nil)
     }
 
     // MARK: Helpers

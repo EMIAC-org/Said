@@ -120,10 +120,12 @@ final class AppEnvironment: ObservableObject {
     }
 
     var isOnboardingComplete: Bool {
-        account != nil && UserDefaults.standard.bool(forKey: onboardingCompleteKey)
+        guard account != nil else { return false }
+        return SharedStore.onboardingComplete || UserDefaults.standard.bool(forKey: onboardingCompleteKey)
     }
 
     func completeOnboarding() {
+        SharedStore.onboardingComplete = true
         UserDefaults.standard.set(true, forKey: onboardingCompleteKey)
         phase = .ready
     }
@@ -206,6 +208,10 @@ final class AppEnvironment: ObservableObject {
 
     private func signOutLocally() {
         authTokens.clear()
+        // Clear onboarding so the next account completes it fresh (and is prompted
+        // for its own provider keys). Device-level steps auto-pass.
+        SharedStore.onboardingComplete = false
+        UserDefaults.standard.removeObject(forKey: onboardingCompleteKey)
         account = nil
         dictationAvailable = false
         runtimeStatusLabel = "Signed out"

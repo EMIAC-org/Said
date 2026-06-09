@@ -45,6 +45,7 @@ struct DictationSheet: View {
             }
         }
         .animation(.easeInOut(duration: 0.26), value: controller.phase)
+        .onDisappear { Task { await controller.cancel() } }
     }
 
     // MARK: Hero
@@ -100,7 +101,7 @@ struct DictationSheet: View {
         AirNoteCard {
             VStack(alignment: .leading, spacing: 12) {
                 if !controller.interim.isEmpty {
-                    previewRow(title: "Heard", text: controller.interim, tint: AirNoteDesign.muted)
+                    previewRow(title: "Heard", text: HinglishScript.enforceRomanHinglish(controller.interim), tint: AirNoteDesign.muted)
                 }
                 if !controller.polishPreview.isEmpty {
                     previewRow(title: "Polished", text: controller.polishPreview, tint: AirNoteDesign.foreground)

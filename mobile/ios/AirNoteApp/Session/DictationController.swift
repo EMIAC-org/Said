@@ -54,6 +54,14 @@ final class DictationController: ObservableObject {
         }
     }
 
+    deinit {
+        // The sheet can be swipe-dismissed without hitting Close — make sure the
+        // audio engine / socket are torn down and no timer is left dangling.
+        finalizeTimeout?.cancel()
+        streamer.onUpdate = nil
+        streamer.hardStop()
+    }
+
     var isBusy: Bool {
         switch phase {
         case .preparing, .recording, .processing: return true
@@ -76,6 +84,7 @@ final class DictationController: ObservableObject {
 
     func start() async {
         guard !isBusy else { return }
+        cancelFinalizeTimeout()
         errorMessage = nil
         result = nil
         interim = ""
@@ -208,6 +217,8 @@ final class DictationController: ObservableObject {
 
     private func finish(transcript: String, polished: String, latencyMS: Int) {
         cancelFinalizeTimeout()
+        // Guarantee Roman Hinglish — strip any residual Devanagari the model leaked.
+        let polished = HinglishScript.enforceRomanHinglish(polished)
         let value = DictationResult(transcript: transcript, polished: polished, latencyMS: latencyMS)
         result = value
         polishPreview = polished

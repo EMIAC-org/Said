@@ -80,6 +80,18 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: AirNote
 
+  AirNoteSharedTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: AirNoteSharedTests
+    dependencies:
+      - target: AirNoteShared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.emiac.airnote.ios.sharedtests
+        GENERATE_INFOPLIST_FILE: YES
+
 schemes:
   AirNote:
     build:
@@ -92,6 +104,7 @@ schemes:
     test:
       config: Debug
       targets:
+        - AirNoteSharedTests
         - AirNoteUITests
     archive:
       config: Release
