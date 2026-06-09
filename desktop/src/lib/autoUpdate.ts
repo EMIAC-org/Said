@@ -5,6 +5,7 @@ import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updat
 
 const LAST_CHECK_KEY = "airnote:auto-update:last-check-ms";
 const READY_VERSION_KEY = "airnote:auto-update:ready-version";
+const REMINDER_SNOOZE_UNTIL_KEY = "airnote:auto-update:reminder-snooze-until-ms";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Event the status-bar window emits when the user clicks Restart. The main
@@ -83,6 +84,10 @@ function writeString(key: string, value: string): void {
   }
 }
 
+function writeNumber(key: string, value: number): void {
+  writeString(key, String(value));
+}
+
 function removeKey(key: string): void {
   try {
     localStorage.removeItem(key);
@@ -101,6 +106,20 @@ export function getStoredReadyUpdateVersion(): string {
 
 export function clearStoredReadyUpdateVersion(): void {
   removeKey(READY_VERSION_KEY);
+  clearReadyUpdateReminderSnooze();
+}
+
+function isReadyUpdateReminderSnoozed(): boolean {
+  return readNumber(REMINDER_SNOOZE_UNTIL_KEY) > Date.now();
+}
+
+/** Hide the restart reminder until the snooze expires. The downloaded update stays staged. */
+export function snoozeReadyUpdateReminder(durationMs = DAY_MS): void {
+  writeNumber(REMINDER_SNOOZE_UNTIL_KEY, Date.now() + durationMs);
+}
+
+export function clearReadyUpdateReminderSnooze(): void {
+  removeKey(REMINDER_SNOOZE_UNTIL_KEY);
 }
 
 export async function getPendingReadyUpdateVersion(): Promise<string> {
@@ -121,6 +140,13 @@ export async function getPendingReadyUpdateVersion(): Promise<string> {
   return readyVersion;
 }
 
+/** Ready update that should surface a restart reminder right now. */
+export async function getPendingReadyUpdateReminder(): Promise<string> {
+  const readyVersion = await getPendingReadyUpdateVersion();
+  if (!readyVersion || isReadyUpdateReminderSnoozed()) return "";
+  return readyVersion;
+}
+
 async function notifyReady(version: string, reminder = false): Promise<void> {
   await emit("auto-update-ready", {
     version,
@@ -133,6 +159,8 @@ async function notifyReady(version: string, reminder = false): Promise<void> {
 async function reconcileReadyVersion(): Promise<boolean> {
   const readyVersion = await getPendingReadyUpdateVersion();
   if (!readyVersion) return false;
+
+  if (isReadyUpdateReminderSnoozed()) return true;
 
   await notifyReady(readyVersion, true);
   return true;
