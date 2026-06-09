@@ -34,6 +34,8 @@ final class DictationController: ObservableObject {
     @Published private(set) var interim = ""
     @Published private(set) var polishPreview = ""
     @Published private(set) var level: Float = 0
+    private var maxLevel: Float = 0
+    private var recordingStartedAt: Date?
     @Published private(set) var lastLatencyMS: Int?
     @Published private(set) var errorMessage: String?
     @Published private(set) var result: DictationResult?
@@ -89,6 +91,8 @@ final class DictationController: ObservableObject {
         result = nil
         interim = ""
         polishPreview = ""
+        maxLevel = 0
+        recordingStartedAt = nil
         phase = .preparing
 
         // Just-in-time microphone permission (Wispr-style: ask at first use).
@@ -114,6 +118,7 @@ final class DictationController: ObservableObject {
             self.session = session
             try await streamer.start(session: session, config: env.dictationConfig(runID: runID))
             phase = .recording
+            recordingStartedAt = Date()
             env.track(.audioStarted)
         } catch let error as VoiceStreamError {
             failOrUnavailable(error.isCredentialMissing, message: error.message)
@@ -131,8 +136,20 @@ final class DictationController: ObservableObject {
 
     func stop() async {
         guard phase == .recording else { return }
-        phase = .processing
         env.track(.audioStopped)
+
+        // No speech captured? Abort immediately instead of hanging on an empty
+        // server round-trip (silence never produces a transcript final).
+        let elapsed = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+        if maxLevel < 0.035 || elapsed < 0.4 {
+            await streamer.cancel()
+            interim = ""
+            phase = .failed
+            errorMessage = "Didn't catch any speech — tap the mic and speak."
+            return
+        }
+
+        phase = .processing
         await streamer.stop()
         startFinalizeTimeout()
     }
@@ -142,11 +159,11 @@ final class DictationController: ObservableObject {
     private func startFinalizeTimeout() {
         finalizeTimeout?.cancel()
         finalizeTimeout = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: 14 * 1_000_000_000)
             guard let self, !Task.isCancelled, self.phase == .processing else { return }
             await self.streamer.cancel()
             self.phase = .failed
-            self.errorMessage = "That took too long. Tap the mic to try again."
+            self.errorMessage = "That took too long — tap the mic and try again."
         }
     }
 
@@ -185,6 +202,7 @@ final class DictationController: ObservableObject {
         switch update {
         case .level(let value):
             level = value
+            maxLevel = max(maxLevel, value)
         case .status:
             if phase == .recording { /* keep */ }
         case .interimTranscript(let text):
@@ -219,6 +237,16 @@ final class DictationController: ObservableObject {
         cancelFinalizeTimeout()
         // Guarantee Roman Hinglish — strip any residual Devanagari the model leaked.
         let polished = HinglishScript.enforceRomanHinglish(polished)
+        // Empty result (silence / no speech) — surface a friendly retry, don't
+        // "complete" with blank text.
+        let combined = polished.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            : polished
+        if combined.isEmpty {
+            phase = .failed
+            errorMessage = "Didn't catch any speech — tap the mic and try again."
+            return
+        }
         let value = DictationResult(transcript: transcript, polished: polished, latencyMS: latencyMS)
         result = value
         polishPreview = polished
