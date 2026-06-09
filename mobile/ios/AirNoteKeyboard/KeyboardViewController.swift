@@ -11,6 +11,7 @@ final class KeyboardViewController: UIInputViewController {
     private lazy var gateway = GatewayEnvironment.makeClient()
 
     private var state: KeyboardState = .ready
+    private var pad: RecordingPadView?
     private var currentResult: BridgeResult?
     private var resultSeq: UInt64 = 0
     private var isRecording = false
@@ -102,8 +103,11 @@ final class KeyboardViewController: UIInputViewController {
         // While a fresh insertion is still teachable, hold the post-insert state
         // so the "Teach a fix" affordance stays put as the user edits the text.
         if canTeachFix { return }
+        // Only re-render when the secure-field gate actually flips — re-rendering
+        // on every keystroke would needlessly churn the voice surface.
+        let previous = state
         recomputeIdleState()
-        render()
+        if state != previous { render(animated: true) }
     }
 
     // MARK: Health handshake (lets the main app know the keyboard is enabled + Full Access)
@@ -126,8 +130,13 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    private func render() {
-        view.subviews.forEach { $0.removeFromSuperview() }
+    private func render(animated: Bool = false) {
+        // Build the pad once; afterwards only the voice surface is swapped, so the
+        // keys never flash and state changes settle in with a soft spring.
+        if let pad {
+            pad.update(state: state, canTeachFix: canTeachFix, animated: animated)
+            return
+        }
         let pad = RecordingPadView(state: state, canTeachFix: canTeachFix)
         pad.translatesAutoresizingMaskIntoConstraints = false
         pad.onStart = { [weak self] in self?.requestAppDictation() }
@@ -147,12 +156,13 @@ final class KeyboardViewController: UIInputViewController {
             pad.topAnchor.constraint(equalTo: view.topAnchor),
             pad.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+        self.pad = pad
     }
 
     private func setState(_ newState: KeyboardState) {
         guard newState != state else { return }
         state = newState
-        render()
+        render(animated: true)
     }
 
     // MARK: Recording

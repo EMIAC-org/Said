@@ -13,8 +13,11 @@ final class RecordingPadView: UIView {
     var onDelete: (() -> Void)?
     var onNextKeyboard: (() -> Void)?
 
-    private let state: KeyboardState
-    private let canTeachFix: Bool
+    private var state: KeyboardState
+    private var canTeachFix: Bool
+
+    private let rootStack = UIStackView()
+    private var voiceSurface: UIView?
 
     init(state: KeyboardState, canTeachFix: Bool = false) {
         self.state = state
@@ -33,23 +36,54 @@ final class RecordingPadView: UIView {
     private func build() {
         backgroundColor = KeyboardTheme.keyboardBackground
 
-        let stack = UIStackView()
-        stack.axis = .vertical
-        stack.spacing = 7
-        stack.alignment = .fill
-        stack.translatesAutoresizingMaskIntoConstraints = false
+        rootStack.axis = .vertical
+        rootStack.spacing = 7
+        rootStack.alignment = .fill
+        rootStack.translatesAutoresizingMaskIntoConstraints = false
 
-        stack.addArrangedSubview(makeVoiceSurface())
-        makeKeyboardRows().forEach { stack.addArrangedSubview($0) }
-        stack.addArrangedSubview(makeBottomRow())
+        let surface = makeVoiceSurface()
+        voiceSurface = surface
+        rootStack.addArrangedSubview(surface)
+        makeKeyboardRows().forEach { rootStack.addArrangedSubview($0) }
+        rootStack.addArrangedSubview(makeBottomRow())
 
-        addSubview(stack)
+        addSubview(rootStack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
+            rootStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            rootStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            rootStack.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            rootStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
         ])
+    }
+
+    /// Swap ONLY the voice surface for the new state — the keys stay put, so
+    /// state changes never flash the whole keyboard. The surface settles in with
+    /// a soft spring (Wispr-style). Returns without animating identical states.
+    func update(state: KeyboardState, canTeachFix: Bool, animated: Bool) {
+        self.state = state
+        self.canTeachFix = canTeachFix
+
+        let newSurface = makeVoiceSurface()
+        if let old = voiceSurface {
+            rootStack.removeArrangedSubview(old)
+            old.removeFromSuperview()
+        }
+        rootStack.insertArrangedSubview(newSurface, at: 0)
+        voiceSurface = newSurface
+
+        guard animated else { return }
+        newSurface.alpha = 0
+        newSurface.transform = CGAffineTransform(translationX: 0, y: -7)
+        UIView.animate(
+            withDuration: 0.26,
+            delay: 0,
+            usingSpringWithDamping: 0.82,
+            initialSpringVelocity: 0.5,
+            options: [.curveEaseOut, .allowUserInteraction]
+        ) {
+            newSurface.alpha = 1
+            newSurface.transform = .identity
+        }
     }
 
     private func makeVoiceSurface() -> UIView {
@@ -58,6 +92,11 @@ final class RecordingPadView: UIView {
         surface.layer.cornerRadius = KeyboardTheme.radius
         surface.layer.borderWidth = 1
         surface.layer.borderColor = KeyboardTheme.border.cgColor
+        // Soft elevation for depth (premium feel) — the keys stay flat below it.
+        surface.layer.shadowColor = UIColor.black.cgColor
+        surface.layer.shadowOpacity = 0.12
+        surface.layer.shadowRadius = 7
+        surface.layer.shadowOffset = CGSize(width: 0, height: 2)
 
         let stack = UIStackView()
         stack.axis = .vertical
@@ -95,6 +134,7 @@ final class RecordingPadView: UIView {
         icon.contentMode = .scaleAspectFit
         icon.setContentHuggingPriority(.required, for: .horizontal)
         icon.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        if isCelebration { addPop(to: icon) }
 
         let title = UILabel()
         title.font = .preferredFont(forTextStyle: .headline)
@@ -132,12 +172,15 @@ final class RecordingPadView: UIView {
         bars.distribution = .equalCentering
         bars.spacing = 5
 
-        for height in waveformHeights {
+        for (index, height) in waveformHeights.enumerated() {
             let bar = UIView()
             bar.backgroundColor = statusColor.withAlphaComponent(isActiveWaveform ? 0.95 : 0.45)
             bar.layer.cornerRadius = 3
             bar.widthAnchor.constraint(equalToConstant: 6).isActive = true
             bar.heightAnchor.constraint(equalToConstant: height).isActive = true
+            if isActiveWaveform {
+                addWaveAnimation(to: bar, index: index)
+            }
             bars.addArrangedSubview(bar)
         }
 
@@ -160,6 +203,41 @@ final class RecordingPadView: UIView {
         return container
     }
 
+    private var isCelebration: Bool {
+        switch state {
+        case .inserted, .copied, .savedToHistory, .learned: return true
+        default: return false
+        }
+    }
+
+    /// A spring "pop" on the success checkmark so an insert/teach feels rewarding.
+    private func addPop(to view: UIView) {
+        let pop = CASpringAnimation(keyPath: "transform.scale")
+        pop.fromValue = 0.45
+        pop.toValue = 1.0
+        pop.damping = 9
+        pop.stiffness = 190
+        pop.mass = 0.7
+        pop.initialVelocity = 2.0
+        pop.duration = pop.settlingDuration
+        view.layer.add(pop, forKey: "pop")
+    }
+
+    /// A continuous, staggered "breathing" scale on each waveform bar so the
+    /// surface feels alive while recording/processing — a traveling wave, like
+    /// Wispr. Phase is offset per bar via timeOffset (no wall-clock dependency).
+    private func addWaveAnimation(to bar: UIView, index: Int) {
+        let pulse = CABasicAnimation(keyPath: "transform.scale.y")
+        pulse.fromValue = 0.45
+        pulse.toValue = 1.0
+        pulse.duration = 0.55
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        pulse.timeOffset = Double(index) * 0.11
+        bar.layer.add(pulse, forKey: "wave")
+    }
+
     private func makePreview(_ text: String) -> UIView {
         let label = UILabel()
         label.text = text
@@ -180,12 +258,26 @@ final class RecordingPadView: UIView {
         primary.addTarget(self, action: #selector(primaryTapped), for: .touchUpInside)
         primary.isEnabled = !isPrimaryActionDisabled
         primary.alpha = isPrimaryActionDisabled ? 0.55 : 1.0
+        if case .recording = state { addRecordingPulse(to: primary) }
 
         let row = UIStackView(arrangedSubviews: [primary])
         row.axis = .horizontal
         row.spacing = 8
         row.alignment = .fill
         return row
+    }
+
+    /// A slow, soft breathing scale on the Stop button while recording — signals
+    /// "live" without distracting from the text being dictated.
+    private func addRecordingPulse(to button: UIView) {
+        let pulse = CABasicAnimation(keyPath: "transform.scale")
+        pulse.fromValue = 1.0
+        pulse.toValue = 1.035
+        pulse.duration = 0.75
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        button.layer.add(pulse, forKey: "recordingPulse")
     }
 
     /// Post-insertion: re-record OR teach a correction made in-place.
