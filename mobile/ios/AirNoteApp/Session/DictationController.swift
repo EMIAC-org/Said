@@ -36,6 +36,9 @@ final class DictationController: ObservableObject {
     @Published private(set) var level: Float = 0
     private var maxLevel: Float = 0
     private var recordingStartedAt: Date?
+    private var lastLoudAt: Date?
+    /// Auto-stop after this much silence once the user has actually spoken.
+    var silenceAutoStopSeconds: Double = 1.8
     @Published private(set) var lastLatencyMS: Int?
     @Published private(set) var errorMessage: String?
     @Published private(set) var result: DictationResult?
@@ -93,6 +96,7 @@ final class DictationController: ObservableObject {
         polishPreview = ""
         maxLevel = 0
         recordingStartedAt = nil
+        lastLoudAt = nil
         phase = .preparing
 
         // Just-in-time microphone permission (Wispr-style: ask at first use).
@@ -203,6 +207,14 @@ final class DictationController: ObservableObject {
         case .level(let value):
             level = value
             maxLevel = max(maxLevel, value)
+            // Hands-free: once the user has spoken, auto-stop after a short silence.
+            if value > 0.07 {
+                lastLoudAt = Date()
+            } else if phase == .recording, maxLevel > 0.07, let last = lastLoudAt,
+                      Date().timeIntervalSince(last) > silenceAutoStopSeconds {
+                lastLoudAt = nil
+                Task { [weak self] in await self?.stop() }
+            }
         case .status:
             if phase == .recording { /* keep */ }
         case .interimTranscript(let text):
