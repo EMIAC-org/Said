@@ -209,6 +209,9 @@ final class AppEnvironment: ObservableObject {
         let clean = HinglishScript.enforceRomanHinglish(text)
         guard !clean.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         SharedStore.putPendingKeyboardText(clean, at: Date())
+        // Keep the mic warm (while still foreground) so the NEXT keyboard dictation
+        // happens in-place with no app switch.
+        WarmDictationHost.shared.warmUp()
     }
 
     /// Handles the `airnote://auth/callback?token=…` deep link from Lark sign-in.

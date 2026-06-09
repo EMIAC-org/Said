@@ -26,6 +26,23 @@ public enum SharedStore {
         static let kbdDictationRequestedAt = "airnote.shared.kbd_dictation_requested_at"
         static let pendingKbdText = "airnote.shared.pending_kbd_text"
         static let pendingKbdTextAt = "airnote.shared.pending_kbd_text_at"
+        static let sessionWarmUntil = "airnote.shared.session_warm_until"
+    }
+
+    /// Until when the app is holding the mic warm in the background. While this is
+    /// in the future, the keyboard can dictate IN-PLACE (no app switch) by
+    /// signalling the warm app over Darwin notifications.
+    public static var sessionWarmUntil: Date? {
+        get {
+            let ts = defaults?.double(forKey: Key.sessionWarmUntil) ?? 0
+            return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
+        }
+        set { defaults?.set(newValue?.timeIntervalSince1970 ?? 0, forKey: Key.sessionWarmUntil) }
+    }
+
+    public static var isSessionWarm: Bool {
+        guard let until = sessionWarmUntil else { return false }
+        return until > Date()
     }
 
     /// Onboarding-complete flag, in the App Group so it survives a reinstall

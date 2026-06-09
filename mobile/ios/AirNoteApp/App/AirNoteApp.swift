@@ -10,7 +10,10 @@ struct AirNoteApp: App {
             RootView()
                 .environmentObject(environment)
                 .airNotePreferredAppearance()
-                .task { await environment.bootstrap() }
+                .task {
+                    WarmDictationHost.shared.startObserving()
+                    await environment.bootstrap()
+                }
                 .onOpenURL { url in
                     Task { await environment.handleDeepLink(url) }
                 }

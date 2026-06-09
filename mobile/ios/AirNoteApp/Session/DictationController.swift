@@ -89,6 +89,8 @@ final class DictationController: ObservableObject {
 
     func start() async {
         guard !isBusy else { return }
+        // Release any warm background mic so this foreground dictation owns it.
+        WarmDictationHost.shared.endWarmSession()
         cancelFinalizeTimeout()
         errorMessage = nil
         result = nil

@@ -14,6 +14,9 @@ final class KeyboardViewController: UIInputViewController {
     private var resultSeq: UInt64 = 0
     private var isRecording = false
     private var finalizeTimer: Timer?
+    private var warmActive = false
+    private var gotAck = false
+    private var ackTimer: Timer?
 
     // MARK: Lifecycle
 
@@ -21,6 +24,16 @@ final class KeyboardViewController: UIInputViewController {
         super.viewDidLoad()
         streamer.onUpdate = { [weak self] update in
             self?.handle(update)
+        }
+        DarwinSignal.shared.observe(DarwinSignal.dictationAck) { [weak self] in
+            self?.gotAck = true
+            self?.ackTimer?.invalidate()
+        }
+        DarwinSignal.shared.observe(DarwinSignal.resultReady) { [weak self] in
+            self?.handleWarmResult()
+        }
+        DarwinSignal.shared.observe(DarwinSignal.dictationFailed) { [weak self] in
+            self?.handleWarmFailed()
         }
         reportHealth()
         recomputeIdleState()
@@ -42,6 +55,9 @@ final class KeyboardViewController: UIInputViewController {
         // unload the keyboard process the instant it disappears, so release audio
         // + the socket now, synchronously.
         isRecording = false
+        warmActive = false
+        ackTimer?.invalidate()
+        ackTimer = nil
         finalizeTimer?.invalidate()
         finalizeTimer = nil
         streamer.hardStop()
@@ -166,6 +182,12 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func stopRecording() {
+        if warmActive {
+            setState(.processing("Polishing"))
+            DarwinSignal.shared.post(DarwinSignal.stopDictation)
+            startFinalizeTimer()   // result-ready safety net
+            return
+        }
         guard isRecording else { return }
         isRecording = false
         setState(.processing("Polishing"))
@@ -176,12 +198,13 @@ final class KeyboardViewController: UIInputViewController {
     /// Never let the keyboard hang on "Polishing" if the server goes silent.
     private func startFinalizeTimer() {
         finalizeTimer?.invalidate()
-        finalizeTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+        finalizeTimer = Timer.scheduledTimer(withTimeInterval: 14, repeats: false) { [weak self] _ in
             guard let self else { return }
             if case .processing = self.state {
+                self.warmActive = false
                 self.streamer.hardStop()
                 self.currentResult = nil
-                self.setState(.error("That took too long. Tap to try again."))
+                self.setState(.error("That took too long — tap the mic and try again."))
             }
         }
     }
@@ -304,8 +327,46 @@ final class KeyboardViewController: UIInputViewController {
         SharedStore.clearKeyboardDictation()
         SharedStore.keyboardDictationRequestedAt = Date()
         currentResult = nil
+
+        if SharedStore.isSessionWarm {
+            // In-place: the app is holding the mic warm in the background. Signal
+            // it and record right here — no app switch.
+            warmActive = true
+            gotAck = false
+            setState(.recording)
+            DarwinSignal.shared.post(DarwinSignal.startDictation)
+            ackTimer?.invalidate()
+            ackTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+                guard let self, self.warmActive, !self.gotAck else { return }
+                // The warm app was suspended after all — fall back to the handoff.
+                self.warmActive = false
+                self.coldHandoff()
+            }
+        } else {
+            coldHandoff()
+        }
+    }
+
+    private func coldHandoff() {
         setState(.dictatingInApp)
         openURLInApp("airnote://dictate")
+    }
+
+    private func handleWarmResult() {
+        ackTimer?.invalidate()
+        warmActive = false
+        cancelFinalizeTimer()
+        if !consumePendingDictation() {
+            recomputeIdleState()
+            render()
+        }
+    }
+
+    private func handleWarmFailed() {
+        ackTimer?.invalidate()
+        cancelFinalizeTimer()
+        warmActive = false
+        setState(.error("Didn't catch that — tap the mic and speak."))
     }
 
     /// On returning to the keyboard, insert any polished text the app produced for

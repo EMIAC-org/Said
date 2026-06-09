@@ -151,6 +151,10 @@ public final class VoiceStreamingClient {
     private var interruptionObservers: [NSObjectProtocol] = []
     private var currentSession: MobileSessionResponse?
     private var latestTranscript = ""
+    /// Warm-session mode: keep the mic engine running between dictations so the
+    /// keyboard can dictate in-place. When true, ending a stream tears down only
+    /// the socket, not the engine/session.
+    private var keepEngineWarm = false
 
     public init(
         baseURL: URL = BuildConfig.gatewayBaseURL,
@@ -224,6 +228,71 @@ public final class VoiceStreamingClient {
 
     public var isRecording: Bool {
         audioEngine.isRunning
+    }
+
+    // MARK: Warm-session (keyboard) mode
+    //
+    // Keep the mic engine alive between dictations so the keyboard can dictate
+    // in-place (no app re-foreground). startWarmEngine() keeps capturing with no
+    // socket (audioSendTarget() is nil → buffers only drive the level meter);
+    // beginStreaming() attaches a socket for one dictation; endStreaming() sends
+    // audio.end and returns to warm-idle without stopping the engine.
+
+    public var isWarmEngineRunning: Bool { audioEngine.isRunning }
+
+    public func startWarmEngine() async throws {
+        keepEngineWarm = true
+        if !audioEngine.isRunning {
+            try await startAudioEngine()
+        }
+    }
+
+    public func beginStreaming(session: MobileSessionResponse, config: VoiceStreamConfig) async throws {
+        keepEngineWarm = true
+        if !audioEngine.isRunning {
+            try await startAudioEngine()
+        }
+        guard let voiceWSURL = session.voiceWSURL else {
+            throw VoiceStreamError(code: "missing_voice_ws_url", retryable: true, message: "Runtime session is missing its voice socket.")
+        }
+        let socketURL = try websocketURL(relativeOrAbsolute: voiceWSURL)
+        let task = urlSession.webSocketTask(with: socketURL)
+        currentSession = session
+        latestTranscript = ""
+        receiveTask?.cancel()
+        prepareForStart(task: task)   // resets isStopping/terminal + sets the socket
+        task.resume()
+        receiveTask = Task { [weak self] in await self?.receiveLoop() }
+        try await task.send(.string(config.startPayloadJSON(sampleRate: 16_000)))
+        let maxSeconds = session.maxRecordingSeconds ?? BuildConfig.maxRecordingSeconds
+        maxDurationTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(maxSeconds) * 1_000_000_000)
+            await self?.endStreaming()
+        }
+    }
+
+    public func endStreaming() async {
+        guard markStopping() else { return }
+        maxDurationTask?.cancel()
+        maxDurationTask = nil
+        try? await currentWebSocket()?.send(.string("{\"type\":\"audio.end\"}"))
+        // receiveLoop receives runtime.done → emits .final/.done → teardownAfterStreamEnd
+    }
+
+    public func stopWarmEngine() {
+        keepEngineWarm = false
+        hardStop()
+    }
+
+    /// After a stream ends: in warm mode keep the engine running and just drop the
+    /// socket (back to warm-idle); otherwise tear the engine down as before.
+    private func teardownAfterStreamEnd() {
+        receiveTask = nil
+        currentWebSocket()?.cancel(with: .goingAway, reason: nil)
+        setWebSocket(nil)
+        if !keepEngineWarm {
+            stopAudioEngine()
+        }
     }
 
     private func startAudioEngine() async throws {
@@ -337,7 +406,7 @@ public final class VoiceStreamingClient {
                 switch message {
                 case .string(let text):
                     guard handleServerText(text) else {
-                        stopAudioEngine()
+                        teardownAfterStreamEnd()
                         return
                     }
                 case .data:
@@ -346,7 +415,7 @@ public final class VoiceStreamingClient {
                     break
                 }
             } catch {
-                stopAudioEngine()
+                teardownAfterStreamEnd()
                 if !shouldSuppressDisconnectError, markTerminalEvent() {
                     emit(.error(VoiceStreamError(code: "ws_disconnected", retryable: true, message: "AirNote lost the voice connection.")))
                 }
@@ -609,6 +678,12 @@ public final class VoiceStreamingClient {
     public var isRecording: Bool {
         false
     }
+
+    public var isWarmEngineRunning: Bool { false }
+    public func startWarmEngine() async throws {}
+    public func beginStreaming(session: MobileSessionResponse, config: VoiceStreamConfig) async throws {}
+    public func endStreaming() async {}
+    public func stopWarmEngine() {}
 }
 #endif
 
