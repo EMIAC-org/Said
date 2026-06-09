@@ -273,7 +273,12 @@ final class DictationController: ObservableObject {
         level = 0
         phase = .completed
         UIPasteboard.general.string = value.displayText
-        // The server persists completed runtime sessions; pull the latest history.
-        Task { await env.refreshHistory() }
+        // The WS voice path doesn't write history server-side — persist it from the
+        // client so it shows in History (and can be reviewed for learning).
+        let runID = self.runID
+        Task {
+            try? await env.gateway.syncHistory(clientRunID: runID, transcript: transcript, polished: polished, source: "ios_app")
+            await env.refreshHistory()
+        }
     }
 }

@@ -16,7 +16,9 @@ final class WarmDictationHost {
     static let shared = WarmDictationHost()
 
     private let streamer = VoiceStreamingClient()
+    private let gateway = GatewayEnvironment.makeClient()
     private var warmWindowTask: Task<Void, Never>?
+    private var currentRunID = ""
     private var isStreaming = false
     private var maxLevel: Float = 0
     private var lastLoudAt: Date?
@@ -77,7 +79,8 @@ final class WarmDictationHost {
         maxLevel = 0
         lastLoudAt = nil
         SharedStore.pendingKeyboardText = nil
-        let runID = RequestId.make()
+        currentRunID = RequestId.make()
+        let runID = currentRunID
         let session = MobileSessionResponse(
             sessionID: runID,
             sessionToken: token,
@@ -153,6 +156,10 @@ final class WarmDictationHost {
         SharedStore.putPendingKeyboardText(clean, at: Date())
         DarwinSignal.shared.post(DarwinSignal.resultReady)
         extendWarmWindow()
+        // Persist to history (WS path doesn't server-side) so in-place keyboard
+        // dictations also show up + are reviewable for learning.
+        let runID = currentRunID
+        Task { try? await gateway.syncHistory(clientRunID: runID, transcript: transcript, polished: clean, source: "ios_keyboard") }
     }
 
     // MARK: Warm window

@@ -594,6 +594,7 @@ public protocol MobileGatewayClient {
     func dictateBatch(audio: Data, sessionID: String?, deviceID: String, languageHint: LanguageHint, style: DictationStyle) async throws -> MobileDictationResponse
     func listHistory(limit: Int) async throws -> [RuntimeHistoryItem]
     func deleteHistory(id: String) async throws
+    func syncHistory(clientRunID: String, transcript: String, polished: String, source: String) async throws
     func listLearningEvents(limit: Int) async throws -> [RuntimeLearningEvent]
     func addVocabulary(terms: [String], aliases: [(heard: String, correct: String)]) async throws -> RuntimeLearningConfirmResult
     func analyzeEdit(recordingID: String, transcript: String, aiOutput: String, userKept: String) async throws -> RuntimeLearningAnalysis
@@ -667,6 +668,7 @@ public struct PreviewMobileGatewayClient: MobileGatewayClient {
 
     public func listHistory(limit: Int) async throws -> [RuntimeHistoryItem] { [] }
     public func deleteHistory(id: String) async throws {}
+    public func syncHistory(clientRunID: String, transcript: String, polished: String, source: String) async throws {}
     public func listLearningEvents(limit: Int) async throws -> [RuntimeLearningEvent] { [] }
     public func addVocabulary(terms: [String], aliases: [(heard: String, correct: String)]) async throws -> RuntimeLearningConfirmResult {
         RuntimeLearningConfirmResult(learnedCount: terms.count, blockedCount: 0, learnedTerms: terms, status: "accepted")
@@ -852,6 +854,28 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         try Self.validate(data, response: response)
     }
 
+    /// Persist a finished dictation to history. The WS voice path doesn't write
+    /// history server-side, so the client syncs it here (the same endpoint the
+    /// desktop uses), making dictations show in History + reviewable for learning.
+    public func syncHistory(clientRunID: String, transcript: String, polished: String, source: String = "ios") async throws {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/runtime/history/sync"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&urlRequest)
+        urlRequest.httpBody = try encoder.encode(HistorySyncBody(items: [
+            HistorySyncBody.Item(
+                clientRunID: clientRunID,
+                source: source,
+                platform: "ios",
+                transcript: transcript,
+                polishedOutput: polished,
+                finalText: polished
+            )
+        ]))
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+    }
+
     public func analyzeEdit(recordingID: String, transcript: String, aiOutput: String, userKept: String) async throws -> RuntimeLearningAnalysis {
         var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/runtime/learning/analyze-edit"))
         urlRequest.httpMethod = "POST"
@@ -997,6 +1021,24 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
     private struct AuthBody: Encodable {
         var email: String
         var password: String
+    }
+
+    private struct HistorySyncBody: Encodable {
+        let items: [Item]
+        struct Item: Encodable {
+            var clientRunID: String
+            var source: String
+            var platform: String
+            var transcript: String
+            var polishedOutput: String
+            var finalText: String
+            enum CodingKeys: String, CodingKey {
+                case clientRunID = "client_run_id"
+                case source, platform, transcript
+                case polishedOutput = "polished_output"
+                case finalText = "final_text"
+            }
+        }
     }
 
     private struct MeResponse: Decodable {
