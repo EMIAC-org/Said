@@ -132,11 +132,14 @@ final class KeyboardViewController: UIInputViewController {
 
     private func render(animated: Bool = false) {
         // Build the pad once; afterwards only the voice surface is swapped, so the
-        // keys never flash and state changes settle in with a soft spring.
-        if let pad {
+        // keys never flash and state changes settle in with a soft spring. If the
+        // pad ever got detached from the view (system view reload), rebuild it so
+        // the keyboard can never end up blank.
+        if let pad, pad.superview === view {
             pad.update(state: state, canTeachFix: canTeachFix, animated: animated)
             return
         }
+        view.subviews.forEach { $0.removeFromSuperview() }
         let pad = RecordingPadView(state: state, canTeachFix: canTeachFix)
         pad.translatesAutoresizingMaskIntoConstraints = false
         pad.onStart = { [weak self] in self?.requestAppDictation() }
