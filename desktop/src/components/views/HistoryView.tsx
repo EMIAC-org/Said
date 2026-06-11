@@ -174,10 +174,13 @@ interface RowProps {
   onDownloadSuccess?: (path: string) => void;
 }
 
+/** Polished history text longer than this many words is collapsed behind a "Read more" toggle. */
+const TRUNCATE_WORD_LIMIT = 50;
+
 function HistoryRow({ recording, playingId, onPlay, onDelete, onDownloadSuccess }: RowProps) {
   const [menuOpen,    setMenuOpen]    = useState(false);
   const [copied,      setCopied]      = useState<"polished" | "transcript" | false>(false);
-  const [showStt,     setShowStt]     = useState(false);
+  const [expanded,    setExpanded]    = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [hasAudio,    setHasAudio]    = useState(Boolean(recording.audio_id));
   const btnRef = useRef<HTMLButtonElement>(null);

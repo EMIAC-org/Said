@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
-import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse, SttRuntimeInfo } from "@/types";
+import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
 
 import {
@@ -20,7 +20,7 @@ import {
 } from "@/lib/enterprise";
 import { EnterpriseConnectForm } from "@/components/EnterpriseConnectForm";
 import {
-  getPreferences, patchPreferences, getSttRuntime,
+  getPreferences, patchPreferences,
   getVoicePrompt, saveVoicePromptDraft, applyVoicePromptDraft,
   resetVoicePrompt, testVoicePrompt,
   getDebugLogs,
@@ -833,20 +833,15 @@ export function SettingsView({
 
   // ── API key state ────────────────────────────────────────────────────────────
   const [deepgramKey,   setDeepgramKey]   = useState("");
-  const [sarvamKey,     setSarvamKey]     = useState("");
   const [groqKey,       setGroqKey]       = useState("");
   const [cerebrasKey,   setCerebrasKey]   = useState("");
   const [showDeepgram,  setShowDeepgram]  = useState(false);
-  const [showSarvam,    setShowSarvam]    = useState(false);
   const [showGroq,      setShowGroq]      = useState(false);
-  const [sttSwitchError, setSttSwitchError] = useState("");
   const [, setShowCerebras]  = useState(false);
   const [keySaving,     setKeySaving]     = useState(false);
   const [keySaved,      setKeySaved]      = useState(false);
-  const [sttRuntime,    setSttRuntime]    = useState<SttRuntimeInfo | null>(null);
   const keySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sttProvider = prefs?.stt_provider ?? "deepgram";
-  const usingSarvam = sttProvider === "sarvam";
 
   // ── Debug logs state ───────────────────────────────────────────────────────
   const [debugLogs,    setDebugLogs]    = useState<DebugLogs | null>(null);
@@ -952,18 +947,15 @@ export function SettingsView({
 
   function syncApiKeyInputs(nextPrefs: Preferences) {
     setDeepgramKey(nextPrefs.deepgram_api_key ?? "");
-    setSarvamKey(nextPrefs.sarvam_api_key ?? "");
     setGroqKey(nextPrefs.groq_api_key ?? "");
     setCerebrasKey(nextPrefs.cerebras_api_key ?? "");
     setShowDeepgram(false);
-    setShowSarvam(false);
     setShowGroq(false);
     setShowCerebras(false);
   }
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion("?"));
-    void getSttRuntime().then(setSttRuntime).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1056,19 +1048,13 @@ export function SettingsView({
     try {
       const update: Partial<Preferences> = {};
       const currentDeepgram = prefs.deepgram_api_key ?? "";
-      const currentSarvam = prefs.sarvam_api_key ?? "";
       const currentGroq = prefs.groq_api_key ?? "";
       const currentCerebras = prefs.cerebras_api_key ?? "";
       const nextDeepgram = deepgramKey.trim();
-      const nextSarvam = sarvamKey.trim();
       const nextGroq = groqKey.trim();
       const nextCerebras = cerebrasKey.trim();
 
       if (nextDeepgram !== currentDeepgram) update.deepgram_api_key = nextDeepgram || null;
-      if (nextSarvam !== currentSarvam) {
-        update.sarvam_api_key = nextSarvam || null;
-        if (nextSarvam) update.stt_provider = "sarvam";
-      }
       if (nextGroq !== currentGroq) update.groq_api_key = nextGroq || null;
       if (nextCerebras !== currentCerebras) update.cerebras_api_key = nextCerebras || null;
 
@@ -1083,7 +1069,6 @@ export function SettingsView({
       if (!updated) throw new Error("preferences update returned no data");
       setPrefs(updated);
       syncApiKeyInputs(updated);
-      void getSttRuntime().then(setSttRuntime).catch(() => {});
 
       setVaultSyncState("syncing");
       const vault = await syncCredentialVault();
@@ -1958,7 +1943,7 @@ export function SettingsView({
               <div className="min-w-0 flex-1">
                 <p className="text-[13px] font-medium text-foreground">Speech-to-text</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5">
-                  Who transcribes your voice. Sarvam is stronger on Hinglish; Deepgram streams a live preview while you speak.
+                  Who transcribes your voice. Deepgram streams a live preview while you speak.
                 </p>
               </div>
             </div>
@@ -1973,23 +1958,12 @@ export function SettingsView({
                   label: "Deepgram",
                   desc: "Nova-3 streaming — live preview",
                 },
-                {
-                  key: "sarvam",
-                  icon: <Mic size={13} />,
-                  label: "Sarvam",
-                  desc: "Saaras v3 codemix — batch on release",
-                },
               ] as const).map((opt) => {
                 const isActive = sttProvider === opt.key;
                 return (
                   <button
                     key={opt.key}
                     onClick={() => {
-                      if (opt.key === "sarvam" && !sttRuntime?.sarvam_runtime_ready) {
-                        setSttSwitchError("Add a Sarvam API key in API keys before switching.");
-                        return;
-                      }
-                      setSttSwitchError("");
                       void patch({ stt_provider: opt.key });
                     }}
                     className="flex-1 text-left px-3 py-2.5 rounded-[10px] transition-all"
@@ -2024,11 +1998,6 @@ export function SettingsView({
                 );
               })}
             </div>
-            {sttSwitchError && (
-              <p className="text-[12px] mt-2" style={{ color: "hsl(var(--destructive))" }}>
-                {sttSwitchError}
-              </p>
-            )}
           </div>
 
           <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
@@ -2044,7 +2013,7 @@ export function SettingsView({
               <div className="min-w-0 flex-1">
                 <p className="text-[13px] font-medium text-foreground">Server polish runtime</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5">
-                  Keeps {usingSarvam ? "Sarvam" : "Deepgram"} on this Mac, then sends the finished transcript to airnote.emiactech.com for polish.
+                  Keeps Deepgram on this Mac, then sends the finished transcript to airnote.emiactech.com for polish.
                 </p>
               </div>
               <button
@@ -2330,7 +2299,7 @@ export function SettingsView({
 
             <SettingsDisclosure
               title="Required for dictation"
-              description="Groq polishes text. Deepgram or Sarvam transcribes audio (Deepgram is fallback when Sarvam is unavailable)."
+              description="Groq polishes text. Deepgram transcribes audio."
               icon={<Zap size={15} />}
               defaultOpen
               status={
@@ -2354,26 +2323,12 @@ export function SettingsView({
               <SecretInput
                 icon={<Cpu size={12} style={{ color: "hsl(var(--primary))" }} />}
                 label="Deepgram API Key"
-                helper="Speech-to-text default and Sarvam fallback."
+                helper="Speech-to-text for dictation."
                 placeholder="Token ..."
                 value={deepgramKey}
                 visible={showDeepgram}
                 onChange={setDeepgramKey}
                 onToggle={() => setShowDeepgram((v) => !v)}
-              />
-              <SecretInput
-                icon={<Mic size={12} style={{ color: "hsl(var(--primary))" }} />}
-                label="Sarvam API Key"
-                helper={
-                  sttRuntime?.sarvam_configured
-                    ? "Configured — saving enables Sarvam as your STT provider."
-                    : "Recommended for Hinglish. Optional until you switch STT to Sarvam."
-                }
-                placeholder="sk_…"
-                value={sarvamKey}
-                visible={showSarvam}
-                onChange={setSarvamKey}
-                onToggle={() => setShowSarvam((v) => !v)}
               />
             </SettingsDisclosure>
 

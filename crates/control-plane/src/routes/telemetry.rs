@@ -645,7 +645,6 @@ fn latency_json(latency: &LatencyPercentiles) -> Value {
 fn stt_short_label(provider: &str) -> &str {
     match provider {
         "deepgram" => "DG",
-        "sarvam" => "SV",
         other => other,
     }
 }

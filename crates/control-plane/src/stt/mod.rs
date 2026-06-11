@@ -1,6 +1,4 @@
-pub mod sarvam;
-
-use said_core::stt::{is_sarvam, resolve_server_default_provider};
+use said_core::stt::resolve_server_default_provider;
 
 pub use said_core::stt::{STT_PROVIDER_ENV, SttProvider};
 
@@ -8,25 +6,17 @@ pub fn runtime_stt_provider() -> String {
     resolve_server_default_provider()
 }
 
-pub fn runtime_stt_credential_provider(provider: &str) -> &'static str {
-    if is_sarvam(provider) {
-        "sarvam"
-    } else {
-        "deepgram"
-    }
+pub fn runtime_stt_credential_provider(_provider: &str) -> &'static str {
+    "deepgram"
 }
 
 pub async fn call_batch_stt(
-    provider: &str,
+    _provider: &str,
     api_key: &str,
     wav_data: Vec<u8>,
     tag: &str,
 ) -> Result<String, String> {
-    if is_sarvam(provider) {
-        sarvam::transcribe_batch(api_key, wav_data, tag).await
-    } else {
-        call_deepgram_batch(api_key, wav_data, tag).await
-    }
+    call_deepgram_batch(api_key, wav_data, tag).await
 }
 
 async fn call_deepgram_batch(
@@ -81,18 +71,14 @@ async fn call_deepgram_batch(
 }
 
 pub async fn connect_runtime_ws(
-    provider: &str,
+    _provider: &str,
     api_key: &str,
     sample_rate: u32,
 ) -> Result<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Box<dyn std::error::Error + Send + Sync>,
 > {
-    if is_sarvam(provider) {
-        sarvam::connect_ws(api_key, sample_rate).await
-    } else {
-        connect_deepgram_ws(api_key, sample_rate).await
-    }
+    connect_deepgram_ws(api_key, sample_rate).await
 }
 
 async fn connect_deepgram_ws(

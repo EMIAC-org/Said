@@ -121,10 +121,6 @@ pub fn spawn() -> Result<BackendHandle, String> {
             std::env::var("DEEPGRAM_API_KEY").unwrap_or_default(),
         )
         .env(
-            "SARVAM_API_KEY",
-            std::env::var("SARVAM_API_KEY").unwrap_or_default(),
-        )
-        .env(
             "AIRNOTE_STT_PROVIDER",
             std::env::var("AIRNOTE_STT_PROVIDER").unwrap_or_default(),
         )

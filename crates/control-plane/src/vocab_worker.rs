@@ -33,7 +33,6 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                         hub: crate::meeting_hub::MeetingHub::new(db.clone()),
                         notifications: crate::notification_hub::NotificationHub::new(),
                         deepgram_api_key: String::new(),
-                        sarvam_api_key: String::new(),
                         stt_provider: "deepgram".to_string(),
                         groq_api_key: String::new(),
                         diagnostics_rate_limit:

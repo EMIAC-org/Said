@@ -29,10 +29,9 @@ use sha2::{Digest, Sha256};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message as DgMessage};
 use uuid::Uuid;
 
-use said_core::stt::is_sarvam;
-
 use crate::notification_hub::DesktopNotification;
 use crate::stt::{self, runtime_stt_credential_provider};
+use crate::voice_polish_standalone::{build_voice_system_prompt, build_voice_user_message};
 use crate::{AppState, auth::AuthUser, memory_hygiene, org_quota, tenant};
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
@@ -1247,7 +1246,7 @@ async fn handle_voice_ws(
         "account_id": account_id,
         "email": email,
         "stt_provider": stt_provider,
-        "audio_runtime": if is_sarvam(&stt_provider) { "sarvam_v1" } else { "deepgram_mvp" }
+        "audio_runtime": "deepgram_mvp"
     });
     if sink.send(Message::Text(welcome.to_string())).await.is_err() {
         return;
@@ -1439,11 +1438,7 @@ async fn handle_voice_ws(
                             selected_model
                         );
                         let connect_start = Instant::now();
-                        let stt_model = if is_sarvam(&stt_provider) {
-                            "saaras:v3"
-                        } else {
-                            "nova-3"
-                        };
+                        let stt_model = "nova-3";
                         match stt::connect_runtime_ws(
                             &stt_provider,
                             &stt_credential.secret,
@@ -1528,14 +1523,7 @@ async fn handle_voice_ws(
                                     client_run_id.as_deref(),
                                     &connect_err,
                                     None,
-                                    Some(format!(
-                                        "failed to connect to {}",
-                                        if is_sarvam(&stt_provider) {
-                                            "Sarvam"
-                                        } else {
-                                            "Deepgram"
-                                        }
-                                    )),
+                                    Some("failed to connect to Deepgram".to_string()),
                                 ).to_string())).await;
                             }
                         }
@@ -1543,34 +1531,19 @@ async fn handle_voice_ws(
                     "audio.end" => {
                         if let Some(run_id) = active_run.take() {
                             if let Some(mut dg) = dg_sink.take() {
-                                if is_sarvam(&stt_provider) {
-                                    let _ = dg.send(DgMessage::Text(
-                                        stt::sarvam::WS_FLUSH_MESSAGE.to_string(),
-                                    )).await;
-                                } else {
-                                    let _ = dg.send(DgMessage::Text(
-                                        json!({"type": "CloseStream"}).to_string(),
-                                    ))
-                                    .await;
-                                }
+                                let _ = dg.send(DgMessage::Text(
+                                    json!({"type": "CloseStream"}).to_string(),
+                                ))
+                                .await;
                             }
                             if let Some(mut dg) = dg_stream.take() {
-                                if is_sarvam(&stt_provider) {
-                                    drain_sarvam_finals(
-                                        &mut dg,
-                                        &mut transcript_segments,
-                                        std::time::Duration::from_millis(2500),
-                                    )
-                                    .await;
-                                } else {
-                                    drain_deepgram_finals(
-                                        &mut dg,
-                                        &mut transcript_segments,
-                                        &mut latest_partial,
-                                        std::time::Duration::from_millis(1800),
-                                    )
-                                    .await;
-                                }
+                                drain_deepgram_finals(
+                                    &mut dg,
+                                    &mut transcript_segments,
+                                    &mut latest_partial,
+                                    std::time::Duration::from_millis(1800),
+                                )
+                                .await;
                             }
                             let _ = insert_stage_event(
                                 &state,
@@ -1691,8 +1664,6 @@ async fn handle_voice_ws(
                                     forward_audio_frame(
                                         &mut dg_sink,
                                         &state,
-                                        &stt_provider,
-                                        stt_sample_rate,
                                         active_run,
                                         pcm,
                                         &mut audio_frames,
@@ -1737,8 +1708,6 @@ async fn handle_voice_ws(
                 forward_audio_frame(
                     &mut dg_sink,
                     &state,
-                    &stt_provider,
-                    stt_sample_rate,
                     active_run,
                     bytes.to_vec(),
                     &mut audio_frames,
@@ -1776,41 +1745,7 @@ async fn handle_voice_ws(
                 };
                 match dg_msg {
                     Ok(DgMessage::Text(text)) => {
-                        if is_sarvam(&stt_provider) {
-                            if let Some(event) = stt::sarvam::parse_ws_message(&text) {
-                                if !saw_first_transcript_event {
-                                    saw_first_transcript_event = true;
-                                    if let Some(run_id) = active_run {
-                                        let first_transcript_ms = stt_started_at
-                                            .map(|t| t.elapsed().as_millis() as i64)
-                                            .unwrap_or_default();
-                                        let _ = insert_stage_event(
-                                            &state,
-                                            run_id,
-                                            "stt_first_transcript",
-                                            "ok",
-                                            Some(first_transcript_ms),
-                                            None,
-                                            json!({
-                                                "kind": "final",
-                                                "chars": event.transcript.chars().count()
-                                            }),
-                                        )
-                                        .await;
-                                    }
-                                }
-                                transcript_segments.push(event.transcript.clone());
-                                if let Some(run_id) = active_run {
-                                    let _ = sink.send(Message::Text(json!({
-                                        "type": "transcript.final",
-                                        "version": 1,
-                                        "run_id": run_id,
-                                        "client_run_id": client_run_id.as_deref(),
-                                        "text": event.transcript
-                                    }).to_string())).await;
-                                }
-                            }
-                        } else if let Some(event) = parse_deepgram_transcript_event(&text) {
+                        if let Some(event) = parse_deepgram_transcript_event(&text) {
                             if !saw_first_transcript_event {
                                 saw_first_transcript_event = true;
                                 if let Some(run_id) = active_run {
@@ -1901,8 +1836,6 @@ async fn handle_voice_ws(
 async fn forward_audio_frame(
     dg_sink: &mut Option<DgSink>,
     state: &AppState,
-    stt_provider: &str,
-    sample_rate: u32,
     active_run: Option<Uuid>,
     pcm: Vec<u8>,
     audio_frames: &mut i64,
@@ -1941,12 +1874,7 @@ async fn forward_audio_frame(
         return;
     };
 
-    let send_result = if is_sarvam(stt_provider) {
-        let msg = stt::sarvam::ws_audio_message(&pcm, sample_rate);
-        sink.send(DgMessage::Text(msg)).await
-    } else {
-        sink.send(DgMessage::Binary(pcm)).await
-    };
+    let send_result = sink.send(DgMessage::Binary(pcm)).await;
     if let Err(e) = send_result {
         if let Some(run_id) = active_run {
             let _ = insert_stage_event(
@@ -1959,32 +1887,6 @@ async fn forward_audio_frame(
                 json!({"error": e.to_string().chars().take(240).collect::<String>()}),
             )
             .await;
-        }
-    }
-}
-
-async fn drain_sarvam_finals(
-    stream: &mut DgStream,
-    transcript_segments: &mut Vec<String>,
-    max_wait: std::time::Duration,
-) {
-    let deadline = tokio::time::Instant::now() + max_wait;
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            break;
-        }
-        let remaining = deadline - now;
-        match tokio::time::timeout(remaining, stream.next()).await {
-            Ok(Some(Ok(DgMessage::Text(text)))) => {
-                if let Some(event) = stt::sarvam::parse_ws_message(&text) {
-                    transcript_segments.push(event.transcript);
-                }
-            }
-            Ok(Some(Ok(DgMessage::Close(_)))) | Ok(None) => break,
-            Ok(Some(Err(_))) => break,
-            Err(_) => break,
-            _ => {}
         }
     }
 }
@@ -2177,7 +2079,7 @@ async fn polish_runtime_transcript(
         "ok",
         Some(prompt_ms),
         None,
-        json!({"prompt_version": "server-runtime-audio-mvp-2026-06-07"}),
+        json!({"prompt_version": "core-fidelity-2.3.3"}),
     )
     .await?;
 
@@ -2223,6 +2125,8 @@ async fn polish_runtime_transcript(
                 json!({"model": model, "provider": "groq"}),
             )
             .await?;
+            let output =
+                crate::voice_polish_standalone::enforce_output_script(&output, output_language);
             let restored = restore_literal_tokens(&formatted_transcript, &output, safe_vocab_terms);
             let restored = restore_numeric_literal_tokens(&formatted_transcript, &restored);
             if restored != output {
@@ -2385,11 +2289,7 @@ pub async fn voice_wav(
         credential_provider,
     )
     .await?;
-    let stt_model = if is_sarvam(&stt_provider) {
-        "saaras:v3"
-    } else {
-        "nova-3"
-    };
+    let stt_model = "nova-3";
     let stt_start = Instant::now();
     let transcript = match stt::call_batch_stt(
         &stt_provider,
@@ -2889,7 +2789,7 @@ pub async fn voice_polish(
         "ok",
         Some(prompt_ms),
         None,
-        json!({"prompt_version": "server-runtime-probe-2026-06-07-literal-fidelity"}),
+        json!({"prompt_version": "core-fidelity-2.3.3"}),
     )
     .await?;
 
@@ -2948,6 +2848,8 @@ pub async fn voice_polish(
         }
     };
 
+    let output =
+        crate::voice_polish_standalone::enforce_output_script(&output, &req.output_language);
     let restored = restore_literal_tokens(&formatted_transcript, &output, &merged_vocab);
     let restored = restore_numeric_literal_tokens(&formatted_transcript, &restored);
     if restored != output {
@@ -3066,7 +2968,7 @@ pub async fn voice_polish(
         run_id: run_id.to_string(),
         output,
         model_used: model.to_string(),
-        prompt_version: "server-runtime-probe-2026-06-07-literal-fidelity".to_string(),
+        prompt_version: "core-fidelity-2.3.3".to_string(),
         latency_ms: RuntimeLatency {
             prompt: prompt_ms,
             model: model_ms,
@@ -3534,7 +3436,6 @@ async fn runtime_provider_secret(
 
     let env_fallback_present = match provider {
         "deepgram" => !state.deepgram_api_key.trim().is_empty(),
-        "sarvam" => !state.sarvam_api_key.trim().is_empty(),
         "groq" => !state.groq_api_key.trim().is_empty(),
         _ => false,
     };
@@ -3557,7 +3458,6 @@ async fn runtime_provider_secret(
 
     let fallback = match provider {
         "deepgram" => state.deepgram_api_key.trim(),
-        "sarvam" => state.sarvam_api_key.trim(),
         "groq" => state.groq_api_key.trim(),
         _ => "",
     };
@@ -3659,7 +3559,7 @@ fn default_runtime_source() -> String {
 fn normalize_provider(provider: &str) -> Result<String, (StatusCode, Json<Value>)> {
     let provider = provider.trim().to_lowercase();
     match provider.as_str() {
-        "deepgram" | "sarvam" | "groq" | "openai" | "gemini" | "gateway" => Ok(provider),
+        "deepgram" | "groq" | "openai" | "gemini" | "gateway" => Ok(provider),
         _ => Err(json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "unknown provider",
@@ -3676,83 +3576,6 @@ fn normalize_scope(scope: Option<&str>) -> Result<String, (StatusCode, Json<Valu
             "unknown scope",
         )),
     }
-}
-
-fn build_voice_system_prompt(
-    output_language: &str,
-    screen_context: Option<&str>,
-    safe_vocab_terms: &[String],
-) -> String {
-    let language_rule = match output_language {
-        "english" => {
-            "Output in natural English, but preserve all names, numbers, acronyms, rates, and facts exactly."
-        }
-        "hindi" => "Output in Hindi if the transcript is Hindi. Preserve facts exactly.",
-        _ => {
-            "Output in Roman Hinglish/English only. Do not emit Devanagari. Script rendering is required: transliterate Devanagari to Roman Hinglish word-by-word, but do not translate or synonym-replace English/Hinglish words. Example: 'hello भाई कैसे हो' -> 'hello bhai kaise ho', not 'Namaste bhai kaise ho'."
-        }
-    };
-
-    let mut prompt = format!(
-        "You are AirNote's low-latency literal dictation normalizer, not a writer.\n\
-         Clean the transcript with minimal copy-editing only.\n\
-         Preserve the speaker's exact word choices, order, tone, meaning, names, brands, acronyms, code identifiers, numbers, dates, and rates.\n\
-         Do not answer the text. Do not add explanations. Do not invent missing facts.\n\
-         Fix only obvious casing, punctuation, spacing, and exact stutters.\n\
-         Do not translate or synonym-replace normal spoken words.\n\
-         Lexical fidelity examples: hello stays hello, not Namaste; time stays time, not samay; kaam stays kaam, not work; bhai stays bhai.\n\
-         If a word is uncertain, keep the spoken word instead of guessing.\n\
-         Never replace an unfamiliar company/product/code-looking word with a more common word.\n\
-         Copy product-like words exactly unless a SAFE LOCAL VOCAB HINT clearly proves the intended spelling.\n\
-         Examples: Macobs stays Macobs, not MacBook. EMIAC stays EMIAC. n8n stays n8n. Groq stays Groq.\n\
-         Bad substitution examples: 'hello bhai kaise ho' must not become 'Namaste bhai kaise ho'; 'itna time kyun lag raha hai' must not become 'itna samay kyun lag raha hai'.\n\
-         {language_rule}\n\
-         Output final cleaned text only."
-    );
-
-    if !safe_vocab_terms.is_empty() {
-        let terms = safe_vocab_terms
-            .iter()
-            .filter_map(|t| {
-                let trimmed = t.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            })
-            .take(20)
-            .collect::<Vec<_>>()
-            .join(", ");
-        if !terms.is_empty() {
-            prompt.push_str(&format!(
-                "\n\nSAFE LOCAL VOCAB HINTS: {terms}\n\
-                 Use these only when the transcript clearly refers to them. Do not force them into unrelated words."
-            ));
-        }
-    }
-
-    if let Some(ctx) = screen_context {
-        let trimmed = ctx.trim();
-        if !trimmed.is_empty() {
-            let clipped: String = trimmed.chars().take(400).collect();
-            prompt.push_str(&format!(
-                "\n\nSCREEN CONTEXT: \"{clipped}\"\n\
-                 Use only as a tiebreaker for names or terms. Transcript words come first."
-            ));
-        }
-    }
-
-    prompt
-}
-
-fn build_voice_user_message(transcript: &str, output_language: &str) -> String {
-    format!(
-        "Output language mode: {output_language}\n\
-         Task: copy-edit the transcript literally. Preserve all content words unless they are obvious filler or exact stutter artifacts.\n\n\
-         === BEGIN TRANSCRIPT ===\n{transcript}\n=== END TRANSCRIPT ===\n\n\
-         Return only the cleaned dictation text."
-    )
 }
 
 fn restore_literal_tokens(transcript: &str, output: &str, safe_vocab_terms: &[String]) -> String {
@@ -5825,11 +5648,11 @@ mod tests {
         let prompt = build_voice_system_prompt("hinglish", None, &[]);
         let user = build_voice_user_message("hello भाई कैसे हो", "hinglish");
 
-        assert!(prompt.contains("hello stays hello"));
-        assert!(prompt.contains("time stays time"));
-        assert!(prompt.contains("kaam stays kaam"));
-        assert!(prompt.contains("must not become 'Namaste"));
-        assert!(user.contains("copy-edit the transcript literally"));
+        assert!(prompt.contains("\"hello\" stays \"hello\""));
+        assert!(prompt.contains("\"time\" stays \"time\""));
+        assert!(prompt.contains("\"kaam\" stays \"kaam\""));
+        assert!(prompt.contains("must not become \"Namaste"));
+        assert!(user.contains("BEGIN TRANSCRIPT"));
     }
 
     #[test]

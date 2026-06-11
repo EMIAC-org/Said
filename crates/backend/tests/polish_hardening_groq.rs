@@ -67,7 +67,6 @@ fn prefs(output_language: &str, custom_prompt: Option<&str>) -> Preferences {
         server_runtime_enabled: false,
         server_audio_runtime_enabled: false,
         deepgram_api_key: None,
-        sarvam_api_key: None,
         gemini_api_key: None,
         learning_enabled: true,
         gateway_api_key: None,

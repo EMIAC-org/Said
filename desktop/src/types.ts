@@ -59,10 +59,6 @@ export interface SttRuntimeInfo {
   preferred_provider: string;
   effective_provider: string;
   deepgram_configured: boolean;
-  /** Sarvam key saved in SQLite (app-start prompt gate). */
-  sarvam_configured: boolean;
-  /** Sarvam key available at runtime (prefs or dev env). */
-  sarvam_runtime_ready: boolean;
 }
 
 export interface Preferences {
@@ -82,13 +78,12 @@ export interface Preferences {
   // API keys stored in SQLite — never leave the device
   gateway_api_key:    string | null;
   deepgram_api_key:   string | null;
-  sarvam_api_key:     string | null;
   gemini_api_key:     string | null;
   groq_api_key:       string | null;
   cerebras_api_key:   string | null;
   /** LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex" */
   llm_provider:       string;
-  /** STT routing: "deepgram" | "sarvam" */
+  /** STT routing: "deepgram" */
   stt_provider:       string;
 }
 
@@ -108,13 +103,12 @@ export interface PrefsUpdate {
   // API keys — set to null to clear
   gateway_api_key?:    string | null;
   deepgram_api_key?:   string | null;
-  sarvam_api_key?:     string | null;
   gemini_api_key?:     string | null;
   groq_api_key?:       string | null;
   cerebras_api_key?:   string | null;
   /** LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex" */
   llm_provider?:       string;
-  /** STT routing: "deepgram" | "sarvam" */
+  /** STT routing: "deepgram" */
   stt_provider?:       string;
 }
 

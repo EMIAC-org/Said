@@ -1386,22 +1386,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
 
         let deepgram_key = said_core::stt::resolve_deepgram_api_key(prefs.deepgram_api_key.as_deref())
             .unwrap_or_default();
-        let sarvam_key = said_core::stt::resolve_sarvam_api_key(prefs.sarvam_api_key.as_deref())
-            .unwrap_or_default();
         let stt_provider = crate::routes::key_guard::effective_stt_provider(&prefs);
-        if said_core::stt::is_sarvam(&said_core::stt::resolve_provider_from_pref(
-            &prefs.stt_provider,
-        )) && !said_core::stt::is_sarvam(&stt_provider)
-        {
-            info!(
-                "[voice] stt_provider pref=sarvam but no Sarvam key — using Deepgram fallback"
-            );
-        }
-        let stt_api_key = if said_core::stt::is_sarvam(&stt_provider) {
-            sarvam_key.as_str()
-        } else {
-            deepgram_key.as_str()
-        };
+        let stt_api_key = deepgram_key.as_str();
         let gemini_key = prefs.gemini_api_key.clone()
             .or_else(|| std::env::var("GEMINI_API_KEY").ok())
             .unwrap_or_default();
@@ -1801,37 +1787,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             #[cfg(not(feature = "local-stt"))]
             let use_whisper = false;
 
-            if said_core::stt::is_sarvam(&stt_provider) {
-                match crate::stt::sarvam::transcribe(
-                    &http_client,
-                    stt_api_key,
-                    wav_data.clone(),
-                    "codemix",
-                )
-                .await
-                {
-                    Ok(result) => {
-                        let ms = total_start.elapsed().as_millis() as i64;
-                        info!(
-                            "[timing] STT={}ms (sarvam:codemix, {} words)",
-                            ms, result.word_count,
-                        );
-                        (
-                            result.transcript,
-                            result.enriched_transcript,
-                            result.confidence,
-                            ms,
-                        )
-                    }
-                    Err(e) => {
-                        warn!("[voice] sarvam STT error: {e}");
-                        yield Ok(Event::default().event("error").data(
-                            json!({"message": e, "audio_id": aid}).to_string()
-                        ));
-                        return;
-                    }
-                }
-            } else if stt_provider == "groq_whisper" {
+            if stt_provider == "groq_whisper" {
                 match crate::stt::groq_whisper::transcribe(
                     &http_client,
                     &groq_key,
@@ -2868,19 +2824,6 @@ async fn maybe_rescue_transcript(
     bias: &BiasPackage,
     primary_ws: Option<TranscriptCandidate>,
 ) -> Result<(TranscriptCandidate, i64), String> {
-    if said_core::stt::is_sarvam(provider) {
-        let primary = run_batch_transcript(
-            client,
-            provider,
-            api_key,
-            wav_data,
-            bias.clone(),
-            "batch:sarvam:codemix".to_string(),
-        )
-        .await?;
-        return Ok((primary, 0));
-    }
-
     if let Some(primary) = primary_ws {
         let primary_quality = assess_candidate(&primary, audio_seconds, bias);
         let Some(rescue_mode) = rescue_mode_for(&primary_quality, &primary.meta.stt_mode) else {
@@ -2938,21 +2881,12 @@ fn with_mode(bias: &BiasPackage, stt_mode: &str) -> BiasPackage {
 
 async fn run_batch_transcript(
     client: &reqwest::Client,
-    provider: &str,
+    _provider: &str,
     api_key: &str,
     wav_data: Vec<u8>,
     bias: BiasPackage,
     source: String,
 ) -> Result<TranscriptCandidate, String> {
-    if said_core::stt::is_sarvam(provider) {
-        let result = crate::stt::sarvam::transcribe(client, api_key, wav_data, "codemix").await?;
-        let meta = result.meta();
-        return Ok(TranscriptCandidate {
-            transcript: result.transcript,
-            meta,
-            source,
-        });
-    }
     let result = deepgram::transcribe(client, api_key, wav_data, &bias).await?;
     let meta = result.meta();
     Ok(TranscriptCandidate {

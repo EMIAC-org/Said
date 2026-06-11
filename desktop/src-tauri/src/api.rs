@@ -37,8 +37,6 @@ pub struct Preferences {
     #[serde(default)]
     pub deepgram_api_key: Option<String>,
     #[serde(default)]
-    pub sarvam_api_key: Option<String>,
-    #[serde(default)]
     pub gemini_api_key: Option<String>,
     #[serde(default)]
     pub gateway_api_key: Option<String>,
@@ -49,7 +47,7 @@ pub struct Preferences {
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
     #[serde(default = "default_llm_provider")]
     pub llm_provider: String,
-    /// STT routing: "deepgram" | "sarvam"
+    /// STT routing: "deepgram"
     #[serde(default = "default_stt_provider")]
     pub stt_provider: String,
 }
@@ -98,8 +96,6 @@ pub struct PrefsUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deepgram_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sarvam_api_key: Option<Option<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub gemini_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groq_api_key: Option<Option<String>>,
@@ -108,7 +104,7 @@ pub struct PrefsUpdate {
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_provider: Option<String>,
-    /// STT routing: "deepgram" | "sarvam"
+    /// STT routing: "deepgram"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stt_provider: Option<String>,
 }
@@ -237,7 +233,6 @@ fn redact_pref_key_fields(raw: &str) -> String {
     for field in [
         "gateway_api_key",
         "deepgram_api_key",
-        "sarvam_api_key",
         "gemini_api_key",
         "groq_api_key",
     ] {

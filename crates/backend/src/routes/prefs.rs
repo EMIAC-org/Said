@@ -39,7 +39,6 @@ pub async fn patch_prefs(
 ) -> Result<Json<Preferences>, StatusCode> {
     let provider_key_updated = update.gateway_api_key.is_some()
         || update.deepgram_api_key.is_some()
-        || update.sarvam_api_key.is_some()
         || update.gemini_api_key.is_some()
         || update.groq_api_key.is_some()
         || update.cerebras_api_key.is_some();

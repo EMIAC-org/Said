@@ -911,12 +911,10 @@ struct HotPathCache(Arc<tokio::sync::RwLock<HotPathCacheInner>>);
 struct HotPathCacheInner {
     /// User's STT language setting (e.g. "hi", "multi", "auto").
     language: String,
-    /// Active STT vendor from preferences (`deepgram` | `sarvam`).
+    /// Active STT vendor from preferences (`deepgram`).
     stt_provider: String,
     /// Saved Deepgram API key from preferences.
     deepgram_key: String,
-    /// Saved Sarvam API key from preferences.
-    sarvam_key: String,
     /// Resolved STT mode sent to Deepgram.
     stt_mode: String,
     /// Personal vocabulary terms sent to Deepgram as `keyterm=` biases.
@@ -2368,14 +2366,6 @@ struct SttRuntimeInfo {
     preferred_provider: String,
     effective_provider: String,
     deepgram_configured: bool,
-    /// Sarvam key saved in SQLite preferences (app-start prompt gate).
-    sarvam_configured: bool,
-    /// Sarvam key available for STT at runtime (prefs or dev env fallback).
-    sarvam_runtime_ready: bool,
-}
-
-fn sarvam_key_saved_in_prefs(pref_key: Option<&str>) -> bool {
-    pref_key.map(str::trim).is_some_and(|k| !k.is_empty())
 }
 
 #[tauri::command]
@@ -2384,69 +2374,39 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
         Ok(ep) => match api::get_preferences(&ep).await {
             Ok(p) => {
                 let preferred = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
-                let sarvam_saved = sarvam_key_saved_in_prefs(p.sarvam_api_key.as_deref());
-                let sarvam_runtime_ready =
-                    said_core::stt::resolve_sarvam_api_key(p.sarvam_api_key.as_deref()).is_some();
                 let has_deepgram =
                     said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref())
                         .is_some();
-                let effective = said_core::stt::resolve_effective_stt_provider(
-                    &p.stt_provider,
-                    sarvam_runtime_ready,
-                    has_deepgram,
-                );
                 Ok(SttRuntimeInfo {
-                    provider: effective.clone(),
-                    preferred_provider: preferred,
-                    effective_provider: effective,
+                    provider: preferred.clone(),
+                    preferred_provider: preferred.clone(),
+                    effective_provider: preferred,
                     deepgram_configured: has_deepgram,
-                    sarvam_configured: sarvam_saved,
-                    sarvam_runtime_ready,
                 })
             }
-            Err(_) => {
-                let sarvam_runtime_ready =
-                    said_core::stt::resolve_sarvam_api_key(None).is_some();
-                Ok(SttRuntimeInfo {
-                    provider: "deepgram".into(),
-                    preferred_provider: "deepgram".into(),
-                    effective_provider: "deepgram".into(),
-                    deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
-                    sarvam_configured: false,
-                    sarvam_runtime_ready,
-                })
-            }
-        },
-        Err(_) => {
-            let sarvam_runtime_ready = said_core::stt::resolve_sarvam_api_key(None).is_some();
-            Ok(SttRuntimeInfo {
+            Err(_) => Ok(SttRuntimeInfo {
                 provider: "deepgram".into(),
                 preferred_provider: "deepgram".into(),
                 effective_provider: "deepgram".into(),
                 deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
-                sarvam_configured: false,
-                sarvam_runtime_ready,
-            })
-        }
+            }),
+        },
+        Err(_) => Ok(SttRuntimeInfo {
+            provider: "deepgram".into(),
+            preferred_provider: "deepgram".into(),
+            effective_provider: "deepgram".into(),
+            deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
+        }),
     }
 }
 
 fn hot_cache_effective_stt_provider(app: &tauri::AppHandle) -> String {
     app.try_state::<HotPathCache>()
         .and_then(|hot| {
-            hot.0.try_read().ok().map(|guard| {
-                let has_sarvam =
-                    said_core::stt::resolve_sarvam_api_key(Some(guard.sarvam_key.as_str()))
-                        .is_some();
-                let has_deepgram =
-                    said_core::stt::resolve_deepgram_api_key(Some(guard.deepgram_key.as_str()))
-                        .is_some();
-                said_core::stt::resolve_effective_stt_provider(
-                    &guard.stt_provider,
-                    has_sarvam,
-                    has_deepgram,
-                )
-            })
+            hot.0
+                .try_read()
+                .ok()
+                .map(|guard| said_core::stt::resolve_provider_from_pref(&guard.stt_provider))
         })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "deepgram".to_string())
@@ -2495,7 +2455,6 @@ async fn patch_preferences(
             hot.language = p.language.clone();
             hot.stt_provider = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
             hot.deepgram_key = p.deepgram_api_key.clone().unwrap_or_default();
-            hot.sarvam_key = p.sarvam_api_key.clone().unwrap_or_default();
         }
         Err(e) => tracing::warn!("[patch_prefs] backend error: {e}"),
     }
@@ -7243,11 +7202,6 @@ fn main() {
                                 .ok()
                                 .and_then(|p| p.deepgram_api_key.clone())
                                 .unwrap_or_default();
-                            let sarvam_key = prefs_res
-                                .as_ref()
-                                .ok()
-                                .and_then(|p| p.sarvam_api_key.clone())
-                                .unwrap_or_default();
                             let stt_bias = stt_bias_res.unwrap_or_default();
                             tracing::info!(
                                 "[hot_cache] seeded mode={} keyterms={} replacements={}",
@@ -7267,7 +7221,6 @@ fn main() {
                             c.language = language;
                             c.stt_provider = stt_provider;
                             c.deepgram_key = deepgram_key.clone();
-                            c.sarvam_key = sarvam_key;
                             c.stt_mode = stt_bias.stt_mode.clone();
                             c.keyterms = stt_bias.keyterms.clone();
                             c.replacements = stt_bias.replacements.clone();

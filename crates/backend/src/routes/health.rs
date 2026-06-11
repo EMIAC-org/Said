@@ -15,11 +15,8 @@ pub async fn handler(State(state): State<AppState>) -> Json<Value> {
         |p| {
             let preferred = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
             let effective = key_guard::effective_stt_provider(p);
-            let ready = if said_core::stt::is_sarvam(&effective) {
-                said_core::stt::resolve_sarvam_api_key(p.sarvam_api_key.as_deref()).is_some()
-            } else {
-                said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref()).is_some()
-            };
+            let ready =
+                said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref()).is_some();
             (preferred, effective, ready)
         },
     );

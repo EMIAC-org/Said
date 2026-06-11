@@ -420,13 +420,6 @@ fn provider_secrets(prefs: &Preferences) -> Vec<ProviderSecret> {
             secret,
         });
     }
-    if let Some(secret) = said_core::stt::resolve_sarvam_api_key(prefs.sarvam_api_key.as_deref()) {
-        out.push(ProviderSecret {
-            provider: "sarvam",
-            display_name: "Sarvam API key",
-            secret,
-        });
-    }
     if let Some(secret) = clean_secret(prefs.groq_api_key.as_deref()) {
         out.push(ProviderSecret {
             provider: "groq",
@@ -487,7 +480,6 @@ mod tests {
             updated_at: 0,
             gateway_api_key: Some("gsk_test_gateway_key_1234567890".into()),
             deepgram_api_key: Some("dg_test".into()),
-            sarvam_api_key: None,
             gemini_api_key: None,
             groq_api_key: None,
             cerebras_api_key: None,
@@ -501,38 +493,5 @@ mod tests {
         assert!(providers.contains(&"deepgram"));
         assert!(providers.contains(&"groq"));
         assert!(providers.contains(&"gateway"));
-    }
-
-    #[test]
-    fn provider_secrets_includes_sarvam_when_key_set() {
-        let prefs = Preferences {
-            user_id: "u".into(),
-            selected_model: "fast".into(),
-            tone_preset: "neutral".into(),
-            custom_prompt: None,
-            language: "auto".into(),
-            output_language: "hinglish".into(),
-            auto_paste: true,
-            edit_capture: true,
-            polish_text_hotkey: "cmd+shift+p".into(),
-            record_hotkey: "caps_lock".into(),
-            learning_enabled: true,
-            server_runtime_enabled: false,
-            server_audio_runtime_enabled: false,
-            updated_at: 0,
-            gateway_api_key: None,
-            deepgram_api_key: Some("dg_test".into()),
-            sarvam_api_key: Some("sk_sarvam_test".into()),
-            gemini_api_key: None,
-            groq_api_key: None,
-            cerebras_api_key: None,
-            llm_provider: "groq".into(),
-            stt_provider: "sarvam".into(),
-        };
-        let providers: Vec<&str> = provider_secrets(&prefs)
-            .iter()
-            .map(|p| p.provider)
-            .collect();
-        assert!(providers.contains(&"sarvam"));
     }
 }

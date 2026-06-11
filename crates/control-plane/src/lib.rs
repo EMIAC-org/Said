@@ -21,6 +21,7 @@ pub mod store;
 pub mod stt;
 pub mod tenant;
 pub mod vocab_worker;
+pub mod voice_polish_standalone;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -54,8 +55,7 @@ pub struct AppState {
     pub hub: Arc<meeting_hub::MeetingHub>,
     pub notifications: Arc<notification_hub::NotificationHub>,
     pub deepgram_api_key: String,
-    pub sarvam_api_key: String,
-    /// Active STT vendor for server runtime (`deepgram` | `sarvam`). From `AIRNOTE_STT_PROVIDER`.
+    /// Active STT vendor for server runtime (`deepgram`). From `AIRNOTE_STT_PROVIDER`.
     pub stt_provider: String,
     pub groq_api_key: String,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,

@@ -907,7 +907,7 @@ fn sdk_options(bias: &BiasPackage) -> Options {
         .build()
 }
 
-/// Discard live PCM chunks when batch-only STT (e.g. Sarvam) is active.
+/// Discard live PCM chunks when batch-only STT (e.g. groq_whisper) is active.
 /// The recorder still needs a consumer or its sync channel backs up.
 pub fn spawn_chunk_drain(recording_id: String, chunk_recv: ChunkReceiver) {
     std::thread::spawn(move || {

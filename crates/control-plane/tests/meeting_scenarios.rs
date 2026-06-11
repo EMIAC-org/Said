@@ -47,7 +47,6 @@ impl TestServer {
             hub,
             notifications: said_control_plane::notification_hub::NotificationHub::new(),
             deepgram_api_key: String::new(),
-            sarvam_api_key: String::new(),
             stt_provider: "deepgram".to_string(),
             groq_api_key: String::new(),
             diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),

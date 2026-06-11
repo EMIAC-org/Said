@@ -59,10 +59,6 @@ struct Cli {
     #[arg(long, env = "DEEPGRAM_API_KEY", default_value = "")]
     deepgram_api_key: String,
 
-    /// Sarvam API key for server-runtime STT when AIRNOTE_STT_PROVIDER=sarvam
-    #[arg(long, env = "SARVAM_API_KEY", default_value = "")]
-    sarvam_api_key: String,
-
     /// Groq API key for server-runtime polish latency probes
     #[arg(long, env = "GROQ_API_KEY", default_value = "")]
     groq_api_key: String,
@@ -132,10 +128,9 @@ async fn main() {
     };
     let stt_provider = said_control_plane::stt::runtime_stt_provider();
     info!(
-        "[cp] runtime stt_provider={} credential env: deepgram={} sarvam={} groq={} runtime_credentials_key={}",
+        "[cp] runtime stt_provider={} credential env: deepgram={} groq={} runtime_credentials_key={}",
         stt_provider,
         !cli.deepgram_api_key.trim().is_empty(),
-        !cli.sarvam_api_key.trim().is_empty(),
         !groq_api_key.trim().is_empty(),
         !cli.runtime_credentials_key.trim().is_empty(),
     );
@@ -147,7 +142,6 @@ async fn main() {
         hub,
         notifications,
         deepgram_api_key: cli.deepgram_api_key,
-        sarvam_api_key: cli.sarvam_api_key,
         stt_provider,
         groq_api_key,
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
