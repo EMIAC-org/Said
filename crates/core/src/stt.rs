@@ -24,21 +24,14 @@ impl SttProvider {
     }
 }
 
-pub const STT_PROVIDER_ENV: &str = "AIRNOTE_STT_PROVIDER";
-
 /// Resolve the user's STT provider from SQLite preferences only.
 pub fn resolve_provider_from_pref(pref: &str) -> String {
     normalize_toggle_stt_provider(pref)
 }
 
-/// Server deploy default — env wins when set, else Deepgram. Not used for desktop user prefs.
+/// Server-side STT vendor. Deepgram is the only server vendor, so this always
+/// resolves to `"deepgram"` (kept as a function so call sites stay stable).
 pub fn resolve_server_default_provider() -> String {
-    if let Ok(env) = std::env::var(STT_PROVIDER_ENV) {
-        let trimmed = env.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_ascii_lowercase();
-        }
-    }
     "deepgram".to_string()
 }
 

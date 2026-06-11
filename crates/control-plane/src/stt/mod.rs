@@ -1,6 +1,6 @@
 use said_core::stt::resolve_server_default_provider;
 
-pub use said_core::stt::{STT_PROVIDER_ENV, SttProvider};
+pub use said_core::stt::SttProvider;
 
 pub fn runtime_stt_provider() -> String {
     resolve_server_default_provider()

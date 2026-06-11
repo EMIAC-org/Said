@@ -40,3 +40,6 @@ tools/eval-pipeline/transcripts.jsonl
 
 # Whisper model files (large binary, downloaded separately)
 models/*.bin
+
+# Local STT benchmark HF weights (ephemeral; purged after compare)
+tools/stt-compare/.hf-cache/
