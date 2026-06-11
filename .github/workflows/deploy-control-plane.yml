@@ -85,6 +85,7 @@ jobs:
           test -n "${{ secrets.LARK_APP_ID }}" || (echo "LARK_APP_ID is missing" && exit 1)
           test -n "${{ secrets.LARK_APP_SECRET }}" || (echo "LARK_APP_SECRET is missing" && exit 1)
           test -n "${{ secrets.LARK_REDIRECT_URI }}" || (echo "LARK_REDIRECT_URI is missing" && exit 1)
+          test -n "${{ secrets.RUNTIME_CREDENTIALS_KEY }}" || (echo "RUNTIME_CREDENTIALS_KEY is missing" && exit 1)
 
       - name: Configure SSH
         shell: bash
@@ -100,6 +101,7 @@ jobs:
           LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
           LARK_REDIRECT_URI: ${{ secrets.LARK_REDIRECT_URI }}
+          RUNTIME_CREDENTIALS_KEY: ${{ secrets.RUNTIME_CREDENTIALS_KEY }}
         run: |
           tar -C deploy/control-plane -czf /tmp/airnote-control-plane-deploy.tgz \
             docker-compose.yml Caddyfile README.md .env.example
@@ -107,6 +109,7 @@ jobs:
             printf 'LARK_APP_ID=%s\n' "$LARK_APP_ID"
             printf 'LARK_APP_SECRET=%s\n' "$LARK_APP_SECRET"
             printf 'LARK_REDIRECT_URI=%s\n' "$LARK_REDIRECT_URI"
+            printf 'RUNTIME_CREDENTIALS_KEY=%s\n' "$RUNTIME_CREDENTIALS_KEY"
           } > /tmp/airnote-control-plane-secrets.env
           chmod 600 /tmp/airnote-control-plane-secrets.env
           ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
@@ -177,7 +180,7 @@ jobs:
           docker compose pull control-plane
           docker compose up -d --force-recreate control-plane
           CID=$(docker compose ps -q control-plane)
-          for key in LARK_APP_ID LARK_APP_SECRET LARK_REDIRECT_URI; do
+          for key in LARK_APP_ID LARK_APP_SECRET LARK_REDIRECT_URI RUNTIME_CREDENTIALS_KEY; do
             docker inspect "$CID" --format '{{range .Config.Env}}{{println .}}{{end}}' \
               | grep -q "^${key}=." || (echo "$key was not propagated into the control-plane container" && exit 1)
           done
