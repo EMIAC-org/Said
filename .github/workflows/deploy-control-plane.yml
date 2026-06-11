@@ -56,7 +56,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: crates/control-plane
+          context: .
           file: crates/control-plane/Dockerfile
           push: true
           tags: ${{ steps.image.outputs.tags }}
