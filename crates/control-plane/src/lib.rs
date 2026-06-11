@@ -10,11 +10,16 @@ pub mod format_recover;
 pub mod lark_client;
 pub mod lark_sync;
 pub mod meeting_hub;
+pub mod memory_hygiene;
+pub mod memory_hygiene_worker;
 pub mod notification_hub;
 pub mod notification_worker;
 pub mod number_format;
+pub mod org_quota;
 pub mod routes;
 pub mod store;
+pub mod stt;
+pub mod tenant;
 pub mod vocab_worker;
 
 use std::sync::Arc;
@@ -49,6 +54,9 @@ pub struct AppState {
     pub hub: Arc<meeting_hub::MeetingHub>,
     pub notifications: Arc<notification_hub::NotificationHub>,
     pub deepgram_api_key: String,
+    pub sarvam_api_key: String,
+    /// Active STT vendor for server runtime (`deepgram` | `sarvam`). From `AIRNOTE_STT_PROVIDER`.
+    pub stt_provider: String,
     pub groq_api_key: String,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
     /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
@@ -70,7 +78,12 @@ pub fn build_router(state: AppState) -> Router {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT]);
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            header::HeaderName::from_static(crate::tenant::ORG_HEADER),
+        ]);
 
     Router::new()
         // Previews (standalone HTML, outside /admin SPA)
@@ -107,6 +120,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/runtime/voice/polish",
             post(routes::runtime::voice_polish),
+        )
+        .route(
+            "/v1/runtime/message-polish",
+            post(routes::runtime::message_polish),
         )
         .route("/v1/runtime/voice/wav", post(routes::runtime::voice_wav))
         .route("/v1/runtime/status", get(routes::runtime::status))
@@ -169,6 +186,10 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::runtime_history::sync_memory),
         )
         .route(
+            "/v1/runtime/memory/dirty",
+            post(routes::runtime_history::mark_memory_dirty_route),
+        )
+        .route(
             "/v1/runtime/settings",
             get(routes::runtime_settings::get_settings)
                 .patch(routes::runtime_settings::patch_settings),
@@ -179,6 +200,30 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/license/check", get(routes::license::check))
         .route("/v1/metering/report", post(routes::metering::report))
+        .route(
+            "/v1/runtime/telemetry/batch",
+            post(routes::telemetry::batch_ingest),
+        )
+        .route(
+            "/v1/orgs/:org_id/telemetry",
+            get(routes::telemetry::org_analytics),
+        )
+        .route(
+            "/v1/orgs/:org_id/telemetry/users",
+            get(routes::telemetry::list_users),
+        )
+        .route(
+            "/v1/orgs/:org_id/telemetry/users/:account_id",
+            get(routes::telemetry::user_detail),
+        )
+        .route(
+            "/v1/orgs/:org_id/telemetry/users/:account_id/runs",
+            get(routes::telemetry::user_runs),
+        )
+        .route(
+            "/v1/orgs/:org_id/telemetry/users/:account_id/memory",
+            get(routes::telemetry::user_memory),
+        )
         // Enterprise — Desktop clients
         .route("/v1/clients/register", post(routes::clients::register))
         .route("/v1/clients/heartbeat", post(routes::clients::heartbeat))
@@ -245,8 +290,13 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::vocab::upload_user_vocab),
         )
         // Enterprise — Orgs
-        .route("/v1/orgs", post(routes::orgs::create))
+        .route(
+            "/v1/orgs",
+            get(routes::orgs::list).post(routes::orgs::create),
+        )
         .route("/v1/orgs/me", get(routes::orgs::me))
+        .route("/v1/orgs/:org_id/activate", post(routes::orgs::activate))
+        .route("/v1/orgs/deactivate", post(routes::orgs::deactivate))
         .route("/v1/orgs/:org_id/members", get(routes::orgs::members))
         // Enterprise — Meetings
         .route(

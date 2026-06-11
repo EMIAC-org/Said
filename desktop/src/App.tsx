@@ -4,6 +4,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { InviteTeamModal } from "@/components/InviteTeamModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { OnboardingFlow } from "@/components/OnboardingFlow";
+import { SarvamKeyPrompt } from "@/components/SarvamKeyPrompt";
 import { Topbar } from "@/components/Topbar";
 import { DashboardView } from "@/components/views/DashboardView";
 import { HistoryView } from "@/components/views/HistoryView";
@@ -39,6 +40,7 @@ import {
   runMigration,
   syncServerSettings,
   syncCredentialVault,
+  getSttRuntime,
   type NotifPermission,
   type VocabToastPayload,
   type ServerMigrationStatus,
@@ -200,6 +202,8 @@ export default function App() {
       return false;
     }
   });
+  const [sarvamConfigured, setSarvamConfigured] = useState<boolean | null>(null);
+  const [sarvamPromptDismissed, setSarvamPromptDismissed] = useState(false);
 
   // ── Retry toast ───────────────────────────────────────────────────────────
   const [retryToast, setRetryToast] = useState<{ message: string; audioId: string } | null>(null);
@@ -380,6 +384,13 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enterpriseGate]);
 
+  useEffect(() => {
+    if (enterpriseGate !== "connected" || !onboardingComplete) return;
+    void getSttRuntime()
+      .then((info) => setSarvamConfigured(info?.sarvam_configured ?? false))
+      .catch(() => setSarvamConfigured(false));
+  }, [enterpriseGate, onboardingComplete]);
+
   const handleEnterpriseDisconnect = useCallback(() => {
     setSettingsOpen(false);
     setEnterpriseGate("required");
@@ -451,7 +462,12 @@ export default function App() {
       setTokenBuf("");
       if (errorCode === "missing_api_keys") {
         setRetryToast(null);
-        setErrorBanner("API keys required — open Settings to add them.");
+        const sarvamMissing = msg.toLowerCase().includes("sarvam");
+        setErrorBanner(
+          sarvamMissing
+            ? "Sarvam API key required — open Settings → API keys."
+            : "API keys required — open Settings to add them.",
+        );
         setSettingsSection("api-keys");
         setSettingsOpen(true);
       }
@@ -665,6 +681,11 @@ export default function App() {
   const needsEnterprise = enterpriseGate === "required";
   const needsSetup = !corePermissionsReady || !onboardingComplete;
   const workspaceOnly = needsEnterprise && onboardingComplete && corePermissionsReady;
+  const showSarvamPrompt =
+    enterpriseGate === "connected" &&
+    onboardingComplete &&
+    sarvamConfigured === false &&
+    !sarvamPromptDismissed;
 
   if (needsEnterprise || needsSetup) {
     return (
@@ -937,6 +958,16 @@ export default function App() {
         showOverlay={heartbeat.showOverlay}
         justRecovered={heartbeat.justRecovered}
       />
+
+      {showSarvamPrompt && (
+        <SarvamKeyPrompt
+          onDismiss={() => setSarvamPromptDismissed(true)}
+          onSaved={() => {
+            setSarvamConfigured(true);
+            setSarvamPromptDismissed(true);
+          }}
+        />
+      )}
     </div>
   );
 }

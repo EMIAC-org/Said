@@ -18,9 +18,9 @@ import { EnterpriseConnectForm } from "@/components/EnterpriseConnectForm";
 import type { EnterpriseConnection } from "@/lib/enterprise";
 import { getConnection, completeEmailAuth, DEFAULT_CLOUD_SERVER_URL } from "@/lib/enterprise";
 import type { AppSnapshot, Preferences } from "@/types";
-import { getPreferences, patchPreferences, openExternal } from "@/lib/invoke";
+import { getPreferences, patchPreferences, openExternal, syncCredentialVault } from "@/lib/invoke";
 
-type Step = "welcome" | "account" | "permissions" | "keys" | "hotkey";
+type Step = "welcome" | "account" | "permissions" | "keys" | "sarvam" | "hotkey";
 
 interface Props {
   snapshot: AppSnapshot | null;
@@ -93,8 +93,11 @@ export function OnboardingFlow({
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [groqKey, setGroqKey] = useState("");
   const [deepgramKey, setDeepgramKey] = useState("");
+  const [sarvamKey, setSarvamKey] = useState("");
   const [keySaving, setKeySaving] = useState(false);
   const [keyError, setKeyError] = useState("");
+  const [sarvamSaving, setSarvamSaving] = useState(false);
+  const [sarvamError, setSarvamError] = useState("");
   const [workspacePreview, setWorkspacePreview] = useState<EnterpriseConnection | null>(null);
 
   // account step: personal vs workspace sub-view.
@@ -123,6 +126,7 @@ export function OnboardingFlow({
         setPrefs(p);
         if (p.groq_api_key) setGroqKey(p.groq_api_key);
         if (p.deepgram_api_key) setDeepgramKey(p.deepgram_api_key);
+        if (p.sarvam_api_key) setSarvamKey(p.sarvam_api_key);
       }
     });
   }, []);
@@ -220,6 +224,33 @@ export function OnboardingFlow({
     }
   }, [groqKey, deepgramKey, goNext]);
 
+  const handleSaveSarvam = useCallback(async () => {
+    const trimmed = sarvamKey.trim();
+    if (!trimmed) {
+      setSarvamError("Enter your Sarvam API key or skip for now.");
+      return;
+    }
+    setSarvamSaving(true);
+    setSarvamError("");
+    try {
+      const updated = await patchPreferences({
+        sarvam_api_key: trimmed,
+        stt_provider: "sarvam",
+      });
+      if (updated) setPrefs(updated);
+      try {
+        await syncCredentialVault();
+      } catch {
+        /* key saved locally; vault sync retries on connect */
+      }
+      goNext();
+    } catch {
+      setSarvamError("Failed to save Sarvam key. Try again.");
+    } finally {
+      setSarvamSaving(false);
+    }
+  }, [sarvamKey, goNext]);
+
   const handleHotkeySelect = useCallback(async (key: string) => {
     await patchPreferences({ record_hotkey: key });
     onFinish();
@@ -235,8 +266,8 @@ export function OnboardingFlow({
         title="Welcome to AirNote."
         subtitle={
           isWindows
-            ? "A two-minute setup. Create your account, grant microphone access, add two free API keys, pick a hold-key — then you’ll never type by hand again."
-            : "A two-minute setup. Create your account, grant three permissions, add two free API keys, pick a hold-key — then you’ll never type by hand again."
+            ? "A two-minute setup. Create your account, grant microphone access, add Groq + Deepgram keys (Sarvam optional), pick a hold-key — then you’ll never type by hand again."
+            : "A two-minute setup. Create your account, grant three permissions, add Groq + Deepgram keys (Sarvam optional), pick a hold-key — then you’ll never type by hand again."
         }
         brandTagline={
           isWindows
@@ -545,8 +576,8 @@ export function OnboardingFlow({
         totalSteps={TOTAL_STEPS}
         eyebrow="Voice engine"
         title="Connect your voice."
-        subtitle="Two free API keys do all the work. Both take under a minute."
-        brandTagline="Two free keys. Speech-to-text and LLM polish — both on free tiers that cover daily use."
+        subtitle="Groq + Deepgram are required. Sarvam (recommended for Hinglish) is optional on the next step."
+        brandTagline="Groq polishes; Deepgram transcribes. Both have free tiers that cover daily use."
         brandKicker="Stored locally"
         brandQuote={`Your keys never leave this ${isWindows ? "PC" : "Mac"} except directly to Groq and Deepgram.`}
         topRight={<span>{stepLabel(step)}</span>}
@@ -594,7 +625,62 @@ export function OnboardingFlow({
     );
   }
 
-  // ── Step 5: Hotkey ───────────────────────────────────────────────────────
+  // ── Step 5: Sarvam (optional) ────────────────────────────────────────────
+  if (step === "sarvam") {
+    return (
+      <OnboardingShell
+        step={stepIndex}
+        totalSteps={TOTAL_STEPS}
+        eyebrow="Recommended"
+        title="Try Sarvam for Hinglish."
+        subtitle="Saaras v3 codemix is stronger on Hindi–English mix. Add a free Sarvam key now, or skip — you can add it later."
+        brandTagline="New model available — Saaras v3 batch transcription on release, tuned for codemix."
+        brandKicker="Optional"
+        brandQuote="Skip is fine — dictation keeps working on Deepgram until you add Sarvam."
+        topRight={<span>{stepLabel(step)}</span>}
+        bottomNote={<span>Get a key at dashboard.sarvam.ai/key-management</span>}
+        onBack={goBack}
+      >
+        <div className="mt-7 flex flex-col gap-3">
+          <KeyCard
+            color="#5b4cdb"
+            letter="S"
+            name="Sarvam"
+            href="https://dashboard.sarvam.ai/key-management"
+            placeholder="sk_…"
+            value={sarvamKey}
+            onChange={setSarvamKey}
+            connected={!!prefs?.sarvam_api_key}
+          />
+
+          {sarvamError && (
+            <p className="text-[12px] text-center" style={{ color: "hsl(var(--destructive))" }}>
+              {sarvamError}
+            </p>
+          )}
+
+          <button
+            onClick={handleSaveSarvam}
+            disabled={sarvamSaving || !sarvamKey.trim()}
+            className="btn-primary btn-lg w-full mt-1"
+          >
+            {sarvamSaving ? "Saving…" : "Save & enable Sarvam"}
+            {!sarvamSaving && <ArrowRight size={14} />}
+          </button>
+          <button
+            type="button"
+            onClick={goNext}
+            disabled={sarvamSaving}
+            className="btn-ghost btn-lg w-full"
+          >
+            Skip for now
+          </button>
+        </div>
+      </OnboardingShell>
+    );
+  }
+
+  // ── Step 6: Hotkey ───────────────────────────────────────────────────────
   const currentHotkey = prefs?.record_hotkey ?? "caps_lock";
   const options: { key: string; glyph: string; label: string; desc: string }[] = [
     { key: "caps_lock",    glyph: "⇪",  label: "Caps Lock",     desc: "Single key, easy to hold." },

@@ -14,8 +14,8 @@ use clap::Parser;
 use tracing::info;
 
 use said_control_plane::{
-    AppState, LarkConfig, ai_worker, build_router, meeting_hub, notification_hub,
-    notification_worker, routes, store, vocab_worker,
+    AppState, LarkConfig, ai_worker, build_router, meeting_hub, memory_hygiene_worker,
+    notification_hub, notification_worker, routes, store, vocab_worker,
 };
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -58,6 +58,10 @@ struct Cli {
     /// Deepgram API key for guest browser STT relay
     #[arg(long, env = "DEEPGRAM_API_KEY", default_value = "")]
     deepgram_api_key: String,
+
+    /// Sarvam API key for server-runtime STT when AIRNOTE_STT_PROVIDER=sarvam
+    #[arg(long, env = "SARVAM_API_KEY", default_value = "")]
+    sarvam_api_key: String,
 
     /// Groq API key for server-runtime polish latency probes
     #[arg(long, env = "GROQ_API_KEY", default_value = "")]
@@ -119,15 +123,19 @@ async fn main() {
 
     // Build privacy-safe org vocabulary suggestions once daily.
     vocab_worker::start_vocab_aggregation_worker(db.clone());
+    memory_hygiene_worker::start_memory_hygiene_worker(db.clone());
 
     let groq_api_key = if cli.groq_api_key.trim().is_empty() {
         cli.gateway_api_key.clone()
     } else {
         cli.groq_api_key.clone()
     };
+    let stt_provider = said_control_plane::stt::runtime_stt_provider();
     info!(
-        "[cp] runtime credential env present: deepgram={} groq={} runtime_credentials_key={}",
+        "[cp] runtime stt_provider={} credential env: deepgram={} sarvam={} groq={} runtime_credentials_key={}",
+        stt_provider,
         !cli.deepgram_api_key.trim().is_empty(),
+        !cli.sarvam_api_key.trim().is_empty(),
         !groq_api_key.trim().is_empty(),
         !cli.runtime_credentials_key.trim().is_empty(),
     );
@@ -139,6 +147,8 @@ async fn main() {
         hub,
         notifications,
         deepgram_api_key: cli.deepgram_api_key,
+        sarvam_api_key: cli.sarvam_api_key,
+        stt_provider,
         groq_api_key,
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
         divo_base_url: cli.divo_base_url,

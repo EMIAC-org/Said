@@ -3,14 +3,14 @@
 use axum::{
     Json,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser};
+use crate::{AppState, auth::AuthUser, tenant};
 
 #[derive(Deserialize)]
 pub struct ClientBody {
@@ -51,44 +51,6 @@ pub struct ClientUsage {
     pub word_count: i64,
 }
 
-async fn resolve_org(
-    state: &AppState,
-    account_id: Uuid,
-) -> Result<Uuid, (StatusCode, Json<Value>)> {
-    let row: Option<Uuid> =
-        sqlx::query_scalar("SELECT org_id FROM org_members WHERE account_id = $1 LIMIT 1")
-            .bind(account_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(db_err)?;
-
-    row.ok_or_else(|| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "you must belong to an org"})),
-        )
-    })
-}
-
-async fn resolve_org_role(
-    state: &AppState,
-    account_id: Uuid,
-) -> Result<(Uuid, String), (StatusCode, Json<Value>)> {
-    let row: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT org_id, role FROM org_members WHERE account_id = $1 LIMIT 1")
-            .bind(account_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(db_err)?;
-
-    row.ok_or_else(|| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "you must belong to an org"})),
-        )
-    })
-}
-
 fn require_viewer(role: &str) -> Result<(), (StatusCode, Json<Value>)> {
     if role.eq_ignore_ascii_case("admin")
         || role.eq_ignore_ascii_case("COMPANY_ADMIN")
@@ -108,10 +70,11 @@ fn require_viewer(role: &str) -> Result<(), (StatusCode, Json<Value>)> {
 /// POST /v1/clients/register — upsert desktop install on connect.
 pub async fn register(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(body): Json<ClientBody>,
 ) -> Result<StatusCode, (StatusCode, Json<Value>)> {
-    let org_id = resolve_org(&state, user.account_id).await?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
     let device_id = body.device_id.trim();
     if device_id.is_empty() {
         return Err((
@@ -156,10 +119,11 @@ pub async fn register(
 /// POST /v1/clients/heartbeat — refresh last_seen_at.
 pub async fn heartbeat(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(body): Json<ClientBody>,
 ) -> Result<StatusCode, (StatusCode, Json<Value>)> {
-    let org_id = resolve_org(&state, user.account_id).await?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
     let device_id = body.device_id.trim();
     if device_id.is_empty() {
         return Err((
@@ -193,8 +157,7 @@ pub async fn heartbeat(
     .map_err(db_err)?;
 
     if updated.rows_affected() == 0 {
-        // Client row missing — re-register
-        return register(State(state), user, Json(body)).await;
+        return register(State(state), headers, user, Json(body)).await;
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -203,16 +166,11 @@ pub async fn heartbeat(
 /// GET /v1/orgs/:org_id/clients — list org desktop installs.
 pub async fn list_org_clients(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(org_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let (member_org, role) = resolve_org_role(&state, user.account_id).await?;
-    if member_org != org_id {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "not a member of this org"})),
-        ));
-    }
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
     require_viewer(&role)?;
 
     let clients: Vec<ClientRow> = sqlx::query_as::<_, ClientRow>(
@@ -244,24 +202,20 @@ pub async fn list_org_clients(
 /// GET /v1/orgs/:org_id/clients/:account_id/usage — 7-day usage for one user.
 pub async fn client_usage(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path((org_id, account_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let (member_org, role) = resolve_org_role(&state, user.account_id).await?;
-    if member_org != org_id {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "not a member of this org"})),
-        ));
-    }
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
     require_viewer(&role)?;
 
     let row: Option<(i64, i64)> = sqlx::query_as(
         "SELECT COALESCE(SUM(polish_count), 0), COALESCE(SUM(word_count), 0)
-           FROM usage_events
-          WHERE account_id = $1
+           FROM org_usage_daily
+          WHERE org_id = $1 AND account_id = $2
             AND event_date >= (CURRENT_DATE - INTERVAL '7 days')",
     )
+    .bind(org_id)
     .bind(account_id)
     .fetch_optional(&state.db)
     .await
@@ -277,16 +231,11 @@ pub async fn client_usage(
 /// GET /v1/orgs/:org_id/stats — dashboard aggregates.
 pub async fn org_stats(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(org_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let (member_org, role) = resolve_org_role(&state, user.account_id).await?;
-    if member_org != org_id {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "not a member of this org"})),
-        ));
-    }
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
     require_viewer(&role)?;
 
     let active_desktops: i64 = sqlx::query_scalar(
@@ -298,48 +247,40 @@ pub async fn org_stats(
     .await
     .map_err(db_err)?;
 
-    let total_word_count: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(ue.word_count), 0)
-           FROM usage_events ue
-           JOIN org_members om ON om.account_id = ue.account_id
-          WHERE om.org_id = $1
-            AND ue.event_date >= (CURRENT_DATE - INTERVAL '30 days')",
+    let total_desktops: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM desktop_clients WHERE org_id = $1")
+            .bind(org_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(db_err)?;
+
+    let member_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM org_members WHERE org_id = $1")
+            .bind(org_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(db_err)?;
+
+    let (polish_7d, words_7d): (i64, i64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(polish_count), 0), COALESCE(SUM(word_count), 0)
+           FROM org_usage_daily
+          WHERE org_id = $1
+            AND event_date >= (CURRENT_DATE - INTERVAL '7 days')",
     )
     .bind(org_id)
-    .fetch_one(&state.db)
+    .fetch_optional(&state.db)
     .await
-    .map_err(db_err)?;
-
-    let recent: Vec<ClientRow> = {
-        sqlx::query_as::<_, ClientRow>(
-            "SELECT dc.id, dc.account_id, dc.device_id, dc.platform, dc.app_version,
-                    dc.hostname, dc.first_seen_at, dc.last_seen_at,
-                    a.email, om.lark_name, om.lark_avatar_url,
-                    CASE
-                      WHEN om.lark_user_id IS NOT NULL THEN 'lark'
-                      WHEN om.auth_source IS NOT NULL THEN om.auth_source
-                      ELSE 'email'
-                    END AS auth_source,
-                    (om.lark_user_id IS NOT NULL) AS lark_connected,
-                    dc.company_bucket_version, dc.company_vocab_synced_at,
-                    dc.personal_vocab_count, dc.personal_alias_count
-               FROM desktop_clients dc
-               JOIN accounts a ON a.id = dc.account_id
-               LEFT JOIN org_members om ON om.account_id = dc.account_id AND om.org_id = dc.org_id
-              WHERE dc.org_id = $1
-              ORDER BY dc.last_seen_at DESC
-              LIMIT 5",
-        )
-        .bind(org_id)
-        .fetch_all(&state.db)
-        .await
-        .map_err(db_err)?
-    };
+    .map_err(db_err)?
+    .unwrap_or((0, 0));
 
     Ok(Json(json!({
         "active_desktops": active_desktops,
-        "total_word_count_30d": total_word_count,
-        "recent_clients": recent,
+        "total_desktops": total_desktops,
+        "member_count": member_count,
+        "usage_7d": {
+            "polish_count": polish_7d,
+            "word_count": words_7d,
+        },
     })))
 }
 

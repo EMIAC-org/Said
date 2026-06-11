@@ -7,7 +7,7 @@
 use axum::{
     Json,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse},
 };
 use chrono::{DateTime, Duration, Utc};
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser};
+use crate::{AppState, auth::AuthUser, tenant};
 
 const GUEST_JOIN_HTML: &str = include_str!("../../admin/guest-join.html");
 
@@ -50,21 +50,26 @@ struct InviteInfo {
 
 pub async fn create_guest_link(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(meeting_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
+
     let host_ok: bool = sqlx::query_scalar(
         "SELECT EXISTS(
             SELECT 1
               FROM meetings m
               JOIN meeting_participants mp
-                ON mp.meeting_id = m.id AND mp.account_id = $2
+                ON mp.meeting_id = m.id AND mp.account_id = $3
              WHERE m.id = $1
-               AND m.created_by = $2
+               AND m.org_id = $2
+               AND m.created_by = $3
                AND m.status IN ('scheduled', 'live')
         )",
     )
     .bind(meeting_id)
+    .bind(org_id)
     .bind(user.account_id)
     .fetch_one(&state.db)
     .await

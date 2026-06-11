@@ -15,6 +15,7 @@ mod permissions;
 mod recovery; // crash-safe dictation audio capture + relaunch recovery
 mod server_runtime_stream;
 mod speaker_suppression;
+mod telemetry;
 
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -910,8 +911,12 @@ struct HotPathCache(Arc<tokio::sync::RwLock<HotPathCacheInner>>);
 struct HotPathCacheInner {
     /// User's STT language setting (e.g. "hi", "multi", "auto").
     language: String,
+    /// Active STT vendor from preferences (`deepgram` | `sarvam`).
+    stt_provider: String,
     /// Saved Deepgram API key from preferences.
     deepgram_key: String,
+    /// Saved Sarvam API key from preferences.
+    sarvam_key: String,
     /// Resolved STT mode sent to Deepgram.
     stt_mode: String,
     /// Personal vocabulary terms sent to Deepgram as `keyterm=` biases.
@@ -1739,16 +1744,16 @@ fn toggle_message_polish_mode(app: &tauri::AppHandle) {
     );
 }
 
-fn insert_text_prefer_direct(label: &str, text: &str) -> Result<(), String> {
+fn insert_text_prefer_direct(label: &str, text: &str) -> (Result<(), String>, bool) {
     match paster::type_text(text) {
-        Ok(true) => Ok(()),
+        Ok(true) => (Ok(()), false),
         Ok(false) => {
             tracing::warn!("[{label}] direct typing unavailable — falling back to clipboard paste");
-            paster::paste(text)
+            (paster::paste(text), true)
         }
         Err(e) => {
             tracing::warn!("[{label}] direct typing failed: {e} — falling back to clipboard paste");
-            paster::paste(text)
+            (paster::paste(text), true)
         }
     }
 }
@@ -2357,6 +2362,96 @@ async fn test_voice_prompt(
     api::test_voice_prompt(&ep, transcript, draft_body).await
 }
 
+#[derive(serde::Serialize)]
+struct SttRuntimeInfo {
+    provider: String,
+    preferred_provider: String,
+    effective_provider: String,
+    deepgram_configured: bool,
+    /// Sarvam key saved in SQLite preferences (app-start prompt gate).
+    sarvam_configured: bool,
+    /// Sarvam key available for STT at runtime (prefs or dev env fallback).
+    sarvam_runtime_ready: bool,
+}
+
+fn sarvam_key_saved_in_prefs(pref_key: Option<&str>) -> bool {
+    pref_key.map(str::trim).is_some_and(|k| !k.is_empty())
+}
+
+#[tauri::command]
+async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeInfo, String> {
+    match get_endpoint(&backend) {
+        Ok(ep) => match api::get_preferences(&ep).await {
+            Ok(p) => {
+                let preferred = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
+                let sarvam_saved = sarvam_key_saved_in_prefs(p.sarvam_api_key.as_deref());
+                let sarvam_runtime_ready =
+                    said_core::stt::resolve_sarvam_api_key(p.sarvam_api_key.as_deref()).is_some();
+                let has_deepgram =
+                    said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref())
+                        .is_some();
+                let effective = said_core::stt::resolve_effective_stt_provider(
+                    &p.stt_provider,
+                    sarvam_runtime_ready,
+                    has_deepgram,
+                );
+                Ok(SttRuntimeInfo {
+                    provider: effective.clone(),
+                    preferred_provider: preferred,
+                    effective_provider: effective,
+                    deepgram_configured: has_deepgram,
+                    sarvam_configured: sarvam_saved,
+                    sarvam_runtime_ready,
+                })
+            }
+            Err(_) => {
+                let sarvam_runtime_ready =
+                    said_core::stt::resolve_sarvam_api_key(None).is_some();
+                Ok(SttRuntimeInfo {
+                    provider: "deepgram".into(),
+                    preferred_provider: "deepgram".into(),
+                    effective_provider: "deepgram".into(),
+                    deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
+                    sarvam_configured: false,
+                    sarvam_runtime_ready,
+                })
+            }
+        },
+        Err(_) => {
+            let sarvam_runtime_ready = said_core::stt::resolve_sarvam_api_key(None).is_some();
+            Ok(SttRuntimeInfo {
+                provider: "deepgram".into(),
+                preferred_provider: "deepgram".into(),
+                effective_provider: "deepgram".into(),
+                deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
+                sarvam_configured: false,
+                sarvam_runtime_ready,
+            })
+        }
+    }
+}
+
+fn hot_cache_effective_stt_provider(app: &tauri::AppHandle) -> String {
+    app.try_state::<HotPathCache>()
+        .and_then(|hot| {
+            hot.0.try_read().ok().map(|guard| {
+                let has_sarvam =
+                    said_core::stt::resolve_sarvam_api_key(Some(guard.sarvam_key.as_str()))
+                        .is_some();
+                let has_deepgram =
+                    said_core::stt::resolve_deepgram_api_key(Some(guard.deepgram_key.as_str()))
+                        .is_some();
+                said_core::stt::resolve_effective_stt_provider(
+                    &guard.stt_provider,
+                    has_sarvam,
+                    has_deepgram,
+                )
+            })
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "deepgram".to_string())
+}
+
 #[tauri::command]
 async fn patch_preferences(
     backend: State<'_, BackendState>,
@@ -2398,7 +2493,9 @@ async fn patch_preferences(
             // Keep hot-path cache in sync — no HTTP needed next recording.
             let mut hot = hot_cache.0.write().await;
             hot.language = p.language.clone();
+            hot.stt_provider = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
             hot.deepgram_key = p.deepgram_api_key.clone().unwrap_or_default();
+            hot.sarvam_key = p.sarvam_api_key.clone().unwrap_or_default();
         }
         Err(e) => tracing::warn!("[patch_prefs] backend error: {e}"),
     }
@@ -2967,7 +3064,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     };
     match started {
         Ok(snap) => {
-            let (_session_gen, _recording_id) = app.state::<RecordingSessionState>().begin();
+            let (_session_gen, run_id) = app.state::<RecordingSessionState>().begin();
             let route = if DIVO_START_PENDING.swap(false, Ordering::SeqCst) {
                 RecordingRoute::Divo
             } else {
@@ -2983,6 +3080,20 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             };
             if let Ok(mut route_state) = app.state::<RecordingRouteState>().0.lock() {
                 *route_state = Some(route);
+            }
+            let mode = match route {
+                RecordingRoute::Divo => "divo",
+                RecordingRoute::Meeting => "meeting",
+                RecordingRoute::Normal if said_core::prefs::load().message_polish_mode => {
+                    "message_polish"
+                }
+                RecordingRoute::Normal => "normal_voice",
+            };
+            if let Some(ep) = app
+                .try_state::<BackendState>()
+                .and_then(|b| b.0.lock().ok().and_then(|g| g.clone()))
+            {
+                telemetry::on_run_start(&ep, &run_id, mode, None);
             }
             tracing::info!("[record] started — state={}", snap.state);
             diag::breadcrumb("start:recording");
@@ -3145,7 +3256,9 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
         }
     }
 
-    // ── P5: Start Deepgram WS streaming immediately ────────────────────────────
+    // ── P5: Live STT WS (Deepgram) or chunk drain (batch-only providers) ───────
+    let stt_provider = hot_cache_effective_stt_provider(app);
+    let batch_only_stt = said_core::stt::use_batch_stt_only(&stt_provider);
     let chunk_recv = shared.lock().ok().and_then(|mut d| d.take_chunk_receiver());
     if let Some(chunk_recv) = chunk_recv {
         // Crash-safe recovery: capture this dictation's audio to disk so a crash
@@ -3162,6 +3275,14 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             .try_state::<RecordingSessionState>()
             .and_then(|s| s.current().map(|(_, id)| id))
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if batch_only_stt && !is_meeting_capture {
+            tracing::info!(
+                "[stt] provider={stt_provider} — skipping Deepgram WS; backend will batch-STT on release"
+            );
+            dg_stream::spawn_chunk_drain(recording_id.clone(), chunk_recv);
+            return;
+        }
+
         let streaming_state = app.state::<StreamingState>();
         let (transcript_tx, transcript_rx) =
             tokio::sync::oneshot::channel::<Option<dg_stream::StreamingTranscript>>();
@@ -3474,8 +3595,16 @@ fn do_finish_recording(
         // 16kHz × 16-bit × mono = 32,000 bytes/sec, plus 44 byte WAV header
         let wav_duration_s = (wav.len().saturating_sub(44)) as f64 / 32_000.0;
 
-        let pre_transcript: Option<dg_stream::StreamingTranscript> = if let Some(rx) = transcript_rx
+        let message_polish_mode = said_core::prefs::load().message_polish_mode;
+        let stt_provider = hot_cache_effective_stt_provider(&app2);
+        let pre_transcript: Option<dg_stream::StreamingTranscript> = if message_polish_mode
+            || said_core::stt::use_batch_stt_only(&stt_provider)
         {
+            tracing::info!(
+                "[finish] batch-only STT (provider={stt_provider}) — skipping WS pre-transcript"
+            );
+            None
+        } else if let Some(rx) = transcript_rx {
             let wait_start = tokio::time::Instant::now();
             match tokio::time::timeout(std::time::Duration::from_millis(2500), rx).await {
                 Ok(Ok(Some(t))) if !t.transcript.is_empty() => {
@@ -3551,7 +3680,7 @@ fn do_finish_recording(
             &back_arc2,
             wav,
             None,
-            client_run_id,
+            client_run_id.clone(),
             pre_transcript,
             None,
             screen_context,
@@ -3730,6 +3859,7 @@ fn do_finish_recording(
                 start_edit_watcher(
                     back3,
                     app2.clone(),
+                    client_run_id.clone(),
                     done.recording_id.clone(),
                     done.polished.clone(),
                     watch_start,
@@ -3967,13 +4097,16 @@ async fn run_voice_polish_sse(
         }
     };
 
-    let done = if let Some(transcript) = pre_transcript {
+    let had_ws_pretranscript = pre_transcript.is_some();
+    let wav_len = wav.len();
+    let target_app_for_telemetry = target_app.clone();
+    let done_result = if let Some(transcript) = pre_transcript {
         tracing::info!("[pipeline] fast path: sending WAV + WS transcript to backend");
         api::stream_voice_polish(
             &ep,
             wav,
             target_app,
-            client_run_id,
+            client_run_id.clone(),
             Some(transcript.transcript),
             Some(transcript.meta),
             repair_mode,
@@ -3981,13 +4114,13 @@ async fn run_voice_polish_sse(
             message_polish_mode,
             &mut on_polish_event,
         )
-        .await?
+        .await
     } else {
         api::stream_voice_polish(
             &ep,
             wav,
             target_app,
-            client_run_id,
+            client_run_id.clone(),
             None,
             None,
             repair_mode,
@@ -3995,12 +4128,22 @@ async fn run_voice_polish_sse(
             message_polish_mode,
             &mut on_polish_event,
         )
-        .await?
+        .await
+    };
+    let done = match done_result {
+        Ok(d) => d,
+        Err(e) => {
+            if let Some(run_id) = client_run_id.as_deref() {
+                telemetry::on_pipeline_error(&ep, run_id, None);
+            }
+            return Err(e);
+        }
     };
 
     let n_typed = token_count.load(std::sync::atomic::Ordering::Relaxed);
     let n_failed = fail_count.load(std::sync::atomic::Ordering::Relaxed);
     let mut output_pasted = false;
+    let mut used_clipboard_fallback = false;
     if suppress_local {
         tracing::info!("[main] meeting/divo mode — skipping paste for polished chunk");
     } else if typed_any.load(std::sync::atomic::Ordering::Relaxed) {
@@ -4073,8 +4216,11 @@ async fn run_voice_polish_sse(
             done.polished.len()
         );
         if !done.polished.is_empty() {
-            match insert_text_prefer_direct("main_final_insert", &done.polished) {
-                Ok(_) => {
+            let (insert_res, clipboard) =
+                insert_text_prefer_direct("main_final_insert", &done.polished);
+            used_clipboard_fallback = clipboard;
+            match insert_res {
+                Ok(()) => {
                     output_pasted = true;
                 }
                 Err(e) => {
@@ -4141,6 +4287,50 @@ async fn run_voice_polish_sse(
                 "status": output_status,
                 "message": output_message,
             }),
+        );
+    }
+
+    if let Some(run_id) = client_run_id.as_deref() {
+        let mode = if is_divo {
+            "divo"
+        } else if is_meeting {
+            "meeting"
+        } else if message_polish_mode {
+            "message_polish"
+        } else {
+            "normal_voice"
+        };
+        let audio_seconds = wav_len as f64 / (16_000.0 * 2.0);
+        let word_count = done.polished.split_whitespace().count() as i32;
+        let char_count = done.polished.chars().count() as i32;
+        let stt_provider = hot_cache_effective_stt_provider(app);
+        let stt_model = said_core::stt::telemetry_stt_model(&stt_provider).to_string();
+        let stt_path =
+            said_core::stt::telemetry_stt_path(&stt_provider, had_ws_pretranscript).to_string();
+        telemetry::on_pipeline_done(
+            &ep,
+            run_id,
+            telemetry::PipelineTelemetry {
+                recording_id: done.recording_id.clone(),
+                mode: mode.to_string(),
+                target_app: target_app_for_telemetry.clone(),
+                audio_seconds,
+                word_count,
+                char_count,
+                transcribe_ms: done.latency_ms.transcribe as i32,
+                embed_ms: done.latency_ms.embed as i32,
+                polish_ms: done.latency_ms.polish as i32,
+                total_ms: done.latency_ms.total as i32,
+                success: !done.polished.is_empty() || output_pasted,
+                error_code: None,
+                used_clipboard_fallback,
+                used_ws_pretranscript: had_ws_pretranscript,
+                used_http_stt_fallback: !had_ws_pretranscript,
+                stt_provider,
+                stt_model,
+                stt_path,
+                polished_preview: done.polished.clone(),
+            },
         );
     }
 
@@ -4692,6 +4882,7 @@ fn retry_recording_spawn(
             start_edit_watcher(
                 back3,
                 app2.clone(),
+                None,
                 done.recording_id.clone(),
                 done.polished.clone(),
                 watch_start,
@@ -5386,6 +5577,59 @@ async fn get_enterprise_status(
 }
 
 #[tauri::command]
+async fn list_workspaces(
+    backend: State<'_, BackendState>,
+) -> Result<api::WorkspaceListResponse, String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    api::list_workspaces(&server_url, &token, status.active_org_id.as_deref()).await
+}
+
+#[tauri::command]
+async fn activate_workspace(
+    org_id: String,
+    backend: State<'_, BackendState>,
+) -> Result<String, String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    let active = api::activate_workspace_on_server(&server_url, &token, &org_id).await?;
+    api::set_local_active_org(&ep, Some(&active)).await?;
+    Ok(active)
+}
+
+#[tauri::command]
+async fn deactivate_workspace(backend: State<'_, BackendState>) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    api::deactivate_workspace_on_server(&server_url, &token).await?;
+    api::set_local_active_org(&ep, None).await
+}
+
+#[tauri::command]
 fn get_device_id() -> String {
     said_core::paths::device_id()
 }
@@ -5635,6 +5879,7 @@ fn cancel_edit_watcher(app: &tauri::AppHandle, reason: &str) {
 fn start_edit_watcher(
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
     app: tauri::AppHandle,
+    client_run_id: Option<String>,
     recording_id: String,
     polished: String,
     watch_start: std::time::Instant,
@@ -5666,6 +5911,7 @@ fn start_edit_watcher(
             token.clone(),
             back_arc,
             app_for_task.clone(),
+            client_run_id,
             recording_id,
             polished,
             watch_start,
@@ -5689,6 +5935,7 @@ async fn watch_for_edit(
     token: CancellationToken,
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
     app: tauri::AppHandle,
+    client_run_id: Option<String>,
     recording_id: String,
     polished: String,                // the AI-generated text we pasted
     watch_start: std::time::Instant, // captured at the call site, right after paste
@@ -5949,6 +6196,12 @@ async fn watch_for_edit(
         // ── AX was readable — compare values directly ──────────────────────────
         if effective_val == post_paste {
             tracing::info!("[edit-watch] ax_no_edit for {recording_id}");
+            if let (Some(run_id), Some(ep)) = (
+                client_run_id.as_deref(),
+                back_arc.lock().ok().and_then(|g| g.clone()),
+            ) {
+                telemetry::on_accepted_no_edit(&ep, run_id);
+            }
             return;
         }
         user_kept = extract_kept(
@@ -5973,6 +6226,12 @@ async fn watch_for_edit(
         tracing::info!(
             "[edit-watch] ax_unreadable_skip for {recording_id} — no clipboard or selection fallback"
         );
+        if let (Some(run_id), Some(ep)) = (
+            client_run_id.as_deref(),
+            back_arc.lock().ok().and_then(|g| g.clone()),
+        ) {
+            telemetry::on_accepted_no_edit(&ep, run_id);
+        }
         return;
     }
 
@@ -5980,6 +6239,20 @@ async fn watch_for_edit(
 
     if user_kept.is_empty() || user_kept.trim() == polished.trim() {
         tracing::info!("[edit-watch] no diff for {recording_id} — skipping");
+        if let (Some(run_id), Some(ep)) = (
+            client_run_id.as_deref(),
+            back_arc.lock().ok().and_then(|g| g.clone()),
+        ) {
+            telemetry::on_edit_outcome(
+                &ep,
+                run_id,
+                &polished,
+                &user_kept,
+                true,
+                user_kept.is_empty(),
+                true,
+            );
+        }
         return;
     }
 
@@ -5995,12 +6268,24 @@ async fn watch_for_edit(
             "[edit-watch] user_kept has no word overlap with polished — garbage, skipping. kept={:?}",
             user_kept.chars().take(40).collect::<String>()
         );
+        if let (Some(run_id), Some(ep)) = (
+            client_run_id.as_deref(),
+            back_arc.lock().ok().and_then(|g| g.clone()),
+        ) {
+            telemetry::on_accepted_no_edit(&ep, run_id);
+        }
         return;
     }
 
     // Whitespace / punctuation / AX-jitter filter (no API call needed).
     if !is_meaningful_edit(&polished, &user_kept) {
         tracing::info!("[edit-watch] edit not meaningful for {recording_id} — skipping");
+        if let (Some(run_id), Some(ep)) = (
+            client_run_id.as_deref(),
+            back_arc.lock().ok().and_then(|g| g.clone()),
+        ) {
+            telemetry::on_accepted_no_edit(&ep, run_id);
+        }
         return;
     }
 
@@ -6042,6 +6327,19 @@ async fn watch_for_edit(
                     resp.reason,
                     resp.pending_id
                 );
+
+                if let Some(run_id) = client_run_id.as_deref() {
+                    telemetry::on_edit_outcome(
+                        ep,
+                        run_id,
+                        &polished,
+                        &user_kept,
+                        false,
+                        user_kept.trim().is_empty(),
+                        false,
+                    );
+                    telemetry::on_classify_result(ep, run_id, &resp);
+                }
 
                 if let Some(email) = resp.learned_emails.first() {
                     if !email.trim().is_empty() {
@@ -6945,6 +7243,11 @@ fn main() {
                                 .ok()
                                 .and_then(|p| p.deepgram_api_key.clone())
                                 .unwrap_or_default();
+                            let sarvam_key = prefs_res
+                                .as_ref()
+                                .ok()
+                                .and_then(|p| p.sarvam_api_key.clone())
+                                .unwrap_or_default();
                             let stt_bias = stt_bias_res.unwrap_or_default();
                             tracing::info!(
                                 "[hot_cache] seeded mode={} keyterms={} replacements={}",
@@ -6953,9 +7256,18 @@ fn main() {
                                 stt_bias.replacements.len()
                             );
                             let hot = app_h.state::<HotPathCache>();
+                            let stt_provider = prefs_res
+                                .as_ref()
+                                .ok()
+                                .map(|p| {
+                                    said_core::stt::resolve_provider_from_pref(&p.stt_provider)
+                                })
+                                .unwrap_or_else(|| "deepgram".to_string());
                             let mut c = hot.0.write().await;
                             c.language = language;
+                            c.stt_provider = stt_provider;
                             c.deepgram_key = deepgram_key.clone();
+                            c.sarvam_key = sarvam_key;
                             c.stt_mode = stt_bias.stt_mode.clone();
                             c.keyterms = stt_bias.keyterms.clone();
                             c.replacements = stt_bias.replacements.clone();
@@ -7629,6 +7941,7 @@ fn main() {
             set_status_bar_interactive,
             get_backend_endpoint,
             get_preferences,
+            get_stt_runtime,
             get_voice_prompt,
             save_voice_prompt_draft,
             apply_voice_prompt_draft,
@@ -7650,6 +7963,9 @@ fn main() {
             stop_enterprise_oauth_listener,
             clear_enterprise_auth,
             get_enterprise_status,
+            list_workspaces,
+            activate_workspace,
+            deactivate_workspace,
             get_device_id,
             get_hostname,
             cloud_login,

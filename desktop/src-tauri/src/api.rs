@@ -37,6 +37,8 @@ pub struct Preferences {
     #[serde(default)]
     pub deepgram_api_key: Option<String>,
     #[serde(default)]
+    pub sarvam_api_key: Option<String>,
+    #[serde(default)]
     pub gemini_api_key: Option<String>,
     #[serde(default)]
     pub gateway_api_key: Option<String>,
@@ -47,10 +49,17 @@ pub struct Preferences {
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
     #[serde(default = "default_llm_provider")]
     pub llm_provider: String,
+    /// STT routing: "deepgram" | "sarvam"
+    #[serde(default = "default_stt_provider")]
+    pub stt_provider: String,
 }
 
 fn default_llm_provider() -> String {
     "gateway".to_string()
+}
+
+fn default_stt_provider() -> String {
+    "deepgram".to_string()
 }
 
 fn default_learning_enabled() -> bool {
@@ -89,6 +98,8 @@ pub struct PrefsUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deepgram_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub sarvam_api_key: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gemini_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groq_api_key: Option<Option<String>>,
@@ -97,6 +108,9 @@ pub struct PrefsUpdate {
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_provider: Option<String>,
+    /// STT routing: "deepgram" | "sarvam"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,6 +237,7 @@ fn redact_pref_key_fields(raw: &str) -> String {
     for field in [
         "gateway_api_key",
         "deepgram_api_key",
+        "sarvam_api_key",
         "gemini_api_key",
         "groq_api_key",
     ] {
@@ -816,7 +831,25 @@ pub struct EnterpriseStatus {
     pub email: Option<String>,
     pub server_url: Option<String>,
     pub org_name: Option<String>,
+    pub active_org_id: Option<String>,
+    pub personal_mode: Option<bool>,
     pub token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrgMembership {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    pub role: String,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceListResponse {
+    pub orgs: Vec<OrgMembership>,
+    pub active_org_id: Option<String>,
+    pub personal_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1001,6 +1034,98 @@ pub async fn get_enterprise_status(ep: &BackendEndpoint) -> Result<EnterpriseSta
         .json::<EnterpriseStatus>()
         .await
         .map_err(|e| format!("parse enterprise status: {e}"))
+}
+
+pub async fn set_local_active_org(
+    ep: &BackendEndpoint,
+    active_org_id: Option<&str>,
+) -> Result<(), String> {
+    let url = format!("{}/v1/cloud/active-org", ep.url);
+    let body = serde_json::json!({ "active_org_id": active_org_id });
+    let status = Client::new()
+        .put(&url)
+        .header("Authorization", ep.bearer())
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("set active org failed: {e}"))?
+        .status();
+    if status.is_success() || status.as_u16() == 204 {
+        Ok(())
+    } else {
+        Err(format!("set active org error: {status}"))
+    }
+}
+
+pub async fn list_workspaces(
+    server_url: &str,
+    token: &str,
+    active_org_id: Option<&str>,
+) -> Result<WorkspaceListResponse, String> {
+    let url = format!("{}/v1/orgs", server_url.trim_end_matches('/'));
+    let mut req = Client::new()
+        .get(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(10));
+    if let Some(org_id) = active_org_id.filter(|s| !s.trim().is_empty()) {
+        req = req.header("x-airnote-org-id", org_id);
+    }
+    req.send()
+        .await
+        .map_err(|e| format!("list orgs failed: {e}"))?
+        .json::<WorkspaceListResponse>()
+        .await
+        .map_err(|e| format!("parse org list: {e}"))
+}
+
+pub async fn activate_workspace_on_server(
+    server_url: &str,
+    token: &str,
+    org_id: &str,
+) -> Result<String, String> {
+    let url = format!(
+        "{}/v1/orgs/{}/activate",
+        server_url.trim_end_matches('/'),
+        org_id
+    );
+    let resp = Client::new()
+        .post(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("activate org failed: {e}"))?;
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("activate org error: {}", extract_error(&body)));
+    }
+    let value: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse activate response: {e}"))?;
+    value
+        .get("active_org_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "activate response missing active_org_id".to_string())
+}
+
+pub async fn deactivate_workspace_on_server(server_url: &str, token: &str) -> Result<(), String> {
+    let url = format!("{}/v1/orgs/deactivate", server_url.trim_end_matches('/'));
+    let resp = Client::new()
+        .post(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("deactivate org failed: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        let body = resp.text().await.unwrap_or_default();
+        Err(format!("deactivate org error: {}", extract_error(&body)))
+    }
 }
 
 pub async fn get_runtime_live_config(ep: &BackendEndpoint) -> Result<RuntimeLiveConfig, String> {
@@ -1577,6 +1702,122 @@ pub fn recording_audio_url(ep: &BackendEndpoint, id: &str) -> String {
 /// is fragile because it needs CORS + an Authorization header + media playback
 /// to all line up inside the webview. Keeping the authenticated fetch in Tauri
 /// makes play/download buttons independent of browser fetch behavior.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TelemetryRunPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_app: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub word_count: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub char_count: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcribe_ms: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embed_ms: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub polish_ms: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_ms: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paste_ms: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub success: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_clipboard_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_ws_pretranscript: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_http_stt_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_detected: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_bucket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_distance_chars: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_distance_words: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accepted_as_is: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_entire_output: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub re_recorded_quickly: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub learning_candidate: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub learning_modal_shown: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub learning_confirmed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub learning_dismissed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_learning_saved: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_learning_blocked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_numbers: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_currency: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_percent: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_email: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_url: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_code_like_terms: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mixed_language: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protected_term_hit: Option<bool>,
+    #[serde(default)]
+    pub finalize: bool,
+}
+
+pub async fn patch_telemetry_run(
+    ep: &BackendEndpoint,
+    run_id: &str,
+    patch: &TelemetryRunPatch,
+) -> Result<(), String> {
+    let url = format!("{}/v1/telemetry/runs/{}", ep.url, run_id);
+    let status = Client::new()
+        .patch(&url)
+        .bearer_auth(&ep.secret)
+        .json(patch)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .map_err(|e| format!("telemetry patch failed: {e}"))?
+        .status();
+    if status.is_success() || status.as_u16() == 204 {
+        Ok(())
+    } else {
+        Err(format!("telemetry patch error: {status}"))
+    }
+}
+
 pub async fn recording_audio_bytes(ep: &BackendEndpoint, id: &str) -> Result<Vec<u8>, String> {
     let url = recording_audio_url(ep, id);
     let res = Client::new()

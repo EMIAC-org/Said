@@ -53,6 +53,18 @@ export interface AppSnapshot {
 
 // ── Backend types (mirrored from airnote-backend) ────────────────────────────
 
+/** STT provider from preferences plus key readiness (for API key section). */
+export interface SttRuntimeInfo {
+  provider: string;
+  preferred_provider: string;
+  effective_provider: string;
+  deepgram_configured: boolean;
+  /** Sarvam key saved in SQLite (app-start prompt gate). */
+  sarvam_configured: boolean;
+  /** Sarvam key available at runtime (prefs or dev env). */
+  sarvam_runtime_ready: boolean;
+}
+
 export interface Preferences {
   user_id:            string;
   selected_model:     string;
@@ -70,11 +82,14 @@ export interface Preferences {
   // API keys stored in SQLite — never leave the device
   gateway_api_key:    string | null;
   deepgram_api_key:   string | null;
+  sarvam_api_key:     string | null;
   gemini_api_key:     string | null;
   groq_api_key:       string | null;
   cerebras_api_key:   string | null;
   /** LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex" */
   llm_provider:       string;
+  /** STT routing: "deepgram" | "sarvam" */
+  stt_provider:       string;
 }
 
 export interface PrefsUpdate {
@@ -93,11 +108,14 @@ export interface PrefsUpdate {
   // API keys — set to null to clear
   gateway_api_key?:    string | null;
   deepgram_api_key?:   string | null;
+  sarvam_api_key?:     string | null;
   gemini_api_key?:     string | null;
   groq_api_key?:       string | null;
   cerebras_api_key?:   string | null;
   /** LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex" */
   llm_provider?:       string;
+  /** STT routing: "deepgram" | "sarvam" */
+  stt_provider?:       string;
 }
 
 export interface PromptTemplateResponse {

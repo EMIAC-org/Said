@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use crate::{
-    AppState,
+    AppState, cp_client,
     store::{
         prefs::{self, Preferences},
         users,
@@ -93,6 +93,7 @@ struct RuntimeStatusPayload {
 struct AuthContext {
     token: String,
     server_url: String,
+    active_org_id: Option<String>,
 }
 
 pub async fn sync(
@@ -154,14 +155,17 @@ pub async fn sync_saved_provider_credentials(
             "display_name": credential.display_name,
             "secret": credential.secret,
         });
-        match state
-            .http_client
-            .post(&url)
-            .bearer_auth(&auth.token)
-            .json(&body)
-            .timeout(std::time::Duration::from_secs(SYNC_TIMEOUT_SECS))
-            .send()
-            .await
+        match cp_client::with_org_id(
+            state
+                .http_client
+                .post(&url)
+                .bearer_auth(&auth.token)
+                .json(&body)
+                .timeout(std::time::Duration::from_secs(SYNC_TIMEOUT_SECS)),
+            auth.active_org_id.as_deref(),
+        )
+        .send()
+        .await
         {
             Ok(resp) if resp.status().is_success() => {
                 response.synced += 1;
@@ -212,13 +216,16 @@ pub async fn sync_saved_provider_credentials(
             auth.server_url.trim_end_matches('/'),
             row.id
         );
-        match state
-            .http_client
-            .delete(&url)
-            .bearer_auth(&auth.token)
-            .timeout(std::time::Duration::from_secs(SYNC_TIMEOUT_SECS))
-            .send()
-            .await
+        match cp_client::with_org_id(
+            state
+                .http_client
+                .delete(&url)
+                .bearer_auth(&auth.token)
+                .timeout(std::time::Duration::from_secs(SYNC_TIMEOUT_SECS)),
+            auth.active_org_id.as_deref(),
+        )
+        .send()
+        .await
         {
             Ok(resp) if resp.status().is_success() || resp.status().as_u16() == 204 => {
                 response.revoked += 1;
@@ -325,7 +332,11 @@ fn resolve_auth(state: &AppState) -> Option<AuthContext> {
         .or_else(|| std::env::var("AIRNOTE_CONTROL_PLANE_URL").ok())
         .or_else(|| std::env::var("CLOUD_API_URL").ok())
         .unwrap_or_else(|| DEFAULT_CONTROL_PLANE_URL.to_string());
-    Some(AuthContext { token, server_url })
+    Some(AuthContext {
+        token,
+        server_url,
+        active_org_id: user.active_org_id,
+    })
 }
 
 async fn fetch_server_credentials(
@@ -336,13 +347,15 @@ async fn fetch_server_credentials(
         "{}/v1/runtime/credentials",
         auth.server_url.trim_end_matches('/')
     );
-    let resp = http
-        .get(&url)
-        .bearer_auth(&auth.token)
-        .timeout(std::time::Duration::from_secs(SYNC_TIMEOUT_SECS))
-        .send()
-        .await
-        .map_err(|e| format!("credentials list request failed: {e}"))?;
+    let resp = cp_client::with_org_id(
+        http.get(&url)
+            .bearer_auth(&auth.token)
+            .timeout(std::time::Duration::from_secs(SYNC_TIMEOUT_SECS)),
+        auth.active_org_id.as_deref(),
+    )
+    .send()
+    .await
+    .map_err(|e| format!("credentials list request failed: {e}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -361,13 +374,15 @@ async fn fetch_encryption_configured(
         "{}/v1/runtime/status",
         auth.server_url.trim_end_matches('/')
     );
-    let resp = http
-        .get(&url)
-        .bearer_auth(&auth.token)
-        .timeout(std::time::Duration::from_secs(SYNC_TIMEOUT_SECS))
-        .send()
-        .await
-        .map_err(|e| format!("runtime status request failed: {e}"))?;
+    let resp = cp_client::with_org_id(
+        http.get(&url)
+            .bearer_auth(&auth.token)
+            .timeout(std::time::Duration::from_secs(SYNC_TIMEOUT_SECS)),
+        auth.active_org_id.as_deref(),
+    )
+    .send()
+    .await
+    .map_err(|e| format!("runtime status request failed: {e}"))?;
     if !resp.status().is_success() {
         return Ok(false);
     }
@@ -402,6 +417,13 @@ fn provider_secrets(prefs: &Preferences) -> Vec<ProviderSecret> {
         out.push(ProviderSecret {
             provider: "deepgram",
             display_name: "Deepgram API key",
+            secret,
+        });
+    }
+    if let Some(secret) = said_core::stt::resolve_sarvam_api_key(prefs.sarvam_api_key.as_deref()) {
+        out.push(ProviderSecret {
+            provider: "sarvam",
+            display_name: "Sarvam API key",
             secret,
         });
     }
@@ -465,6 +487,7 @@ mod tests {
             updated_at: 0,
             gateway_api_key: Some("gsk_test_gateway_key_1234567890".into()),
             deepgram_api_key: Some("dg_test".into()),
+            sarvam_api_key: None,
             gemini_api_key: None,
             groq_api_key: None,
             cerebras_api_key: None,
@@ -478,5 +501,38 @@ mod tests {
         assert!(providers.contains(&"deepgram"));
         assert!(providers.contains(&"groq"));
         assert!(providers.contains(&"gateway"));
+    }
+
+    #[test]
+    fn provider_secrets_includes_sarvam_when_key_set() {
+        let prefs = Preferences {
+            user_id: "u".into(),
+            selected_model: "fast".into(),
+            tone_preset: "neutral".into(),
+            custom_prompt: None,
+            language: "auto".into(),
+            output_language: "hinglish".into(),
+            auto_paste: true,
+            edit_capture: true,
+            polish_text_hotkey: "cmd+shift+p".into(),
+            record_hotkey: "caps_lock".into(),
+            learning_enabled: true,
+            server_runtime_enabled: false,
+            server_audio_runtime_enabled: false,
+            updated_at: 0,
+            gateway_api_key: None,
+            deepgram_api_key: Some("dg_test".into()),
+            sarvam_api_key: Some("sk_sarvam_test".into()),
+            gemini_api_key: None,
+            groq_api_key: None,
+            cerebras_api_key: None,
+            llm_provider: "groq".into(),
+            stt_provider: "sarvam".into(),
+        };
+        let providers: Vec<&str> = provider_secrets(&prefs)
+            .iter()
+            .map(|p| p.provider)
+            .collect();
+        assert!(providers.contains(&"sarvam"));
     }
 }

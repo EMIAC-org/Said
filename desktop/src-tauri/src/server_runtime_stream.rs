@@ -221,6 +221,7 @@ async fn runtime_ws_actor_loop(mut rx: UnboundedReceiver<RuntimeWsActorCommand>)
                             &recording_id,
                             &prefs.selected_model,
                             &prefs.output_language,
+                            &prefs.stt_provider,
                             screen_context,
                         );
                         if send_runtime_text_with_reconnect(
@@ -350,6 +351,7 @@ fn build_voice_start_message(
     recording_id: &str,
     selected_model: &str,
     output_language: &str,
+    stt_provider: &str,
     screen_context: Option<String>,
 ) -> String {
     json!({
@@ -358,6 +360,7 @@ fn build_voice_start_message(
         "mode": "normal_voice",
         "selected_model": selected_model,
         "output_language": output_language,
+        "stt_provider": said_core::stt::resolve_provider_from_pref(stt_provider),
         "source": "desktop_live_mirror",
         "platform": std::env::consts::OS,
         "app_version": option_env!("CARGO_PKG_VERSION"),

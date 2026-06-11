@@ -809,6 +809,7 @@ mod tests {
             server_runtime_enabled: false,
             server_audio_runtime_enabled: false,
             deepgram_api_key: None,
+            sarvam_api_key: None,
             gemini_api_key: None,
             gateway_api_key: None,
             groq_api_key: None,
@@ -883,7 +884,7 @@ mod tests {
         let prompt = build_system_prompt_with_vocab(&p, &[], &[], &[]);
         let user = build_user_message("meac ke office mein maine naya mac liya hai", "hinglish");
 
-        assert!(prompt.contains("minimal, literal edits"));
+        assert!(prompt.contains("literal dictation normalizer"));
         assert!(prompt.contains("Treat the transcript as ground truth"));
         assert!(prompt.contains("Do not rewrite style"));
         assert!(prompt.contains("Polish My Message mode"));

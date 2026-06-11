@@ -47,6 +47,8 @@ impl TestServer {
             hub,
             notifications: said_control_plane::notification_hub::NotificationHub::new(),
             deepgram_api_key: String::new(),
+            sarvam_api_key: String::new(),
+            stt_provider: "deepgram".to_string(),
             groq_api_key: String::new(),
             diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
             divo_base_url: String::new(),
@@ -2000,4 +2002,91 @@ async fn s32_diagnostics_rejects_private_context() {
             .await
             .unwrap();
     assert_eq!(count, 0, "private transcript event should not be stored");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Multi-org: cross-workspace IDOR guard
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn s_multi_org_idor_blocks_cross_workspace_clients() {
+    unsafe {
+        std::env::set_var("MULTI_ORG_ENABLED", "true");
+    }
+    let srv = TestServer::start().await;
+    let suffix = Uuid::new_v4().to_string();
+    let (account_id, token) = srv.create_account(&suffix).await;
+    let org_a = srv
+        .create_org(token, account_id, &format!("{suffix}-a"), "MEMBER")
+        .await;
+    let org_b = srv
+        .create_org(token, account_id, &format!("{suffix}-b"), "MEMBER")
+        .await;
+
+    let activate_a = srv
+        .client
+        .post(srv.url(&format!("/v1/orgs/{org_a}/activate")))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(activate_a.status(), 200, "activate org A failed");
+
+    let cross = srv
+        .client
+        .get(srv.url(&format!("/v1/orgs/{org_b}/clients")))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        cross.status(),
+        403,
+        "listing org B while org A is active must be forbidden"
+    );
+
+    let activate_b = srv
+        .client
+        .post(srv.url(&format!("/v1/orgs/{org_b}/activate")))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(activate_b.status(), 200, "activate org B failed");
+
+    let allowed = srv
+        .client
+        .get(srv.url(&format!("/v1/orgs/{org_b}/clients")))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        allowed.status(),
+        200,
+        "listing org B after activation should succeed"
+    );
+
+    let list = srv
+        .client
+        .get(srv.url("/v1/orgs"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list.status(), 200);
+    let body: Value = list.json().await.unwrap();
+    let org_ids: Vec<String> = body["orgs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|o| o["id"].as_str().map(str::to_string))
+        .collect();
+    assert!(org_ids.contains(&org_a.to_string()));
+    assert!(org_ids.contains(&org_b.to_string()));
+    assert_eq!(body["active_org_id"].as_str().unwrap(), org_b.to_string());
+
+    unsafe {
+        std::env::remove_var("MULTI_ORG_ENABLED");
+    }
 }

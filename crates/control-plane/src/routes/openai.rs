@@ -4,15 +4,15 @@
 //!   GET    /v1/openai/status      — check connection status
 //!   DELETE /v1/openai/disconnect  — remove connected account (admin only)
 
-use axum::{Json, extract::State, http::StatusCode};
+use crate::{AppState, auth::AuthUser, codex_client, tenant};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use uuid::Uuid;
-
-use crate::{AppState, auth::AuthUser, codex_client};
-
-// ── Request types ───────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct CompleteBody {
@@ -22,14 +22,12 @@ pub struct CompleteBody {
     pub label: Option<String>,
 }
 
-// ── POST /v1/openai/connect ─────────────────────────────────────────────────
-
 pub async fn connect(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // Must be org admin
-    let (_org_id, role) = resolve_org_and_role(&state, user.account_id).await?;
+    let (_, role) = tenant::require_active_org_role(&state, &user, &headers).await?;
     require_admin(&role)?;
 
     let session = codex_client::create_pkce_session();
@@ -41,17 +39,15 @@ pub async fn connect(
     })))
 }
 
-// ── POST /v1/openai/complete ────────────────────────────────────────────────
-
 pub async fn complete(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(body): Json<CompleteBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let (org_id, role) = resolve_org_and_role(&state, user.account_id).await?;
+    let (org_id, role) = tenant::require_active_org_role(&state, &user, &headers).await?;
     require_admin(&role)?;
 
-    // Exchange the authorization code for tokens
     let tokens = codex_client::exchange_code(&body.code, &body.code_verifier)
         .await
         .map_err(|e| {
@@ -63,8 +59,6 @@ pub async fn complete(
 
     let now = Utc::now();
     let expires_at = now + chrono::Duration::seconds(tokens.expires_in);
-
-    // Determine plan_type: prefer the body override, otherwise leave NULL
     let plan_type = body.plan_type.as_deref();
     let label = body.label.as_deref();
 
@@ -96,19 +90,14 @@ pub async fn complete(
     })))
 }
 
-// ── GET /v1/openai/status ───────────────────────────────────────────────────
-
 pub async fn status(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let org_id = resolve_org(&state, user.account_id).await?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
 
-    let row: Option<(
-        Option<String>,        // openai_plan_type
-        Option<String>,        // openai_label
-        Option<DateTime<Utc>>, // openai_connected_at
-    )> = sqlx::query_as(
+    let row: Option<(Option<String>, Option<String>, Option<DateTime<Utc>>)> = sqlx::query_as(
         "SELECT openai_plan_type, openai_label, openai_connected_at
            FROM orgs
           WHERE id = $1 AND openai_access_token IS NOT NULL",
@@ -134,13 +123,12 @@ pub async fn status(
     }
 }
 
-// ── DELETE /v1/openai/disconnect ────────────────────────────────────────────
-
 pub async fn disconnect(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
 ) -> Result<StatusCode, (StatusCode, Json<Value>)> {
-    let (org_id, role) = resolve_org_and_role(&state, user.account_id).await?;
+    let (org_id, role) = tenant::require_active_org_role(&state, &user, &headers).await?;
     require_admin(&role)?;
 
     sqlx::query(
@@ -161,38 +149,6 @@ pub async fn disconnect(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-/// Resolve the caller's org_id AND role from org_members, or return 403.
-async fn resolve_org_and_role(
-    state: &AppState,
-    account_id: Uuid,
-) -> Result<(Uuid, String), (StatusCode, Json<Value>)> {
-    let row: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT org_id, role FROM org_members WHERE account_id = $1 LIMIT 1")
-            .bind(account_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(db_err)?;
-
-    row.ok_or_else(|| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "you must belong to an org"})),
-        )
-    })
-}
-
-/// Resolve the caller's org_id, discarding the role.
-async fn resolve_org(
-    state: &AppState,
-    account_id: Uuid,
-) -> Result<Uuid, (StatusCode, Json<Value>)> {
-    let (org_id, _role) = resolve_org_and_role(state, account_id).await?;
-    Ok(org_id)
-}
-
-/// Require COMPANY_ADMIN role (or the lowercase "admin" used internally).
 fn require_admin(role: &str) -> Result<(), (StatusCode, Json<Value>)> {
     if role.eq_ignore_ascii_case("admin") || role.eq_ignore_ascii_case("COMPANY_ADMIN") {
         Ok(())

@@ -1,10 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Clock, Copy, Play, Pause, Trash2, MoreHorizontal, Check, Search, X, Download, RefreshCw } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { groupHistory } from "@/types";
 import type { Recording } from "@/types";
-import { deleteRecording, listHistory, downloadRecordingAudio as saveRecordingAudio } from "@/lib/invoke";
-import { useAudioPlayer } from "@/lib/useAudioPlayer";
+import {
+  deleteRecording,
+  listHistory,
+  downloadRecordingAudio as saveRecordingAudio,
+  getRecordingAudioBytes,
+} from "@/lib/invoke";
 
 // ── Download helper ───────────────────────────────────────────────────────────
 
@@ -18,8 +21,64 @@ function audioFilename(recording: Recording): string {
 
 /** Ask Tauri to save the WAV. Native app prompts for the destination path. */
 async function downloadRecordingAudio(recording: Recording): Promise<string | null> {
-  if (!recording.audio_id) return null;
   return await saveRecordingAudio(recording.id, audioFilename(recording));
+}
+
+/** Group full Recording rows by calendar day — preserves ids (unlike groupHistory). */
+function groupRecordingsByDay(recordings: Recording[]): { label: string; items: Recording[] }[] {
+  if (recordings.length === 0) return [];
+
+  const now = Date.now();
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const todayMs = startOfToday.getTime();
+  const yesterdayMs = todayMs - 86_400_000;
+
+  const buckets = new Map<string, Recording[]>();
+  const order: string[] = [];
+
+  for (const rec of recordings) {
+    const d = new Date(rec.timestamp_ms);
+    const startOfItemDay = new Date(rec.timestamp_ms);
+    startOfItemDay.setHours(0, 0, 0, 0);
+    const itemDayMs = startOfItemDay.getTime();
+
+    let label: string;
+    if (itemDayMs >= todayMs) {
+      label = "TODAY";
+    } else if (itemDayMs >= yesterdayMs) {
+      label = "YESTERDAY";
+    } else {
+      label = d
+        .toLocaleDateString("en-US", {
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+        })
+        .toUpperCase();
+    }
+
+    if (!buckets.has(label)) {
+      buckets.set(label, []);
+      order.push(label);
+    }
+    buckets.get(label)!.push(rec);
+  }
+
+  return order.map((label) => ({ label, items: buckets.get(label)! }));
+}
+
+/** One shared player — same pattern as the dashboard history rows. */
+let _activeAudio: HTMLAudioElement | null = null;
+let _activeBlobUrl: string | null = null;
+
+function stopSharedAudio() {
+  _activeAudio?.pause();
+  _activeAudio = null;
+  if (_activeBlobUrl) {
+    URL.revokeObjectURL(_activeBlobUrl);
+    _activeBlobUrl = null;
+  }
 }
 
 // ── Context menu ──────────────────────────────────────────────────────────────
@@ -27,6 +86,7 @@ async function downloadRecordingAudio(recording: Recording): Promise<string | nu
 interface MenuProps {
   recording:   Recording;
   playingId:   string | null;
+  hasAudio:    boolean;
   onPlay:      () => void;
   onCopy:      () => void;
   onCopyTranscript: () => void;
@@ -36,10 +96,9 @@ interface MenuProps {
   anchorRef:   React.RefObject<HTMLButtonElement | null>;
 }
 
-function RowMenu({ recording, playingId, onPlay, onCopy, onCopyTranscript, onDownload, onDelete, onClose, anchorRef }: MenuProps) {
+function RowMenu({ recording, playingId, hasAudio, onPlay, onCopy, onCopyTranscript, onDownload, onDelete, onClose, anchorRef }: MenuProps) {
   const menuRef  = useRef<HTMLDivElement>(null);
   const isPlaying = playingId === recording.id;
-  const hasAudio  = !!recording.audio_id;
 
   // Close on outside click
   useEffect(() => {
@@ -115,18 +174,28 @@ interface RowProps {
   onDownloadSuccess?: (path: string) => void;
 }
 
-// Word-count threshold above which a recording is collapsed with a Read-more
-const TRUNCATE_WORD_LIMIT = 30;
-
 function HistoryRow({ recording, playingId, onPlay, onDelete, onDownloadSuccess }: RowProps) {
   const [menuOpen,    setMenuOpen]    = useState(false);
   const [copied,      setCopied]      = useState<"polished" | "transcript" | false>(false);
-  const [expanded,    setExpanded]    = useState(false);
+  const [showStt,     setShowStt]     = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [hasAudio,    setHasAudio]    = useState(Boolean(recording.audio_id));
   const btnRef = useRef<HTMLButtonElement>(null);
 
+  useEffect(() => {
+    let alive = true;
+    if (recording.audio_id) {
+      setHasAudio(true);
+      return;
+    }
+    void getRecordingAudioBytes(recording.id).then((bytes) => {
+      if (alive && bytes && bytes.length > 0) setHasAudio(true);
+    });
+    return () => { alive = false; };
+  }, [recording.id, recording.audio_id]);
+
   async function handleDownload() {
-    if (!recording.audio_id || downloading) return;
+    if (!hasAudio || downloading) return;
     setDownloading(true);
     try {
       const savedPath = await downloadRecordingAudio(recording);
@@ -261,7 +330,7 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onDownloadSuccess 
       </div>
 
       {/* Action buttons — visible on hover */}
-      <div className="flex-shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="flex-shrink-0 flex items-center gap-1 opacity-100">
         {/* Quick copy */}
         <button
           onClick={handleCopy}
@@ -275,16 +344,39 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onDownloadSuccess 
         </button>
 
         {/* Quick play — only when audio exists */}
-        {recording.audio_id && (
+        {hasAudio && (
           <button
-            onClick={() => onPlay(recording)}
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onPlay(recording); }}
             title={isPlaying ? "Pause" : "Play"}
             className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors"
-            style={{ color: isPlaying ? "hsl(var(--chip-lime-fg))" : "hsl(var(--muted-foreground))" }}
+            style={{ color: isPlaying ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))" }}
             onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-4))"; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
           >
             {isPlaying ? <Pause size={13} /> : <Play size={13} />}
+          </button>
+        )}
+
+        {/* Quick download — only when audio exists */}
+        {hasAudio && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); void handleDownload(); }}
+            disabled={downloading}
+            title={downloading ? "Saving…" : "Download audio"}
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors disabled:opacity-50"
+            style={{
+              color: downloading ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
+            }}
+            onMouseEnter={(e) => { if (!downloading) e.currentTarget.style.background = "hsl(var(--surface-4))"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+          >
+            {downloading ? (
+              <span className="inline-block w-2 h-2 rounded-full bg-current animate-pulse" />
+            ) : (
+              <Download size={13} />
+            )}
           </button>
         )}
 
@@ -311,6 +403,7 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onDownloadSuccess 
             <RowMenu
               recording={recording}
               playingId={playingId}
+              hasAudio={hasAudio}
               onPlay={() => onPlay(recording)}
               onCopy={handleCopy}
               onCopyTranscript={handleCopyTranscript}
@@ -332,7 +425,7 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [query,      setQuery]      = useState("");
   const [refreshing, setRefreshing] = useState(false);
-  const { playingId, play, stop }   = useAudioPlayer();
+  const [playingId,  setPlayingId]  = useState<string | null>(null);
 
   const loadHistory = useCallback(async () => {
     setRefreshing(true);
@@ -357,31 +450,49 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
   }, [recordings, query]);
 
   async function handleDelete(rec: Recording) {
-    stop();
+    stopSharedAudio();
+    setPlayingId(null);
     await deleteRecording(rec.id);
     setRecordings((prev) => prev.filter((r) => r.id !== rec.id));
   }
 
-  function handlePlay(rec: Recording) {
-    play(rec.id, rec.audio_id);
+  async function handlePlay(rec: Recording) {
+    if (playingId === rec.id) {
+      stopSharedAudio();
+      setPlayingId(null);
+      return;
+    }
+    try {
+      const bytes = await getRecordingAudioBytes(rec.id);
+      if (!bytes || bytes.length === 0) return;
+
+      stopSharedAudio();
+      const blob = new Blob([bytes as BlobPart], { type: "audio/wav" });
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      _activeAudio = audio;
+      _activeBlobUrl = url;
+      audio.onended = () => {
+        setPlayingId(null);
+        stopSharedAudio();
+      };
+      audio.onerror = () => {
+        setPlayingId(null);
+        stopSharedAudio();
+      };
+      await audio.play();
+      setPlayingId(rec.id);
+    } catch {
+      setPlayingId(null);
+      stopSharedAudio();
+    }
   }
 
-  const items = filteredRecordings.map((r) => ({
-    timestamp_ms:      r.timestamp_ms,
-    polished:          r.polished,
-    word_count:        r.word_count,
-    recording_seconds: r.recording_seconds,
-    model:             r.model_used,
-    transcribe_ms:     r.transcribe_ms ?? 0,
-    embed_ms:          r.embed_ms ?? 0,
-    polish_ms:         r.polish_ms ?? 0,
-    audio_id:          r.audio_id,
-    edit_count:        r.edit_count,
-  }));
-  const timeline = groupHistory(items);
+  useEffect(() => () => {
+    stopSharedAudio();
+  }, []);
 
-  // Map group index back to recordings for easy lookup
-  const recByTs = new Map(filteredRecordings.map((r) => [r.timestamp_ms, r]));
+  const timeline = groupRecordingsByDay(filteredRecordings);
 
   if (recordings.length === 0) {
     return (
@@ -470,24 +581,20 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
               </div>
 
               <div className="tile overflow-hidden">
-                {group.items.map((item, idx) => {
-                  const rec = recByTs.get(item.timestamp_ms);
-                  if (!rec) return null;
-                  return (
-                    <React.Fragment key={rec.id}>
-                      {idx > 0 && (
-                        <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
-                      )}
-                      <HistoryRow
-                        recording={rec}
-                        playingId={playingId}
-                        onPlay={handlePlay}
-                        onDelete={handleDelete}
-                        onDownloadSuccess={onDownloadSuccess}
-                      />
-                    </React.Fragment>
-                  );
-                })}
+                {group.items.map((rec, idx) => (
+                  <React.Fragment key={rec.id}>
+                    {idx > 0 && (
+                      <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--border))" }} />
+                    )}
+                    <HistoryRow
+                      recording={rec}
+                      playingId={playingId}
+                      onPlay={handlePlay}
+                      onDelete={handleDelete}
+                      onDownloadSuccess={onDownloadSuccess}
+                    />
+                  </React.Fragment>
+                ))}
               </div>
             </div>
           ))}

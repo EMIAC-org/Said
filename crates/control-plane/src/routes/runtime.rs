@@ -17,7 +17,7 @@ use aes_gcm::{
 use axum::{
     Json,
     extract::{Path, Query, State, WebSocketUpgrade, ws::Message},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use base64::{Engine as _, engine::general_purpose};
@@ -26,14 +26,14 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio_tungstenite::{
-    WebSocketStream, connect_async,
-    tungstenite::{Message as DgMessage, client::IntoClientRequest},
-};
+use tokio_tungstenite::{WebSocketStream, tungstenite::Message as DgMessage};
 use uuid::Uuid;
 
+use said_core::stt::is_sarvam;
+
 use crate::notification_hub::DesktopNotification;
-use crate::{AppState, auth::AuthUser};
+use crate::stt::{self, runtime_stt_credential_provider};
+use crate::{AppState, auth::AuthUser, memory_hygiene, org_quota, tenant};
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL_FAST: &str = "llama-3.1-8b-instant";
@@ -57,6 +57,22 @@ type DgSink = futures_util::stream::SplitSink<DgSocket, DgMessage>;
 type DgStream = futures_util::stream::SplitStream<DgSocket>;
 
 // ── Request / response models ───────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct MessagePolishRequest {
+    pub text: String,
+    #[serde(default)]
+    pub client_run_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MessagePolishResponse {
+    pub run_id: String,
+    pub output: String,
+    pub model_used: String,
+    pub prompt_version: String,
+    pub latency_ms: RuntimeLatency,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct VoicePolishRequest {
@@ -87,11 +103,15 @@ pub struct VoiceWavRequest {
     #[serde(default)]
     pub client_run_id: Option<String>,
     #[serde(default)]
+    pub recording_id: Option<String>,
+    #[serde(default)]
     pub device_id: Option<String>,
     #[serde(default)]
     pub platform: Option<String>,
     #[serde(default)]
     pub app_version: Option<String>,
+    #[serde(default)]
+    pub stt_provider: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -395,7 +415,7 @@ pub async fn save_credential(
         ));
     }
     if let Some(org_id) = req.org_id {
-        ensure_org_member(&state, user.account_id, org_id).await?;
+        tenant::ensure_org_member(&state, user.account_id, org_id).await?;
     }
 
     let encrypted = encrypt_secret(&state, secret)?;
@@ -573,7 +593,7 @@ pub async fn revoke_credential(
 ) -> Result<StatusCode, (StatusCode, Json<Value>)> {
     let row = load_owned_credential_secret(&state, user.account_id, id).await?;
     if row.account_id != Some(user.account_id) && row.org_id.is_some() {
-        ensure_org_member(&state, user.account_id, row.org_id.unwrap()).await?;
+        tenant::ensure_org_member(&state, user.account_id, row.org_id.unwrap()).await?;
     }
 
     sqlx::query(
@@ -840,6 +860,7 @@ pub async fn analyze_edit_learning(
 
 pub async fn confirm_learning_batch(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(req): Json<RuntimeConfirmBatchRequest>,
 ) -> Result<Json<RuntimeConfirmBatchResponse>, (StatusCode, Json<Value>)> {
@@ -847,7 +868,8 @@ pub async fn confirm_learning_batch(
         return Err(json_error(StatusCode::BAD_REQUEST, "items are required"));
     }
 
-    let org_id = primary_org_id(&state, user.account_id).await?;
+    let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
+    let org_id = tenant_ctx.active_org_id;
     let mut accepted_terms = Vec::new();
     let mut accepted_aliases = Vec::new();
     let mut learned_terms = Vec::new();
@@ -1005,6 +1027,7 @@ pub async fn confirm_learning_batch(
 
 pub async fn client_event(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(req): Json<ClientEventRequest>,
 ) -> Result<Json<ClientEventResponse>, (StatusCode, Json<Value>)> {
@@ -1016,7 +1039,8 @@ pub async fn client_event(
         ));
     }
 
-    let org_id = primary_org_id(&state, user.account_id).await?;
+    let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
+    let org_id = tenant_ctx.active_org_id;
     let run_id = if let Some(run_id) = req.run_id {
         let owned: bool = sqlx::query_scalar(
             "SELECT EXISTS(
@@ -1093,7 +1117,7 @@ pub async fn notifications_ws(
     Query(query): Query<RuntimeWsQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let (account_id, email) = crate::auth::resolve_ws_token(&query.token, &state)
+    let (account_id, email, _) = crate::auth::resolve_ws_token(&query.token, &state)
         .await
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "invalid or expired token".into()))?;
 
@@ -1157,12 +1181,15 @@ async fn handle_notifications_ws(
 
 pub async fn voice_dry_run(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(req): Json<DryRunRequest>,
 ) -> Result<Json<DryRunResponse>, (StatusCode, Json<Value>)> {
+    let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
     let run_id = create_runtime_session(
         &state,
         user.account_id,
+        tenant_ctx.active_org_id,
         req.client_run_id.as_deref(),
         &req.mode,
         &req.source,
@@ -1196,7 +1223,7 @@ pub async fn voice_ws(
     Query(query): Query<RuntimeWsQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let (account_id, email) = crate::auth::resolve_ws_token(&query.token, &state)
+    let (account_id, email, _) = crate::auth::resolve_ws_token(&query.token, &state)
         .await
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "invalid or expired token".into()))?;
 
@@ -1212,12 +1239,15 @@ async fn handle_voice_ws(
     socket: axum::extract::ws::WebSocket,
 ) {
     let (mut sink, mut stream) = socket.split();
+    let server_stt_default = state.stt_provider.clone();
+    let mut stt_provider = server_stt_default.clone();
     let welcome = json!({
         "type": "runtime.connected",
         "version": 1,
         "account_id": account_id,
         "email": email,
-        "audio_runtime": "deepgram_mvp"
+        "stt_provider": stt_provider,
+        "audio_runtime": if is_sarvam(&stt_provider) { "sarvam_v1" } else { "deepgram_mvp" }
     });
     if sink.send(Message::Text(welcome.to_string())).await.is_err() {
         return;
@@ -1237,6 +1267,7 @@ async fn handle_voice_ws(
     let mut screen_context: Option<String> = None;
     let mut client_run_id: Option<String> = None;
     let mut saw_first_transcript_event = false;
+    let mut stt_sample_rate: u32 = 16_000;
 
     loop {
         tokio::select! {
@@ -1300,10 +1331,44 @@ async fn handle_voice_ws(
                             .and_then(Value::as_u64)
                             .unwrap_or(16_000)
                             .clamp(8_000, 48_000) as u32;
+                        stt_provider = value
+                            .get("stt_provider")
+                            .and_then(Value::as_str)
+                            .map(said_core::stt::resolve_provider_from_pref)
+                            .unwrap_or_else(|| server_stt_default.clone());
+
+                        let ws_org_id = match tenant::resolve_ws_org_id(&state, account_id).await {
+                            Ok(org_id) => org_id,
+                            Err((status, body)) => {
+                                let _ = sink.send(Message::Text(runtime_error_payload(
+                                    None,
+                                    client_run_id.as_deref(),
+                                    "org_resolution_failed",
+                                    Some(status),
+                                    Some(runtime_error_message(&body)),
+                                ).to_string())).await;
+                                continue;
+                            }
+                        };
+                        if let Some(org_id) = ws_org_id {
+                            if let Err((status, body)) =
+                                org_quota::check_runtime_quota(&state, org_id).await
+                            {
+                                let _ = sink.send(Message::Text(runtime_error_payload(
+                                    None,
+                                    client_run_id.as_deref(),
+                                    "quota_exceeded",
+                                    Some(status),
+                                    Some(runtime_error_message(&body)),
+                                ).to_string())).await;
+                                continue;
+                            }
+                        }
 
                         let run_result = create_runtime_session(
                             &state,
                             account_id,
+                            ws_org_id,
                             client_run_id.as_deref(),
                             mode,
                             "desktop_voice",
@@ -1333,14 +1398,31 @@ async fn handle_voice_ws(
                                 continue;
                             }
                         };
-                        let dg_credential = match runtime_provider_secret(&state, account_id, "deepgram").await {
+                        stt_sample_rate = sample_rate;
+                        let credential_provider =
+                            runtime_stt_credential_provider(&stt_provider);
+                        let stt_credential = match runtime_provider_secret(
+                            &state,
+                            account_id,
+                            ws_org_id,
+                            credential_provider,
+                        )
+                        .await
+                        {
                             Ok(secret) => secret,
                             Err((status, body)) => {
-                                let _ = mark_runtime_session(&state, run_id, "failed", Some("deepgram_credential_missing")).await;
+                                let err_kind = format!("{credential_provider}_credential_missing");
+                                let _ = mark_runtime_session(
+                                    &state,
+                                    run_id,
+                                    "failed",
+                                    Some(&err_kind),
+                                )
+                                .await;
                                 let _ = sink.send(Message::Text(runtime_error_payload(
                                     Some(run_id),
                                     client_run_id.as_deref(),
-                                    "deepgram_credential_missing",
+                                    &err_kind,
                                     Some(status),
                                     Some(runtime_error_message(&body)),
                                 ).to_string())).await;
@@ -1348,15 +1430,27 @@ async fn handle_voice_ws(
                             }
                         };
                         tracing::info!(
-                            "[runtime] ws voice.start account={} run_id={} client_run_id={:?} sample_rate={} model={}",
+                            "[runtime] ws voice.start account={} run_id={} client_run_id={:?} stt={} sample_rate={} model={}",
                             account_id,
                             run_id,
                             client_run_id,
+                            stt_provider,
                             sample_rate,
                             selected_model
                         );
                         let connect_start = Instant::now();
-                        match connect_deepgram_runtime(&dg_credential.secret, sample_rate).await {
+                        let stt_model = if is_sarvam(&stt_provider) {
+                            "saaras:v3"
+                        } else {
+                            "nova-3"
+                        };
+                        match stt::connect_runtime_ws(
+                            &stt_provider,
+                            &stt_credential.secret,
+                            sample_rate,
+                        )
+                        .await
+                        {
                             Ok(socket) => {
                                 let connect_ms = connect_start.elapsed().as_millis() as i64;
                                 let (new_sink, new_stream) = socket.split();
@@ -1369,13 +1463,14 @@ async fn handle_voice_ws(
                                 latest_partial.clear();
                                 stt_started_at = Some(Instant::now());
                                 saw_first_transcript_event = false;
-                                let _ = update_credential_used(&state, dg_credential.credential_id).await;
+                                let _ =
+                                    update_credential_used(&state, stt_credential.credential_id).await;
                                 let _ = insert_provider_usage(
                                     &state,
                                     run_id,
-                                    &dg_credential,
-                                    "deepgram",
-                                    Some("nova-3"),
+                                    &stt_credential,
+                                    credential_provider,
+                                    Some(stt_model),
                                     Some(connect_ms),
                                     "connected",
                                     None,
@@ -1388,9 +1483,9 @@ async fn handle_voice_ws(
                                     Some(connect_ms),
                                     None,
                                     json!({
-                                        "provider": "deepgram",
+                                        "provider": credential_provider,
                                         "sample_rate": sample_rate,
-                                        "credential_scope": dg_credential.scope
+                                        "credential_scope": stt_credential.scope
                                     }),
                                 )
                                 .await;
@@ -1405,15 +1500,16 @@ async fn handle_voice_ws(
                             Err(e) => {
                                 let connect_ms = connect_start.elapsed().as_millis() as i64;
                                 let err_msg = e.to_string();
+                                let connect_err = format!("{credential_provider}_connect_failed");
                                 let _ = insert_provider_usage(
                                     &state,
                                     run_id,
-                                    &dg_credential,
-                                    "deepgram",
-                                    Some("nova-3"),
+                                    &stt_credential,
+                                    credential_provider,
+                                    Some(stt_model),
                                     Some(connect_ms),
                                     "error",
-                                    Some("deepgram_connect_failed"),
+                                    Some(&connect_err),
                                 ).await;
                                 let _ = insert_stage_event(
                                     &state,
@@ -1421,16 +1517,25 @@ async fn handle_voice_ws(
                                     "stt_ws_connect",
                                     "error",
                                     Some(connect_ms),
-                                    Some("deepgram_connect_failed"),
+                                    Some(&connect_err),
                                     json!({"error": err_msg.chars().take(240).collect::<String>()}),
                                 ).await;
-                                let _ = mark_runtime_session(&state, run_id, "failed", Some("deepgram_connect_failed")).await;
+                                let _ =
+                                    mark_runtime_session(&state, run_id, "failed", Some(&connect_err))
+                                        .await;
                                 let _ = sink.send(Message::Text(runtime_error_payload(
                                     Some(run_id),
                                     client_run_id.as_deref(),
-                                    "deepgram_connect_failed",
+                                    &connect_err,
                                     None,
-                                    Some("failed to connect to Deepgram".to_string()),
+                                    Some(format!(
+                                        "failed to connect to {}",
+                                        if is_sarvam(&stt_provider) {
+                                            "Sarvam"
+                                        } else {
+                                            "Deepgram"
+                                        }
+                                    )),
                                 ).to_string())).await;
                             }
                         }
@@ -1438,10 +1543,34 @@ async fn handle_voice_ws(
                     "audio.end" => {
                         if let Some(run_id) = active_run.take() {
                             if let Some(mut dg) = dg_sink.take() {
-                                let _ = dg.send(DgMessage::Text(json!({"type": "CloseStream"}).to_string())).await;
+                                if is_sarvam(&stt_provider) {
+                                    let _ = dg.send(DgMessage::Text(
+                                        stt::sarvam::WS_FLUSH_MESSAGE.to_string(),
+                                    )).await;
+                                } else {
+                                    let _ = dg.send(DgMessage::Text(
+                                        json!({"type": "CloseStream"}).to_string(),
+                                    ))
+                                    .await;
+                                }
                             }
                             if let Some(mut dg) = dg_stream.take() {
-                                drain_deepgram_finals(&mut dg, &mut transcript_segments, &mut latest_partial, std::time::Duration::from_millis(1800)).await;
+                                if is_sarvam(&stt_provider) {
+                                    drain_sarvam_finals(
+                                        &mut dg,
+                                        &mut transcript_segments,
+                                        std::time::Duration::from_millis(2500),
+                                    )
+                                    .await;
+                                } else {
+                                    drain_deepgram_finals(
+                                        &mut dg,
+                                        &mut transcript_segments,
+                                        &mut latest_partial,
+                                        std::time::Duration::from_millis(1800),
+                                    )
+                                    .await;
+                                }
                             }
                             let _ = insert_stage_event(
                                 &state,
@@ -1559,7 +1688,17 @@ async fn handle_voice_ws(
                         if let Some(pcm_b64) = value.get("pcm_b64").and_then(Value::as_str) {
                             match general_purpose::STANDARD.decode(pcm_b64) {
                                 Ok(pcm) => {
-                                    forward_audio_frame(&mut dg_sink, &state, active_run, pcm, &mut audio_frames, &mut audio_bytes).await;
+                                    forward_audio_frame(
+                                        &mut dg_sink,
+                                        &state,
+                                        &stt_provider,
+                                        stt_sample_rate,
+                                        active_run,
+                                        pcm,
+                                        &mut audio_frames,
+                                        &mut audio_bytes,
+                                    )
+                                    .await;
                                 }
                                 Err(_) => {
                                     let _ = sink.send(Message::Text(json!({
@@ -1595,7 +1734,17 @@ async fn handle_voice_ws(
                 }
             }
             Message::Binary(bytes) => {
-                forward_audio_frame(&mut dg_sink, &state, active_run, bytes.to_vec(), &mut audio_frames, &mut audio_bytes).await;
+                forward_audio_frame(
+                    &mut dg_sink,
+                    &state,
+                    &stt_provider,
+                    stt_sample_rate,
+                    active_run,
+                    bytes.to_vec(),
+                    &mut audio_frames,
+                    &mut audio_bytes,
+                )
+                .await;
             }
             Message::Close(_) => break,
             _ => {}
@@ -1627,7 +1776,41 @@ async fn handle_voice_ws(
                 };
                 match dg_msg {
                     Ok(DgMessage::Text(text)) => {
-                        if let Some(event) = parse_deepgram_transcript_event(&text) {
+                        if is_sarvam(&stt_provider) {
+                            if let Some(event) = stt::sarvam::parse_ws_message(&text) {
+                                if !saw_first_transcript_event {
+                                    saw_first_transcript_event = true;
+                                    if let Some(run_id) = active_run {
+                                        let first_transcript_ms = stt_started_at
+                                            .map(|t| t.elapsed().as_millis() as i64)
+                                            .unwrap_or_default();
+                                        let _ = insert_stage_event(
+                                            &state,
+                                            run_id,
+                                            "stt_first_transcript",
+                                            "ok",
+                                            Some(first_transcript_ms),
+                                            None,
+                                            json!({
+                                                "kind": "final",
+                                                "chars": event.transcript.chars().count()
+                                            }),
+                                        )
+                                        .await;
+                                    }
+                                }
+                                transcript_segments.push(event.transcript.clone());
+                                if let Some(run_id) = active_run {
+                                    let _ = sink.send(Message::Text(json!({
+                                        "type": "transcript.final",
+                                        "version": 1,
+                                        "run_id": run_id,
+                                        "client_run_id": client_run_id.as_deref(),
+                                        "text": event.transcript
+                                    }).to_string())).await;
+                                }
+                            }
+                        } else if let Some(event) = parse_deepgram_transcript_event(&text) {
                             if !saw_first_transcript_event {
                                 saw_first_transcript_event = true;
                                 if let Some(run_id) = active_run {
@@ -1718,6 +1901,8 @@ async fn handle_voice_ws(
 async fn forward_audio_frame(
     dg_sink: &mut Option<DgSink>,
     state: &AppState,
+    stt_provider: &str,
+    sample_rate: u32,
     active_run: Option<Uuid>,
     pcm: Vec<u8>,
     audio_frames: &mut i64,
@@ -1756,7 +1941,13 @@ async fn forward_audio_frame(
         return;
     };
 
-    if let Err(e) = sink.send(DgMessage::Binary(pcm)).await {
+    let send_result = if is_sarvam(stt_provider) {
+        let msg = stt::sarvam::ws_audio_message(&pcm, sample_rate);
+        sink.send(DgMessage::Text(msg)).await
+    } else {
+        sink.send(DgMessage::Binary(pcm)).await
+    };
+    if let Err(e) = send_result {
         if let Some(run_id) = active_run {
             let _ = insert_stage_event(
                 state,
@@ -1764,7 +1955,7 @@ async fn forward_audio_frame(
                 "stt_ws_write",
                 "error",
                 None,
-                Some("deepgram_write_failed"),
+                Some("stt_write_failed"),
                 json!({"error": e.to_string().chars().take(240).collect::<String>()}),
             )
             .await;
@@ -1772,22 +1963,30 @@ async fn forward_audio_frame(
     }
 }
 
-async fn connect_deepgram_runtime(
-    api_key: &str,
-    sample_rate: u32,
-) -> Result<DgSocket, Box<dyn std::error::Error + Send + Sync>> {
-    let url = format!(
-        "wss://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true&encoding=linear16&sample_rate={sample_rate}&channels=1&interim_results=true&endpointing=1000&utterance_end_ms=2000"
-    );
-    let mut request = url.into_client_request()?;
-    request
-        .headers_mut()
-        .insert("Authorization", format!("Token {api_key}").parse()?);
-    let (socket, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(6), connect_async(request))
-            .await
-            .map_err(|_| "Deepgram runtime websocket connect timed out")??;
-    Ok(socket)
+async fn drain_sarvam_finals(
+    stream: &mut DgStream,
+    transcript_segments: &mut Vec<String>,
+    max_wait: std::time::Duration,
+) {
+    let deadline = tokio::time::Instant::now() + max_wait;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let remaining = deadline - now;
+        match tokio::time::timeout(remaining, stream.next()).await {
+            Ok(Some(Ok(DgMessage::Text(text)))) => {
+                if let Some(event) = stt::sarvam::parse_ws_message(&text) {
+                    transcript_segments.push(event.transcript);
+                }
+            }
+            Ok(Some(Ok(DgMessage::Close(_)))) | Ok(None) => break,
+            Ok(Some(Err(_))) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
 }
 
 async fn drain_deepgram_finals(
@@ -1987,7 +2186,8 @@ async fn polish_runtime_transcript(
     } else {
         GROQ_MODEL_FAST
     };
-    let credential = runtime_provider_secret(state, account_id, "groq").await?;
+    let active_org_id = primary_org_id(state, account_id).await?;
+    let credential = runtime_provider_secret(state, account_id, active_org_id, "groq").await?;
     let model_start = Instant::now();
     let output = call_groq(
         state,
@@ -2132,9 +2332,14 @@ async fn update_runtime_session_result(
 
 pub async fn voice_wav(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(req): Json<VoiceWavRequest>,
 ) -> Result<Json<VoiceWavResponse>, (StatusCode, Json<Value>)> {
+    let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
+    if let Some(org_id) = tenant_ctx.active_org_id {
+        org_quota::check_runtime_quota(&state, org_id).await?;
+    }
     let total_start = Instant::now();
     let wav_data = general_purpose::STANDARD
         .decode(req.wav_b64.trim())
@@ -2151,6 +2356,7 @@ pub async fn voice_wav(
     let run_id = create_runtime_session(
         &state,
         user.account_id,
+        tenant_ctx.active_org_id,
         req.client_run_id.as_deref(),
         "normal_voice",
         "runtime_wav_probe",
@@ -2166,23 +2372,46 @@ pub async fn voice_wav(
     )
     .await?;
 
-    let dg_credential = runtime_provider_secret(&state, user.account_id, "deepgram").await?;
+    let stt_provider = req
+        .stt_provider
+        .as_deref()
+        .map(said_core::stt::resolve_provider_from_pref)
+        .unwrap_or_else(|| state.stt_provider.clone());
+    let credential_provider = runtime_stt_credential_provider(&stt_provider);
+    let stt_credential = runtime_provider_secret(
+        &state,
+        user.account_id,
+        tenant_ctx.active_org_id,
+        credential_provider,
+    )
+    .await?;
+    let stt_model = if is_sarvam(&stt_provider) {
+        "saaras:v3"
+    } else {
+        "nova-3"
+    };
     let stt_start = Instant::now();
-    let transcript = match call_deepgram_batch(&dg_credential.secret, wav_data, "runtime_wav_probe")
-        .await
+    let transcript = match stt::call_batch_stt(
+        &stt_provider,
+        &stt_credential.secret,
+        wav_data,
+        "runtime_wav_probe",
+    )
+    .await
     {
         Ok(transcript) => transcript,
         Err(e) => {
             let stt_ms = stt_start.elapsed().as_millis() as i64;
+            let batch_err = format!("{credential_provider}_batch_failed");
             let _ = insert_provider_usage(
                 &state,
                 run_id,
-                &dg_credential,
-                "deepgram",
-                Some("nova-3"),
+                &stt_credential,
+                credential_provider,
+                Some(stt_model),
                 Some(stt_ms),
                 "error",
-                Some("deepgram_batch_failed"),
+                Some(&batch_err),
             )
             .await;
             let _ = insert_stage_event(
@@ -2191,26 +2420,25 @@ pub async fn voice_wav(
                 "stt_batch_complete",
                 "error",
                 Some(stt_ms),
-                Some("deepgram_batch_failed"),
+                Some(&batch_err),
                 json!({"error": e.chars().take(240).collect::<String>()}),
             )
             .await;
-            let _ =
-                mark_runtime_session(&state, run_id, "failed", Some("deepgram_batch_failed")).await;
+            let _ = mark_runtime_session(&state, run_id, "failed", Some(&batch_err)).await;
             return Err(json_error(
                 StatusCode::BAD_GATEWAY,
-                &format!("Deepgram batch STT failed: {e}"),
+                &format!("{credential_provider} batch STT failed: {e}"),
             ));
         }
     };
     let stt_ms = stt_start.elapsed().as_millis() as i64;
-    update_credential_used(&state, dg_credential.credential_id).await?;
+    update_credential_used(&state, stt_credential.credential_id).await?;
     insert_provider_usage(
         &state,
         run_id,
-        &dg_credential,
-        "deepgram",
-        Some("nova-3"),
+        &stt_credential,
+        credential_provider,
+        Some(stt_model),
         Some(stt_ms),
         "ok",
         None,
@@ -2299,6 +2527,7 @@ pub async fn voice_wav(
         org_id_for_history,
         run_id,
         req.client_run_id.as_deref(),
+        req.recording_id.as_deref(),
         &transcript,
         &output,
         model,
@@ -2323,13 +2552,236 @@ pub async fn voice_wav(
     }))
 }
 
+fn deepseek_base_url() -> String {
+    std::env::var("DEEPSEEK_BASE_URL")
+        .unwrap_or_else(|_| "https://api.deepseek.com".to_string())
+        .trim()
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn deepseek_message_polish_model() -> String {
+    std::env::var("DEEPSEEK_MESSAGE_POLISH_MODEL")
+        .unwrap_or_else(|_| "deepseek-v4-flash".to_string())
+}
+
+fn build_message_polish_system_prompt() -> String {
+    "You are a stateless text processing utility. Your sole function is to transform input text into a professional English format.\n\n\
+     Execution Rules:\n\n\
+     No Dialogue: Do NOT answer questions. Do NOT ask for context. Do NOT provide \"Introduction Mode\" unless the input is specifically \"Hello\" or \"Who are you?\".\n\n\
+     Handle Questions as Data: If the user provides a question (e.g., \"What went wrong?\"), do NOT answer it. Instead, rephrase it into a formal professional inquiry (e.g., \"Please provide a detailed explanation regarding the cause of the discrepancy.\").\n\n\
+     Translation: Automatically detect Hindi/Hinglish and translate to English before rephrasing.\n\n\
+     Tone: Always use a clear, polite, and professional tone.\n\n\
+     Output Format (Strict): Return ONLY the final rephrased text.\n\n\
+     No quotation marks.\n\n\
+     No introductory phrases (e.g., \"Here is the rephrased version\").\n\n\
+     No conversational filler.\n\n\
+     Input-to-Output Examples:\n\n\
+     Input: \"What went wrong and why\"\n\n\
+     Output: Could you please provide a detailed explanation regarding the root cause of these issues?\n\n\
+     Input: \"kaam kab tak khatam hoga?\"\n\n\
+     Output: Could you please provide an estimated timeline for the completion of the task?"
+        .to_string()
+}
+
+fn build_message_polish_user_message(text: &str) -> String {
+    text.to_string()
+}
+
+fn scrub_message_polish_output(output: &str) -> String {
+    let trimmed = output.trim();
+    for prefix in [
+        "Explanation:",
+        "Previous output:",
+        "Here is the rephrased version:",
+        "Rephrased version:",
+    ] {
+        if trimmed.starts_with(prefix) {
+            return trimmed[prefix.len()..].trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+async fn call_deepseek_message_polish(
+    api_key: &str,
+    system_prompt: &str,
+    user_message: &str,
+) -> Result<String, (StatusCode, Json<Value>)> {
+    let model = deepseek_message_polish_model();
+    let url = format!("{}/v1/chat/completions", deepseek_base_url());
+    let estimated_input_tokens = user_message.len() / 4;
+    let max_tokens = (estimated_input_tokens * 2 + 256).min(4096);
+    let body = json!({
+        "model": model,
+        "temperature": 0.0,
+        "top_p": 0.9,
+        "max_tokens": max_tokens,
+        "stream": false,
+        "thinking": { "type": "disabled" },
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_message }
+        ]
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(|e| {
+            json_error(
+                StatusCode::BAD_GATEWAY,
+                &format!("DeepSeek message polish request failed: {e}"),
+            )
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let preview = resp.text().await.unwrap_or_default();
+        tracing::warn!(
+            "[runtime] DeepSeek HTTP {status}: {}",
+            &preview[..preview.len().min(300)]
+        );
+        return Err(json_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("DeepSeek returned {status}"),
+        ));
+    }
+
+    let value: Value = resp.json().await.map_err(|e| {
+        json_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("DeepSeek response parse failed: {e}"),
+        )
+    })?;
+
+    let output = value
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if output.is_empty() {
+        return Err(json_error(
+            StatusCode::BAD_GATEWAY,
+            "DeepSeek returned empty output",
+        ));
+    }
+
+    Ok(output)
+}
+
+// ── Message polish (DeepSeek) ───────────────────────────────────────────────
+
+pub async fn message_polish(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Json(req): Json<MessagePolishRequest>,
+) -> Result<Json<MessagePolishResponse>, (StatusCode, Json<Value>)> {
+    let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
+    let total_start = Instant::now();
+    let text = req.text.trim();
+    if text.is_empty() {
+        return Err(json_error(StatusCode::BAD_REQUEST, "text is required"));
+    }
+
+    let api_key = std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
+        json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "DEEPSEEK_API_KEY is not configured on the server",
+        )
+    })?;
+
+    let run_id = create_runtime_session(
+        &state,
+        user.account_id,
+        tenant_ctx.active_org_id,
+        req.client_run_id.as_deref(),
+        "message_polish",
+        "desktop_message_polish",
+        None,
+        None,
+        None,
+        json!({
+            "endpoint": "message_polish",
+            "input_chars": text.chars().count(),
+        }),
+    )
+    .await?;
+
+    let prompt_start = Instant::now();
+    let system_prompt = build_message_polish_system_prompt();
+    let user_message = build_message_polish_user_message(text);
+    let prompt_ms = prompt_start.elapsed().as_millis() as i64;
+
+    let model = deepseek_message_polish_model();
+    let model_start = Instant::now();
+    let raw_output = call_deepseek_message_polish(&api_key, &system_prompt, &user_message).await?;
+    let output = scrub_message_polish_output(&raw_output);
+    let model_ms = model_start.elapsed().as_millis() as i64;
+    let total_ms = total_start.elapsed().as_millis() as i64;
+
+    insert_stage_event(
+        &state,
+        run_id,
+        "message_polish_model",
+        "ok",
+        None,
+        None,
+        json!({
+            "model": model,
+            "input_chars": text.chars().count(),
+            "output_chars": output.chars().count(),
+        }),
+    )
+    .await?;
+
+    tracing::info!(
+        "[runtime] message polish done account={} run_id={} model={} output_chars={} model_ms={} total_ms={}",
+        user.account_id,
+        run_id,
+        model,
+        output.len(),
+        model_ms,
+        total_ms,
+    );
+
+    Ok(Json(MessagePolishResponse {
+        run_id: run_id.to_string(),
+        output,
+        model_used: model,
+        prompt_version: "message-polish-deepseek-2026-06-09".to_string(),
+        latency_ms: RuntimeLatency {
+            prompt: prompt_ms,
+            model: model_ms,
+            total: total_ms,
+        },
+    }))
+}
+
 // ── Transcript-only polish probe ────────────────────────────────────────────
 
 pub async fn voice_polish(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(req): Json<VoicePolishRequest>,
 ) -> Result<Json<VoicePolishResponse>, (StatusCode, Json<Value>)> {
+    let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
+    if let Some(org_id) = tenant_ctx.active_org_id {
+        org_quota::check_runtime_quota(&state, org_id).await?;
+    }
     let total_start = Instant::now();
     let transcript = req.transcript.trim();
     if transcript.is_empty() {
@@ -2347,6 +2799,7 @@ pub async fn voice_polish(
     let run_id = create_runtime_session(
         &state,
         user.account_id,
+        tenant_ctx.active_org_id,
         req.client_run_id.as_deref(),
         "normal_voice",
         "desktop_voice",
@@ -2392,29 +2845,32 @@ pub async fn voice_polish(
     } else {
         GROQ_MODEL_FAST
     };
-    let credential = match runtime_provider_secret(&state, user.account_id, "groq").await {
-        Ok(credential) => credential,
-        Err(err) => {
-            let _ = insert_stage_event(
-                &state,
-                run_id,
-                "credential_lookup",
-                "error",
-                None,
-                Some("provider_credential_missing"),
-                json!({"provider": "groq"}),
-            )
-            .await;
-            let _ = mark_runtime_session(
-                &state,
-                run_id,
-                "failed",
-                Some("provider_credential_missing"),
-            )
-            .await;
-            return Err(err);
-        }
-    };
+    let credential =
+        match runtime_provider_secret(&state, user.account_id, tenant_ctx.active_org_id, "groq")
+            .await
+        {
+            Ok(credential) => credential,
+            Err(err) => {
+                let _ = insert_stage_event(
+                    &state,
+                    run_id,
+                    "credential_lookup",
+                    "error",
+                    None,
+                    Some("provider_credential_missing"),
+                    json!({"provider": "groq"}),
+                )
+                .await;
+                let _ = mark_runtime_session(
+                    &state,
+                    run_id,
+                    "failed",
+                    Some("provider_credential_missing"),
+                )
+                .await;
+                return Err(err);
+            }
+        };
 
     tracing::info!(
         "[runtime] voice polish start account={} run_id={} model={} credential_scope={} transcript_chars={} vocab_hints={}",
@@ -2586,6 +3042,7 @@ pub async fn voice_polish(
         org_id_for_history,
         run_id,
         req.client_run_id.as_deref(),
+        None,
         transcript,
         &output,
         model,
@@ -2623,6 +3080,7 @@ pub async fn voice_polish(
 async fn create_runtime_session(
     state: &AppState,
     account_id: Uuid,
+    active_org_id: Option<Uuid>,
     client_run_id: Option<&str>,
     mode: &str,
     source: &str,
@@ -2631,7 +3089,7 @@ async fn create_runtime_session(
     app_version: Option<&str>,
     metadata: Value,
 ) -> Result<Uuid, (StatusCode, Json<Value>)> {
-    let org_id = primary_org_id(state, account_id).await?;
+    let org_id = active_org_id;
     let run_id: Uuid = sqlx::query_scalar(
         "INSERT INTO runtime_sessions
             (account_id, org_id, device_id, client_run_id, mode, source, platform, app_version,
@@ -2705,41 +3163,7 @@ async fn primary_org_id(
     state: &AppState,
     account_id: Uuid,
 ) -> Result<Option<Uuid>, (StatusCode, Json<Value>)> {
-    sqlx::query_scalar(
-        "SELECT org_id
-           FROM org_members
-          WHERE account_id = $1
-          ORDER BY joined_at ASC
-          LIMIT 1",
-    )
-    .bind(account_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(db_err)
-}
-
-async fn ensure_org_member(
-    state: &AppState,
-    account_id: Uuid,
-    org_id: Uuid,
-) -> Result<(), (StatusCode, Json<Value>)> {
-    let is_member: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-            SELECT 1 FROM org_members WHERE account_id = $1 AND org_id = $2
-        )",
-    )
-    .bind(account_id)
-    .bind(org_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(db_err)?;
-    if !is_member {
-        return Err(json_error(
-            StatusCode::FORBIDDEN,
-            "account is not a member of this org",
-        ));
-    }
-    Ok(())
+    tenant::resolve_ws_org_id(state, account_id).await
 }
 
 // ── Crypto helpers ──────────────────────────────────────────────────────────
@@ -3052,36 +3476,65 @@ struct RuntimeProviderSecret {
 async fn runtime_provider_secret(
     state: &AppState,
     account_id: Uuid,
+    active_org_id: Option<Uuid>,
     provider: &str,
 ) -> Result<RuntimeProviderSecret, (StatusCode, Json<Value>)> {
-    let row = sqlx::query_as::<_, CredentialSecretWithScopeRow>(
-        "SELECT id, scope, secret_ciphertext, secret_nonce
-           FROM runtime_provider_credentials
-          WHERE provider = $2
-            AND status = 'active'
-            AND (
-                account_id = $1
-                OR org_id IN (SELECT org_id FROM org_members WHERE account_id = $1)
-                OR scope = 'airnote_managed'
-            )
-          ORDER BY
-            CASE
-                WHEN account_id = $1 THEN 0
-                WHEN org_id IS NOT NULL THEN 1
-                WHEN scope = 'airnote_managed' THEN 2
-                ELSE 3
-            END,
-            updated_at DESC
-          LIMIT 1",
-    )
-    .bind(account_id)
-    .bind(provider)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(db_err)?;
+    let row = if let Some(org_id) = active_org_id {
+        sqlx::query_as::<_, CredentialSecretWithScopeRow>(
+            "SELECT id, scope, secret_ciphertext, secret_nonce
+               FROM runtime_provider_credentials
+              WHERE provider = $2
+                AND status = 'active'
+                AND (
+                    account_id = $1
+                    OR org_id = $3
+                    OR scope = 'airnote_managed'
+                )
+              ORDER BY
+                CASE
+                    WHEN account_id = $1 THEN 0
+                    WHEN org_id = $3 THEN 1
+                    WHEN scope = 'airnote_managed' THEN 2
+                    ELSE 3
+                END,
+                updated_at DESC
+              LIMIT 1",
+        )
+        .bind(account_id)
+        .bind(provider)
+        .bind(org_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(db_err)?
+    } else {
+        sqlx::query_as::<_, CredentialSecretWithScopeRow>(
+            "SELECT id, scope, secret_ciphertext, secret_nonce
+               FROM runtime_provider_credentials
+              WHERE provider = $2
+                AND status = 'active'
+                AND (
+                    account_id = $1
+                    OR scope = 'airnote_managed'
+                )
+              ORDER BY
+                CASE
+                    WHEN account_id = $1 THEN 0
+                    WHEN scope = 'airnote_managed' THEN 1
+                    ELSE 2
+                END,
+                updated_at DESC
+              LIMIT 1",
+        )
+        .bind(account_id)
+        .bind(provider)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(db_err)?
+    };
 
     let env_fallback_present = match provider {
         "deepgram" => !state.deepgram_api_key.trim().is_empty(),
+        "sarvam" => !state.sarvam_api_key.trim().is_empty(),
         "groq" => !state.groq_api_key.trim().is_empty(),
         _ => false,
     };
@@ -3104,10 +3557,11 @@ async fn runtime_provider_secret(
 
     let fallback = match provider {
         "deepgram" => state.deepgram_api_key.trim(),
+        "sarvam" => state.sarvam_api_key.trim(),
         "groq" => state.groq_api_key.trim(),
         _ => "",
     };
-    if !fallback.is_empty() {
+    if tenant::allow_platform_credential_fallback() && !fallback.is_empty() {
         tracing::info!(
             "[runtime] credential resolved provider={} account_id={} vault_row=false env_fallback_present=true selected_scope=airnote_env",
             provider,
@@ -3205,7 +3659,7 @@ fn default_runtime_source() -> String {
 fn normalize_provider(provider: &str) -> Result<String, (StatusCode, Json<Value>)> {
     let provider = provider.trim().to_lowercase();
     match provider.as_str() {
-        "deepgram" | "groq" | "openai" | "gemini" | "gateway" => Ok(provider),
+        "deepgram" | "sarvam" | "groq" | "openai" | "gemini" | "gateway" => Ok(provider),
         _ => Err(json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "unknown provider",
@@ -3547,57 +4001,6 @@ async fn call_groq(
     Ok(output)
 }
 
-async fn call_deepgram_batch(
-    api_key: &str,
-    wav_data: Vec<u8>,
-    tag: &str,
-) -> Result<String, String> {
-    let url = "https://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true";
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(url)
-        .header("Authorization", format!("Token {api_key}"))
-        .header("Content-Type", "audio/wav")
-        .body(wav_data)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-        .map_err(|e| format!("{tag}: Deepgram request failed: {e}"))?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "{tag}: Deepgram returned {status}: {}",
-            &body[..body.len().min(300)]
-        ));
-    }
-
-    let raw = resp
-        .json::<Value>()
-        .await
-        .map_err(|e| format!("{tag}: failed to parse Deepgram response: {e}"))?;
-    let transcript = raw
-        .get("results")
-        .and_then(|v| v.get("channels"))
-        .and_then(Value::as_array)
-        .and_then(|channels| channels.first())
-        .and_then(|channel| channel.get("alternatives"))
-        .and_then(Value::as_array)
-        .and_then(|alternatives| alternatives.first())
-        .and_then(|alternative| alternative.get("transcript"))
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
-    if transcript.is_empty() {
-        Err(format!("{tag}: Deepgram returned empty transcript"))
-    } else {
-        Ok(transcript)
-    }
-}
-
 // ── Learning memory: helpers, loader, resolver ─────────────────────────────
 
 struct RuntimeMemory {
@@ -3777,7 +4180,8 @@ async fn learning_judge_candidates(
     req: &AnalyzeEditLearningRequest,
     edit_spans: &[UserEditSpan],
 ) -> Result<Vec<LearningReviewCandidate>, (StatusCode, Json<Value>)> {
-    let credential = runtime_provider_secret(state, account_id, "groq").await?;
+    let active_org_id = primary_org_id(state, account_id).await?;
+    let credential = runtime_provider_secret(state, account_id, active_org_id, "groq").await?;
     let system_prompt = r#"You are AirNote's edit-learning judge.
 
 You receive:
@@ -3871,7 +4275,8 @@ async fn validate_learning_candidates_with_judge(
     account_id: Uuid,
     req: &AnalyzeEditLearningRequest,
 ) -> Result<Vec<LearningReviewCandidate>, (StatusCode, Json<Value>)> {
-    let credential = runtime_provider_secret(state, account_id, "groq").await?;
+    let active_org_id = primary_org_id(state, account_id).await?;
+    let credential = runtime_provider_secret(state, account_id, active_org_id, "groq").await?;
     let system_prompt = r#"You are AirNote's edit-learning validation judge.
 
 You receive:
@@ -5326,6 +5731,9 @@ async fn judge_and_upsert_client_learning_event(
 
     let total_accepted = accepted_term_count + accepted_alias_count;
     let total_blocked = blocked_term_count + blocked_alias_count;
+    if total_accepted > 0 {
+        let _ = memory_hygiene::mark_memory_dirty(&state.db, user.account_id).await;
+    }
     let status = if total_accepted > 0 && total_blocked == 0 {
         "accepted"
     } else if total_accepted > 0 {

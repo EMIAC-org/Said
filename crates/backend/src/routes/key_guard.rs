@@ -8,9 +8,28 @@ fn non_empty(value: Option<String>) -> Option<String> {
 }
 
 fn has_deepgram_key(prefs: &Preferences) -> bool {
-    non_empty(prefs.deepgram_api_key.clone())
-        .or_else(|| non_empty(std::env::var("DEEPGRAM_API_KEY").ok()))
-        .is_some()
+    said_core::stt::resolve_deepgram_api_key(prefs.deepgram_api_key.as_deref()).is_some()
+}
+
+fn has_sarvam_key(prefs: &Preferences) -> bool {
+    said_core::stt::resolve_sarvam_api_key(prefs.sarvam_api_key.as_deref()).is_some()
+}
+
+pub fn effective_stt_provider(prefs: &Preferences) -> String {
+    said_core::stt::resolve_effective_stt_provider(
+        &prefs.stt_provider,
+        has_sarvam_key(prefs),
+        has_deepgram_key(prefs),
+    )
+}
+
+fn has_stt_key(prefs: &Preferences) -> bool {
+    let effective = effective_stt_provider(prefs);
+    if said_core::stt::is_sarvam(&effective) {
+        has_sarvam_key(prefs)
+    } else {
+        has_deepgram_key(prefs)
+    }
 }
 
 fn has_llm_credential(pool: &DbPool, user_id: &str, prefs: &Preferences) -> bool {
@@ -41,13 +60,31 @@ pub fn missing_voice_api_keys(
     prefs: &Preferences,
 ) -> Vec<&'static str> {
     let mut missing = Vec::new();
-    if !has_deepgram_key(prefs) {
-        missing.push("deepgram");
+    if !has_stt_key(prefs) {
+        let effective = effective_stt_provider(prefs);
+        missing.push(if said_core::stt::is_sarvam(&effective) {
+            "sarvam"
+        } else {
+            "deepgram"
+        });
     }
     if !has_llm_credential(pool, user_id, prefs) {
         missing.push("llm");
     }
     missing
+}
+
+pub fn missing_message_polish_voice_keys(prefs: &Preferences) -> Vec<&'static str> {
+    if has_stt_key(prefs) {
+        Vec::new()
+    } else {
+        let effective = effective_stt_provider(prefs);
+        if said_core::stt::is_sarvam(&effective) {
+            vec!["sarvam"]
+        } else {
+            vec!["deepgram"]
+        }
+    }
 }
 
 pub fn missing_text_api_keys(
@@ -72,4 +109,44 @@ pub fn missing_api_keys_response(missing: Vec<&'static str>) -> axum::response::
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::prefs::Preferences;
+
+    fn base_prefs(stt_provider: &str) -> Preferences {
+        Preferences {
+            user_id: "u".into(),
+            selected_model: "fast".into(),
+            tone_preset: "neutral".into(),
+            custom_prompt: None,
+            language: "auto".into(),
+            output_language: "hinglish".into(),
+            auto_paste: true,
+            edit_capture: true,
+            polish_text_hotkey: "cmd+shift+p".into(),
+            record_hotkey: "caps_lock".into(),
+            learning_enabled: true,
+            server_runtime_enabled: false,
+            server_audio_runtime_enabled: false,
+            updated_at: 0,
+            gateway_api_key: Some("gsk_test".into()),
+            deepgram_api_key: Some("dg_test".into()),
+            sarvam_api_key: None,
+            gemini_api_key: None,
+            groq_api_key: None,
+            cerebras_api_key: None,
+            llm_provider: "groq".into(),
+            stt_provider: stt_provider.into(),
+        }
+    }
+
+    #[test]
+    fn sarvam_pref_with_key_stays_sarvam() {
+        let mut prefs = base_prefs("sarvam");
+        prefs.sarvam_api_key = Some("sk_test".into());
+        assert_eq!(effective_stt_provider(&prefs), "sarvam");
+    }
 }

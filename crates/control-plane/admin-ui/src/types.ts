@@ -186,3 +186,221 @@ export interface Org {
   role: string
   meeting_creator_roles?: string[]
 }
+
+export interface TelemetryUserRow {
+  account_id: string
+  email: string
+  lark_name?: string | null
+  role: string
+  auth_source: string
+  runs: number
+  audio_minutes: number
+  acceptance_rate: number
+  edit_rate: number
+  heavy_edit_rate: number
+  fallback_rate: number
+  learning_success_rate: number
+  last_active_at?: string | null
+  desktop_active: boolean
+  primary_stt?: string | null
+}
+
+export interface TelemetrySttBreakdown {
+  by_provider_path: { stt_provider: string; stt_path: string; count: number }[]
+  by_provider: { stt_provider: string; count: number; share: number }[]
+  total_tagged: number
+  latency_by_provider?: {
+    stt_provider: string
+    transcribe_p50: number | null
+    transcribe_p95: number | null
+    runs: number
+  }[]
+}
+
+export interface TelemetryQuality {
+  acceptance_rate: number
+  edit_rate: number
+  heavy_edit_rate: number
+  fallback_rate: number
+  learning_candidate_rate: number
+  learning_success_rate: number
+}
+
+export interface TelemetryLatency {
+  total_p50: number | null
+  total_p95: number | null
+  transcribe_p50: number | null
+  transcribe_p95: number | null
+  embed_p50?: number | null
+  embed_p95?: number | null
+  polish_p50?: number | null
+  polish_p95?: number | null
+  paste_p50?: number | null
+  paste_p95?: number | null
+}
+
+export interface TelemetryDailyRollup {
+  event_date: string
+  mode: string
+  run_count: number
+  audio_seconds: number
+  accepted_count: number
+  edit_count: number
+  heavy_edit_count: number
+  learning_modal_shown: number
+  learning_confirmed: number
+  failure_count: number
+  fallback_count: number
+}
+
+export interface TelemetryUpload {
+  received_at: string
+  device_id?: string | null
+  client_version?: string | null
+  run_count: number
+  rollup_count: number
+  accepted_count: number
+  rejected_count: number
+}
+
+export interface TelemetryRunContentFlags {
+  has_numbers: boolean
+  has_currency: boolean
+  has_percent: boolean
+  has_email: boolean
+  has_url: boolean
+  has_code_like_terms: boolean
+  mixed_language: boolean
+  protected_term_hit: boolean
+}
+
+export interface TelemetryRun {
+  run_id: string
+  recording_id?: string | null
+  device_id?: string | null
+  mode: string
+  target_app?: string | null
+  platform?: string | null
+  app_version?: string | null
+  machine_class?: string | null
+  audio_seconds?: number | null
+  word_count?: number | null
+  char_count?: number | null
+  transcribe_ms?: number | null
+  embed_ms?: number | null
+  polish_ms?: number | null
+  total_ms?: number | null
+  paste_ms?: number | null
+  success: boolean
+  error_code?: string | null
+  used_clipboard_fallback: boolean
+  used_ws_pretranscript: boolean
+  used_http_stt_fallback: boolean
+  stt_provider?: string | null
+  stt_model?: string | null
+  stt_path?: string | null
+  edit_detected: boolean
+  edit_bucket: string
+  edit_distance_chars?: number | null
+  edit_distance_words?: number | null
+  accepted_as_is: boolean
+  deleted_entire_output: boolean
+  re_recorded_quickly: boolean
+  learning_candidate: boolean
+  learning_modal_shown: boolean
+  learning_confirmed: boolean
+  learning_dismissed: boolean
+  server_learning_saved: boolean
+  server_learning_blocked: boolean
+  content_flags?: TelemetryRunContentFlags
+  client_version?: string | null
+  event_at: string
+  received_at: string
+}
+
+export interface TelemetryUserProfile {
+  window_days: number
+  member: {
+    account_id: string
+    email: string
+    lark_name?: string | null
+    lark_department?: string | null
+    role: string
+    auth_source: string
+    lark_connected: boolean
+    desktop_active: boolean
+  }
+  summary: {
+    runs: number
+    audio_minutes: number
+    word_count: number
+    char_count: number
+  }
+  quality: TelemetryQuality
+  quality_counts: {
+    accepted_as_is: number
+    edit_detected: number
+    heavy_edit: number
+    deleted_entire_output: number
+    re_recorded_quickly: number
+    failures: number
+  }
+  learning: {
+    learning_candidate: number
+    learning_modal_shown: number
+    learning_confirmed: number
+    learning_dismissed: number
+    server_learning_saved: number
+    server_learning_blocked: number
+  }
+  latency_ms: TelemetryLatency
+  stt?: TelemetrySttBreakdown
+  by_mode: { mode: string; count: number }[]
+  by_target_app: { target_app: string | null; count: number }[]
+  content_flags: Record<string, number>
+  daily_rollups: TelemetryDailyRollup[]
+  uploads: TelemetryUpload[]
+}
+
+export interface TelemetryUserMemory {
+  hygiene: {
+    memory_dirty_at?: string | null
+    last_hygiene_at?: string | null
+    hygiene_version: number
+    pending_review: boolean
+  }
+  vocab_terms: {
+    term: string
+    term_type: string
+    weight: number
+    positive_count: number
+    status: string
+    source: string
+  }[]
+  aliases: {
+    transcript_form: string
+    correct_form: string
+    weight: number
+    positive_count: number
+    status: string
+    safety_status: string
+    learned_stt_provider?: string | null
+  }[]
+  edit_policies: {
+    variant_form: string
+    correct_form: string
+    edit_type: string
+    positive_count: number
+    negative_count: number
+    status: string
+  }[]
+  audit_log: {
+    created_at: string
+    action: string
+    heard?: string | null
+    correct?: string | null
+    verdict: string
+    reason: string
+    model?: string | null
+  }[]
+}

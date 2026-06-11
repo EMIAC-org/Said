@@ -11,6 +11,7 @@ pub struct LocalUser {
     pub license_tier: String,
     pub enterprise_server_url: Option<String>,
     pub enterprise_org_name: Option<String>,
+    pub active_org_id: Option<String>,
     pub created_at: i64,
 }
 
@@ -73,6 +74,15 @@ pub fn update_enterprise_auth(
     }
 }
 
+pub fn update_active_org(pool: &DbPool, user_id: &str, active_org_id: Option<&str>) {
+    if let Ok(conn) = pool.get() {
+        let _ = conn.execute(
+            "UPDATE local_user SET active_org_id = ?1 WHERE id = ?2",
+            params![active_org_id, user_id],
+        );
+    }
+}
+
 pub fn clear_cloud_token(pool: &DbPool, user_id: &str) {
     if let Ok(conn) = pool.get() {
         let _ = conn.execute(
@@ -80,7 +90,8 @@ pub fn clear_cloud_token(pool: &DbPool, user_id: &str) {
                 SET cloud_token = NULL,
                     license_tier = 'free',
                     enterprise_server_url = NULL,
-                    enterprise_org_name = NULL
+                    enterprise_org_name = NULL,
+                    active_org_id = NULL
               WHERE id = ?1",
             params![user_id],
         );
@@ -117,7 +128,7 @@ pub fn has_enterprise_auth(pool: &DbPool, user_id: &str) -> bool {
 pub fn get_user(pool: &DbPool, user_id: &str) -> Option<LocalUser> {
     let conn = pool.get().ok()?;
     conn.query_row(
-        "SELECT id, email, cloud_token, license_tier, enterprise_server_url, enterprise_org_name, created_at
+        "SELECT id, email, cloud_token, license_tier, enterprise_server_url, enterprise_org_name, active_org_id, created_at
          FROM local_user WHERE id = ?1",
         params![user_id],
         |row| {
@@ -128,7 +139,8 @@ pub fn get_user(pool: &DbPool, user_id: &str) -> Option<LocalUser> {
                 license_tier: row.get(3)?,
                 enterprise_server_url: row.get(4)?,
                 enterprise_org_name: row.get(5)?,
-                created_at: row.get(6)?,
+                active_org_id: row.get(6)?,
+                created_at: row.get(7)?,
             })
         },
     )

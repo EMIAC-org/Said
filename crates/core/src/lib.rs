@@ -5,6 +5,7 @@ pub mod paths;
 pub mod prefs;
 pub mod reporter;
 pub mod scrub;
+pub mod stt;
 pub mod telemetry;
 
 // ── Gateway constants ─────────────────────────────────────────────────────────

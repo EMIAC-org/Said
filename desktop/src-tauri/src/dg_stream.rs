@@ -907,6 +907,22 @@ fn sdk_options(bias: &BiasPackage) -> Options {
         .build()
 }
 
+/// Discard live PCM chunks when batch-only STT (e.g. Sarvam) is active.
+/// The recorder still needs a consumer or its sync channel backs up.
+pub fn spawn_chunk_drain(recording_id: String, chunk_recv: ChunkReceiver) {
+    std::thread::spawn(move || {
+        let sync_rx = chunk_recv.rx;
+        let mut drained = 0usize;
+        while sync_rx.recv().is_ok() {
+            drained += 1;
+        }
+        debug!(
+            "[dg_session] chunk drain finished id={} chunks={}",
+            recording_id, drained
+        );
+    });
+}
+
 pub fn spawn_audio_bridge(
     recording_id: String,
     chunk_recv: ChunkReceiver,

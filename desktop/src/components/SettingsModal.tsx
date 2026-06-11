@@ -106,7 +106,7 @@ export function SettingsModal({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
       style={{
-        background: "hsl(220 50% 2% / 0.55)",
+        background: "hsl(var(--foreground) / 0.22)",
         backdropFilter: "blur(8px)",
         WebkitBackdropFilter: "blur(8px)",
         animation: "fadeIn 0.18s ease-out",

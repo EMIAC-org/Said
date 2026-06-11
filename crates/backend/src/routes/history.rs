@@ -29,10 +29,11 @@ pub async fn list(
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<Vec<Recording>>, StatusCode> {
     let user_id = state.default_user_id.clone();
-    let items = match try_list_server_history(&state, &user_id, &q).await {
+    let mut items = match try_list_server_history(&state, &user_id, &q).await {
         Some(items) => items,
         None => crate::store::history::list_recordings(&state.pool, &user_id, q.limit, q.before),
     };
+    enrich_recordings_with_local_audio(&state.pool, &user_id, &mut items);
     Ok(Json(items))
 }
 
@@ -170,6 +171,91 @@ fn first_non_empty<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> Opt
 
 fn count_words(text: &str) -> i64 {
     text.split_whitespace().count() as i64
+}
+
+/// Server runtime history omits audio_id; merge from local SQLite when the row
+/// still exists on this device so play/download work in the History UI.
+fn enrich_recordings_with_local_audio(
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    recordings: &mut [Recording],
+) {
+    use std::collections::HashMap;
+
+    let local_rows: Vec<Recording> =
+        crate::store::history::list_recordings(pool, user_id, 500, None);
+    let mut local_by_ts: HashMap<i64, Recording> = HashMap::new();
+    let mut local_by_id: HashMap<String, Recording> = HashMap::new();
+    let mut local_with_audio: Vec<Recording> = Vec::new();
+    for local in local_rows {
+        if local.audio_id.is_some() {
+            local_by_id
+                .entry(local.id.clone())
+                .or_insert_with(|| local.clone());
+            local_by_ts
+                .entry(local.timestamp_ms)
+                .or_insert_with(|| local.clone());
+            local_with_audio.push(local);
+        }
+    }
+
+    for rec in recordings.iter_mut() {
+        if rec.audio_id.is_some() {
+            continue;
+        }
+        if let Some(local) = local_by_id.get(&rec.id) {
+            rec.audio_id = local.audio_id.clone();
+            continue;
+        }
+        // Server row id may differ from the local SQLite id — match by timestamp.
+        if let Some(local) = local_by_ts.get(&rec.timestamp_ms) {
+            rec.id = local.id.clone();
+            rec.audio_id = local.audio_id.clone();
+            continue;
+        }
+        if let Some(local) = find_best_local_audio_match(rec, &local_with_audio) {
+            rec.id = local.id.clone();
+            rec.audio_id = local.audio_id.clone();
+        }
+    }
+}
+
+fn find_best_local_audio_match<'a>(
+    rec: &Recording,
+    local_rows: &'a [Recording],
+) -> Option<&'a Recording> {
+    const EXACTISH_WINDOW_MS: i64 = 30_000;
+    const CONTENT_WINDOW_MS: i64 = 10 * 60_000;
+
+    local_rows
+        .iter()
+        .filter(|local| {
+            let delta = (local.timestamp_ms - rec.timestamp_ms).abs();
+            if delta <= EXACTISH_WINDOW_MS {
+                return true;
+            }
+
+            let polished_match =
+                !rec.polished.trim().is_empty() && rec.polished.trim() == local.polished.trim();
+            let transcript_match = !rec.transcript.trim().is_empty()
+                && rec.transcript.trim() == local.transcript.trim();
+
+            delta <= CONTENT_WINDOW_MS && (polished_match || transcript_match)
+        })
+        .min_by_key(|local| {
+            let delta = (local.timestamp_ms - rec.timestamp_ms).abs();
+            let polished_mismatch = if rec.polished.trim() == local.polished.trim() {
+                0
+            } else {
+                1
+            };
+            let transcript_mismatch = if rec.transcript.trim() == local.transcript.trim() {
+                0
+            } else {
+                1
+            };
+            (polished_mismatch, transcript_mismatch, delta)
+        })
 }
 
 #[cfg(test)]

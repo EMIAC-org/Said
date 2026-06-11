@@ -11,6 +11,7 @@ import type {
   PolishDone,
   Preferences,
   PrefsUpdate,
+  SttRuntimeInfo,
   PromptTemplateResponse,
   PromptTestResponse,
   Recording,
@@ -261,6 +262,16 @@ export async function getPreferences(): Promise<Preferences | null> {
   if (!isTauriRuntime()) return null;
   try {
     return await tauriInvoke<Preferences>("get_preferences");
+  } catch {
+    return null;
+  }
+}
+
+/** Active STT provider + env key presence (from Tauri process env). */
+export async function getSttRuntime(): Promise<SttRuntimeInfo | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<SttRuntimeInfo>("get_stt_runtime");
   } catch {
     return null;
   }

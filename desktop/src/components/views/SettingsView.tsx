@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
-import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
+import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse, SttRuntimeInfo } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
 
 import {
@@ -20,7 +20,7 @@ import {
 } from "@/lib/enterprise";
 import { EnterpriseConnectForm } from "@/components/EnterpriseConnectForm";
 import {
-  getPreferences, patchPreferences,
+  getPreferences, patchPreferences, getSttRuntime,
   getVoicePrompt, saveVoicePromptDraft, applyVoicePromptDraft,
   resetVoicePrompt, testVoicePrompt,
   getDebugLogs,
@@ -67,20 +67,24 @@ type SyncBadgeState = "idle" | "syncing" | "synced" | "offline" | "failed";
 
 function SyncBadge({ state }: { state: SyncBadgeState }) {
   if (state === "idle") return null;
-  const configs: Record<Exclude<SyncBadgeState, "idle">, [string, string]> = {
-    synced:  ["hsl(145 60% 50%)", "Synced"],
-    syncing: ["hsl(38 90% 55%)",  "Syncing…"],
-    offline: ["hsl(38 70% 55%)",  "Offline cache"],
-    failed:  ["hsl(0 65% 55%)",   "Sync failed"],
+  const configs: Record<Exclude<SyncBadgeState, "idle">, { label: string; fg: string; bg: string }> = {
+    synced:  { label: "Synced",        fg: "hsl(var(--chip-cyan-fg))",  bg: "hsl(var(--chip-cyan-bg))"  },
+    syncing: { label: "Syncing…",      fg: "hsl(var(--chip-amber-fg))", bg: "hsl(var(--chip-amber-bg))" },
+    offline: { label: "Offline cache", fg: "hsl(var(--chip-amber-fg))", bg: "hsl(var(--chip-amber-bg))" },
+    failed:  { label: "Sync failed",   fg: "hsl(var(--chip-red-fg))",   bg: "hsl(var(--chip-red-bg))"   },
   };
-  const [color, label] = configs[state as Exclude<SyncBadgeState, "idle">] ?? ["hsl(var(--muted-foreground))", ""];
+  const cfg = configs[state as Exclude<SyncBadgeState, "idle">];
+  if (!cfg) return null;
   return (
-    <span className="ml-1 flex items-center gap-1" style={{ fontSize: "10px", color, opacity: 0.85 }}>
+    <span
+      className="ml-2 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold"
+      style={{ color: cfg.fg, background: cfg.bg }}
+    >
       <span
         className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
-        style={{ background: color }}
+        style={{ background: "currentColor" }}
       />
-      {label}
+      {cfg.label}
     </span>
   );
 }
@@ -214,25 +218,15 @@ function SettingsDisclosure({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <div
-      className="rounded-xl overflow-hidden"
-      style={{
-        background: "hsl(var(--surface-3))",
-        boxShadow: "inset 0 0 0 1px hsl(var(--surface-4))",
-      }}
-    >
+    <div className="settings-disclosure">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left"
+        className="w-full flex items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-[hsl(var(--surface-hover))]"
         aria-expanded={open}
       >
         <span
-          className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-          style={{
-            background: "hsl(var(--surface-4))",
-            color: "hsl(var(--accent-violet))",
-          }}
+          className="settings-disclosure__icon w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
         >
           {icon}
         </span>
@@ -253,8 +247,8 @@ function SettingsDisclosure({
       </button>
       {open && (
         <div
-          className="px-4 pb-4 pt-1 space-y-4"
-          style={{ borderTop: "1px solid hsl(var(--surface-4))" }}
+          className="px-4 pb-4 pt-2 space-y-4"
+          style={{ borderTop: "1px solid hsl(var(--border))" }}
         >
           {children}
         </div>
@@ -528,10 +522,27 @@ function renderPromptTemplatePreview(
 
 function EnterpriseSection({ onDisconnect }: { onDisconnect?: () => void }) {
   const [connection, setConnection] = useState<EnterpriseConnection | null>(null);
+  const [workspaces, setWorkspaces] = useState<
+    import("@/lib/enterprise").WorkspaceMembership[]
+  >([]);
+  const [personalMode, setPersonalMode] = useState(false);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
 
   useEffect(() => {
     setConnection(enterpriseGetConnection());
   }, []);
+
+  useEffect(() => {
+    if (!connection) return;
+    void (async () => {
+      const { listWorkspaces } = await import("@/lib/enterprise");
+      const data = await listWorkspaces();
+      if (data) {
+        setWorkspaces(data.orgs);
+        setPersonalMode(data.personal_mode);
+      }
+    })();
+  }, [connection]);
 
   async function handleDisconnect() {
     await disconnectEnterprise();
@@ -552,11 +563,7 @@ function EnterpriseSection({ onDisconnect }: { onDisconnect?: () => void }) {
         <div className="panel overflow-hidden">
           <div className="flex items-center gap-4 px-5 py-4">
             <div
-              className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 overflow-hidden"
-              style={{
-                background: "hsl(var(--surface-4))",
-                color: "hsl(var(--accent-violet))",
-              }}
+              className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 overflow-hidden settings-disclosure__icon"
             >
               {connection.larkAvatarUrl ? (
                 <img
@@ -574,15 +581,11 @@ function EnterpriseSection({ onDisconnect }: { onDisconnect?: () => void }) {
                   {connection.orgName ?? "Enterprise"}
                 </p>
                 <span
-                  className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                  style={{
-                    background: connection.authSource === "email"
-                      ? "hsl(210 60% 16%)"
-                      : "hsl(145 60% 16%)",
-                    color: connection.authSource === "email"
-                      ? "hsl(210 70% 68%)"
-                      : "hsl(145 70% 65%)",
-                  }}
+                  className={
+                    connection.authSource === "email"
+                      ? "status-pill chip-blue"
+                      : "status-pill--ready"
+                  }
                 >
                   {connection.authSource === "email" ? "Email only" : "Connected"}
                 </span>
@@ -595,32 +598,97 @@ function EnterpriseSection({ onDisconnect }: { onDisconnect?: () => void }) {
             </div>
           </div>
 
-          <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+          {workspaces.length > 0 && (
+            <>
+              <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--border))" }} />
+              <div className="px-5 py-4 space-y-2.5">
+                <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.06em]">
+                  Active workspace
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={workspaceBusy}
+                    onClick={() => {
+                      void (async () => {
+                        setWorkspaceBusy(true);
+                        const { deactivateWorkspace, listWorkspaces } = await import("@/lib/enterprise");
+                        if (await deactivateWorkspace()) {
+                          const data = await listWorkspaces();
+                          if (data) {
+                            setWorkspaces(data.orgs);
+                            setPersonalMode(true);
+                          }
+                        }
+                        setWorkspaceBusy(false);
+                      })();
+                    }}
+                    className="text-[11px] font-semibold px-3 py-1.5 rounded-full transition-colors disabled:opacity-50"
+                    style={{
+                      background: personalMode ? "hsl(var(--primary))" : "hsl(var(--muted))",
+                      color: personalMode ? "hsl(var(--primary-foreground))" : "hsl(var(--foreground))",
+                      boxShadow: personalMode
+                        ? "0 2px 8px -4px hsl(var(--primary) / 0.45)"
+                        : "inset 0 0 0 1px hsl(var(--border))",
+                    }}
+                  >
+                    Personal
+                  </button>
+                  {workspaces.map((org) => (
+                    <button
+                      key={org.id}
+                      type="button"
+                      disabled={workspaceBusy}
+                      onClick={() => {
+                        void (async () => {
+                          setWorkspaceBusy(true);
+                          const { activateWorkspace, listWorkspaces } = await import("@/lib/enterprise");
+                          if (await activateWorkspace(org.id)) {
+                            const data = await listWorkspaces();
+                            if (data) {
+                              setWorkspaces(data.orgs);
+                              setPersonalMode(data.personal_mode);
+                            }
+                            setConnection(enterpriseGetConnection());
+                          }
+                          setWorkspaceBusy(false);
+                        })();
+                      }}
+                      className="text-[11px] font-semibold px-3 py-1.5 rounded-full transition-colors disabled:opacity-50"
+                      style={{
+                        background: org.is_active ? "hsl(var(--primary))" : "hsl(var(--muted))",
+                        color: org.is_active ? "hsl(var(--primary-foreground))" : "hsl(var(--foreground))",
+                        boxShadow: org.is_active
+                          ? "0 2px 8px -4px hsl(var(--primary) / 0.45)"
+                          : "inset 0 0 0 1px hsl(var(--border))",
+                      }}
+                    >
+                      {org.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--border))" }} />
 
           <div className="flex items-center gap-4 px-5 py-4">
             <div
-              className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-              style={{
-                background: "hsl(var(--surface-4))",
-                color: "hsl(var(--muted-foreground))",
-              }}
+              className="settings-disclosure__icon w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
             >
               <Wifi size={16} />
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-[13px] font-medium text-foreground">Server</p>
-              <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed truncate">
+              <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed truncate font-mono">
                 {connection.serverUrl}
               </p>
             </div>
             <div className="flex-shrink-0 ml-4">
               <button
                 onClick={() => void handleDisconnect()}
-                className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors"
-                style={{
-                  background: "hsl(0 60% 16%)",
-                  color: "hsl(0 75% 72%)",
-                }}
+                className="btn-soft-danger"
               >
                 <LogOut size={11} />
                 Disconnect
@@ -765,14 +833,20 @@ export function SettingsView({
 
   // ── API key state ────────────────────────────────────────────────────────────
   const [deepgramKey,   setDeepgramKey]   = useState("");
+  const [sarvamKey,     setSarvamKey]     = useState("");
   const [groqKey,       setGroqKey]       = useState("");
   const [cerebrasKey,   setCerebrasKey]   = useState("");
   const [showDeepgram,  setShowDeepgram]  = useState(false);
+  const [showSarvam,    setShowSarvam]    = useState(false);
   const [showGroq,      setShowGroq]      = useState(false);
+  const [sttSwitchError, setSttSwitchError] = useState("");
   const [, setShowCerebras]  = useState(false);
   const [keySaving,     setKeySaving]     = useState(false);
   const [keySaved,      setKeySaved]      = useState(false);
+  const [sttRuntime,    setSttRuntime]    = useState<SttRuntimeInfo | null>(null);
   const keySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sttProvider = prefs?.stt_provider ?? "deepgram";
+  const usingSarvam = sttProvider === "sarvam";
 
   // ── Debug logs state ───────────────────────────────────────────────────────
   const [debugLogs,    setDebugLogs]    = useState<DebugLogs | null>(null);
@@ -878,15 +952,18 @@ export function SettingsView({
 
   function syncApiKeyInputs(nextPrefs: Preferences) {
     setDeepgramKey(nextPrefs.deepgram_api_key ?? "");
+    setSarvamKey(nextPrefs.sarvam_api_key ?? "");
     setGroqKey(nextPrefs.groq_api_key ?? "");
     setCerebrasKey(nextPrefs.cerebras_api_key ?? "");
     setShowDeepgram(false);
+    setShowSarvam(false);
     setShowGroq(false);
     setShowCerebras(false);
   }
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion("?"));
+    void getSttRuntime().then(setSttRuntime).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -979,13 +1056,19 @@ export function SettingsView({
     try {
       const update: Partial<Preferences> = {};
       const currentDeepgram = prefs.deepgram_api_key ?? "";
+      const currentSarvam = prefs.sarvam_api_key ?? "";
       const currentGroq = prefs.groq_api_key ?? "";
       const currentCerebras = prefs.cerebras_api_key ?? "";
       const nextDeepgram = deepgramKey.trim();
+      const nextSarvam = sarvamKey.trim();
       const nextGroq = groqKey.trim();
       const nextCerebras = cerebrasKey.trim();
 
       if (nextDeepgram !== currentDeepgram) update.deepgram_api_key = nextDeepgram || null;
+      if (nextSarvam !== currentSarvam) {
+        update.sarvam_api_key = nextSarvam || null;
+        if (nextSarvam) update.stt_provider = "sarvam";
+      }
       if (nextGroq !== currentGroq) update.groq_api_key = nextGroq || null;
       if (nextCerebras !== currentCerebras) update.cerebras_api_key = nextCerebras || null;
 
@@ -1000,6 +1083,7 @@ export function SettingsView({
       if (!updated) throw new Error("preferences update returned no data");
       setPrefs(updated);
       syncApiKeyInputs(updated);
+      void getSttRuntime().then(setSttRuntime).catch(() => {});
 
       setVaultSyncState("syncing");
       const vault = await syncCredentialVault();
@@ -1864,6 +1948,92 @@ export function SettingsView({
           <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
 
           <div className="px-5 py-4">
+            <div className="flex items-center gap-4 mb-3">
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
+                style={{ background: "hsl(var(--surface-4))" }}
+              >
+                <Mic size={16} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-medium text-foreground">Speech-to-text</p>
+                <p className="text-[12px] text-muted-foreground mt-0.5">
+                  Who transcribes your voice. Sarvam is stronger on Hinglish; Deepgram streams a live preview while you speak.
+                </p>
+              </div>
+            </div>
+            <div
+              className="flex rounded-xl p-1"
+              style={{ background: "hsl(var(--surface-3))" }}
+            >
+              {([
+                {
+                  key: "deepgram",
+                  icon: <Cpu size={13} />,
+                  label: "Deepgram",
+                  desc: "Nova-3 streaming — live preview",
+                },
+                {
+                  key: "sarvam",
+                  icon: <Mic size={13} />,
+                  label: "Sarvam",
+                  desc: "Saaras v3 codemix — batch on release",
+                },
+              ] as const).map((opt) => {
+                const isActive = sttProvider === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    onClick={() => {
+                      if (opt.key === "sarvam" && !sttRuntime?.sarvam_runtime_ready) {
+                        setSttSwitchError("Add a Sarvam API key in API keys before switching.");
+                        return;
+                      }
+                      setSttSwitchError("");
+                      void patch({ stt_provider: opt.key });
+                    }}
+                    className="flex-1 text-left px-3 py-2.5 rounded-[10px] transition-all"
+                    style={{
+                      background: isActive ? "hsl(var(--surface-1))" : "transparent",
+                      boxShadow: isActive
+                        ? "0 1px 3px hsl(0 0% 0% / 0.3)"
+                        : "none",
+                    }}
+                  >
+                    <p
+                      className="text-[12px] font-semibold leading-tight flex items-center justify-between gap-2"
+                      style={{
+                        color: isActive
+                          ? "hsl(var(--foreground))"
+                          : "hsl(var(--muted-foreground))",
+                      }}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {opt.icon}
+                        {opt.label}
+                      </span>
+                      {isActive && <Check size={12} />}
+                    </p>
+                    <p
+                      className="text-[10px] leading-snug mt-0.5"
+                      style={{ color: "hsl(var(--muted-foreground))" }}
+                    >
+                      {opt.desc}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+            {sttSwitchError && (
+              <p className="text-[12px] mt-2" style={{ color: "hsl(var(--destructive))" }}>
+                {sttSwitchError}
+              </p>
+            )}
+          </div>
+
+          <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+
+          <div className="px-5 py-4">
             <div className="flex items-center gap-4">
               <div
                 className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
@@ -1874,7 +2044,7 @@ export function SettingsView({
               <div className="min-w-0 flex-1">
                 <p className="text-[13px] font-medium text-foreground">Server polish runtime</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5">
-                  Keeps Deepgram on this Mac, then sends the finished transcript to airnote.emiactech.com for polish.
+                  Keeps {usingSarvam ? "Sarvam" : "Deepgram"} on this Mac, then sends the finished transcript to airnote.emiactech.com for polish.
                 </p>
               </div>
               <button
@@ -2143,65 +2313,36 @@ export function SettingsView({
         {/* ── API Keys ──────────────────────────────────── */}
         <Show when={isOn("api-keys")}>
         <div className="mb-7">
-          <p className="section-label px-1 mb-2.5 flex items-center gap-2">API Keys<SyncBadge state={vaultSyncState} /></p>
-          <div className="panel p-5 space-y-3">
+          <p className="section-label px-1 mb-2.5 flex items-center gap-2">
+            <span
+              className="inline-block w-1 h-1 rounded-full"
+              style={{ background: "hsl(var(--accent-violet))" }}
+            />
+            API Keys
+            <SyncBadge state={vaultSyncState} />
+          </p>
+          <div className="panel p-5 space-y-4">
             <p className="text-[12px] text-muted-foreground leading-relaxed">
               {vaultStatus?.signed_in
                 ? "Keys are saved on this device and synced to your AirNote account vault for server-side polish."
                 : `Stored on this ${isWindows ? "PC" : "Mac"} until you sign in — then they sync to your account vault.`}
             </p>
-            {vaultStatus?.signed_in && (
-              <div
-                className="rounded-lg border px-3 py-2.5 space-y-1.5"
-                style={{ borderColor: "hsl(var(--border))", background: "hsl(var(--surface-3))" }}
-              >
-                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-                  Server vault
-                </p>
-                {!vaultStatus.encryption_configured ? (
-                  <p className="text-[12px]" style={{ color: "hsl(0 75% 75%)" }}>
-                    Server encryption is not configured — contact your admin.
-                  </p>
-                ) : vaultStatus.server_credentials.filter((c) => c.scope === "user" && c.status === "active").length === 0 ? (
-                  <p className="text-[12px] text-muted-foreground">
-                    No keys in server vault yet — save keys above to sync.
-                  </p>
-                ) : (
-                  vaultStatus.server_credentials
-                    .filter((c) => c.scope === "user" && c.status === "active")
-                    .map((c) => (
-                      <div key={c.id} className="flex items-center justify-between text-[12px]">
-                        <span className="capitalize text-muted-foreground">{c.provider}</span>
-                        <span style={{ color: "hsl(145 70% 65%)" }}>
-                          ••••{c.secret_last4}
-                        </span>
-                      </div>
-                    ))
-                )}
-              </div>
-            )}
 
             <SettingsDisclosure
               title="Required for dictation"
-              description="Groq polishes text. Deepgram transcribes audio."
+              description="Groq polishes text. Deepgram or Sarvam transcribes audio (Deepgram is fallback when Sarvam is unavailable)."
               icon={<Zap size={15} />}
               defaultOpen
               status={
                 prefs?.groq_api_key && prefs?.deepgram_api_key ? (
-                  <span className="text-[10px] px-2 py-1 rounded-full"
-                        style={{ background: "hsl(145 60% 16%)", color: "hsl(145 70% 65%)" }}>
-                    Ready
-                  </span>
+                  <span className="status-pill--ready">Ready</span>
                 ) : (
-                  <span className="text-[10px] px-2 py-1 rounded-full"
-                        style={{ background: "hsl(30 80% 20%)", color: "hsl(30 90% 75%)" }}>
-                    Missing
-                  </span>
+                  <span className="status-pill--warn">Missing</span>
                 )
               }
             >
               <SecretInput
-                icon={<Zap size={12} className="text-muted-foreground" />}
+                icon={<Zap size={12} style={{ color: "hsl(var(--primary))" }} />}
                 label="Groq API Key"
                 helper="Used by normal voice polish, repair, classification, and fallbacks."
                 placeholder="gsk_..."
@@ -2211,14 +2352,28 @@ export function SettingsView({
                 onToggle={() => setShowGroq((v) => !v)}
               />
               <SecretInput
-                icon={<Cpu size={12} className="text-muted-foreground" />}
+                icon={<Cpu size={12} style={{ color: "hsl(var(--primary))" }} />}
                 label="Deepgram API Key"
-                helper="Used for speech-to-text."
+                helper="Speech-to-text default and Sarvam fallback."
                 placeholder="Token ..."
                 value={deepgramKey}
                 visible={showDeepgram}
                 onChange={setDeepgramKey}
                 onToggle={() => setShowDeepgram((v) => !v)}
+              />
+              <SecretInput
+                icon={<Mic size={12} style={{ color: "hsl(var(--primary))" }} />}
+                label="Sarvam API Key"
+                helper={
+                  sttRuntime?.sarvam_configured
+                    ? "Configured — saving enables Sarvam as your STT provider."
+                    : "Recommended for Hinglish. Optional until you switch STT to Sarvam."
+                }
+                placeholder="sk_…"
+                value={sarvamKey}
+                visible={showSarvam}
+                onChange={setSarvamKey}
+                onToggle={() => setShowSarvam((v) => !v)}
               />
             </SettingsDisclosure>
 
@@ -2236,7 +2391,7 @@ export function SettingsView({
                 <button
                   onClick={saveApiKeys}
                   disabled={keySaving}
-                  className="btn-primary !py-1.5 !px-4 !text-[12px] flex items-center gap-1.5"
+                  className="btn-accent !py-1.5 !px-4 !text-[12px] !h-8 flex items-center gap-1.5"
                 >
                   {keySaving ? <Loader2 size={12} className="animate-spin" /> : null}
                   Save Keys

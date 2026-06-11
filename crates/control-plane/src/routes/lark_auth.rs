@@ -10,7 +10,7 @@ use argon2::{
 use axum::{
     Json,
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use chrono::{Duration, Utc};
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser};
+use crate::{AppState, auth::AuthUser, tenant};
 
 // ── Query / JWT types ───────────────────────────────────────────────────────
 
@@ -210,15 +210,17 @@ pub async fn callback(
     };
 
     // ── Find or auto-create org + membership ──────────────────────────────────
-    let org_row: Option<(Uuid, Uuid)> =
-        sqlx::query_as("SELECT id, org_id FROM org_members WHERE account_id = $1 LIMIT 1")
-            .bind(account_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(db_err)?;
+    let existing_org_id = resolve_lark_callback_org(&state, account_id, &oauth_state).await?;
 
-    let (member_id, org_id) = if let Some(row) = org_row {
-        row
+    let (member_id, org_id, had_existing_membership) = if let Some(org_id) = existing_org_id {
+        let member_id: Uuid =
+            sqlx::query_scalar("SELECT id FROM org_members WHERE org_id = $1 AND account_id = $2")
+                .bind(org_id)
+                .bind(account_id)
+                .fetch_one(&state.db)
+                .await
+                .map_err(db_err)?;
+        (member_id, org_id, true)
     } else if matches!(oauth_state, OAuthFlow::Admin(_)) {
         return Ok(admin_oauth_bridge(
             None,
@@ -272,11 +274,11 @@ pub async fn callback(
                 .await
                 .map_err(db_err)?;
 
-        (mid, oid)
+        (mid, oid, false)
     };
 
     // Update Lark profile fields on existing membership
-    if org_row.is_some() {
+    if had_existing_membership {
         sqlx::query(
             "UPDATE org_members
                 SET lark_user_id    = $1,
@@ -317,13 +319,22 @@ pub async fn callback(
     .await
     .map_err(db_err)?;
 
+    sqlx::query("UPDATE accounts SET active_org_id = COALESCE(active_org_id, $1) WHERE id = $2")
+        .bind(org_id)
+        .bind(account_id)
+        .execute(&state.db)
+        .await
+        .map_err(db_err)?;
+
     // ── Issue session token (for API calls) ────────────────────────────────
     let session_expires = Utc::now() + Duration::days(30);
     let session_token: Uuid = sqlx::query_scalar(
-        "INSERT INTO sessions (account_id, expires_at) VALUES ($1, $2) RETURNING token",
+        "INSERT INTO sessions (account_id, expires_at, active_org_id)
+         VALUES ($1, $2, $3) RETURNING token",
     )
     .bind(account_id)
     .bind(session_expires)
+    .bind(org_id)
     .fetch_one(&state.db)
     .await
     .map_err(db_err)?;
@@ -701,18 +712,21 @@ window.location.replace('{destination}');
 
 pub async fn refresh(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // Look up refresh token
-    let row: Option<(Uuid, String, Uuid)> = sqlx::query_as(
-        "SELECT id, refresh_token, org_id FROM lark_tokens WHERE account_id = $1 LIMIT 1",
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
+
+    let row: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, refresh_token FROM lark_tokens WHERE account_id = $1 AND org_id = $2",
     )
     .bind(user.account_id)
+    .bind(org_id)
     .fetch_optional(&state.db)
     .await
     .map_err(db_err)?;
 
-    let (token_row_id, refresh_token, _org_id) = row.ok_or_else(|| {
+    let (token_row_id, refresh_token) = row.ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             Json(json!({"error": "no lark tokens found for this account"})),
@@ -759,6 +773,23 @@ pub async fn refresh(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+async fn resolve_lark_callback_org(
+    state: &AppState,
+    account_id: Uuid,
+    oauth_state: &OAuthFlow,
+) -> Result<Option<Uuid>, (StatusCode, Json<Value>)> {
+    if let Some(org_id) = tenant::resolve_ws_org_id(state, account_id).await? {
+        return Ok(Some(org_id));
+    }
+
+    if matches!(oauth_state, OAuthFlow::Admin(_)) {
+        return Ok(None);
+    }
+
+    let memberships = tenant::list_memberships(state, account_id).await?;
+    Ok(memberships.first().map(|m| m.id))
+}
 
 fn db_err(_e: sqlx::Error) -> (StatusCode, Json<Value>) {
     (
