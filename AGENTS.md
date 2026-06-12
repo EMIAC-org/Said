@@ -272,4 +272,4 @@ Treat updating the wiki as the last action you take in every session.
 |---|---|---|
 | Bug: Status Bar + Hang Fixes | In progress — committed, needs push + test | `Z54Id6iGCoCJpwxT4Zcldez9gTg` |
 | Meeting Transcription — Hindi Accuracy & Mic Silence Guard | Fix done + tested (85 pass), not yet committed | `L7YSdjAWvoRwHNxh4XclpFWOgKe` |
-| Robust Post-Meeting Flow — Queue, Retry, Processing UI | Done + verified (my crates green), not yet committed; 2 pre-existing said-backend test failures flagged | `GBeIdR8QPogYU3xt5I0loeY4gJd` |
+| Robust Post-Meeting Flow — Queue, Retry, Processing UI | Committed (5 commits on windows-devlog-vocab-fix); audit done, P0+storage+quality+FE-dedup landed; Rust module split deferred to a fresh pass; 2 pre-existing said-backend test failures flagged | `GBeIdR8QPogYU3xt5I0loeY4gJd` |
