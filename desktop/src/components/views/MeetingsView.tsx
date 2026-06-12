@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { formatTimestamp, speakerColor } from "@/lib/meetingFormat";
 import type { MutableRefObject, ReactNode } from "react";
 import {
   AlertTriangle,
@@ -169,37 +170,8 @@ function isInCurrentWeek(date: Date): boolean {
   return date >= start && date < end;
 }
 
-function formatTimestamp(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-  }
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
-function formatAudioTime(seconds: number): string {
-  return formatTimestamp(seconds * 1000);
-}
-
 function wordCount(text: string | null | undefined): number {
   return text?.trim().split(/\s+/).filter(Boolean).length ?? 0;
-}
-
-const SPEAKER_COLORS = [
-  "hsl(3 72% 58%)",
-  "hsl(251 88% 65%)",
-  "hsl(318 70% 58%)",
-  "hsl(37 86% 58%)",
-  "hsl(154 68% 52%)",
-  "hsl(212 84% 62%)",
-];
-
-function speakerColor(speakerId: string, speakers: string[]): string {
-  const index = Math.max(0, speakers.indexOf(speakerId));
-  return SPEAKER_COLORS[index % SPEAKER_COLORS.length];
 }
 
 const TAG_COLORS = [
@@ -492,7 +464,7 @@ function MeetingAudioBar({
       />
       <div className="flex items-center gap-3 text-[12px] font-semibold text-muted-foreground">
         <span className="tabular-nums">
-          {formatAudioTime(currentTime)} / {formatAudioTime(effectiveDuration)}
+          {formatTimestamp(currentTime * 1000)} / {formatTimestamp(effectiveDuration * 1000)}
         </span>
         <IconButton label="Back 15 seconds" disabled={!audioSrc} onClick={() => onSeek(Math.max(0, currentTime - 15))}>
           <SkipBack size={14} />
@@ -537,7 +509,6 @@ function SpeakerTimeline({
   segments: MeetingCachedTranscriptSegment[];
   durationMs: number;
 }) {
-  const speakers = Array.from(new Set(segments.map((segment) => segment.speaker_id)));
   if (segments.length === 0) return null;
   return (
     <div className="mt-6 flex h-8 w-full overflow-hidden rounded-lg">
@@ -548,7 +519,7 @@ function SpeakerTimeline({
             type="button"
             key={`${segment.start_ms}-${segment.speaker_id}-${index}`}
             className="h-full min-w-[4px] border-r border-black/20"
-            style={{ width: `${width}%`, background: speakerColor(segment.speaker_id, speakers) }}
+            style={{ width: `${width}%`, background: speakerColor(segment.speaker_id) }}
             title={`${formatTimestamp(segment.start_ms)} ${segment.speaker_name}`}
           />
         );
@@ -613,7 +584,7 @@ function TranscriptTab({
               <span className="min-w-0">
                 <span
                   className="text-[13px] font-bold"
-                  style={{ color: speakerColor(segment.speaker_id, speakers) }}
+                  style={{ color: speakerColor(segment.speaker_id) }}
                 >
                   {segment.speaker_name}
                 </span>

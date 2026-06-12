@@ -17,6 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getConnection } from "@/lib/enterprise";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
+import { formatTimestamp, speakerColor } from "@/lib/meetingFormat";
 
 // ── Types (matching WS protocol) ─────────────────────────────────────────────
 
@@ -171,25 +172,6 @@ type WsMessage =
   | { type: "participant_left"; account_id: string }
   | { type: "meeting_ended"; meeting_id: string };
 
-// ── Speaker color assignment ─────────────────────────────────────────────────
-
-const SPEAKER_COLORS = [
-  "hsl(226 80% 78%)",  // periwinkle (primary)
-  "hsl(142 70% 65%)",  // green
-  "hsl(38 90% 72%)",   // amber
-  "hsl(354 85% 75%)",  // red
-  "hsl(280 70% 75%)",  // purple
-  "hsl(180 60% 65%)",  // teal
-];
-
-
-function getSpeakerColor(speakerId: string, colorMap: Map<string, string>): string {
-  if (colorMap.has(speakerId)) return colorMap.get(speakerId)!;
-  const color = SPEAKER_COLORS[colorMap.size % SPEAKER_COLORS.length];
-  colorMap.set(speakerId, color);
-  return color;
-}
-
 function liveChunkToTranscriptChunk(chunk: MeetingLiveTranscriptChunk): TranscriptChunk {
   return {
     speaker_id: chunk.speaker_id,
@@ -310,7 +292,6 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   const wsRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
-  const speakerColorMap = useRef<Map<string, string>>(new Map());
   const highestChunkIndexRef = useRef(-1);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoffRef = useRef(1000); // start at 1s, doubles up to 8s
@@ -790,12 +771,6 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   }, [meetingId]);
 
   // Format timestamp
-  const formatTime = (ms: number) => {
-    const totalSec = Math.floor(ms / 1000);
-    const min = Math.floor(totalSec / 60);
-    const sec = totalSec % 60;
-    return `${min}:${sec.toString().padStart(2, "0")}`;
-  };
 
   // Active participant count
   const activeParticipants = participants.filter((p) => p.status !== "left").length;
@@ -845,7 +820,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   const liveTranscriptOverride = useMemo(() => {
     if (chunks.length === 0) return "";
     return chunks
-      .map((chunk) => `[${formatTime(chunk.timestamp_ms)} ${chunk.speaker_name}] ${chunk.text}`)
+      .map((chunk) => `[${formatTimestamp(chunk.timestamp_ms)} ${chunk.speaker_name}] ${chunk.text}`)
       .join("\n");
   }, [chunks]);
   const hasFinalTranscript = finalDiarizationStatus === "completed" && finalTranscript.length > 0;
@@ -1051,7 +1026,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
         title="Open live meeting AI chat"
       >
         <Sparkles size={16} style={{ color: "hsl(var(--primary))" }} />
-        <span>{chunks.length > 0 ? formatTime(chunks[chunks.length - 1].timestamp_ms) : "00:00"}</span>
+        <span>{chunks.length > 0 ? formatTimestamp(chunks[chunks.length - 1].timestamp_ms) : "00:00"}</span>
       </button>
       {aiChatOpen && aiChatPanel}
 
@@ -1183,7 +1158,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
             ) : (
               <div className="space-y-3">
                 {chunks.map((chunk, i) => {
-                  const color = getSpeakerColor(chunk.speaker_id, speakerColorMap.current);
+                  const color = speakerColor(chunk.speaker_id);
                   // Group consecutive chunks from same speaker
                   const prevChunk = i > 0 ? chunks[i - 1] : null;
                   const sameSpeaker = prevChunk?.speaker_id === chunk.speaker_id;
@@ -1199,7 +1174,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
                             {chunk.speaker_name}
                           </span>
                           <span className="text-[10px] text-muted-foreground">
-                            {formatTime(chunk.timestamp_ms)}
+                            {formatTimestamp(chunk.timestamp_ms)}
                           </span>
                         </div>
                       )}
