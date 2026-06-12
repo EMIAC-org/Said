@@ -10,6 +10,7 @@ mod diag; // lock-holder + breadcrumb instrumentation for stuck-state diagnostic
 mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plane)
 mod echo_gate;
 mod enterprise_oauth;
+mod meeting_engine;
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
 mod recovery; // crash-safe dictation audio capture + relaunch recovery
@@ -33,6 +34,19 @@ use tokio_util::sync::CancellationToken;
 
 use backend::BackendEndpoint;
 use desktop::DesktopApp;
+use meeting_engine::{
+    meeting_engine_add_user_tag, meeting_engine_chat, meeting_engine_delete_meeting_files,
+    meeting_engine_dismiss_ai_tag, meeting_engine_generate_intelligence,
+    meeting_engine_get_cached_artifacts, meeting_engine_get_cached_intelligence,
+    meeting_engine_get_live_transcript, meeting_engine_get_manual_actions,
+    meeting_engine_get_meeting_overviews, meeting_engine_get_notes,
+    meeting_engine_get_processing_status, meeting_engine_get_status, meeting_engine_get_user_tags,
+    meeting_engine_remove_user_tag, meeting_engine_retranscribe, meeting_engine_search_meetings,
+    meeting_engine_set_manual_actions, meeting_engine_set_meeting_favorite,
+    meeting_engine_set_meeting_hidden, meeting_engine_set_meeting_lark_doc,
+    meeting_engine_set_meeting_title, meeting_engine_set_notes, meeting_engine_start_session,
+    meeting_engine_stop_session, meeting_engine_toggle_mute,
+};
 use said_core::{AppSnapshot, ProcessSummary};
 use said_paster as paster;
 
@@ -6797,6 +6811,27 @@ fn main() {
                     tracing::info!("[main] macOS activation policy set to Regular (dock visible)");
                 }
 
+                // Crash recovery: repair WAV headers for any meeting interrupted
+                // mid-recording/processing on the previous run (so its audio is
+                // playable), then re-enqueue any meeting that never finished
+                // transcribing so the pipeline self-heals. Runs off-thread to keep
+                // startup responsive; best-effort and self-contained.
+                {
+                    let recovery_handle = app.handle().clone();
+                    std::thread::Builder::new()
+                        .name("meeting-recovery".to_string())
+                        .spawn(move || {
+                            meeting_engine::recover_incomplete_meetings();
+                            // Reclaim empty orphan dirs from past sessions that
+                            // captured nothing (invisible in the UI otherwise).
+                            meeting_engine::gc_orphan_meeting_dirs();
+                            recovery_handle
+                                .state::<meeting_engine::MeetingEngineState>()
+                                .requeue_interrupted_meetings();
+                        })
+                        .ok();
+                }
+
                 let desktop_prefs = said_core::prefs::load();
                 if let Err(e) = apply_launch_at_login(app.handle(), desktop_prefs.launch_at_login)
                 {
@@ -7644,6 +7679,7 @@ fn main() {
         .manage(StatusBarPlacementActive(AtomicBool::new(false)))
         .manage(StatusBarInteractive(AtomicBool::new(false)))
         .manage(MeetingModeState::new())
+        .manage(meeting_engine::MeetingEngineState::new())
         .manage(speaker_suppression::SpeakerSuppressionGuard::new())
         .manage(LongDictationState::new())
         .invoke_handler(tauri::generate_handler![
@@ -7738,6 +7774,32 @@ fn main() {
             backend_log_location,
             open_log_folder,
             // Meeting audio pipeline
+            meeting_engine_start_session,
+            meeting_engine_stop_session,
+            meeting_engine_toggle_mute,
+            meeting_engine_get_live_transcript,
+            meeting_engine_get_status,
+            meeting_engine_get_processing_status,
+            meeting_engine_get_cached_artifacts,
+            meeting_engine_get_cached_intelligence,
+            meeting_engine_generate_intelligence,
+            meeting_engine_chat,
+            meeting_engine_get_user_tags,
+            meeting_engine_add_user_tag,
+            meeting_engine_remove_user_tag,
+            meeting_engine_get_meeting_overviews,
+            meeting_engine_set_meeting_title,
+            meeting_engine_set_meeting_favorite,
+            meeting_engine_set_meeting_hidden,
+            meeting_engine_set_meeting_lark_doc,
+            meeting_engine_dismiss_ai_tag,
+            meeting_engine_delete_meeting_files,
+            meeting_engine_get_notes,
+            meeting_engine_set_notes,
+            meeting_engine_get_manual_actions,
+            meeting_engine_set_manual_actions,
+            meeting_engine_search_meetings,
+            meeting_engine_retranscribe,
             start_meeting_stt,
             stop_meeting_stt,
             toggle_meeting_mute,
@@ -7768,6 +7830,11 @@ fn main() {
                     api.prevent_exit();
                 }
                 tauri::RunEvent::Exit => {
+                    // Finalize any in-progress recording (valid WAV headers +
+                    // fsync + recovery breadcrumb) and stop the job worker before
+                    // tearing down the backend — otherwise an active recording is
+                    // abandoned with a stale header and the whisper child orphans.
+                    app.state::<meeting_engine::MeetingEngineState>().shutdown();
                     if let Ok(mut guard) = app.state::<BackendHandleState>().0.lock() {
                         drop(guard.take());
                     }

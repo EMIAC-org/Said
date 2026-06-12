@@ -1,10 +1,8 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import {
   ArrowLeft,
   Radio,
   Users,
-  Check,
-  Send,
   Loader2,
   Wifi,
   WifiOff,
@@ -12,10 +10,13 @@ import {
   MicOff,
   PhoneOff,
   CircleStop,
+  Sparkles,
+  X,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getConnection } from "@/lib/enterprise";
+import { MeetingAiChat } from "@/components/MeetingAiChat";
 
 // ── Types (matching WS protocol) ─────────────────────────────────────────────
 
@@ -25,14 +26,7 @@ interface TranscriptChunk {
   text: string;
   timestamp_ms: number;
   chunk_index: number;
-}
-
-interface WsTask {
-  task_id: string;
-  title: string;
-  assignee_name: string | null;
-  lark_task_id?: string | null;
-  status?: string;
+  source?: string;
 }
 
 interface WsParticipant {
@@ -47,23 +41,131 @@ interface MeetingDetail {
   title: string;
   status: "scheduled" | "live" | "ended";
   created_by: string;
+  scheduled_at?: string | null;
+  created_at?: string | null;
+  agenda?: string | null;
 }
 
-interface MeetingSttStatus {
+
+interface MeetingEngineStatus {
   active: boolean;
   muted: boolean;
   capture_running: boolean;
-  speaker_reference_available: boolean;
-  echo_gate_active: boolean;
-  local_speech_active: boolean;
-  last_gate_reason: string;
+  mic_track_active?: boolean;
+  system_track_active?: boolean;
+  speaker_reference_available?: boolean;
+  echo_gate_active?: boolean;
+  local_speech_active?: boolean;
+  last_gate_reason?: string;
+  session_id?: string | null;
+  started_at_ms?: number | null;
+  generation?: number;
+  phase?: string;
+  mic_wav_path?: string | null;
+  mic_duration_ms?: number | null;
+  mic_samples_written?: number;
+  mic_dropped_chunks?: number;
+  system_wav_path?: string | null;
+  system_duration_ms?: number | null;
+  system_samples_written?: number;
+  system_dropped_chunks?: number;
+  system_capture_status?: string;
+  system_capture_error?: string | null;
+  merged_wav_path?: string | null;
+  merged_duration_ms?: number | null;
+  merge_status?: string;
+  merge_error?: string | null;
+  source_activity_path?: string | null;
+  live_transcript_running?: boolean;
+  live_transcript_status?: string;
+  live_transcript_provider?: string | null;
+  live_transcript_model?: string | null;
+  live_transcript_language?: string | null;
+  live_transcript_chunk_count?: number;
+  live_transcript_error?: string | null;
+  live_transcript_dropped_audio_chunks?: number;
+  transcription_running?: boolean;
+  transcription_status?: string;
+  transcription_provider?: string | null;
+  transcription_model?: string | null;
+  transcription_language?: string | null;
+  transcription_latency_ms?: number | null;
+  transcript_text_path?: string | null;
+  transcript_json_path?: string | null;
+  transcript_text?: string | null;
+  transcript_cleaned_text?: string | null;
+  final_transcript_text?: string | null;
+  transcript_cleanup_status?: string;
+  transcript_cleanup_provider?: string | null;
+  transcript_cleanup_model?: string | null;
+  transcript_cleanup_latency_ms?: number | null;
+  transcript_cleanup_error?: string | null;
+  final_diarization_status?: string;
+  final_diarization_provider?: string | null;
+  final_diarization_latency_ms?: number | null;
+  final_diarization_json_path?: string | null;
+  final_transcript_json_path?: string | null;
+  final_diarization_error?: string | null;
+  transcription_error?: string | null;
+  last_error?: string | null;
 }
+
+type TranscriptReviewMode = "final" | "cleaned" | "raw";
+
+interface MeetingLiveTranscriptChunk {
+  chunk_index: number;
+  source: string;
+  speaker_id: string;
+  speaker_name: string;
+  timestamp_ms: number;
+  text: string;
+  is_final: boolean;
+}
+
+interface MeetingLiveTranscriptPayload {
+  session_id?: string | null;
+  status: string;
+  provider?: string | null;
+  model?: string | null;
+  language?: string | null;
+  chunks: MeetingLiveTranscriptChunk[];
+  error?: string | null;
+  dropped_audio_chunks?: number;
+}
+
+interface MeetingLiveTranscriptEvent {
+  session_id: string;
+  chunk: MeetingLiveTranscriptChunk;
+}
+
+interface MeetingAiActionItem {
+  title: string;
+  assignee?: string | null;
+  due?: string | null;
+  evidence?: string | null;
+}
+
+interface MeetingAiDecision {
+  text: string;
+  evidence?: string | null;
+}
+
+interface MeetingIntelligenceResult {
+  status: string;
+  provider: string;
+  model: string;
+  latency_ms: number;
+  transcript_source: string;
+  summary: string;
+  action_items: MeetingAiActionItem[];
+  decisions: MeetingAiDecision[];
+}
+
 
 type WsMessage =
   | { type: "connected"; meeting_id: string; account_id: string }
-  | { type: "catchup"; summary: string | null; current_chunks: TranscriptChunk[]; tasks: WsTask[]; decisions: { text: string }[]; participants: WsParticipant[] }
+  | { type: "catchup"; summary: string | null; current_chunks: TranscriptChunk[]; decisions: { text: string }[]; participants: WsParticipant[] }
   | { type: "transcript_chunk"; speaker_id: string; speaker_name: string; text: string; timestamp_ms: number; chunk_index: number }
-  | { type: "task_detected"; task_id: string; title: string; assignee_id: string | null; assignee_name: string | null }
   | { type: "summary_updated"; summary: string }
   | { type: "participant_joined"; account_id: string; email: string; display_name?: string }
   | { type: "participant_left"; account_id: string }
@@ -80,6 +182,7 @@ const SPEAKER_COLORS = [
   "hsl(180 60% 65%)",  // teal
 ];
 
+
 function getSpeakerColor(speakerId: string, colorMap: Map<string, string>): string {
   if (colorMap.has(speakerId)) return colorMap.get(speakerId)!;
   const color = SPEAKER_COLORS[colorMap.size % SPEAKER_COLORS.length];
@@ -87,23 +190,48 @@ function getSpeakerColor(speakerId: string, colorMap: Map<string, string>): stri
   return color;
 }
 
-function displayNameFromEmail(email?: string | null): string {
-  if (!email) return "You";
-  return email.split("@")[0] || email;
+function liveChunkToTranscriptChunk(chunk: MeetingLiveTranscriptChunk): TranscriptChunk {
+  return {
+    speaker_id: chunk.speaker_id,
+    speaker_name: chunk.speaker_name,
+    text: chunk.text,
+    timestamp_ms: chunk.timestamp_ms,
+    chunk_index: 1_000_000_000 + chunk.chunk_index,
+    source: chunk.source,
+  };
 }
 
-function dedupeTasks(tasks: WsTask[]): WsTask[] {
-  const byId = new Map<string, WsTask>();
+function transcriptChunkKey(chunk: TranscriptChunk): string {
+  return [
+    chunk.source || "remote",
+    chunk.speaker_id,
+    Math.round(chunk.timestamp_ms),
+    chunk.text.trim(),
+  ].join("|");
+}
 
-  for (const task of tasks) {
-    byId.set(task.task_id, { ...byId.get(task.task_id), ...task });
+function mergeTranscriptChunks(
+  current: TranscriptChunk[],
+  incoming: TranscriptChunk[],
+): TranscriptChunk[] {
+  if (incoming.length === 0) return current;
+  const seen = new Set(current.map(transcriptChunkKey));
+  let changed = false;
+  const merged = [...current];
+  for (const chunk of incoming) {
+    const key = transcriptChunkKey(chunk);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(chunk);
+    changed = true;
   }
-
-  return Array.from(byId.values());
-}
-
-function upsertTask(tasks: WsTask[], task: WsTask): WsTask[] {
-  return dedupeTasks([...tasks, task]);
+  if (!changed) return current;
+  merged.sort((a, b) =>
+    a.timestamp_ms - b.timestamp_ms
+    || a.chunk_index - b.chunk_index
+    || a.speaker_id.localeCompare(b.speaker_id)
+  );
+  return merged;
 }
 
 // ── Props ────────────────────────────────────────────────────────────────────
@@ -111,26 +239,67 @@ function upsertTask(tasks: WsTask[], task: WsTask): WsTask[] {
 interface LiveMeetingViewProps {
   meetingId: string;
   onBack: () => void;
+  /** Fired once when the meeting ends. The parent navigates to the Meetings
+   *  page and focuses this meeting; LiveMeetingView is the LIVE surface only and
+   *  no longer renders its own post-meeting notes layout. */
+  onEnded?: (meetingId: string) => void;
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
+export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewProps) {
+  void onBack; // onBack reserved for a future in-call back button
   const [connected, setConnected] = useState(false);
   const [ended, setEnded] = useState(false);
   const [chunks, setChunks] = useState<TranscriptChunk[]>([]);
-  const [tasks, setTasks] = useState<WsTask[]>([]);
   const [participants, setParticipants] = useState<WsParticipant[]>([]);
-  const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
-  const [pushing, setPushing] = useState(false);
-  const [pushResult, setPushResult] = useState<string | null>(null);
+  // Live notes — saved to this meeting and used as AI-chat context.
+  const [notes, setNotes] = useState("");
+  const [notesStatus, setNotesStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const notesSaveTimer = useRef<number | null>(null);
   const [muted, setMuted] = useState(false);
-  const [sttRunning, setSttRunning] = useState(false);
+  const [engineRunning, setEngineRunning] = useState(false);
   const [captureRunning, setCaptureRunning] = useState(false);
-  const [speakerReferenceAvailable, setSpeakerReferenceAvailable] = useState(false);
-  const [echoGateActive, setEchoGateActive] = useState(false);
+  const [micTrackActive, setMicTrackActive] = useState(false);
+  const [systemTrackActive, setSystemTrackActive] = useState(false);
+  const [systemCaptureStatus, setSystemCaptureStatus] = useState("idle");
+  const [systemCaptureError, setSystemCaptureError] = useState<string | null>(null);
   const [localSpeechActive, setLocalSpeechActive] = useState(false);
   const [lastGateReason, setLastGateReason] = useState("not_started");
+  const [engineError, setEngineError] = useState<string | null>(null);
+  const [liveTranscriptStatus, setLiveTranscriptStatus] = useState("idle");
+  const [liveTranscriptModel, setLiveTranscriptModel] = useState<string | null>(null);
+  const [liveTranscriptError, setLiveTranscriptError] = useState<string | null>(null);
+  const [transcriptionRunning, setTranscriptionRunning] = useState(false);
+  const [transcriptionStatus, setTranscriptionStatus] = useState("idle");
+  const [, setTranscriptionModel] = useState<string | null>(null);
+  const [, setTranscriptionLanguage] = useState<string | null>(null);
+  const [, setTranscriptionLatencyMs] = useState<number | null>(null);
+  const [, setTranscriptTextPath] = useState<string | null>(null);
+  const [, setTranscriptJsonPath] = useState<string | null>(null);
+  const [transcriptText, setTranscriptText] = useState<string | null>(null);
+  const [transcriptCleanedText, setTranscriptCleanedText] = useState<string | null>(null);
+  const [finalTranscriptText, setFinalTranscriptText] = useState<string | null>(null);
+  const [finalTranscriptJsonPath, setFinalTranscriptJsonPath] = useState<string | null>(null);
+  const [transcriptCleanupStatus, setTranscriptCleanupStatus] = useState("idle");
+  const [, setTranscriptCleanupModel] = useState<string | null>(null);
+  const [, setTranscriptCleanupLatencyMs] = useState<number | null>(null);
+  const [, setTranscriptCleanupError] = useState<string | null>(null);
+  const [finalDiarizationStatus, setFinalDiarizationStatus] = useState("idle");
+  const [, setFinalDiarizationProvider] = useState<string | null>(null);
+  const [, setFinalDiarizationLatencyMs] = useState<number | null>(null);
+  const [, setFinalDiarizationError] = useState<string | null>(null);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [transcriptReviewMode, setTranscriptReviewMode] = useState<TranscriptReviewMode>("raw");
+  const [meetingAiStatus, setMeetingAiStatus] = useState("idle");
+  const [meetingAiSummary, setMeetingAiSummary] = useState("");
+  const [, setMeetingAiActionItems] = useState<MeetingAiActionItem[]>([]);
+  const [, setMeetingAiDecisions] = useState<MeetingAiDecision[]>([]);
+  const [, setMeetingAiSource] = useState<string | null>(null);
+  const [, setMeetingAiModel] = useState<string | null>(null);
+  const [, setMeetingAiLatencyMs] = useState<number | null>(null);
+  const [, setMeetingAiError] = useState<string | null>(null);
+  const [aiChatOpen, setAiChatOpen] = useState(false);
   const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
   const [controlBusy, setControlBusy] = useState(false);
   const [ending, setEnding] = useState(false);
@@ -142,22 +311,50 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const speakerColorMap = useRef<Map<string, string>>(new Map());
-  const chunkIndexRef = useRef(0);
   const highestChunkIndexRef = useRef(-1);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoffRef = useRef(1000); // start at 1s, doubles up to 8s
   const unmountedRef = useRef(false);
   const endedRef = useRef(false); // track ended via ref to avoid stale closures
   const isFirstConnectRef = useRef(true);
+  const lastIntelligenceKeyRef = useRef<string | null>(null);
+  const engineSessionIdRef = useRef<string | null>(null);
 
-  const applyMeetingStatus = useCallback((status: MeetingSttStatus) => {
-    setSttRunning(status.active);
+  const applyMeetingStatus = useCallback((status: MeetingEngineStatus) => {
+    engineSessionIdRef.current = status.session_id || null;
+    setEngineRunning(status.active);
     setMuted(status.muted);
     setCaptureRunning(status.capture_running);
-    setSpeakerReferenceAvailable(status.speaker_reference_available);
-    setEchoGateActive(status.echo_gate_active);
-    setLocalSpeechActive(status.local_speech_active);
+    setMicTrackActive(Boolean(status.mic_track_active));
+    setSystemTrackActive(Boolean(status.system_track_active));
+    setSystemCaptureStatus(status.system_capture_status || "idle");
+    setSystemCaptureError(status.system_capture_error || null);
+    setLocalSpeechActive(Boolean(status.local_speech_active));
     setLastGateReason(status.last_gate_reason || "unknown");
+    setEngineError(status.last_error || null);
+    setLiveTranscriptStatus(status.live_transcript_status || "idle");
+    setLiveTranscriptModel(status.live_transcript_model || null);
+    setLiveTranscriptError(status.live_transcript_error || null);
+    setTranscriptionRunning(Boolean(status.transcription_running));
+    setTranscriptionStatus(status.transcription_status || "idle");
+    setTranscriptionModel(status.transcription_model || null);
+    setTranscriptionLanguage(status.transcription_language || null);
+    setTranscriptionLatencyMs(status.transcription_latency_ms ?? null);
+    setTranscriptTextPath(status.transcript_text_path || null);
+    setTranscriptJsonPath(status.transcript_json_path || null);
+    setTranscriptText(status.transcript_text || null);
+    setTranscriptCleanedText(status.transcript_cleaned_text || null);
+    setFinalTranscriptText(status.final_transcript_text || null);
+    setFinalTranscriptJsonPath(status.final_transcript_json_path || null);
+    setTranscriptCleanupStatus(status.transcript_cleanup_status || "idle");
+    setTranscriptCleanupModel(status.transcript_cleanup_model || null);
+    setTranscriptCleanupLatencyMs(status.transcript_cleanup_latency_ms ?? null);
+    setTranscriptCleanupError(status.transcript_cleanup_error || null);
+    setFinalDiarizationStatus(status.final_diarization_status || "idle");
+    setFinalDiarizationProvider(status.final_diarization_provider || null);
+    setFinalDiarizationLatencyMs(status.final_diarization_latency_ms ?? null);
+    setFinalDiarizationError(status.final_diarization_error || null);
+    setTranscriptionError(status.transcription_error || null);
   }, []);
 
   // Keep endedRef in sync with state (avoids stale closures in WS callbacks)
@@ -165,38 +362,89 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
     endedRef.current = ended;
   }, [ended]);
 
+  // When the meeting ends (via any path — leave, end, WS, or reopening an
+  // already-ended meeting) hand off to the Meetings page exactly once. The
+  // parent unmounts this view, so the post-meeting experience lives entirely in
+  // MeetingsView (single surface; no duplicate notes layout here).
+  const onEndedRef = useRef(onEnded);
+  useEffect(() => {
+    onEndedRef.current = onEnded;
+  }, [onEnded]);
+  const endedHandoffRef = useRef(false);
+  useEffect(() => {
+    if (ended && !endedHandoffRef.current) {
+      endedHandoffRef.current = true;
+      onEndedRef.current?.(meetingId);
+    }
+  }, [ended, meetingId]);
+
+  // Load this meeting's saved notes once.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<string>("meeting_engine_get_notes", { meetingId })
+      .then((value) => {
+        if (!cancelled) setNotes(value ?? "");
+      })
+      .catch(() => {
+        /* no notes yet */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [meetingId]);
+
+  // Debounced notes autosave (same store the Meetings page + AI chat read from).
+  const handleNotesChange = useCallback(
+    (value: string) => {
+      setNotes(value);
+      setNotesStatus("saving");
+      if (notesSaveTimer.current) window.clearTimeout(notesSaveTimer.current);
+      notesSaveTimer.current = window.setTimeout(() => {
+        invoke("meeting_engine_set_notes", { meetingId, notes: value })
+          .then(() => setNotesStatus("saved"))
+          .catch(() => setNotesStatus("idle"));
+      }, 600);
+    },
+    [meetingId],
+  );
+
   // Auto-scroll to bottom when new chunks arrive
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chunks]);
 
-  // ── Meeting audio pipeline (start on mount, stop on unmount) ────────────
+  // ── Meeting engine session (start on mount, stop on unmount) ────────────
   useEffect(() => {
     let cancelled = false;
-    invoke<MeetingSttStatus>("start_meeting_stt")
+    invoke<MeetingEngineStatus>("meeting_engine_start_session", { meetingId })
       .then((status) => {
         if (!cancelled) {
           applyMeetingStatus(status);
         }
       })
       .catch((e) => {
-        console.warn("[meeting_audio] start failed:", e);
+        console.warn("[meeting_engine] start failed:", e);
       });
 
     return () => {
       cancelled = true;
-      invoke("stop_meeting_stt").catch(() => {});
-      setSttRunning(false);
+      invoke("meeting_engine_stop_session").catch(() => {});
+      setEngineRunning(false);
       setCaptureRunning(false);
+      setMicTrackActive(false);
+      setSystemTrackActive(false);
+      setLocalSpeechActive(false);
+      setEngineError(null);
+      setTranscriptionRunning(false);
     };
-  }, [applyMeetingStatus]);
+  }, [applyMeetingStatus, meetingId]);
 
   useEffect(() => {
-    const unlistenPromise = listen<MeetingSttStatus>("meeting-stt-state", (event) => {
+    const unlistenPromise = listen<MeetingEngineStatus>("meeting-engine-state", (event) => {
       applyMeetingStatus(event.payload);
     });
 
-    invoke<MeetingSttStatus>("get_meeting_stt_status")
+    invoke<MeetingEngineStatus>("meeting_engine_get_status")
       .then(applyMeetingStatus)
       .catch(() => {});
 
@@ -205,57 +453,85 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
     };
   }, [applyMeetingStatus]);
 
-  // ── Listen for meeting-transcript events from the native pipeline ───────
   useEffect(() => {
-    const conn = getConnection();
-    const speakerId = conn?.accountId ?? "self";
-    const speakerName = conn?.larkName ?? displayNameFromEmail(conn?.email);
+    let cancelled = false;
 
-    const unlistenPromise = listen<{ text: string; timestamp_ms: number }>(
-      "meeting-transcript",
-      (event) => {
-        const { text, timestamp_ms } = event.payload;
-        if (!text.trim()) return;
-
-        // Add to local transcript as own speech
-        const idx = chunkIndexRef.current++;
-        const ownChunk: TranscriptChunk = {
-          speaker_id: speakerId,
-          speaker_name: speakerName,
-          text,
-          timestamp_ms,
-          chunk_index: idx,
-        };
-        setChunks((prev) => [...prev, ownChunk]);
-
-        // Send to the meeting WS so other participants see it
-        const ws = wsRef.current;
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(
-            JSON.stringify({
-              type: "transcript_chunk",
-              text,
-              timestamp_ms,
-            })
-          );
-        }
+    const mergeLivePayload = (payload: MeetingLiveTranscriptPayload) => {
+      if (cancelled || !payload.chunks?.length) return;
+      if (
+        payload.session_id
+        && engineSessionIdRef.current
+        && payload.session_id !== engineSessionIdRef.current
+      ) {
+        return;
       }
+      setChunks((prev) =>
+        mergeTranscriptChunks(prev, payload.chunks.map(liveChunkToTranscriptChunk))
+      );
+    };
+
+    const unlistenPromise = listen<MeetingLiveTranscriptEvent>(
+      "meeting-engine-live-transcript",
+      (event) => {
+        if (cancelled) return;
+        if (
+          engineSessionIdRef.current
+          && event.payload.session_id !== engineSessionIdRef.current
+        ) {
+          return;
+        }
+        setChunks((prev) =>
+          mergeTranscriptChunks(prev, [liveChunkToTranscriptChunk(event.payload.chunk)])
+        );
+      },
     );
 
+    invoke<MeetingLiveTranscriptPayload>("meeting_engine_get_live_transcript")
+      .then(mergeLivePayload)
+      .catch(() => {});
+
     return () => {
+      cancelled = true;
       unlistenPromise.then((fn) => fn());
     };
   }, []);
+
+  useEffect(() => {
+    const cleanupRunning = transcriptCleanupStatus === "running";
+    const finalDiarizationRunning =
+      finalDiarizationStatus === "running" || transcriptionStatus === "final_diarizing";
+    if (!ended && !transcriptionRunning && !cleanupRunning && !finalDiarizationRunning) return;
+    const terminalTranscription =
+      transcriptionStatus === "completed"
+      || transcriptionStatus === "failed"
+      || transcriptionStatus.startsWith("skipped_");
+    if (!cleanupRunning && !finalDiarizationRunning && terminalTranscription) return;
+
+    const id = setInterval(() => {
+      invoke<MeetingEngineStatus>("meeting_engine_get_status")
+        .then(applyMeetingStatus)
+        .catch(() => {});
+    }, 1000);
+
+    return () => clearInterval(id);
+  }, [
+    applyMeetingStatus,
+    ended,
+    finalDiarizationStatus,
+    transcriptionRunning,
+    transcriptionStatus,
+    transcriptCleanupStatus,
+  ]);
 
   // ── Toggle mute handler ─────────────────────────────────────────────────
   const handleToggleMute = useCallback(async () => {
     setControlBusy(true);
     setControlError(null);
     try {
-      const status = await invoke<MeetingSttStatus>("toggle_meeting_mute");
+      const status = await invoke<MeetingEngineStatus>("meeting_engine_toggle_mute");
       applyMeetingStatus(status);
     } catch (e) {
-      console.warn("[meeting_audio] toggle mute failed:", e);
+      console.warn("[meeting_engine] toggle mute failed:", e);
       setControlError(e instanceof Error ? e.message : String(e));
     } finally {
       setControlBusy(false);
@@ -264,12 +540,16 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
 
   const handleLeave = useCallback(async () => {
     setControlBusy(true);
+    setControlError(null);
     try {
-      await invoke("stop_meeting_stt");
-    } catch {}
+      const status = await invoke<MeetingEngineStatus>("meeting_engine_stop_session");
+      applyMeetingStatus(status);
+      setEnded(true);
+    } catch (e) {
+      setControlError(e instanceof Error ? e.message : String(e));
+    }
     setControlBusy(false);
-    onBack();
-  }, [onBack]);
+  }, [applyMeetingStatus]);
 
   const handleEndMeeting = useCallback(async () => {
     const conn = getConnection();
@@ -287,14 +567,15 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error ?? "Failed to end meeting");
       }
-      await invoke("stop_meeting_stt").catch(() => {});
+      const status = await invoke<MeetingEngineStatus>("meeting_engine_stop_session").catch(() => null);
+      if (status) applyMeetingStatus(status);
       setEnded(true);
     } catch (e) {
       setControlError(e instanceof Error ? e.message : String(e));
     } finally {
       setEnding(false);
     }
-  }, [ending, meetingId]);
+  }, [applyMeetingStatus, ending, meetingId]);
 
   useEffect(() => {
     const conn = getConnection();
@@ -311,7 +592,7 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
         setMeeting(data.meeting);
         if (data.meeting.status === "ended") {
           setEnded(true);
-          invoke("stop_meeting_stt").catch(() => {});
+          invoke("meeting_engine_stop_session").catch(() => {});
         }
       })
       .catch(() => {});
@@ -437,18 +718,8 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
                 }
               }
               setChunks((prev) => {
-                // Build a set of existing chunk_index values for dedup
-                const existingIndices = new Set(prev.map((c) => c.chunk_index));
-                const newChunks = msg.current_chunks.filter(
-                  (c) => !existingIndices.has(c.chunk_index)
-                );
-                if (newChunks.length === 0) return prev;
-                // Merge and sort by chunk_index to maintain order
-                const merged = [...prev, ...newChunks];
-                merged.sort((a, b) => a.chunk_index - b.chunk_index);
-                return merged;
+                return mergeTranscriptChunks(prev, msg.current_chunks);
               });
-              setTasks(dedupeTasks(msg.tasks));
               setParticipants(msg.participants);
               break;
 
@@ -464,23 +735,9 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
               if (msg.chunk_index > highestChunkIndexRef.current) {
                 highestChunkIndexRef.current = msg.chunk_index;
               }
-              // Deduplicate by chunk_index
-              setChunks((prev) => {
-                if (prev.some((c) => c.chunk_index === msg.chunk_index)) {
-                  return prev; // already have this chunk
-                }
-                return [...prev, newChunk];
-              });
+              setChunks((prev) => mergeTranscriptChunks(prev, [newChunk]));
               break;
             }
-
-            case "task_detected":
-              setTasks((prev) => upsertTask(prev, {
-                task_id: msg.task_id,
-                title: msg.title,
-                assignee_name: msg.assignee_name,
-              }));
-              break;
 
             case "summary_updated":
               // Could show summary somewhere; for now just acknowledge
@@ -508,7 +765,7 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
 
             case "meeting_ended":
               setEnded(true);
-              invoke("stop_meeting_stt").catch(() => {});
+              invoke("meeting_engine_stop_session").catch(() => {});
               break;
           }
         } catch {
@@ -532,71 +789,6 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
     };
   }, [meetingId]);
 
-  // Toggle task selection
-  const toggleTask = useCallback((taskId: string) => {
-    setSelectedTasks((prev) => {
-      const next = new Set(prev);
-      if (next.has(taskId)) next.delete(taskId);
-      else next.add(taskId);
-      return next;
-    });
-  }, []);
-
-  // Push selected tasks to Lark
-  const handlePushTasks = useCallback(async () => {
-    const conn = getConnection();
-    if (!conn || selectedTasks.size === 0) return;
-
-    setPushing(true);
-    setPushResult(null);
-
-    try {
-      const url = conn.serverUrl.replace(/\/+$/, "");
-      const res = await fetch(`${url}/v1/meetings/${meetingId}/push-tasks`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${conn.jwt}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ task_ids: Array.from(selectedTasks) }),
-      });
-
-      if (!res.ok) {
-        setPushResult("Failed to push tasks");
-        return;
-      }
-
-      const data = await res.json();
-      setPushResult(`Pushed ${data.pushed} task${data.pushed !== 1 ? "s" : ""}`);
-
-      // Mark pushed tasks as synced locally
-      setTasks((prev) =>
-        prev.map((t) =>
-          selectedTasks.has(t.task_id)
-            ? { ...t, status: "synced", lark_task_id: "pushed" }
-            : t
-        )
-      );
-      setSelectedTasks(new Set());
-
-      // Clear result message after 3s
-      setTimeout(() => setPushResult(null), 3000);
-    } catch {
-      setPushResult("Network error");
-    } finally {
-      setPushing(false);
-    }
-  }, [meetingId, selectedTasks]);
-
-  // Check if a task is already synced
-  const isTaskSynced = (task: WsTask) =>
-    task.status === "synced" || !!task.lark_task_id;
-
-  // Count selectable (non-synced) selected tasks
-  const selectableSelected = Array.from(selectedTasks).filter(
-    (id) => !isTaskSynced(tasks.find((t) => t.task_id === id)!)
-  ).length;
-
   // Format timestamp
   const formatTime = (ms: number) => {
     const totalSec = Math.floor(ms / 1000);
@@ -609,40 +801,233 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
   const activeParticipants = participants.filter((p) => p.status !== "left").length;
   const conn = getConnection();
   const isOwner = !!meeting && !!conn && meeting.created_by === conn.accountId;
-  const captureLabel = captureRunning ? "Recording" : muted ? "Muted" : "Paused";
-  const speakerFilterReady = echoGateActive && speakerReferenceAvailable;
-  const speakerFilterLabel = speakerFilterReady
-    ? localSpeechActive
-      ? "Local speech"
-      : "Speaker filter on"
-    : "Speaker filter unavailable";
+  const captureLabel = !engineRunning
+    ? transcriptionRunning
+      ? "Transcribing"
+      : "Stopped"
+    : engineError
+      ? "Error"
+      : muted
+        ? "Muted"
+        : captureRunning
+          ? "Recording"
+          : "Ready";
+  const engineReady = (engineRunning && !muted && !engineError) || transcriptionRunning;
+  const systemUnavailable = systemCaptureStatus === "unavailable" || Boolean(systemCaptureError);
+  const engineStatusLabel = engineError
+    ? "Mic error"
+    : transcriptionRunning
+      ? "Transcribing"
+      : transcriptionError
+        ? "Transcription error"
+    : muted
+    ? "Engine muted"
+    : captureRunning
+      ? micTrackActive && systemTrackActive
+        ? "Mic + system"
+        : micTrackActive
+          ? systemUnavailable
+            ? "Mic only"
+            : "Mic recording"
+          : systemTrackActive
+            ? "System audio"
+            : localSpeechActive
+              ? "Local speech"
+              : "Audio capture"
+      : engineRunning
+        ? systemUnavailable
+          ? "System unavailable"
+          : "Engine ready"
+        : "Engine stopped";
+  const rawTranscript = transcriptText?.trim() || "";
+  const cleanedTranscript = transcriptCleanedText?.trim() || "";
+  const finalTranscript = finalTranscriptText?.trim() || "";
+  const liveTranscriptOverride = useMemo(() => {
+    if (chunks.length === 0) return "";
+    return chunks
+      .map((chunk) => `[${formatTime(chunk.timestamp_ms)} ${chunk.speaker_name}] ${chunk.text}`)
+      .join("\n");
+  }, [chunks]);
+  const hasFinalTranscript = finalDiarizationStatus === "completed" && finalTranscript.length > 0;
+  const hasCleanedTranscript = transcriptCleanupStatus === "completed" && cleanedTranscript.length > 0;
+  const activeTranscriptText = transcriptReviewMode === "final" && hasFinalTranscript
+    ? finalTranscript
+    : transcriptReviewMode === "cleaned" && hasCleanedTranscript
+      ? cleanedTranscript
+      : rawTranscript;
+  const finalizationActive = finalDiarizationStatus === "running" || transcriptionStatus === "final_diarizing";
+  const cleanupActive = transcriptCleanupStatus === "running" || transcriptionStatus === "cleaning";
+  const intelligenceSourceKey = hasFinalTranscript
+    ? `final:${finalTranscriptJsonPath || finalTranscript.length}`
+    : finalizationActive
+      ? ""
+      : hasCleanedTranscript
+        ? `cleaned:${cleanedTranscript.length}`
+        : rawTranscript.length > 0
+          ? `raw:${rawTranscript.length}`
+          : "";
+  const meetingAiRunning = meetingAiStatus === "running";
+  const liveChatTranscript = liveTranscriptOverride.trim();
+  const chatCanSend = ended
+    ? Boolean(activeTranscriptText || rawTranscript)
+    : Boolean(liveChatTranscript);
+  const liveTranscriptModelLabel = liveTranscriptModel
+    ? liveTranscriptModel.split(/[\\/]/).pop() || liveTranscriptModel
+    : liveTranscriptStatus.replace(/_/g, " ");
+  const liveChatUnavailableLabel = ended
+    ? "Transcript is not ready yet."
+    : liveTranscriptError
+      ? `Live transcript unavailable: ${liveTranscriptError}`
+      : liveTranscriptStatus === "disabled"
+        ? "Live transcript is disabled."
+        : liveTranscriptStatus.startsWith("skipped")
+          ? "Live transcript could not start. Check whisper.cpp settings."
+            : liveTranscriptStatus === "running" || liveTranscriptStatus === "running_with_errors"
+              ? `Listening with ${liveTranscriptModelLabel}; waiting for the first transcript chunk.`
+              : "Live chat starts after transcript chunks arrive.";
 
-  // ── Ended overlay ──────────────────────────────────────────────────────────
+  const applyMeetingIntelligenceResult = useCallback((result: MeetingIntelligenceResult) => {
+    setMeetingAiStatus(result.status || "completed");
+    setMeetingAiSummary(result.summary || "");
+    setMeetingAiActionItems(result.action_items || []);
+    setMeetingAiDecisions(result.decisions || []);
+    setMeetingAiSource(result.transcript_source || null);
+    setMeetingAiModel(result.model || null);
+    setMeetingAiLatencyMs(result.latency_ms ?? null);
+    setMeetingAiError(null);
+  }, []);
+
+  const loadCachedMeetingIntelligence = useCallback(async () => {
+    try {
+      const result = await invoke<MeetingIntelligenceResult | null>(
+        "meeting_engine_get_cached_intelligence",
+        { meetingId },
+      );
+      if (!result?.summary && !result?.action_items?.length && !result?.decisions?.length) {
+        return false;
+      }
+      applyMeetingIntelligenceResult(result);
+      lastIntelligenceKeyRef.current = `cached:${meetingId}:${result.model}:${result.latency_ms}`;
+      return true;
+    } catch (e) {
+      setMeetingAiError(e instanceof Error ? e.message : String(e));
+      return false;
+    }
+  }, [applyMeetingIntelligenceResult, meetingId]);
+
+  const generateMeetingIntelligence = useCallback(async (force = false) => {
+    if (!intelligenceSourceKey) return;
+    if (!force && lastIntelligenceKeyRef.current === intelligenceSourceKey) return;
+    lastIntelligenceKeyRef.current = intelligenceSourceKey;
+    setMeetingAiStatus("running");
+    setMeetingAiError(null);
+    try {
+      const result = await invoke<MeetingIntelligenceResult>("meeting_engine_generate_intelligence", {
+        meetingId,
+      });
+      applyMeetingIntelligenceResult(result);
+    } catch (e) {
+      lastIntelligenceKeyRef.current = null;
+      setMeetingAiStatus("failed");
+      setMeetingAiError(e instanceof Error ? e.message : String(e));
+    }
+  }, [applyMeetingIntelligenceResult, intelligenceSourceKey]);
+
+  useEffect(() => {
+    if (!ended || meetingAiRunning || meetingAiSummary.trim()) {
+      return;
+    }
+    void loadCachedMeetingIntelligence();
+  }, [ended, loadCachedMeetingIntelligence, meetingAiRunning, meetingAiSummary]);
+
+  useEffect(() => {
+    if (!ended || !intelligenceSourceKey || transcriptionRunning || finalizationActive || cleanupActive) {
+      return;
+    }
+    void generateMeetingIntelligence(false);
+  }, [
+    cleanupActive,
+    ended,
+    finalizationActive,
+    generateMeetingIntelligence,
+    intelligenceSourceKey,
+    transcriptionRunning,
+  ]);
+
+  useEffect(() => {
+    if (hasFinalTranscript) {
+      setTranscriptReviewMode("final");
+      return;
+    }
+    if (!hasCleanedTranscript && transcriptReviewMode !== "raw") {
+      setTranscriptReviewMode("raw");
+    } else if (transcriptReviewMode === "final") {
+      setTranscriptReviewMode(hasCleanedTranscript ? "cleaned" : "raw");
+    }
+  }, [hasCleanedTranscript, hasFinalTranscript, transcriptReviewMode]);
+
+  const aiChatPanel = (
+    <div
+      className="absolute right-4 top-4 bottom-4 z-40 w-[380px] max-w-[calc(100%-2rem)] rounded-xl flex flex-col overflow-hidden"
+      style={{
+        background: "hsl(var(--surface-2) / 0.98)",
+        border: "1px solid hsl(var(--surface-4))",
+        boxShadow: "0 24px 70px hsl(0 0% 0% / 0.48)",
+        backdropFilter: "blur(28px) saturate(170%)",
+        WebkitBackdropFilter: "blur(28px) saturate(170%)",
+      }}
+    >
+      <div
+        className="flex items-center justify-between px-4 py-3"
+        style={{ borderBottom: "1px solid hsl(var(--surface-4))" }}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <Sparkles size={15} style={{ color: "hsl(var(--primary))" }} />
+          <div className="min-w-0">
+            <p className="text-[12px] font-bold text-foreground">Meeting AI Chat</p>
+            <p className="text-[10px] text-muted-foreground truncate">
+              {ended ? "Final meeting context" : "Live context so far"}
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setAiChatOpen(false)}
+          className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors"
+          style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+          title="Close AI chat"
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1">
+        <MeetingAiChat
+          resetKey={meetingId}
+          summary={meetingAiSummary || null}
+          transcriptOverride={ended ? null : liveChatTranscript}
+          notes={notes || null}
+          canSend={chatCanSend}
+          unavailableLabel={liveChatUnavailableLabel}
+          emptyHint={'Ask anything from this meeting — "What are the decisions?", "What did I say?", "What should I do next?"'}
+          placeholder={ended ? "Ask about this meeting" : "Ask about the live meeting"}
+        />
+      </div>
+    </div>
+  );
 
   if (ended) {
+    // Meeting ended — the parent navigates to the Meetings page and focuses
+    // this meeting (see onEnded). Render a brief hand-off state for the single
+    // frame before this view unmounts. The entire post-meeting experience
+    // (summary, transcript, actions, AI chat, live processing stages) lives in
+    // MeetingsView — the single source of truth. No duplicate notes page here.
     return (
-      <div className="h-full flex flex-col items-center justify-center gap-4">
-        <div
-          className="flex items-center justify-center w-14 h-14 rounded-full"
-          style={{ background: "hsl(var(--surface-4))" }}
-        >
-          <Radio size={24} style={{ color: "hsl(var(--muted-foreground))" }} />
+      <div className="h-full flex items-center justify-center">
+        <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+          <Loader2 size={16} className="animate-spin" />
+          <span>Wrapping up your meeting…</span>
         </div>
-        <h2 className="text-[16px] font-bold text-foreground">Meeting Ended</h2>
-        <p className="text-[12px] text-muted-foreground">
-          This meeting has concluded. {chunks.length} transcript chunk{chunks.length !== 1 ? "s" : ""} recorded.
-        </p>
-        <button
-          onClick={onBack}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg text-[12px] font-semibold transition-colors mt-2"
-          style={{
-            background: "hsl(var(--primary))",
-            color: "hsl(var(--primary-foreground))",
-          }}
-        >
-          <ArrowLeft size={13} />
-          Back to Meetings
-        </button>
       </div>
     );
   }
@@ -651,6 +1036,25 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
 
   return (
     <div className="h-full flex flex-col overflow-hidden relative">
+      <button
+        type="button"
+        onClick={() => setAiChatOpen(true)}
+        className="absolute top-3 left-1/2 -translate-x-1/2 z-30 h-11 px-5 rounded-full flex items-center gap-2 text-[12px] font-bold transition-transform hover:scale-[1.02]"
+        style={{
+          background: "hsl(var(--surface-2) / 0.96)",
+          border: "1px solid hsl(var(--surface-4))",
+          color: "hsl(var(--foreground))",
+          boxShadow: "0 14px 38px hsl(0 0% 0% / 0.35), 0 0 0 4px hsl(var(--primary) / 0.08)",
+          backdropFilter: "blur(24px) saturate(170%)",
+          WebkitBackdropFilter: "blur(24px) saturate(170%)",
+        }}
+        title="Open live meeting AI chat"
+      >
+        <Sparkles size={16} style={{ color: "hsl(var(--primary))" }} />
+        <span>{chunks.length > 0 ? formatTime(chunks[chunks.length - 1].timestamp_ms) : "00:00"}</span>
+      </button>
+      {aiChatOpen && aiChatPanel}
+
       {/* Top bar */}
       <div
         className="flex items-center justify-between px-5 py-3 flex-shrink-0"
@@ -773,7 +1177,7 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
               <div className="flex flex-col items-center justify-center h-full gap-2 opacity-50">
                 <Loader2 size={18} className="animate-spin text-muted-foreground" />
                 <p className="text-[11px] text-muted-foreground">
-                  Waiting for transcript...
+                  {liveChatUnavailableLabel}
                 </p>
               </div>
             ) : (
@@ -811,131 +1215,28 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
           </div>
         </div>
 
-        {/* Right panel — Tasks (40%) */}
+        {/* Right panel — Notes */}
         <div className="flex-[2] flex flex-col overflow-hidden min-w-0">
-          <div className="px-4 py-3 flex-shrink-0">
-            <h2 className="text-[12px] font-semibold text-muted-foreground uppercase tracking-wide">
-              Tasks ({tasks.length})
+          <div className="flex flex-shrink-0 items-center justify-between px-4 py-3">
+            <h2 className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Notes
             </h2>
+            <span className="text-[10px] text-muted-foreground">
+              {notesStatus === "saving" ? "Saving…" : notesStatus === "saved" ? "Saved" : ""}
+            </span>
           </div>
-
-          <div className="flex-1 overflow-y-auto px-4 pb-24">
-            {tasks.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full gap-2 opacity-50">
-                <Check size={18} className="text-muted-foreground" />
-                <p className="text-[11px] text-muted-foreground">
-                  Tasks will appear here
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {tasks.map((task) => {
-                  const synced = isTaskSynced(task);
-                  const isSelected = selectedTasks.has(task.task_id);
-
-                  return (
-                    <div
-                      key={task.task_id}
-                      onClick={() => !synced && toggleTask(task.task_id)}
-                      className={`rounded-lg p-3 transition-colors ${
-                        synced ? "opacity-50 cursor-default" : "cursor-pointer"
-                      }`}
-                      style={{
-                        background: isSelected && !synced
-                          ? "hsl(var(--primary) / 0.08)"
-                          : "hsl(var(--surface-3))",
-                        boxShadow: isSelected && !synced
-                          ? "inset 0 0 0 1px hsl(var(--primary) / 0.3)"
-                          : "inset 0 0 0 1px hsl(var(--surface-4))",
-                      }}
-                    >
-                      <div className="flex items-start gap-2.5">
-                        {/* Checkbox */}
-                        <div
-                          className="flex items-center justify-center w-4 h-4 rounded flex-shrink-0 mt-0.5 transition-colors"
-                          style={{
-                            background: synced
-                              ? "hsl(142 70% 45% / 0.2)"
-                              : isSelected
-                                ? "hsl(var(--primary))"
-                                : "hsl(var(--surface-4))",
-                            border: synced
-                              ? "none"
-                              : isSelected
-                                ? "none"
-                                : "1px solid hsl(var(--muted-foreground) / 0.3)",
-                          }}
-                        >
-                          {(synced || isSelected) && (
-                            <Check
-                              size={10}
-                              style={{
-                                color: synced
-                                  ? "hsl(142 70% 65%)"
-                                  : "hsl(var(--primary-foreground))",
-                              }}
-                            />
-                          )}
-                        </div>
-
-                        <div className="flex-1 min-w-0">
-                          <p className="text-[12px] text-foreground leading-snug">
-                            {task.title}
-                          </p>
-                          {task.assignee_name && (
-                            <p className="text-[10px] text-muted-foreground mt-1">
-                              {task.assignee_name}
-                            </p>
-                          )}
-                          {synced && (
-                            <p className="text-[10px] mt-1" style={{ color: "hsl(142 70% 65%)" }}>
-                              Synced to Lark
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* Push to Lark button */}
-          <div
-            className="flex-shrink-0 px-4 py-3"
-            style={{ borderTop: "1px solid hsl(var(--surface-4))" }}
-          >
-            {pushResult && (
-              <p className="text-[11px] text-center mb-2" style={{ color: "hsl(142 70% 65%)" }}>
-                {pushResult}
-              </p>
-            )}
-            <button
-              onClick={() => void handlePushTasks()}
-              disabled={selectableSelected === 0 || pushing}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-[12px] font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          <div className="min-h-0 flex-1 px-4 pb-24">
+            <textarea
+              value={notes}
+              onChange={(e) => handleNotesChange(e.target.value)}
+              placeholder="Jot notes during the meeting…  Saved to this meeting and used as context in AI chat."
+              spellCheck={false}
+              className="h-full w-full resize-none rounded-xl px-4 py-3 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:outline-none"
               style={{
-                background: selectableSelected > 0
-                  ? "hsl(var(--primary))"
-                  : "hsl(var(--surface-4))",
-                color: selectableSelected > 0
-                  ? "hsl(var(--primary-foreground))"
-                  : "hsl(var(--muted-foreground))",
+                background: "hsl(var(--surface-2))",
+                border: "1px solid hsl(var(--surface-4))",
               }}
-            >
-              {pushing ? (
-                <>
-                  <Loader2 size={13} className="animate-spin" />
-                  Pushing...
-                </>
-              ) : (
-                <>
-                  <Send size={12} />
-                  Push {selectableSelected > 0 ? `${selectableSelected} ` : ""}to Lark
-                </>
-              )}
-            </button>
+            />
           </div>
         </div>
       </div>
@@ -967,20 +1268,24 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
 
           <button
             onClick={() => void handleToggleMute()}
-            disabled={!sttRunning || controlBusy}
+            disabled={!engineRunning || controlBusy}
             className="flex items-center gap-2 h-10 px-4 rounded-full text-[12px] font-semibold transition-all disabled:opacity-40"
             style={{
               background: captureRunning
                 ? "hsl(142 70% 45% / 0.18)"
-                : "hsl(354 80% 55% / 0.16)",
+                : muted
+                  ? "hsl(354 80% 55% / 0.16)"
+                  : "hsl(226 80% 60% / 0.16)",
               color: captureRunning
                 ? "hsl(142 70% 65%)"
-                : "hsl(354 85% 75%)",
+                : muted
+                  ? "hsl(354 85% 75%)"
+                  : "hsl(226 80% 78%)",
               boxShadow: captureRunning
                 ? "0 0 18px hsl(142 70% 55% / 0.24)"
                 : "none",
             }}
-            title={captureRunning ? "Mute meeting capture" : "Resume meeting capture"}
+            title={muted ? "Resume meeting session" : "Mute meeting session"}
           >
             {controlBusy ? (
               <Loader2 size={15} className="animate-spin" />
@@ -1003,25 +1308,27 @@ export function LiveMeetingView({ meetingId, onBack }: LiveMeetingViewProps) {
 
           <div
             className="flex items-center gap-1.5 h-8 px-3 rounded-full text-[11px] font-medium"
-            title={lastGateReason}
+            title={
+              engineError || transcriptionError || systemCaptureError || transcriptionStatus || lastGateReason
+            }
             style={{
-              background: speakerFilterReady
+              background: engineReady
                 ? "hsl(142 70% 45% / 0.12)"
-                : "hsl(38 90% 55% / 0.13)",
-              color: speakerFilterReady
+                : "hsl(354 80% 55% / 0.16)",
+              color: engineReady
                 ? "hsl(142 70% 65%)"
-                : "hsl(38 90% 72%)",
+                : "hsl(354 85% 75%)",
             }}
           >
             <span
-              className={localSpeechActive ? "w-1.5 h-1.5 rounded-full animate-pulse" : "w-1.5 h-1.5 rounded-full"}
+              className={captureRunning ? "w-1.5 h-1.5 rounded-full animate-pulse" : "w-1.5 h-1.5 rounded-full"}
               style={{
-                background: speakerFilterReady
+                background: engineReady
                   ? "hsl(142 70% 55%)"
-                  : "hsl(38 90% 62%)",
+                  : "hsl(354 80% 65%)",
               }}
             />
-            <span>{speakerFilterLabel}</span>
+            <span>{engineStatusLabel}</span>
           </div>
 
           <div

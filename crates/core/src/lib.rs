@@ -4,6 +4,7 @@ pub mod deepgram;
 pub mod paths;
 pub mod prefs;
 pub mod reporter;
+pub mod script;
 pub mod scrub;
 pub mod telemetry;
 
