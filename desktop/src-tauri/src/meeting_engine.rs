@@ -4046,6 +4046,13 @@ fn transliterate_segments_with_llm(
                 segment.text = text.clone();
             }
         }
+        // Backstop: any line the LLM dropped or returned still in Devanagari gets
+        // the deterministic romanizer, so the final transcript is never a mix of
+        // Roman + Devanagari (the LLM routinely drops a fraction of lines on long
+        // inputs).
+        if said_core::script::contains_devanagari(&segment.text) {
+            segment.text = said_core::script::romanize_devanagari(&segment.text);
+        }
     }
     Ok(())
 }
@@ -7391,22 +7398,49 @@ fn complete_meeting_llm(
         .timeout(timeout)
         .build()
         .map_err(|e| format!("meeting AI client failed: {e}"))?;
+
+    // Retry transient failures (rate limits, 5xx, network/timeout) with backoff.
+    // Non-streaming callers (cleanup, intelligence, transliteration, verifier)
+    // are batch operations, so a brief retry turns the most common provider
+    // hiccup into a non-event instead of a hard pipeline failure.
+    const MEETING_LLM_MAX_ATTEMPTS: u32 = 3;
     let started = Instant::now();
-    let response = client
-        .post(&config.url)
-        .header(&config.auth_header_name, &config.auth_header_value)
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .map_err(|e| format!("meeting AI request failed: {e}"))?;
-    let status = response.status();
-    if !status.is_success() {
+    let mut attempt = 0;
+    let response = loop {
+        attempt += 1;
+        let send_result = client
+            .post(&config.url)
+            .header(&config.auth_header_name, &config.auth_header_value)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send();
+        let response = match send_result {
+            Ok(response) => response,
+            Err(e) => {
+                if attempt < MEETING_LLM_MAX_ATTEMPTS {
+                    tracing::warn!(attempt, error = %e, "[meeting_engine] LLM request errored; retrying");
+                    thread::sleep(Duration::from_millis(800 * attempt as u64));
+                    continue;
+                }
+                return Err(format!("meeting AI request failed: {e}"));
+            }
+        };
+        let status = response.status();
+        if status.is_success() {
+            break response;
+        }
+        let retryable = status.as_u16() == 429 || status.is_server_error();
         let body_text = response.text().unwrap_or_default();
+        if retryable && attempt < MEETING_LLM_MAX_ATTEMPTS {
+            tracing::warn!(attempt, %status, "[meeting_engine] LLM transient error; retrying");
+            thread::sleep(Duration::from_millis(800 * attempt as u64));
+            continue;
+        }
         return Err(format!(
             "meeting AI provider error {status}: {}",
             truncate_error(body_text.trim())
         ));
-    }
+    };
 
     let response: CleanupChatResponse = response
         .json()
