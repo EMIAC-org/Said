@@ -400,11 +400,30 @@ final class AppEnvironment: ObservableObject {
         await refreshRuntimeStatus()
         do {
             learnedEvents = try await gateway.listLearningEvents(limit: 50)
+            cacheSafeVocabTerms()
             vocabStatus = ""
         } catch {
             if handleUnauthorized(error) { return }
             vocabStatus = "Couldn't load learned terms"
         }
+    }
+
+    /// Mirror the most-recent learned terms into the App Group so every dictation
+    /// (app + keyboard warm path) sends them as `safe_vocab_terms`. Newest first,
+    /// deduped, capped — this is what makes taught names survive polish today
+    /// without any server change.
+    private func cacheSafeVocabTerms() {
+        var seen = Set<String>()
+        var terms: [String] = []
+        for event in learnedEvents {
+            for term in event.learnedTerms {
+                let key = term.lowercased()
+                if !key.isEmpty, seen.insert(key).inserted {
+                    terms.append(term)
+                }
+            }
+        }
+        SharedStore.safeVocabTerms = terms
     }
 
     @discardableResult
@@ -585,7 +604,7 @@ final class AppEnvironment: ObservableObject {
             runID: runID,
             selectedModel: selectedModel,
             outputLanguage: outputLanguage,
-            safeVocabTerms: [],
+            safeVocabTerms: SharedStore.safeVocabTerms,
             screenContext: nil,
             platform: "ios",
             appVersion: AppInfo.version

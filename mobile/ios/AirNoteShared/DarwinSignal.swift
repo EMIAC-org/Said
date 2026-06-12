@@ -16,6 +16,9 @@ public final class DarwinSignal {
     public static let resultReady = "com.emiac.airnote.signal.result"
     /// App → keyboard: the dictation failed / was cancelled.
     public static let dictationFailed = "com.emiac.airnote.signal.failed"
+    /// App → keyboard: a new live (romanized) partial transcript is in
+    /// SharedStore.keyboardLivePartial — show words as the user speaks.
+    public static let livePartial = "com.emiac.airnote.signal.partial"
 
     private var handlers: [String: () -> Void] = [:]
     private let lock = NSLock()

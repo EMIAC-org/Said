@@ -28,6 +28,31 @@ public enum SharedStore {
         static let pendingKbdTextAt = "airnote.shared.pending_kbd_text_at"
         static let sessionWarmUntil = "airnote.shared.session_warm_until"
         static let sessionDurationMinutes = "airnote.shared.session_duration_minutes"
+        static let safeVocabTerms = "airnote.shared.safe_vocab_terms"
+        static let keyboardLivePartial = "airnote.shared.kbd_live_partial"
+    }
+
+    /// The latest live (already romanized) partial transcript during a warm
+    /// keyboard dictation, written by the app and read by the keyboard so it can
+    /// show words as the user speaks. Empty string = nothing to show / cleared.
+    public static var keyboardLivePartial: String {
+        get { defaults?.string(forKey: Key.keyboardLivePartial) ?? "" }
+        set { defaults?.set(newValue, forKey: Key.keyboardLivePartial) }
+    }
+
+    /// The user's learned vocabulary (names/brands they've taught), cached by the
+    /// app so every dictation — including the keyboard's warm path — can send them
+    /// as `safe_vocab_terms`. The server polish prompt uses these as "SAFE LOCAL
+    /// VOCAB HINTS", so taught terms (e.g. "Anugra") start surviving polish even
+    /// without the server-side learned-memory merge. Capped at 30 (server limit).
+    public static var safeVocabTerms: [String] {
+        get { (defaults?.array(forKey: Key.safeVocabTerms) as? [String]) ?? [] }
+        set {
+            let cleaned = newValue
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            defaults?.set(Array(cleaned.prefix(30)), forKey: Key.safeVocabTerms)
+        }
     }
 
     /// How long a keyboard session stays warm after the last dictation, in

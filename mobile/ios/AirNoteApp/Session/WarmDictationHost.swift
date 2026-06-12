@@ -25,6 +25,7 @@ final class WarmDictationHost: ObservableObject {
     private var isStreaming = false
     private var maxLevel: Float = 0
     private var lastLoudAt: Date?
+    private var lastPartialAt = Date.distantPast
     private var observing = false
 
     /// How long the mic stays warm after the last dictation (extends on each use),
@@ -87,6 +88,7 @@ final class WarmDictationHost: ObservableObject {
         }
         maxLevel = 0
         lastLoudAt = nil
+        clearLivePartial()
         SharedStore.pendingKeyboardText = nil
         currentRunID = RequestId.make()
         let runID = currentRunID
@@ -104,7 +106,7 @@ final class WarmDictationHost: ObservableObject {
             runID: runID,
             selectedModel: SharedStore.selectedModel,
             outputLanguage: SharedStore.outputLanguage,
-            safeVocabTerms: [],
+            safeVocabTerms: SharedStore.safeVocabTerms,
             screenContext: nil
         )
         do {
@@ -140,6 +142,8 @@ final class WarmDictationHost: ObservableObject {
                 lastLoudAt = nil
                 Task { @MainActor in await self.stopDictation() }
             }
+        case .interimTranscript(let text), .finalTranscript(let text):
+            publishLivePartial(text)
         case .final(let final):
             deliver(transcript: final.transcript, polished: final.polished)
         case .done:
@@ -157,8 +161,25 @@ final class WarmDictationHost: ObservableObject {
         }
     }
 
+    /// Push a romanized live partial to the keyboard (throttled), so it can show
+    /// words as the user speaks during an in-place dictation.
+    private func publishLivePartial(_ text: String) {
+        let now = Date()
+        if now.timeIntervalSince(lastPartialAt) < 0.18 { return }
+        lastPartialAt = now
+        let roman = HinglishScript.enforceRomanHinglish(text)
+        SharedStore.keyboardLivePartial = roman
+        DarwinSignal.shared.post(DarwinSignal.livePartial)
+    }
+
+    private func clearLivePartial() {
+        lastPartialAt = .distantPast
+        SharedStore.keyboardLivePartial = ""
+    }
+
     private func deliver(transcript: String, polished: String) {
         isStreaming = false
+        clearLivePartial()
         let clean = HinglishScript.enforceRomanHinglish(polished.isEmpty ? transcript : polished)
         guard !clean.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             DarwinSignal.shared.post(DarwinSignal.dictationFailed)

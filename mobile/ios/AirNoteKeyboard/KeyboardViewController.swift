@@ -57,6 +57,9 @@ final class KeyboardViewController: UIInputViewController {
         DarwinSignal.shared.observe(DarwinSignal.dictationFailed) { [weak self] in
             self?.handleWarmFailed()
         }
+        DarwinSignal.shared.observe(DarwinSignal.livePartial) { [weak self] in
+            self?.handleLivePartial()
+        }
         reportHealth()
         recomputeIdleState()
         render()
@@ -204,7 +207,7 @@ final class KeyboardViewController: UIInputViewController {
             runID: runID,
             selectedModel: SharedStore.selectedModel,
             outputLanguage: SharedStore.outputLanguage,
-            safeVocabTerms: [],
+            safeVocabTerms: SharedStore.safeVocabTerms,
             screenContext: ContextReader(documentProxy: textDocumentProxy).read().fieldHint
         )
 
@@ -509,6 +512,14 @@ final class KeyboardViewController: UIInputViewController {
         cancelFinalizeTimer()
         warmActive = false
         setState(.error("Didn't catch that — tap the mic and speak."))
+    }
+
+    /// Show the live (already romanized) transcript the warm app is producing, so
+    /// the user sees words appear as they speak — without a full re-render.
+    private func handleLivePartial() {
+        guard warmActive, case .recording = state else { return }
+        let text = SharedStore.keyboardLivePartial
+        if !text.isEmpty { pad?.setLivePartial(text) }
     }
 
     /// On returning to the keyboard, insert any polished text the app produced for

@@ -18,6 +18,12 @@ final class RecordingPadView: UIView {
 
     private let rootStack = UIStackView()
     private var voiceSurface: UIView?
+    private weak var liveLabel: UILabel?
+
+    /// Update the live transcript shown while recording, without a full re-render.
+    func setLivePartial(_ text: String) {
+        liveLabel?.text = text.isEmpty ? " " : text
+    }
 
     init(state: KeyboardState, canTeachFix: Bool = false) {
         self.state = state
@@ -105,6 +111,9 @@ final class RecordingPadView: UIView {
 
         stack.addArrangedSubview(makeStatusRow())
         stack.addArrangedSubview(makeWaveform())
+        if case .recording = state {
+            stack.addArrangedSubview(makeLiveTranscript())
+        }
 
         if let preview = previewText {
             stack.addArrangedSubview(makePreview(preview))
@@ -236,6 +245,24 @@ final class RecordingPadView: UIView {
         pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         pulse.timeOffset = Double(index) * 0.11
         bar.layer.add(pulse, forKey: "wave")
+    }
+
+    /// Live transcript shown while recording — words appear as the user speaks
+    /// (the warm app streams romanized partials over the App Group).
+    private func makeLiveTranscript() -> UIView {
+        let label = UILabel()
+        label.text = " "
+        label.font = .preferredFont(forTextStyle: .body)
+        label.adjustsFontForContentSizeCategory = true
+        label.numberOfLines = 3
+        label.textColor = KeyboardTheme.foreground
+        label.backgroundColor = KeyboardTheme.secondarySurface
+        label.layer.cornerRadius = KeyboardTheme.radius
+        label.layer.masksToBounds = true
+        label.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
+        label.accessibilityLabel = "Live transcript"
+        liveLabel = label
+        return label
     }
 
     private func makePreview(_ text: String) -> UIView {
