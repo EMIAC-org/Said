@@ -203,7 +203,14 @@ final class WarmDictationHost: ObservableObject {
     private func deliver(transcript: String, polished: String) {
         isStreaming = false
         clearLivePartial()
-        let clean = HinglishScript.enforceRomanHinglish(polished.isEmpty ? transcript : polished)
+        let roman = HinglishScript.enforceRomanHinglish(polished.isEmpty ? transcript : polished)
+        // Apply the user's taught corrections on-device (the server's streaming
+        // path doesn't), using the transcript as evidence.
+        let clean = LearnedAliasResolver.apply(
+            roman,
+            transcript: HinglishScript.enforceRomanHinglish(transcript),
+            aliases: SharedStore.learnedAliases
+        )
         guard !clean.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             DarwinSignal.shared.post(DarwinSignal.dictationFailed)
             extendWarmWindow()

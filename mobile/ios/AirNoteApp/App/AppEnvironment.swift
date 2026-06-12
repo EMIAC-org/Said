@@ -435,6 +435,7 @@ final class AppEnvironment: ObservableObject {
         do {
             let result = try await gateway.addVocabulary(terms: [trimmedTerm], aliases: aliases)
             if result.learnedCount > 0 {
+                if !alias.isEmpty { SharedStore.addLearnedAlias(heard: alias, correct: trimmedTerm) }
                 vocabStatus = "Added \(trimmedTerm)"
                 await refreshVocabulary()
                 return true
@@ -575,6 +576,11 @@ final class AppEnvironment: ObservableObject {
         do {
             let result = try await gateway.confirmLearning(recordingID: item.learningRecordingID, items: items)
             if result.learnedCount > 0 {
+                // Cache the heard→meant mapping locally so the client applies it
+                // to future dictation output (the server's streaming path won't).
+                for candidate in items {
+                    SharedStore.addLearnedAlias(heard: candidate.original, correct: candidate.corrected)
+                }
                 learningStatus = "✓ Learned \(result.learnedTerms.isEmpty ? "\(result.learnedCount) correction\(result.learnedCount == 1 ? "" : "s")" : result.learnedTerms.joined(separator: ", "))"
                 learningCandidates = []
                 await refreshVocabulary()

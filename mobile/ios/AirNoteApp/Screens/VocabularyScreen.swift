@@ -6,6 +6,7 @@ struct VocabularyScreen: View {
     @State private var term = ""
     @State private var heardAs = ""
     @State private var adding = false
+    @State private var aliases: [LearnedAliasPair] = []
     @FocusState private var termFocused: Bool
 
     var body: some View {
@@ -16,6 +17,7 @@ struct VocabularyScreen: View {
                     VStack(spacing: 16) {
                         statsCard
                         addCard
+                        if !aliases.isEmpty { correctionsCard }
                         learnedCard
                     }
                     .padding(.horizontal, 16)
@@ -25,8 +27,14 @@ struct VocabularyScreen: View {
             }
             .navigationTitle("Vocabulary")
             .navigationBarTitleDisplayMode(.large)
-            .task { await env.refreshVocabulary() }
-            .refreshable { await env.refreshVocabulary() }
+            .task {
+                aliases = SharedStore.learnedAliases
+                await env.refreshVocabulary()
+            }
+            .refreshable {
+                aliases = SharedStore.learnedAliases
+                await env.refreshVocabulary()
+            }
         }
     }
 
@@ -78,6 +86,40 @@ struct VocabularyScreen: View {
                 }
                 .buttonStyle(AirNotePrimaryButtonStyle())
                 .disabled(adding || term.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+
+    /// Shows the heard→meant mapping the client applies on-device, so the user
+    /// can see exactly which word gets fixed into what.
+    private var correctionsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader("Corrections AirNote applies")
+            AirNoteCard(padding: 14) {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(aliases.prefix(20).enumerated()), id: \.offset) { index, pair in
+                        HStack(spacing: 8) {
+                            Text(pair.correct)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AirNoteDesign.foreground)
+                            Image(systemName: "arrow.left")
+                                .font(.caption2)
+                                .foregroundStyle(AirNoteDesign.muted)
+                            Text("heard “\(pair.heard)”")
+                                .font(.caption)
+                                .foregroundStyle(AirNoteDesign.muted)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        if index < min(aliases.count, 20) - 1 {
+                            Divider().overlay(AirNoteDesign.border)
+                        }
+                    }
+                    Text("Applied on your device to every dictation, before it's inserted.")
+                        .font(.caption2)
+                        .foregroundStyle(AirNoteDesign.muted)
+                        .padding(.top, 2)
+                }
             }
         }
     }

@@ -430,6 +430,10 @@ final class KeyboardViewController: UIInputViewController {
                 await MainActor.run {
                     self.clearTeachable()
                     if result.learnedCount > 0 {
+                        // Cache heard→meant locally so it's applied to future output.
+                        for candidate in learnable {
+                            SharedStore.addLearnedAlias(heard: candidate.original, correct: candidate.corrected)
+                        }
                         let terms = result.learnedTerms.isEmpty
                             ? "\(result.learnedCount) correction\(result.learnedCount == 1 ? "" : "s")"
                             : result.learnedTerms.joined(separator: ", ")

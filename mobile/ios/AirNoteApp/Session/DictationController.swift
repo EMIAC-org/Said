@@ -254,8 +254,13 @@ final class DictationController: ObservableObject {
 
     private func finish(transcript: String, polished: String, latencyMS: Int) {
         cancelFinalizeTimeout()
-        // Guarantee Roman Hinglish — strip any residual Devanagari the model leaked.
-        let polished = HinglishScript.enforceRomanHinglish(polished)
+        // Guarantee Roman Hinglish, then apply the user's taught corrections
+        // on-device (the server's streaming path doesn't apply learned aliases).
+        let polished = LearnedAliasResolver.apply(
+            HinglishScript.enforceRomanHinglish(polished),
+            transcript: HinglishScript.enforceRomanHinglish(transcript),
+            aliases: SharedStore.learnedAliases
+        )
         // Empty result (silence / no speech) — surface a friendly retry, don't
         // "complete" with blank text.
         let combined = polished.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

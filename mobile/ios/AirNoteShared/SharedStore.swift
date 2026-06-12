@@ -30,6 +30,38 @@ public enum SharedStore {
         static let sessionDurationMinutes = "airnote.shared.session_duration_minutes"
         static let safeVocabTerms = "airnote.shared.safe_vocab_terms"
         static let keyboardLivePartial = "airnote.shared.kbd_live_partial"
+        static let learnedAliases = "airnote.shared.learned_aliases"
+    }
+
+    /// Locally cached learned corrections (heard -> meant), captured whenever the
+    /// user teaches one. The client applies these to dictation output so taught
+    /// names actually get fixed even though the server's streaming path doesn't
+    /// merge learned aliases. Newest first, capped.
+    public static var learnedAliases: [LearnedAliasPair] {
+        get {
+            guard let data = defaults?.data(forKey: Key.learnedAliases),
+                  let pairs = try? JSONDecoder().decode([LearnedAliasPair].self, from: data)
+            else { return [] }
+            return pairs
+        }
+        set {
+            let capped = Array(newValue.prefix(120))
+            defaults?.set(try? JSONEncoder().encode(capped), forKey: Key.learnedAliases)
+        }
+    }
+
+    /// Record a taught correction (newest first, deduped, only if it's a real
+    /// heard≠meant pair that passes the resolver's safety gate).
+    public static func addLearnedAlias(heard: String, correct: String) {
+        let h = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        let c = correct.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard LearnedAliasResolver.isSafe(heard: h, correct: c) else { return }
+        let pair = LearnedAliasPair(heard: h, correct: c)
+        var current = learnedAliases.filter {
+            !($0.heard.caseInsensitiveCompare(h) == .orderedSame && $0.correct == c)
+        }
+        current.insert(pair, at: 0)
+        learnedAliases = current
     }
 
     /// The latest live (already romanized) partial transcript during a warm
