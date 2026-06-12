@@ -1831,10 +1831,13 @@ impl MeetingEngineState {
             if meeting_has_usable_transcript(&dir) {
                 continue;
             }
-            let has_audio = RECOVERABLE_MEETING_WAVS
-                .iter()
-                .any(|name| dir.join(name).is_file());
-            if !has_audio {
+            // Only the tracks build_retranscribe_plan can actually use — mic or
+            // the merged mixdown. A system-only or audio-less orphan dir can't be
+            // re-transcribed, so skip it silently instead of log-spamming a "no
+            // audio" error every launch (the storage GC reclaims those dirs).
+            let has_retranscribable_audio =
+                dir.join("mic.wav").is_file() || dir.join("meeting.merged.wav").is_file();
+            if !has_retranscribable_audio {
                 continue;
             }
             match build_retranscribe_plan(&dir) {
