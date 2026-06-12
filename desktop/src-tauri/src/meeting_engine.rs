@@ -7064,6 +7064,13 @@ fn answer_meeting_question(
     }
 
     let config = meeting_ai_config()?;
+    tracing::info!(
+        provider = %config.provider,
+        model = %config.model,
+        transcript_source = %selected.source,
+        transcript_chars = selected.text.len(),
+        "[meeting_engine] meeting chat request started"
+    );
     let summary = summary
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -7098,14 +7105,23 @@ fn answer_meeting_question(
         MEETING_CHAT_SYSTEM_PROMPT,
         &user_prompt,
         config,
-        meeting_ai_timeout(),
+        meeting_chat_timeout(),
         meeting_ai_max_tokens(),
         on_delta,
-    )?;
+    )
+    .inspect_err(|e| {
+        tracing::warn!(error = %e, "[meeting_engine] meeting chat request failed");
+    })?;
     let answer = strip_llm_code_fences(&completion.content);
     if answer.trim().is_empty() {
+        tracing::warn!("[meeting_engine] meeting chat returned an empty answer");
         return Err("meeting chat returned an empty answer".to_string());
     }
+    tracing::info!(
+        latency_ms = completion.latency_ms,
+        answer_chars = answer.len(),
+        "[meeting_engine] meeting chat request completed"
+    );
 
     Ok(MeetingChatResult {
         status: "completed".to_string(),
@@ -7748,6 +7764,13 @@ fn meeting_ai_timeout() -> Duration {
         "AIRNOTE_MEETING_AI_TIMEOUT_SECS",
         DEFAULT_MEETING_AI_TIMEOUT_SECS,
     ))
+}
+
+/// Interactive chat gets a tighter timeout than batch cleanup/intelligence so a
+/// stalled provider surfaces a clear error in ~a minute instead of leaving the
+/// chat stuck on "thinking" for the full 2-minute batch timeout.
+fn meeting_chat_timeout() -> Duration {
+    Duration::from_secs(env_u64("AIRNOTE_MEETING_CHAT_TIMEOUT_SECS", 60))
 }
 
 fn meeting_ai_max_tokens() -> u64 {
