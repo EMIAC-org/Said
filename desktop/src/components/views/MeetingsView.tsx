@@ -810,6 +810,7 @@ interface MeetingProcessingStatus {
   error: string | null;
   has_transcript: boolean;
   has_intelligence: boolean;
+  summary_failed: boolean;
   updated_at_ms: number;
 }
 
@@ -819,13 +820,14 @@ const PROCESSING_STEPS: { key: string; label: string }[] = [
   { key: "transcribing", label: "Transcribing" },
   { key: "cleaning", label: "Cleaning" },
   { key: "diarizing", label: "Diarizing" },
-  { key: "transcribed", label: "Ready" },
+  { key: "summarizing", label: "Summarizing" },
+  { key: "summarized", label: "Done" },
 ];
 
 function processingStepIndex(stage: string): number {
   const i = PROCESSING_STEPS.findIndex((s) => s.key === stage);
   if (i >= 0) return i;
-  if (stage === "summarized") return PROCESSING_STEPS.length - 1;
+  if (stage === "transcribed") return PROCESSING_STEPS.length - 1;
   return 0;
 }
 
@@ -833,14 +835,18 @@ function processingStepIndex(stage: string): number {
  *  runs, or a failure state with a Retry button. Shown above the detail tabs. */
 function ProcessingBanner({
   status,
-  onRetry,
+  onRetryTranscribe,
+  onRetrySummary,
   retrying,
 }: {
   status: MeetingProcessingStatus;
-  onRetry: () => void;
+  onRetryTranscribe: () => void;
+  onRetrySummary: () => void;
   retrying: boolean;
 }) {
-  const failed = !status.running && status.can_retry;
+  const summaryFailed = !status.running && status.summary_failed;
+  const failed = !status.running && (status.can_retry || summaryFailed);
+  const onRetry = summaryFailed ? onRetrySummary : onRetryTranscribe;
   const activeIdx = processingStepIndex(status.stage);
   return (
     <div
@@ -858,11 +864,13 @@ function ProcessingBanner({
             <Loader2 size={16} className="animate-spin" style={{ color: "hsl(var(--primary))" }} />
           )}
           <span className="text-[13px] font-bold text-foreground">
-            {failed
-              ? "Processing failed"
-              : status.queued
-                ? "Queued for processing…"
-                : "Processing your meeting…"}
+            {summaryFailed
+              ? "Summary failed — transcript is saved"
+              : failed
+                ? "Processing failed"
+                : status.queued
+                  ? "Queued for processing…"
+                  : "Processing your meeting…"}
           </span>
         </div>
         {failed ? (
@@ -874,7 +882,7 @@ function ProcessingBanner({
             style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--foreground))" }}
           >
             <RefreshCw size={13} className={retrying ? "animate-spin" : ""} />
-            {retrying ? "Retrying…" : "Retry"}
+            {retrying ? "Retrying…" : summaryFailed ? "Regenerate summary" : "Retry"}
           </button>
         ) : null}
       </div>
@@ -1451,7 +1459,8 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
       if (cancelled || selectedIdRef.current !== id) return;
       setProcStatus(status);
       const running = Boolean(status?.running);
-      // running → finished: reload the freshly-written transcript/summary.
+      // running → finished: reload the freshly-written transcript AND summary
+      // (the worker now auto-generates the summary as the final stage).
       if (procWasRunningRef.current && !running) {
         try {
           const fresh = await invoke<MeetingCachedArtifacts | null>(
@@ -1459,6 +1468,18 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
             { meetingId: id },
           );
           if (!cancelled && selectedIdRef.current === id) setArtifacts(fresh);
+        } catch {
+          /* best-effort */
+        }
+        try {
+          const intel = await invoke<MeetingIntelligenceResult | null>(
+            "meeting_engine_get_cached_intelligence",
+            { meetingId: id },
+          );
+          if (!cancelled && selectedIdRef.current === id && intel) {
+            setMeetingAi(intel);
+            setMeetingAiError(null);
+          }
         } catch {
           /* best-effort */
         }
@@ -2025,8 +2046,13 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
               ) : null}
             </div>
 
-            {procStatus && (procStatus.running || procStatus.can_retry) ? (
-              <ProcessingBanner status={procStatus} onRetry={handleRetranscribe} retrying={retranscribing} />
+            {procStatus && (procStatus.running || procStatus.can_retry || procStatus.summary_failed) ? (
+              <ProcessingBanner
+                status={procStatus}
+                onRetryTranscribe={handleRetranscribe}
+                onRetrySummary={handleReanalyze}
+                retrying={retranscribing || meetingAiLoading}
+              />
             ) : null}
 
             <div className="mt-6 grid grid-cols-5 border-b" style={{ borderColor: "hsl(var(--surface-4))" }}>

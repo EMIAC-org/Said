@@ -2321,6 +2321,16 @@ fn run_transcription_job(
                 .ok()
                 .flatten();
 
+            // Capture the best transcript text for the summary stage before the
+            // originals are moved into the snapshot below.
+            let (summary_source, summary_text) = if let Some(text) = &final_transcript_text {
+                ("final".to_string(), text.clone())
+            } else if let Some(text) = &cleaned_transcript {
+                ("cleaned".to_string(), text.clone())
+            } else {
+                ("raw".to_string(), done.transcript.clone())
+            };
+
             {
                 let mut transcription = transcription_state
                     .lock()
@@ -2335,15 +2345,46 @@ fn run_transcription_job(
                 transcription.final_diarization = final_diarization;
                 transcription.error = None;
             }
-            // Checkpoint: transcript + diarization are on disk. The LLM summary is
-            // generated lazily when the meeting is opened, so "transcribed" is the
-            // recovery-complete mark.
+            // Checkpoint: transcript + diarization are on disk.
             if let Some(dir) = job_artifact_dir.as_deref() {
                 write_meeting_state(dir, MEETING_PHASE_TRANSCRIBED, None);
                 // The transcript is durable now — reclaim the disposable
                 // intermediates (live/ windows + *.asr.wav copies), the bulk of
                 // a meeting's footprint.
                 prune_meeting_intermediates(dir);
+
+                // Final stage: generate the meeting summary so the after-meeting
+                // flow is complete and robust — NOT a separate manual click.
+                // run_meeting_intelligence's LLM call already retries transient
+                // failures; on a terminal failure we record it in meeting state
+                // (phase stays "transcribed" + a "summary failed" error) so the UI
+                // surfaces it and offers Retry, instead of silently stopping. On
+                // success write_meeting_intelligence_cache marks the meeting
+                // "summarized".
+                if env_bool("AIRNOTE_MEETING_AUTO_SUMMARY", true) && !summary_text.trim().is_empty()
+                {
+                    if let Ok(mut t) = transcription_state.lock() {
+                        t.status = "summarizing".to_string();
+                    }
+                    let selected = MeetingAiTranscript {
+                        source: summary_source,
+                        text: summary_text,
+                    };
+                    match run_meeting_intelligence(selected, Some(dir.to_path_buf())) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(error = %e, dir = %dir.display(), "[meeting_engine] meeting summary generation failed");
+                            write_meeting_state(
+                                dir,
+                                MEETING_PHASE_TRANSCRIBED,
+                                Some(format!("summary failed: {e}")),
+                            );
+                        }
+                    }
+                    if let Ok(mut t) = transcription_state.lock() {
+                        t.status = "completed".to_string();
+                    }
+                }
             }
             JobOutcome::Done
         }
@@ -4394,6 +4435,9 @@ pub struct MeetingProcessingStatusPayload {
     pub error: Option<String>,
     pub has_transcript: bool,
     pub has_intelligence: bool,
+    /// Transcript is done but the summary stage failed (recoverable via
+    /// regenerate, distinct from a transcription failure that needs re-transcribe).
+    pub summary_failed: bool,
     pub updated_at_ms: u64,
 }
 
@@ -4442,6 +4486,21 @@ pub fn meeting_engine_get_processing_status(
         phase.clone()
     };
 
+    // Summary stage failed: transcript is on disk but no intelligence cache and a
+    // recorded error. Recoverable by regenerating the summary (not re-transcribing).
+    let summary_failed = !running
+        && has_transcript
+        && !has_intelligence
+        && error
+            .as_deref()
+            .is_some_and(|e| e.to_ascii_lowercase().contains("summary"));
+
+    let stage = if !running && summary_failed {
+        "summary_failed".to_string()
+    } else {
+        stage
+    };
+
     if running {
         error = None;
     }
@@ -4455,7 +4514,8 @@ pub fn meeting_engine_get_processing_status(
         .any(|name| dir.join(name).is_file());
     // Retry is offered when nothing is running for this meeting, audio exists, and
     // either it failed or it's stuck in a non-terminal phase without a transcript
-    // (interrupted before completion).
+    // (interrupted before completion). Summary-stage failures are retried via the
+    // separate regenerate path, not here.
     let can_retry = !running
         && has_audio
         && (phase == MEETING_PHASE_FAILED || (!terminal_phase && !has_transcript));
@@ -4470,6 +4530,7 @@ pub fn meeting_engine_get_processing_status(
         error,
         has_transcript,
         has_intelligence,
+        summary_failed,
         updated_at_ms,
     })
 }
