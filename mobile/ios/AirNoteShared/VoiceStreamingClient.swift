@@ -155,6 +155,13 @@ public final class VoiceStreamingClient {
     /// keyboard can dictate in-place. When true, ending a stream tears down only
     /// the socket, not the engine/session.
     private var keepEngineWarm = false
+    /// A socket opened ahead of time during warm-idle so the next dictation skips
+    /// the TLS + WebSocket-upgrade round-trips (and doesn't clip the first words
+    /// while connecting). Consumed by beginStreaming; falls back to a fresh socket
+    /// if it has died. The server allows only one recording per socket, so we
+    /// pre-open a new one after each dictation rather than reuse.
+    private var prewarmedTask: URLSessionWebSocketTask?
+    private var prewarmedURL: URL?
 
     public init(
         baseURL: URL = BuildConfig.gatewayBaseURL,
@@ -224,6 +231,9 @@ public final class VoiceStreamingClient {
         latestTranscript = ""
         currentWebSocket()?.cancel(with: .goingAway, reason: nil)
         setWebSocket(nil)
+        prewarmedTask?.cancel(with: .goingAway, reason: nil)
+        prewarmedTask = nil
+        prewarmedURL = nil
     }
 
     public var isRecording: Bool {
@@ -248,6 +258,19 @@ public final class VoiceStreamingClient {
         }
     }
 
+    /// Open a socket during warm-idle so the next dictation's first audio ships
+    /// instantly. Cheap to call; safe to call repeatedly (replaces any prior).
+    public func prewarmConnection(session: MobileSessionResponse) {
+        guard keepEngineWarm, let voiceWSURL = session.voiceWSURL,
+              let url = try? websocketURL(relativeOrAbsolute: voiceWSURL)
+        else { return }
+        prewarmedTask?.cancel(with: .goingAway, reason: nil)
+        let task = urlSession.webSocketTask(with: url)
+        task.resume()   // performs the TLS + WS upgrade now, off the hot path
+        prewarmedTask = task
+        prewarmedURL = url
+    }
+
     public func beginStreaming(session: MobileSessionResponse, config: VoiceStreamConfig) async throws {
         keepEngineWarm = true
         if !audioEngine.isRunning {
@@ -258,14 +281,35 @@ public final class VoiceStreamingClient {
             throw VoiceStreamError(code: "missing_voice_ws_url", retryable: true, message: "Runtime session is missing its voice socket.")
         }
         let socketURL = try websocketURL(relativeOrAbsolute: voiceWSURL)
-        let task = urlSession.webSocketTask(with: socketURL)
+        // Adopt the pre-warmed socket if it matches this session; else open fresh.
+        let task: URLSessionWebSocketTask
+        if let pre = prewarmedTask, prewarmedURL == socketURL {
+            prewarmedTask = nil
+            prewarmedURL = nil
+            task = pre   // already resumed during prewarm
+        } else {
+            prewarmedTask?.cancel(with: .goingAway, reason: nil)
+            prewarmedTask = nil
+            task = urlSession.webSocketTask(with: socketURL)
+            task.resume()
+        }
         currentSession = session
         latestTranscript = ""
         receiveTask?.cancel()
         prepareForStart(task: task)   // resets isStopping/terminal + sets the socket
-        task.resume()
         receiveTask = Task { [weak self] in await self?.receiveLoop() }
-        try await task.send(.string(config.startPayloadJSON(sampleRate: 16_000)))
+        do {
+            try await task.send(.string(config.startPayloadJSON(sampleRate: 16_000)))
+        } catch {
+            // The pre-warmed socket had died — open a fresh one and retry once so
+            // a stale warm socket never costs the user a failed dictation.
+            let fresh = urlSession.webSocketTask(with: socketURL)
+            fresh.resume()
+            prepareForStart(task: fresh)
+            receiveTask?.cancel()
+            receiveTask = Task { [weak self] in await self?.receiveLoop() }
+            try await fresh.send(.string(config.startPayloadJSON(sampleRate: 16_000)))
+        }
         let maxSeconds = session.maxRecordingSeconds ?? BuildConfig.maxRecordingSeconds
         maxDurationTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(maxSeconds) * 1_000_000_000)
@@ -299,6 +343,10 @@ public final class VoiceStreamingClient {
 
     private func startAudioEngine() async throws {
         try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
+        // Low-latency capture: request a short I/O buffer BEFORE activating (the
+        // OS only honours "preferred" values while inactive). ~5ms trims capture
+        // latency and yields finer audio chunks that reach the server sooner.
+        try? audioSession.setPreferredIOBufferDuration(0.005)
         try audioSession.setActive(true, options: [])
 
         let input = audioEngine.inputNode
@@ -687,6 +735,7 @@ public final class VoiceStreamingClient {
 
     public var isWarmEngineRunning: Bool { false }
     public func startWarmEngine() async throws {}
+    public func prewarmConnection(session: MobileSessionResponse) {}
     public func beginStreaming(session: MobileSessionResponse, config: VoiceStreamConfig) async throws {}
     public func endStreaming() async {}
     public func stopWarmEngine() {}

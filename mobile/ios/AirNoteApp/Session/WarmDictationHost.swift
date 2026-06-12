@@ -64,10 +64,32 @@ final class WarmDictationHost: ObservableObject {
             do {
                 try await streamer.startWarmEngine()
                 extendWarmWindow()
+                prewarm()
             } catch {
                 SharedStore.sessionWarmUntil = nil
             }
         }
+    }
+
+    /// Build a session shell (token + voice-WS URL) for streaming / pre-warming.
+    private func makeSession() -> MobileSessionResponse? {
+        guard let token = SharedStore.accessToken, !token.isEmpty else { return nil }
+        return MobileSessionResponse(
+            sessionID: RequestId.make(),
+            sessionToken: token,
+            expiresAt: Date().addingTimeInterval(15 * 60),
+            streamingEnabled: true,
+            currentVocabHash: "keyboard",
+            voiceWSURL: "/v1/runtime/voice/ws?token=\(token)",
+            batchURL: "/v1/runtime/voice/wav",
+            maxRecordingSeconds: BuildConfig.maxRecordingSeconds
+        )
+    }
+
+    /// Open the next dictation's socket now (warm-idle) so the first words ship
+    /// instantly instead of waiting on a TLS + WebSocket handshake.
+    private func prewarm() {
+        if let session = makeSession() { streamer.prewarmConnection(session: session) }
     }
 
     func endWarmSession() {
@@ -149,13 +171,14 @@ final class WarmDictationHost: ObservableObject {
         case .done:
             if isStreaming { isStreaming = false }
             extendWarmWindow()
+            prewarm()   // open the next socket now
         case .error:
             isStreaming = false
             DarwinSignal.shared.post(DarwinSignal.dictationFailed)
             // If the engine is still warm it was a transient stream error — keep
             // the session; if the engine died (e.g. interruption), end it cleanly
             // so the keyboard falls back to the handoff.
-            if streamer.isWarmEngineRunning { extendWarmWindow() } else { endWarmSession() }
+            if streamer.isWarmEngineRunning { extendWarmWindow(); prewarm() } else { endWarmSession() }
         default:
             break
         }
@@ -189,6 +212,7 @@ final class WarmDictationHost: ObservableObject {
         SharedStore.putPendingKeyboardText(clean, at: Date())
         DarwinSignal.shared.post(DarwinSignal.resultReady)
         extendWarmWindow()
+        prewarm()   // open the next socket now so the next dictation is instant
         // Persist to history (WS path doesn't server-side) so in-place keyboard
         // dictations also show up + are reviewable for learning.
         let runID = currentRunID
