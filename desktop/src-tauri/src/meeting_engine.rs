@@ -7332,6 +7332,16 @@ struct ChatStreamDelta {
     content: Option<String>,
 }
 
+/// True when the cleaned transcript's word volume is within a sane band of the
+/// raw (0.5×–2×). Outside that, the LLM rewrote/dropped content rather than
+/// correcting it, and the cleanup should be rejected in favor of the raw text.
+fn cleanup_within_volume_band(raw: &str, cleaned: &str) -> bool {
+    let raw_words = raw.split_whitespace().count().max(1);
+    let cleaned_words = cleaned.split_whitespace().count();
+    let ratio = cleaned_words as f32 / raw_words as f32;
+    (0.5..=2.0).contains(&ratio)
+}
+
 fn cleanup_meeting_transcript_with_llm(
     raw: &str,
     config: MeetingCleanupConfig,
@@ -7363,6 +7373,20 @@ fn cleanup_meeting_transcript_with_llm(
     let cleaned = strip_llm_transcript_wrappers(&completion.content);
     if cleaned.trim().is_empty() {
         return Err("meeting cleanup returned an empty transcript".to_string());
+    }
+
+    // Over-correction guard: a faithful cleanup keeps roughly the same volume of
+    // words (it fixes ASR slips, it doesn't rewrite). If the cleaned text
+    // collapsed or ballooned far outside a sane band, the model rewrote/dropped
+    // content — reject it so the caller keeps the raw transcript rather than a
+    // confidently-wrong one (temp-0 cleanup can "correct" real names into
+    // plausible-but-wrong words).
+    if !cleanup_within_volume_band(raw, &cleaned) {
+        let raw_words = raw.split_whitespace().count();
+        let cleaned_words = cleaned.split_whitespace().count();
+        return Err(format!(
+            "meeting cleanup changed transcript length too much ({raw_words} → {cleaned_words} words); rejecting as over-correction"
+        ));
     }
 
     Ok(MeetingCleanupResult {
@@ -8416,6 +8440,24 @@ mod tests {
         assert!(status.mic_wav_path.is_some());
         assert!(status.system_wav_path.is_some());
         assert_eq!(status.system_capture_status, "not_started");
+    }
+
+    #[test]
+    fn cleanup_volume_band_rejects_rewrites_keeps_corrections() {
+        let raw = "so um we we kicked off the the project and reviewed timeline";
+        // A light correction (filler/dup removal) stays in band.
+        assert!(cleanup_within_volume_band(
+            raw,
+            "So we kicked off the project and reviewed the timeline."
+        ));
+        // A collapse (model dropped most content) is rejected.
+        assert!(!cleanup_within_volume_band(raw, "Project kickoff."));
+        // A balloon (model rewrote/expanded) is rejected.
+        assert!(!cleanup_within_volume_band(
+            "ok done",
+            "Okay, the team confirmed that everything is now fully done and \
+             completed across all of the outstanding items and follow ups today"
+        ));
     }
 
     #[test]
