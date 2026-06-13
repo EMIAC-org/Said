@@ -9,14 +9,14 @@
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser};
+use crate::{AppState, auth::AuthUser, tenant};
 
 // ── Request / response types ────────────────────────────────────────────────
 
@@ -75,6 +75,7 @@ pub struct ParticipantInfo {
 
 pub async fn create(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(body): Json<CreateMeetingBody>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
@@ -93,8 +94,7 @@ pub async fn create(
         ));
     }
 
-    // Resolve caller's org and role
-    let (org_id, caller_role) = resolve_org_and_role(&state, user.account_id).await?;
+    let (org_id, caller_role) = tenant::require_active_org_role(&state, &user, &headers).await?;
 
     // Check if caller's role permits creating meetings
     let creator_roles: Value =
@@ -221,10 +221,11 @@ pub async fn create(
 
 pub async fn list(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Query(query): Query<ListMeetingsQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let org_id = resolve_org(&state, user.account_id).await?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
 
     let meetings: Vec<(
         Uuid,
@@ -311,10 +312,11 @@ pub async fn list(
 
 pub async fn detail(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(meeting_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let org_id = resolve_org(&state, user.account_id).await?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
 
     // Fetch meeting (scoped to caller's org)
     let meeting: Option<(
@@ -528,10 +530,11 @@ pub async fn detail(
 
 pub async fn start(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(meeting_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let org_id = resolve_org(&state, user.account_id).await?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
 
     let now = Utc::now();
     let rows_affected = sqlx::query(
@@ -567,10 +570,11 @@ pub async fn start(
 
 pub async fn end(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(meeting_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let org_id = resolve_org(&state, user.account_id).await?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
 
     let now = Utc::now();
     let rows_affected = sqlx::query(
@@ -624,11 +628,12 @@ pub async fn end(
 
 pub async fn push_tasks(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(meeting_id): Path<Uuid>,
     Json(body): Json<PushTasksBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let org_id = resolve_org(&state, user.account_id).await?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
 
     // Verify meeting belongs to this org
     let meeting_exists: Option<Uuid> =
@@ -722,37 +727,6 @@ pub async fn push_tasks(
     }
 
     Ok(Json(json!({ "pushed": pushed, "skipped": skipped })))
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-/// Resolve the caller's org_id AND role from org_members, or return 403.
-async fn resolve_org_and_role(
-    state: &AppState,
-    account_id: Uuid,
-) -> Result<(Uuid, String), (StatusCode, Json<Value>)> {
-    let row: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT org_id, role FROM org_members WHERE account_id = $1 LIMIT 1")
-            .bind(account_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(db_err)?;
-
-    row.ok_or_else(|| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "you must belong to an org"})),
-        )
-    })
-}
-
-/// Resolve the caller's org_id from org_members, or return 403.
-async fn resolve_org(
-    state: &AppState,
-    account_id: Uuid,
-) -> Result<Uuid, (StatusCode, Json<Value>)> {
-    let (org_id, _role) = resolve_org_and_role(state, account_id).await?;
-    Ok(org_id)
 }
 
 fn db_err(_e: sqlx::Error) -> (StatusCode, Json<Value>) {

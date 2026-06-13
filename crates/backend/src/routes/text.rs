@@ -9,7 +9,7 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::{
-        IntoResponse,
+        IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
 };
@@ -83,6 +83,19 @@ pub async fn polish(
 ) -> impl IntoResponse {
     if body.text.trim().is_empty() {
         return axum::http::StatusCode::BAD_REQUEST.into_response();
+    }
+
+    if body.tone_override.as_deref() == Some("message_polish") {
+        if !crate::store::users::has_enterprise_auth(&state.pool, &state.default_user_id) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": crate::routes::message_polish::MESSAGE_POLISH_SIGNIN_ERROR,
+                })),
+            )
+                .into_response();
+        }
+        return polish_message_polish_server(state, body).await;
     }
 
     let user_id = state.default_user_id.as_str().to_string();
@@ -428,6 +441,95 @@ pub async fn polish(
             })
             .to_string()
         ));
+    };
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+async fn polish_message_polish_server(state: AppState, body: TextPolishBody) -> Response {
+    let user_id = state.default_user_id.as_str().to_string();
+    let pool = state.pool.clone();
+    let transcript = body.text.clone();
+    let target_app = body.target_app.clone();
+    let http_client = state.http_client.clone();
+
+    let stream = async_stream::stream! {
+        let total_start = Instant::now();
+
+        yield Ok::<Event, Infallible>(Event::default().event("status")
+            .data(json!({"phase": "message_polishing", "transcript": transcript}).to_string()));
+
+        match crate::routes::message_polish::run_server_message_polish(
+            &http_client,
+            &pool,
+            &user_id,
+            &transcript,
+            None,
+        ).await {
+            Ok((llm_result, model_used)) => {
+                let total_ms = total_start.elapsed().as_millis() as i64;
+                let recording_id = Uuid::new_v4().to_string();
+                let word_count = llm_result.polished.split_whitespace().count() as i64;
+
+                let pool2 = pool.clone();
+                let id2 = recording_id.clone();
+                let uid2 = user_id.clone();
+                let t2 = transcript.clone();
+                let p2 = llm_result.polished.clone();
+                let ta2 = target_app.clone();
+                let model2 = model_used.clone();
+                let p_ms = llm_result.polish_ms as i64;
+                tokio::task::spawn_blocking(move || {
+                    insert_recording(&pool2, InsertRecording {
+                        id: &id2,
+                        user_id: &uid2,
+                        transcript: &t2,
+                        polished: &p2,
+                        word_count,
+                        recording_seconds: word_count as f64 * 60.0 / 130.0,
+                        model_used: &model2,
+                        confidence: None,
+                        transcribe_ms: Some(0),
+                        embed_ms: Some(0),
+                        polish_ms: Some(p_ms),
+                        target_app: ta2.as_deref(),
+                        source: "text",
+                        audio_id: None,
+                        enriched_transcript: None,
+                        raw_transcript: None,
+                        local_corrected_transcript: None,
+                        polished_output: Some(&p2),
+                    });
+                });
+
+                yield Ok(Event::default().event("done").data(
+                    json!({
+                        "recording_id": recording_id,
+                        "transcript": transcript,
+                        "polished": llm_result.polished,
+                        "model_used": model_used,
+                        "source": "text",
+                        "target_app": target_app,
+                        "output_language": "english",
+                        "latency_ms": {
+                            "transcribe": 0,
+                            "embed": 0,
+                            "retrieve": 0,
+                            "polish": llm_result.polish_ms,
+                            "total": total_ms,
+                        },
+                        "examples_used": 0,
+                    }).to_string()
+                ));
+            }
+            Err(e) => {
+                warn!("[text] server message polish failed: {e}");
+                yield Ok(Event::default().event("error")
+                    .data(json!({"message": e}).to_string()));
+            }
+        }
     };
 
     Sse::new(stream)

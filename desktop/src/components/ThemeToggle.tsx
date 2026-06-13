@@ -38,7 +38,7 @@ export function ThemeToggle({ theme, toggle }: Props) {
           height: "14px",
           top:    "50%",
           transform: "translateY(-50%)",
-          color:  isDark ? "hsl(var(--muted-foreground))" : "hsl(38 95% 52%)",
+          color:  isDark ? "hsl(var(--muted-foreground))" : "hsl(var(--primary-foreground))",
         }}
       >
         <Sun size={11} strokeWidth={2.5} />
@@ -53,13 +53,13 @@ export function ThemeToggle({ theme, toggle }: Props) {
           height: "14px",
           top:    "50%",
           transform: "translateY(-50%)",
-          color:  isDark ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
+          color:  isDark ? "hsl(var(--primary-foreground))" : "hsl(var(--muted-foreground))",
         }}
       >
         <Moon size={10} strokeWidth={2.5} />
       </span>
 
-      {/* Sliding thumb */}
+      {/* Sliding thumb — brand periwinkle in both modes */}
       <span
         className="absolute rounded-full transition-all duration-200 ease-out"
         style={{
@@ -67,12 +67,8 @@ export function ThemeToggle({ theme, toggle }: Props) {
           height:     "20px",
           top:        "3px",
           left:       isDark ? "29px" : "3px",
-          background: isDark
-            ? "linear-gradient(135deg, hsl(0 0% 100%), hsl(0 0% 92%))"
-            : "linear-gradient(135deg, hsl(220 28% 12%), hsl(220 28% 6%))",
-          boxShadow:  isDark
-            ? "0 1px 3px hsl(220 50% 5% / 0.5), 0 0 0 0.5px hsl(0 0% 100% / 0.15) inset"
-            : "0 2px 4px hsl(220 28% 10% / 0.30)",
+          background: "linear-gradient(135deg, hsl(var(--primary)), hsl(var(--primary) / 0.82))",
+          boxShadow:  "0 2px 6px hsl(var(--primary) / 0.38), inset 0 1px 0 hsl(0 0% 100% / 0.18)",
         }}
       />
     </button>

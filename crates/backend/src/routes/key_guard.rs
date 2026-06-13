@@ -8,9 +8,15 @@ fn non_empty(value: Option<String>) -> Option<String> {
 }
 
 fn has_deepgram_key(prefs: &Preferences) -> bool {
-    non_empty(prefs.deepgram_api_key.clone())
-        .or_else(|| non_empty(std::env::var("DEEPGRAM_API_KEY").ok()))
-        .is_some()
+    said_core::stt::resolve_deepgram_api_key(prefs.deepgram_api_key.as_deref()).is_some()
+}
+
+pub fn effective_stt_provider(prefs: &Preferences) -> String {
+    said_core::stt::resolve_provider_from_pref(&prefs.stt_provider)
+}
+
+fn has_stt_key(prefs: &Preferences) -> bool {
+    has_deepgram_key(prefs)
 }
 
 fn has_llm_credential(pool: &DbPool, user_id: &str, prefs: &Preferences) -> bool {
@@ -41,13 +47,21 @@ pub fn missing_voice_api_keys(
     prefs: &Preferences,
 ) -> Vec<&'static str> {
     let mut missing = Vec::new();
-    if !has_deepgram_key(prefs) {
+    if !has_stt_key(prefs) {
         missing.push("deepgram");
     }
     if !has_llm_credential(pool, user_id, prefs) {
         missing.push("llm");
     }
     missing
+}
+
+pub fn missing_message_polish_voice_keys(prefs: &Preferences) -> Vec<&'static str> {
+    if has_stt_key(prefs) {
+        Vec::new()
+    } else {
+        vec!["deepgram"]
+    }
 }
 
 pub fn missing_text_api_keys(

@@ -4,24 +4,23 @@
 use axum::{
     Json,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser};
+use crate::{AppState, auth::AuthUser, tenant};
 
 // ── POST /v1/meetings/:id/sync-to-lark ─────────────────────────────────────
 
 pub async fn sync_to_lark(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(meeting_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // Resolve caller's org
-    let org_id = resolve_org(&state, user.account_id).await?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
 
-    // Verify meeting exists, belongs to caller's org, and is ended
     let meeting_status: Option<String> =
         sqlx::query_scalar("SELECT status FROM meetings WHERE id = $1 AND org_id = $2")
             .bind(meeting_id)
@@ -44,7 +43,6 @@ pub async fn sync_to_lark(
         ));
     }
 
-    // Sync to Lark
     let result = crate::lark_sync::sync_meeting_to_lark(
         &state.lark.app_id,
         &state.lark.app_secret,
@@ -66,27 +64,6 @@ pub async fn sync_to_lark(
         "doc_id": result.doc_id,
         "messages_sent": result.messages_sent,
     })))
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-async fn resolve_org(
-    state: &AppState,
-    account_id: Uuid,
-) -> Result<Uuid, (StatusCode, Json<Value>)> {
-    let org_id: Option<Uuid> =
-        sqlx::query_scalar("SELECT org_id FROM org_members WHERE account_id = $1 LIMIT 1")
-            .bind(account_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(db_err)?;
-
-    org_id.ok_or_else(|| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "you must belong to an org"})),
-        )
-    })
 }
 
 fn db_err(_e: sqlx::Error) -> (StatusCode, Json<Value>) {

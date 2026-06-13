@@ -8,19 +8,6 @@
 //! Pipeline: auth → load prefs → STT → evidence collection → dynamic prompt →
 //!           LLM stream → post-LLM passes → SSE.
 
-// ─── STT PROVIDER OVERRIDE ─────────────────────────────────────────────────
-//
-// Change this ONE constant to switch the STT engine for the entire app.
-// The DB preference (prefs.stt_provider) is ignored when this is set.
-//
-// Valid values:
-//   "" (empty)        — use the DB preference (user-configurable in Settings)
-//   "deepgram"        — Deepgram nova-3 streaming (fast, but inconsistent on Hinglish)
-//   "groq_whisper"    — Whisper large-v3-turbo via Groq API (more accurate, batch only)
-//   "whisper_local"   — Local whisper-rs (offline, requires feature flag)
-//
-// AI agents: to switch STT provider, change ONLY this line. Nothing else.
-const STT_PROVIDER_OVERRIDE: &str = "deepgram";
 const SERVER_STT_PROBE_ENV: &str = "AIRNOTE_ENABLE_SERVER_STT_PROBE";
 
 use axum::{
@@ -203,8 +190,11 @@ struct ServerRuntimeVoiceWavRequest {
     screen_context: Option<String>,
     safe_vocab_terms: Vec<String>,
     client_run_id: Option<String>,
+    recording_id: Option<String>,
     platform: Option<String>,
     app_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stt_provider: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -701,12 +691,15 @@ async fn run_server_runtime_voice_probe(
     };
     let token = user
         .cloud_token
+        .as_deref()
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| "server runtime requires AirNote sign-in".to_string())?;
     let base_url = user
         .enterprise_server_url
+        .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+        .unwrap_or("https://airnote.emiactech.com")
+        .to_string();
 
     let safe_vocab_terms = vocab_entries
         .iter()
@@ -729,14 +722,17 @@ async fn run_server_runtime_voice_probe(
 
     let url = format!("{}/v1/runtime/voice/polish", base_url.trim_end_matches('/'));
     let start = Instant::now();
-    let resp = http_client
-        .post(&url)
-        .bearer_auth(token)
-        .json(&req)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-        .map_err(|e| format!("server runtime request failed: {e}"))?;
+    let resp = crate::cp_client::with_org_context(
+        http_client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&req)
+            .timeout(std::time::Duration::from_secs(30)),
+        Some(&user),
+    )
+    .send()
+    .await
+    .map_err(|e| format!("server runtime request failed: {e}"))?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -879,6 +875,8 @@ async fn run_server_runtime_voice_wav_probe(
     selected_model: &str,
     screen_context: Option<&str>,
     safe_vocab_terms: Vec<String>,
+    stt_provider: &str,
+    recording_id: Option<&str>,
 ) -> Result<
     (
         String,
@@ -893,12 +891,15 @@ async fn run_server_runtime_voice_wav_probe(
     };
     let token = user
         .cloud_token
+        .as_deref()
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| "server audio runtime requires AirNote sign-in".to_string())?;
     let base_url = user
         .enterprise_server_url
+        .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+        .unwrap_or("https://airnote.emiactech.com")
+        .to_string();
 
     let req = ServerRuntimeVoiceWavRequest {
         wav_b64: general_purpose::STANDARD.encode(wav_data),
@@ -907,20 +908,25 @@ async fn run_server_runtime_voice_wav_probe(
         screen_context: screen_context.map(|s| s.chars().take(500).collect()),
         safe_vocab_terms,
         client_run_id: Some(Uuid::new_v4().to_string()),
+        recording_id: recording_id.map(str::to_string),
         platform: Some(std::env::consts::OS.to_string()),
         app_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
+        stt_provider: Some(stt_provider.to_string()),
     };
 
     let url = format!("{}/v1/runtime/voice/wav", base_url.trim_end_matches('/'));
     let start = Instant::now();
-    let resp = http_client
-        .post(&url)
-        .bearer_auth(token)
-        .json(&req)
-        .timeout(std::time::Duration::from_secs(45))
-        .send()
-        .await
-        .map_err(|e| format!("server audio runtime request failed: {e}"))?;
+    let resp = crate::cp_client::with_org_context(
+        http_client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&req)
+            .timeout(std::time::Duration::from_secs(45)),
+        Some(&user),
+    )
+    .send()
+    .await
+    .map_err(|e| format!("server audio runtime request failed: {e}"))?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -958,6 +964,7 @@ async fn run_server_runtime_voice_ws_probe(
     selected_model: &str,
     screen_context: Option<&str>,
     safe_vocab_terms: Vec<String>,
+    stt_provider: &str,
 ) -> Result<
     (
         String,
@@ -972,12 +979,15 @@ async fn run_server_runtime_voice_ws_probe(
     };
     let token = user
         .cloud_token
+        .as_deref()
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| "server audio runtime requires AirNote sign-in".to_string())?;
     let base_url = user
         .enterprise_server_url
+        .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+        .unwrap_or("https://airnote.emiactech.com")
+        .to_string();
 
     let wav = extract_pcm16_wav(wav_data)?;
     let ws_url = build_server_runtime_ws_url(&base_url, &token);
@@ -1003,6 +1013,7 @@ async fn run_server_runtime_voice_ws_probe(
         "mode": "normal_voice",
         "selected_model": selected_model,
         "output_language": output_language,
+        "stt_provider": stt_provider,
         "source": "local_backend_ws_probe",
         "platform": std::env::consts::OS,
         "app_version": option_env!("CARGO_PKG_VERSION"),
@@ -1344,8 +1355,11 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
     let Some(prefs_for_guard) = prefs_opt.as_ref() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let missing =
-        crate::routes::key_guard::missing_voice_api_keys(&pool, &user_id, prefs_for_guard);
+    let missing = if message_polish_mode {
+        crate::routes::key_guard::missing_message_polish_voice_keys(prefs_for_guard)
+    } else {
+        crate::routes::key_guard::missing_voice_api_keys(&pool, &user_id, prefs_for_guard)
+    };
     if !missing.is_empty() {
         return crate::routes::key_guard::missing_api_keys_response(missing);
     }
@@ -1370,9 +1384,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             }
         };
 
-        let deepgram_key = prefs.deepgram_api_key.clone()
-            .or_else(|| std::env::var("DEEPGRAM_API_KEY").ok())
+        let deepgram_key = said_core::stt::resolve_deepgram_api_key(prefs.deepgram_api_key.as_deref())
             .unwrap_or_default();
+        let stt_provider = crate::routes::key_guard::effective_stt_provider(&prefs);
+        let stt_api_key = deepgram_key.as_str();
         let gemini_key = prefs.gemini_api_key.clone()
             .or_else(|| std::env::var("GEMINI_API_KEY").ok())
             .unwrap_or_default();
@@ -1412,12 +1427,139 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             info!("[pipeline] keyterms={:?}", stt_bias_package.keyterms);
         }
 
+        if message_polish_mode {
+            if wav_data.is_empty() {
+                yield Ok(Event::default().event("error").data(
+                    json!({"message": "no audio captured for message polish mode", "audio_id": aid}).to_string()
+                ));
+                return;
+            }
+
+            yield Ok(Event::default().event("status")
+                .data(json!({"phase": "transcribing"}).to_string()));
+
+            let stt_result = run_batch_transcript(
+                &http_client,
+                &stt_provider,
+                stt_api_key,
+                wav_data.clone(),
+                stt_bias_package.clone(),
+                "message_polish:batch".to_string(),
+            ).await;
+
+            let (stt_transcript_raw, transcribe_ms) = match stt_result {
+                Ok(candidate) => {
+                    let ms = total_start.elapsed().as_millis() as i64;
+                    info!(
+                        "[voice] message-polish batch STT={}ms ({} words)",
+                        ms,
+                        candidate.meta.word_count,
+                    );
+                    (candidate.transcript, ms)
+                }
+                Err(e) => {
+                    warn!("[voice] message-polish batch STT error: {e}");
+                    yield Ok(Event::default().event("error").data(
+                        json!({"message": e, "audio_id": aid}).to_string()
+                    ));
+                    return;
+                }
+            };
+
+            if stt_transcript_raw.trim().is_empty() {
+                yield Ok(Event::default().event("error").data(
+                    json!({"message": "no speech detected — try speaking again", "audio_id": aid}).to_string()
+                ));
+                return;
+            }
+
+            yield Ok(Event::default().event("status")
+                .data(json!({"phase": "message_polishing", "transcript": stt_transcript_raw}).to_string()));
+
+            match crate::routes::message_polish::run_server_message_polish(
+                &http_client,
+                &pool,
+                &user_id,
+                &stt_transcript_raw,
+                client_run_id.as_deref(),
+            ).await {
+                Ok((llm_result, model_used)) => {
+                    let total_ms = total_start.elapsed().as_millis() as i64;
+                    let recording_id = Uuid::new_v4().to_string();
+                    let word_count = llm_result.polished.split_whitespace().count() as i64;
+                    let audio_secs = wav_duration_secs(&wav_data);
+
+                    let pool2 = pool.clone();
+                    let id2 = recording_id.clone();
+                    let uid2 = user_id.clone();
+                    let t2 = stt_transcript_raw.clone();
+                    let p2 = llm_result.polished.clone();
+                    let ta2 = target_app.clone();
+                    let model2 = model_used.clone();
+                    let p_ms = llm_result.polish_ms as i64;
+                    let aid2 = saved_audio_id.clone();
+                    tokio::task::spawn_blocking(move || {
+                        insert_recording(&pool2, InsertRecording {
+                            id: &id2,
+                            user_id: &uid2,
+                            transcript: &t2,
+                            polished: &p2,
+                            word_count,
+                            recording_seconds: if audio_secs > 0.0 { audio_secs } else { estimated_secs(word_count) },
+                            model_used: &model2,
+                            confidence: None,
+                            transcribe_ms: Some(transcribe_ms),
+                            embed_ms: Some(0),
+                            polish_ms: Some(p_ms),
+                            target_app: ta2.as_deref(),
+                            source: "voice",
+                            audio_id: aid2.as_deref(),
+                            enriched_transcript: None,
+                            raw_transcript: Some(&t2),
+                            local_corrected_transcript: None,
+                            polished_output: Some(&p2),
+                        });
+                    });
+
+                    yield Ok(Event::default().event("done").data(
+                        json!({
+                            "recording_id": recording_id,
+                            "transcript": stt_transcript_raw,
+                            "audio_id": saved_audio_id,
+                            "source": "voice",
+                            "target_app": target_app,
+                            "output_language": "english",
+                            "polished": llm_result.polished,
+                            "model_used": model_used,
+                            "confidence": null,
+                            "latency_ms": {
+                                "transcribe": transcribe_ms,
+                                "embed": 0,
+                                "retrieve": 0,
+                                "polish": llm_result.polish_ms,
+                                "total": total_ms,
+                            },
+                            "examples_used": 0,
+                        }).to_string()
+                    ));
+                }
+                Err(e) => {
+                    warn!("[voice] server message polish failed: {e}");
+                    yield Ok(Event::default().event("error").data(
+                        json!({"message": e, "audio_id": aid}).to_string()
+                    ));
+                }
+            }
+            return;
+        }
+
         if prefs.server_audio_runtime_enabled
             && server_stt_probe_enabled()
             && !wav_data.is_empty()
             && !message_polish_mode
             && repair_mode.is_none()
         {
+            let recording_id = Uuid::new_v4().to_string();
             let server_audio_transport = std::env::var("AIRNOTE_SERVER_AUDIO_RUNTIME_TRANSPORT")
                 .unwrap_or_else(|_| "http".to_string())
                 .trim()
@@ -1465,6 +1607,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     .filter(|term| !term.is_empty())
                     .take(30)
                     .collect::<Vec<_>>();
+                let stt_provider = crate::routes::key_guard::effective_stt_provider(&prefs);
                 if server_audio_transport == "ws" {
                     run_server_runtime_voice_ws_probe(
                         &pool,
@@ -1474,6 +1617,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         &prefs.selected_model,
                         screen_context.as_deref(),
                         safe_vocab_terms,
+                        &stt_provider,
                     )
                     .await
                 } else {
@@ -1486,6 +1630,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         &prefs.selected_model,
                         screen_context.as_deref(),
                         safe_vocab_terms,
+                        &stt_provider,
+                        Some(&recording_id),
                     )
                     .await
                 }
@@ -1508,7 +1654,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         server_latency.total,
                     );
 
-                    let recording_id = Uuid::new_v4().to_string();
                     let recording_id_for_store = recording_id.clone();
                     let transcript_for_store = server_transcript.clone();
                     let polished_for_store = server_result.polished.clone();
@@ -1579,15 +1724,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         }
 
         // ── STEP 1: STT ───────────────────────────────────────────────────────────
-        // Resolve STT provider: code override takes priority over DB preference.
-        let stt_provider: &str = if STT_PROVIDER_OVERRIDE.is_empty() {
-            &prefs.stt_provider
-        } else {
-            STT_PROVIDER_OVERRIDE
-        };
         info!("[voice] stt_provider={stt_provider:?}");
         let audio_seconds = wav_duration_seconds(&wav_data);
-        let use_alt_stt = stt_provider == "whisper_local" || stt_provider == "groq_whisper";
+        let use_alt_stt = said_core::stt::use_batch_stt_only(&stt_provider);
         let pre_transcript = if use_alt_stt { None } else { pre_transcript };
         let (stt_transcript_raw, enriched_raw, stt_confidence, transcribe_ms) = if let Some(t) = pre_transcript {
             let plain = strip_confidence_markers(&t);
@@ -1609,7 +1748,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             };
             let (chosen, rescue_ms) = match maybe_rescue_transcript(
                 &http_client,
-                &deepgram_key,
+                &stt_provider,
+                stt_api_key,
                 wav_data.clone(),
                 audio_seconds,
                 &stt_bias_package,
@@ -1718,7 +1858,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             } else {
                 match maybe_rescue_transcript(
                     &http_client,
-                    &deepgram_key,
+                    &stt_provider,
+                    stt_api_key,
                     wav_data.clone(),
                     audio_seconds,
                     &stt_bias_package,
@@ -2676,6 +2817,7 @@ fn normalize_token(token: &str) -> String {
 
 async fn maybe_rescue_transcript(
     client: &reqwest::Client,
+    provider: &str,
     api_key: &str,
     wav_data: Vec<u8>,
     audio_seconds: f64,
@@ -2692,6 +2834,7 @@ async fn maybe_rescue_transcript(
         }
         let rescue = run_batch_transcript(
             client,
+            provider,
             api_key,
             wav_data,
             with_mode(bias, &rescue_mode),
@@ -2705,6 +2848,7 @@ async fn maybe_rescue_transcript(
 
     let primary = run_batch_transcript(
         client,
+        provider,
         api_key,
         wav_data.clone(),
         bias.clone(),
@@ -2717,6 +2861,7 @@ async fn maybe_rescue_transcript(
     };
     let rescue = run_batch_transcript(
         client,
+        provider,
         api_key,
         wav_data,
         with_mode(bias, &rescue_mode),
@@ -2736,6 +2881,7 @@ fn with_mode(bias: &BiasPackage, stt_mode: &str) -> BiasPackage {
 
 async fn run_batch_transcript(
     client: &reqwest::Client,
+    _provider: &str,
     api_key: &str,
     wav_data: Vec<u8>,
     bias: BiasPackage,

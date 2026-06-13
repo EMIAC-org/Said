@@ -17,6 +17,15 @@
     <script>
       (function () {
         try {
+          var params = new URLSearchParams(window.location.search);
+          var isStatusBar =
+            window.location.hash === '#statusbar' ||
+            params.get('view') === 'statusbar' ||
+            params.has('statusbar');
+          if (isStatusBar) {
+            document.documentElement.dataset.theme = 'dark';
+            return;
+          }
           var t = localStorage.getItem('vp-theme');
           if (t === 'light' || t === 'dark') {
             document.documentElement.dataset.theme = t;

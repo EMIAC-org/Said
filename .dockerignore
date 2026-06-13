@@ -1,0 +1,31 @@
+# Build context for crates/control-plane/Dockerfile is the repo root.
+# Keep it lean: only the workspace source tree is needed. Everything below is
+# either a build artifact, a large binary, or unrelated to the control-plane
+# image. Do NOT ignore any crate Cargo.toml / src or the root Cargo.toml —
+# said-core's workspace inheritance needs the whole member tree to resolve.
+
+.git
+.github
+**/target
+**/node_modules
+
+# Admin UI is rebuilt in the admin-builder stage; ignore host build output.
+crates/control-plane/admin-ui/dist
+
+# Desktop app artifacts not needed to build the server (the src-tauri Cargo.toml
+# and src/ stay — it's a workspace member — only its heavy outputs are ignored).
+desktop/src-tauri/binaries
+desktop/src-tauri/gen
+desktop/src-tauri/target
+desktop/dist
+
+# Benchmark / scratch tooling (huge; never part of the image).
+tools
+
+# Editor / agent / local scratch.
+.context
+.claude
+.vscode
+**/*.dmg
+**/*.app
+**/*.log

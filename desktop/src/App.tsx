@@ -67,6 +67,7 @@ type SettingsSectionId =
   | "writing"
   | "hotkeys"
   | "models"
+  | "meeting"
   | "notifications"
   | "permissions"
   | "api-keys"
@@ -183,6 +184,11 @@ export default function App() {
   const [errorBanner, setErrorBanner] = useState<string>("");
   const [activeView,  setActiveView]  = useState<ActiveView>("dashboard");
   const [liveMeetingId, setLiveMeetingId] = useState<string | null>(null);
+  // When a live meeting ends we navigate to the Meetings page and focus the
+  // just-ended meeting so its post-processing (transcribe → clean → summarize)
+  // is shown there. This is the single post-meeting surface — LiveMeetingView no
+  // longer renders its own duplicate "ended" notes layout.
+  const [focusMeetingId, setFocusMeetingId] = useState<string | null>(null);
   const [inviteOpen,  setInviteOpen]  = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("models");
@@ -200,7 +206,6 @@ export default function App() {
       return false;
     }
   });
-
   // ── Retry toast ───────────────────────────────────────────────────────────
   const [retryToast, setRetryToast] = useState<{ message: string; audioId: string } | null>(null);
 
@@ -763,6 +768,12 @@ export default function App() {
             {activeView === "insights"   && <InsightsView snapshot={snapshotWithHistory} />}
             {activeView === "meetings"   && (
               <MeetingsView
+                focusMeetingId={focusMeetingId}
+                onFocusConsumed={() => setFocusMeetingId(null)}
+                onConfigureModels={() => {
+                  setSettingsSection("meeting");
+                  setSettingsOpen(true);
+                }}
                 onJoinMeeting={(id) => {
                   setLiveMeetingId(id);
                   setActiveView("live-meeting");
@@ -773,6 +784,13 @@ export default function App() {
               <LiveMeetingView
                 meetingId={liveMeetingId}
                 onBack={() => setActiveView("meetings")}
+                onEnded={(id) => {
+                  // Hand the just-ended meeting to the Meetings page and switch
+                  // to it. Processing continues in the background; the Meetings
+                  // detail polls and renders the live stage progress.
+                  setFocusMeetingId(id);
+                  setActiveView("meetings");
+                }}
               />
             )}
             {activeView === "divo" && <DivoView />}

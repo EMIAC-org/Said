@@ -68,4 +68,6 @@ echo ""
 
 free_port "$VITE_PORT"
 cd "$ADMIN_DIR"
+export VITE_API_TARGET="${VITE_API_TARGET:-http://127.0.0.1:$PORT}"
+echo "  API proxy target  $VITE_API_TARGET"
 exec pnpm dev -- --port "$VITE_PORT"

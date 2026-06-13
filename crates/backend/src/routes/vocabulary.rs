@@ -367,6 +367,10 @@ pub async fn patch(
         updated |= vocabulary::update_example_context(&state.pool, uid, trimmed, ctx);
     }
     if updated {
+        // Edits to meaning/type/context feed STT bias + polish, so the cached
+        // lexicon must be refreshed or the change won't take effect for up to
+        // the cache TTL (looks like "the edit didn't save").
+        crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
         info!("[vocab] patched term={trimmed:?}");
         StatusCode::OK
     } else {

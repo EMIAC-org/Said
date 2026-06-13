@@ -14,6 +14,7 @@ use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 
 pub mod auth;
+pub mod cp_client;
 pub mod embedder;
 pub mod formatting;
 pub mod llm;
@@ -21,6 +22,7 @@ pub mod number_format;
 pub mod routes;
 pub mod store;
 pub mod stt;
+pub mod telemetry;
 pub mod tier2;
 pub mod watchdog;
 
@@ -394,6 +396,11 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/v1/corrections", get(routes::prefs::get_corrections))
         .route("/v1/stt/bias", get(routes::stt::get_bias))
         .route("/v1/tier2/status", get(routes::tier2::status))
+        .route(
+            "/v1/telemetry/runs/:run_id",
+            patch(routes::telemetry::patch_run),
+        )
+        .route("/v1/telemetry/flush", post(routes::telemetry::flush))
         // Cloud auth bridge — store/clear cloud token, query cloud status
         .route(
             "/v1/cloud/token",
@@ -404,6 +411,10 @@ pub fn router_with_state(state: AppState) -> Router {
             axum::routing::delete(routes::cloud::clear_token),
         )
         .route("/v1/cloud/status", get(routes::cloud::status))
+        .route(
+            "/v1/cloud/active-org",
+            axum::routing::put(routes::cloud::set_active_org),
+        )
         .route(
             "/v1/enterprise/status",
             get(routes::cloud::enterprise_status),

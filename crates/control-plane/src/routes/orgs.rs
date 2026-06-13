@@ -1,19 +1,21 @@
 //! Org routes:
-//!   GET  /v1/orgs/me             — get the current user's org
-//!   POST /v1/orgs                — create an org (caller becomes admin)
-//!   GET  /v1/orgs/:org_id/members — list org members
+//!   GET  /v1/orgs                  — list all org memberships
+//!   GET  /v1/orgs/me               — get active org (legacy)
+//!   POST /v1/orgs                  — create an org (caller becomes admin)
+//!   POST /v1/orgs/:org_id/activate — set active workspace
+//!   GET  /v1/orgs/:org_id/members  — list org members
 
 use axum::{
     Json,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser};
+use crate::{AppState, auth::AuthUser, tenant};
 
 // ── Request / response types ────────────────────────────────────────────────
 
@@ -49,12 +51,63 @@ pub struct MemberInfo {
     pub joined_at: DateTime<Utc>,
 }
 
+// ── GET /v1/orgs ────────────────────────────────────────────────────────────
+
+pub async fn list(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let orgs = tenant::list_memberships(&state, user.account_id).await?;
+    let active_org_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT active_org_id FROM accounts WHERE id = $1")
+            .bind(user.account_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(db_err)?
+            .flatten();
+
+    Ok(Json(json!({
+        "orgs": orgs,
+        "active_org_id": active_org_id,
+        "personal_mode": active_org_id.is_none(),
+    })))
+}
+
 // ── GET /v1/orgs/me ─────────────────────────────────────────────────────────
 
 pub async fn me(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let tenant = tenant::resolve_tenant(&state, &user, &headers).await?;
+    let active_org_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT active_org_id FROM accounts WHERE id = $1")
+            .bind(user.account_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(db_err)?
+            .flatten();
+
+    let lookup_org = if let Some(org_id) = tenant.active_org_id.or(active_org_id) {
+        Some(org_id)
+    } else {
+        sqlx::query_scalar(
+            "SELECT org_id FROM org_members WHERE account_id = $1 ORDER BY joined_at ASC LIMIT 1",
+        )
+        .bind(user.account_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(db_err)?
+    };
+
+    let Some(org_id) = lookup_org else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "you are not a member of any org"})),
+        ));
+    };
+
     let row: Option<(
         Uuid,
         String,
@@ -69,10 +122,10 @@ pub async fn me(
                 om.lark_name, om.lark_avatar_url
            FROM org_members om
            JOIN orgs o ON o.id = om.org_id
-          WHERE om.account_id = $1
-          LIMIT 1",
+          WHERE om.account_id = $1 AND om.org_id = $2",
     )
     .bind(user.account_id)
+    .bind(org_id)
     .fetch_optional(&state.db)
     .await
     .map_err(db_err)?;
@@ -96,7 +149,9 @@ pub async fn me(
             "meeting_creator_roles": meeting_creator_roles,
             "lark_name":             lark_name,
             "lark_avatar_url":       lark_avatar_url,
-        }
+            "is_active":             active_org_id == Some(id),
+        },
+        "active_org_id": active_org_id,
     })))
 }
 
@@ -117,21 +172,6 @@ pub async fn create(
         ));
     }
 
-    let already_member: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM org_members WHERE account_id = $1)")
-            .bind(user.account_id)
-            .fetch_one(&state.db)
-            .await
-            .map_err(db_err)?;
-
-    if already_member {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(json!({"error": "account already belongs to an org"})),
-        ));
-    }
-
-    // Check slug uniqueness
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM orgs WHERE slug = $1)")
         .bind(&slug)
         .fetch_one(&state.db)
@@ -145,13 +185,11 @@ pub async fn create(
         ));
     }
 
-    // Build meeting_creator_roles (default to ["COMPANY_ADMIN", "MANAGER"])
     let meeting_creator_roles: Value = body
         .meeting_creator_roles
         .map(|roles| json!(roles))
         .unwrap_or_else(|| json!(["COMPANY_ADMIN", "MANAGER"]));
 
-    // Insert org
     let org_id: Uuid = sqlx::query_scalar(
         "INSERT INTO orgs (name, slug, meeting_creator_roles) VALUES ($1, $2, $3) RETURNING id",
     )
@@ -162,7 +200,6 @@ pub async fn create(
     .await
     .map_err(db_err)?;
 
-    // Add creator as company admin. Meeting creation checks this role by default.
     sqlx::query(
         "INSERT INTO org_members (org_id, account_id, role) VALUES ($1, $2, 'COMPANY_ADMIN')",
     )
@@ -171,6 +208,17 @@ pub async fn create(
     .execute(&state.db)
     .await
     .map_err(db_err)?;
+
+    sqlx::query(
+        "INSERT INTO org_subscriptions (org_id, tier) VALUES ($1, 'team')
+         ON CONFLICT (org_id) DO NOTHING",
+    )
+    .bind(org_id)
+    .execute(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    let _ = tenant::activate_org(&state, &user, org_id).await?;
 
     Ok((
         StatusCode::CREATED,
@@ -181,9 +229,37 @@ pub async fn create(
                 "slug":                  slug,
                 "role":                  "COMPANY_ADMIN",
                 "meeting_creator_roles": meeting_creator_roles,
-            }
+            },
+            "active_org_id": org_id,
         })),
     ))
+}
+
+// ── POST /v1/orgs/:org_id/activate ──────────────────────────────────────────
+
+pub async fn activate(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(org_id): Path<Uuid>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let active = tenant::activate_org(&state, &user, org_id).await?;
+    Ok(Json(json!({
+        "active_org_id": active,
+        "personal_mode": false,
+    })))
+}
+
+// ── POST /v1/orgs/:org_id/deactivate — return to personal mode ───────────────
+
+pub async fn deactivate(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    tenant::clear_active_org(&state, &user).await?;
+    Ok(Json(json!({
+        "active_org_id": null,
+        "personal_mode": true,
+    })))
 }
 
 // ── GET /v1/orgs/:org_id/members ────────────────────────────────────────────
@@ -193,22 +269,7 @@ pub async fn members(
     user: AuthUser,
     Path(org_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // Verify caller is a member of this org
-    let is_member: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM org_members WHERE org_id = $1 AND account_id = $2)",
-    )
-    .bind(org_id)
-    .bind(user.account_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(db_err)?;
-
-    if !is_member {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "you are not a member of this org"})),
-        ));
-    }
+    tenant::ensure_org_member(&state, user.account_id, org_id).await?;
 
     let members: Vec<MemberInfo> = sqlx::query_as::<
         _,
@@ -278,8 +339,6 @@ pub async fn members(
 
     Ok(Json(json!({ "members": members })))
 }
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn db_err(_e: sqlx::Error) -> (StatusCode, Json<Value>) {
     (

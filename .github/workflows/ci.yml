@@ -20,9 +20,11 @@ concurrency:
 jobs:
   rust:
     name: Rust workspace (fmt, clippy, test)
-    # ScreenCaptureKit pulls apple-metal's Swift bridge, which now references
-    # macOS 26 SDK symbols. Keep the Rust workspace gate on an SDK that can
-    # compile that bridge instead of relying on the slower-moving latest alias.
+    # macos-26 (Xcode 26 / macOS 26 SDK). Pinned, not macos-latest: the
+    # screencapturekit -> apple-metal 0.8.x Swift bridge references macOS 26 SDK
+    # symbols (MTLSamplerReductionMode, MTLSamplerDescriptor.reductionMode/lodBias),
+    # which the older macos-latest image SDK lacks — that build failure is what
+    # was reddening CI on every push (main included). The dev toolchain is Xcode 26.
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4

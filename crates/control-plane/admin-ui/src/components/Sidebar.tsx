@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router'
-import { Activity, BookOpenText, Bug, LayoutDashboard, Video, Users, Monitor, Settings, LogOut, LogIn, Gauge } from 'lucide-react'
+import { Activity, BarChart3, BookOpenText, Bug, LayoutDashboard, Video, Users, Monitor, Settings, LogOut, LogIn, Gauge } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { Avatar } from './Avatar'
 
@@ -9,6 +9,7 @@ const nav = [
   { to: '/team', icon: Users, label: 'Team' },
   { to: '/desktop', icon: Monitor, label: 'Desktop' },
   { to: '/runtime', icon: Gauge, label: 'Runtime' },
+  { to: '/telemetry', icon: BarChart3, label: 'Telemetry' },
   { to: '/vocabulary', icon: BookOpenText, label: 'Vocabulary' },
   { to: '/bugs', icon: Bug, label: 'Bugs' },
   { to: '/diagnostics', icon: Activity, label: 'Diagnostics' },

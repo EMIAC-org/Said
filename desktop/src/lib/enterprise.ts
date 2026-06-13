@@ -133,7 +133,30 @@ export async function uploadUserVocabSummary(force = false): Promise<void> {
 }
 
 function normalizeServerUrl(url: string): string {
-  return url.trim().replace(/\/+$/, "");
+  const trimmed = url.trim().replace(/\/+$/, "");
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.pathname === "" || parsed.pathname === "/") return parsed.origin;
+    if (parsed.pathname.startsWith("/admin") || parsed.pathname.startsWith("/v1")) {
+      return parsed.origin;
+    }
+  } catch {
+    // Fall through to the original trimmed value.
+  }
+  return trimmed;
+}
+
+async function responseErrorMessage(res: Response, fallback: string): Promise<string> {
+  const raw = await res.text().catch(() => "");
+  if (!raw.trim()) return fallback;
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.error === "string" && parsed.error.trim()) return parsed.error;
+    if (typeof parsed?.message === "string" && parsed.message.trim()) return parsed.message;
+  } catch {
+    // Non-JSON Axum extractor errors are still useful to show.
+  }
+  return raw.trim();
 }
 
 /** Recently used workspace server URLs (newest first). */
@@ -183,9 +206,112 @@ export interface EnterpriseConnection {
   accountId: string;
   email: string;
   orgName?: string;
+  activeOrgId?: string;
   larkName?: string;
   larkAvatarUrl?: string;
   authSource?: "lark" | "email";
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isUuid(value: string | null | undefined): value is string {
+  return typeof value === "string" && UUID_RE.test(value);
+}
+
+export async function fetchAuthenticatedAccount(
+  serverUrl: string,
+  jwt: string,
+): Promise<{ id: string; email: string }> {
+  const url = normalizeServerUrl(serverUrl);
+  const res = await fetch(`${url}/v1/auth/me`, {
+    headers: { Authorization: `Bearer ${jwt}` },
+  });
+  if (!res.ok) {
+    throw new Error(await responseErrorMessage(res, "Invalid or expired token"));
+  }
+  const data = await res.json();
+  const id = data?.account?.id;
+  const email = data?.account?.email;
+  if (!isUuid(id) || typeof email !== "string") {
+    throw new Error("Server did not return a valid account");
+  }
+  return { id, email };
+}
+
+export async function repairEnterpriseConnection(
+  conn: EnterpriseConnection,
+): Promise<EnterpriseConnection> {
+  const normalizedServerUrl = normalizeServerUrl(conn.serverUrl);
+  if (isUuid(conn.accountId) && normalizedServerUrl === conn.serverUrl) return conn;
+
+  const account = await fetchAuthenticatedAccount(normalizedServerUrl, conn.jwt);
+  const repaired: EnterpriseConnection = {
+    ...conn,
+    serverUrl: normalizedServerUrl,
+    accountId: account.id,
+    email: account.email || conn.email,
+  };
+  saveConnection(repaired);
+  return repaired;
+}
+
+export interface WorkspaceMembership {
+  id: string;
+  name: string;
+  slug: string;
+  role: string;
+  is_active: boolean;
+}
+
+export interface WorkspaceListResponse {
+  orgs: WorkspaceMembership[];
+  active_org_id: string | null;
+  personal_mode: boolean;
+}
+
+export async function listWorkspaces(): Promise<WorkspaceListResponse | null> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<WorkspaceListResponse>("list_workspaces");
+  } catch (err) {
+    console.warn("[enterprise] listWorkspaces failed", err);
+    return null;
+  }
+}
+
+export async function activateWorkspace(orgId: string): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke<string>("activate_workspace", { orgId });
+    const conn = getConnection();
+    if (conn) {
+      const org = (await listWorkspaces())?.orgs.find((o) => o.id === orgId);
+      saveConnection({
+        ...conn,
+        activeOrgId: orgId,
+        orgName: org?.name ?? conn.orgName,
+      });
+    }
+    return true;
+  } catch (err) {
+    console.warn("[enterprise] activateWorkspace failed", err);
+    return false;
+  }
+}
+
+export async function deactivateWorkspace(): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("deactivate_workspace");
+    const conn = getConnection();
+    if (conn) {
+      saveConnection({ ...conn, activeOrgId: undefined });
+    }
+    return true;
+  } catch (err) {
+    console.warn("[enterprise] deactivateWorkspace failed", err);
+    return false;
+  }
 }
 
 interface LocalEnterpriseStatus {
@@ -245,10 +371,10 @@ export async function restoreConnectionFromLocalBackend(): Promise<EnterpriseCon
     }
     const existing = getConnection();
     if (existing?.jwt === status.token && existing.serverUrl === status.server_url) {
-      return existing;
+      return repairEnterpriseConnection(existing).catch(() => existing);
     }
     const conn: EnterpriseConnection = {
-      serverUrl: status.server_url,
+      serverUrl: normalizeServerUrl(status.server_url),
       jwt: status.token,
       accountId: existing?.accountId ?? "local-backend",
       email: status.email,
@@ -257,8 +383,10 @@ export async function restoreConnectionFromLocalBackend(): Promise<EnterpriseCon
       larkAvatarUrl: existing?.larkAvatarUrl,
       authSource: existing?.authSource ?? "email",
     };
-    saveConnection(conn);
-    return conn;
+    return repairEnterpriseConnection(conn).catch(() => {
+      saveConnection(conn);
+      return conn;
+    });
   } catch (err) {
     console.warn("[enterprise] restore from local backend failed", err);
     return null;
@@ -578,6 +706,50 @@ export async function listMeetings(
   }
 }
 
+/** Create a meeting in the user's org */
+export async function createMeeting(
+  serverUrl: string,
+  jwt: string,
+  body: {
+    title: string;
+    agenda?: string | null;
+    participant_ids: string[];
+    scheduled_at?: string | null;
+    duration_minutes?: number;
+  },
+): Promise<any> {
+  const url = normalizeServerUrl(serverUrl);
+  const res = await fetch(`${url}/v1/meetings`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(await responseErrorMessage(res, "Failed to create meeting"));
+  }
+  const data = await res.json().catch(() => ({}));
+  return data.meeting;
+}
+
+/** Mark a meeting live */
+export async function startMeeting(
+  serverUrl: string,
+  jwt: string,
+  meetingId: string,
+): Promise<void> {
+  const url = normalizeServerUrl(serverUrl);
+  const res = await fetch(`${url}/v1/meetings/${meetingId}/start`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${jwt}` },
+  });
+  if (!res.ok) {
+    throw new Error(await responseErrorMessage(res, "Failed to start meeting"));
+  }
+}
+
 // ── OpenAI integration ───────────────────────────────────────────────────────
 
 export interface OpenAIStatus {
@@ -672,6 +844,70 @@ export async function syncMeetingToLark(meetingId: string): Promise<{
     return await res.json();
   } catch {
     return null;
+  }
+}
+
+export interface LarkExportPayload {
+  title: string;
+  summary: string;
+  action_items: Array<{ title: string; assignee?: string | null }>;
+  decisions: string[];
+}
+
+export type LarkExportResult =
+  | { ok: true; url: string; inSharedFolder: boolean; warning?: string | null }
+  | { ok: false; code: string; message: string };
+
+/**
+ * Export a meeting's locally-generated minutes to a Lark Docx document. The
+ * desktop holds the content, so it is sent in the body; the control-plane
+ * creates the doc with the org's Lark app. Returns a categorized result so the
+ * UI can distinguish "not connected" / "not configured" / "API error" / etc.
+ */
+export async function exportMeetingToLark(
+  meetingId: string,
+  payload: LarkExportPayload,
+): Promise<LarkExportResult> {
+  const conn = getConnection();
+  if (!conn) {
+    return { ok: false, code: "not_connected", message: "Not connected to your workspace." };
+  }
+  const url = conn.serverUrl.replace(/\/+$/, "");
+  try {
+    const res = await fetch(`${url}/v1/meetings/${meetingId}/export-lark`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${conn.jwt}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (res.status === 401) {
+      return { ok: false, code: "unauthorized", message: "Your session expired — reconnect and try again." };
+    }
+    const data = await res.json().catch(() => ({}) as Record<string, unknown>);
+    // A 404 with no error body means the route isn't on the server (the handler
+    // returns a JSON error for a missing meeting), i.e. the control-plane hasn't
+    // been deployed with the export endpoint yet.
+    if (res.status === 404 && typeof data.error !== "string") {
+      return {
+        ok: false,
+        code: "endpoint_missing",
+        message: "Lark export isn't available on your workspace server yet — it needs to be updated.",
+      };
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        code: typeof data.code === "string" ? data.code : "error",
+        message: typeof data.error === "string" ? data.error : `Lark export failed (${res.status}).`,
+      };
+    }
+    return {
+      ok: true,
+      url: typeof data.url === "string" ? data.url : "",
+      inSharedFolder: data.in_shared_folder === true,
+      warning: typeof data.content_warning === "string" ? data.content_warning : null,
+    };
+  } catch {
+    return { ok: false, code: "offline", message: "You're offline — try again." };
   }
 }
 

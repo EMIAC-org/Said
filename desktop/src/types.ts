@@ -53,6 +53,14 @@ export interface AppSnapshot {
 
 // ── Backend types (mirrored from airnote-backend) ────────────────────────────
 
+/** STT provider from preferences plus key readiness (for API key section). */
+export interface SttRuntimeInfo {
+  provider: string;
+  preferred_provider: string;
+  effective_provider: string;
+  deepgram_configured: boolean;
+}
+
 export interface Preferences {
   user_id:            string;
   selected_model:     string;
@@ -75,6 +83,8 @@ export interface Preferences {
   cerebras_api_key:   string | null;
   /** LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex" */
   llm_provider:       string;
+  /** STT routing: "deepgram" */
+  stt_provider:       string;
 }
 
 export interface PrefsUpdate {
@@ -98,6 +108,8 @@ export interface PrefsUpdate {
   cerebras_api_key?:   string | null;
   /** LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex" */
   llm_provider?:       string;
+  /** STT routing: "deepgram" */
+  stt_provider?:       string;
 }
 
 export interface PromptTemplateResponse {

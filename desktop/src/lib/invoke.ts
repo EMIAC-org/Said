@@ -11,6 +11,7 @@ import type {
   PolishDone,
   Preferences,
   PrefsUpdate,
+  SttRuntimeInfo,
   PromptTemplateResponse,
   PromptTestResponse,
   Recording,
@@ -261,6 +262,16 @@ export async function getPreferences(): Promise<Preferences | null> {
   if (!isTauriRuntime()) return null;
   try {
     return await tauriInvoke<Preferences>("get_preferences");
+  } catch {
+    return null;
+  }
+}
+
+/** Active STT provider + env key presence (from Tauri process env). */
+export async function getSttRuntime(): Promise<SttRuntimeInfo | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<SttRuntimeInfo>("get_stt_runtime");
   } catch {
     return null;
   }
@@ -983,6 +994,23 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
 export async function setDesktopPrefs(prefs: DesktopPrefs): Promise<void> {
   if (!isTauriRuntime()) return;
   return tauriInvoke<void>("set_desktop_prefs", { prefs });
+}
+
+// ── Developer log (backend.log tail) ─────────────────────────────────────────
+
+export async function readBackendLog(maxLines = 600): Promise<string> {
+  if (!isTauriRuntime()) return "(dev log only available in the desktop app)";
+  return tauriInvoke<string>("read_backend_log", { maxLines });
+}
+
+export async function backendLogLocation(): Promise<string> {
+  if (!isTauriRuntime()) return "";
+  return tauriInvoke<string>("backend_log_location");
+}
+
+export async function openLogFolder(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  return tauriInvoke<void>("open_log_folder");
 }
 
 // ── Divo (Ctrl hold-to-talk → agent) ──────────────────────────────────────────

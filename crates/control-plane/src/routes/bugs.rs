@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser};
+use crate::{AppState, auth::AuthUser, tenant};
 
 const REPORT_PURPOSE: &str = "bug_report";
 const MAX_SCREENSHOT_DATA_URL_BYTES: usize = 6 * 1024 * 1024;
@@ -80,26 +80,17 @@ pub struct BugReportRow {
 
 pub async fn create_session(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(body): Json<CreateReportSessionBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let org_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT org_id
-           FROM org_members
-          WHERE account_id = $1
-          ORDER BY joined_at DESC
-          LIMIT 1",
-    )
-    .bind(user.account_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(db_err)?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
 
     let expires_at = Utc::now() + Duration::days(7);
     let claims = BugReportClaims {
         sub: user.account_id.to_string(),
         email: user.email,
-        org_id: org_id.map(|id| id.to_string()),
+        org_id: Some(org_id.to_string()),
         exp: expires_at.timestamp() as usize,
         purpose: REPORT_PURPOSE.to_string(),
     };
@@ -155,17 +146,20 @@ pub async fn submit_public(
         }
     }
 
-    let reporter_name: Option<String> = sqlx::query_scalar(
-        "SELECT lark_name
-           FROM org_members
-          WHERE account_id = $1
-          ORDER BY joined_at DESC
-          LIMIT 1",
-    )
-    .bind(account_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(db_err)?;
+    let reporter_name: Option<String> = if let Some(org_id) = org_id {
+        sqlx::query_scalar(
+            "SELECT lark_name
+               FROM org_members
+              WHERE account_id = $1 AND org_id = $2",
+        )
+        .bind(account_id)
+        .bind(org_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(db_err)?
+    } else {
+        None
+    };
 
     let user_agent = headers
         .get("user-agent")
@@ -205,19 +199,21 @@ pub async fn submit_public(
 
 pub async fn list(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
+
     let rows: Vec<BugReportRow> = sqlx::query_as(
         "SELECT id, org_id, account_id, reporter_email, reporter_name, title, description,
                 severity, status, app_version, platform, device_id, screenshot_url,
                 screenshot_data_url, screenshot_name, screenshot_mime, created_at, updated_at
            FROM bug_reports
-          WHERE account_id = $1
-             OR org_id IN (SELECT org_id FROM org_members WHERE account_id = $1)
+          WHERE org_id = $1
           ORDER BY created_at DESC
           LIMIT 200",
     )
-    .bind(user.account_id)
+    .bind(org_id)
     .fetch_all(&state.db)
     .await
     .map_err(db_err)?;
@@ -227,26 +223,25 @@ pub async fn list(
 
 pub async fn update_status(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateBugStatusBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
     let status = normalize_status(&body.status);
     let updated: Option<BugReportRow> = sqlx::query_as(
         "UPDATE bug_reports
             SET status = $2, updated_at = now()
           WHERE id = $1
-            AND (
-              account_id = $3
-              OR org_id IN (SELECT org_id FROM org_members WHERE account_id = $3)
-            )
+            AND org_id = $3
           RETURNING id, org_id, account_id, reporter_email, reporter_name, title, description,
                     severity, status, app_version, platform, device_id, screenshot_url,
                     screenshot_data_url, screenshot_name, screenshot_mime, created_at, updated_at",
     )
     .bind(id)
     .bind(status)
-    .bind(user.account_id)
+    .bind(org_id)
     .fetch_optional(&state.db)
     .await
     .map_err(db_err)?;

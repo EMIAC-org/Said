@@ -10,11 +10,13 @@ mod diag; // lock-holder + breadcrumb instrumentation for stuck-state diagnostic
 mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plane)
 mod echo_gate;
 mod enterprise_oauth;
+mod meeting_engine;
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
 mod recovery; // crash-safe dictation audio capture + relaunch recovery
 mod server_runtime_stream;
 mod speaker_suppression;
+mod telemetry;
 
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -33,6 +35,19 @@ use tokio_util::sync::CancellationToken;
 
 use backend::BackendEndpoint;
 use desktop::DesktopApp;
+use meeting_engine::{
+    meeting_engine_add_user_tag, meeting_engine_chat, meeting_engine_delete_meeting_files,
+    meeting_engine_dismiss_ai_tag, meeting_engine_generate_intelligence,
+    meeting_engine_get_cached_artifacts, meeting_engine_get_cached_intelligence,
+    meeting_engine_get_live_transcript, meeting_engine_get_manual_actions,
+    meeting_engine_get_meeting_overviews, meeting_engine_get_notes,
+    meeting_engine_get_processing_status, meeting_engine_get_status, meeting_engine_get_user_tags,
+    meeting_engine_remove_user_tag, meeting_engine_retranscribe, meeting_engine_search_meetings,
+    meeting_engine_set_manual_actions, meeting_engine_set_meeting_favorite,
+    meeting_engine_set_meeting_hidden, meeting_engine_set_meeting_lark_doc,
+    meeting_engine_set_meeting_title, meeting_engine_set_notes, meeting_engine_start_session,
+    meeting_engine_stop_session, meeting_engine_toggle_mute,
+};
 use said_core::{AppSnapshot, ProcessSummary};
 use said_paster as paster;
 
@@ -155,6 +170,19 @@ tauri_panel! {
     panel!(StatusBarPanel {
         config: {
             can_become_key_window: false,
+            can_become_main_window: false,
+            is_floating_panel: true,
+            hides_on_deactivate: false,
+            works_when_modal: true
+        }
+    })
+
+    // Like StatusBarPanel but able to become key so a click registers (the pill
+    // restores the app on click). Still non-activating so it floats over — and
+    // doesn't steal a Space from — a full-screen meeting app.
+    panel!(MeetingPillPanel {
+        config: {
+            can_become_key_window: true,
             can_become_main_window: false,
             is_floating_panel: true,
             hides_on_deactivate: false,
@@ -480,10 +508,13 @@ fn present_status_bar_native(
 
     #[cfg(not(target_os = "macos"))]
     {
+        // Position the HUD before showing — the macOS path repositions via the
+        // panel presenter, but the native path must do it explicitly or the
+        // window appears at its stale/default origin.
+        reposition_status_bar(app, &win);
         win.set_always_on_top(true)
             .map_err(|e| format!("set_always_on_top failed: {e}"))?;
-        win.set_visible_on_all_workspaces(true)
-            .map_err(|e| format!("set_visible_on_all_workspaces failed: {e}"))?;
+        let _ = win.set_visible_on_all_workspaces(true); // no-op on Windows; best-effort
         win.show()
             .map_err(|e| format!("show status bar failed: {e}"))?;
         if resync {
@@ -910,6 +941,8 @@ struct HotPathCache(Arc<tokio::sync::RwLock<HotPathCacheInner>>);
 struct HotPathCacheInner {
     /// User's STT language setting (e.g. "hi", "multi", "auto").
     language: String,
+    /// Active STT vendor from preferences (`deepgram`).
+    stt_provider: String,
     /// Saved Deepgram API key from preferences.
     deepgram_key: String,
     /// Resolved STT mode sent to Deepgram.
@@ -1302,6 +1335,7 @@ fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
             schedule_present_status_bar_macos(handle, &win, state, false);
             #[cfg(not(target_os = "macos"))]
             {
+                reposition_status_bar(handle, &win);
                 let _ = win.set_always_on_top(true);
                 let _ = win.set_visible_on_all_workspaces(true);
                 let _ = win.show();
@@ -1391,6 +1425,7 @@ fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
 
     #[cfg(not(target_os = "macos"))]
     {
+        reposition_status_bar(handle, &win);
         match win.set_always_on_top(true) {
             Ok(_) => tracing::debug!("[status-bar] set_always_on_top ok"),
             Err(e) => tracing::warn!("[status-bar] set_always_on_top failed: {e}"),
@@ -1583,6 +1618,160 @@ fn show_main_window(app: &tauri::AppHandle) {
     activate_airnote(app, "show_main_window");
 }
 
+// ── Live-meeting floating pill ────────────────────────────────────────────────
+// A tiny capsule shown while a meeting records and the app isn't in front, so
+// recording status stays visible over ANYTHING — including other apps' full
+// screen Spaces. macOS uses a true NSPanel (the only way to float over another
+// app's full-screen Space); other platforms use an always-on-top window.
+
+const MEETING_PILL_W: f64 = 200.0;
+const MEETING_PILL_H: f64 = 52.0;
+
+/// Force the pill's native window fully transparent (clear background, not
+/// opaque, no shadow) so only the rounded capsule shows — no square backing.
+#[cfg(target_os = "macos")]
+fn make_pill_transparent_macos(app: &tauri::AppHandle) {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    let Some(win) = app.get_webview_window("meeting-pill") else {
+        return;
+    };
+    let Ok(ns_window) = win.ns_window() else {
+        return;
+    };
+    if ns_window.is_null() {
+        return;
+    }
+    unsafe {
+        let ns_window = ns_window as *mut Object;
+        let clear: *mut Object = msg_send![class!(NSColor), clearColor];
+        let _: () = msg_send![ns_window, setOpaque: false];
+        let _: () = msg_send![ns_window, setBackgroundColor: clear];
+        let _: () = msg_send![ns_window, setHasShadow: false];
+    }
+}
+
+fn meeting_pill_position(app: &tauri::AppHandle) -> (f64, f64) {
+    app.get_webview_window("main")
+        .and_then(|w| w.current_monitor().ok().flatten())
+        .map(|m| {
+            let logical_w = m.size().width as f64 / m.scale_factor();
+            (((logical_w - MEETING_PILL_W) / 2.0).max(8.0), 16.0)
+        })
+        .unwrap_or((620.0, 16.0))
+}
+
+#[tauri::command]
+fn show_meeting_pill(app: tauri::AppHandle) {
+    let url = "index.html?view=meeting-pill#meeting-pill";
+    let (x, y) = meeting_pill_position(&app);
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(panel) = app.get_webview_panel("meeting-pill") {
+            panel.show();
+            panel.order_front_regardless();
+            return;
+        }
+        match PanelBuilder::<_, MeetingPillPanel>::new(&app, "meeting-pill")
+            .url(tauri::WebviewUrl::App(url.into()))
+            .title("AirNote Meeting")
+            .size(tauri::Size::Logical(tauri::LogicalSize::new(
+                MEETING_PILL_W,
+                MEETING_PILL_H,
+            )))
+            .position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+            .level(PanelLevel::Custom(28))
+            .floating(true)
+            .hides_on_deactivate(false)
+            .works_when_modal(true)
+            .ignores_mouse_events(false)
+            .has_shadow(false)
+            .transparent(true)
+            .style_mask(StyleMask::empty().borderless().nonactivating_panel())
+            .collection_behavior(
+                CollectionBehavior::new()
+                    .can_join_all_spaces()
+                    .full_screen_auxiliary(),
+            )
+            .no_activate(true)
+            .with_window(|window| {
+                window
+                    .decorations(false)
+                    .always_on_top(true)
+                    .visible_on_all_workspaces(true)
+                    .skip_taskbar(true)
+                    .focused(false)
+                    .resizable(false)
+                    .shadow(false)
+                    .transparent(true)
+            })
+            .build()
+        {
+            Ok(panel) => {
+                panel.show();
+                panel.order_front_regardless();
+                make_pill_transparent_macos(&app);
+                tracing::info!("[meeting-pill] NSPanel created");
+            }
+            Err(e) => tracing::warn!("[meeting-pill] panel create failed: {e}"),
+        }
+        make_pill_transparent_macos(&app);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(w) = app.get_webview_window("meeting-pill") {
+            let _ = w.show();
+            let _ = w.set_always_on_top(true);
+            return;
+        }
+        match tauri::WebviewWindowBuilder::new(
+            &app,
+            "meeting-pill",
+            tauri::WebviewUrl::App(url.into()),
+        )
+        .title("AirNote Meeting")
+        .inner_size(MEETING_PILL_W, MEETING_PILL_H)
+        .position(x, y)
+        .decorations(false)
+        .always_on_top(true)
+        .visible_on_all_workspaces(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .resizable(false)
+        .build()
+        {
+            Ok(win) => {
+                let _ = win.set_always_on_top(true);
+                tracing::info!("[meeting-pill] created");
+            }
+            Err(e) => tracing::warn!("[meeting-pill] create failed: {e}"),
+        }
+    }
+}
+
+#[tauri::command]
+fn hide_meeting_pill(app: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(panel) = app.get_webview_panel("meeting-pill") {
+            panel.hide();
+            return;
+        }
+    }
+    if let Some(w) = app.get_webview_window("meeting-pill") {
+        let _ = w.hide();
+    }
+}
+
+#[tauri::command]
+fn focus_main_from_pill(app: tauri::AppHandle) {
+    show_main_window(&app);
+    hide_meeting_pill(app);
+}
+
 fn launched_from_autostart() -> bool {
     std::env::args().any(|arg| arg == AUTOSTART_ARG)
 }
@@ -1739,16 +1928,16 @@ fn toggle_message_polish_mode(app: &tauri::AppHandle) {
     );
 }
 
-fn insert_text_prefer_direct(label: &str, text: &str) -> Result<(), String> {
+fn insert_text_prefer_direct(label: &str, text: &str) -> (Result<(), String>, bool) {
     match paster::type_text(text) {
-        Ok(true) => Ok(()),
+        Ok(true) => (Ok(()), false),
         Ok(false) => {
             tracing::warn!("[{label}] direct typing unavailable — falling back to clipboard paste");
-            paster::paste(text)
+            (paster::paste(text), true)
         }
         Err(e) => {
             tracing::warn!("[{label}] direct typing failed: {e} — falling back to clipboard paste");
-            paster::paste(text)
+            (paster::paste(text), true)
         }
     }
 }
@@ -2357,6 +2546,58 @@ async fn test_voice_prompt(
     api::test_voice_prompt(&ep, transcript, draft_body).await
 }
 
+#[derive(serde::Serialize)]
+struct SttRuntimeInfo {
+    provider: String,
+    preferred_provider: String,
+    effective_provider: String,
+    deepgram_configured: bool,
+}
+
+#[tauri::command]
+async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeInfo, String> {
+    match get_endpoint(&backend) {
+        Ok(ep) => match api::get_preferences(&ep).await {
+            Ok(p) => {
+                let preferred = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
+                let has_deepgram =
+                    said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref())
+                        .is_some();
+                Ok(SttRuntimeInfo {
+                    provider: preferred.clone(),
+                    preferred_provider: preferred.clone(),
+                    effective_provider: preferred,
+                    deepgram_configured: has_deepgram,
+                })
+            }
+            Err(_) => Ok(SttRuntimeInfo {
+                provider: "deepgram".into(),
+                preferred_provider: "deepgram".into(),
+                effective_provider: "deepgram".into(),
+                deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
+            }),
+        },
+        Err(_) => Ok(SttRuntimeInfo {
+            provider: "deepgram".into(),
+            preferred_provider: "deepgram".into(),
+            effective_provider: "deepgram".into(),
+            deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
+        }),
+    }
+}
+
+fn hot_cache_effective_stt_provider(app: &tauri::AppHandle) -> String {
+    app.try_state::<HotPathCache>()
+        .and_then(|hot| {
+            hot.0
+                .try_read()
+                .ok()
+                .map(|guard| said_core::stt::resolve_provider_from_pref(&guard.stt_provider))
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "deepgram".to_string())
+}
+
 #[tauri::command]
 async fn patch_preferences(
     backend: State<'_, BackendState>,
@@ -2398,6 +2639,7 @@ async fn patch_preferences(
             // Keep hot-path cache in sync — no HTTP needed next recording.
             let mut hot = hot_cache.0.write().await;
             hot.language = p.language.clone();
+            hot.stt_provider = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
             hot.deepgram_key = p.deepgram_api_key.clone().unwrap_or_default();
         }
         Err(e) => tracing::warn!("[patch_prefs] backend error: {e}"),
@@ -2967,7 +3209,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     };
     match started {
         Ok(snap) => {
-            let (_session_gen, _recording_id) = app.state::<RecordingSessionState>().begin();
+            let (_session_gen, run_id) = app.state::<RecordingSessionState>().begin();
             let route = if DIVO_START_PENDING.swap(false, Ordering::SeqCst) {
                 RecordingRoute::Divo
             } else {
@@ -2983,6 +3225,20 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             };
             if let Ok(mut route_state) = app.state::<RecordingRouteState>().0.lock() {
                 *route_state = Some(route);
+            }
+            let mode = match route {
+                RecordingRoute::Divo => "divo",
+                RecordingRoute::Meeting => "meeting",
+                RecordingRoute::Normal if said_core::prefs::load().message_polish_mode => {
+                    "message_polish"
+                }
+                RecordingRoute::Normal => "normal_voice",
+            };
+            if let Some(ep) = app
+                .try_state::<BackendState>()
+                .and_then(|b| b.0.lock().ok().and_then(|g| g.clone()))
+            {
+                telemetry::on_run_start(&ep, &run_id, mode, None);
             }
             tracing::info!("[record] started — state={}", snap.state);
             diag::breadcrumb("start:recording");
@@ -3145,7 +3401,9 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
         }
     }
 
-    // ── P5: Start Deepgram WS streaming immediately ────────────────────────────
+    // ── P5: Live STT WS (Deepgram) or chunk drain (batch-only providers) ───────
+    let stt_provider = hot_cache_effective_stt_provider(app);
+    let batch_only_stt = said_core::stt::use_batch_stt_only(&stt_provider);
     let chunk_recv = shared.lock().ok().and_then(|mut d| d.take_chunk_receiver());
     if let Some(chunk_recv) = chunk_recv {
         // Crash-safe recovery: capture this dictation's audio to disk so a crash
@@ -3162,6 +3420,14 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             .try_state::<RecordingSessionState>()
             .and_then(|s| s.current().map(|(_, id)| id))
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if batch_only_stt && !is_meeting_capture {
+            tracing::info!(
+                "[stt] provider={stt_provider} — skipping Deepgram WS; backend will batch-STT on release"
+            );
+            dg_stream::spawn_chunk_drain(recording_id.clone(), chunk_recv);
+            return;
+        }
+
         let streaming_state = app.state::<StreamingState>();
         let (transcript_tx, transcript_rx) =
             tokio::sync::oneshot::channel::<Option<dg_stream::StreamingTranscript>>();
@@ -3474,8 +3740,16 @@ fn do_finish_recording(
         // 16kHz × 16-bit × mono = 32,000 bytes/sec, plus 44 byte WAV header
         let wav_duration_s = (wav.len().saturating_sub(44)) as f64 / 32_000.0;
 
-        let pre_transcript: Option<dg_stream::StreamingTranscript> = if let Some(rx) = transcript_rx
+        let message_polish_mode = said_core::prefs::load().message_polish_mode;
+        let stt_provider = hot_cache_effective_stt_provider(&app2);
+        let pre_transcript: Option<dg_stream::StreamingTranscript> = if message_polish_mode
+            || said_core::stt::use_batch_stt_only(&stt_provider)
         {
+            tracing::info!(
+                "[finish] batch-only STT (provider={stt_provider}) — skipping WS pre-transcript"
+            );
+            None
+        } else if let Some(rx) = transcript_rx {
             let wait_start = tokio::time::Instant::now();
             match tokio::time::timeout(std::time::Duration::from_millis(2500), rx).await {
                 Ok(Ok(Some(t))) if !t.transcript.is_empty() => {
@@ -3551,7 +3825,7 @@ fn do_finish_recording(
             &back_arc2,
             wav,
             None,
-            client_run_id,
+            client_run_id.clone(),
             pre_transcript,
             None,
             screen_context,
@@ -3730,6 +4004,7 @@ fn do_finish_recording(
                 start_edit_watcher(
                     back3,
                     app2.clone(),
+                    client_run_id.clone(),
                     done.recording_id.clone(),
                     done.polished.clone(),
                     watch_start,
@@ -3967,13 +4242,16 @@ async fn run_voice_polish_sse(
         }
     };
 
-    let done = if let Some(transcript) = pre_transcript {
+    let had_ws_pretranscript = pre_transcript.is_some();
+    let wav_len = wav.len();
+    let target_app_for_telemetry = target_app.clone();
+    let done_result = if let Some(transcript) = pre_transcript {
         tracing::info!("[pipeline] fast path: sending WAV + WS transcript to backend");
         api::stream_voice_polish(
             &ep,
             wav,
             target_app,
-            client_run_id,
+            client_run_id.clone(),
             Some(transcript.transcript),
             Some(transcript.meta),
             repair_mode,
@@ -3981,13 +4259,13 @@ async fn run_voice_polish_sse(
             message_polish_mode,
             &mut on_polish_event,
         )
-        .await?
+        .await
     } else {
         api::stream_voice_polish(
             &ep,
             wav,
             target_app,
-            client_run_id,
+            client_run_id.clone(),
             None,
             None,
             repair_mode,
@@ -3995,12 +4273,22 @@ async fn run_voice_polish_sse(
             message_polish_mode,
             &mut on_polish_event,
         )
-        .await?
+        .await
+    };
+    let done = match done_result {
+        Ok(d) => d,
+        Err(e) => {
+            if let Some(run_id) = client_run_id.as_deref() {
+                telemetry::on_pipeline_error(&ep, run_id, None);
+            }
+            return Err(e);
+        }
     };
 
     let n_typed = token_count.load(std::sync::atomic::Ordering::Relaxed);
     let n_failed = fail_count.load(std::sync::atomic::Ordering::Relaxed);
     let mut output_pasted = false;
+    let mut used_clipboard_fallback = false;
     if suppress_local {
         tracing::info!("[main] meeting/divo mode — skipping paste for polished chunk");
     } else if typed_any.load(std::sync::atomic::Ordering::Relaxed) {
@@ -4073,8 +4361,11 @@ async fn run_voice_polish_sse(
             done.polished.len()
         );
         if !done.polished.is_empty() {
-            match insert_text_prefer_direct("main_final_insert", &done.polished) {
-                Ok(_) => {
+            let (insert_res, clipboard) =
+                insert_text_prefer_direct("main_final_insert", &done.polished);
+            used_clipboard_fallback = clipboard;
+            match insert_res {
+                Ok(()) => {
                     output_pasted = true;
                 }
                 Err(e) => {
@@ -4141,6 +4432,50 @@ async fn run_voice_polish_sse(
                 "status": output_status,
                 "message": output_message,
             }),
+        );
+    }
+
+    if let Some(run_id) = client_run_id.as_deref() {
+        let mode = if is_divo {
+            "divo"
+        } else if is_meeting {
+            "meeting"
+        } else if message_polish_mode {
+            "message_polish"
+        } else {
+            "normal_voice"
+        };
+        let audio_seconds = wav_len as f64 / (16_000.0 * 2.0);
+        let word_count = done.polished.split_whitespace().count() as i32;
+        let char_count = done.polished.chars().count() as i32;
+        let stt_provider = hot_cache_effective_stt_provider(app);
+        let stt_model = said_core::stt::telemetry_stt_model(&stt_provider).to_string();
+        let stt_path =
+            said_core::stt::telemetry_stt_path(&stt_provider, had_ws_pretranscript).to_string();
+        telemetry::on_pipeline_done(
+            &ep,
+            run_id,
+            telemetry::PipelineTelemetry {
+                recording_id: done.recording_id.clone(),
+                mode: mode.to_string(),
+                target_app: target_app_for_telemetry.clone(),
+                audio_seconds,
+                word_count,
+                char_count,
+                transcribe_ms: done.latency_ms.transcribe as i32,
+                embed_ms: done.latency_ms.embed as i32,
+                polish_ms: done.latency_ms.polish as i32,
+                total_ms: done.latency_ms.total as i32,
+                success: !done.polished.is_empty() || output_pasted,
+                error_code: None,
+                used_clipboard_fallback,
+                used_ws_pretranscript: had_ws_pretranscript,
+                used_http_stt_fallback: !had_ws_pretranscript,
+                stt_provider,
+                stt_model,
+                stt_path,
+                polished_preview: done.polished.clone(),
+            },
         );
     }
 
@@ -4599,6 +4934,27 @@ async fn download_recording_audio(
     Ok(Some(path.display().to_string()))
 }
 
+/// Save a meeting's local audio file to a user-chosen location (native save
+/// dialog on macOS, Downloads elsewhere). The file is already on disk, so this
+/// copies it rather than fetching from the server. Returns the saved path, or
+/// None if the user cancelled.
+#[tauri::command]
+fn download_meeting_audio(audio_path: String, filename: String) -> Result<Option<String>, String> {
+    let src = std::path::PathBuf::from(&audio_path);
+    if !src.is_file() {
+        return Err("meeting audio file not found on disk".to_string());
+    }
+    let Some(dest) = choose_recording_audio_save_path(&filename)? else {
+        return Ok(None);
+    };
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("couldn't create download folder: {e}"))?;
+    }
+    std::fs::copy(&src, &dest).map_err(|e| format!("couldn't save audio: {e}"))?;
+    Ok(Some(dest.display().to_string()))
+}
+
 #[tauri::command]
 fn reveal_downloaded_file(path: String) -> Result<(), String> {
     let path = std::path::PathBuf::from(path);
@@ -4692,6 +5048,7 @@ fn retry_recording_spawn(
             start_edit_watcher(
                 back3,
                 app2.clone(),
+                None,
                 done.recording_id.clone(),
                 done.polished.clone(),
                 watch_start,
@@ -5179,6 +5536,40 @@ fn set_desktop_prefs(
     Ok(())
 }
 
+// ── Developer log viewer (Settings → Developer log) ──────────────────────────
+//
+// Surfaces the backend daemon's `backend.log` in-app so issues (e.g. a failed
+// vocabulary write) can be diagnosed without hunting through the OS data dir.
+
+fn backend_log_path() -> std::path::PathBuf {
+    said_core::paths::log_dir().join("backend.log")
+}
+
+/// Return the tail of the backend log (last `max_lines` lines, default 600).
+#[tauri::command]
+fn read_backend_log(max_lines: Option<usize>) -> Result<String, String> {
+    let path = backend_log_path();
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let max = max_lines.unwrap_or(600);
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(max);
+    Ok(lines[start..].join("\n"))
+}
+
+/// Absolute path of the backend log file (shown in the UI).
+#[tauri::command]
+fn backend_log_location() -> String {
+    backend_log_path().to_string_lossy().into_owned()
+}
+
+/// Reveal the log directory in the OS file manager.
+#[tauri::command]
+fn open_log_folder() -> Result<(), String> {
+    let dir = said_core::paths::log_dir();
+    open::that(&dir).map_err(|e| format!("couldn't open {}: {e}", dir.display()))
+}
+
 // ── Meeting mode commands ────────────────────────────────────────────────────
 
 /// Enter meeting mode: auto-start recording, invert hotkey (hold = mute).
@@ -5383,6 +5774,59 @@ async fn get_enterprise_status(
 ) -> Result<api::EnterpriseStatus, String> {
     let ep = get_endpoint(&backend)?;
     api::get_enterprise_status(&ep).await
+}
+
+#[tauri::command]
+async fn list_workspaces(
+    backend: State<'_, BackendState>,
+) -> Result<api::WorkspaceListResponse, String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    api::list_workspaces(&server_url, &token, status.active_org_id.as_deref()).await
+}
+
+#[tauri::command]
+async fn activate_workspace(
+    org_id: String,
+    backend: State<'_, BackendState>,
+) -> Result<String, String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    let active = api::activate_workspace_on_server(&server_url, &token, &org_id).await?;
+    api::set_local_active_org(&ep, Some(&active)).await?;
+    Ok(active)
+}
+
+#[tauri::command]
+async fn deactivate_workspace(backend: State<'_, BackendState>) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    api::deactivate_workspace_on_server(&server_url, &token).await?;
+    api::set_local_active_org(&ep, None).await
 }
 
 #[tauri::command]
@@ -5635,6 +6079,7 @@ fn cancel_edit_watcher(app: &tauri::AppHandle, reason: &str) {
 fn start_edit_watcher(
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
     app: tauri::AppHandle,
+    client_run_id: Option<String>,
     recording_id: String,
     polished: String,
     watch_start: std::time::Instant,
@@ -5666,6 +6111,7 @@ fn start_edit_watcher(
             token.clone(),
             back_arc,
             app_for_task.clone(),
+            client_run_id,
             recording_id,
             polished,
             watch_start,
@@ -5689,6 +6135,7 @@ async fn watch_for_edit(
     token: CancellationToken,
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
     app: tauri::AppHandle,
+    client_run_id: Option<String>,
     recording_id: String,
     polished: String,                // the AI-generated text we pasted
     watch_start: std::time::Instant, // captured at the call site, right after paste
@@ -5949,6 +6396,12 @@ async fn watch_for_edit(
         // ── AX was readable — compare values directly ──────────────────────────
         if effective_val == post_paste {
             tracing::info!("[edit-watch] ax_no_edit for {recording_id}");
+            if let (Some(run_id), Some(ep)) = (
+                client_run_id.as_deref(),
+                back_arc.lock().ok().and_then(|g| g.clone()),
+            ) {
+                telemetry::on_accepted_no_edit(&ep, run_id);
+            }
             return;
         }
         user_kept = extract_kept(
@@ -5973,6 +6426,12 @@ async fn watch_for_edit(
         tracing::info!(
             "[edit-watch] ax_unreadable_skip for {recording_id} — no clipboard or selection fallback"
         );
+        if let (Some(run_id), Some(ep)) = (
+            client_run_id.as_deref(),
+            back_arc.lock().ok().and_then(|g| g.clone()),
+        ) {
+            telemetry::on_accepted_no_edit(&ep, run_id);
+        }
         return;
     }
 
@@ -5980,6 +6439,20 @@ async fn watch_for_edit(
 
     if user_kept.is_empty() || user_kept.trim() == polished.trim() {
         tracing::info!("[edit-watch] no diff for {recording_id} — skipping");
+        if let (Some(run_id), Some(ep)) = (
+            client_run_id.as_deref(),
+            back_arc.lock().ok().and_then(|g| g.clone()),
+        ) {
+            telemetry::on_edit_outcome(
+                &ep,
+                run_id,
+                &polished,
+                &user_kept,
+                true,
+                user_kept.is_empty(),
+                true,
+            );
+        }
         return;
     }
 
@@ -5995,12 +6468,24 @@ async fn watch_for_edit(
             "[edit-watch] user_kept has no word overlap with polished — garbage, skipping. kept={:?}",
             user_kept.chars().take(40).collect::<String>()
         );
+        if let (Some(run_id), Some(ep)) = (
+            client_run_id.as_deref(),
+            back_arc.lock().ok().and_then(|g| g.clone()),
+        ) {
+            telemetry::on_accepted_no_edit(&ep, run_id);
+        }
         return;
     }
 
     // Whitespace / punctuation / AX-jitter filter (no API call needed).
     if !is_meaningful_edit(&polished, &user_kept) {
         tracing::info!("[edit-watch] edit not meaningful for {recording_id} — skipping");
+        if let (Some(run_id), Some(ep)) = (
+            client_run_id.as_deref(),
+            back_arc.lock().ok().and_then(|g| g.clone()),
+        ) {
+            telemetry::on_accepted_no_edit(&ep, run_id);
+        }
         return;
     }
 
@@ -6042,6 +6527,19 @@ async fn watch_for_edit(
                     resp.reason,
                     resp.pending_id
                 );
+
+                if let Some(run_id) = client_run_id.as_deref() {
+                    telemetry::on_edit_outcome(
+                        ep,
+                        run_id,
+                        &polished,
+                        &user_kept,
+                        false,
+                        user_kept.trim().is_empty(),
+                        false,
+                    );
+                    telemetry::on_classify_result(ep, run_id, &resp);
+                }
 
                 if let Some(email) = resp.learned_emails.first() {
                     if !email.trim().is_empty() {
@@ -6758,6 +7256,29 @@ fn main() {
                     tracing::info!("[main] macOS activation policy set to Regular (dock visible)");
                 }
 
+                // Crash recovery: repair WAV headers for any meeting interrupted
+                // mid-recording/processing on the previous run (so its audio is
+                // playable), then re-enqueue any meeting that never finished
+                // transcribing so the pipeline self-heals. Runs off-thread to keep
+                // startup responsive; best-effort and self-contained.
+                {
+                    let recovery_handle = app.handle().clone();
+                    std::thread::Builder::new()
+                        .name("meeting-recovery".to_string())
+                        .spawn(move || {
+                            meeting_engine::recover_incomplete_meetings();
+                            // Reclaim empty orphan dirs from past sessions that
+                            // captured nothing (invisible in the UI otherwise).
+                            meeting_engine::gc_orphan_meeting_dirs();
+                            // Ensure a model is selected if any is installed.
+                            meeting_engine::meeting_ensure_active_model();
+                            recovery_handle
+                                .state::<meeting_engine::MeetingEngineState>()
+                                .requeue_interrupted_meetings();
+                        })
+                        .ok();
+                }
+
                 let desktop_prefs = said_core::prefs::load();
                 if let Err(e) = apply_launch_at_login(app.handle(), desktop_prefs.launch_at_login)
                 {
@@ -6953,8 +7474,16 @@ fn main() {
                                 stt_bias.replacements.len()
                             );
                             let hot = app_h.state::<HotPathCache>();
+                            let stt_provider = prefs_res
+                                .as_ref()
+                                .ok()
+                                .map(|p| {
+                                    said_core::stt::resolve_provider_from_pref(&p.stt_provider)
+                                })
+                                .unwrap_or_else(|| "deepgram".to_string());
                             let mut c = hot.0.write().await;
                             c.language = language;
+                            c.stt_provider = stt_provider;
                             c.deepgram_key = deepgram_key.clone();
                             c.stt_mode = stt_bias.stt_mode.clone();
                             c.keyterms = stt_bias.keyterms.clone();
@@ -7605,6 +8134,7 @@ fn main() {
         .manage(StatusBarPlacementActive(AtomicBool::new(false)))
         .manage(StatusBarInteractive(AtomicBool::new(false)))
         .manage(MeetingModeState::new())
+        .manage(meeting_engine::MeetingEngineState::new())
         .manage(speaker_suppression::SpeakerSuppressionGuard::new())
         .manage(LongDictationState::new())
         .invoke_handler(tauri::generate_handler![
@@ -7629,6 +8159,7 @@ fn main() {
             set_status_bar_interactive,
             get_backend_endpoint,
             get_preferences,
+            get_stt_runtime,
             get_voice_prompt,
             save_voice_prompt_draft,
             apply_voice_prompt_draft,
@@ -7650,6 +8181,9 @@ fn main() {
             stop_enterprise_oauth_listener,
             clear_enterprise_auth,
             get_enterprise_status,
+            list_workspaces,
+            activate_workspace,
+            deactivate_workspace,
             get_device_id,
             get_hostname,
             cloud_login,
@@ -7668,6 +8202,7 @@ fn main() {
             get_recording_audio_bytes,
             download_recording_audio,
             reveal_downloaded_file,
+            download_meeting_audio,
             // Pending-edit review
             get_pending_edits,
             resolve_pending_edit,
@@ -7694,7 +8229,49 @@ fn main() {
             // Backed by `<data_dir>/desktop_prefs.json`, not the SQLite preferences DB.
             get_desktop_prefs,
             set_desktop_prefs,
+            // Developer log viewer
+            read_backend_log,
+            backend_log_location,
+            open_log_folder,
             // Meeting audio pipeline
+            meeting_engine_start_session,
+            meeting_engine_stop_session,
+            meeting_engine_toggle_mute,
+            meeting_engine_get_live_transcript,
+            meeting_engine_get_status,
+            meeting_engine_get_processing_status,
+            show_meeting_pill,
+            hide_meeting_pill,
+            focus_main_from_pill,
+            meeting_engine::meeting_settings_get,
+            meeting_engine::meeting_settings_set,
+            meeting_engine::meeting_list_whisper_models,
+            meeting_engine::meeting_cleanup_storage,
+            meeting_engine::meeting_whisper_model_catalog,
+            meeting_engine::meeting_cancel_model_download,
+            meeting_engine::meeting_download_whisper_model,
+            meeting_engine::meeting_delete_whisper_model,
+            meeting_engine::meeting_ensure_active_model,
+            meeting_engine_get_cached_artifacts,
+            meeting_engine_get_cached_intelligence,
+            meeting_engine_generate_intelligence,
+            meeting_engine_chat,
+            meeting_engine_get_user_tags,
+            meeting_engine_add_user_tag,
+            meeting_engine_remove_user_tag,
+            meeting_engine_get_meeting_overviews,
+            meeting_engine_set_meeting_title,
+            meeting_engine_set_meeting_favorite,
+            meeting_engine_set_meeting_hidden,
+            meeting_engine_set_meeting_lark_doc,
+            meeting_engine_dismiss_ai_tag,
+            meeting_engine_delete_meeting_files,
+            meeting_engine_get_notes,
+            meeting_engine_set_notes,
+            meeting_engine_get_manual_actions,
+            meeting_engine_set_manual_actions,
+            meeting_engine_search_meetings,
+            meeting_engine_retranscribe,
             start_meeting_stt,
             stop_meeting_stt,
             toggle_meeting_mute,
@@ -7725,6 +8302,11 @@ fn main() {
                     api.prevent_exit();
                 }
                 tauri::RunEvent::Exit => {
+                    // Finalize any in-progress recording (valid WAV headers +
+                    // fsync + recovery breadcrumb) and stop the job worker before
+                    // tearing down the backend — otherwise an active recording is
+                    // abandoned with a stale header and the whisper child orphans.
+                    app.state::<meeting_engine::MeetingEngineState>().shutdown();
                     if let Ok(mut guard) = app.state::<BackendHandleState>().0.lock() {
                         drop(guard.take());
                     }

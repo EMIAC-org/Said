@@ -18,14 +18,14 @@ use axum::{
     Json,
     body::Body,
     extract::{Path, RawQuery, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser};
+use crate::{AppState, auth::AuthUser, tenant};
 
 // ── Error helpers ─────────────────────────────────────────────────────────────
 
@@ -77,15 +77,16 @@ fn ensure_divo_allowed(user: &AuthUser) -> Result<(), Response> {
 async fn get_lark_token(
     state: &AppState,
     account_id: Uuid,
+    org_id: Uuid,
     force_refresh: bool,
 ) -> Result<(String, bool), Response> {
     let row: Option<(Uuid, String, String, DateTime<Utc>)> = sqlx::query_as(
         "SELECT id, access_token, refresh_token, token_expires_at
            FROM lark_tokens
-          WHERE account_id = $1
-          LIMIT 1",
+          WHERE account_id = $1 AND org_id = $2",
     )
     .bind(account_id)
+    .bind(org_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|_| db_err_resp())?;
@@ -140,6 +141,7 @@ fn divo_base(state: &AppState) -> String {
 /// opaquely — we don't model it, Divo owns that contract.
 pub async fn chat(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(body): Json<Value>,
 ) -> Response {
@@ -147,11 +149,17 @@ pub async fn chat(
         return resp;
     }
 
+    let (_, org_id) = match tenant::require_active_org(&state, &user, &headers).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
     let client = reqwest::Client::new();
     let url = format!("{}/api/airnote/chat", divo_base(&state));
 
     // First attempt with the proactively-refreshed token.
-    let (mut token, was_fresh) = match get_lark_token(&state, user.account_id, false).await {
+    let (mut token, was_fresh) = match get_lark_token(&state, user.account_id, org_id, false).await
+    {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -168,7 +176,7 @@ pub async fn chat(
     // rotating it again) before surfacing the 401.
     if upstream.status() == reqwest::StatusCode::UNAUTHORIZED {
         if !was_fresh {
-            token = match get_lark_token(&state, user.account_id, true).await {
+            token = match get_lark_token(&state, user.account_id, org_id, true).await {
                 Ok((t, _)) => t,
                 Err(resp) => return resp,
             };
@@ -239,6 +247,7 @@ async fn post_chat(
 /// pick up a post-approval result). Forwards the JSON response verbatim.
 pub async fn thread(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(thread_id): Path<String>,
     RawQuery(query): RawQuery,
@@ -247,6 +256,11 @@ pub async fn thread(
         return resp;
     }
 
+    let (_, org_id) = match tenant::require_active_org(&state, &user, &headers).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
     let client = reqwest::Client::new();
     let base = divo_base(&state);
     let url = match query {
@@ -254,7 +268,8 @@ pub async fn thread(
         _ => format!("{base}/api/airnote/threads/{thread_id}"),
     };
 
-    let (mut token, was_fresh) = match get_lark_token(&state, user.account_id, false).await {
+    let (mut token, was_fresh) = match get_lark_token(&state, user.account_id, org_id, false).await
+    {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -268,7 +283,7 @@ pub async fn thread(
     // ride over the brief verification delay on a freshly-minted token.
     if upstream.status() == reqwest::StatusCode::UNAUTHORIZED {
         if !was_fresh {
-            token = match get_lark_token(&state, user.account_id, true).await {
+            token = match get_lark_token(&state, user.account_id, org_id, true).await {
                 Ok((t, _)) => t,
                 Err(resp) => return resp,
             };
@@ -302,12 +317,18 @@ pub async fn thread(
 /// and 401 handling as [`thread`].
 pub async fn list_threads(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     RawQuery(query): RawQuery,
 ) -> Response {
     if let Err(resp) = ensure_divo_allowed(&user) {
         return resp;
     }
+
+    let (_, org_id) = match tenant::require_active_org(&state, &user, &headers).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
 
     let client = reqwest::Client::new();
     let base = divo_base(&state);
@@ -316,7 +337,8 @@ pub async fn list_threads(
         _ => format!("{base}/api/airnote/threads"),
     };
 
-    let (mut token, was_fresh) = match get_lark_token(&state, user.account_id, false).await {
+    let (mut token, was_fresh) = match get_lark_token(&state, user.account_id, org_id, false).await
+    {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -330,7 +352,7 @@ pub async fn list_threads(
     // ride over the brief verification delay on a freshly-minted token.
     if upstream.status() == reqwest::StatusCode::UNAUTHORIZED {
         if !was_fresh {
-            token = match get_lark_token(&state, user.account_id, true).await {
+            token = match get_lark_token(&state, user.account_id, org_id, true).await {
                 Ok((t, _)) => t,
                 Err(resp) => return resp,
             };

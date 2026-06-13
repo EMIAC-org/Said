@@ -291,6 +291,21 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [playing, setPlaying] = useState(false);
+  const [hasAudio, setHasAudio] = useState(Boolean(r.audio_id));
+
+  useEffect(() => {
+    let alive = true;
+    if (r.audio_id) {
+      setHasAudio(true);
+      return;
+    }
+    void getRecordingAudioBytes(r.id).then((bytes) => {
+      if (alive && bytes && bytes.length > 0) setHasAudio(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [r.id, r.audio_id]);
 
   const handleCopy = async () => {
     try {
@@ -301,7 +316,7 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
   };
 
   const handlePlay = async () => {
-    if (!r.audio_id) return;
+    if (!hasAudio) return;
     if (playing && _activeAudio) {
       _activeAudio.pause();
       _activeAudio = null;
@@ -324,7 +339,7 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
   };
 
   const handleDownload = async () => {
-    if (!r.audio_id) return;
+    if (!hasAudio) return;
     setDownloading(true);
     try {
       const filename = `airnote-${new Date(r.timestamp_ms).toISOString().slice(0, 10)}-${r.id.slice(0, 8)}.wav`;
@@ -340,18 +355,11 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
     >
       <div className="flex-1 min-w-0">
         <div
-          className="text-[13.5px] leading-snug"
-          style={{
-            color: "hsl(var(--foreground))",
-            display: "-webkit-box",
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: "vertical",
-            overflow: "hidden",
-            wordBreak: "break-word",
-          }}
-          title={r.polished}
+          className="text-[13.5px] leading-snug truncate"
+          style={{ color: "hsl(var(--foreground))" }}
+          title={r.polished || r.transcript || undefined}
         >
-          {r.polished}
+          {r.polished || r.transcript}
         </div>
         <div className="flex items-center gap-2 mt-1">
           <span
@@ -372,8 +380,8 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
           )}
         </div>
       </div>
-      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity pt-0.5">
-        {r.audio_id && (
+      <div className="flex items-center gap-1 opacity-100 pt-0.5">
+        {hasAudio && (
           <button
             onClick={handlePlay}
             className="p-1.5 rounded-md hover:bg-[hsl(var(--surface-hover))] transition-colors"
@@ -395,7 +403,7 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
             : <Copy size={14} style={{ color: "hsl(var(--muted-foreground))" }} />
           }
         </button>
-        {r.audio_id && (
+        {hasAudio && (
           <button
             onClick={handleDownload}
             disabled={downloading}
