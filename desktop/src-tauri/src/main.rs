@@ -7013,6 +7013,8 @@ fn main() {
                             // Reclaim empty orphan dirs from past sessions that
                             // captured nothing (invisible in the UI otherwise).
                             meeting_engine::gc_orphan_meeting_dirs();
+                            // Ensure a model is selected if any is installed.
+                            meeting_engine::meeting_ensure_active_model();
                             recovery_handle
                                 .state::<meeting_engine::MeetingEngineState>()
                                 .requeue_interrupted_meetings();
@@ -7980,6 +7982,7 @@ fn main() {
             meeting_engine::meeting_cancel_model_download,
             meeting_engine::meeting_download_whisper_model,
             meeting_engine::meeting_delete_whisper_model,
+            meeting_engine::meeting_ensure_active_model,
             meeting_engine_get_cached_artifacts,
             meeting_engine_get_cached_intelligence,
             meeting_engine_generate_intelligence,

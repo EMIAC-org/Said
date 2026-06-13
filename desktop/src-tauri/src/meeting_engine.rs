@@ -8257,7 +8257,41 @@ pub fn meeting_delete_whisper_model(name: String) -> Result<(), String> {
     if meeting_env("AIRNOTE_WHISPER_CPP_MODEL").as_deref() == Some(&path.display().to_string()) {
         let _ = meeting_settings_set("AIRNOTE_WHISPER_CPP_MODEL".to_string(), None);
     }
+    // Re-point the active selection to a remaining model (or clear it).
+    meeting_ensure_active_model();
     Ok(())
+}
+
+/// Guarantee an active model whenever any usable one exists. Keeps the current
+/// selection if it's still a real file; otherwise auto-selects the strongest
+/// installed model and persists it (so a single installed model is always
+/// active). Clears the setting if no usable model remains. Returns the active
+/// model's file name, or None when none is installed.
+#[tauri::command]
+pub fn meeting_ensure_active_model() -> Option<String> {
+    let name_of = |path: &Path| -> Option<String> {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+    };
+    // Keep the current selection if it still points at a real, usable model.
+    if let Some(current) = env_path("AIRNOTE_WHISPER_CPP_MODEL") {
+        if is_usable_whisper_model(&current) {
+            return name_of(&current);
+        }
+    }
+    // Otherwise auto-select the strongest installed model and persist it.
+    let dir = said_core::paths::data_dir().join("models");
+    if let Some(best) = first_whisper_model_in_dir(&dir) {
+        let _ = meeting_settings_set(
+            "AIRNOTE_WHISPER_CPP_MODEL".to_string(),
+            Some(best.display().to_string()),
+        );
+        return name_of(&best);
+    }
+    // No usable model installed — drop any stale selection.
+    let _ = meeting_settings_set("AIRNOTE_WHISPER_CPP_MODEL".to_string(), None);
+    None
 }
 
 fn env_nonempty(name: &str) -> Option<String> {

@@ -1056,6 +1056,8 @@ export function MeetingsView({
     let cancelled = false;
     const check = async () => {
       try {
+        // Keep a model selected whenever one is installed (auto-select single).
+        await invoke("meeting_ensure_active_model").catch(() => null);
         const models = await invoke<{ incomplete: boolean }[]>("meeting_list_whisper_models");
         if (!cancelled) setHasModel(models.some((m) => !m.incomplete));
       } catch {

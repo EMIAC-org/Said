@@ -71,6 +71,9 @@ export function MeetingSettingsSection() {
 
   const refresh = useCallback(async () => {
     try {
+      // Guarantee one model is active when any is installed (auto-selects the
+      // strongest, clears when none remain) before reading the list.
+      await invoke<string | null>("meeting_ensure_active_model").catch(() => null);
       const [settings, models, cat] = await Promise.all([
         invoke<Record<string, string>>("meeting_settings_get"),
         invoke<InstalledModel[]>("meeting_list_whisper_models"),
