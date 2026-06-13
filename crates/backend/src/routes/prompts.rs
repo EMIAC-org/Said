@@ -222,12 +222,8 @@ async fn run_prompt_test(
     } else if llm_provider == "gemini_direct" {
         gemini_direct::GEMINI_DIRECT_MODEL.to_string()
     } else if llm_provider == "groq" {
-        if prefs.selected_model == "smart" {
-            groq::GROQ_MODEL_SMART
-        } else {
-            groq::GROQ_MODEL_FAST
-        }
-        .to_string()
+        // Dictation model selector removed — always use Smart (Llama 4 Scout).
+        groq::GROQ_MODEL_SMART.to_string()
     } else {
         said_core::resolve_model(&prefs.selected_model).to_string()
     };
