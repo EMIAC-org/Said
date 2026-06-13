@@ -3,7 +3,7 @@ use std::io::{BufRead, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -4989,8 +4989,7 @@ fn normalize_wav_for_asr(input: &Path, output: &Path, gain: f32) -> Result<(), S
 
 fn whisper_language_for_track(track: MeetingAudioTrack, default_language: &str) -> String {
     match track {
-        MeetingAudioTrack::Mic => std::env::var("AIRNOTE_MEETING_MIC_WHISPER_LANGUAGE")
-            .ok()
+        MeetingAudioTrack::Mic => meeting_env("AIRNOTE_MEETING_MIC_WHISPER_LANGUAGE")
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| default_language.to_string()),
         // The system track carries the remote participant — usually the most
@@ -4999,8 +4998,7 @@ fn whisper_language_for_track(track: MeetingAudioTrack, default_language: &str) 
         // segments / speaker bleed (same reason the mic defaults to a fixed
         // language). Set AIRNOTE_MEETING_SYSTEM_WHISPER_LANGUAGE=auto to opt back
         // into detection.
-        MeetingAudioTrack::System => std::env::var("AIRNOTE_MEETING_SYSTEM_WHISPER_LANGUAGE")
-            .ok()
+        MeetingAudioTrack::System => meeting_env("AIRNOTE_MEETING_SYSTEM_WHISPER_LANGUAGE")
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| default_language.to_string()),
     }
@@ -7898,48 +7896,401 @@ fn strip_llm_code_fences(content: &str) -> String {
     text.trim().to_string()
 }
 
+// ── Meeting settings store ────────────────────────────────────────────────────
+// User-tweakable meeting settings (language, model, diarization, …) are persisted
+// as a key→value map keyed by the same AIRNOTE_MEETING_* / AIRNOTE_WHISPER_* names
+// the engine already reads. `meeting_env` overlays the store on top of the
+// process env, so a UI setting wins over a shell env var which wins over the
+// built-in default — and every existing `env_*` reader picks it up with no
+// call-site rewrite. Changes apply to the next meeting (the engine reads these
+// per job). Persisted atomically; a corrupt file is ignored, never crashes.
+
+fn meeting_settings_path() -> PathBuf {
+    said_core::paths::data_dir().join("meeting-settings.json")
+}
+
+fn meeting_settings_store() -> &'static RwLock<std::collections::BTreeMap<String, String>> {
+    static STORE: OnceLock<RwLock<std::collections::BTreeMap<String, String>>> = OnceLock::new();
+    STORE.get_or_init(|| {
+        let map = fs::read(meeting_settings_path())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        RwLock::new(map)
+    })
+}
+
+/// Resolve a meeting setting: persisted UI value > shell env var > unset.
+fn meeting_env(name: &str) -> Option<String> {
+    if let Ok(store) = meeting_settings_store().read() {
+        if let Some(value) = store.get(name) {
+            if !value.trim().is_empty() {
+                return Some(value.clone());
+            }
+        }
+    }
+    std::env::var(name).ok()
+}
+
+#[tauri::command]
+pub fn meeting_settings_get() -> std::collections::BTreeMap<String, String> {
+    meeting_settings_store()
+        .read()
+        .map(|store| store.clone())
+        .unwrap_or_default()
+}
+
+/// Set (or clear, when `value` is None/empty) a single meeting setting and
+/// persist atomically.
+#[tauri::command]
+pub fn meeting_settings_set(key: String, value: Option<String>) -> Result<(), String> {
+    // Only allow our own namespaced keys — never let the UI write arbitrary env.
+    if !(key.starts_with("AIRNOTE_MEETING_") || key.starts_with("AIRNOTE_WHISPER_")) {
+        return Err(format!("rejected non-meeting setting key: {key}"));
+    }
+    let mut store = meeting_settings_store()
+        .write()
+        .map_err(|_| "meeting settings lock poisoned".to_string())?;
+    match value {
+        Some(v) if !v.trim().is_empty() => {
+            store.insert(key, v.trim().to_string());
+        }
+        _ => {
+            store.remove(&key);
+        }
+    }
+    let bytes = serde_json::to_vec_pretty(&*store)
+        .map_err(|e| format!("failed to serialize meeting settings: {e}"))?;
+    write_atomic(meeting_settings_path(), bytes)
+        .map_err(|e| format!("failed to write meeting settings: {e}"))
+}
+
+#[derive(Debug, Serialize)]
+pub struct WhisperModelInfo {
+    pub name: String,
+    pub path: String,
+    pub size_bytes: u64,
+    pub active: bool,
+}
+
+/// List installed whisper.cpp models (`ggml-*.bin`, excluding the Silero VAD
+/// model) in the app's model directory, marking which one is currently active.
+#[tauri::command]
+pub fn meeting_list_whisper_models() -> Vec<WhisperModelInfo> {
+    let dir = said_core::paths::data_dir().join("models");
+    let active = resolve_whisper_cpp_config().ok().map(|config| config.model);
+    let mut models = Vec::new();
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.starts_with("ggml-") || !name.ends_with(".bin") || name.contains("silero") {
+                continue;
+            }
+            models.push(WhisperModelInfo {
+                name: name.to_string(),
+                path: path.display().to_string(),
+                size_bytes: entry.metadata().map(|m| m.len()).unwrap_or(0),
+                active: active.as_deref() == Some(path.as_path()),
+            });
+        }
+    }
+    models.sort_by(|a, b| a.name.cmp(&b.name));
+    models
+}
+
+/// Reclaim disposable meeting storage on demand (orphan dirs + per-meeting
+/// intermediates), reusing the startup GC.
+#[tauri::command]
+pub fn meeting_cleanup_storage() -> Result<(), String> {
+    gc_orphan_meeting_dirs();
+    Ok(())
+}
+
+// ── Whisper model download / management ───────────────────────────────────────
+
+const MODEL_DOWNLOAD_EVENT: &str = "meeting-model-download";
+
+/// Downloadable whisper.cpp models (name, source URL, approx size for a progress
+/// estimate before Content-Length is known). Mirror of the official
+/// ggerganov/whisper.cpp ggml weights.
+const WHISPER_MODEL_CATALOG: &[(&str, &str, u64)] = &[
+    (
+        "ggml-base.en.bin",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+        147_951_465,
+    ),
+    (
+        "ggml-small.bin",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+        487_601_967,
+    ),
+    (
+        "ggml-medium.bin",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
+        1_533_763_059,
+    ),
+    (
+        "ggml-large-v3-turbo.bin",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+        1_624_555_275,
+    ),
+    (
+        "ggml-large-v3.bin",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+        3_095_033_483,
+    ),
+];
+
+fn model_download_cancels() -> &'static Mutex<std::collections::HashSet<String>> {
+    static CANCELS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    CANCELS.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+fn model_downloads_inflight() -> &'static Mutex<std::collections::HashSet<String>> {
+    static INFLIGHT: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    INFLIGHT.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ModelDownloadProgress {
+    name: String,
+    received: u64,
+    total: u64,
+    status: String, // "downloading" | "done" | "cancelled" | "error"
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CatalogModel {
+    pub name: String,
+    pub size_bytes: u64,
+    pub installed: bool,
+}
+
+#[tauri::command]
+pub fn meeting_whisper_model_catalog() -> Vec<CatalogModel> {
+    let dir = said_core::paths::data_dir().join("models");
+    WHISPER_MODEL_CATALOG
+        .iter()
+        .map(|(name, _, size)| CatalogModel {
+            name: (*name).to_string(),
+            size_bytes: *size,
+            installed: dir.join(name).is_file(),
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn meeting_cancel_model_download(name: String) {
+    if let Ok(mut cancels) = model_download_cancels().lock() {
+        cancels.insert(name);
+    }
+}
+
+/// Download a catalogued whisper model with streamed progress events, partial-
+/// file cleanup, cancellation, idempotency, and a single-flight guard.
+#[tauri::command]
+pub async fn meeting_download_whisper_model(app: AppHandle, name: String) -> Result<(), String> {
+    let Some((_, url, total_hint)) = WHISPER_MODEL_CATALOG.iter().find(|(n, _, _)| *n == name)
+    else {
+        return Err(format!("unknown model: {name}"));
+    };
+    let url = url.to_string();
+    let total_hint = *total_hint;
+    let dir = said_core::paths::data_dir().join("models");
+    let dest = dir.join(&name);
+    if dest.is_file() {
+        return Ok(()); // already installed — idempotent
+    }
+    // Single-flight: refuse a concurrent download of the same model.
+    {
+        let mut inflight = model_downloads_inflight()
+            .lock()
+            .map_err(|_| "download registry poisoned".to_string())?;
+        if !inflight.insert(name.clone()) {
+            return Err("this model is already downloading".to_string());
+        }
+    }
+    if let Ok(mut cancels) = model_download_cancels().lock() {
+        cancels.remove(&name);
+    }
+
+    let name_for_task = name.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        download_whisper_model_blocking(&app, &name_for_task, &url, total_hint, &dir, &dest)
+    })
+    .await
+    .map_err(|e| format!("download task failed: {e}"))?;
+
+    if let Ok(mut inflight) = model_downloads_inflight().lock() {
+        inflight.remove(&name);
+    }
+    if let Ok(mut cancels) = model_download_cancels().lock() {
+        cancels.remove(&name);
+    }
+    result
+}
+
+fn download_whisper_model_blocking(
+    app: &AppHandle,
+    name: &str,
+    url: &str,
+    total_hint: u64,
+    dir: &Path,
+    dest: &Path,
+) -> Result<(), String> {
+    use std::io::{Read, Write};
+
+    fs::create_dir_all(dir).map_err(|e| format!("couldn't create models folder: {e}"))?;
+    let part = dir.join(format!("{name}.part"));
+
+    let emit = |received: u64, total: u64, status: &str, error: Option<String>| {
+        let _ = app.emit(
+            MODEL_DOWNLOAD_EVENT,
+            ModelDownloadProgress {
+                name: name.to_string(),
+                received,
+                total,
+                status: status.to_string(),
+                error,
+            },
+        );
+    };
+    let fail = |part: &Path, received: u64, total: u64, msg: String| -> String {
+        let _ = fs::remove_file(part);
+        emit(received, total, "error", Some(msg.clone()));
+        msg
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .build()
+        .map_err(|e| fail(&part, 0, total_hint, format!("http client: {e}")))?;
+    let mut response = client
+        .get(url)
+        .send()
+        .map_err(|e| fail(&part, 0, total_hint, format!("request failed: {e}")))?;
+    if !response.status().is_success() {
+        return Err(fail(
+            &part,
+            0,
+            total_hint,
+            format!("download failed: HTTP {}", response.status()),
+        ));
+    }
+    let total = response.content_length().unwrap_or(total_hint);
+    let mut file =
+        fs::File::create(&part).map_err(|e| fail(&part, 0, total, format!("create temp: {e}")))?;
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut received: u64 = 0;
+    let mut last_emit: u64 = 0;
+    emit(0, total, "downloading", None);
+    loop {
+        let cancelled = model_download_cancels()
+            .lock()
+            .map(|c| c.contains(name))
+            .unwrap_or(false);
+        if cancelled {
+            drop(file);
+            let _ = fs::remove_file(&part);
+            emit(received, total, "cancelled", None);
+            return Err("cancelled".to_string());
+        }
+        let n = response
+            .read(&mut buf)
+            .map_err(|e| fail(&part, received, total, format!("read failed: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])
+            .map_err(|e| fail(&part, received, total, format!("write failed: {e}")))?;
+        received += n as u64;
+        if received - last_emit >= 2_000_000 {
+            last_emit = received;
+            emit(received, total, "downloading", None);
+        }
+    }
+    file.flush().ok();
+    let _ = file.sync_all();
+    drop(file);
+    // Sanity: a truncated download (server hiccup) shouldn't masquerade as a model.
+    if total > 0 && received < total / 2 {
+        return Err(fail(
+            &part,
+            received,
+            total,
+            "download ended early (incomplete file)".to_string(),
+        ));
+    }
+    fs::rename(&part, dest).map_err(|e| fail(&part, received, total, format!("finalize: {e}")))?;
+    emit(received, total, "done", None);
+    Ok(())
+}
+
+/// Delete an installed whisper model. Validates the name (no path traversal,
+/// must be a ggml model, never the Silero VAD), and clears the active-model
+/// setting if it pointed at the deleted file.
+#[tauri::command]
+pub fn meeting_delete_whisper_model(name: String) -> Result<(), String> {
+    if name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || !name.starts_with("ggml-")
+        || !name.ends_with(".bin")
+        || name.contains("silero")
+    {
+        return Err("invalid model name".to_string());
+    }
+    let path = said_core::paths::data_dir().join("models").join(&name);
+    if !path.is_file() {
+        return Err("model is not installed".to_string());
+    }
+    fs::remove_file(&path).map_err(|e| format!("couldn't delete model: {e}"))?;
+    if meeting_env("AIRNOTE_WHISPER_CPP_MODEL").as_deref() == Some(&path.display().to_string()) {
+        let _ = meeting_settings_set("AIRNOTE_WHISPER_CPP_MODEL".to_string(), None);
+    }
+    Ok(())
+}
+
 fn env_nonempty(name: &str) -> Option<String> {
-    std::env::var(name).ok().and_then(|value| {
+    meeting_env(name).and_then(|value| {
         let value = value.trim().to_string();
         if value.is_empty() { None } else { Some(value) }
     })
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
+    meeting_env(name)
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
 }
 
 fn env_i32_at_least(name: &str, default: i32, min: i32) -> i32 {
-    std::env::var(name)
-        .ok()
+    meeting_env(name)
         .and_then(|value| value.trim().parse::<i32>().ok())
         .filter(|value| *value >= min)
         .unwrap_or(default)
 }
 
 fn env_f32(name: &str, default: f32) -> f32 {
-    std::env::var(name)
-        .ok()
+    meeting_env(name)
         .and_then(|value| value.trim().parse::<f32>().ok())
         .filter(|value| value.is_finite())
         .unwrap_or(default)
 }
 
 fn env_f64(name: &str, default: f64) -> f64 {
-    std::env::var(name)
-        .ok()
+    meeting_env(name)
         .and_then(|value| value.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite())
         .unwrap_or(default)
 }
 
 fn env_bool(name: &str, default: bool) -> bool {
-    std::env::var(name)
-        .ok()
+    meeting_env(name)
         .map(|value| value.trim().to_ascii_lowercase())
         .and_then(|value| match value.as_str() {
             "1" | "true" | "yes" | "on" => Some(true),
@@ -7967,12 +8318,10 @@ fn resolve_whisper_cpp_config() -> Result<WhisperCppConfig, String> {
                 .to_string()
         })?;
 
-    let language = std::env::var("AIRNOTE_MEETING_WHISPER_LANGUAGE")
-        .ok()
+    let language = meeting_env("AIRNOTE_MEETING_WHISPER_LANGUAGE")
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_WHISPER_LANGUAGE.to_string());
-    let prompt = std::env::var("AIRNOTE_MEETING_WHISPER_PROMPT")
-        .ok()
+    let prompt = meeting_env("AIRNOTE_MEETING_WHISPER_PROMPT")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let max_context_tokens = env_i32_at_least(
@@ -8160,7 +8509,7 @@ fn env_path(key: &str) -> Option<PathBuf> {
 }
 
 fn env_file_path(key: &str) -> Option<PathBuf> {
-    let raw = std::env::var(key).ok()?;
+    let raw = meeting_env(key)?;
     config_path_candidates(raw.trim())
         .into_iter()
         .find(|path| path.is_file())
@@ -8180,7 +8529,7 @@ fn env_executable_path(key: &str) -> Option<PathBuf> {
 }
 
 fn env_dir(key: &str) -> Option<PathBuf> {
-    let raw = std::env::var(key).ok()?;
+    let raw = meeting_env(key)?;
     config_path_candidates(raw.trim())
         .into_iter()
         .find(|path| path.is_dir())
