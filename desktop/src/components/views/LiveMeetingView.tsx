@@ -360,33 +360,34 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
     }
   }, [ended, meetingId]);
 
-  // While a meeting is live, mirror recording to a floating always-on-top pill
-  // whenever the main window is minimized; hide it once restored or on leave.
+  // While a meeting is live, show a floating always-on-top pill whenever the app
+  // is not in the foreground — switched to another window OR minimized — and hide
+  // it when the app regains focus or the meeting is left. Event-driven (no
+  // polling) via the window focus change.
   useEffect(() => {
     if (ended) return;
     const appWindow = getCurrentWindow();
-    let cancelled = false;
-    let pillShown = false;
-    const tick = async () => {
-      try {
-        const minimized = await appWindow.isMinimized();
-        if (cancelled) return;
-        if (minimized && !pillShown) {
-          pillShown = true;
-          await invoke("show_meeting_pill");
-        } else if (!minimized && pillShown) {
-          pillShown = false;
-          await invoke("hide_meeting_pill");
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    appWindow
+      .onFocusChanged(({ payload: focused }) => {
+        if (disposed) return;
+        if (focused) {
+          void invoke("hide_meeting_pill").catch(() => {});
+        } else {
+          void invoke("show_meeting_pill").catch(() => {});
         }
-      } catch {
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {
         /* window API unavailable */
-      }
-    };
-    void tick();
-    const id = window.setInterval(() => void tick(), 700);
+      });
     return () => {
-      cancelled = true;
-      window.clearInterval(id);
+      disposed = true;
+      unlisten?.();
       void invoke("hide_meeting_pill").catch(() => {});
     };
   }, [ended]);
@@ -825,8 +826,6 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
     ? "Mic error"
     : transcriptionRunning
       ? "Transcribing"
-      : transcriptionError
-        ? "Transcription error"
     : muted
     ? "Engine muted"
     : captureRunning
