@@ -12,6 +12,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
 import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
+import { MeetingSettingsSection } from "@/components/views/MeetingSettingsSection";
 
 import {
   getConnection as enterpriseGetConnection,
@@ -359,6 +360,7 @@ export type SettingsSection =
   | "writing"
   | "hotkeys"
   | "models"
+  | "meeting"
   | "notifications"
   | "permissions"
   | "api-keys"
@@ -369,6 +371,7 @@ export type SettingsSection =
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "hotkeys",      label: "Hotkeys"      },
   { id: "models",         label: "Models"         },
+  { id: "meeting",        label: "Meeting"        },
   { id: "notifications",  label: "Notifications"  },
   { id: "permissions",    label: "Permissions"     },
   { id: "api-keys",    label: "API keys"      },
@@ -2269,6 +2272,10 @@ export function SettingsView({
         {/* ── Enterprise ──────────────────────────────── */}
         <Show when={isOn("enterprise")}>
           <EnterpriseSection onDisconnect={onEnterpriseDisconnect} />
+        </Show>
+
+        <Show when={isOn("meeting")}>
+          <MeetingSettingsSection />
         </Show>
 
         {/* ── Debug ───────────────────────────────────── */}
