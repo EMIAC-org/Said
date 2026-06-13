@@ -1643,9 +1643,63 @@ fn show_meeting_pill(app: tauri::AppHandle) {
     {
         Ok(win) => {
             let _ = win.set_always_on_top(true);
+            #[cfg(target_os = "macos")]
+            configure_meeting_pill_macos(&win);
             tracing::info!("[meeting-pill] created");
         }
         Err(e) => tracing::warn!("[meeting-pill] create failed: {e}"),
+    }
+}
+
+/// Make the pill float over EVERYTHING — full-screen apps and every Space —
+/// while staying clickable. Same NSWindow recipe as the status-bar HUD
+/// (canJoinAllSpaces + fullScreenAuxiliary + a above-status window level), but
+/// without ignoring mouse events so clicking it can restore the app.
+#[cfg(target_os = "macos")]
+fn configure_meeting_pill_macos(win: &tauri::WebviewWindow) {
+    use objc::Message;
+    use objc::runtime::{Object, Sel};
+
+    let Ok(ns_window) = win.ns_window() else {
+        return;
+    };
+    if ns_window.is_null() {
+        return;
+    }
+    const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
+    const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
+    const NONACTIVATING_PANEL_STYLE: usize = 1 << 7;
+    const NS_STATUS_WINDOW_LEVEL_PLUS_THREE: isize = 28;
+    unsafe {
+        let ns_window = &*(ns_window as *mut Object);
+        let style_mask: usize = ns_window
+            .send_message(Sel::register("styleMask"), ())
+            .unwrap_or(0);
+        let _: Result<(), _> = ns_window.send_message(
+            Sel::register("setStyleMask:"),
+            (style_mask | NONACTIVATING_PANEL_STYLE,),
+        );
+        let behavior = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
+        let _: Result<(), _> =
+            ns_window.send_message(Sel::register("setCollectionBehavior:"), (behavior,));
+        let _: Result<(), _> = ns_window.send_message(
+            Sel::register("setLevel:"),
+            (NS_STATUS_WINDOW_LEVEL_PLUS_THREE,),
+        );
+        let _: Result<(), _> = ns_window.send_message(Sel::register("setCanHide:"), (false,));
+        for (selector_name, value) in [
+            ("setHidesOnDeactivate:", false),
+            ("setFloatingPanel:", true),
+        ] {
+            let selector = Sel::register(selector_name);
+            let responds: bool = ns_window
+                .send_message(Sel::register("respondsToSelector:"), (selector,))
+                .unwrap_or(false);
+            if responds {
+                let _: Result<(), _> = ns_window.send_message(selector, (value,));
+            }
+        }
+        let _: Result<(), _> = ns_window.send_message(Sel::register("orderFrontRegardless"), ());
     }
 }
 

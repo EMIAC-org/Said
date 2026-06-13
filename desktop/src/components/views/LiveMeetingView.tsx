@@ -392,6 +392,18 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
     };
   }, [ended]);
 
+  // Auto-minimize the app once recording actually starts, so it gets out of the
+  // way and the floating pill takes over (minimizing also surfaces the pill via
+  // the focus-change watcher above). Fires once per meeting.
+  const autoMinimizedRef = useRef(false);
+  useEffect(() => {
+    if (ended || autoMinimizedRef.current || !captureRunning) return;
+    autoMinimizedRef.current = true;
+    void getCurrentWindow()
+      .minimize()
+      .catch(() => {});
+  }, [captureRunning, ended]);
+
   // Load this meeting's saved notes once.
   useEffect(() => {
     let cancelled = false;
