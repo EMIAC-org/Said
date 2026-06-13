@@ -159,21 +159,35 @@ export function MeetingSettingsSection() {
     [refresh],
   );
 
-  const download = useCallback((name: string) => {
-    setDownloads((prev) => ({
-      ...prev,
-      [name]: { name, received: 0, total: 0, status: "downloading", error: null },
-    }));
-    invoke("meeting_download_whisper_model", { name }).catch((e) => {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg !== "cancelled") setError(`${prettyModelName(name)}: ${msg}`);
-      setDownloads((prev) => {
-        const next = { ...prev };
-        delete next[name];
-        return next;
-      });
+  const clearDownload = useCallback((name: string) => {
+    setDownloads((prev) => {
+      const next = { ...prev };
+      delete next[name];
+      return next;
     });
   }, []);
+
+  const download = useCallback(
+    (name: string) => {
+      setDownloads((prev) => ({
+        ...prev,
+        [name]: { name, received: 0, total: 0, status: "downloading", error: null },
+      }));
+      invoke("meeting_download_whisper_model", { name })
+        .then(() => {
+          // Completed (or was already installed): move it into the downloaded
+          // list. Don't rely solely on the final progress event arriving.
+          clearDownload(name);
+          void refresh();
+        })
+        .catch((e) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (msg !== "cancelled") setError(`${prettyModelName(name)}: ${msg}`);
+          clearDownload(name);
+        });
+    },
+    [clearDownload, refresh],
+  );
 
   const cancelDownload = useCallback((name: string) => {
     void invoke("meeting_cancel_model_download", { name }).catch(() => {});
