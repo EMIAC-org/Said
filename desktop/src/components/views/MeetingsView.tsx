@@ -1836,30 +1836,38 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
       <main className="min-w-0 flex-1 overflow-y-auto px-4 pb-12 pt-6 lg:px-10">
         {pendingDelete ? (
           <div
-            className="mx-auto mb-5 flex w-full max-w-[1280px] items-center justify-between gap-4 rounded-lg px-5 py-3"
-            style={{ background: "hsl(354 60% 18% / 0.4)", border: "1px solid hsl(354 60% 40%)" }}
+            className="mx-auto mb-5 flex w-full max-w-[1280px] flex-wrap items-center gap-x-4 gap-y-2 rounded-xl px-4 py-2.5"
+            style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}
           >
-            <p className="text-[13px] text-foreground">
-              <span className="font-bold">{pendingDelete.title}</span> removed from your list. Files are still on disk.
-            </p>
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2.5">
+              <Trash2 size={15} className="flex-shrink-0" style={{ color: "hsl(354 80% 70%)" }} />
+              <p className="min-w-0 truncate text-[13px] text-muted-foreground">
+                <span className="font-semibold text-foreground">{pendingDelete.title}</span> removed — files still on disk.
+              </p>
+            </div>
+            <div className="flex flex-shrink-0 items-center gap-1">
               <button
                 type="button"
                 onClick={() => void handleUndoDelete()}
-                className="h-8 rounded-lg px-3 text-[12px] font-bold"
-                style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--foreground))" }}
+                className="h-8 rounded-lg px-3 text-[12px] font-semibold"
+                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
               >
                 Undo
               </button>
               <button
                 type="button"
                 onClick={() => void handleDeleteFiles()}
-                className="h-8 rounded-lg px-3 text-[12px] font-bold"
-                style={{ background: "hsl(354 70% 28%)", color: "hsl(354 90% 88%)", border: "1px solid hsl(354 60% 45%)" }}
+                className="h-8 rounded-lg px-3 text-[12px] font-semibold transition-colors hover:bg-[hsl(354_60%_18%)]"
+                style={{ color: "hsl(354 82% 72%)" }}
               >
-                Delete files permanently
+                Delete files
               </button>
-              <button type="button" onClick={() => setPendingDelete(null)} title="Dismiss" className="text-muted-foreground hover:text-foreground">
+              <button
+                type="button"
+                onClick={() => setPendingDelete(null)}
+                title="Dismiss"
+                className="ml-0.5 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground"
+              >
                 <X size={15} />
               </button>
             </div>
