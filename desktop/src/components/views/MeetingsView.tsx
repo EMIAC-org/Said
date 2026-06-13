@@ -24,20 +24,17 @@ import {
   Sparkles,
   Star,
   Trash2,
-  Users,
   Video,
   X,
 } from "lucide-react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import {
   createMeeting,
-  exportMeetingToLark,
   getConnection,
   listMeetings,
   repairEnterpriseConnection,
   startMeeting,
 } from "@/lib/enterprise";
-import { openExternal } from "@/lib/invoke";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
 import {
   MeetingRichText,
@@ -129,11 +126,6 @@ interface MeetingCachedArtifacts {
   segments: MeetingCachedTranscriptSegment[];
 }
 
-type SyncState =
-  | { kind: "idle" }
-  | { kind: "syncing" }
-  | { kind: "done"; url: string; inSharedFolder: boolean; warning?: string | null }
-  | { kind: "error"; code?: string; message: string };
 
 
 function formatMeetingDate(meeting: Meeting): string {
@@ -399,6 +391,55 @@ function ToolbarButton({
   );
 }
 
+/** Copy button with reactive "Copied" feedback. `onCopy` performs the copy; the
+ *  button flips to a green ✓ Copied for ~1.5s on success. */
+function CopyButton({
+  label,
+  onCopy,
+  disabled,
+}: {
+  label: string;
+  onCopy: () => Promise<void> | void;
+  disabled?: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+  const handle = async () => {
+    try {
+      await onCopy();
+      setCopied(true);
+      if (timer.current) window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard denied / nothing to copy */
+    }
+  };
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => void handle()}
+      className="h-10 rounded-lg px-3 text-[12px] font-bold transition-colors disabled:opacity-45"
+      style={{
+        background: copied ? "hsl(142 50% 12%)" : "hsl(var(--surface-2))",
+        border: copied ? "1px solid hsl(142 56% 36%)" : "1px solid hsl(var(--surface-4))",
+        color: copied ? "hsl(142 72% 62%)" : "hsl(var(--muted-foreground))",
+      }}
+    >
+      <span className="flex items-center gap-2">
+        {copied ? <Check size={14} /> : <Copy size={14} />}
+        {copied ? "Copied" : label}
+      </span>
+    </button>
+  );
+}
+
 function MeetingAudioBar({
   audioSrc,
   audioRef,
@@ -583,8 +624,7 @@ function TranscriptTab({
             disabled={retranscribing}
             onClick={onRetranscribe}
           />
-          <ToolbarButton icon={<Users size={14} />} label="Manage Speakers" disabled />
-          <ToolbarButton icon={<Copy size={14} />} label="Copy All" disabled={!artifacts?.transcript} onClick={onCopyTranscript} />
+          <CopyButton label="Copy All" disabled={!artifacts?.transcript} onCopy={onCopyTranscript} />
         </div>
       </div>
 
@@ -634,8 +674,6 @@ function ActionRows({
   meetingAi,
   completed,
   onToggle,
-  onSync,
-  syncState,
   manualActions,
   actionDraft,
   onActionDraftChange,
@@ -646,8 +684,6 @@ function ActionRows({
   meetingAi: MeetingIntelligenceResult | null;
   completed: Set<string>;
   onToggle: (key: string) => void;
-  onSync: () => void;
-  syncState: SyncState;
   manualActions: ManualAction[];
   actionDraft: string;
   onActionDraftChange: (value: string) => void;
@@ -659,31 +695,9 @@ function ActionRows({
   const totalCount = actions.length + manualActions.length;
   return (
     <div className="pt-8">
-      <div className="mb-7 flex items-center justify-between gap-3">
+      <div className="mb-7">
         <h3 className="text-[15px] font-bold text-foreground">Actions {totalCount}</h3>
-        <button
-          type="button"
-          onClick={onSync}
-          disabled={syncState.kind === "syncing"}
-          className="h-9 rounded-lg px-3 text-[12px] font-bold disabled:opacity-45"
-          style={{ background: "hsl(132 38% 12%)", color: "hsl(132 72% 62%)", border: "1px solid hsl(132 56% 32%)" }}
-        >
-          <span className="flex items-center gap-2">
-            {syncState.kind === "syncing" ? <Loader2 size={14} className="animate-spin" /> : <ExternalLink size={14} />}
-            Export to Lark
-          </span>
-        </button>
       </div>
-      {syncState.kind === "done" ? (
-        <p className="mb-5 text-[12px] font-semibold" style={{ color: "hsl(132 72% 62%)" }}>
-          Exported to Lark{syncState.inSharedFolder ? " (shared folder)" : ""}
-          {syncState.warning ? " — content partial" : ""}.
-        </p>
-      ) : syncState.kind === "error" ? (
-        <p className="mb-5 text-[12px] font-semibold" style={{ color: "hsl(354 85% 75%)" }}>
-          {syncState.message}
-        </p>
-      ) : null}
 
       {/* Add a manual action */}
       <div className="mb-6 flex gap-2">
@@ -980,7 +994,6 @@ export function MeetingsView({
   const [completedActions, setCompletedActions] = useState<Set<string>>(new Set());
   const [manualActions, setManualActions] = useState<ManualAction[]>([]);
   const [actionDraft, setActionDraft] = useState("");
-  const [syncState, setSyncState] = useState<SyncState>({ kind: "idle" });
   const [overviews, setOverviews] = useState<Record<string, MeetingOverview>>({});
   const [userTags, setUserTags] = useState<string[]>([]);
   const [addingTag, setAddingTag] = useState(false);
@@ -1264,7 +1277,6 @@ export function MeetingsView({
     setMeetingAiError(null);
     setArtifactsLoading(true);
     setCompletedActions(new Set());
-    setSyncState({ kind: "idle" });
     setUserTags([]);
     setAddingTag(false);
     setTagDraft("");
@@ -1411,60 +1423,6 @@ export function MeetingsView({
     if (!text) return;
     await navigator.clipboard.writeText(text);
   }, [artifacts?.transcript]);
-
-  const handleSyncToLark = useCallback(async () => {
-    if (!selectedMeeting) return;
-    const summary = meetingAi?.summary?.trim();
-    if (!summary) {
-      setSyncState({ kind: "error", code: "no_summary", message: "Generate a summary first, then export." });
-      return;
-    }
-    const title =
-      overviews[selectedMeeting.id]?.title?.trim()
-      || meetingAi?.title?.trim()
-      || selectedMeeting.title;
-    const payload = {
-      title,
-      summary,
-      action_items: [
-        ...(meetingAi?.action_items ?? []).map((item) => ({
-          title: item.title,
-          assignee: item.assignee ?? null,
-        })),
-        // Include the user's manually-added actions in the exported doc.
-        ...manualActions.map((action) => ({
-          title: action.done ? `${action.title} (done)` : action.title,
-          assignee: null,
-        })),
-      ],
-      decisions: (meetingAi?.decisions ?? []).map((decision) => decision.text),
-    };
-    setSyncState({ kind: "syncing" });
-    let result = await exportMeetingToLark(selectedMeeting.id, payload);
-    // One automatic retry if the session lapsed.
-    if (!result.ok && result.code === "unauthorized") {
-      const conn = getConnection();
-      if (conn) {
-        try {
-          await repairEnterpriseConnection(conn);
-        } catch {
-          /* ignore — the retry will surface the real error */
-        }
-      }
-      result = await exportMeetingToLark(selectedMeeting.id, payload);
-    }
-    if (result.ok) {
-      setSyncState({ kind: "done", url: result.url, inSharedFolder: result.inSharedFolder, warning: result.warning });
-      try {
-        await invoke("meeting_engine_set_meeting_lark_doc", { meetingId: selectedMeeting.id, url: result.url });
-        await refreshOverviews();
-      } catch {
-        /* best-effort idempotency cache */
-      }
-    } else {
-      setSyncState({ kind: "error", code: result.code, message: result.message });
-    }
-  }, [selectedMeeting, meetingAi, overviews, refreshOverviews, manualActions]);
 
   const handleReanalyze = useCallback(async () => {
     if (!selectedMeeting || meetingAiLoading) return;
@@ -1700,9 +1658,6 @@ export function MeetingsView({
       || selectedMeeting.title
     : "";
   const isFavorite = selectedMeeting ? (overviews[selectedMeeting.id]?.favorite ?? false) : false;
-  const larkDocUrl = selectedMeeting
-    ? (syncState.kind === "done" ? syncState.url : null) || overviews[selectedMeeting.id]?.lark_doc_url || null
-    : null;
 
   // Context passed to the AI chat: the user's notes plus their manual actions.
   const chatContext = [
@@ -2152,45 +2107,6 @@ export function MeetingsView({
               downloading={downloadingAudio}
             />
 
-            <div className="mt-5 flex flex-wrap items-center gap-3">
-              <ToolbarButton
-                icon={syncState.kind === "syncing" ? <Loader2 size={15} className="animate-spin" /> : <FileText size={15} />}
-                label={
-                  syncState.kind === "syncing"
-                    ? "Exporting to Lark…"
-                    : larkDocUrl
-                      ? "Re-export to Lark"
-                      : "Export to Lark Docs"
-                }
-                active={syncState.kind === "done"}
-                disabled={syncState.kind === "syncing" || !meetingAi?.summary}
-                onClick={handleSyncToLark}
-              />
-              {larkDocUrl ? (
-                <button
-                  type="button"
-                  onClick={() => void openExternal(larkDocUrl)}
-                  className="flex h-10 items-center gap-2 rounded-lg px-3 text-[12px] font-bold"
-                  style={{ background: "hsl(132 38% 12%)", color: "hsl(132 72% 62%)", border: "1px solid hsl(132 56% 32%)" }}
-                >
-                  <ExternalLink size={14} />
-                  Open in Lark
-                </button>
-              ) : null}
-              {syncState.kind === "done" ? (
-                <span className="text-[12px] font-semibold" style={{ color: "hsl(132 72% 62%)" }}>
-                  Exported{syncState.inSharedFolder ? " to shared folder" : ""}
-                  {syncState.warning ? " · content partial (see Lark)" : ""}
-                </span>
-              ) : syncState.kind === "error" ? (
-                <span className="text-[12px] font-semibold" style={{ color: "hsl(354 85% 75%)" }}>
-                  {syncState.message}
-                </span>
-              ) : !meetingAi?.summary ? (
-                <span className="text-[12px] text-muted-foreground">Generate a summary first to export.</span>
-              ) : null}
-            </div>
-
             {procStatus && (procStatus.running || procStatus.can_retry || procStatus.summary_failed) ? (
               <ProcessingBanner
                 status={procStatus}
@@ -2238,7 +2154,7 @@ export function MeetingsView({
                       disabled={meetingAiLoading || Boolean(procStatus?.running)}
                       onClick={handleReanalyze}
                     />
-                    <ToolbarButton icon={<Copy size={14} />} label="Copy" disabled={!meetingAi?.summary} onClick={copySummary} />
+                    <CopyButton label="Copy" disabled={!meetingAi?.summary} onCopy={copySummary} />
                   </div>
                 </div>
                 {meetingAiLoading ? (
@@ -2343,8 +2259,6 @@ export function MeetingsView({
                     return next;
                   });
                 }}
-                onSync={handleSyncToLark}
-                syncState={syncState}
                 manualActions={manualActions}
                 actionDraft={actionDraft}
                 onActionDraftChange={setActionDraft}
