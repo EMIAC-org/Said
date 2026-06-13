@@ -1712,7 +1712,7 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
 
   return (
     <div className="relative flex h-full overflow-hidden">
-      <aside className="flex w-[330px] flex-shrink-0 flex-col" style={{ borderRight: "1px solid hsl(var(--surface-4))" }}>
+      <aside className="flex w-[240px] flex-shrink-0 flex-col xl:w-[330px]" style={{ borderRight: "1px solid hsl(var(--surface-4))" }}>
         <div className="px-4 pb-3 pt-5">
           <div className="flex items-center justify-between">
             <div>
@@ -1833,7 +1833,7 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1 overflow-y-auto px-10 pb-12 pt-6">
+      <main className="min-w-0 flex-1 overflow-y-auto px-4 pb-12 pt-6 lg:px-10">
         {pendingDelete ? (
           <div
             className="mx-auto mb-5 flex w-full max-w-[1280px] items-center justify-between gap-4 rounded-lg px-5 py-3"
@@ -2061,14 +2061,15 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
                   key={tab.id}
                   type="button"
                   onClick={() => setDetailTab(tab.id)}
-                  className="flex h-14 items-center justify-center gap-2 text-[14px] font-bold"
+                  title={tab.label}
+                  className="flex h-14 min-w-0 items-center justify-center gap-1.5 px-1 text-[12px] font-bold lg:gap-2 lg:text-[14px]"
                   style={{
                     color: detailTab === tab.id ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
                     borderBottom: detailTab === tab.id ? "2px solid hsl(var(--primary))" : "2px solid transparent",
                   }}
                 >
-                  {tab.icon}
-                  {tab.label}
+                  <span className="flex-shrink-0">{tab.icon}</span>
+                  <span className="truncate">{tab.label}</span>
                 </button>
               ))}
             </div>
