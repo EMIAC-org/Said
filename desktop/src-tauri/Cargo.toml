@@ -17,7 +17,7 @@ tauri-build = { version = "2.0.0", features = [] }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 dotenvy    = { workspace = true }
-tauri      = { version = "2.0.0", features = ["tray-icon", "image-png", "macos-private-api"] }
+tauri      = { version = "2.0.0", features = ["protocol-asset", "tray-icon", "image-png", "macos-private-api"] }
 uuid       = { workspace = true }
 tokio      = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }

@@ -10,6 +10,7 @@ mod diag; // lock-holder + breadcrumb instrumentation for stuck-state diagnostic
 mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plane)
 mod echo_gate;
 mod enterprise_oauth;
+mod meeting_engine;
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
 mod recovery; // crash-safe dictation audio capture + relaunch recovery
@@ -34,6 +35,19 @@ use tokio_util::sync::CancellationToken;
 
 use backend::BackendEndpoint;
 use desktop::DesktopApp;
+use meeting_engine::{
+    meeting_engine_add_user_tag, meeting_engine_chat, meeting_engine_delete_meeting_files,
+    meeting_engine_dismiss_ai_tag, meeting_engine_generate_intelligence,
+    meeting_engine_get_cached_artifacts, meeting_engine_get_cached_intelligence,
+    meeting_engine_get_live_transcript, meeting_engine_get_manual_actions,
+    meeting_engine_get_meeting_overviews, meeting_engine_get_notes,
+    meeting_engine_get_processing_status, meeting_engine_get_status, meeting_engine_get_user_tags,
+    meeting_engine_remove_user_tag, meeting_engine_retranscribe, meeting_engine_search_meetings,
+    meeting_engine_set_manual_actions, meeting_engine_set_meeting_favorite,
+    meeting_engine_set_meeting_hidden, meeting_engine_set_meeting_lark_doc,
+    meeting_engine_set_meeting_title, meeting_engine_set_notes, meeting_engine_start_session,
+    meeting_engine_stop_session, meeting_engine_toggle_mute,
+};
 use said_core::{AppSnapshot, ProcessSummary};
 use said_paster as paster;
 
@@ -156,6 +170,19 @@ tauri_panel! {
     panel!(StatusBarPanel {
         config: {
             can_become_key_window: false,
+            can_become_main_window: false,
+            is_floating_panel: true,
+            hides_on_deactivate: false,
+            works_when_modal: true
+        }
+    })
+
+    // Like StatusBarPanel but able to become key so a click registers (the pill
+    // restores the app on click). Still non-activating so it floats over — and
+    // doesn't steal a Space from — a full-screen meeting app.
+    panel!(MeetingPillPanel {
+        config: {
+            can_become_key_window: true,
             can_become_main_window: false,
             is_floating_panel: true,
             hides_on_deactivate: false,
@@ -481,10 +508,13 @@ fn present_status_bar_native(
 
     #[cfg(not(target_os = "macos"))]
     {
+        // Position the HUD before showing — the macOS path repositions via the
+        // panel presenter, but the native path must do it explicitly or the
+        // window appears at its stale/default origin.
+        reposition_status_bar(app, &win);
         win.set_always_on_top(true)
             .map_err(|e| format!("set_always_on_top failed: {e}"))?;
-        win.set_visible_on_all_workspaces(true)
-            .map_err(|e| format!("set_visible_on_all_workspaces failed: {e}"))?;
+        let _ = win.set_visible_on_all_workspaces(true); // no-op on Windows; best-effort
         win.show()
             .map_err(|e| format!("show status bar failed: {e}"))?;
         if resync {
@@ -1305,6 +1335,7 @@ fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
             schedule_present_status_bar_macos(handle, &win, state, false);
             #[cfg(not(target_os = "macos"))]
             {
+                reposition_status_bar(handle, &win);
                 let _ = win.set_always_on_top(true);
                 let _ = win.set_visible_on_all_workspaces(true);
                 let _ = win.show();
@@ -1394,6 +1425,7 @@ fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
 
     #[cfg(not(target_os = "macos"))]
     {
+        reposition_status_bar(handle, &win);
         match win.set_always_on_top(true) {
             Ok(_) => tracing::debug!("[status-bar] set_always_on_top ok"),
             Err(e) => tracing::warn!("[status-bar] set_always_on_top failed: {e}"),
@@ -1584,6 +1616,160 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = w.set_focus();
     }
     activate_airnote(app, "show_main_window");
+}
+
+// ── Live-meeting floating pill ────────────────────────────────────────────────
+// A tiny capsule shown while a meeting records and the app isn't in front, so
+// recording status stays visible over ANYTHING — including other apps' full
+// screen Spaces. macOS uses a true NSPanel (the only way to float over another
+// app's full-screen Space); other platforms use an always-on-top window.
+
+const MEETING_PILL_W: f64 = 200.0;
+const MEETING_PILL_H: f64 = 52.0;
+
+/// Force the pill's native window fully transparent (clear background, not
+/// opaque, no shadow) so only the rounded capsule shows — no square backing.
+#[cfg(target_os = "macos")]
+fn make_pill_transparent_macos(app: &tauri::AppHandle) {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    let Some(win) = app.get_webview_window("meeting-pill") else {
+        return;
+    };
+    let Ok(ns_window) = win.ns_window() else {
+        return;
+    };
+    if ns_window.is_null() {
+        return;
+    }
+    unsafe {
+        let ns_window = ns_window as *mut Object;
+        let clear: *mut Object = msg_send![class!(NSColor), clearColor];
+        let _: () = msg_send![ns_window, setOpaque: false];
+        let _: () = msg_send![ns_window, setBackgroundColor: clear];
+        let _: () = msg_send![ns_window, setHasShadow: false];
+    }
+}
+
+fn meeting_pill_position(app: &tauri::AppHandle) -> (f64, f64) {
+    app.get_webview_window("main")
+        .and_then(|w| w.current_monitor().ok().flatten())
+        .map(|m| {
+            let logical_w = m.size().width as f64 / m.scale_factor();
+            (((logical_w - MEETING_PILL_W) / 2.0).max(8.0), 16.0)
+        })
+        .unwrap_or((620.0, 16.0))
+}
+
+#[tauri::command]
+fn show_meeting_pill(app: tauri::AppHandle) {
+    let url = "index.html?view=meeting-pill#meeting-pill";
+    let (x, y) = meeting_pill_position(&app);
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(panel) = app.get_webview_panel("meeting-pill") {
+            panel.show();
+            panel.order_front_regardless();
+            return;
+        }
+        match PanelBuilder::<_, MeetingPillPanel>::new(&app, "meeting-pill")
+            .url(tauri::WebviewUrl::App(url.into()))
+            .title("AirNote Meeting")
+            .size(tauri::Size::Logical(tauri::LogicalSize::new(
+                MEETING_PILL_W,
+                MEETING_PILL_H,
+            )))
+            .position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+            .level(PanelLevel::Custom(28))
+            .floating(true)
+            .hides_on_deactivate(false)
+            .works_when_modal(true)
+            .ignores_mouse_events(false)
+            .has_shadow(false)
+            .transparent(true)
+            .style_mask(StyleMask::empty().borderless().nonactivating_panel())
+            .collection_behavior(
+                CollectionBehavior::new()
+                    .can_join_all_spaces()
+                    .full_screen_auxiliary(),
+            )
+            .no_activate(true)
+            .with_window(|window| {
+                window
+                    .decorations(false)
+                    .always_on_top(true)
+                    .visible_on_all_workspaces(true)
+                    .skip_taskbar(true)
+                    .focused(false)
+                    .resizable(false)
+                    .shadow(false)
+                    .transparent(true)
+            })
+            .build()
+        {
+            Ok(panel) => {
+                panel.show();
+                panel.order_front_regardless();
+                make_pill_transparent_macos(&app);
+                tracing::info!("[meeting-pill] NSPanel created");
+            }
+            Err(e) => tracing::warn!("[meeting-pill] panel create failed: {e}"),
+        }
+        make_pill_transparent_macos(&app);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(w) = app.get_webview_window("meeting-pill") {
+            let _ = w.show();
+            let _ = w.set_always_on_top(true);
+            return;
+        }
+        match tauri::WebviewWindowBuilder::new(
+            &app,
+            "meeting-pill",
+            tauri::WebviewUrl::App(url.into()),
+        )
+        .title("AirNote Meeting")
+        .inner_size(MEETING_PILL_W, MEETING_PILL_H)
+        .position(x, y)
+        .decorations(false)
+        .always_on_top(true)
+        .visible_on_all_workspaces(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .resizable(false)
+        .build()
+        {
+            Ok(win) => {
+                let _ = win.set_always_on_top(true);
+                tracing::info!("[meeting-pill] created");
+            }
+            Err(e) => tracing::warn!("[meeting-pill] create failed: {e}"),
+        }
+    }
+}
+
+#[tauri::command]
+fn hide_meeting_pill(app: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(panel) = app.get_webview_panel("meeting-pill") {
+            panel.hide();
+            return;
+        }
+    }
+    if let Some(w) = app.get_webview_window("meeting-pill") {
+        let _ = w.hide();
+    }
+}
+
+#[tauri::command]
+fn focus_main_from_pill(app: tauri::AppHandle) {
+    show_main_window(&app);
+    hide_meeting_pill(app);
 }
 
 fn launched_from_autostart() -> bool {
@@ -4748,6 +4934,27 @@ async fn download_recording_audio(
     Ok(Some(path.display().to_string()))
 }
 
+/// Save a meeting's local audio file to a user-chosen location (native save
+/// dialog on macOS, Downloads elsewhere). The file is already on disk, so this
+/// copies it rather than fetching from the server. Returns the saved path, or
+/// None if the user cancelled.
+#[tauri::command]
+fn download_meeting_audio(audio_path: String, filename: String) -> Result<Option<String>, String> {
+    let src = std::path::PathBuf::from(&audio_path);
+    if !src.is_file() {
+        return Err("meeting audio file not found on disk".to_string());
+    }
+    let Some(dest) = choose_recording_audio_save_path(&filename)? else {
+        return Ok(None);
+    };
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("couldn't create download folder: {e}"))?;
+    }
+    std::fs::copy(&src, &dest).map_err(|e| format!("couldn't save audio: {e}"))?;
+    Ok(Some(dest.display().to_string()))
+}
+
 #[tauri::command]
 fn reveal_downloaded_file(path: String) -> Result<(), String> {
     let path = std::path::PathBuf::from(path);
@@ -5327,6 +5534,40 @@ fn set_desktop_prefs(
         apply_launch_at_login(&app, prefs.launch_at_login)?;
     }
     Ok(())
+}
+
+// ── Developer log viewer (Settings → Developer log) ──────────────────────────
+//
+// Surfaces the backend daemon's `backend.log` in-app so issues (e.g. a failed
+// vocabulary write) can be diagnosed without hunting through the OS data dir.
+
+fn backend_log_path() -> std::path::PathBuf {
+    said_core::paths::log_dir().join("backend.log")
+}
+
+/// Return the tail of the backend log (last `max_lines` lines, default 600).
+#[tauri::command]
+fn read_backend_log(max_lines: Option<usize>) -> Result<String, String> {
+    let path = backend_log_path();
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let max = max_lines.unwrap_or(600);
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(max);
+    Ok(lines[start..].join("\n"))
+}
+
+/// Absolute path of the backend log file (shown in the UI).
+#[tauri::command]
+fn backend_log_location() -> String {
+    backend_log_path().to_string_lossy().into_owned()
+}
+
+/// Reveal the log directory in the OS file manager.
+#[tauri::command]
+fn open_log_folder() -> Result<(), String> {
+    let dir = said_core::paths::log_dir();
+    open::that(&dir).map_err(|e| format!("couldn't open {}: {e}", dir.display()))
 }
 
 // ── Meeting mode commands ────────────────────────────────────────────────────
@@ -7015,6 +7256,29 @@ fn main() {
                     tracing::info!("[main] macOS activation policy set to Regular (dock visible)");
                 }
 
+                // Crash recovery: repair WAV headers for any meeting interrupted
+                // mid-recording/processing on the previous run (so its audio is
+                // playable), then re-enqueue any meeting that never finished
+                // transcribing so the pipeline self-heals. Runs off-thread to keep
+                // startup responsive; best-effort and self-contained.
+                {
+                    let recovery_handle = app.handle().clone();
+                    std::thread::Builder::new()
+                        .name("meeting-recovery".to_string())
+                        .spawn(move || {
+                            meeting_engine::recover_incomplete_meetings();
+                            // Reclaim empty orphan dirs from past sessions that
+                            // captured nothing (invisible in the UI otherwise).
+                            meeting_engine::gc_orphan_meeting_dirs();
+                            // Ensure a model is selected if any is installed.
+                            meeting_engine::meeting_ensure_active_model();
+                            recovery_handle
+                                .state::<meeting_engine::MeetingEngineState>()
+                                .requeue_interrupted_meetings();
+                        })
+                        .ok();
+                }
+
                 let desktop_prefs = said_core::prefs::load();
                 if let Err(e) = apply_launch_at_login(app.handle(), desktop_prefs.launch_at_login)
                 {
@@ -7870,6 +8134,7 @@ fn main() {
         .manage(StatusBarPlacementActive(AtomicBool::new(false)))
         .manage(StatusBarInteractive(AtomicBool::new(false)))
         .manage(MeetingModeState::new())
+        .manage(meeting_engine::MeetingEngineState::new())
         .manage(speaker_suppression::SpeakerSuppressionGuard::new())
         .manage(LongDictationState::new())
         .invoke_handler(tauri::generate_handler![
@@ -7937,6 +8202,7 @@ fn main() {
             get_recording_audio_bytes,
             download_recording_audio,
             reveal_downloaded_file,
+            download_meeting_audio,
             // Pending-edit review
             get_pending_edits,
             resolve_pending_edit,
@@ -7963,7 +8229,49 @@ fn main() {
             // Backed by `<data_dir>/desktop_prefs.json`, not the SQLite preferences DB.
             get_desktop_prefs,
             set_desktop_prefs,
+            // Developer log viewer
+            read_backend_log,
+            backend_log_location,
+            open_log_folder,
             // Meeting audio pipeline
+            meeting_engine_start_session,
+            meeting_engine_stop_session,
+            meeting_engine_toggle_mute,
+            meeting_engine_get_live_transcript,
+            meeting_engine_get_status,
+            meeting_engine_get_processing_status,
+            show_meeting_pill,
+            hide_meeting_pill,
+            focus_main_from_pill,
+            meeting_engine::meeting_settings_get,
+            meeting_engine::meeting_settings_set,
+            meeting_engine::meeting_list_whisper_models,
+            meeting_engine::meeting_cleanup_storage,
+            meeting_engine::meeting_whisper_model_catalog,
+            meeting_engine::meeting_cancel_model_download,
+            meeting_engine::meeting_download_whisper_model,
+            meeting_engine::meeting_delete_whisper_model,
+            meeting_engine::meeting_ensure_active_model,
+            meeting_engine_get_cached_artifacts,
+            meeting_engine_get_cached_intelligence,
+            meeting_engine_generate_intelligence,
+            meeting_engine_chat,
+            meeting_engine_get_user_tags,
+            meeting_engine_add_user_tag,
+            meeting_engine_remove_user_tag,
+            meeting_engine_get_meeting_overviews,
+            meeting_engine_set_meeting_title,
+            meeting_engine_set_meeting_favorite,
+            meeting_engine_set_meeting_hidden,
+            meeting_engine_set_meeting_lark_doc,
+            meeting_engine_dismiss_ai_tag,
+            meeting_engine_delete_meeting_files,
+            meeting_engine_get_notes,
+            meeting_engine_set_notes,
+            meeting_engine_get_manual_actions,
+            meeting_engine_set_manual_actions,
+            meeting_engine_search_meetings,
+            meeting_engine_retranscribe,
             start_meeting_stt,
             stop_meeting_stt,
             toggle_meeting_mute,
@@ -7994,6 +8302,11 @@ fn main() {
                     api.prevent_exit();
                 }
                 tauri::RunEvent::Exit => {
+                    // Finalize any in-progress recording (valid WAV headers +
+                    // fsync + recovery breadcrumb) and stop the job worker before
+                    // tearing down the backend — otherwise an active recording is
+                    // abandoned with a stale header and the whisper child orphans.
+                    app.state::<meeting_engine::MeetingEngineState>().shutdown();
                     if let Ok(mut guard) = app.state::<BackendHandleState>().0.lock() {
                         drop(guard.take());
                     }

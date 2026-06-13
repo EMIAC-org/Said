@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   X, RefreshCw, CloudCheck,
-  Wand2, ShieldCheck, Key, Info, Bug, Palette, Link, Bell, Brain, Keyboard,
+  Wand2, ShieldCheck, Key, Info, Bug, Palette, Link, Bell, Brain, Keyboard, Video,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -22,6 +22,7 @@ const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
   "writing":       <Wand2        size={14} />,
   "hotkeys":       <Keyboard     size={14} />,
   "models":        <Brain        size={14} />,
+  "meeting":       <Video        size={14} />,
   "notifications": <Bell         size={14} />,
   "permissions":   <ShieldCheck  size={14} />,
   "api-keys":    <Key          size={14} />,
@@ -35,6 +36,7 @@ const SECTION_TITLES: Record<SettingsSection, string> = {
   "writing":       "Writing style",
   "hotkeys":       "Hotkeys",
   "models":        "Models",
+  "meeting":       "Meeting",
   "notifications": "Notifications",
   "permissions":   "Permissions",
   "api-keys":    "API keys",
@@ -48,6 +50,7 @@ const SECTION_SUBTITLES: Record<SettingsSection, string> = {
   "writing":       "Advanced voice prompt controls.",
   "hotkeys":       "Choose the key AirNote listens for while you speak.",
   "models":        "Dictation speed, quality, and ChatGPT connection.",
+  "meeting":       "Meeting transcription language and Whisper model.",
   "notifications": "Control which status bar alerts you see.",
   "permissions":   "Accessibility, input monitoring, notifications.",
   "api-keys":    "Groq and Deepgram keys (stored locally).",

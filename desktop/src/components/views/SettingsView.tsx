@@ -12,6 +12,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
 import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
+import { MeetingSettingsSection } from "@/components/views/MeetingSettingsSection";
 
 import {
   getConnection as enterpriseGetConnection,
@@ -26,6 +27,7 @@ import {
   getDebugLogs,
   requestNotifications, checkNotificationPermission,
   getDesktopPrefs, setDesktopPrefs,
+  readBackendLog, backendLogLocation, openLogFolder,
   openaiConnect, openaiStatus, openaiDisconnect,
   getServerSettingsStatus,
   getCredentialVaultStatus,
@@ -352,6 +354,7 @@ export type SettingsSection =
   | "writing"
   | "hotkeys"
   | "models"
+  | "meeting"
   | "notifications"
   | "permissions"
   | "api-keys"
@@ -362,6 +365,7 @@ export type SettingsSection =
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "hotkeys",      label: "Hotkeys"      },
   { id: "models",         label: "Models"         },
+  { id: "meeting",        label: "Meeting"        },
   { id: "notifications",  label: "Notifications"  },
   { id: "permissions",    label: "Permissions"     },
   { id: "api-keys",    label: "API keys"      },
@@ -872,6 +876,24 @@ export function SettingsView({
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "ready" | "applying" | "up-to-date" | "error">("idle");
   const [updateVersion, setUpdateVersion] = useState("");
   const [updateError, setUpdateError] = useState("");
+
+  // ── Developer log state ───────────────────────────────────────────────────
+  const [devLog, setDevLog] = useState("");
+  const [devLogPath, setDevLogPath] = useState("");
+  const [devLogLoading, setDevLogLoading] = useState(false);
+
+  const loadDevLog = useCallback(async () => {
+    setDevLogLoading(true);
+    try {
+      const [text, path] = await Promise.all([readBackendLog(800), backendLogLocation()]);
+      setDevLog(text || "(log is empty)");
+      setDevLogPath(path);
+    } catch (err) {
+      setDevLog(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDevLogLoading(false);
+    }
+  }, []);
 
   const checkForUpdates = useCallback(async () => {
     setUpdateStatus("checking");
@@ -2291,6 +2313,10 @@ export function SettingsView({
           <EnterpriseSection onDisconnect={onEnterpriseDisconnect} />
         </Show>
 
+        <Show when={isOn("meeting")}>
+          <MeetingSettingsSection />
+        </Show>
+
         {/* ── Debug ───────────────────────────────────── */}
         <Show when={isOn("debug")}>
         <Section title="Performance">
@@ -2576,6 +2602,45 @@ export function SettingsView({
               </div>
             }
           />
+
+          {isWindows && (
+            <div className="mt-4">
+              <div className="flex items-center justify-between mb-2">
+                <p className="section-label px-1">Developer log</p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void loadDevLog()}
+                    className="px-3 py-1 rounded-md text-[11px] font-medium border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-all"
+                  >
+                    {devLogLoading ? "Loading…" : "Refresh"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void openLogFolder()}
+                    className="px-3 py-1 rounded-md text-[11px] font-medium border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-all"
+                  >
+                    Open folder
+                  </button>
+                  {devLog && (
+                    <button
+                      type="button"
+                      onClick={() => void navigator.clipboard.writeText(devLog)}
+                      className="px-3 py-1 rounded-md text-[11px] font-medium border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-all"
+                    >
+                      Copy
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground px-1 mb-2 break-all">
+                {devLogPath || "Backend daemon log (backend.log) — tail of the latest entries."}
+              </p>
+              <pre className="text-[10.5px] leading-relaxed font-mono whitespace-pre-wrap break-words bg-muted/40 border border-border rounded-md p-3 max-h-72 overflow-auto">
+                {devLog || "Click Refresh to load the latest backend log."}
+              </pre>
+            </div>
+          )}
         </Section>
         </Show>
 
