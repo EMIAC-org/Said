@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router'
 import { apiJson } from '../api'
 import { useAuth } from '../hooks/useAuth'
 import { Avatar } from '../components/Avatar'
@@ -27,6 +28,7 @@ function AuthTag({ member }: { member: OrgMember }) {
 }
 
 export function TeamPage() {
+  const navigate = useNavigate()
   const { org } = useAuth()
   const [members, setMembers] = useState<OrgMember[]>([])
   const [loading, setLoading] = useState(true)
@@ -84,7 +86,11 @@ export function TeamPage() {
               {members.map(m => {
                 const name = m.lark_name || m.email || `User ${(m.account_id || '?').substring(0, 8)}`
                 return (
-                  <tr key={m.account_id} className="hover:bg-surface-4/30 transition-colors">
+                  <tr
+                    key={m.account_id}
+                    className="cursor-pointer hover:bg-surface-4/30 transition-colors"
+                    onClick={() => navigate(`/telemetry/users/${m.account_id}`)}
+                  >
                     <td className="px-5 py-3.5 border-b border-border-light">
                       <div className="flex items-center gap-2.5">
                         <Avatar name={name} size="sm" />

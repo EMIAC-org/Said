@@ -133,7 +133,11 @@ export function Sidebar({
         />
 
         {/* Brand mark — single source of truth in BrandMark.tsx */}
-        <div className="no-drag" title="AirNote — Voice Polish Studio">
+        <div
+          className="no-drag"
+          title="AirNote — Voice Polish Studio"
+          style={{ color: "hsl(var(--primary))" }}
+        >
           <BrandMark size={32} idSuffix="sidebar" />
         </div>
       </div>

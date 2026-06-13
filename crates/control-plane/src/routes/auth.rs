@@ -8,13 +8,17 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser};
+use crate::{AppState, auth::AuthUser, tenant};
 
 // ── Request / response types ──────────────────────────────────────────────────
 
@@ -183,6 +187,7 @@ pub async fn logout(
 
 pub async fn me(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let tier: String = sqlx::query_scalar(
@@ -197,6 +202,8 @@ pub async fn me(
     .unwrap_or_else(|| "free".into());
 
     let features = license_features(&tier);
+    let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
+    let orgs = tenant::list_memberships(&state, user.account_id).await?;
 
     Ok(Json(json!({
         "account": {
@@ -208,6 +215,10 @@ pub async fn me(
             "active":   true,
             "features": features,
         },
+        "orgs": orgs,
+        "active_org_id": tenant_ctx.active_org_id,
+        "personal_mode": tenant_ctx.personal_mode,
+        "org_role": tenant_ctx.org_role,
     })))
 }
 

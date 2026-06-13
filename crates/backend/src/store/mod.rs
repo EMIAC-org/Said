@@ -17,6 +17,7 @@ pub mod prompt_templates;
 pub mod server_migration;
 pub mod server_settings;
 pub mod stt_replacements;
+pub mod telemetry;
 pub mod tier2_edit_policy;
 pub mod tier2_model;
 pub mod tier2_policy;
@@ -67,6 +68,10 @@ const MIGRATION_036: &str = include_str!("migrations/036_server_audio_runtime_pr
 const MIGRATION_037: &str = include_str!("migrations/037_server_migration_state.sql");
 const MIGRATION_038: &str = include_str!("migrations/038_server_settings_state.sql");
 const MIGRATION_039: &str = include_str!("migrations/039_enable_server_runtime_for_signed_in.sql");
+const MIGRATION_040: &str = include_str!("migrations/040_active_org_id.sql");
+const MIGRATION_041: &str = include_str!("migrations/041_telemetry.sql");
+const MIGRATION_042: &str = include_str!("migrations/042_telemetry_stt.sql");
+const MIGRATION_043: &str = include_str!("migrations/043_sarvam_api_key.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -95,6 +100,7 @@ pub fn open(path: &PathBuf) -> DbPool {
         .expect("failed to create SQLite connection pool");
 
     run_migrations(&pool);
+    repair_schema_gaps(&pool);
     purge_garbage_edits(&pool);
     corrections::backfill_from_edit_events(&pool);
     let repaired_term_types = vocabulary::backfill_missing_term_types(&pool);
@@ -429,6 +435,64 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 39")
             .expect("failed to set user_version to 39");
     }
+
+    if version < 40 {
+        info!("running migration 040_active_org_id");
+        conn.execute_batch(MIGRATION_040)
+            .expect("migration 040 failed");
+        conn.execute_batch("PRAGMA user_version = 40")
+            .expect("failed to set user_version to 40");
+    }
+
+    if version < 41 {
+        info!("running migration 041_telemetry");
+        conn.execute_batch(MIGRATION_041)
+            .expect("migration 041 failed");
+        conn.execute_batch("PRAGMA user_version = 41")
+            .expect("failed to set user_version to 41");
+    }
+
+    if version < 42 {
+        info!("running migration 042_telemetry_stt");
+        conn.execute_batch(MIGRATION_042)
+            .expect("migration 042 failed");
+        conn.execute_batch("PRAGMA user_version = 42")
+            .expect("failed to set user_version to 42");
+    }
+
+    if version < 43 {
+        info!("running migration 043_sarvam_api_key");
+        conn.execute_batch(MIGRATION_043)
+            .expect("migration 043 failed");
+        conn.execute_batch("PRAGMA user_version = 43")
+            .expect("failed to set user_version to 43");
+    }
+}
+
+/// Idempotent repairs for partial migration states (e.g. user_version bumped without ALTER).
+fn repair_schema_gaps(pool: &DbPool) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("[schema-repair] pool get failed: {e}");
+            return;
+        }
+    };
+    let has_active_org: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('local_user') WHERE name = 'active_org_id'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !has_active_org {
+        warn!("[schema-repair] adding missing local_user.active_org_id");
+        if let Err(e) = conn.execute_batch("ALTER TABLE local_user ADD COLUMN active_org_id TEXT;")
+        {
+            warn!("[schema-repair] active_org_id add failed: {e}");
+        }
+    }
 }
 
 /// Return the default database path. Delegates to `paths::default_db_path()`
@@ -567,7 +631,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 34);
+        assert_eq!(version, 43);
 
         for table in [
             "tier2_policy_weights",

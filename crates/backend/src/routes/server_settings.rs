@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use crate::{
-    AppState, invalidate_prefs_cache,
+    AppState, cp_client, invalidate_prefs_cache,
     store::{
         prefs::{PrefsUpdate, update_prefs},
         server_settings, users,
@@ -113,19 +113,22 @@ pub async fn pull_and_apply_server_settings(state: &AppState) -> Result<i64, (St
 
     let get_url = format!("{}/v1/runtime/settings", server_url.trim_end_matches('/'));
 
-    let resp = state
-        .http_client
-        .get(&get_url)
-        .bearer_auth(&token)
-        .timeout(std::time::Duration::from_secs(SYNC_TIMEOUT_SECS))
-        .send()
-        .await
-        .map_err(|e| {
-            let msg = format!("request failed: {e}");
-            warn!("[server-settings] {msg}");
-            server_settings::set_error(&state.pool, &uid, &server_account_id, &msg);
-            (StatusCode::SERVICE_UNAVAILABLE, msg)
-        })?;
+    let resp = cp_client::with_org_context(
+        state
+            .http_client
+            .get(&get_url)
+            .bearer_auth(&token)
+            .timeout(std::time::Duration::from_secs(SYNC_TIMEOUT_SECS)),
+        user.as_ref(),
+    )
+    .send()
+    .await
+    .map_err(|e| {
+        let msg = format!("request failed: {e}");
+        warn!("[server-settings] {msg}");
+        server_settings::set_error(&state.pool, &uid, &server_account_id, &msg);
+        (StatusCode::SERVICE_UNAVAILABLE, msg)
+    })?;
 
     if !resp.status().is_success() {
         let msg = format!("server returned {}", resp.status().as_u16());
@@ -267,14 +270,17 @@ pub async fn push_cross_device_settings_to_server(
         "server_audio_runtime_enabled": server_audio_runtime_enabled,
     });
 
-    if let Err(e) = state
-        .http_client
-        .patch(&url)
-        .bearer_auth(&token)
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(8))
-        .send()
-        .await
+    if let Err(e) = cp_client::with_org_context(
+        state
+            .http_client
+            .patch(&url)
+            .bearer_auth(&token)
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(8)),
+        user.as_ref(),
+    )
+    .send()
+    .await
     {
         warn!("[server-settings] push after prefs patch failed: {e}");
     }

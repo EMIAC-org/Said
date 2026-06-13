@@ -183,6 +183,17 @@ async fn main() {
         });
     }
 
+    // ── Telemetry batch uploader (signed-in users, best-effort) ─────────────────
+    {
+        said_backend::telemetry::uploader::spawn_uploader(
+            pool.clone(),
+            user_id.clone(),
+            state.http_client.clone(),
+            env!("CARGO_PKG_VERSION").to_string(),
+            said_core::paths::device_id(),
+        );
+    }
+
     // ── Background alias review lane ────────────────────────────────────────
     {
         let state2 = state.clone();

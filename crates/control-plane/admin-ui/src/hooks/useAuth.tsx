@@ -1,8 +1,19 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
-import { apiJson, api, setToken, clearToken, isAuthenticated } from '../api'
+import { apiJson, api, setToken, clearToken, isAuthenticated, setActiveOrgId } from '../api'
 import type { User, Org } from '../types'
 
 interface OrgResponse { org: Org }
+
+interface AuthMeResponse extends User {
+  active_org_id?: string | null
+  orgs?: Array<{
+    id: string
+    name: string
+    slug: string
+    role: string
+    is_active?: boolean
+  }>
+}
 
 interface AuthCtx {
   user: User | null
@@ -24,29 +35,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setHasToken] = useState(isAuthenticated)
   const [loading, setLoading] = useState(true)
 
-  const fetchOrg = useCallback(async () => {
-    try {
-      const res = await api('/v1/orgs/me')
-      if (res.status === 404) {
-        setOrg(null)
-        setOrgMissing(true)
-        return
-      }
-      const text = await res.text()
-      let data: { org: Org; error?: string }
-      try {
-        data = JSON.parse(text)
-      } catch {
-        throw new Error(text || `Request failed (${res.status})`)
-      }
-      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
-      const nextOrg = data
-      setOrg(nextOrg)
-      setOrgMissing(false)
-    } catch {
+  const fetchOrgFromMe = useCallback(async (me: AuthMeResponse) => {
+    const memberships = me.orgs ?? []
+    if (memberships.length === 0) {
       setOrg(null)
-      setOrgMissing(false)
+      setOrgMissing(true)
+      setActiveOrgId(null)
+      return
     }
+    const active =
+      memberships.find(o => o.id === me.active_org_id) ??
+      memberships.find(o => o.is_active) ??
+      memberships[0]
+    setActiveOrgId(active.id)
+    setOrg({
+      org: {
+        id: active.id,
+        name: active.name,
+        slug: active.slug,
+        role: active.role,
+      },
+    })
+    setOrgMissing(false)
   }, [])
 
   const fetchData = useCallback(async () => {
@@ -54,22 +64,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null)
       setOrg(null)
       setOrgMissing(false)
+      setActiveOrgId(null)
       setLoading(false)
       return
     }
     try {
-      const u = await apiJson<User>('/v1/auth/me')
-      setUser(u)
-      await fetchOrg()
+      const me = await apiJson<AuthMeResponse>('/v1/auth/me')
+      setUser(me)
+      await fetchOrgFromMe(me)
     } catch {
       clearToken()
       setHasToken(false)
       setUser(null)
       setOrg(null)
       setOrgMissing(false)
+      setActiveOrgId(null)
     }
     setLoading(false)
-  }, [fetchOrg])
+  }, [fetchOrgFromMe])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -94,7 +106,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setOrgMissing(false)
   }, [])
 
-  const refreshOrg = useCallback(fetchOrg, [fetchOrg])
+  const refreshOrg = useCallback(async () => {
+    if (!isAuthenticated()) return
+    const me = await apiJson<AuthMeResponse>('/v1/auth/me')
+    await fetchOrgFromMe(me)
+  }, [fetchOrgFromMe])
 
   return (
     <Ctx.Provider value={{ user, org, orgMissing, token, loading, login, logout, refreshOrg }}>

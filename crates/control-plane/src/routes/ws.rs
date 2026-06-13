@@ -38,7 +38,7 @@ pub async fn handler(
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     // ── Validate auth token (session UUID or JWT) ────────────────────────────
-    let (account_id, email) = crate::auth::resolve_ws_token(&query.token, &state)
+    let (account_id, email, _) = crate::auth::resolve_ws_token(&query.token, &state)
         .await
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "invalid or expired token".into()))?;
 

@@ -31,7 +31,8 @@ if (isMeetingPill) {
     </React.StrictMode>,
   );
 } else if (isStatusBar) {
-  // Floating status-bar window — minimal pill overlay
+  // Floating status-bar window — always dark, independent of main-app theme
+  document.documentElement.dataset.theme = "dark";
   document.documentElement.classList.add("statusbar-mode");
   document.body.classList.add("statusbar-mode");
   root.render(

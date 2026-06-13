@@ -71,6 +71,29 @@ fn hash_text(text: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn post_runtime_memory_dirty(state: AppState) {
+    tokio::spawn(async move {
+        let Some(user) = users::get_user(&state.pool, &state.default_user_id) else {
+            return;
+        };
+        let Some(token) = user.cloud_token.filter(|t| !t.trim().is_empty()) else {
+            return;
+        };
+        let base_url = user
+            .enterprise_server_url
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+        let url = format!("{}/v1/runtime/memory/dirty", base_url.trim_end_matches('/'));
+        let _ = state
+            .http_client
+            .post(url)
+            .bearer_auth(token)
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+            .await;
+    });
+}
+
 fn post_runtime_client_event(
     state: AppState,
     event_type: &'static str,
@@ -1430,6 +1453,9 @@ pub async fn classify(
                 },
             }),
         );
+    }
+    if promoted_count > 0 || policy_touched {
+        post_runtime_memory_dirty(state.clone());
     }
 
     (

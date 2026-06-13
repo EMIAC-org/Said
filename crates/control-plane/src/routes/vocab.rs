@@ -7,7 +7,7 @@
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser};
+use crate::{AppState, auth::AuthUser, tenant};
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
@@ -208,24 +208,6 @@ fn bad_request(message: &'static str) -> (StatusCode, Json<Value>) {
     (StatusCode::BAD_REQUEST, Json(json!({"error": message})))
 }
 
-async fn resolve_org_role(
-    state: &AppState,
-    account_id: Uuid,
-) -> Result<(Uuid, String), (StatusCode, Json<Value>)> {
-    let row: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT org_id, role FROM org_members WHERE account_id = $1 LIMIT 1")
-            .bind(account_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(db_err)?;
-    row.ok_or_else(|| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "you must belong to an org"})),
-        )
-    })
-}
-
 fn require_viewer(role: &str) -> Result<(), (StatusCode, Json<Value>)> {
     if role.eq_ignore_ascii_case("admin")
         || role.eq_ignore_ascii_case("company_admin")
@@ -255,27 +237,6 @@ fn require_admin(role: &str) -> Result<(), (StatusCode, Json<Value>)> {
     }
 }
 
-async fn ensure_org_access(
-    state: &AppState,
-    user: &AuthUser,
-    org_id: Uuid,
-    admin: bool,
-) -> Result<String, (StatusCode, Json<Value>)> {
-    let (member_org, role) = resolve_org_role(state, user.account_id).await?;
-    if member_org != org_id {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "not a member of this org"})),
-        ));
-    }
-    if admin {
-        require_admin(&role)?;
-    } else {
-        require_viewer(&role)?;
-    }
-    Ok(role)
-}
-
 async fn audit(
     state: &AppState,
     org_id: Uuid,
@@ -301,11 +262,13 @@ async fn audit(
 
 pub async fn list_terms(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(org_id): Path<Uuid>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, false).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_viewer(&role)?;
     let status = query.status.unwrap_or_else(|| "all".to_string());
     let rows = if status == "all" {
         sqlx::query_as::<_, (Uuid, String, String, String, String, f64, i32, String, DateTime<Utc>)>(
@@ -356,11 +319,13 @@ pub async fn list_terms(
 
 pub async fn create_term(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(org_id): Path<Uuid>,
     Json(body): Json<TermBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, true).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_admin(&role)?;
     let term = body.term.trim();
     if term.is_empty() {
         return Err(bad_request("term required"));
@@ -411,11 +376,13 @@ pub async fn create_term(
 
 pub async fn update_term(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path((org_id, term_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<TermBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, true).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_admin(&role)?;
     let term = body.term.trim();
     if term.is_empty() {
         return Err(bad_request("term required"));
@@ -462,10 +429,12 @@ pub async fn update_term(
 
 pub async fn delete_term(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path((org_id, term_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, true).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_admin(&role)?;
     sqlx::query("UPDATE org_vocab_terms SET status = 'blocked', updated_by = $3, updated_at = now() WHERE org_id = $1 AND id = $2")
         .bind(org_id)
         .bind(term_id)
@@ -488,11 +457,13 @@ pub async fn delete_term(
 
 pub async fn list_aliases(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(org_id): Path<Uuid>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, false).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_viewer(&role)?;
     let status = query.status.unwrap_or_else(|| "all".to_string());
     let rows = if status == "all" {
         sqlx::query_as::<
@@ -560,11 +531,13 @@ pub async fn list_aliases(
 
 pub async fn create_alias(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(org_id): Path<Uuid>,
     Json(body): Json<AliasBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, true).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_admin(&role)?;
     let transcript = body.transcript_form.trim();
     let correct = body.correct_form.trim();
     if transcript.is_empty() || correct.is_empty() {
@@ -623,11 +596,13 @@ pub async fn create_alias(
 
 pub async fn update_alias(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path((org_id, alias_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<AliasBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, true).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_admin(&role)?;
     let transcript = body.transcript_form.trim();
     let correct = body.correct_form.trim();
     if transcript.is_empty() || correct.is_empty() {
@@ -683,10 +658,12 @@ pub async fn update_alias(
 
 pub async fn delete_alias(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path((org_id, alias_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, true).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_admin(&role)?;
     sqlx::query("UPDATE org_vocab_aliases SET status = 'blocked', updated_by = $3, updated_at = now() WHERE org_id = $1 AND id = $2")
         .bind(org_id)
         .bind(alias_id)
@@ -765,11 +742,13 @@ fn manifest_hash(manifest: &Value) -> String {
 
 pub async fn publish(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(org_id): Path<Uuid>,
     Json(body): Json<PublishBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, true).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_admin(&role)?;
     let manifest = build_manifest(&state, org_id).await?;
     let hash = manifest_hash(&manifest);
     let version: i32 = sqlx::query_scalar(
@@ -810,10 +789,12 @@ pub async fn publish(
 
 pub async fn releases(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(org_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, false).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_viewer(&role)?;
     let rows = sqlx::query_as::<_, (Uuid, i32, String, Option<String>, DateTime<Utc>)>(
         "SELECT id, version, bucket_hash, notes, created_at
            FROM org_vocab_releases WHERE org_id = $1 ORDER BY version DESC LIMIT 25",
@@ -833,10 +814,11 @@ pub async fn releases(
 
 pub async fn desktop_version(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Query(query): Query<DesktopVersionQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let (org_id, _) = resolve_org_role(&state, user.account_id).await?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
     let latest: Option<(i32, String, DateTime<Utc>)> = sqlx::query_as(
         "SELECT version, bucket_hash, created_at
            FROM org_vocab_releases WHERE org_id = $1 ORDER BY version DESC LIMIT 1",
@@ -861,10 +843,11 @@ pub async fn desktop_version(
 
 pub async fn desktop_bucket(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Query(query): Query<DesktopBucketQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let (org_id, _) = resolve_org_role(&state, user.account_id).await?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
     let row: Option<(i32, String, Value, DateTime<Utc>)> = if let Some(version) = query.version {
         sqlx::query_as(
             "SELECT version, bucket_hash, manifest_json, created_at
@@ -923,6 +906,7 @@ fn contains_forbidden_upload_key(value: &Value) -> bool {
 
 pub async fn upload_user_vocab(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(raw): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -933,7 +917,7 @@ pub async fn upload_user_vocab(
     }
     let body: UserVocabUpload =
         serde_json::from_value(raw).map_err(|_| bad_request("invalid upload body"))?;
-    let (org_id, _) = resolve_org_role(&state, user.account_id).await?;
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
     let device_id = body.device_id.trim();
     if device_id.is_empty() {
         return Err(bad_request("device_id required"));
@@ -1065,10 +1049,12 @@ pub async fn upload_user_vocab(
 
 pub async fn user_vocab_detail(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path((org_id, account_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, false).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_viewer(&role)?;
     let terms = sqlx::query_as::<
         _,
         (
@@ -1311,10 +1297,12 @@ pub async fn aggregate_all_orgs(state: &AppState) -> Result<(u64, u64), (StatusC
 
 pub async fn aggregate_now(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(org_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, true).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_admin(&role)?;
     let (terms, aliases) = aggregate_suggestions_for_org(&state, org_id).await?;
     Ok(Json(
         json!({ "term_suggestions": terms, "alias_suggestions": aliases }),
@@ -1323,11 +1311,13 @@ pub async fn aggregate_now(
 
 pub async fn list_suggestions(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(org_id): Path<Uuid>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, false).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_viewer(&role)?;
     let status = query.status.unwrap_or_else(|| "pending".to_string());
     let rows = sqlx::query_as::<_, (Uuid, String, Option<String>, Option<String>, Option<String>, Option<String>, i32, i32, i32, f64, String, String, DateTime<Utc>)>(
         "SELECT id, kind, term, transcript_form, correct_form, term_type, users_count,
@@ -1354,11 +1344,13 @@ pub async fn list_suggestions(
 
 pub async fn update_suggestion(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Path((org_id, suggestion_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<SuggestionActionBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    ensure_org_access(&state, &user, org_id, true).await?;
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id).await?;
+    require_admin(&role)?;
     let action = body.action.trim();
     if !matches!(action, "approve" | "reject" | "block") {
         return Err(bad_request("action must be approve, reject, or block"));

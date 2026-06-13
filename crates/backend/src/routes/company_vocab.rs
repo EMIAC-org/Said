@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    AppState,
+    AppState, cp_client,
     store::{company_vocab, users},
 };
 
@@ -45,10 +45,15 @@ pub async fn sync(State(state): State<AppState>, Json(body): Json<SyncBody>) -> 
     let Some(user) = users::get_user(&state.pool, &user_id) else {
         return Json(json!({ "ok": false, "changed": false, "error": "local user not found" }));
     };
-    let Some(token) = user.cloud_token else {
-        return Json(json!({ "ok": false, "changed": false, "error": "enterprise token missing" }));
+    let token = match user.cloud_token.as_deref().filter(|t| !t.trim().is_empty()) {
+        Some(t) => t.to_string(),
+        None => {
+            return Json(
+                json!({ "ok": false, "changed": false, "error": "enterprise token missing" }),
+            );
+        }
     };
-    let Some(base_url) = user.enterprise_server_url else {
+    let Some(base_url) = user.enterprise_server_url.as_deref().map(str::to_string) else {
         return Json(
             json!({ "ok": false, "changed": false, "error": "enterprise server URL missing" }),
         );
@@ -66,12 +71,12 @@ pub async fn sync(State(state): State<AppState>, Json(body): Json<SyncBody>) -> 
             local.version
         ),
     );
-    let version_res = match state
-        .http_client
-        .get(version_url)
-        .bearer_auth(&token)
-        .send()
-        .await
+    let version_res = match cp_client::with_org_context(
+        state.http_client.get(version_url).bearer_auth(&token),
+        Some(&user),
+    )
+    .send()
+    .await
     {
         Ok(res) => res,
         Err(e) => {
@@ -141,12 +146,12 @@ pub async fn sync(State(state): State<AppState>, Json(body): Json<SyncBody>) -> 
         &base_url,
         &format!("/v1/company-vocab/bucket?version={remote_version}"),
     );
-    let bucket_res = match state
-        .http_client
-        .get(bucket_url)
-        .bearer_auth(&token)
-        .send()
-        .await
+    let bucket_res = match cp_client::with_org_context(
+        state.http_client.get(bucket_url).bearer_auth(&token),
+        Some(&user),
+    )
+    .send()
+    .await
     {
         Ok(res) => res,
         Err(e) => {
@@ -214,10 +219,11 @@ pub async fn upload_user_summary(
     let Some(user) = users::get_user(&state.pool, &user_id) else {
         return Json(json!({ "ok": false, "error": "local user not found" }));
     };
-    let Some(token) = user.cloud_token else {
-        return Json(json!({ "ok": false, "error": "enterprise token missing" }));
+    let token = match user.cloud_token.as_deref().filter(|t| !t.trim().is_empty()) {
+        Some(t) => t.to_string(),
+        None => return Json(json!({ "ok": false, "error": "enterprise token missing" })),
     };
-    let Some(base_url) = user.enterprise_server_url else {
+    let Some(base_url) = user.enterprise_server_url.as_deref().map(str::to_string) else {
         return Json(json!({ "ok": false, "error": "enterprise server URL missing" }));
     };
     if !company_vocab::should_upload_summary(&state.pool, &user_id, body.force) {
@@ -229,13 +235,16 @@ pub async fn upload_user_summary(
         .unwrap_or_else(|| "unknown-device".to_string());
     let payload = company_vocab::build_user_summary(&state.pool, &user_id, device_id);
     let url = server_url(&base_url, "/v1/company-vocab/user-vocab");
-    let res = match state
-        .http_client
-        .post(url)
-        .bearer_auth(&token)
-        .json(&payload)
-        .send()
-        .await
+    let res = match cp_client::with_org_context(
+        state
+            .http_client
+            .post(url)
+            .bearer_auth(&token)
+            .json(&payload),
+        Some(&user),
+    )
+    .send()
+    .await
     {
         Ok(res) => res,
         Err(e) => {

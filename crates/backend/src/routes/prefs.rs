@@ -50,7 +50,8 @@ pub async fn patch_prefs(
         || update.edit_capture.is_some()
         || update.learning_enabled.is_some()
         || update.server_runtime_enabled.is_some()
-        || update.server_audio_runtime_enabled.is_some();
+        || update.server_audio_runtime_enabled.is_some()
+        || update.stt_provider.is_some();
     info!(
         "[patch_prefs] backend received: llm_provider={:?} selected_model={:?} gateway_key_set={} gemini_key_set={} groq_key_set={}",
         update.llm_provider,

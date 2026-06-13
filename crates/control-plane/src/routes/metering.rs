@@ -5,12 +5,12 @@
 //!
 //! Body: { "events": [{ "date": "YYYY-MM-DD", "polish_count": n, "word_count": n, "model": "fast" }] }
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Json, extract::State, http::HeaderMap, http::StatusCode};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::{AppState, auth::AuthUser};
+use crate::{AppState, auth::AuthUser, org_quota, tenant};
 
 #[derive(Deserialize)]
 pub struct MeteringReport {
@@ -27,11 +27,16 @@ pub struct UsageEvent {
 
 pub async fn report(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(body): Json<MeteringReport>,
 ) -> StatusCode {
+    let tenant = match tenant::resolve_tenant(&state, &user, &headers).await {
+        Ok(t) => t,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+    };
+
     for event in &body.events {
-        // Parse date — skip malformed
         let Ok(date) = NaiveDate::parse_from_str(&event.date, "%Y-%m-%d") else {
             continue;
         };
@@ -41,7 +46,7 @@ pub async fn report(
              VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (account_id, event_date, model_used) DO UPDATE
                SET polish_count = usage_events.polish_count + EXCLUDED.polish_count,
-                   word_count   = usage_events.word_count   + EXCLUDED.word_count"
+                   word_count   = usage_events.word_count   + EXCLUDED.word_count",
         )
         .bind(user.account_id)
         .bind(date)
@@ -52,7 +57,23 @@ pub async fn report(
         .await;
 
         if let Err(e) = result {
-            debug!("[metering] upsert failed: {e}");
+            debug!("[metering] account upsert failed: {e}");
+        }
+
+        if let Some(org_id) = tenant.active_org_id {
+            if let Err(e) = org_quota::record_org_usage(
+                &state,
+                org_id,
+                user.account_id,
+                date,
+                event.polish_count,
+                event.word_count,
+                &event.model,
+            )
+            .await
+            {
+                debug!("[metering] org upsert failed: {e}");
+            }
         }
     }
 

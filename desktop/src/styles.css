@@ -7,7 +7,7 @@
    ───────────────────────────────────────────────────────────────────────────
    Dark : near-black floor, hairline insets, deep macOS-style glass blur,
           single soft periwinkle accent (no mint/violet noise)
-   Light: pure white panels on off-white floor, same periwinkle accent
+   Light: warm stone-gray panels on muted gray floor, same periwinkle accent
    ═══════════════════════════════════════════════════════════════════════════ */
 
 @layer base {
@@ -105,13 +105,13 @@
     --topbar-height:        48px;
   }
 
-  /* ── LIGHT — pure whites + periwinkle accent (mirror of dark) ─────── */
+  /* ── LIGHT — warm stone gray + periwinkle accent (mirror of dark) ─ */
   [data-theme="light"] {
-    --background:           220 14% 96%;       /* off-white floor */
+    --background:           220 14% 87%;       /* muted gray floor */
     --foreground:           240 8% 12%;        /* near-black text */
-    --card:                 0 0% 100%;
+    --card:                 220 12% 91%;        /* lifted panels — not white */
     --card-foreground:      240 8% 12%;
-    --popover:              0 0% 100%;
+    --popover:              220 12% 91%;
     --popover-foreground:   240 8% 12%;
 
     --primary:              226 70% 56%;       /* deeper periwinkle for contrast on white */
@@ -120,9 +120,9 @@
     --accent-violet:        226 70% 56%;
     --accent-violet-soft:   226 70% 56% / 0.10;
 
-    --secondary:            220 14% 94%;
+    --secondary:            220 12% 89%;
     --secondary-foreground: 240 8% 18%;
-    --muted:                220 14% 94%;
+    --muted:                220 12% 89%;
     --muted-foreground:     240 6% 45%;
 
     --accent:               226 70% 56%;
@@ -131,24 +131,25 @@
     --destructive:          354 78% 50%;
     --destructive-foreground: 0 0% 100%;
 
-    --border:               220 14% 88%;
-    --input:                220 14% 96%;
+    --border:               220 12% 81%;
+    --input:                220 12% 90%;
     --ring:                 226 70% 56%;
 
     --recording:            354 78% 52%;
 
     /* ── Surface hierarchy (light) ──────────────────────────────────── */
-    --surface-1:            220 14% 94%;       /* sidebar / page floor */
-    --surface-2:            220 14% 97%;       /* mat (lift) */
-    --surface-3:            0 0% 100%;         /* tile / card (pure white) */
-    --surface-4:            220 14% 88%;       /* chip backplate */
-    --surface-hover:        220 14% 92%;
+    --surface-1:            220 14% 85%;       /* sidebar / page floor */
+    --surface-2:            220 12% 88%;       /* mat (lift) */
+    --surface-3:            220 12% 91%;       /* tile / card — stone, not white */
+    --surface-4:            220 12% 83%;       /* chip backplate */
+    --surface-hover:        220 12% 87%;
 
-    --glass-bg:             0 0% 100% / 0.62;
-    --glass-bg-strong:      0 0% 100% / 0.82;
-    --glass-stroke:         240 8% 25% / 0.06;
-    --glass-stroke-strong:  240 8% 25% / 0.10;
-    --glass-highlight:      0 0% 100% / 0.65;
+    /* Nearly opaque — stops macOS vibrancy dark bleed ("dhabbaa" stains) */
+    --glass-bg:             220 14% 86% / 0.98;
+    --glass-bg-strong:      220 12% 89% / 0.98;
+    --glass-stroke:         220 12% 60% / 0.16;
+    --glass-stroke-strong:  220 12% 55% / 0.20;
+    --glass-highlight:      0 0% 100% / 0.25;
 
     --pill-active-bg:       240 8% 14%;
     --pill-active-fg:       0 0% 100%;
@@ -169,22 +170,22 @@
     --chip-lime-bg:         226 70% 56% / 0.12;
     --chip-lime-fg:         226 70% 40%;
 
-    --heat-0:               220 13% 88%;
+    --heat-0:               220 12% 84%;
 
     --shadow-tile:
-      0 1px 0 hsl(240 8% 25% / 0.04) inset,
-      0 1px 2px hsl(240 8% 20% / 0.04),
-      0 8px 24px hsl(240 8% 20% / 0.05);
+      0 1px 0 hsl(220 12% 50% / 0.05) inset,
+      0 1px 3px hsl(220 12% 40% / 0.05),
+      0 4px 14px hsl(220 12% 40% / 0.04);
     --shadow-glass:
-      0 1px 0 hsl(0 0% 100% / 0.6) inset,
-      0 0 0 1px hsl(240 8% 25% / 0.06) inset,
-      0 18px 50px hsl(240 8% 20% / 0.10);
+      0 1px 0 hsl(0 0% 100% / 0.22) inset,
+      0 0 0 1px hsl(220 12% 60% / 0.12),
+      0 6px 20px hsl(220 12% 40% / 0.06);
     --shadow-pop:
-      0 30px 80px hsl(240 8% 20% / 0.18);
+      0 20px 50px hsl(220 16% 50% / 0.10);
 
     --mesh-bg:
-      radial-gradient(60% 50% at 10% 0%,  hsl(226 70% 56% / 0.04) 0%, transparent 55%),
-      radial-gradient(50% 50% at 100% 100%, hsl(220 60% 50% / 0.03) 0%, transparent 60%);
+      radial-gradient(60% 50% at 10% 0%,  hsl(226 70% 56% / 0.02) 0%, transparent 55%),
+      radial-gradient(50% 50% at 100% 100%, hsl(220 60% 50% / 0.015) 0%, transparent 60%);
   }
 
   * {
@@ -218,7 +219,7 @@
     --body-overlay: hsl(240 5% 2% / 0.81);
   }
   [data-theme="light"] {
-    --body-overlay: hsl(220 14% 96% / 0.92);
+    --body-overlay: hsl(220 14% 87% / 0.99);
   }
 
   body {
@@ -303,6 +304,22 @@
       0 24px 60px hsl(0 0% 0% / 0.45);
   }
 
+  /* Light mode — solid surfaces, no heavy black drop shadows */
+  [data-theme="light"] .glass {
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    box-shadow:
+      inset 0 0 0 1px hsl(var(--glass-stroke)),
+      0 1px 3px hsl(220 16% 50% / 0.05);
+  }
+  [data-theme="light"] .glass-strong {
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    box-shadow:
+      inset 0 0 0 1px hsl(var(--glass-stroke-strong)),
+      0 2px 8px hsl(220 16% 50% / 0.06);
+  }
+
   /* ── Tile (card surface) — solid panel with subtle inner highlight ── */
   .tile {
     background: hsl(var(--surface-3));
@@ -316,6 +333,11 @@
       inset 0 1px 0 hsl(0 0% 100% / 0.04),
       0 1px 2px hsl(235 50% 2% / 0.20);
   }
+  [data-theme="light"] .tile-glass {
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.18),
+      0 1px 3px hsl(220 12% 40% / 0.06);
+  }
   /* Panel — Sentinel-style: white card with subtle 1px border + soft shadow */
   .panel {
     background: hsl(var(--surface-3));
@@ -324,11 +346,49 @@
       inset 0 0 0 1px hsl(var(--border)),
       0 1px 2px hsl(220 18% 8% / 0.04);
   }
+  /* Light mode — clean border, no muddy drop shadow */
+  [data-theme="light"] .panel {
+    box-shadow: none;
+    border: 1px solid hsl(var(--border));
+  }
   /* Dark mode override — drop the visible border, restore inset highlight */
-  :root .panel,
+  :root:not([data-theme="light"]) .panel,
   [data-theme="dark"] .panel {
     box-shadow:
       inset 0 1px 0 hsl(0 0% 100% / 0.04);
+  }
+
+  /* Settings — nested disclosure / vault blocks */
+  .settings-disclosure {
+    background: hsl(var(--surface-2));
+    border: 1px solid hsl(var(--border));
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .settings-disclosure__icon {
+    background: hsl(var(--primary) / 0.12);
+    color: hsl(var(--primary));
+  }
+  .settings-vault {
+    background: hsl(var(--muted));
+    border: 1px solid hsl(var(--border));
+    border-radius: 10px;
+  }
+  .status-pill {
+    @apply text-[10px] font-semibold px-2.5 py-1 rounded-full;
+  }
+  .status-pill--ready { @apply status-pill chip-cyan; }
+  .status-pill--warn  { @apply status-pill chip-amber; }
+
+  .btn-soft-danger {
+    @apply inline-flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors;
+    background: hsl(var(--chip-red-bg));
+    color: hsl(var(--chip-red-fg));
+    border: 1px solid hsl(var(--chip-red-fg) / 0.14);
+  }
+  .btn-soft-danger:hover {
+    border-color: hsl(var(--chip-red-fg) / 0.28);
+    filter: brightness(0.97);
   }
 
   /* ── Sidebar nav item — Cursor-style tight rail ─────────────────────
@@ -351,6 +411,14 @@
     color: hsl(var(--foreground));
     font-weight: 500;
     box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke));
+  }
+  [data-theme="light"] .nav-item:hover {
+    background: hsl(220 16% 50% / 0.06);
+    color: hsl(var(--foreground));
+  }
+  [data-theme="light"] .nav-item.active {
+    background: hsl(220 16% 50% / 0.08);
+    box-shadow: inset 0 0 0 1px hsl(220 14% 70% / 0.14);
   }
   .nav-item.disabled {
     @apply opacity-30 cursor-not-allowed pointer-events-none;
@@ -396,6 +464,25 @@
   }
   .btn-ghost:hover {
     background: hsl(0 0% 100% / 0.04);
+    box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong));
+  }
+  [data-theme="light"] .btn-primary {
+    background: hsl(240 8% 14%);
+    color: hsl(0 0% 100%);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.08),
+      0 1px 3px hsl(220 16% 50% / 0.10),
+      0 4px 12px hsl(220 16% 50% / 0.08);
+  }
+  [data-theme="light"] .btn-primary:hover {
+    background: hsl(240 8% 10%);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.10),
+      0 2px 6px hsl(220 16% 50% / 0.12),
+      0 6px 16px hsl(220 16% 50% / 0.10);
+  }
+  [data-theme="light"] .btn-ghost:hover {
+    background: hsl(220 16% 50% / 0.05);
     box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong));
   }
 
@@ -466,7 +553,7 @@
     box-shadow: inset 0 0 0 1.5px hsl(var(--primary));
   }
   /* Light mode — lighter & friendlier mint ramp */
-  [data-theme="light"] .heat-0 { background: hsl(220 13% 92%); }
+  [data-theme="light"] .heat-0 { background: hsl(220 12% 84%); }
   [data-theme="light"] .heat-1 { background: hsl(160 55% 82%); }
   [data-theme="light"] .heat-2 { background: hsl(150 60% 68%); }
   [data-theme="light"] .heat-3 { background: hsl(140 65% 52%); }
@@ -503,8 +590,30 @@
     border-color: hsl(var(--primary) / 0.45);
     box-shadow: 0 0 0 3px hsl(var(--primary) / 0.10);
   }
-  [data-theme="light"] .input { background: hsl(var(--surface-3)); }
-  [data-theme="light"] .input:focus { background: hsl(var(--surface-3)); }
+  [data-theme="light"] .input {
+    background: hsl(var(--input));
+    border-color: hsl(var(--border));
+  }
+  [data-theme="light"] .input:focus {
+    background: hsl(var(--surface-3));
+    border-color: hsl(var(--primary) / 0.45);
+  }
+
+  .btn-accent {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold
+           transition-all duration-150;
+    height: 36px;
+    box-shadow: 0 4px 14px -6px hsl(var(--primary) / 0.45);
+  }
+  .btn-accent:hover  { filter: brightness(1.06); }
+  .btn-accent:active { transform: translateY(0.5px); }
+  .btn-accent:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    box-shadow: none;
+  }
 
   /* ── Audio-bars brand mark — AirNote logo, scales 14px → 64px ──────
      A 4-bar SVG waveform that uses currentColor, so it tints correctly
@@ -721,19 +830,53 @@ body.statusbar-mode {
   color-scheme: dark;
 }
 
-/* Status bar surfaces — same Obsidian tokens as the main app */
+/* Status bar — always dark near-black, never follows main-app light theme */
 html.statusbar-mode {
-  --sb-bg: hsl(var(--card));
-  --sb-bg-elevated: hsl(var(--surface-3));
-  --sb-fg: hsl(var(--foreground));
-  --sb-fg-muted: hsl(var(--muted-foreground));
-  --sb-primary: hsl(var(--primary));
-  --sb-primary-fg: hsl(var(--primary-foreground));
-  --sb-primary-soft: hsl(var(--primary) / 0.14);
-  --sb-primary-border: hsl(var(--primary) / 0.28);
-  --sb-border: hsl(var(--border));
-  --sb-glass-stroke: hsl(var(--glass-stroke-strong));
-  --sb-amber: hsl(var(--chip-amber-fg));
+  --background:           240 6% 6%;
+  --foreground:           240 6% 92%;
+  --card:                 240 5% 10%;
+  --card-foreground:      240 6% 92%;
+  --popover:              240 6% 12%;
+  --popover-foreground:   240 6% 92%;
+  --primary:              226 80% 78%;
+  --primary-foreground:   240 8% 8%;
+  --secondary:            240 5% 16%;
+  --secondary-foreground: 240 6% 88%;
+  --muted:                240 5% 12%;
+  --muted-foreground:     240 5% 60%;
+  --accent:               226 80% 78%;
+  --accent-foreground:    240 8% 8%;
+  --destructive:          354 80% 62%;
+  --destructive-foreground: 0 0% 98%;
+  --border:               240 5% 16%;
+  --input:                240 5% 12%;
+  --ring:                 226 80% 78%;
+  --recording:            354 84% 62%;
+  --surface-1:            240 5% 3%;
+  --surface-2:            240 5% 4.5%;
+  --surface-3:            240 5% 7.5%;
+  --surface-4:            240 5% 13%;
+  --surface-hover:        240 5% 11%;
+  --glass-bg:             240 5% 10% / 0.62;
+  --glass-bg-strong:      240 5% 12% / 0.78;
+  --glass-stroke:         0 0% 100% / 0.06;
+  --glass-stroke-strong:  0 0% 100% / 0.09;
+  --chip-amber-fg:        38 90% 72%;
+  --chip-cyan-fg:         226 80% 84%;
+  --chip-cyan-bg:         226 80% 78% / 0.14;
+  --chip-red-fg:          354 85% 75%;
+
+  --sb-bg: hsl(240 5% 10%);
+  --sb-bg-elevated: hsl(240 5% 7.5%);
+  --sb-fg: hsl(240 6% 92%);
+  --sb-fg-muted: hsl(240 5% 60%);
+  --sb-primary: hsl(226 80% 78%);
+  --sb-primary-fg: hsl(240 8% 8%);
+  --sb-primary-soft: hsl(226 80% 78% / 0.14);
+  --sb-primary-border: hsl(226 80% 78% / 0.28);
+  --sb-border: hsl(240 5% 16%);
+  --sb-glass-stroke: hsl(0 0% 100% / 0.09);
+  --sb-amber: hsl(38 90% 72%);
 }
 
 html.statusbar-mode::before,

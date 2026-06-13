@@ -106,7 +106,29 @@ pub async fn enterprise_status(State(state): State<AppState>) -> Json<Value> {
         "email":       user.as_ref().map(|u| u.email.clone()),
         "server_url":  user.as_ref().and_then(|u| u.enterprise_server_url.clone()),
         "org_name":    user.as_ref().and_then(|u| u.enterprise_org_name.clone()),
+        "active_org_id": user.as_ref().and_then(|u| u.active_org_id.clone()),
+        "personal_mode": user.as_ref().map(|u| u.active_org_id.is_none()).unwrap_or(true),
         "license_tier": user.as_ref().map(|u| u.license_tier.clone()).unwrap_or_else(|| "free".into()),
         "token":       if connected { user.as_ref().and_then(|u| u.cloud_token.clone()) } else { None },
     }))
+}
+
+// ── PUT /v1/cloud/active-org ──────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ActiveOrgBody {
+    pub active_org_id: Option<String>,
+}
+
+pub async fn set_active_org(
+    State(state): State<AppState>,
+    Json(body): Json<ActiveOrgBody>,
+) -> StatusCode {
+    let org_id = body
+        .active_org_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    users::update_active_org(&state.pool, &state.default_user_id, org_id);
+    StatusCode::NO_CONTENT
 }

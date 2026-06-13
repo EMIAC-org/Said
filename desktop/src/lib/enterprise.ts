@@ -206,6 +206,7 @@ export interface EnterpriseConnection {
   accountId: string;
   email: string;
   orgName?: string;
+  activeOrgId?: string;
   larkName?: string;
   larkAvatarUrl?: string;
   authSource?: "lark" | "email";
@@ -252,6 +253,65 @@ export async function repairEnterpriseConnection(
   };
   saveConnection(repaired);
   return repaired;
+}
+
+export interface WorkspaceMembership {
+  id: string;
+  name: string;
+  slug: string;
+  role: string;
+  is_active: boolean;
+}
+
+export interface WorkspaceListResponse {
+  orgs: WorkspaceMembership[];
+  active_org_id: string | null;
+  personal_mode: boolean;
+}
+
+export async function listWorkspaces(): Promise<WorkspaceListResponse | null> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<WorkspaceListResponse>("list_workspaces");
+  } catch (err) {
+    console.warn("[enterprise] listWorkspaces failed", err);
+    return null;
+  }
+}
+
+export async function activateWorkspace(orgId: string): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke<string>("activate_workspace", { orgId });
+    const conn = getConnection();
+    if (conn) {
+      const org = (await listWorkspaces())?.orgs.find((o) => o.id === orgId);
+      saveConnection({
+        ...conn,
+        activeOrgId: orgId,
+        orgName: org?.name ?? conn.orgName,
+      });
+    }
+    return true;
+  } catch (err) {
+    console.warn("[enterprise] activateWorkspace failed", err);
+    return false;
+  }
+}
+
+export async function deactivateWorkspace(): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("deactivate_workspace");
+    const conn = getConnection();
+    if (conn) {
+      saveConnection({ ...conn, activeOrgId: undefined });
+    }
+    return true;
+  } catch (err) {
+    console.warn("[enterprise] deactivateWorkspace failed", err);
+    return false;
+  }
 }
 
 interface LocalEnterpriseStatus {

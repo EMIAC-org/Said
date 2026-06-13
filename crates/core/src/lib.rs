@@ -2,10 +2,12 @@ use serde::{Deserialize, Serialize};
 
 pub mod deepgram;
 pub mod paths;
+pub mod polish;
 pub mod prefs;
 pub mod reporter;
 pub mod script;
 pub mod scrub;
+pub mod stt;
 pub mod telemetry;
 
 // ── Gateway constants ─────────────────────────────────────────────────────────

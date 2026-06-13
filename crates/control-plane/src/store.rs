@@ -27,6 +27,10 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/013_runtime_gateway.sql"),
     include_str!("../migrations/014_runtime_history.sql"),
     include_str!("../migrations/015_runtime_settings.sql"),
+    include_str!("../migrations/016_multi_org.sql"),
+    include_str!("../migrations/017_telemetry.sql"),
+    include_str!("../migrations/018_telemetry_stt.sql"),
+    include_str!("../migrations/019_memory_hygiene.sql"),
 ];
 
 /// Connect to Postgres and apply the schema.

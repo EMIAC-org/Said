@@ -235,8 +235,8 @@ export function OnboardingFlow({
         title="Welcome to AirNote."
         subtitle={
           isWindows
-            ? "A two-minute setup. Create your account, grant microphone access, add two free API keys, pick a hold-key — then you’ll never type by hand again."
-            : "A two-minute setup. Create your account, grant three permissions, add two free API keys, pick a hold-key — then you’ll never type by hand again."
+            ? "A two-minute setup. Create your account, grant microphone access, add Groq + Deepgram keys, pick a hold-key — then you’ll never type by hand again."
+            : "A two-minute setup. Create your account, grant three permissions, add Groq + Deepgram keys, pick a hold-key — then you’ll never type by hand again."
         }
         brandTagline={
           isWindows
@@ -545,8 +545,8 @@ export function OnboardingFlow({
         totalSteps={TOTAL_STEPS}
         eyebrow="Voice engine"
         title="Connect your voice."
-        subtitle="Two free API keys do all the work. Both take under a minute."
-        brandTagline="Two free keys. Speech-to-text and LLM polish — both on free tiers that cover daily use."
+        subtitle="Groq + Deepgram are required to start dictating."
+        brandTagline="Groq polishes; Deepgram transcribes. Both have free tiers that cover daily use."
         brandKicker="Stored locally"
         brandQuote={`Your keys never leave this ${isWindows ? "PC" : "Mac"} except directly to Groq and Deepgram.`}
         topRight={<span>{stepLabel(step)}</span>}

@@ -21,9 +21,7 @@ export function useAudioPlayer() {
     }
   }, []);
 
-  const play = useCallback(async (recordingId: string, audioId: string | null) => {
-    if (!audioId) return;
-
+  const play = useCallback(async (recordingId: string, _audioId?: string | null) => {
     // Toggle off if the same row is already playing
     if (playingId === recordingId) {
       audioRef.current?.pause();

@@ -41,7 +41,7 @@ pub struct Preferences {
     pub cerebras_api_key: Option<String>,
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
     pub llm_provider: String,
-    /// STT routing: "deepgram" | "whisper_local"
+    /// STT routing: "deepgram" | "whisper_local" | "groq_whisper"
     pub stt_provider: String,
 }
 
@@ -68,7 +68,7 @@ pub struct PrefsUpdate {
     pub cerebras_api_key: Option<Option<String>>,
     /// LLM provider: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
     pub llm_provider: Option<String>,
-    /// STT provider: "deepgram" | "whisper_local"
+    /// STT provider: "deepgram" | "whisper_local" | "groq_whisper"
     pub stt_provider: Option<String>,
 }
 
@@ -78,8 +78,8 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
         "SELECT user_id, selected_model, tone_preset, custom_prompt, language,
                 output_language, auto_paste, edit_capture, polish_text_hotkey, record_hotkey,
                 learning_enabled, server_runtime_enabled, server_audio_runtime_enabled, updated_at,
-                gateway_api_key, deepgram_api_key, gemini_api_key, llm_provider, groq_api_key,
-                cerebras_api_key, stt_provider
+                gateway_api_key, deepgram_api_key, gemini_api_key, llm_provider,
+                groq_api_key, cerebras_api_key, stt_provider
          FROM preferences WHERE user_id = ?1",
         params![user_id],
         |row| {
@@ -116,9 +116,10 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                 },
                 groq_api_key: row.get(18)?,
                 cerebras_api_key: row.get(19)?,
-                stt_provider: row
-                    .get::<_, Option<String>>(20)?
-                    .unwrap_or_else(|| "deepgram".into()),
+                stt_provider: said_core::stt::normalize_toggle_stt_provider(
+                    &row.get::<_, Option<String>>(20)?
+                        .unwrap_or_else(|| "deepgram".into()),
+                ),
             })
         },
     )
@@ -257,6 +258,7 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
         .ok()?;
     }
     if let Some(v) = update.stt_provider {
+        let v = said_core::stt::normalize_toggle_stt_provider(&v);
         conn.execute(
             "UPDATE preferences SET stt_provider = ?1, updated_at = ?2 WHERE user_id = ?3",
             params![v, now, user_id],

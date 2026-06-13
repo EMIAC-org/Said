@@ -1,0 +1,1182 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AirNote — Telemetry UI Preview (mock)</title>
+  <style>
+    :root {
+      --color-floor: hsl(240 6% 6%);
+      --color-surface: hsl(240 5% 7.5%);
+      --color-sidebar: hsl(240 5% 3%);
+      --color-surface-2: hsl(240 5% 4.5%);
+      --color-surface-3: hsl(240 5% 7.5%);
+      --color-surface-4: hsl(240 5% 13%);
+      --color-fg: hsl(240 6% 92%);
+      --color-fg-2: hsl(240 5% 80%);
+      --color-fg-3: hsl(240 5% 60%);
+      --color-fg-4: hsl(240 5% 45%);
+      --color-fg-5: hsl(240 5% 25%);
+      --color-border: hsl(240 5% 16%);
+      --color-border-light: hsl(240 5% 12%);
+      --color-accent: hsl(226 80% 78%);
+      --color-accent-fg: hsl(240 8% 8%);
+      --color-accent-hover: hsl(226 80% 84%);
+      --color-accent-light: rgba(200, 184, 255, 0.10);
+      --color-ok: hsl(142 70% 55%);
+      --color-ok-bg: rgba(74, 222, 128, 0.12);
+      --color-warn: hsl(38 90% 72%);
+      --color-warn-bg: rgba(245, 188, 84, 0.12);
+      --color-live: hsl(354 85% 75%);
+      --color-live-bg: rgba(255, 100, 100, 0.12);
+      --color-info: hsl(226 80% 78%);
+      --color-info-bg: rgba(200, 184, 255, 0.10);
+      --color-glass-strong: hsla(240, 5%, 12%, 0.78);
+      --color-glass-stroke: hsla(0, 0%, 100%, 0.06);
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    [data-theme="light"] {
+      --color-floor: #f0f2f8;
+      --color-surface: #ffffff;
+      --color-sidebar: #ffffff;
+      --color-surface-2: #f8f9fc;
+      --color-surface-3: #ffffff;
+      --color-surface-4: #e8eaf0;
+      --color-fg: #0c0e1a;
+      --color-fg-2: #2a2d3e;
+      --color-fg-3: #6b7090;
+      --color-fg-4: #9498b0;
+      --color-fg-5: #c8cad8;
+      --color-border: #e2e4ef;
+      --color-border-light: #eff0f6;
+      --color-accent: #7591ef;
+      --color-accent-fg: #ffffff;
+      --color-accent-hover: #5a7ae8;
+      --color-accent-light: rgba(117, 145, 239, 0.1);
+      --color-ok: #22c55e;
+      --color-ok-bg: #f0fdf4;
+      --color-warn: #f59e0b;
+      --color-warn-bg: #fffbeb;
+      --color-live: #ef4444;
+      --color-live-bg: #fef2f2;
+      --color-info: #7591ef;
+      --color-info-bg: rgba(117, 145, 239, 0.08);
+      --color-glass-strong: rgba(255, 255, 255, 0.85);
+      --color-glass-stroke: #e2e4ef;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: var(--font-sans);
+      letter-spacing: -0.005em;
+      background: var(--color-sidebar);
+      color: var(--color-fg);
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    .app { display: flex; height: 100vh; }
+    .sidebar {
+      width: 210px; min-width: 210px;
+      background: var(--color-sidebar);
+      display: flex; flex-direction: column;
+      height: 100vh; overflow-y: auto;
+      border-right: 1px solid var(--color-border-light);
+    }
+    .brand { padding: 20px 20px 4px; display: flex; align-items: center; gap: 10px; }
+    .brand span { font-size: 13px; font-weight: 600; letter-spacing: -0.02em; }
+    .brand svg { color: var(--color-accent); flex-shrink: 0; }
+    .greeting { padding: 16px 20px 20px; }
+    .greeting .date { font-size: 9px; font-weight: 500; color: var(--color-fg-4); letter-spacing: 0.06em; margin-bottom: 10px; }
+    .greeting .row { display: flex; align-items: center; gap: 10px; }
+    .avatar {
+      width: 32px; height: 32px; border-radius: 50%;
+      background: var(--color-accent-light);
+      color: var(--color-accent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 600;
+    }
+    .avatar.sm { width: 28px; height: 28px; font-size: 11px; }
+    .greeting .hi { font-size: 10px; color: var(--color-fg-4); }
+    .greeting .name { font-size: 13px; font-weight: 600; line-height: 1.2; }
+    .nav { padding: 0 12px; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+    .nav a {
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 10px; height: 30px; border-radius: 6px;
+      font-size: 12.5px; color: var(--color-fg-3); text-decoration: none;
+      transition: background 0.15s, color 0.15s;
+    }
+    .nav a:hover { color: var(--color-fg); background: rgba(255,255,255,0.03); }
+    .nav a.active {
+      color: var(--color-fg); font-weight: 500;
+      background: hsla(240, 5%, 13%, 0.6);
+      box-shadow: inset 0 0 0 1px hsla(0,0%,100%,0.06);
+    }
+    .nav svg { width: 15px; height: 15px; opacity: 0.85; }
+    .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh; }
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 24px; flex-shrink: 0;
+    }
+    .pill-btn {
+      font-size: 12px; font-weight: 500; padding: 8px 16px;
+      border-radius: 8px; border: 1px solid var(--color-border);
+      background: transparent; color: var(--color-fg-3); cursor: pointer;
+    }
+    .pill-btn:hover { color: var(--color-fg); border-color: var(--color-fg-5); }
+    .topbar-right { display: flex; align-items: center; gap: 8px; }
+    .search-pill {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px; border-radius: 8px;
+      border: 1px solid var(--color-border);
+      background: hsla(0,0%,0%,0.25);
+      font-size: 12px; color: var(--color-fg-4); min-width: 180px;
+    }
+    .icon-btn {
+      width: 32px; height: 32px; border-radius: 8px; border: 1px solid transparent;
+      background: transparent; color: var(--color-fg-4); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .icon-btn:hover { color: var(--color-fg-3); background: hsla(240,5%,13%,0.5); border-color: var(--color-border); }
+    .mat-wrap { flex: 1; min-height: 0; padding-left: 16px; }
+    .mat {
+      background: var(--color-glass-strong);
+      backdrop-filter: blur(36px) saturate(200%);
+      border: 1px solid var(--color-glass-stroke);
+      border-radius: 16px 0 0 0;
+      height: 100%; overflow-y: auto;
+      box-shadow: inset 0 1px 0 hsla(0,0%,100%,0.05), 0 12px 36px hsla(0,0%,0%,0.35);
+    }
+    .content { max-width: 1200px; margin: 0 auto; padding: 28px 40px 48px; }
+    .card {
+      background: var(--color-surface-3);
+      border: 1px solid var(--color-glass-stroke);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: inset 0 1px 0 hsla(0,0%,100%,0.04), 0 4px 12px hsla(0,0%,0%,0.25);
+    }
+    .card.flush { padding: 0; overflow: hidden; }
+    h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.02em; }
+    h1.lg { font-size: 20px; }
+    .subtitle { font-size: 12px; color: var(--color-fg-4); margin-top: 4px; }
+    .section-label {
+      font-size: 10px; font-weight: 600; color: var(--color-fg-4);
+      text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px;
+    }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .stat-card { padding: 16px; }
+    .stat-card .label { display: flex; align-items: center; gap: 8px; color: var(--color-fg-4); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; }
+    .stat-card .value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .stat-card .sub { font-size: 11px; color: var(--color-fg-4); margin-top: 4px; }
+    .tabs {
+      display: inline-flex; gap: 2px; padding: 3px;
+      background: var(--color-surface-2); border-radius: 8px;
+      border: 1px solid var(--color-border-light); margin-bottom: 20px;
+    }
+    .tab {
+      padding: 6px 14px; border-radius: 6px; border: none; background: transparent;
+      font-size: 12px; color: var(--color-fg-4); cursor: pointer; font-family: inherit;
+    }
+    .tab.active { background: var(--color-surface-4); color: var(--color-fg); font-weight: 500; }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left; font-size: 10px; font-weight: 500; color: var(--color-fg-4);
+      text-transform: uppercase; letter-spacing: 0.06em;
+      padding: 12px 20px; border-bottom: 1px solid var(--color-border);
+    }
+    td {
+      padding: 14px 20px; font-size: 12px; border-bottom: 1px solid var(--color-border-light);
+      vertical-align: middle;
+    }
+    tr.clickable { cursor: pointer; transition: background 0.12s; }
+    tr.clickable:hover { background: hsla(240, 5%, 13%, 0.3); }
+    tr.selected { background: hsla(240, 5%, 13%, 0.5); }
+    .mono { font-family: var(--font-mono); font-size: 11px; }
+    .tabular { font-variant-numeric: tabular-nums; }
+    .badge {
+      display: inline-flex; align-items: center; font-size: 10px; font-weight: 600;
+      padding: 2px 8px; border-radius: 999px;
+    }
+    .badge.ok { background: var(--color-ok-bg); color: var(--color-ok); }
+    .badge.warn { background: var(--color-warn-bg); color: var(--color-warn); }
+    .badge.live { background: var(--color-live-bg); color: var(--color-live); }
+    .badge.info { background: var(--color-info-bg); color: var(--color-info); }
+    .badge.neutral { background: var(--color-surface-4); color: var(--color-fg-3); }
+    .back-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 12px; color: var(--color-fg-4); background: none; border: none;
+      cursor: pointer; font-family: inherit; margin-bottom: 16px; padding: 0;
+    }
+    .back-link:hover { color: var(--color-fg-2); }
+    .user-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+    .user-header .left { display: flex; gap: 14px; align-items: center; }
+    .user-header .email { font-size: 12px; color: var(--color-fg-4); margin-top: 2px; }
+    .user-header .meta { font-size: 11px; color: var(--color-fg-4); margin-top: 6px; }
+    .field-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 16px;
+      font-size: 12px;
+    }
+    .field-grid .k { color: var(--color-fg-4); font-size: 11px; }
+    .field-grid .v { color: var(--color-fg); font-variant-numeric: tabular-nums; }
+    .field-grid .v.mono { font-family: var(--font-mono); font-size: 11px; }
+    .bool-yes { color: var(--color-ok); }
+    .bool-no { color: var(--color-fg-5); }
+    .run-detail {
+      display: none; background: var(--color-surface-2);
+      border-top: 1px solid var(--color-border-light);
+      padding: 16px 20px;
+    }
+    .run-detail.open { display: block; }
+    .run-detail h4 { font-size: 11px; color: var(--color-fg-4); text-transform: uppercase; letter-spacing: 0.05em; margin: 12px 0 8px; }
+    .run-detail h4:first-child { margin-top: 0; }
+    .flag-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .flag { font-size: 10px; padding: 2px 8px; border-radius: 4px; background: var(--color-surface-4); color: var(--color-fg-3); }
+    .flag.on { background: var(--color-info-bg); color: var(--color-info); }
+    .search-input {
+      width: 100%; max-width: 280px; padding: 8px 12px;
+      border-radius: 8px; border: 1px solid var(--color-border);
+      background: var(--color-surface-2); color: var(--color-fg);
+      font-size: 12px; font-family: inherit; margin-bottom: 16px;
+    }
+    .search-input:focus { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 3px hsla(226,80%,78%,0.1); }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+    .select {
+      font-size: 12px; padding: 6px 10px; border-radius: 8px;
+      border: 1px solid var(--color-border); background: var(--color-surface-2);
+      color: var(--color-fg); font-family: inherit;
+    }
+    .preview-banner {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 16px; border-radius: 999px;
+      background: hsla(240, 5%, 5%, 0.94);
+      border: 1px solid var(--color-surface-4);
+      backdrop-filter: blur(22px);
+      box-shadow: 0 18px 42px hsla(0,0%,0%,0.38);
+      z-index: 100; font-size: 11px; color: var(--color-fg-3);
+    }
+    .preview-banner button {
+      font-size: 11px; font-weight: 600; padding: 5px 12px; border-radius: 6px;
+      border: 1px solid var(--color-border); background: var(--color-surface-4);
+      color: var(--color-fg); cursor: pointer; font-family: inherit;
+    }
+    .preview-banner button.active { background: var(--color-accent); color: var(--color-accent-fg); border-color: transparent; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .mb-4 { margin-bottom: 16px; }
+    .mb-5 { margin-bottom: 20px; }
+    .link { color: var(--color-accent); cursor: pointer; }
+    .link:hover { text-decoration: underline; }
+    .chevron { transition: transform 0.15s; display: inline-block; }
+    tr.expanded .chevron { transform: rotate(90deg); }
+    .inner-tabs {
+      display: inline-flex; gap: 2px; padding: 3px;
+      background: var(--color-surface-2); border-radius: 8px;
+      border: 1px solid var(--color-border-light); margin-bottom: 20px;
+    }
+    .inner-tab {
+      padding: 7px 16px; border-radius: 6px; border: none; background: transparent;
+      font-size: 12px; color: var(--color-fg-4); cursor: pointer; font-family: inherit;
+    }
+    .inner-tab.active { background: var(--color-surface-4); color: var(--color-fg); font-weight: 500; }
+    .profile-pane { display: none; }
+    .profile-pane.active { display: block; }
+    .flow-card {
+      padding: 16px 18px; border-radius: 10px;
+      background: linear-gradient(135deg, hsla(226,80%,78%,0.06), hsla(240,5%,10%,0.4));
+      border: 1px solid var(--color-border-light);
+      font-size: 12px; line-height: 1.55; color: var(--color-fg-2);
+    }
+    .flow-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+    .flow-step {
+      padding: 6px 10px; border-radius: 8px;
+      background: var(--color-surface-4); border: 1px solid var(--color-border);
+      font-size: 11px;
+    }
+    .flow-arrow { color: var(--color-fg-5); font-size: 14px; }
+    .alias-cluster {
+      display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px;
+    }
+    .alias-chip {
+      font-family: var(--font-mono); font-size: 11px;
+      padding: 3px 8px; border-radius: 6px;
+      background: var(--color-surface-4); border: 1px solid var(--color-border);
+    }
+    .alias-chip.target {
+      background: var(--color-info-bg); border-color: hsla(226,80%,78%,0.35);
+      color: var(--color-info); font-weight: 600;
+    }
+    .alias-chip.blocked {
+      background: var(--color-live-bg); border-color: hsla(354,85%,75%,0.35);
+      color: var(--color-live); text-decoration: line-through; opacity: 0.85;
+    }
+    .alias-chip.warn {
+      background: var(--color-warn-bg); border-color: hsla(38,90%,72%,0.35);
+      color: var(--color-warn);
+    }
+    .cron-banner {
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 14px 16px; border-radius: 10px;
+      background: var(--color-warn-bg); border: 1px solid hsla(38,90%,72%,0.25);
+      margin-bottom: 16px; font-size: 12px;
+    }
+    .cron-banner .icon { font-size: 18px; line-height: 1; }
+    .cron-banner strong { color: var(--color-fg); }
+    .cron-banner p { color: var(--color-fg-3); margin-top: 4px; line-height: 1.5; }
+    .edit-span {
+      display: inline; padding: 1px 4px; border-radius: 4px;
+      font-family: var(--font-mono); font-size: 11px;
+    }
+    .edit-span.bad { background: var(--color-live-bg); color: var(--color-live); }
+    .edit-span.good { background: var(--color-ok-bg); color: var(--color-ok); }
+    .edit-span.raw { background: var(--color-surface-4); color: var(--color-fg-3); }
+    @media (max-width: 900px) {
+      .grid-3, .grid-4, .field-grid { grid-template-columns: repeat(2, 1fr); }
+      .sidebar { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <svg viewBox="0 0 24 24" width="22" height="22"><rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor"/><rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor"/><rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor"/><rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor"/></svg>
+        <span>AirNote Enterprise</span>
+      </div>
+      <div class="greeting">
+        <div class="date" id="dateStr"></div>
+        <div class="row">
+          <div class="avatar">A</div>
+          <div>
+            <div class="hi">Welcome back,</div>
+            <div class="name">Abhishek!</div>
+          </div>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="#">Dashboard</a>
+        <a href="#">Meetings</a>
+        <a href="#">Team</a>
+        <a href="#">Desktop</a>
+        <a href="#">Runtime</a>
+        <a href="#" class="active">Telemetry</a>
+        <a href="#">Vocabulary</a>
+        <a href="#">Settings</a>
+      </nav>
+    </aside>
+
+    <div class="main-col">
+      <div class="topbar">
+        <button class="pill-btn">Last 30 days ▾</button>
+        <div class="topbar-right">
+          <div class="search-pill">⌕ Search...</div>
+          <button class="icon-btn" id="themeToggle" title="Toggle theme">☀</button>
+          <div class="avatar sm">A</div>
+        </div>
+      </div>
+      <div class="mat-wrap">
+        <div class="mat">
+          <div class="content">
+
+            <!-- VIEW: Org Overview -->
+            <div id="view-overview" class="view active">
+              <div class="mb-4">
+                <h1>Desktop Telemetry</h1>
+                <p class="subtitle">Privacy-safe per-run analytics from signed-in desktops — last 30 days. No transcript text is stored.</p>
+              </div>
+
+              <div class="tabs">
+                <button class="tab active" data-tab="overview">Overview</button>
+                <button class="tab" data-tab="users" onclick="showView('users')">Users</button>
+              </div>
+
+              <div class="grid-3 mb-4">
+                <div class="card stat-card"><div class="label">🎤 Completed runs</div><div class="value">1,284</div><div class="sub">412 min dictated</div></div>
+                <div class="card stat-card"><div class="label">📊 DAU / WAU</div><div class="value">18 / 42</div><div class="sub">Active dictation users</div></div>
+                <div class="card stat-card"><div class="label">👍 Acceptance rate</div><div class="value">71.2%</div><div class="sub">No meaningful edit after paste</div></div>
+                <div class="card stat-card"><div class="label">⏱ Total latency p50</div><div class="value">1,240 ms</div><div class="sub">p95 2,890 ms</div></div>
+                <div class="card stat-card"><div class="label">✎ Edit rate</div><div class="value">24.8%</div><div class="sub">Heavy 6.1%</div></div>
+                <div class="card stat-card"><div class="label">⚡ Fallback rate</div><div class="value">3.2%</div><div class="sub">Clipboard or HTTP STT fallback</div></div>
+              </div>
+
+              <div class="grid-2 mb-4">
+                <div class="card">
+                  <div class="section-label">Runs by mode</div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span class="mono">normal_voice</span><span class="tabular">1,042</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span class="mono">command</span><span class="tabular">186</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px"><span class="mono">rewrite_selection</span><span class="tabular">56</span></div>
+                </div>
+                <div class="card">
+                  <div class="section-label">Top target apps</div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span>Slack</span><span class="tabular">318</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span>Google Chrome</span><span class="tabular">276</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px"><span>Cursor</span><span class="tabular">194</span></div>
+                </div>
+                <div class="card">
+                  <div class="section-label">STT provider (runs)</div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span class="mono">deepgram · nova-3 WS</span><span class="tabular">892 (69%)</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span class="mono">deepgram · batch fallback</span><span class="tabular">148 (12%)</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span class="mono">sarvam · saarika v2.5</span><span class="tabular">224 (17%)</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px"><span class="mono">sarvam · batch only</span><span class="tabular">20 (2%)</span></div>
+                </div>
+                <div class="card" style="grid-column:1/-1">
+                  <div class="section-label">Learning funnel (org)</div>
+                  <div class="grid-3" style="font-size:12px">
+                    <div><div style="color:var(--color-fg-4)">Candidate rate</div><div style="font-weight:600;margin-top:4px" class="tabular">12.4%</div></div>
+                    <div><div style="color:var(--color-fg-4)">Success rate</div><div style="font-weight:600;margin-top:4px" class="tabular">68.0%</div></div>
+                    <div><div style="color:var(--color-fg-4)">STT p50 / p95</div><div style="font-weight:600;margin-top:4px" class="tabular">420 ms / 980 ms</div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- VIEW: Users list -->
+            <div id="view-users" class="view">
+              <div class="mb-4">
+                <h1>Desktop Telemetry</h1>
+                <p class="subtitle">Emiactech Workspace · 42 members · click a row for full per-user profile</p>
+              </div>
+
+              <div class="tabs">
+                <button class="tab" onclick="showView('overview')">Overview</button>
+                <button class="tab active">Users</button>
+              </div>
+
+              <div class="toolbar">
+                <input type="search" class="search-input" id="userSearch" placeholder="Search by name or email…" />
+                <select class="select"><option>Last 30 days</option><option>Last 7 days</option><option>Last 90 days</option></select>
+              </div>
+
+              <div class="card flush">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>User</th>
+                      <th>Runs</th>
+                      <th>Audio min</th>
+                      <th>Accept %</th>
+                      <th>Edit %</th>
+                      <th>Heavy edit %</th>
+                      <th>Fallback %</th>
+                      <th>STT</th>
+                      <th>Learning ok</th>
+                      <th>Last active</th>
+                      <th>Desktop</th>
+                    </tr>
+                  </thead>
+                  <tbody id="usersTable"></tbody>
+                </table>
+              </div>
+
+              <p class="subtitle" style="margin-top:12px">Aggregates from <span class="mono">runtime_telemetry_daily</span> · no transcript text</p>
+            </div>
+
+            <!-- VIEW: User profile -->
+            <div id="view-profile" class="view">
+              <button class="back-link" onclick="showView('users')">← Back to users</button>
+
+              <div class="user-header">
+                <div class="left">
+                  <div class="avatar" style="width:44px;height:44px;font-size:16px" id="profileAvatar">P</div>
+                  <div>
+                    <h1 class="lg" id="profileName">Priya Sharma</h1>
+                    <div class="email" id="profileEmail">priya@emiactech.com</div>
+                    <div class="meta">
+                      <span class="badge info">Lark</span>
+                      <span class="badge neutral">Engineering</span>
+                      <span class="badge ok" id="profileDesktop">Desktop online</span>
+                      <span class="mono" style="margin-left:8px;color:var(--color-fg-4)">account_id: a3f2…8c91</span>
+                    </div>
+                  </div>
+                </div>
+                <select class="select"><option>Last 30 days</option><option>Last 7 days</option></select>
+              </div>
+
+              <div class="inner-tabs" id="profileInnerTabs">
+                <button class="inner-tab active" data-pane="telemetry" onclick="showProfilePane('telemetry')">Telemetry</button>
+                <button class="inner-tab" data-pane="vocab" onclick="showProfilePane('vocab')">Vocab &amp; memory</button>
+              </div>
+
+              <div id="profile-pane-telemetry" class="profile-pane active">
+
+              <!-- Summary cards -->
+              <div class="grid-4 mb-4">
+                <div class="card stat-card"><div class="label">Runs</div><div class="value" id="pRuns">186</div><div class="sub">completed</div></div>
+                <div class="card stat-card"><div class="label">Audio</div><div class="value" id="pMinutes">58.4</div><div class="sub">minutes dictated</div></div>
+                <div class="card stat-card"><div class="label">Words</div><div class="value" id="pWords">12,840</div><div class="sub">chars 71,204</div></div>
+                <div class="card stat-card"><div class="label">Acceptance</div><div class="value" id="pAccept">74.2%</div><div class="sub">accepted as-is</div></div>
+              </div>
+
+              <div class="grid-3 mb-4">
+                <div class="card stat-card"><div class="label">Edit rate</div><div class="value">21.5%</div><div class="sub">heavy 4.8%</div></div>
+                <div class="card stat-card"><div class="label">Fallback rate</div><div class="value">2.1%</div><div class="sub">clipboard 1.2% · HTTP STT 0.9%</div></div>
+                <div class="card stat-card"><div class="label">Latency p50 / p95</div><div class="value" style="font-size:18px">1,180 / 2,640 ms</div><div class="sub">total pipeline</div></div>
+              </div>
+
+              <div class="card mb-4">
+                <div class="section-label">STT provider mix (this user)</div>
+                <div class="grid-4" style="font-size:12px" id="sttMixGrid">
+                  <div><div class="k" style="color:var(--color-fg-4);font-size:11px">deepgram WS</div><div class="v tabular" style="font-weight:600;margin-top:4px">128 runs · p50 380ms</div></div>
+                  <div><div class="k" style="color:var(--color-fg-4);font-size:11px">deepgram batch</div><div class="v tabular" style="font-weight:600;margin-top:4px">22 runs · p50 1,840ms</div></div>
+                  <div><div class="k" style="color:var(--color-fg-4);font-size:11px">sarvam WS</div><div class="v tabular" style="font-weight:600;margin-top:4px">31 runs · p50 520ms</div></div>
+                  <div><div class="k" style="color:var(--color-fg-4);font-size:11px">sarvam batch</div><div class="v tabular" style="font-weight:600;margin-top:4px">5 runs · p50 2,100ms</div></div>
+                </div>
+              </div>
+
+              <div class="grid-2 mb-4">
+                <div class="card">
+                  <div class="section-label">Quality breakdown</div>
+                  <div class="field-grid">
+                    <div><div class="k">accepted_as_is count</div><div class="v tabular">138</div></div>
+                    <div><div class="k">edit_detected count</div><div class="v tabular">40</div></div>
+                    <div><div class="k">heavy_edit count</div><div class="v tabular">9</div></div>
+                    <div><div class="k">deleted_entire_output</div><div class="v tabular">3</div></div>
+                    <div><div class="k">re_recorded_quickly</div><div class="v tabular">5</div></div>
+                    <div><div class="k">failure_count</div><div class="v tabular">2</div></div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="section-label">Learning funnel (user)</div>
+                  <div class="field-grid">
+                    <div><div class="k">learning_candidate</div><div class="v tabular">24</div></div>
+                    <div><div class="k">learning_modal_shown</div><div class="v tabular">22</div></div>
+                    <div><div class="k">learning_confirmed</div><div class="v tabular">15</div></div>
+                    <div><div class="k">learning_dismissed</div><div class="v tabular">7</div></div>
+                    <div><div class="k">server_learning_saved</div><div class="v tabular">14</div></div>
+                    <div><div class="k">server_learning_blocked</div><div class="v tabular">1</div></div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="section-label">Latency percentiles (ms)</div>
+                  <div class="field-grid">
+                    <div><div class="k">transcribe p50 / p95</div><div class="v tabular">380 / 920</div></div>
+                    <div><div class="k">embed p50 / p95</div><div class="v tabular">120 / 340</div></div>
+                    <div><div class="k">polish p50 / p95</div><div class="v tabular">540 / 1,240</div></div>
+                    <div><div class="k">paste p50 / p95</div><div class="v tabular">85 / 210</div></div>
+                    <div><div class="k">total p50 / p95</div><div class="v tabular">1,180 / 2,640</div></div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="section-label">By mode · by app</div>
+                  <div style="font-size:12px;margin-bottom:12px">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:6px"><span class="mono">normal_voice</span><span class="tabular">152</span></div>
+                    <div style="display:flex;justify-content:space-between;margin-bottom:6px"><span class="mono">command</span><span class="tabular">28</span></div>
+                    <div style="display:flex;justify-content:space-between"><span class="mono">rewrite_selection</span><span class="tabular">6</span></div>
+                  </div>
+                  <div style="border-top:1px solid var(--color-border-light);padding-top:12px;font-size:12px">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:6px"><span>Slack</span><span class="tabular">64</span></div>
+                    <div style="display:flex;justify-content:space-between;margin-bottom:6px"><span>Cursor</span><span class="tabular">48</span></div>
+                    <div style="display:flex;justify-content:space-between"><span>Chrome</span><span class="tabular">41</span></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Content flags aggregate -->
+              <div class="card mb-4">
+                <div class="section-label">Content flags (runs with flag set — aggregate)</div>
+                <div class="flag-row">
+                  <span class="flag on">has_numbers · 89</span>
+                  <span class="flag on">has_currency · 12</span>
+                  <span class="flag on">has_percent · 34</span>
+                  <span class="flag on">has_email · 8</span>
+                  <span class="flag on">has_url · 22</span>
+                  <span class="flag on">has_code_like_terms · 41</span>
+                  <span class="flag on">mixed_language · 67</span>
+                  <span class="flag on">protected_term_hit · 3</span>
+                </div>
+              </div>
+
+              <!-- Daily rollups -->
+              <div class="card flush mb-4">
+                <div style="padding:16px 20px;border-bottom:1px solid var(--color-border)">
+                  <div class="section-label" style="margin:0">Daily rollups</div>
+                  <span class="subtitle">runtime_telemetry_daily · per date × mode</span>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th><th>Mode</th><th>Runs</th><th>Audio sec</th>
+                      <th>Accepted</th><th>Edits</th><th>Heavy</th>
+                      <th>Learning shown</th><th>Confirmed</th><th>Failures</th><th>Fallbacks</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>2026-06-08</td><td class="mono">all</td><td class="tabular">14</td><td class="tabular">312</td><td class="tabular">11</td><td class="tabular">3</td><td class="tabular">1</td><td class="tabular">2</td><td class="tabular">1</td><td class="tabular">0</td><td class="tabular">0</td></tr>
+                    <tr><td>2026-06-07</td><td class="mono">all</td><td class="tabular">22</td><td class="tabular">498</td><td class="tabular">17</td><td class="tabular">4</td><td class="tabular">0</td><td class="tabular">3</td><td class="tabular">2</td><td class="tabular">1</td><td class="tabular">1</td></tr>
+                    <tr><td>2026-06-06</td><td class="mono">normal_voice</td><td class="tabular">8</td><td class="tabular">186</td><td class="tabular">6</td><td class="tabular">2</td><td class="tabular">0</td><td class="tabular">1</td><td class="tabular">1</td><td class="tabular">0</td><td class="tabular">0</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Upload batches -->
+              <div class="card flush mb-4">
+                <div style="padding:16px 20px;border-bottom:1px solid var(--color-border)">
+                  <div class="section-label" style="margin:0">Upload batches</div>
+                  <span class="subtitle">runtime_telemetry_uploads · device sync history</span>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Received</th><th>device_id</th><th>client_version</th>
+                      <th>run_count</th><th>rollup_count</th><th>accepted</th><th>rejected</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>Jun 8, 14:22</td><td class="mono">mac-7f3a…</td><td class="mono">3.0.1-beta</td><td class="tabular">12</td><td class="tabular">3</td><td class="tabular">12</td><td class="tabular">0</td></tr>
+                    <tr><td>Jun 8, 09:05</td><td class="mono">mac-7f3a…</td><td class="mono">3.0.1-beta</td><td class="tabular">8</td><td class="tabular">1</td><td class="tabular">8</td><td class="tabular">0</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Per-run table with expandable detail -->
+              <div class="card flush">
+                <div style="padding:16px 20px;border-bottom:1px solid var(--color-border);display:flex;justify-content:space-between;align-items:center">
+                  <div>
+                    <div class="section-label" style="margin:0">Recent runs</div>
+                    <span class="subtitle">runtime_telemetry_runs · click row to expand all fields</span>
+                  </div>
+                  <select class="select"><option>All modes</option><option>normal_voice</option><option>command</option></select>
+                </div>
+                <table id="runsTable">
+                  <thead>
+                    <tr>
+                      <th style="width:24px"></th>
+                      <th>event_at</th><th>run_id</th><th>mode</th><th>STT</th><th>target_app</th>
+                      <th>audio</th><th>words</th><th>total_ms</th>
+                      <th>edit_bucket</th><th>success</th><th>flags</th>
+                    </tr>
+                  </thead>
+                  <tbody id="runsBody"></tbody>
+                </table>
+              </div>
+
+              </div><!-- /profile-pane-telemetry -->
+
+              <!-- Vocab & memory (per-user learning + Deepseek cron hygiene) -->
+              <div id="profile-pane-vocab" class="profile-pane">
+
+              <div class="flow-card mb-4">
+                <div class="section-label" style="margin-bottom:6px">Edit → alias feedback loop</div>
+                <p>When AirNote polishes wrong (e.g. STT hears <span class="mono">meac</span> but user wanted <strong>Mac</strong>), the user edits the field. Classify-edit may save <strong>STT alias variations</strong> toward the corrected brand (<span class="mono">EMIAC</span>). Similar-sounding fragments cluster: <span class="mono">meac · mea · mec · mia · e miac</span>. Some fragments are real Hindi/Hinglish/English words and must <em>not</em> become global replacements.</p>
+                <div class="flow-steps">
+                  <span class="flow-step">User dictates</span>
+                  <span class="flow-arrow">→</span>
+                  <span class="flow-step">Polish pastes wrong word</span>
+                  <span class="flow-arrow">→</span>
+                  <span class="flow-step">30s edit-watch detects change</span>
+                  <span class="flow-arrow">→</span>
+                  <span class="flow-step">Alias / edit-policy saved</span>
+                  <span class="flow-arrow">→</span>
+                  <span class="flow-step" style="border-color:hsla(38,90%,72%,0.4)">Deepseek cron filters common words</span>
+                </div>
+              </div>
+
+              <div class="grid-3 mb-4">
+                <div class="card stat-card"><div class="label">Vocab terms</div><div class="value" id="vocabCount">12</div><div class="sub">personal_vocab_terms</div></div>
+                <div class="card stat-card"><div class="label">STT aliases</div><div class="value" id="aliasCount">18</div><div class="sub">personal_stt_replacements</div></div>
+                <div class="card stat-card"><div class="label">Cron-blocked (30d)</div><div class="value" id="cronBlockedCount">4</div><div class="sub">common_block · false positives removed</div></div>
+              </div>
+
+              <div class="cron-banner mb-4">
+                <div class="icon">🛡</div>
+                <div>
+                  <strong>Memory hygiene worker</strong> <span class="badge warn" style="margin-left:6px">lazy background · per-user brain</span>
+                  <p>Not per-alias LLM on the hot path. When a user’s memory changes (edit → alias saved, confirm-batch, negative revert), we set <span class="mono">memory_dirty_at</span>. A background worker loads the <em>whole profile</em> — vocab + aliases + edit-policy + negative signals + recent edit outcomes — and one DeepSeek batch call decides: keep, block, merge cluster, penalize rule, or demote weight. Fixes false positives like <span class="mono">mea/mec/mia → EMIAC</span> using full context, not isolated string match.</p>
+                  <div class="flow-steps" style="margin-top:10px">
+                    <span class="flow-step">memory_dirty flag</span>
+                    <span class="flow-arrow">→</span>
+                    <span class="flow-step">debounce 30m (active) or nightly sweep</span>
+                    <span class="flow-arrow">→</span>
+                    <span class="flow-step">1 DeepSeek call / dirty user</span>
+                    <span class="flow-arrow">→</span>
+                    <span class="flow-step">apply blocks + update brain</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card mb-4">
+                <div class="section-label">EMIAC alias cluster (example)</div>
+                <p class="subtitle" style="margin-bottom:12px">Target brand <span class="mono">EMIAC</span> — variations learned from edits; cron flagged risky sources</p>
+                <div class="alias-cluster">
+                  <span class="alias-chip target">EMIAC</span>
+                  <span style="color:var(--color-fg-5)">←</span>
+                  <span class="alias-chip">meac</span>
+                  <span class="alias-chip">e miac</span>
+                  <span class="alias-chip warn">mea</span>
+                  <span class="alias-chip blocked">mec</span>
+                  <span class="alias-chip blocked">mia</span>
+                  <span class="alias-chip">emiac</span>
+                </div>
+                <div style="margin-top:14px;font-size:11px;color:var(--color-fg-4)">
+                  <span class="badge ok" style="margin-right:6px">active</span> safe phonetic variants &nbsp;
+                  <span class="badge warn" style="margin-right:6px">review</span> ambiguous — cron queued &nbsp;
+                  <span class="badge live">common_block</span> removed from resolver
+                </div>
+              </div>
+
+              <div class="grid-2 mb-4">
+                <div class="card flush">
+                  <div style="padding:16px 20px;border-bottom:1px solid var(--color-border)">
+                    <div class="section-label" style="margin:0">Saved vocabulary</div>
+                    <span class="subtitle">personal_vocab_terms · server memory</span>
+                  </div>
+                  <table>
+                    <thead><tr><th>Term</th><th>Type</th><th>Weight</th><th>Status</th><th>Last seen</th></tr></thead>
+                    <tbody id="vocabTable"></tbody>
+                  </table>
+                </div>
+                <div class="card flush">
+                  <div style="padding:16px 20px;border-bottom:1px solid var(--color-border)">
+                    <div class="section-label" style="margin:0">STT aliases</div>
+                    <span class="subtitle">personal_stt_replacements · transcript → correct</span>
+                  </div>
+                  <table>
+                    <thead><tr><th>Heard</th><th>→ Correct</th><th>STT</th><th>Safety</th><th>+ / −</th><th>Source run</th></tr></thead>
+                    <tbody id="aliasTable"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="card flush mb-4">
+                <div style="padding:16px 20px;border-bottom:1px solid var(--color-border)">
+                  <div class="section-label" style="margin:0">Edit-policy rules (tier-2)</div>
+                  <span class="subtitle">personal_edit_policy_rules · variant → correct from user edits</span>
+                </div>
+                <table>
+                  <thead><tr><th>Variant</th><th>→ Correct</th><th>Type</th><th>+ count</th><th>− count</th><th>Status</th></tr></thead>
+                  <tbody id="policyTable"></tbody>
+                </table>
+              </div>
+
+              <div class="card flush mb-4">
+                <div style="padding:16px 20px;border-bottom:1px solid var(--color-border);display:flex;justify-content:space-between;align-items:center">
+                  <div>
+                    <div class="section-label" style="margin:0">Deepseek cron — hygiene log (this user)</div>
+                    <span class="subtitle">alias_safety_audit · actions taken on this account's memory</span>
+                  </div>
+                  <span class="badge info">Task: Regular Deepseek cron</span>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Run at</th><th>Alias / variant</th><th>Was →</th><th>Verdict</th><th>Reason</th><th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="cronTable"></tbody>
+                </table>
+              </div>
+
+              <div class="card flush mb-4">
+                <div style="padding:16px 20px;border-bottom:1px solid var(--color-border)">
+                  <div class="section-label" style="margin:0">Learning events from edits</div>
+                  <span class="subtitle">Linked to telemetry runs · polish vs kept diff</span>
+                </div>
+                <table>
+                  <thead><tr><th>When</th><th>Run</th><th>STT</th><th>Polished</th><th>User kept</th><th>Outcome</th></tr></thead>
+                  <tbody id="learningTable"></tbody>
+                </table>
+              </div>
+
+              </div><!-- /profile-pane-vocab -->
+
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="preview-banner">
+    <span>UI preview — mock data</span>
+    <button class="active" onclick="showView('overview')">Overview</button>
+    <button onclick="showView('users')">Users</button>
+    <button onclick="openProfile('priya')">User profile</button>
+    <button onclick="openProfileVocab('priya')">Vocab &amp; cron</button>
+  </div>
+
+  <script>
+    const USERS = [
+      { id: 'priya', name: 'Priya Sharma', email: 'priya@emiactech.com', runs: 186, min: 58.4, accept: 74.2, edit: 21.5, heavy: 4.8, fallback: 2.1, learning: '68%', stt: 'DG 78%', last: '2h ago', desktop: true },
+      { id: 'abhi', name: 'Abhishek Verma', email: 'abhishek@emiactech.com', runs: 312, min: 94.2, accept: 68.9, edit: 28.1, heavy: 7.2, fallback: 4.8, learning: '72%', stt: 'Sarvam 62%', last: 'Just now', desktop: true },
+      { id: 'rahul', name: 'Rahul Mehta', email: 'rahul@emiactech.com', runs: 98, min: 31.0, accept: 81.3, edit: 15.2, heavy: 2.0, fallback: 1.0, learning: '55%', stt: 'DG 91%', last: '1d ago', desktop: false },
+      { id: 'anish', name: 'Anish Suman', email: 'anish@emiactech.com', runs: 44, min: 12.8, accept: 77.0, edit: 18.0, heavy: 3.5, fallback: 0.0, learning: '—', stt: 'DG 100%', last: '3d ago', desktop: false },
+      { id: 'neha', name: 'Neha Kapoor', email: 'neha@emiactech.com', runs: 156, min: 48.6, accept: 72.4, edit: 22.8, heavy: 5.1, fallback: 2.8, learning: '61%', stt: 'Mixed', last: '5h ago', desktop: true },
+    ];
+
+    const RUN = {
+      run_id: 'run_8f2c91a4',
+      recording_id: 'rec_3b8e…',
+      device_id: 'mac-7f3a2b1c',
+      mode: 'normal_voice',
+      target_app: 'Slack',
+      platform: 'macos',
+      app_version: '3.0.1-beta',
+      machine_class: 'apple_silicon',
+      client_version: '3.0.1-beta',
+      audio_seconds: 18.4,
+      word_count: 42,
+      char_count: 238,
+      transcribe_ms: 412,
+      embed_ms: 98,
+      polish_ms: 624,
+      total_ms: 1284,
+      paste_ms: 92,
+      success: true,
+      error_code: null,
+      stt_provider: 'deepgram',
+      stt_model: 'nova-3',
+      stt_path: 'ws_prewarm',
+      used_clipboard_fallback: false,
+      used_ws_pretranscript: true,
+      used_http_stt_fallback: false,
+      edit_detected: true,
+      edit_bucket: 'light',
+      edit_distance_chars: 6,
+      edit_distance_words: 2,
+      accepted_as_is: false,
+      deleted_entire_output: false,
+      re_recorded_quickly: false,
+      learning_candidate: true,
+      learning_modal_shown: true,
+      learning_confirmed: true,
+      learning_dismissed: false,
+      server_learning_saved: true,
+      server_learning_blocked: false,
+      flags: { has_numbers: true, has_currency: false, has_percent: false, has_email: false, has_url: true, has_code_like_terms: false, mixed_language: true, protected_term_hit: false },
+      event_at: '2026-06-08 14:18:22',
+      received_at: '2026-06-08 14:18:24',
+    };
+
+    const RUNS = [
+      { ...RUN, learning_edit: { polished: '…update from EMIAC team', kept: '…update from Mac team', learned: 'Mac → EMIAC alias reverted' } },
+      { ...RUN, run_id: 'run_1a9d44e2', target_app: 'Cursor', stt_provider: 'sarvam', stt_model: 'saarika:v2.5', stt_path: 'ws_stream', edit_bucket: 'none', accepted_as_is: true, edit_detected: false, total_ms: 1102, event_at: '2026-06-08 11:42:08', learning_candidate: false, learning_modal_shown: false },
+      { ...RUN, run_id: 'run_c77b20ff', mode: 'command', target_app: 'Chrome', stt_provider: 'deepgram', stt_model: 'nova-3', stt_path: 'http_batch', success: false, error_code: 'stt_timeout', edit_bucket: 'none', total_ms: 4200, event_at: '2026-06-07 16:05:41', used_http_stt_fallback: true, used_ws_pretranscript: false },
+      { ...RUN, run_id: 'run_e31ac890', stt_provider: 'deepgram', stt_model: 'nova-3', stt_path: 'ws_prewarm', edit_bucket: 'heavy', edit_distance_chars: 48, edit_distance_words: 9, deleted_entire_output: true, event_at: '2026-06-07 09:22:15', learning_edit: { polished: 'meac ka sixty eight percent hai', kept: 'Mac ka 68% hai', learned: 'meac → EMIAC blocked by cron' } },
+    ];
+
+    const USER_VOCAB = {
+      priya: {
+        vocab: [
+          { term: 'EMIAC', type: 'acronym', weight: 8.2, status: 'active', last: '2h ago' },
+          { term: 'AirNote', type: 'brand', weight: 7.5, status: 'active', last: '1d ago' },
+          { term: 'Groq', type: 'brand', weight: 6.0, status: 'active', last: '3d ago' },
+          { term: 'Macobs', type: 'brand', weight: 5.5, status: 'active', last: '5d ago' },
+          { term: 'Lark', type: 'brand', weight: 5.0, status: 'active', last: '1w ago' },
+        ],
+        aliases: [
+          { heard: 'meac', correct: 'EMIAC', stt: 'deepgram', safety: 'active', pos: 4, neg: 0, run: 'run_e31ac890' },
+          { heard: 'e miac', correct: 'EMIAC', stt: 'deepgram', safety: 'active', pos: 3, neg: 0, run: 'run_8f2c91a4' },
+          { heard: 'emiac', correct: 'EMIAC', stt: 'sarvam', safety: 'active', pos: 2, neg: 0, run: 'run_1a9d44e2' },
+          { heard: 'mea', correct: 'EMIAC', stt: 'deepgram', safety: 'review', pos: 1, neg: 1, run: 'run_c77b20ff' },
+          { heard: 'mec', correct: 'EMIAC', stt: 'deepgram', safety: 'common_block', pos: 1, neg: 2, run: 'run_e31ac890' },
+          { heard: 'mia', correct: 'EMIAC', stt: 'sarvam', safety: 'common_block', pos: 0, neg: 1, run: '—' },
+          { heard: 'macobs', correct: 'Macobs', stt: 'deepgram', safety: 'active', pos: 2, neg: 0, run: 'run_8f2c91a4' },
+          { heard: 'devo', correct: 'Divo', stt: 'sarvam', safety: 'active', pos: 1, neg: 0, run: 'run_1a9d44e2' },
+        ],
+        policy: [
+          { variant: 'mac', correct: 'EMIAC', type: 'replace', pos: 2, neg: 3, status: 'penalized' },
+          { variant: 'set', correct: 'Said', type: 'replace', pos: 1, neg: 0, status: 'active' },
+          { variant: 'nova three', correct: 'nova-3', type: 'replace', pos: 3, neg: 0, status: 'active' },
+        ],
+        cron: [
+          { at: 'Jun 10, 03:00', alias: 'profile sweep', was: '18 aliases', verdict: 'ok', reason: 'Full brain analysis — 2 blocked, 1 penalized rule, 0 merges', action: 'memory_hygiene' },
+          { at: 'Jun 10, 03:00', alias: 'mec', was: 'EMIAC', verdict: 'common_block', reason: 'Common word in EN/FR; cluster context confirms false positive', action: 'blocked alias' },
+          { at: 'Jun 10, 03:00', alias: 'mia', was: 'EMIAC', verdict: 'common_block', reason: 'Hinglish pronoun fragment; user also reverted Mac→EMIAC 2×', action: 'blocked alias' },
+          { at: 'Jun 9, 14:30', alias: 'profile sweep', was: 'dirty flag', verdict: 'ok', reason: 'Debounced 30m after confirm-batch on EMIAC', action: 'memory_hygiene' },
+          { at: 'Jun 9, 03:00', alias: 'mea', was: 'EMIAC', verdict: 'review', reason: 'Ambiguous 3-letter; wait for negative signal', action: 'flagged' },
+        ],
+        learning: [
+          { when: 'Jun 8, 14:18', run: 'run_8f2c91a4', stt: 'deepgram', polished: '…from <span class="edit-span bad">EMIAC</span> team', kept: '…from <span class="edit-span good">Mac</span> team', outcome: '<span class="badge warn">alias reverted</span>' },
+          { when: 'Jun 7, 09:22', run: 'run_e31ac890', stt: 'deepgram', polished: '<span class="edit-span bad">meac</span> ka 68%', kept: '<span class="edit-span good">Mac</span> ka 68%', outcome: '<span class="badge live">hygiene blocked mec/mia</span>' },
+          { when: 'Jun 7, 16:05', run: 'run_c77b20ff', stt: 'deepgram batch', polished: 'open <span class="edit-span bad">EMIAC</span> docs', kept: 'open <span class="edit-span good">Lark</span> docs', outcome: '<span class="badge ok">learned Lark</span>' },
+        ],
+        sttMix: { dgWs: 128, dgBatch: 22, sarvamWs: 31, sarvamBatch: 5 },
+        stats: { vocab: 12, aliases: 18, cronBlocked: 4 },
+      },
+      abhi: {
+        vocab: [{ term: 'Spellar', type: 'brand', weight: 9.0, status: 'active', last: '1h ago' }],
+        aliases: [{ heard: 'speller', correct: 'Spellar', safety: 'active', pos: 5, neg: 0, run: 'run_x1' }],
+        policy: [], cron: [], learning: [],
+        stats: { vocab: 24, aliases: 31, cronBlocked: 2 },
+      },
+    };
+
+    function renderUsers(filter = '') {
+      const q = filter.toLowerCase();
+      const tbody = document.getElementById('usersTable');
+      tbody.innerHTML = USERS.filter(u => !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q))
+        .map(u => `
+          <tr class="clickable" onclick="openProfile('${u.id}')">
+            <td>
+              <div style="display:flex;align-items:center;gap:10px">
+                <div class="avatar sm">${u.name[0]}</div>
+                <div>
+                  <div style="font-weight:500">${u.name}</div>
+                  <div style="font-size:11px;color:var(--color-fg-4)">${u.email}</div>
+                </div>
+              </div>
+            </td>
+            <td class="tabular">${u.runs}</td>
+            <td class="tabular">${u.min}</td>
+            <td class="tabular">${u.accept}%</td>
+            <td class="tabular">${u.edit}%</td>
+            <td class="tabular">${u.heavy}%</td>
+            <td class="tabular">${u.fallback}%</td>
+            <td class="mono" style="font-size:10px">${u.stt}</td>
+            <td class="tabular">${u.learning}</td>
+            <td style="color:var(--color-fg-4)">${u.last}</td>
+            <td>${u.desktop ? '<span class="badge ok">Online</span>' : '<span class="badge neutral">Offline</span>'}</td>
+          </tr>
+        `).join('');
+    }
+
+    function bool(v) { return v ? '<span class="bool-yes">yes</span>' : '<span class="bool-no">no</span>'; }
+
+    function renderRunDetail(r) {
+      const flags = Object.entries(r.flags || {}).map(([k,v]) => `<span class="flag ${v?'on':''}">${k}</span>`).join('');
+      return `
+        <h4>Identity</h4>
+        <div class="field-grid">
+          <div><div class="k">run_id</div><div class="v mono">${r.run_id}</div></div>
+          <div><div class="k">recording_id</div><div class="v mono">${r.recording_id}</div></div>
+          <div><div class="k">device_id</div><div class="v mono">${r.device_id}</div></div>
+        </div>
+        <h4>STT</h4>
+        <div class="field-grid">
+          <div><div class="k">stt_provider</div><div class="v mono">${r.stt_provider || '—'}</div></div>
+          <div><div class="k">stt_model</div><div class="v mono">${r.stt_model || '—'}</div></div>
+          <div><div class="k">stt_path</div><div class="v mono">${r.stt_path || '—'}</div></div>
+        </div>
+        <h4>Context</h4>
+        <div class="field-grid">
+          <div><div class="k">mode</div><div class="v mono">${r.mode}</div></div>
+          <div><div class="k">target_app</div><div class="v">${r.target_app}</div></div>
+          <div><div class="k">platform</div><div class="v mono">${r.platform}</div></div>
+          <div><div class="k">app_version</div><div class="v mono">${r.app_version}</div></div>
+          <div><div class="k">machine_class</div><div class="v mono">${r.machine_class}</div></div>
+          <div><div class="k">client_version</div><div class="v mono">${r.client_version}</div></div>
+        </div>
+        <h4>Audio & text metrics</h4>
+        <div class="field-grid">
+          <div><div class="k">audio_seconds</div><div class="v tabular">${r.audio_seconds}</div></div>
+          <div><div class="k">word_count</div><div class="v tabular">${r.word_count}</div></div>
+          <div><div class="k">char_count</div><div class="v tabular">${r.char_count}</div></div>
+        </div>
+        <h4>Latency (ms)</h4>
+        <div class="field-grid">
+          <div><div class="k">transcribe_ms</div><div class="v tabular">${r.transcribe_ms}</div></div>
+          <div><div class="k">embed_ms</div><div class="v tabular">${r.embed_ms}</div></div>
+          <div><div class="k">polish_ms</div><div class="v tabular">${r.polish_ms}</div></div>
+          <div><div class="k">total_ms</div><div class="v tabular">${r.total_ms}</div></div>
+          <div><div class="k">paste_ms</div><div class="v tabular">${r.paste_ms}</div></div>
+        </div>
+        <h4>Outcome & fallbacks</h4>
+        <div class="field-grid">
+          <div><div class="k">success</div><div class="v">${bool(r.success)}</div></div>
+          <div><div class="k">error_code</div><div class="v mono">${r.error_code || '—'}</div></div>
+          <div><div class="k">used_clipboard_fallback</div><div class="v">${bool(r.used_clipboard_fallback)}</div></div>
+          <div><div class="k">used_ws_pretranscript</div><div class="v">${bool(r.used_ws_pretranscript)}</div></div>
+          <div><div class="k">used_http_stt_fallback</div><div class="v">${bool(r.used_http_stt_fallback)}</div></div>
+        </div>
+        <h4>Edit watch</h4>
+        <div class="field-grid">
+          <div><div class="k">edit_detected</div><div class="v">${bool(r.edit_detected)}</div></div>
+          <div><div class="k">edit_bucket</div><div class="v mono">${r.edit_bucket}</div></div>
+          <div><div class="k">edit_distance_chars</div><div class="v tabular">${r.edit_distance_chars ?? '—'}</div></div>
+          <div><div class="k">edit_distance_words</div><div class="v tabular">${r.edit_distance_words ?? '—'}</div></div>
+          <div><div class="k">accepted_as_is</div><div class="v">${bool(r.accepted_as_is)}</div></div>
+          <div><div class="k">deleted_entire_output</div><div class="v">${bool(r.deleted_entire_output)}</div></div>
+          <div><div class="k">re_recorded_quickly</div><div class="v">${bool(r.re_recorded_quickly)}</div></div>
+        </div>
+        <h4>Learning</h4>
+        <div class="field-grid">
+          <div><div class="k">learning_candidate</div><div class="v">${bool(r.learning_candidate)}</div></div>
+          <div><div class="k">learning_modal_shown</div><div class="v">${bool(r.learning_modal_shown)}</div></div>
+          <div><div class="k">learning_confirmed</div><div class="v">${bool(r.learning_confirmed)}</div></div>
+          <div><div class="k">learning_dismissed</div><div class="v">${bool(r.learning_dismissed)}</div></div>
+          <div><div class="k">server_learning_saved</div><div class="v">${bool(r.server_learning_saved)}</div></div>
+          <div><div class="k">server_learning_blocked</div><div class="v">${bool(r.server_learning_blocked)}</div></div>
+        </div>
+        <h4>Content flags</h4>
+        <div class="flag-row">${flags}</div>
+        <h4>Timestamps</h4>
+        <div class="field-grid">
+          <div><div class="k">event_at</div><div class="v mono">${r.event_at}</div></div>
+          <div><div class="k">received_at</div><div class="v mono">${r.received_at}</div></div>
+        </div>
+        ${r.learning_edit ? `
+        <h4>Edit → memory impact</h4>
+        <div style="font-size:12px;line-height:1.6;margin-bottom:8px">
+          <div><span style="color:var(--color-fg-4)">polished:</span> ${r.learning_edit.polished}</div>
+          <div style="margin-top:4px"><span style="color:var(--color-fg-4)">user kept:</span> ${r.learning_edit.kept}</div>
+        </div>
+        <div><span class="badge ${r.learning_edit.learned.includes('blocked') ? 'live' : r.learning_edit.learned.includes('reverted') ? 'warn' : 'ok'}">${r.learning_edit.learned}</span></div>
+        ` : ''}
+      `;
+    }
+
+    function safetyBadge(s) {
+      const map = { active: 'ok', review: 'warn', common_block: 'live', penalized: 'live', blocked: 'live' };
+      const label = { active: 'active', review: 'review', common_block: 'common_block', penalized: 'penalized', blocked: 'blocked' };
+      return `<span class="badge ${map[s] || 'neutral'}">${label[s] || s}</span>`;
+    }
+
+    function renderVocabForUser(userId) {
+      const d = USER_VOCAB[userId] || USER_VOCAB.priya;
+      document.getElementById('vocabCount').textContent = d.stats.vocab;
+      document.getElementById('aliasCount').textContent = d.stats.aliases;
+      document.getElementById('cronBlockedCount').textContent = d.stats.cronBlocked;
+
+      document.getElementById('vocabTable').innerHTML = d.vocab.map(v => `
+        <tr>
+          <td style="font-weight:500">${v.term}</td>
+          <td class="mono" style="font-size:11px">${v.type}</td>
+          <td class="tabular">${v.weight}</td>
+          <td>${safetyBadge(v.status)}</td>
+          <td style="color:var(--color-fg-4)">${v.last}</td>
+        </tr>
+      `).join('');
+
+      if (d.sttMix) {
+        document.getElementById('sttMixGrid').innerHTML = `
+          <div><div class="k" style="color:var(--color-fg-4);font-size:11px">deepgram WS</div><div class="v tabular" style="font-weight:600;margin-top:4px">${d.sttMix.dgWs} runs</div></div>
+          <div><div class="k" style="color:var(--color-fg-4);font-size:11px">deepgram batch</div><div class="v tabular" style="font-weight:600;margin-top:4px">${d.sttMix.dgBatch} runs</div></div>
+          <div><div class="k" style="color:var(--color-fg-4);font-size:11px">sarvam WS</div><div class="v tabular" style="font-weight:600;margin-top:4px">${d.sttMix.sarvamWs} runs</div></div>
+          <div><div class="k" style="color:var(--color-fg-4);font-size:11px">sarvam batch</div><div class="v tabular" style="font-weight:600;margin-top:4px">${d.sttMix.sarvamBatch} runs</div></div>
+        `;
+      }
+
+      document.getElementById('aliasTable').innerHTML = d.aliases.map(a => `
+        <tr>
+          <td class="mono">${a.heard}</td>
+          <td class="mono" style="font-weight:500">${a.correct}</td>
+          <td class="mono" style="font-size:10px">${a.stt || '—'}</td>
+          <td>${safetyBadge(a.safety)}</td>
+          <td class="tabular"><span class="bool-yes">+${a.pos}</span> <span class="bool-no">−${a.neg}</span></td>
+          <td class="mono" style="font-size:10px;color:var(--color-fg-4)">${a.run}</td>
+        </tr>
+      `).join('');
+
+      document.getElementById('policyTable').innerHTML = (d.policy.length ? d.policy : [{ variant: '—', correct: '—', type: '—', pos: 0, neg: 0, status: 'none' }]).map(p => `
+        <tr>
+          <td class="mono">${p.variant}</td>
+          <td class="mono">${p.correct}</td>
+          <td class="mono">${p.type}</td>
+          <td class="tabular">${p.pos}</td>
+          <td class="tabular">${p.neg}</td>
+          <td>${p.status === 'none' ? '<span class="subtitle">—</span>' : safetyBadge(p.status)}</td>
+        </tr>
+      `).join('');
+
+      document.getElementById('cronTable').innerHTML = d.cron.map(c => `
+        <tr>
+          <td style="color:var(--color-fg-4)">${c.at}</td>
+          <td class="mono">${c.alias}</td>
+          <td class="mono">${c.was}</td>
+          <td>${safetyBadge(c.verdict)}</td>
+          <td style="font-size:11px;color:var(--color-fg-3);max-width:220px">${c.reason}</td>
+          <td><span class="badge info">${c.action}</span></td>
+        </tr>
+      `).join('') || '<tr><td colspan="6" style="color:var(--color-fg-4)">No cron actions yet for this user</td></tr>';
+
+      document.getElementById('learningTable').innerHTML = d.learning.map(l => `
+        <tr>
+          <td style="color:var(--color-fg-4)">${l.when}</td>
+          <td class="mono" style="font-size:10px">${l.run}</td>
+          <td class="mono" style="font-size:10px">${l.stt || '—'}</td>
+          <td style="font-size:11px">${l.polished}</td>
+          <td style="font-size:11px">${l.kept}</td>
+          <td>${l.outcome}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="6" style="color:var(--color-fg-4)">No linked learning events</td></tr>';
+    }
+
+    function showProfilePane(name) {
+      document.querySelectorAll('.profile-pane').forEach(p => p.classList.remove('active'));
+      document.getElementById('profile-pane-' + name).classList.add('active');
+      document.querySelectorAll('#profileInnerTabs .inner-tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.pane === name);
+      });
+    }
+
+    function renderRuns() {
+      const tbody = document.getElementById('runsBody');
+      tbody.innerHTML = RUNS.map((r, i) => {
+        const bucketClass = r.edit_bucket === 'none' ? 'ok' : r.edit_bucket === 'heavy' ? 'live' : 'warn';
+        const flagSummary = r.flags ? Object.entries(r.flags).filter(([,v])=>v).map(([k])=>k.replace('has_','')).slice(0,3).join(', ') : '';
+        const sttLabel = r.stt_provider ? `${r.stt_provider === 'sarvam' ? 'Sarvam' : 'DG'}${r.stt_path === 'http_batch' ? '·batch' : ''}` : '—';
+        return `
+          <tr class="clickable" data-run="${i}" onclick="toggleRun(${i})">
+            <td><span class="chevron">›</span></td>
+            <td class="mono" style="font-size:11px">${r.event_at}</td>
+            <td class="mono">${r.run_id}</td>
+            <td class="mono">${r.mode}</td>
+            <td class="mono" style="font-size:10px" title="${r.stt_model || ''}">${sttLabel}</td>
+            <td>${r.target_app}</td>
+            <td class="tabular">${r.audio_seconds}s</td>
+            <td class="tabular">${r.word_count}</td>
+            <td class="tabular">${r.total_ms}</td>
+            <td><span class="badge ${bucketClass}">${r.edit_bucket}</span></td>
+            <td>${r.success ? '<span class="badge ok">ok</span>' : '<span class="badge live">fail</span>'}</td>
+            <td style="font-size:10px;color:var(--color-fg-4)">${flagSummary || '—'}</td>
+          </tr>
+          <tr><td colspan="12" style="padding:0;border:none">
+            <div class="run-detail" id="run-detail-${i}">${renderRunDetail(r)}</div>
+          </td></tr>
+        `;
+      }).join('');
+    }
+
+    function toggleRun(i) {
+      const detail = document.getElementById('run-detail-' + i);
+      const row = document.querySelector(`tr[data-run="${i}"]`);
+      const open = detail.classList.toggle('open');
+      row.classList.toggle('expanded', open);
+    }
+
+    function showView(name) {
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      document.getElementById('view-' + name).classList.add('active');
+      document.querySelectorAll('.preview-banner button').forEach((b, i) => {
+        b.classList.toggle('active', ['overview','users','profile'][i] === name);
+      });
+    }
+
+    let currentProfileId = 'priya';
+
+    function openProfile(id, pane) {
+      const u = USERS.find(x => x.id === id) || USERS[0];
+      currentProfileId = u.id;
+      document.getElementById('profileName').textContent = u.name;
+      document.getElementById('profileEmail').textContent = u.email;
+      document.getElementById('profileAvatar').textContent = u.name[0];
+      document.getElementById('pRuns').textContent = u.runs;
+      document.getElementById('pMinutes').textContent = u.min;
+      document.getElementById('pAccept').textContent = u.accept + '%';
+      document.getElementById('profileDesktop').textContent = u.desktop ? 'Desktop online' : 'Desktop offline';
+      document.getElementById('profileDesktop').className = 'badge ' + (u.desktop ? 'ok' : 'neutral');
+      renderVocabForUser(u.id);
+      showProfilePane(pane || 'telemetry');
+      showView('profile');
+    }
+
+    function openProfileVocab(id) {
+      openProfile(id || currentProfileId, 'vocab');
+    }
+
+    document.getElementById('userSearch').addEventListener('input', e => renderUsers(e.target.value));
+    document.getElementById('themeToggle').addEventListener('click', () => {
+      const html = document.documentElement;
+      html.dataset.theme = html.dataset.theme === 'light' ? 'dark' : 'light';
+      document.getElementById('themeToggle').textContent = html.dataset.theme === 'light' ? '🌙' : '☀';
+    });
+
+    document.getElementById('dateStr').textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }).toUpperCase();
+    renderUsers();
+    renderRuns();
+  </script>
+</body>
+</html>

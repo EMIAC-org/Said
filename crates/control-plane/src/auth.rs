@@ -25,6 +25,8 @@ use crate::AppState;
 pub struct AuthUser {
     pub account_id: Uuid,
     pub email: String,
+    /// Set when the bearer token is a session UUID (not JWT).
+    pub session_token: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -45,7 +47,7 @@ struct GuestJwtClaims {
 
 /// Try to resolve a bearer token to an account. Checks session UUID first,
 /// then falls back to JWT decode.
-async fn resolve_token(token_str: &str, app: &AppState) -> Option<(Uuid, String)> {
+async fn resolve_token(token_str: &str, app: &AppState) -> Option<(Uuid, String, Option<Uuid>)> {
     // 1. Try as session UUID
     if let Ok(token_uuid) = Uuid::parse_str(token_str) {
         let row: Option<(Uuid, String)> = sqlx::query_as(
@@ -60,8 +62,8 @@ async fn resolve_token(token_str: &str, app: &AppState) -> Option<(Uuid, String)
         .await
         .ok()?;
 
-        if let Some(r) = row {
-            return Some(r);
+        if let Some((account_id, email)) = row {
+            return Some((account_id, email, Some(token_uuid)));
         }
     }
 
@@ -84,7 +86,7 @@ async fn resolve_token(token_str: &str, app: &AppState) -> Option<(Uuid, String)
         .ok()?;
 
     if exists {
-        Some((account_id, token_data.claims.email))
+        Some((account_id, token_data.claims.email, None))
     } else {
         None
     }
@@ -110,17 +112,24 @@ where
             .ok_or((StatusCode::UNAUTHORIZED, "malformed authorization header"))?;
 
         let app = AppState::from_ref(state);
-        let (account_id, email) = resolve_token(token_str, &app)
+        let (account_id, email, session_token) = resolve_token(token_str, &app)
             .await
             .ok_or((StatusCode::UNAUTHORIZED, "invalid or expired token"))?;
 
-        Ok(AuthUser { account_id, email })
+        Ok(AuthUser {
+            account_id,
+            email,
+            session_token,
+        })
     }
 }
 
 /// Standalone function for WebSocket auth (where we have the token as a string,
 /// not in an HTTP header).
-pub async fn resolve_ws_token(token_str: &str, state: &AppState) -> Option<(Uuid, String)> {
+pub async fn resolve_ws_token(
+    token_str: &str,
+    state: &AppState,
+) -> Option<(Uuid, String, Option<Uuid>)> {
     resolve_token(token_str, state).await
 }
 
@@ -134,7 +143,7 @@ pub async fn resolve_guest_ws_token(
     token_str: &str,
     state: &AppState,
 ) -> Option<(Uuid, String, Option<Uuid>)> {
-    if let Some((account_id, email)) = resolve_token(token_str, state).await {
+    if let Some((account_id, email, _)) = resolve_token(token_str, state).await {
         return Some((account_id, email, None));
     }
 

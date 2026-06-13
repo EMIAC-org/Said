@@ -14,13 +14,13 @@
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser};
+use crate::{AppState, auth::AuthUser, memory_hygiene, tenant};
 
 // ── History item ─────────────────────────────────────────────────────────────
 
@@ -330,6 +330,7 @@ pub async fn delete_history_item(
 
 pub async fn sync_history(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(req): Json<HistorySyncRequest>,
 ) -> Result<Json<HistorySyncResponse>, (StatusCode, Json<Value>)> {
@@ -341,7 +342,8 @@ pub async fn sync_history(
         }));
     }
 
-    let org_id = primary_org_id(&state, user.account_id).await?;
+    let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
+    let org_id = tenant_ctx.active_org_id;
     let mut accepted = 0usize;
     let mut skipped = 0usize;
     let mut failed = 0usize;
@@ -427,10 +429,12 @@ pub async fn sync_history(
 
 pub async fn sync_memory(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     Json(req): Json<MemorySyncRequest>,
 ) -> Result<Json<MemorySyncResponse>, (StatusCode, Json<Value>)> {
-    let org_id = primary_org_id(&state, user.account_id).await?;
+    let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
+    let org_id = tenant_ctx.active_org_id;
 
     let mut accepted_vocab = 0usize;
     let mut blocked_vocab = 0usize;
@@ -611,6 +615,10 @@ pub async fn sync_memory(
         accepted_emails += 1;
     }
 
+    if accepted_vocab > 0 || accepted_aliases > 0 || accepted_policies > 0 || accepted_emails > 0 {
+        let _ = memory_hygiene::mark_memory_dirty(&state.db, user.account_id).await;
+    }
+
     Ok(Json(MemorySyncResponse {
         accepted_vocab,
         accepted_aliases,
@@ -622,6 +630,16 @@ pub async fn sync_memory(
     }))
 }
 
+pub async fn mark_memory_dirty_route(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Value>, StatusCode> {
+    memory_hygiene::mark_memory_dirty(&state.db, user.account_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({ "status": "ok" })))
+}
+
 // ── Called by voice_polish / voice_wav after successful completion ────────────
 
 pub async fn write_history_from_runtime(
@@ -630,6 +648,7 @@ pub async fn write_history_from_runtime(
     org_id: Option<Uuid>,
     run_id: Uuid,
     client_run_id: Option<&str>,
+    recording_id: Option<&str>,
     transcript: &str,
     output: &str,
     model_used: &str,
@@ -640,16 +659,17 @@ pub async fn write_history_from_runtime(
     let word_count = output.split_whitespace().count() as i32;
     let r = sqlx::query(
         "INSERT INTO runtime_history_items
-             (account_id, org_id, run_id, client_run_id, source,
+             (account_id, org_id, run_id, client_run_id, recording_id, source,
               transcript, polished_output, final_text, model_used,
               word_count, transcribe_ms, polish_ms)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12)
          ON CONFLICT DO NOTHING",
     )
     .bind(account_id)
     .bind(org_id)
     .bind(run_id)
     .bind(client_run_id)
+    .bind(recording_id)
     .bind(source)
     .bind(transcript)
     .bind(output)
@@ -666,20 +686,6 @@ pub async fn write_history_from_runtime(
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
-
-async fn primary_org_id(
-    state: &AppState,
-    account_id: Uuid,
-) -> Result<Option<Uuid>, (StatusCode, Json<Value>)> {
-    sqlx::query_scalar::<_, Option<Uuid>>(
-        "SELECT org_id FROM org_members WHERE account_id=$1 ORDER BY joined_at ASC LIMIT 1",
-    )
-    .bind(account_id)
-    .fetch_optional(&state.db)
-    .await
-    .map(|r| r.flatten())
-    .map_err(|_| herr("database error"))
-}
 
 fn parse_ts(s: &str) -> Result<chrono::DateTime<chrono::Utc>, (StatusCode, Json<Value>)> {
     s.parse::<chrono::DateTime<chrono::Utc>>()
