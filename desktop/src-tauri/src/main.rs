@@ -175,6 +175,19 @@ tauri_panel! {
             works_when_modal: true
         }
     })
+
+    // Like StatusBarPanel but able to become key so a click registers (the pill
+    // restores the app on click). Still non-activating so it floats over — and
+    // doesn't steal a Space from — a full-screen meeting app.
+    panel!(MeetingPillPanel {
+        config: {
+            can_become_key_window: true,
+            can_become_main_window: false,
+            is_floating_panel: true,
+            hides_on_deactivate: false,
+            works_when_modal: true
+        }
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -1603,31 +1616,92 @@ fn show_main_window(app: &tauri::AppHandle) {
 }
 
 // ── Live-meeting floating pill ────────────────────────────────────────────────
-// A tiny always-on-top capsule shown while a meeting is recording and the main
-// window is minimized, so recording status stays visible; clicking it restores
-// the app. Reuses the proven status-bar window recipe.
+// A tiny capsule shown while a meeting records and the app isn't in front, so
+// recording status stays visible over ANYTHING — including other apps' full
+// screen Spaces. macOS uses a true NSPanel (the only way to float over another
+// app's full-screen Space); other platforms use an always-on-top window.
 
 const MEETING_PILL_W: f64 = 200.0;
 const MEETING_PILL_H: f64 = 52.0;
 
-#[tauri::command]
-fn show_meeting_pill(app: tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("meeting-pill") {
-        let _ = w.show();
-        let _ = w.set_always_on_top(true);
-        return;
-    }
-    let url = "index.html?view=meeting-pill#meeting-pill";
-    // Top-center on the main window's monitor (logical coords).
-    let (x, y) = app
-        .get_webview_window("main")
+fn meeting_pill_position(app: &tauri::AppHandle) -> (f64, f64) {
+    app.get_webview_window("main")
         .and_then(|w| w.current_monitor().ok().flatten())
         .map(|m| {
             let logical_w = m.size().width as f64 / m.scale_factor();
             (((logical_w - MEETING_PILL_W) / 2.0).max(8.0), 16.0)
         })
-        .unwrap_or((620.0, 16.0));
-    match tauri::WebviewWindowBuilder::new(&app, "meeting-pill", tauri::WebviewUrl::App(url.into()))
+        .unwrap_or((620.0, 16.0))
+}
+
+#[tauri::command]
+fn show_meeting_pill(app: tauri::AppHandle) {
+    let url = "index.html?view=meeting-pill#meeting-pill";
+    let (x, y) = meeting_pill_position(&app);
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(panel) = app.get_webview_panel("meeting-pill") {
+            panel.show();
+            panel.order_front_regardless();
+            return;
+        }
+        match PanelBuilder::<_, MeetingPillPanel>::new(&app, "meeting-pill")
+            .url(tauri::WebviewUrl::App(url.into()))
+            .title("AirNote Meeting")
+            .size(tauri::Size::Logical(tauri::LogicalSize::new(
+                MEETING_PILL_W,
+                MEETING_PILL_H,
+            )))
+            .position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+            .level(PanelLevel::Custom(28))
+            .floating(true)
+            .hides_on_deactivate(false)
+            .works_when_modal(true)
+            .ignores_mouse_events(false)
+            .has_shadow(false)
+            .transparent(true)
+            .style_mask(StyleMask::empty().borderless().nonactivating_panel())
+            .collection_behavior(
+                CollectionBehavior::new()
+                    .can_join_all_spaces()
+                    .full_screen_auxiliary(),
+            )
+            .no_activate(true)
+            .with_window(|window| {
+                window
+                    .decorations(false)
+                    .always_on_top(true)
+                    .visible_on_all_workspaces(true)
+                    .skip_taskbar(true)
+                    .focused(false)
+                    .resizable(false)
+                    .shadow(false)
+                    .transparent(true)
+            })
+            .build()
+        {
+            Ok(panel) => {
+                panel.show();
+                panel.order_front_regardless();
+                tracing::info!("[meeting-pill] NSPanel created");
+            }
+            Err(e) => tracing::warn!("[meeting-pill] panel create failed: {e}"),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(w) = app.get_webview_window("meeting-pill") {
+            let _ = w.show();
+            let _ = w.set_always_on_top(true);
+            return;
+        }
+        match tauri::WebviewWindowBuilder::new(
+            &app,
+            "meeting-pill",
+            tauri::WebviewUrl::App(url.into()),
+        )
         .title("AirNote Meeting")
         .inner_size(MEETING_PILL_W, MEETING_PILL_H)
         .position(x, y)
@@ -1637,76 +1711,28 @@ fn show_meeting_pill(app: tauri::AppHandle) {
         .skip_taskbar(true)
         .focused(false)
         .resizable(false)
-        .shadow(false)
-        .transparent(true)
         .build()
-    {
-        Ok(win) => {
-            let _ = win.set_always_on_top(true);
-            #[cfg(target_os = "macos")]
-            configure_meeting_pill_macos(&win);
-            tracing::info!("[meeting-pill] created");
-        }
-        Err(e) => tracing::warn!("[meeting-pill] create failed: {e}"),
-    }
-}
-
-/// Make the pill float over EVERYTHING — full-screen apps and every Space —
-/// while staying clickable. Same NSWindow recipe as the status-bar HUD
-/// (canJoinAllSpaces + fullScreenAuxiliary + a above-status window level), but
-/// without ignoring mouse events so clicking it can restore the app.
-#[cfg(target_os = "macos")]
-fn configure_meeting_pill_macos(win: &tauri::WebviewWindow) {
-    use objc::Message;
-    use objc::runtime::{Object, Sel};
-
-    let Ok(ns_window) = win.ns_window() else {
-        return;
-    };
-    if ns_window.is_null() {
-        return;
-    }
-    const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
-    const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
-    const NONACTIVATING_PANEL_STYLE: usize = 1 << 7;
-    const NS_STATUS_WINDOW_LEVEL_PLUS_THREE: isize = 28;
-    unsafe {
-        let ns_window = &*(ns_window as *mut Object);
-        let style_mask: usize = ns_window
-            .send_message(Sel::register("styleMask"), ())
-            .unwrap_or(0);
-        let _: Result<(), _> = ns_window.send_message(
-            Sel::register("setStyleMask:"),
-            (style_mask | NONACTIVATING_PANEL_STYLE,),
-        );
-        let behavior = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setCollectionBehavior:"), (behavior,));
-        let _: Result<(), _> = ns_window.send_message(
-            Sel::register("setLevel:"),
-            (NS_STATUS_WINDOW_LEVEL_PLUS_THREE,),
-        );
-        let _: Result<(), _> = ns_window.send_message(Sel::register("setCanHide:"), (false,));
-        for (selector_name, value) in [
-            ("setHidesOnDeactivate:", false),
-            ("setFloatingPanel:", true),
-        ] {
-            let selector = Sel::register(selector_name);
-            let responds: bool = ns_window
-                .send_message(Sel::register("respondsToSelector:"), (selector,))
-                .unwrap_or(false);
-            if responds {
-                let _: Result<(), _> = ns_window.send_message(selector, (value,));
+        {
+            Ok(win) => {
+                let _ = win.set_always_on_top(true);
+                tracing::info!("[meeting-pill] created");
             }
+            Err(e) => tracing::warn!("[meeting-pill] create failed: {e}"),
         }
-        let _: Result<(), _> = ns_window.send_message(Sel::register("orderFrontRegardless"), ());
     }
 }
 
 #[tauri::command]
 fn hide_meeting_pill(app: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(panel) = app.get_webview_panel("meeting-pill") {
+            panel.hide();
+            return;
+        }
+    }
     if let Some(w) = app.get_webview_window("meeting-pill") {
-        let _ = w.close();
+        let _ = w.hide();
     }
 }
 
