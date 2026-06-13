@@ -1624,6 +1624,31 @@ fn show_main_window(app: &tauri::AppHandle) {
 const MEETING_PILL_W: f64 = 200.0;
 const MEETING_PILL_H: f64 = 52.0;
 
+/// Force the pill's native window fully transparent (clear background, not
+/// opaque, no shadow) so only the rounded capsule shows — no square backing.
+#[cfg(target_os = "macos")]
+fn make_pill_transparent_macos(app: &tauri::AppHandle) {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    let Some(win) = app.get_webview_window("meeting-pill") else {
+        return;
+    };
+    let Ok(ns_window) = win.ns_window() else {
+        return;
+    };
+    if ns_window.is_null() {
+        return;
+    }
+    unsafe {
+        let ns_window = ns_window as *mut Object;
+        let clear: *mut Object = msg_send![class!(NSColor), clearColor];
+        let _: () = msg_send![ns_window, setOpaque: false];
+        let _: () = msg_send![ns_window, setBackgroundColor: clear];
+        let _: () = msg_send![ns_window, setHasShadow: false];
+    }
+}
+
 fn meeting_pill_position(app: &tauri::AppHandle) -> (f64, f64) {
     app.get_webview_window("main")
         .and_then(|w| w.current_monitor().ok().flatten())
@@ -1684,10 +1709,12 @@ fn show_meeting_pill(app: tauri::AppHandle) {
             Ok(panel) => {
                 panel.show();
                 panel.order_front_regardless();
+                make_pill_transparent_macos(&app);
                 tracing::info!("[meeting-pill] NSPanel created");
             }
             Err(e) => tracing::warn!("[meeting-pill] panel create failed: {e}"),
         }
+        make_pill_transparent_macos(&app);
     }
 
     #[cfg(not(target_os = "macos"))]

@@ -399,6 +399,9 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   useEffect(() => {
     if (ended || autoMinimizedRef.current || !(captureRunning || engineRunning)) return;
     autoMinimizedRef.current = true;
+    // Show the pill explicitly (don't depend on the focus-change event timing),
+    // then minimize so it takes over immediately at meeting start.
+    void invoke("show_meeting_pill").catch(() => {});
     void getCurrentWindow()
       .minimize()
       .catch(() => {});
