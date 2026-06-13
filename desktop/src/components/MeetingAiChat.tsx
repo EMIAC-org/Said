@@ -65,14 +65,18 @@ export function MeetingAiChat({
   const resetKeyRef = useRef(resetKey);
   resetKeyRef.current = resetKey;
   const activeUnlistenRef = useRef<null | (() => void)>(null);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Re-arm on (re)mount. Without this, React StrictMode's dev mount→unmount→
+    // mount cycle leaves mountedRef.current=false (the first unmount set it
+    // false and the second mount never reset it), so isCurrent() is permanently
+    // false and EVERY chat answer is dropped — the UI stays stuck on "thinking".
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
       activeUnlistenRef.current?.();
       activeUnlistenRef.current = null;
-    },
-    [],
-  );
+    };
+  }, []);
 
   // Reset the conversation when the underlying meeting changes — and cancel any
   // in-flight send's UI state + listener so a late answer can't land here.
