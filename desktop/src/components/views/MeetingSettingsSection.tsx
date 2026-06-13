@@ -143,9 +143,11 @@ export function MeetingSettingsSection() {
     [refresh],
   );
 
+  // Inline confirm (window.confirm is a no-op in Tauri webviews).
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const deleteModel = useCallback(
     async (name: string) => {
-      if (!window.confirm(`Delete the ${prettyModelName(name)} model from disk?`)) return;
+      setConfirmDelete(null);
       setBusyKey(name);
       try {
         await invoke("meeting_delete_whisper_model", { name });
@@ -290,15 +292,40 @@ export function MeetingSettingsSection() {
                       </span>
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => void deleteModel(m.name)}
-                    disabled={busyKey === m.name}
-                    title="Delete model"
-                    className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-[hsl(354_85%_70%)] disabled:opacity-40"
-                  >
-                    {busyKey === m.name ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-                  </button>
+                  {busyKey === m.name ? (
+                    <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center text-muted-foreground">
+                      <Loader2 size={13} className="animate-spin" />
+                    </span>
+                  ) : confirmDelete === m.name ? (
+                    <span className="flex flex-shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => void deleteModel(m.name)}
+                        title="Confirm delete"
+                        className="h-7 rounded-lg px-2 text-[11px] font-bold"
+                        style={{ background: "hsl(354 70% 30%)", color: "hsl(354 90% 90%)" }}
+                      >
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDelete(null)}
+                        title="Cancel"
+                        className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground"
+                      >
+                        <X size={14} />
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(m.name)}
+                      title="Delete model"
+                      className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-[hsl(354_85%_70%)]"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
                 </div>
               ))
             )}
