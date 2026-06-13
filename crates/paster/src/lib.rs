@@ -21,7 +21,6 @@ mod imp {
     const KEY_A: u16 = 0; // kVK_ANSI_A
     const KEY_C: u16 = 8; // kVK_ANSI_C
     const KEY_DELETE: u16 = 51; // kVK_Delete (backspace)
-    const KEY_LEFT: u16 = 123; // kVK_LeftArrow
     const KEY_RIGHT: u16 = 124; // kVK_RightArrow
     const KEY_CMD: u16 = 55;
 
@@ -1476,6 +1475,27 @@ mod imp {
         (prefix_len, old_mid_len, new_mid, suffix_len)
     }
 
+    /// With the caret at the END of `typed_text`, compute the minimal tail rewrite
+    /// that turns `typed_text` into `replacement`: how many BACKSPACES to delete
+    /// from the end, and the string to retype. Pure (no I/O) so it can be unit
+    /// tested. Invariants (locked in by `tail_rewrite_*` tests):
+    ///   * `backspaces <= typed_text.chars().count()` — the deletion never reaches
+    ///     past our own streamed text into the user's surrounding content.
+    ///   * `(typed_text minus its last `backspaces` chars) + retype == replacement`.
+    ///
+    /// The safety invariant assumes `typed_text` matches what physically landed in
+    /// the field (every streamed token typed successfully). The AX-range path
+    /// verifies that against the live field value; this blind fallback trusts it.
+    fn tail_rewrite(typed_text: &str, replacement: &str) -> (usize, String) {
+        let (_prefix_len, old_mid_len, new_mid, suffix_len) =
+            diff_single_span(typed_text, replacement);
+        let typed_chars: Vec<char> = typed_text.chars().collect();
+        let suffix_str: String = typed_chars[typed_chars.len().saturating_sub(suffix_len)..]
+            .iter()
+            .collect();
+        (old_mid_len + suffix_len, format!("{new_mid}{suffix_str}"))
+    }
+
     fn utf16_len_for_chars(text: &str, char_count: usize) -> i64 {
         text.chars()
             .take(char_count)
@@ -1493,6 +1513,13 @@ mod imp {
         }
 
         if let Some(initial) = initial_text {
+            // Reliable anchor: the field is exactly the pre-existing text with our
+            // streamed text inserted at a single point —
+            // current == initial[..split] + typed + initial[split..].
+            // Only edit when this holds exactly. If the field no longer matches our
+            // model (length differs, content changed), do NOT guess a location:
+            // return None so the caller leaves the streamed text untouched rather
+            // than editing at a wrong offset.
             let initial_chars: Vec<char> = initial.chars().collect();
             let current_chars: Vec<char> = current_text.chars().collect();
             let typed_chars: Vec<char> = typed_text.chars().collect();
@@ -1506,8 +1533,16 @@ mod imp {
                     }
                 }
             }
+            return None;
         }
 
+        // No reliable baseline (the field wasn't readable before dictation): accept
+        // only a single, unambiguous occurrence of the streamed text. A non-unique
+        // match — or no match — is too risky to edit, so return None and let the
+        // caller keep the streamed text. The previous `ends_with` fallback is
+        // intentionally removed: it assumed our text sat at the very end of the
+        // field, which is precisely wrong when the user dictated into a field that
+        // already had trailing content (the reported "too much content" bug).
         let mut matches = Vec::new();
         let mut search_from = 0;
         while let Some(relative) = current_text[search_from..].find(typed_text) {
@@ -1516,18 +1551,10 @@ mod imp {
             search_from = byte_idx + typed_text.len();
         }
         if matches.len() == 1 {
-            return matches.into_iter().next();
+            matches.into_iter().next()
+        } else {
+            None
         }
-
-        if current_text.ends_with(typed_text) {
-            return Some(
-                current_text[..current_text.len() - typed_text.len()]
-                    .chars()
-                    .count(),
-            );
-        }
-
-        None
     }
 
     unsafe fn focused_ui_element() -> Option<*mut c_void> {
@@ -1646,7 +1673,12 @@ mod imp {
         unsafe { ffi::CFRelease(elem) };
 
         if new_mid.is_empty() {
-            post_key_repeated(KEY_DELETE, 1, 2)?;
+            // Pure deletion: a backspace deletes the selected old_mid range. Guard
+            // on a non-empty selection so we never delete a char to the left of an
+            // empty caret (only reachable if a future caller passes typed==replacement).
+            if selection_length > 0 {
+                post_key_repeated(KEY_DELETE, 1, 2)?;
+            }
         } else {
             type_or_paste_at_cursor(&new_mid)?;
         }
@@ -1710,26 +1742,28 @@ mod imp {
             return Ok(true);
         }
 
-        let (prefix_len, old_mid_len, new_mid, suffix_len) =
-            diff_single_span(typed_text, replacement);
-
         let ax_ok = unsafe { ffi::AXIsProcessTrusted() };
-        tracing::info!(
-            "[paste] reconciling current typed text — prefix_chars={} old_mid_chars={} new_mid_chars={} suffix_chars={}",
-            prefix_len,
-            old_mid_len,
-            new_mid.chars().count(),
-            suffix_len,
-        );
         if !ax_ok {
             return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable AirNote".into());
         }
 
-        post_key_repeated(KEY_LEFT, suffix_len, 1)?;
-        post_key_repeated(KEY_DELETE, old_mid_len, 2)?;
-
-        type_or_paste_at_cursor(&new_mid)?;
-        post_key_repeated(KEY_RIGHT, suffix_len, 1)?;
+        // The caret is at the END of the text AirNote just streamed. Rewrite only
+        // our own trailing characters using BACKSPACES anchored at the caret —
+        // never arrow-key navigation. Arrow nav assumes the field holds *only* our
+        // typed text; when the field already had content (dictating into a
+        // non-empty field, or mid-text), KEY_LEFT/KEY_RIGHT cross into the user's
+        // surrounding text and the delete/retype lands at the wrong offset,
+        // duplicating or garbling content. `tail_rewrite` only ever backspaces our
+        // own typed tail (count <= typed_text length), then retypes the corrected
+        // tail — so the user's surrounding text can never be touched.
+        let (backspaces, retype) = tail_rewrite(typed_text, replacement);
+        tracing::info!(
+            "[paste] reconciling current typed text — backspaces={} retype_chars={}",
+            backspaces,
+            retype.chars().count(),
+        );
+        post_key_repeated(KEY_DELETE, backspaces, 2)?;
+        type_or_paste_at_cursor(&retype)?;
 
         Ok(true)
     }
@@ -1794,7 +1828,7 @@ mod imp {
 
     #[cfg(test)]
     mod tests {
-        use super::{diff_single_span, find_current_recording_span};
+        use super::{diff_single_span, find_current_recording_span, tail_rewrite};
 
         #[test]
         fn diff_single_span_keeps_common_prefix_and_suffix() {
@@ -1824,10 +1858,61 @@ mod imp {
                 find_current_recording_span(None, "before same after", typed),
                 Some("before ".chars().count())
             );
+            // Ambiguous: "same" occurs twice and we have no initial-field anchor,
+            // so refuse to guess. The old code matched the trailing occurrence via
+            // `ends_with` — exactly how dictating into a non-empty field got the
+            // final output garbled. Returning None makes the caller keep the
+            // already-correct streamed text instead.
             assert_eq!(
                 find_current_recording_span(None, "same before same", typed),
-                Some("same before ".chars().count())
+                None
             );
+        }
+
+        #[test]
+        fn current_recording_span_refuses_to_guess_when_field_changed() {
+            // initial-field text is known but the field no longer matches
+            // initial+typed insertion (the app mutated it) — refuse to edit at a
+            // guessed offset rather than risk garbling existing content.
+            assert_eq!(
+                find_current_recording_span(Some("Hello world"), "wildly different content", "spoken"),
+                None
+            );
+        }
+
+        #[test]
+        fn tail_rewrite_only_touches_our_tail_and_reconstructs_replacement() {
+            // (streamed text, final replacement) covering: tail tweak, mid tweak,
+            // word fix, append, deletion, pure append, partial/RESET (fragment ->
+            // full), and multibyte + emoji.
+            let cases = [
+                ("5 pm", "5 PM"),
+                ("5 pm world", "5 PM world"),
+                ("helo world", "hello world"),
+                ("main offic", "main office"),
+                ("hello world", "hello"),
+                ("hello", "hello world"),
+                ("मैं", "Main office ja raha hoon"),
+                ("cafe", "café ☕"),
+            ];
+            for (typed, repl) in cases {
+                let (backspaces, retype) = tail_rewrite(typed, repl);
+                let typed_len = typed.chars().count();
+                // SAFETY: never delete more than we ourselves typed — the deletion
+                // can never reach the user's surrounding text.
+                assert!(
+                    backspaces <= typed_len,
+                    "backspaces {backspaces} > typed len {typed_len} for typed={typed:?}"
+                );
+                // CORRECTNESS: deleting our last `backspaces` streamed chars and
+                // retyping `retype` reproduces the final output exactly.
+                let kept: String = typed.chars().take(typed_len - backspaces).collect();
+                assert_eq!(
+                    format!("{kept}{retype}"),
+                    repl,
+                    "reconstruction failed for typed={typed:?} repl={repl:?}"
+                );
+            }
         }
     }
 }
