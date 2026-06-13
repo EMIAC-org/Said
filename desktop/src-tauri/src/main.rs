@@ -4785,6 +4785,27 @@ async fn download_recording_audio(
     Ok(Some(path.display().to_string()))
 }
 
+/// Save a meeting's local audio file to a user-chosen location (native save
+/// dialog on macOS, Downloads elsewhere). The file is already on disk, so this
+/// copies it rather than fetching from the server. Returns the saved path, or
+/// None if the user cancelled.
+#[tauri::command]
+fn download_meeting_audio(audio_path: String, filename: String) -> Result<Option<String>, String> {
+    let src = std::path::PathBuf::from(&audio_path);
+    if !src.is_file() {
+        return Err("meeting audio file not found on disk".to_string());
+    }
+    let Some(dest) = choose_recording_audio_save_path(&filename)? else {
+        return Ok(None);
+    };
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("couldn't create download folder: {e}"))?;
+    }
+    std::fs::copy(&src, &dest).map_err(|e| format!("couldn't save audio: {e}"))?;
+    Ok(Some(dest.display().to_string()))
+}
+
 #[tauri::command]
 fn reveal_downloaded_file(path: String) -> Result<(), String> {
     let path = std::path::PathBuf::from(path);
@@ -7910,6 +7931,7 @@ fn main() {
             get_recording_audio_bytes,
             download_recording_audio,
             reveal_downloaded_file,
+            download_meeting_audio,
             // Pending-edit review
             get_pending_edits,
             resolve_pending_edit,

@@ -17,10 +17,10 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
+  RotateCw,
   ScrollText,
   Search,
-  SkipBack,
-  SkipForward,
   Sparkles,
   Star,
   Trash2,
@@ -411,6 +411,8 @@ function MeetingAudioBar({
   onToggle,
   onSeek,
   onSpeed,
+  onDownload,
+  downloading,
 }: {
   audioSrc: string | null;
   audioRef: MutableRefObject<HTMLAudioElement | null>;
@@ -424,6 +426,8 @@ function MeetingAudioBar({
   onToggle: () => void;
   onSeek: (seconds: number) => void;
   onSpeed: () => void;
+  onDownload: () => void;
+  downloading: boolean;
 }) {
   const effectiveDuration = duration || ((fallbackDurationMs ?? 0) / 1000);
   return (
@@ -436,7 +440,11 @@ function MeetingAudioBar({
           ref={audioRef}
           src={audioSrc}
           preload="metadata"
-          onLoadedMetadata={(event) => onDuration(event.currentTarget.duration || 0)}
+          onLoadedMetadata={(event) => {
+            onDuration(event.currentTarget.duration || 0);
+            // Re-apply the chosen rate — a fresh src resets playbackRate to 1.
+            event.currentTarget.playbackRate = speed;
+          }}
           onTimeUpdate={(event) => onTime(event.currentTarget.currentTime || 0)}
           onEnded={() => onTime(effectiveDuration)}
         />
@@ -466,37 +474,49 @@ function MeetingAudioBar({
         <span className="tabular-nums">
           {formatTimestamp(currentTime * 1000)} / {formatTimestamp(effectiveDuration * 1000)}
         </span>
-        <IconButton label="Back 15 seconds" disabled={!audioSrc} onClick={() => onSeek(Math.max(0, currentTime - 15))}>
-          <SkipBack size={14} />
-        </IconButton>
-        <IconButton label="Forward 15 seconds" disabled={!audioSrc} onClick={() => onSeek(Math.min(effectiveDuration, currentTime + 15))}>
-          <SkipForward size={14} />
-        </IconButton>
+        <button
+          type="button"
+          disabled={!audioSrc}
+          onClick={() => onSeek(Math.max(0, currentTime - 10))}
+          title="Back 10 seconds"
+          aria-label="Back 10 seconds"
+          className="relative flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground disabled:opacity-45"
+        >
+          <RotateCcw size={18} />
+          <span className="absolute text-[7px] font-bold">10</span>
+        </button>
+        <button
+          type="button"
+          disabled={!audioSrc}
+          onClick={() => onSeek(Math.min(effectiveDuration, currentTime + 10))}
+          title="Forward 10 seconds"
+          aria-label="Forward 10 seconds"
+          className="relative flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground disabled:opacity-45"
+        >
+          <RotateCw size={18} />
+          <span className="absolute text-[7px] font-bold">10</span>
+        </button>
         <button
           type="button"
           disabled={!audioSrc}
           onClick={onSpeed}
-          className="h-8 rounded-lg px-2 text-[12px] font-bold disabled:opacity-45"
+          className="h-8 w-10 rounded-lg text-[12px] font-bold tabular-nums transition-colors hover:text-foreground disabled:opacity-45"
           style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--muted-foreground))" }}
           title="Playback speed"
         >
           {speed}x
         </button>
-        {audioSrc ? (
-          <a
-            href={audioSrc}
-            download
-            className="flex h-8 w-8 items-center justify-center rounded-lg"
-            style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--muted-foreground))" }}
-            title="Download audio"
-          >
-            <Download size={14} />
-          </a>
-        ) : (
-          <IconButton label="Audio not available" disabled>
-            <Download size={14} />
-          </IconButton>
-        )}
+        <button
+          type="button"
+          disabled={!audioSrc || downloading}
+          onClick={onDownload}
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground disabled:opacity-45"
+          style={{ background: "hsl(var(--surface-3))" }}
+          title="Download audio"
+          aria-label="Download audio"
+        >
+          {downloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+        </button>
       </div>
     </div>
   );
@@ -1312,6 +1332,30 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
     });
   }, []);
 
+  const [downloadingAudio, setDownloadingAudio] = useState(false);
+  const handleDownloadAudio = useCallback(async () => {
+    const path = artifacts?.audio_path;
+    if (!path || downloadingAudio) return;
+    setDownloadingAudio(true);
+    try {
+      const base =
+        (selectedMeeting?.title || "meeting")
+          .replace(/[^\w-]+/g, "_")
+          .replace(/^_+|_+$/g, "")
+          .slice(0, 60) || "meeting";
+      const ext = path.split(".").pop()?.toLowerCase() || "wav";
+      const saved = await invoke<string | null>("download_meeting_audio", {
+        audioPath: path,
+        filename: `${base}.${ext}`,
+      });
+      if (saved) await invoke("reveal_downloaded_file", { path: saved }).catch(() => {});
+    } catch (err) {
+      console.warn("[meeting] audio download failed:", err);
+    } finally {
+      setDownloadingAudio(false);
+    }
+  }, [artifacts?.audio_path, selectedMeeting?.title, downloadingAudio]);
+
   const copySummary = useCallback(async () => {
     const text = meetingAi?.summary?.trim();
     if (!text) return;
@@ -2013,6 +2057,8 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
               onToggle={toggleAudio}
               onSeek={seekAudio}
               onSpeed={cycleSpeed}
+              onDownload={handleDownloadAudio}
+              downloading={downloadingAudio}
             />
 
             <div className="mt-5 flex flex-wrap items-center gap-3">
