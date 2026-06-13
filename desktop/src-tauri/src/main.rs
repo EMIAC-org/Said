@@ -1602,6 +1602,66 @@ fn show_main_window(app: &tauri::AppHandle) {
     activate_airnote(app, "show_main_window");
 }
 
+// ── Live-meeting floating pill ────────────────────────────────────────────────
+// A tiny always-on-top capsule shown while a meeting is recording and the main
+// window is minimized, so recording status stays visible; clicking it restores
+// the app. Reuses the proven status-bar window recipe.
+
+const MEETING_PILL_W: f64 = 200.0;
+const MEETING_PILL_H: f64 = 52.0;
+
+#[tauri::command]
+fn show_meeting_pill(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("meeting-pill") {
+        let _ = w.show();
+        let _ = w.set_always_on_top(true);
+        return;
+    }
+    let url = "index.html?view=meeting-pill#meeting-pill";
+    // Top-center on the main window's monitor (logical coords).
+    let (x, y) = app
+        .get_webview_window("main")
+        .and_then(|w| w.current_monitor().ok().flatten())
+        .map(|m| {
+            let logical_w = m.size().width as f64 / m.scale_factor();
+            (((logical_w - MEETING_PILL_W) / 2.0).max(8.0), 16.0)
+        })
+        .unwrap_or((620.0, 16.0));
+    match tauri::WebviewWindowBuilder::new(&app, "meeting-pill", tauri::WebviewUrl::App(url.into()))
+        .title("AirNote Meeting")
+        .inner_size(MEETING_PILL_W, MEETING_PILL_H)
+        .position(x, y)
+        .decorations(false)
+        .always_on_top(true)
+        .visible_on_all_workspaces(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .resizable(false)
+        .shadow(false)
+        .transparent(true)
+        .build()
+    {
+        Ok(win) => {
+            let _ = win.set_always_on_top(true);
+            tracing::info!("[meeting-pill] created");
+        }
+        Err(e) => tracing::warn!("[meeting-pill] create failed: {e}"),
+    }
+}
+
+#[tauri::command]
+fn hide_meeting_pill(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("meeting-pill") {
+        let _ = w.close();
+    }
+}
+
+#[tauri::command]
+fn focus_main_from_pill(app: tauri::AppHandle) {
+    show_main_window(&app);
+    hide_meeting_pill(app);
+}
+
 fn launched_from_autostart() -> bool {
     std::env::args().any(|arg| arg == AUTOSTART_ARG)
 }
@@ -7780,6 +7840,9 @@ fn main() {
             meeting_engine_get_live_transcript,
             meeting_engine_get_status,
             meeting_engine_get_processing_status,
+            show_meeting_pill,
+            hide_meeting_pill,
+            focus_main_from_pill,
             meeting_engine_get_cached_artifacts,
             meeting_engine_get_cached_intelligence,
             meeting_engine_generate_intelligence,

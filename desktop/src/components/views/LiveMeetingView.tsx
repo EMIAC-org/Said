@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getConnection } from "@/lib/enterprise";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
 import { formatTimestamp, speakerColor } from "@/lib/meetingFormat";
@@ -358,6 +359,37 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
       onEndedRef.current?.(meetingId);
     }
   }, [ended, meetingId]);
+
+  // While a meeting is live, mirror recording to a floating always-on-top pill
+  // whenever the main window is minimized; hide it once restored or on leave.
+  useEffect(() => {
+    if (ended) return;
+    const appWindow = getCurrentWindow();
+    let cancelled = false;
+    let pillShown = false;
+    const tick = async () => {
+      try {
+        const minimized = await appWindow.isMinimized();
+        if (cancelled) return;
+        if (minimized && !pillShown) {
+          pillShown = true;
+          await invoke("show_meeting_pill");
+        } else if (!minimized && pillShown) {
+          pillShown = false;
+          await invoke("hide_meeting_pill");
+        }
+      } catch {
+        /* window API unavailable */
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 700);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      void invoke("hide_meeting_pill").catch(() => {});
+    };
+  }, [ended]);
 
   // Load this meeting's saved notes once.
   useEffect(() => {
