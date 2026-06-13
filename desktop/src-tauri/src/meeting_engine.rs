@@ -7971,6 +7971,8 @@ pub struct WhisperModelInfo {
     pub path: String,
     pub size_bytes: u64,
     pub active: bool,
+    /// Empty / partial / broken file — present but not usable for transcription.
+    pub incomplete: bool,
 }
 
 /// List installed whisper.cpp models (`ggml-*.bin`, excluding the Silero VAD
@@ -7989,11 +7991,15 @@ pub fn meeting_list_whisper_models() -> Vec<WhisperModelInfo> {
             if !name.starts_with("ggml-") || !name.ends_with(".bin") || name.contains("silero") {
                 continue;
             }
+            // fs::metadata follows symlinks (some models are symlinked to another
+            // dir), so the size is the real target size, not the link's ~90 bytes.
+            let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             models.push(WhisperModelInfo {
                 name: name.to_string(),
                 path: path.display().to_string(),
-                size_bytes: entry.metadata().map(|m| m.len()).unwrap_or(0),
+                size_bytes,
                 active: active.as_deref() == Some(path.as_path()),
+                incomplete: size_bytes < MIN_WHISPER_MODEL_BYTES,
             });
         }
     }
@@ -8490,6 +8496,20 @@ fn default_dev_repo_live_whisper_model_path() -> Option<PathBuf> {
     first_live_whisper_model_in_dir(&repo_dir.join("tools").join("stt-bench").join("models"))
 }
 
+/// A whisper ggml model below this is empty/partial/broken (the smallest real
+/// model, tiny, is ~75 MB). Used to skip 0-byte placeholders and dangling
+/// symlinks so they never get auto-selected or shown as usable.
+const MIN_WHISPER_MODEL_BYTES: u64 = 1_000_000;
+
+/// True if `path` is a real, non-trivial whisper model. Follows symlinks (so a
+/// symlink to a multi-GB model in another dir counts), rejects empty/partial
+/// files and broken symlinks.
+fn is_usable_whisper_model(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|m| m.is_file() && m.len() >= MIN_WHISPER_MODEL_BYTES)
+        .unwrap_or(false)
+}
+
 fn first_live_whisper_model_in_dir(model_dir: &Path) -> Option<PathBuf> {
     [
         "ggml-large-v3-turbo.bin",
@@ -8501,7 +8521,7 @@ fn first_live_whisper_model_in_dir(model_dir: &Path) -> Option<PathBuf> {
     ]
     .into_iter()
     .map(|name| model_dir.join(name))
-    .find(|path| path.is_file())
+    .find(|path| is_usable_whisper_model(path))
 }
 
 fn env_path(key: &str) -> Option<PathBuf> {
@@ -8577,7 +8597,7 @@ fn default_data_dir_whisper_model_path() -> Option<PathBuf> {
     let data_dir = said_core::paths::data_dir();
     default_whisper_model_candidates(&data_dir)
         .into_iter()
-        .find(|path| path.is_file())
+        .find(|path| is_usable_whisper_model(path))
 }
 
 fn default_dev_repo_whisper_model_path() -> Option<PathBuf> {
@@ -8590,7 +8610,7 @@ fn first_whisper_model_in_dir(model_dir: &Path) -> Option<PathBuf> {
     whisper_model_candidate_names()
         .into_iter()
         .map(|name| model_dir.join(name))
-        .find(|path| path.is_file())
+        .find(|path| is_usable_whisper_model(path))
 }
 
 fn default_whisper_model_candidates(data_dir: &Path) -> Vec<PathBuf> {
@@ -9961,12 +9981,20 @@ mod tests {
             now_ms()
         ));
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("ggml-small.bin"), b"small").unwrap();
-        fs::write(dir.join("ggml-large-v3-turbo.bin"), b"turbo").unwrap();
+        // Real-sized stubs: the resolver skips empty/partial models (< 1 MB).
+        let blob = vec![0u8; (MIN_WHISPER_MODEL_BYTES + 1) as usize];
+        fs::write(dir.join("ggml-small.bin"), &blob).unwrap();
+        fs::write(dir.join("ggml-large-v3-turbo.bin"), &blob).unwrap();
 
         let selected = first_whisper_model_in_dir(&dir).unwrap();
 
         assert!(selected.ends_with("ggml-large-v3-turbo.bin"));
+
+        // A 0-byte placeholder must be ignored, not chosen.
+        let empty_dir = dir.join("empty");
+        fs::create_dir_all(&empty_dir).unwrap();
+        fs::write(empty_dir.join("ggml-large-v3-turbo.bin"), b"").unwrap();
+        assert!(first_whisper_model_in_dir(&empty_dir).is_none());
 
         let _ = fs::remove_dir_all(dir);
     }

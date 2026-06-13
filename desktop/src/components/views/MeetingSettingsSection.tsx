@@ -32,6 +32,7 @@ interface InstalledModel {
   path: string;
   size_bytes: number;
   active: boolean;
+  incomplete: boolean;
 }
 interface CatalogModel {
   name: string;
@@ -245,16 +246,23 @@ export function MeetingSettingsSection() {
                 >
                   <button
                     type="button"
-                    onClick={() => !m.active && void selectModel(m.path)}
-                    disabled={busyKey === m.path}
-                    className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-                    title={m.active ? "Active model" : "Use this model"}
+                    onClick={() => !m.active && !m.incomplete && void selectModel(m.path)}
+                    disabled={busyKey === m.path || m.incomplete}
+                    className="flex min-w-0 flex-1 items-center gap-2.5 text-left disabled:cursor-default"
+                    title={
+                      m.incomplete
+                        ? "Incomplete download — delete and re-download"
+                        : m.active
+                          ? "Active model"
+                          : "Use this model"
+                    }
                   >
                     <span
                       className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full"
                       style={{
                         background: m.active ? "hsl(var(--primary))" : "transparent",
                         border: m.active ? "none" : "1.5px solid hsl(var(--muted-foreground) / 0.5)",
+                        opacity: m.incomplete ? 0.4 : 1,
                       }}
                     >
                       {m.active ? <Check size={11} style={{ color: "hsl(var(--primary-foreground))" }} /> : null}
@@ -263,7 +271,9 @@ export function MeetingSettingsSection() {
                       <span className="block truncate text-[13px] font-semibold text-foreground">
                         {prettyModelName(m.name)}
                       </span>
-                      <span className="text-[11px] text-muted-foreground">{formatSize(m.size_bytes)}</span>
+                      <span className="text-[11px]" style={{ color: m.incomplete ? "hsl(38 90% 66%)" : "hsl(var(--muted-foreground))" }}>
+                        {m.incomplete ? "Incomplete — re-download" : formatSize(m.size_bytes)}
+                      </span>
                     </span>
                   </button>
                   <button
