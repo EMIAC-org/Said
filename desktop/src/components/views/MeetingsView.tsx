@@ -66,6 +66,7 @@ interface MeetingOverview {
   has_intelligence: boolean;
   favorite: boolean;
   hidden: boolean;
+  has_local_files: boolean;
   lark_doc_url?: string | null;
 }
 
@@ -964,7 +965,7 @@ export function MeetingsView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
-  const [dateFilter, setDateFilter] = useState<"all" | "today" | "week">("all");
+  const [dateFilter, setDateFilter] = useState<"all" | "today" | "week" | "archived">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<Record<string, MeetingSearchHit> | null>(null);
   const [searchBusy, setSearchBusy] = useState(false);
@@ -1140,7 +1141,14 @@ export function MeetingsView({
 
   const searching = searchQuery.trim().length > 0;
   const filteredMeetings = meetings.filter((meeting) => {
-    if (overviews[meeting.id]?.hidden) return false;
+    const ov = overviews[meeting.id];
+    // Archived tab: ONLY meetings removed from the list whose files are still on
+    // disk (not file-deleted). Other tabs exclude archived meetings.
+    if (dateFilter === "archived") {
+      if (searching) return Boolean(ov?.hidden && ov?.has_local_files && searchHits?.[meeting.id]);
+      return Boolean(ov?.hidden && ov?.has_local_files);
+    }
+    if (ov?.hidden) return false;
     // When searching, restrict to backend hits and ignore the date filter so
     // matches are never hidden by the All/Today/Week tabs.
     if (searching) return Boolean(searchHits?.[meeting.id]);
@@ -1757,6 +1765,19 @@ export function MeetingsView({
     }
   }, [selectedMeeting, displayTitle, refreshOverviews]);
 
+  const handleRestoreMeeting = useCallback(async () => {
+    if (!selectedMeeting) return;
+    const id = selectedMeeting.id;
+    try {
+      await invoke("meeting_engine_set_meeting_hidden", { meetingId: id, hidden: false });
+      setDateFilter("all");
+      setSelectedMeetingId(id);
+      await refreshOverviews();
+    } catch (err) {
+      console.warn("[meeting] restore failed:", err);
+    }
+  }, [selectedMeeting, refreshOverviews]);
+
   const handleUndoDelete = useCallback(async () => {
     if (!pendingDelete) return;
     const id = pendingDelete.id;
@@ -1866,6 +1887,7 @@ export function MeetingsView({
               { id: "all" as const, label: "All" },
               { id: "today" as const, label: "Today" },
               { id: "week" as const, label: "This Week" },
+              { id: "archived" as const, label: "Archived" },
             ].map((filter) => (
               <button
                 key={filter.id}
@@ -2090,14 +2112,26 @@ export function MeetingsView({
                 <button type="button" title="AI Chat" onClick={() => setDetailTab("chat")} className="transition-colors hover:text-foreground">
                   <MessageSquare size={18} />
                 </button>
-                <button
-                  type="button"
-                  title="Delete meeting"
-                  onClick={() => void handleHideMeeting()}
-                  className="transition-colors hover:text-[hsl(354_85%_70%)]"
-                >
-                  <Trash2 size={17} />
-                </button>
+                {overviews[selectedMeeting.id]?.hidden ? (
+                  <button
+                    type="button"
+                    title="Restore to list"
+                    onClick={() => void handleRestoreMeeting()}
+                    className="flex items-center gap-1.5 text-[12px] font-semibold transition-colors hover:text-foreground"
+                  >
+                    <RotateCcw size={16} />
+                    Restore
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    title="Remove meeting"
+                    onClick={() => void handleHideMeeting()}
+                    className="transition-colors hover:text-[hsl(354_85%_70%)]"
+                  >
+                    <Trash2 size={17} />
+                  </button>
+                )}
               </div>
             </div>
 

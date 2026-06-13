@@ -2551,6 +2551,9 @@ pub struct MeetingOverview {
     has_intelligence: bool,
     favorite: bool,
     hidden: bool,
+    /// Real recording files (audio or transcript) are still on disk — i.e. the
+    /// meeting was removed from the list but not file-deleted. Drives "Archived".
+    has_local_files: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     lark_doc_url: Option<String>,
 }
@@ -2685,6 +2688,10 @@ pub fn meeting_engine_get_meeting_overviews(
         // (it may have been file-deleted while the server record lingers).
         if let Ok(dir) = meeting_dir_for_id(&id) {
             if dir.is_dir() {
+                overview.has_local_files = RECOVERABLE_MEETING_WAVS
+                    .iter()
+                    .any(|name| dir.join(name).is_file())
+                    || meeting_has_usable_transcript(&dir);
                 if let Ok(Some(intel)) = load_cached_meeting_intelligence_from_dir(&dir) {
                     overview.has_intelligence = true;
                     let title = intel.title.trim();
