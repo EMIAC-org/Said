@@ -397,12 +397,12 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   // the focus-change watcher above). Fires once per meeting.
   const autoMinimizedRef = useRef(false);
   useEffect(() => {
-    if (ended || autoMinimizedRef.current || !captureRunning) return;
+    if (ended || autoMinimizedRef.current || !(captureRunning || engineRunning)) return;
     autoMinimizedRef.current = true;
     void getCurrentWindow()
       .minimize()
       .catch(() => {});
-  }, [captureRunning, ended]);
+  }, [captureRunning, engineRunning, ended]);
 
   // Load this meeting's saved notes once.
   useEffect(() => {
