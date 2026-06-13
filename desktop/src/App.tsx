@@ -67,6 +67,7 @@ type SettingsSectionId =
   | "writing"
   | "hotkeys"
   | "models"
+  | "meeting"
   | "notifications"
   | "permissions"
   | "api-keys"
@@ -770,6 +771,10 @@ export default function App() {
               <MeetingsView
                 focusMeetingId={focusMeetingId}
                 onFocusConsumed={() => setFocusMeetingId(null)}
+                onConfigureModels={() => {
+                  setSettingsSection("meeting");
+                  setSettingsOpen(true);
+                }}
                 onJoinMeeting={(id) => {
                   setLiveMeetingId(id);
                   setActiveView("live-meeting");

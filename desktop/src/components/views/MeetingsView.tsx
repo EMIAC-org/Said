@@ -950,9 +950,16 @@ interface MeetingsViewProps {
    *  just ended). Consumed once via onFocusConsumed. */
   focusMeetingId?: string | null;
   onFocusConsumed?: () => void;
+  /** Open Settings → Meeting (to download/select a transcription model). */
+  onConfigureModels?: () => void;
 }
 
-export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }: MeetingsViewProps) {
+export function MeetingsView({
+  onJoinMeeting,
+  focusMeetingId,
+  onFocusConsumed,
+  onConfigureModels,
+}: MeetingsViewProps) {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1041,7 +1048,34 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
     return () => clearInterval(interval);
   }, [fetchMeetings]);
 
+  // A meeting can't be transcribed without an installed model. Poll the installed
+  // model list (null = still checking) so we can block starting + prompt to
+  // download. Re-checks every 5s so the banner clears soon after a download.
+  const [hasModel, setHasModel] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const models = await invoke<{ incomplete: boolean }[]>("meeting_list_whisper_models");
+        if (!cancelled) setHasModel(models.some((m) => !m.incomplete));
+      } catch {
+        if (!cancelled) setHasModel(null);
+      }
+    };
+    void check();
+    const id = setInterval(check, 5_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
   const handleNewMeeting = useCallback(async () => {
+    if (hasModel === false) {
+      setError("Install a transcription model first (Settings → Meeting).");
+      onConfigureModels?.();
+      return;
+    }
     const conn = getConnection();
     if (!conn) {
       setError("Not connected to enterprise server");
@@ -1065,7 +1099,7 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
     } finally {
       setCreating(false);
     }
-  }, [fetchMeetings, onJoinMeeting]);
+  }, [fetchMeetings, onJoinMeeting, hasModel, onConfigureModels]);
 
   // Debounced full-text search across title/tags/summary/notes/decisions/
   // actions/transcript (heavy fields are read locally by the backend).
@@ -1755,7 +1789,28 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
   ];
 
   return (
-    <div className="relative flex h-full overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden">
+      {hasModel === false ? (
+        <div
+          className="flex flex-wrap items-center gap-3 px-5 py-2.5"
+          style={{ background: "hsl(38 70% 13%)", borderBottom: "1px solid hsl(38 60% 30%)" }}
+        >
+          <AlertTriangle size={15} className="flex-shrink-0" style={{ color: "hsl(38 92% 66%)" }} />
+          <span className="min-w-0 flex-1 text-[12px] text-foreground">
+            <span className="font-semibold">No transcription model installed.</span> Meetings can't
+            be transcribed until you download and select a model.
+          </span>
+          <button
+            type="button"
+            onClick={() => onConfigureModels?.()}
+            className="h-7 flex-shrink-0 rounded-lg px-3 text-[12px] font-bold"
+            style={{ background: "hsl(38 92% 60%)", color: "hsl(38 92% 10%)" }}
+          >
+            Download a model
+          </button>
+        </div>
+      ) : null}
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
       <aside className="flex w-[240px] flex-shrink-0 flex-col xl:w-[330px]" style={{ borderRight: "1px solid hsl(var(--surface-4))" }}>
         <div className="px-4 pb-3 pt-5">
           <div className="flex items-center justify-between">
@@ -1769,10 +1824,10 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
               </IconButton>
               <button
                 onClick={handleNewMeeting}
-                disabled={creating}
-                className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors"
+                disabled={creating || hasModel === false}
+                className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                 style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-                title="New Meeting"
+                title={hasModel === false ? "Install a transcription model first" : "New Meeting"}
               >
                 {creating ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
               </button>
@@ -2297,6 +2352,7 @@ export function MeetingsView({ onJoinMeeting, focusMeetingId, onFocusConsumed }:
           </div>
         )}
       </main>
+      </div>
     </div>
   );
 }
