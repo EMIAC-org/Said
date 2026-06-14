@@ -52,6 +52,10 @@ impl TestServer {
             diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
             divo_base_url: String::new(),
             runtime_credentials_key: "test-runtime-credentials-key".into(),
+            runtime_cipher: None,
+            deepseek_api_key: String::new(),
+            deepseek_base_url: String::new(),
+            deepseek_message_polish_model: String::new(),
         };
 
         let app = build_router(state);

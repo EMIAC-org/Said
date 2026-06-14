@@ -66,7 +66,7 @@ async fn call_groq(
         ]
     });
 
-    let client = reqwest::Client::new();
+    let client = &*crate::HTTP_CLIENT;
     let resp = client
         .post(GROQ_ENDPOINT)
         .header("Authorization", format!("Bearer {api_key}"))

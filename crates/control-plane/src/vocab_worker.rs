@@ -39,6 +39,10 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                             routes::diagnostics::DiagnosticsRateLimiter::default(),
                         divo_base_url: String::new(),
                         runtime_credentials_key: String::new(),
+                        runtime_cipher: None,
+                        deepseek_api_key: String::new(),
+                        deepseek_base_url: String::new(),
+                        deepseek_message_polish_model: String::new(),
                     };
                     match routes::vocab::aggregate_all_orgs(&state).await {
                         Ok((terms, aliases)) => {
