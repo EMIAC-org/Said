@@ -3562,7 +3562,7 @@ fn default_output_language() -> String {
 }
 
 fn default_selected_model() -> String {
-    "fast".to_string()
+    "smart".to_string()
 }
 
 fn default_runtime_mode() -> String {
