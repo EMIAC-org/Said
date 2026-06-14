@@ -605,8 +605,15 @@ pub async fn trace(
             None,
         )
     } else if llm_provider == "groq" {
-        // Dictation model selector removed — always use Smart (Llama 4 Scout).
-        (crate::llm::groq::GROQ_MODEL_SMART.to_string(), None)
+        (
+            if prefs.selected_model == "smart" {
+                crate::llm::groq::GROQ_MODEL_SMART
+            } else {
+                crate::llm::groq::GROQ_MODEL_FAST
+            }
+            .to_string(),
+            None,
+        )
     } else {
         (model.clone(), None)
     };

@@ -426,8 +426,15 @@ pub async fn repair_transcript(
         } else if llm_provider == "gemini_direct" {
             (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
         } else if llm_provider == "groq" {
-            // Dictation model selector removed — always use Smart (Llama 4 Scout).
-            (groq::GROQ_MODEL_SMART.to_string(), None)
+            (
+                if prefs.selected_model == "smart" {
+                    groq::GROQ_MODEL_SMART
+                } else {
+                    groq::GROQ_MODEL_FAST
+                }
+                .to_string(),
+                None,
+            )
         } else if llm_provider == "cerebras" {
             (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
         } else {
@@ -779,8 +786,15 @@ async fn run_local_voice_polish_no_stream(
     } else if llm_provider == "gemini_direct" {
         (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
     } else if llm_provider == "groq" {
-        // Dictation model selector removed — always use Smart (Llama 4 Scout).
-        (groq::GROQ_MODEL_SMART.to_string(), None)
+        (
+            if selected_model == "smart" {
+                groq::GROQ_MODEL_SMART
+            } else {
+                groq::GROQ_MODEL_FAST
+            }
+            .to_string(),
+            None,
+        )
     } else if llm_provider == "cerebras" {
         (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
     } else {
@@ -2256,8 +2270,15 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             } else if llm_provider == "gemini_direct" {
                 (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
             } else if llm_provider == "groq" {
-                // Dictation model selector removed — always use Smart (Llama 4 Scout).
-                (groq::GROQ_MODEL_SMART.to_string(), None)
+                (
+                    if prefs.selected_model == "smart" {
+                        groq::GROQ_MODEL_SMART
+                    } else {
+                        groq::GROQ_MODEL_FAST
+                    }
+                    .to_string(),
+                    None,
+                )
             } else if llm_provider == "cerebras" {
                 (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
             } else {

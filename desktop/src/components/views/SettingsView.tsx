@@ -1878,7 +1878,80 @@ export function SettingsView({
 
         {/* ── Models ───────────────────────────────────── */}
         <Show when={isOn("models")}>
-        <Section title="Server polish runtime" extra={<SyncBadge state={serverSyncState} />}>
+        <Section title="Dictation Model" extra={<SyncBadge state={serverSyncState} />}>
+          <div className="px-5 py-4">
+            <div className="flex items-center gap-4 mb-3">
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
+                style={{ background: "hsl(var(--surface-4))" }}
+              >
+                <Zap size={16} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-medium text-foreground">Normal voice polish</p>
+                <p className="text-[12px] text-muted-foreground mt-0.5">
+                  Groq is the fixed provider. Choose speed vs quality for regular hotkey dictation.
+                </p>
+              </div>
+            </div>
+            <div
+              className="flex rounded-xl p-1"
+              style={{ background: "hsl(var(--surface-3))" }}
+            >
+              {([
+                {
+                  key: "fast",
+                  icon: <Zap size={13} />,
+                  label: "Fast",
+                  desc: "Llama 3.1 8B - lowest latency",
+                },
+                {
+                  key: "smart",
+                  icon: <Sparkles size={13} />,
+                  label: "Smart",
+                  desc: "Llama 4 Scout - better for complex sentences",
+                },
+              ] as const).map((opt) => {
+                const isActive = (prefs?.selected_model ?? "fast") === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    onClick={() => void patch({ selected_model: opt.key })}
+                    className="flex-1 text-left px-3 py-2.5 rounded-[10px] transition-all"
+                    style={{
+                      background: isActive ? "hsl(var(--surface-1))" : "transparent",
+                      boxShadow: isActive
+                        ? "0 1px 3px hsl(0 0% 0% / 0.3)"
+                        : "none",
+                    }}
+                  >
+                    <p
+                      className="text-[12px] font-semibold leading-tight flex items-center justify-between gap-2"
+                      style={{
+                        color: isActive
+                          ? "hsl(var(--foreground))"
+                          : "hsl(var(--muted-foreground))",
+                      }}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {opt.icon}
+                        {opt.label}
+                      </span>
+                      {isActive && <Check size={12} />}
+                    </p>
+                    <p
+                      className="text-[10px] leading-snug mt-0.5"
+                      style={{ color: "hsl(var(--muted-foreground))" }}
+                    >
+                      {opt.desc}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
 
           <div className="px-5 py-4">
             <div className="flex items-center gap-4">
