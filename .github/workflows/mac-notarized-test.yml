@@ -1,0 +1,195 @@
+name: Mac Notarized Test Build
+
+# Build-only. Produces a Developer-ID-signed + Apple-notarized + stapled AirNote
+# DMG and uploads it as a downloadable workflow artifact — for sharing a test
+# build that "just works" on any Mac (no Gatekeeper warnings, mic prompt works).
+#
+# It deliberately does NOT publish a GitHub Release, write updater manifests, or
+# deploy to the VM. Nothing here touches production or the auto-updater. Mirrors
+# the signing/notarization steps of release.yml's build job, macOS-only.
+on:
+  push:
+    branches: ['notarized-dmg-build']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PRODUCT_NAME: AirNote
+
+jobs:
+  build:
+    name: Build notarized DMG (aarch64-apple-darwin)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read workspace version
+        id: ver
+        shell: bash
+        run: |
+          VERSION=$(awk '
+            /^\[workspace\.package\]/ { in_section = 1; next }
+            /^\[/                     { in_section = 0 }
+            in_section && /^[[:space:]]*version[[:space:]]*=/ {
+              gsub(/.*=[[:space:]]*"/, ""); gsub(/".*/, ""); print; exit
+            }
+          ' Cargo.toml)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version: $VERSION"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: notarized-test-aarch64
+          cache-targets: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm ci
+
+      - name: Import Apple codesign certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          echo -n "$CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$CERTIFICATE_PASSWORD" -A -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s \
+            "$KEYCHAIN_PATH" \
+            /Library/Keychains/System.keychain \
+            /System/Library/Keychains/SystemRootCertificates.keychain
+          security find-identity -v -p codesigning
+
+      - name: Build airnote-backend sidecar
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          cargo build -p said-backend --release --target aarch64-apple-darwin
+          mkdir -p desktop/src-tauri/binaries
+          cp target/aarch64-apple-darwin/release/airnote-backend \
+            desktop/src-tauri/binaries/airnote-backend-aarch64-apple-darwin
+          chmod +x desktop/src-tauri/binaries/airnote-backend-aarch64-apple-darwin
+
+      - name: Build AirNote.app (unsigned, default features = macOS 11+ standard build)
+        timeout-minutes: 25
+        working-directory: desktop
+        run: |
+          npm run tauri:build -- \
+            --target aarch64-apple-darwin \
+            --bundles app \
+            --ci \
+            --verbose \
+            --no-sign
+
+      - name: Sign AirNote.app (Developer ID, hardened runtime, entitlements)
+        shell: bash
+        timeout-minutes: 8
+        env:
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: EMIAC TECHNOLOGIES LIMITED (96ZQGP7L3B)"
+        run: |
+          set -euo pipefail
+          APP_PATH="target/aarch64-apple-darwin/release/bundle/macos/${PRODUCT_NAME}.app"
+          EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/airnote-backend"
+          ENTITLEMENTS="desktop/src-tauri/AirNote.entitlements"
+          BUNDLE_ID="com.emiac.airnote.desktop"
+
+          test -d "$APP_PATH"
+          test -x "$EMBEDDED_BACKEND"
+          rm -f "$APP_PATH/Contents/MacOS/.env"
+          xattr -cr "$APP_PATH" 2>/dev/null || true
+
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --entitlements "$ENTITLEMENTS" \
+            "$EMBEDDED_BACKEND"
+
+          codesign --force --deep --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --entitlements "$ENTITLEMENTS" \
+            "$APP_PATH"
+
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign --verify --strict --verbose=2 "$EMBEDDED_BACKEND"
+
+          ACTUAL_ID=$(codesign -dv "$APP_PATH" 2>&1 | awk -F= '/^Identifier=/ {print $2}')
+          test "$ACTUAL_ID" = "$BUNDLE_ID"
+          echo "Signed app verified: $APP_PATH"
+
+      - name: Create and sign DMG
+        shell: bash
+        timeout-minutes: 8
+        env:
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: EMIAC TECHNOLOGIES LIMITED (96ZQGP7L3B)"
+        run: |
+          set -euo pipefail
+          APP_PATH="target/aarch64-apple-darwin/release/bundle/macos/${PRODUCT_NAME}.app"
+          BUNDLE_DIR="target/aarch64-apple-darwin/release/bundle"
+          STAGING="$BUNDLE_DIR/dmg-staging"
+          DMG_OUT="$BUNDLE_DIR/dmg/${PRODUCT_NAME}_${{ steps.ver.outputs.version }}_aarch64.dmg"
+
+          rm -rf "$STAGING" "$DMG_OUT"
+          mkdir -p "$STAGING" "$BUNDLE_DIR/dmg"
+          ditto "$APP_PATH" "$STAGING/${PRODUCT_NAME}.app"
+          ln -s /Applications "$STAGING/Applications"
+
+          hdiutil create -volname "$PRODUCT_NAME" -srcfolder "$STAGING" -ov -format UDZO "$DMG_OUT"
+          rm -rf "$STAGING"
+          test -f "$DMG_OUT"
+
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG_OUT"
+          codesign -dv --verbose=2 "$DMG_OUT"
+
+      - name: Notarize, staple, and Gatekeeper-verify DMG
+        shell: bash
+        timeout-minutes: 30
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: 96ZQGP7L3B
+        run: |
+          set -euo pipefail
+          : "${APPLE_ID:?APPLE_ID secret is required for notarization}"
+          : "${APPLE_APP_SPECIFIC_PASSWORD:?APPLE_APP_SPECIFIC_PASSWORD secret is required for notarization}"
+          DMG_OUT="target/aarch64-apple-darwin/release/bundle/dmg/${PRODUCT_NAME}_${{ steps.ver.outputs.version }}_aarch64.dmg"
+          test -f "$DMG_OUT"
+          defaults write com.apple.gke.notary.tool nt-upload-connection-timeout 300 || true
+          xcrun notarytool submit "$DMG_OUT" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --timeout 25m \
+            --wait \
+            --verbose
+          xcrun stapler staple "$DMG_OUT"
+          spctl --assess --type open --context context:primary-signature -v "$DMG_OUT"
+          echo "DMG signed, notarized, stapled, Gatekeeper-verified: $DMG_OUT"
+
+      - name: Upload notarized DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AirNote-notarized-dmg
+          path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          retention-days: 7
