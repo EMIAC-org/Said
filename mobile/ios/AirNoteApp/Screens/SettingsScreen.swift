@@ -13,6 +13,7 @@ struct SettingsScreen: View {
                 AirNoteBackground()
                 Form {
                     accountSection
+                    workspaceSection
                     dictationSection
                     permissionsSection
                     appearanceSection
@@ -59,6 +60,27 @@ struct SettingsScreen: View {
             }
         } header: {
             Text("Account")
+        }
+    }
+
+    // MARK: Workspace
+
+    private var workspaceSection: some View {
+        Section {
+            NavigationLink(destination: ServerConnectionView()) {
+                HStack {
+                    Label("Workspace server", systemImage: "server.rack")
+                    Spacer()
+                    Text(BuildConfig.gatewayBaseURL.host ?? "AirNote")
+                        .font(.caption)
+                        .foregroundStyle(AirNoteDesign.muted)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+            }
+        } header: {
+            Text("Workspace")
+        } footer: {
+            Text("The server your dictation, keyboard, and account connect to. Tap to switch to a self-hosted or enterprise control-plane.")
         }
     }
 
@@ -181,14 +203,6 @@ struct SettingsScreen: View {
     private var aboutSection: some View {
         Section {
             LabeledContent("Version", value: "\(AppInfo.version) (\(AppInfo.build))")
-            NavigationLink(destination: ServerConnectionView()) {
-                HStack {
-                    Text("Server")
-                    Spacer()
-                    Text(BuildConfig.gatewayBaseURL.host ?? "AirNote")
-                        .foregroundStyle(AirNoteDesign.muted)
-                }
-            }
             LabeledContent("Runtime", value: env.runtimeStatusLabel)
         } header: {
             Text("About")

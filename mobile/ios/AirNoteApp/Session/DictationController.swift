@@ -202,7 +202,7 @@ final class DictationController: ObservableObject {
         cancelFinalizeTimeout()
         if unavailable {
             phase = .unavailable
-            errorMessage = "Dictation isn't available on this workspace yet. It'll work automatically once the workspace is set up."
+            errorMessage = "Add your Deepgram and Groq keys in Settings → Voice keys to turn on dictation."
         } else {
             phase = .failed
             errorMessage = message

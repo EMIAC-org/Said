@@ -70,6 +70,11 @@ struct ProviderKeysView: View {
                     Label("Dictation is on", systemImage: "checkmark.circle.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(AirNoteDesign.success)
+                } else {
+                    Label("Dictation needs BOTH a Deepgram and a Groq key. Add them below to turn it on.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AirNoteDesign.warning)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
