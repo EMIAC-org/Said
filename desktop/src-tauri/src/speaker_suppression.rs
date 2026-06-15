@@ -31,6 +31,19 @@ impl SpeakerSuppressionGuard {
         }
 
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Ok(true) = platform::default_output_is_bluetooth() {
+            tracing::info!(
+                "[speaker_suppression] skipped Bluetooth output; reason={reason} gen={generation}"
+            );
+            if let Ok(mut active) = self.active.lock() {
+                *active = Some(ActiveSuppression {
+                    generation,
+                    restore_action: RestoreAction::Noop,
+                });
+            }
+            return;
+        }
+
         let restore_action = match platform::current_output_muted() {
             Ok(true) => {
                 tracing::debug!(
@@ -132,6 +145,9 @@ mod platform {
     const K_AUDIO_OBJECT_SYSTEM_OBJECT: AudioObjectID = 1;
     const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_OUTPUT_DEVICE: u32 = fourcc(*b"dOut");
     const K_AUDIO_DEVICE_PROPERTY_MUTE: u32 = fourcc(*b"mute");
+    const K_AUDIO_DEVICE_PROPERTY_TRANSPORT_TYPE: u32 = fourcc(*b"tran");
+    const K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH: u32 = fourcc(*b"blue");
+    const K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH_LE: u32 = fourcc(*b"blea");
     const K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL: u32 = fourcc(*b"glob");
     const K_AUDIO_DEVICE_PROPERTY_SCOPE_OUTPUT: u32 = fourcc(*b"outp");
     const K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: u32 = 0;
@@ -229,6 +245,18 @@ mod platform {
         }
     }
 
+    pub fn default_output_is_bluetooth() -> Result<bool, String> {
+        let transport = default_output_transport_type()?;
+        Ok(is_bluetooth_transport(transport))
+    }
+
+    pub(super) fn is_bluetooth_transport(transport: u32) -> bool {
+        matches!(
+            transport,
+            K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH | K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH_LE
+        )
+    }
+
     fn default_output_device() -> Result<AudioDeviceID, String> {
         let address = AudioObjectPropertyAddress {
             m_selector: K_AUDIO_HARDWARE_PROPERTY_DEFAULT_OUTPUT_DEVICE,
@@ -256,6 +284,38 @@ mod platform {
         }
     }
 
+    fn default_output_transport_type() -> Result<u32, String> {
+        let device = default_output_device()?;
+        let address = AudioObjectPropertyAddress {
+            m_selector: K_AUDIO_DEVICE_PROPERTY_TRANSPORT_TYPE,
+            m_scope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+            m_element: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+        };
+        if unsafe { AudioObjectHasProperty(device, &address) } == 0 {
+            return Err("default output device has no transport type property".into());
+        }
+
+        let mut transport: u32 = 0;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                device,
+                &address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                (&mut transport as *mut u32).cast::<c_void>(),
+            )
+        };
+        if status == 0 {
+            Ok(transport)
+        } else {
+            Err(format!(
+                "AudioObjectGetPropertyData(transport) status={status}"
+            ))
+        }
+    }
+
     fn output_mute_address(device: AudioDeviceID) -> Result<AudioObjectPropertyAddress, String> {
         let mut address = AudioObjectPropertyAddress {
             m_selector: K_AUDIO_DEVICE_PROPERTY_MUTE,
@@ -277,6 +337,10 @@ mod platform {
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
+    pub fn default_output_is_bluetooth() -> Result<bool, String> {
+        Err("speaker suppression is macOS-only".into())
+    }
+
     pub fn current_output_muted() -> Result<bool, String> {
         Err("speaker suppression is macOS-only".into())
     }
@@ -289,6 +353,13 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::RestoreAction;
+
+    const fn fourcc(bytes: [u8; 4]) -> u32 {
+        ((bytes[0] as u32) << 24)
+            | ((bytes[1] as u32) << 16)
+            | ((bytes[2] as u32) << 8)
+            | bytes[3] as u32
+    }
 
     fn restore_action(previous_muted: bool, mute_succeeded: bool) -> RestoreAction {
         if previous_muted || !mute_succeeded {
@@ -311,5 +382,14 @@ mod tests {
     #[test]
     fn speaker_suppression_noops_when_mute_fails() {
         assert_eq!(restore_action(false, false), RestoreAction::Noop);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bluetooth_transports_skip_output_mute() {
+        assert!(super::platform::is_bluetooth_transport(fourcc(*b"blue")));
+        assert!(super::platform::is_bluetooth_transport(fourcc(*b"blea")));
+        assert!(!super::platform::is_bluetooth_transport(fourcc(*b"buil")));
+        assert!(!super::platform::is_bluetooth_transport(fourcc(*b"usb ")));
     }
 }
