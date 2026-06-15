@@ -265,8 +265,15 @@ final class KeyboardViewController: UIInputViewController {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             switch update {
-            case .interimTranscript:
-                if self.isRecording { self.setState(.recording) }
+            case .interimTranscript(let text):
+                // Show live words in the keyboard's OWN dictation path — previously
+                // only the warm/handoff path streamed partials; the direct stream
+                // flipped to .recording but never showed the transcript.
+                if self.isRecording {
+                    self.setState(.recording)
+                    let shown = HinglishScript.enforceRomanHinglish(text)
+                    if !shown.isEmpty { self.pad?.setLivePartial(shown) }
+                }
             case .finalTranscript:
                 // A per-utterance final mid-recording doesn't mean the user is
                 // done — keep recording until they tap stop (which sets .processing).
@@ -289,10 +296,16 @@ final class KeyboardViewController: UIInputViewController {
         cancelFinalizeTimer()
         isRecording = false
         resultSeq += 1
-        // Guarantee Roman Hinglish before inserting into the host app (including
-        // the raw-transcript fallback when polish came back empty).
-        let polished = HinglishScript.enforceRomanHinglish(polished)
+        // Guarantee Roman Hinglish, then apply the user's taught corrections
+        // on-device — the server streaming path doesn't apply learned aliases, so
+        // mirror DictationController / WarmDictationHost here or a taught name/brand
+        // fix is silently dropped on the keyboard's own dictation.
         let transcript = HinglishScript.enforceRomanHinglish(transcript)
+        let polished = LearnedAliasResolver.apply(
+            HinglishScript.enforceRomanHinglish(polished),
+            transcript: transcript,
+            aliases: SharedStore.learnedAliases
+        )
         let secure = TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField
         let result = BridgeResult(
             resultSeq: resultSeq,
