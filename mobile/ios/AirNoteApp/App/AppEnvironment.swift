@@ -613,6 +613,9 @@ final class AppEnvironment: ObservableObject {
         activeOrgID = nil
         personalMode = true
         meetings = []
+        divoThreads = []
+        divoMessages = []
+        divoActiveThreadID = nil
         return true
     }
 
@@ -710,7 +713,8 @@ final class AppEnvironment: ObservableObject {
         guard !msg.isEmpty, !divoSending else { return }
         divoSending = true
         defer { divoSending = false }
-        divoMessages.append(DivoMessage(id: UUID().uuidString, role: "user", content: msg))
+        let userMessage = DivoMessage(id: UUID().uuidString, role: "user", content: msg)
+        divoMessages.append(userMessage)
         do {
             let result = try await gateway.divoChat(message: msg, threadID: divoActiveThreadID)
             divoActiveThreadID = result.threadID ?? divoActiveThreadID
@@ -718,6 +722,9 @@ final class AppEnvironment: ObservableObject {
             divoStatus = ""
             await refreshDivoThreads()
         } catch {
+            // Roll back the optimistic user bubble so the thread isn't left with a
+            // dangling message and no reply.
+            divoMessages.removeAll { $0.id == userMessage.id }
             if handleUnauthorized(error) { return }
             divoStatus = divoError(error)
         }

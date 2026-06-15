@@ -206,8 +206,10 @@ struct SettingsScreen: View {
         Section {
             Label("Recordings are never stored", systemImage: "waveform.slash")
             Label("AirNote skips password & OTP fields", systemImage: "lock.fill")
-            Link(destination: URL(string: "https://airnote.emiactech.com/privacy")!) {
-                Label("Privacy Policy", systemImage: "hand.raised")
+            if let privacyURL = URL(string: "https://airnote.emiactech.com/privacy") {
+                Link(destination: privacyURL) {
+                    Label("Privacy Policy", systemImage: "hand.raised")
+                }
             }
         } header: {
             Text("Privacy")

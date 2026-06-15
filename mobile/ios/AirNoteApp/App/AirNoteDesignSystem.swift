@@ -356,7 +356,7 @@ struct AirNoteSetupRow: View {
     var body: some View {
         HStack(spacing: 12) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.045))
+                .fill(tint.opacity(0.12))
                 .frame(width: 34, height: 34)
                 .overlay(Image(systemName: icon).font(.system(size: 14, weight: .semibold)).foregroundStyle(tint))
                 .overlay(

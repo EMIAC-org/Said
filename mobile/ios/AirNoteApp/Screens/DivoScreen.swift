@@ -99,7 +99,7 @@ private struct DivoBubble: View {
             if message.isUser { Spacer(minLength: 40) }
             Text(message.content)
                 .font(.subheadline)
-                .foregroundStyle(message.isUser ? Color.white : AirNoteDesign.foreground)
+                .foregroundStyle(message.isUser ? AirNoteDesign.ink : AirNoteDesign.foreground)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
                 .background(

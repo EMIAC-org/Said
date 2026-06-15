@@ -975,7 +975,7 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
             if line.hasPrefix(":") { continue }
             if line.hasPrefix("event:") {
                 event = String(line.dropFirst("event:".count)).trimmingCharacters(in: .whitespaces)
-            } else if line.hasPrefix("data:") {
+            } else if line.hasPrefix("data:"), dataLines.count < 512 {
                 dataLines.append(String(line.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces))
             }
         }
@@ -1251,10 +1251,12 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         if let token = authTokenProvider?()?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        // Scope org-aware endpoints (meetings, divo, org settings) to the active
-        // workspace. Only sent when an org is active — personal mode sends no
-        // header, so the personal dictation runtime is unaffected.
-        if let org = SharedStore.activeOrgID, !org.isEmpty {
+        // Scope the active workspace to ONLY the org-aware endpoints (meetings,
+        // divo, orgs). Account-scoped endpoints (runtime/voice/settings/history/
+        // credentials/learning) must NOT carry it, or the server would org-scope
+        // personal data — so the header is gated on the request path.
+        if let org = SharedStore.activeOrgID, !org.isEmpty, let path = request.url?.path,
+           path.contains("/v1/meetings") || path.contains("/v1/orgs") || path.contains("/v1/divo") {
             request.setValue(org, forHTTPHeaderField: "X-AirNote-Org-Id")
         }
     }

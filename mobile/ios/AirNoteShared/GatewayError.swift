@@ -50,7 +50,10 @@ public enum GatewayError: Error, Equatable {
 
     /// Build a `GatewayError` from an HTTP status + optional decoded error body.
     public static func from(status: Int, code: String?, message: String?) -> GatewayError {
-        if status == 401 || status == 403 {
+        // Only 401 (unauthenticated) signs the user out. 403 (forbidden — e.g. no
+        // active workspace, missing role, gated feature) must NOT sign out; let it
+        // fall through to .server so callers can show a friendly message.
+        if status == 401 {
             return .unauthorized
         }
         if status == 429 {

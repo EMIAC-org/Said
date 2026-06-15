@@ -677,6 +677,13 @@ final class RecordingPadView: UIView {
         deleteRepeatTimer = nil
     }
 
+    /// Stop any in-flight delete-repeat (called when the keyboard disappears or
+    /// deallocates, so it can never fire on a detached text proxy).
+    func stopDeleteTimer() {
+        deleteRepeatTimer?.invalidate()
+        deleteRepeatTimer = nil
+    }
+
     private func specialKey(title: String) -> UIButton {
         baseKey(title: title, background: KeyboardTheme.secondarySurface, fontSize: 16, weight: .medium)
     }

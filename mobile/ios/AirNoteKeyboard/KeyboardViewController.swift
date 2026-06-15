@@ -87,6 +87,7 @@ final class KeyboardViewController: UIInputViewController {
         finalizeTimer = nil
         teachTimer?.invalidate()
         teachTimer = nil
+        pad?.stopDeleteTimer()
         streamer.hardStop()
     }
 
@@ -95,6 +96,7 @@ final class KeyboardViewController: UIInputViewController {
         // then tear down synchronously.
         finalizeTimer?.invalidate()
         teachTimer?.invalidate()
+        pad?.stopDeleteTimer()
         streamer.onUpdate = nil
         streamer.hardStop()
     }
@@ -348,7 +350,7 @@ final class KeyboardViewController: UIInputViewController {
         isRecording = false
         currentResult = nil
         if error.isCredentialMissing {
-            setState(.error("Dictation isn't set up on this workspace yet."))
+            setState(.error("Add your Deepgram and Groq keys in the AirNote app (Settings → Voice keys)."))
         } else {
             setState(.error(error.message))
         }

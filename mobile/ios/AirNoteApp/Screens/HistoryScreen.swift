@@ -13,7 +13,7 @@ struct HistoryScreen: View {
                 || item.transcriptText.localizedCaseInsensitiveContains(search)
         }
         let dict = Dictionary(grouping: filtered) { calendar.startOfDay(for: $0.createdAt) }
-        return dict.keys.sorted(by: >).map { ($0, dict[$0]!.sorted { $0.createdAt > $1.createdAt }) }
+        return dict.keys.sorted(by: >).map { ($0, (dict[$0] ?? []).sorted { $0.createdAt > $1.createdAt }) }
     }
 
     var body: some View {
