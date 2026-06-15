@@ -303,7 +303,10 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/meetings",
             post(routes::meetings::create).get(routes::meetings::list),
         )
-        .route("/v1/meetings/:id", get(routes::meetings::detail))
+        .route(
+            "/v1/meetings/:id",
+            get(routes::meetings::detail).delete(routes::meetings::delete),
+        )
         .route(
             "/v1/meetings/:id/guest-link",
             post(routes::guest::create_guest_link),
