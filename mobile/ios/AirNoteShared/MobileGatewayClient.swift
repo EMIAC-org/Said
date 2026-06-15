@@ -610,6 +610,9 @@ public protocol MobileGatewayClient {
     func endMeeting(id: String) async throws
     func meetingGuestLink(id: String) async throws -> GuestLinkResponse
     func listOrgMembers(orgID: String) async throws -> [OrgMember]
+    func divoListThreads() async throws -> [DivoThreadSummary]
+    func divoThread(id: String) async throws -> DivoThread
+    func divoChat(message: String, threadID: String?) async throws -> DivoChatResult
 }
 
 public typealias GatewayAuthTokenProvider = () -> String?
@@ -704,6 +707,9 @@ public struct PreviewMobileGatewayClient: MobileGatewayClient {
     public func endMeeting(id: String) async throws {}
     public func meetingGuestLink(id: String) async throws -> GuestLinkResponse { GuestLinkResponse(token: "preview", inviteURL: nil, guestLink: nil, expiresAt: nil) }
     public func listOrgMembers(orgID: String) async throws -> [OrgMember] { [] }
+    public func divoListThreads() async throws -> [DivoThreadSummary] { [] }
+    public func divoThread(id: String) async throws -> DivoThread { DivoThread(id: id, title: "Preview", messages: []) }
+    public func divoChat(message: String, threadID: String?) async throws -> DivoChatResult { DivoChatResult(content: "Preview answer.", threadID: threadID ?? "preview") }
 }
 #endif
 
@@ -897,6 +903,96 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         let (data, response) = try await session.data(for: urlRequest)
         try Self.validate(data, response: response)
         return try decoder.decode(OrgMembersResponse.self, from: data).members
+    }
+
+    // MARK: Divo (SSE chat; server-gated to approved accounts)
+
+    public func divoListThreads() async throws -> [DivoThreadSummary] {
+        let url = baseURL.appendingPathComponent("v1/divo/threads")
+        var c = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        c?.queryItems = [URLQueryItem(name: "page", value: "1"), URLQueryItem(name: "pageSize", value: "30")]
+        var urlRequest = URLRequest(url: c?.url ?? url)
+        urlRequest.httpMethod = "GET"
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode(DivoThreadsEnvelope.self, from: data).data.threads
+    }
+
+    public func divoThread(id: String) async throws -> DivoThread {
+        let url = baseURL.appendingPathComponent("v1/divo/threads/\(id)")
+        var c = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        c?.queryItems = [URLQueryItem(name: "page", value: "1"), URLQueryItem(name: "pageSize", value: "50")]
+        var urlRequest = URLRequest(url: c?.url ?? url)
+        urlRequest.httpMethod = "GET"
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode(DivoThreadEnvelope.self, from: data).data
+    }
+
+    public func divoChat(message: String, threadID: String?) async throws -> DivoChatResult {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/divo/chat"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 120
+        req.httpBody = try encoder.encode(DivoChatBody(requestId: RequestId.make(), message: message, threadId: threadID, mode: "high"))
+        authorize(&req)
+        let (bytes, response) = try await session.bytes(for: req)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw GatewayError.from(status: http.statusCode, code: nil,
+                                    message: http.statusCode == 403 ? "Divo is limited to approved accounts, and needs Lark sign-in." : nil)
+        }
+        var event = ""
+        var dataLines: [String] = []
+        var content: String?
+        var thread = threadID
+        for try await line in bytes.lines {
+            if line.isEmpty {
+                let dataStr = dataLines.joined(separator: "\n")
+                if !dataStr.isEmpty {
+                    let obj = (try? JSONSerialization.jsonObject(with: Data(dataStr.utf8))) as? [String: Any]
+                    switch event {
+                    case "error":
+                        throw GatewayError.server(status: 0, code: nil, message: (obj?["message"] as? String) ?? "Divo error")
+                    case "done":
+                        if let msg = obj?["message"] as? [String: Any] {
+                            content = msg["content"] as? String
+                            thread = (msg["threadId"] as? String) ?? thread
+                        }
+                    case "meta":
+                        thread = (obj?["threadId"] as? String) ?? thread
+                    default:
+                        break
+                    }
+                }
+                if event == "done" || event == "error" { break }
+                event = ""
+                dataLines = []
+                continue
+            }
+            if line.hasPrefix(":") { continue }
+            if line.hasPrefix("event:") {
+                event = String(line.dropFirst("event:".count)).trimmingCharacters(in: .whitespaces)
+            } else if line.hasPrefix("data:") {
+                dataLines.append(String(line.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces))
+            }
+        }
+        guard let content, !content.isEmpty else { throw GatewayError.invalidResponse }
+        return DivoChatResult(content: content, threadID: thread)
+    }
+
+    private struct DivoThreadsEnvelope: Decodable {
+        let data: ThreadsData
+        struct ThreadsData: Decodable { let threads: [DivoThreadSummary] }
+    }
+    private struct DivoThreadEnvelope: Decodable { let data: DivoThread }
+    private struct DivoChatBody: Encodable {
+        var requestId: String
+        var message: String
+        var threadId: String?
+        var mode: String
     }
 
     private struct CreateMeetingBody: Encodable {

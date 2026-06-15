@@ -81,6 +81,9 @@ struct SettingsScreen: View {
                 NavigationLink(destination: MeetingsScreen()) {
                     Label("Meetings", systemImage: "person.2.wave.2")
                 }
+                NavigationLink(destination: DivoScreen()) {
+                    Label("Divo (AI chat)", systemImage: "sparkles")
+                }
             }
             NavigationLink(destination: ServerConnectionView()) {
                 HStack {

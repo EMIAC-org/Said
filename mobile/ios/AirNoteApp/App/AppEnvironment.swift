@@ -65,6 +65,14 @@ final class AppEnvironment: ObservableObject {
     @Published private(set) var meetingsLoading = false
     @Published private(set) var meetingsStatus = ""
 
+    // MARK: Divo (enterprise AI chat — server-gated to approved accounts)
+
+    @Published private(set) var divoThreads: [DivoThreadSummary] = []
+    @Published private(set) var divoMessages: [DivoMessage] = []
+    @Published private(set) var divoActiveThreadID: String?
+    @Published private(set) var divoSending = false
+    @Published private(set) var divoStatus = ""
+
     // MARK: Settings (server-backed, cross-device)
 
     @Published private(set) var outputLanguage = SharedStore.outputLanguage   // "hinglish" | "english"
@@ -312,6 +320,9 @@ final class AppEnvironment: ObservableObject {
         personalMode = true
         SharedStore.activeOrgID = nil
         meetings = []
+        divoThreads = []
+        divoMessages = []
+        divoActiveThreadID = nil
         cancelLearningReview()
     }
 
@@ -677,6 +688,55 @@ final class AppEnvironment: ObservableObject {
             return message ?? "Couldn't reach meetings."
         }
         return "Couldn't reach meetings."
+    }
+
+    // MARK: Divo
+
+    func refreshDivoThreads() async {
+        guard account != nil else { return }
+        do { divoThreads = try await gateway.divoListThreads(); divoStatus = "" }
+        catch { if handleUnauthorized(error) { return }; divoStatus = divoError(error) }
+    }
+
+    func openDivoThread(_ id: String) async {
+        divoActiveThreadID = id
+        do { divoMessages = try await gateway.divoThread(id: id).messages; divoStatus = "" }
+        catch { _ = handleUnauthorized(error); divoStatus = divoError(error) }
+    }
+
+    func newDivoThread() {
+        divoActiveThreadID = nil
+        divoMessages = []
+        divoStatus = ""
+    }
+
+    func sendDivo(_ text: String) async {
+        let msg = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !msg.isEmpty, !divoSending else { return }
+        divoSending = true
+        defer { divoSending = false }
+        divoMessages.append(DivoMessage(id: UUID().uuidString, role: "user", content: msg))
+        do {
+            let result = try await gateway.divoChat(message: msg, threadID: divoActiveThreadID)
+            divoActiveThreadID = result.threadID ?? divoActiveThreadID
+            divoMessages.append(DivoMessage(id: UUID().uuidString, role: "assistant", content: result.content))
+            divoStatus = ""
+            await refreshDivoThreads()
+        } catch {
+            if handleUnauthorized(error) { return }
+            divoStatus = divoError(error)
+        }
+    }
+
+    private func divoError(_ error: Error) -> String {
+        if let g = error as? GatewayError {
+            if case let .server(status, _, message) = g {
+                if status == 403 { return message ?? "Divo is limited to approved accounts (and needs Lark sign-in)." }
+                return message ?? "Divo couldn't respond."
+            }
+            return g.userMessage
+        }
+        return "Divo couldn't respond."
     }
 
     // MARK: Learning review
