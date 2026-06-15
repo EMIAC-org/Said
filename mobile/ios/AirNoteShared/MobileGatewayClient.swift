@@ -603,6 +603,13 @@ public protocol MobileGatewayClient {
     func listOrgs() async throws -> OrgsResponse
     func activateOrg(id: String) async throws -> OrgActivateResponse
     func deactivateOrg() async throws -> OrgActivateResponse
+    func listMeetings(status: String?) async throws -> [Meeting]
+    func meetingDetail(id: String) async throws -> MeetingDetail
+    func createMeeting(title: String, agenda: String?, participantIDs: [String], durationMinutes: Int?) async throws -> Meeting
+    func startMeeting(id: String) async throws
+    func endMeeting(id: String) async throws
+    func meetingGuestLink(id: String) async throws -> GuestLinkResponse
+    func listOrgMembers(orgID: String) async throws -> [OrgMember]
 }
 
 public typealias GatewayAuthTokenProvider = () -> String?
@@ -686,6 +693,17 @@ public struct PreviewMobileGatewayClient: MobileGatewayClient {
     public func listOrgs() async throws -> OrgsResponse { OrgsResponse(orgs: [], activeOrgID: nil, personalMode: true) }
     public func activateOrg(id: String) async throws -> OrgActivateResponse { OrgActivateResponse(activeOrgID: id, personalMode: false) }
     public func deactivateOrg() async throws -> OrgActivateResponse { OrgActivateResponse(activeOrgID: nil, personalMode: true) }
+    public func listMeetings(status: String?) async throws -> [Meeting] { [] }
+    public func meetingDetail(id: String) async throws -> MeetingDetail {
+        MeetingDetail(meeting: Meeting(id: id, title: "Preview", agenda: nil, status: "ended", createdBy: nil, startedAt: nil, endedAt: nil, createdAt: nil, scheduledAt: nil, durationMinutes: 30), participants: [], summary: nil, tasks: [], decisions: [], transcript: [])
+    }
+    public func createMeeting(title: String, agenda: String?, participantIDs: [String], durationMinutes: Int?) async throws -> Meeting {
+        Meeting(id: "preview", title: title, agenda: agenda, status: "scheduled", createdBy: nil, startedAt: nil, endedAt: nil, createdAt: nil, scheduledAt: nil, durationMinutes: durationMinutes)
+    }
+    public func startMeeting(id: String) async throws {}
+    public func endMeeting(id: String) async throws {}
+    public func meetingGuestLink(id: String) async throws -> GuestLinkResponse { GuestLinkResponse(token: "preview", inviteURL: nil, guestLink: nil, expiresAt: nil) }
+    public func listOrgMembers(orgID: String) async throws -> [OrgMember] { [] }
 }
 #endif
 
@@ -806,6 +824,93 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         let (data, response) = try await session.data(for: urlRequest)
         try Self.validate(data, response: response)
         return try decoder.decode(OrgActivateResponse.self, from: data)
+    }
+
+    // MARK: Meetings
+
+    public func listMeetings(status: String?) async throws -> [Meeting] {
+        let metURL = baseURL.appendingPathComponent("v1/meetings")
+        var url = metURL
+        if let status, !status.isEmpty, var c = URLComponents(url: metURL, resolvingAgainstBaseURL: false) {
+            c.queryItems = [URLQueryItem(name: "status", value: status)]
+            url = c.url ?? metURL
+        }
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "GET"
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode(MeetingsListResponse.self, from: data).meetings
+    }
+
+    public func meetingDetail(id: String) async throws -> MeetingDetail {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/meetings/\(id)"))
+        urlRequest.httpMethod = "GET"
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode(MeetingDetail.self, from: data)
+    }
+
+    public func createMeeting(title: String, agenda: String?, participantIDs: [String], durationMinutes: Int?) async throws -> Meeting {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/meetings"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try encoder.encode(CreateMeetingBody(
+            title: title, agenda: agenda, participantIds: participantIDs,
+            scheduledAt: nil, durationMinutes: durationMinutes
+        ))
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode(MeetingResponse.self, from: data).meeting
+    }
+
+    public func startMeeting(id: String) async throws { try await postMeetingAction(id: id, action: "start") }
+    public func endMeeting(id: String) async throws { try await postMeetingAction(id: id, action: "end") }
+
+    private func postMeetingAction(id: String, action: String) async throws {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/meetings/\(id)/\(action)"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = Data("{}".utf8)
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+    }
+
+    public func meetingGuestLink(id: String) async throws -> GuestLinkResponse {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/meetings/\(id)/guest-link"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = Data("{}".utf8)
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode(GuestLinkResponse.self, from: data)
+    }
+
+    public func listOrgMembers(orgID: String) async throws -> [OrgMember] {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/orgs/\(orgID)/members"))
+        urlRequest.httpMethod = "GET"
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode(OrgMembersResponse.self, from: data).members
+    }
+
+    private struct CreateMeetingBody: Encodable {
+        var title: String
+        var agenda: String?
+        var participantIds: [String]
+        var scheduledAt: String?
+        var durationMinutes: Int?
+        enum CodingKeys: String, CodingKey {
+            case title, agenda
+            case participantIds = "participant_ids"
+            case scheduledAt = "scheduled_at"
+            case durationMinutes = "duration_minutes"
+        }
     }
 
     public func createSession(_ request: MobileSessionRequest) async throws -> MobileSessionResponse {

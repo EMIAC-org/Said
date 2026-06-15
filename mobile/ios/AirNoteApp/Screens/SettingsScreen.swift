@@ -77,6 +77,11 @@ struct SettingsScreen: View {
                         .lineLimit(1).truncationMode(.tail)
                 }
             }
+            if !env.personalMode {
+                NavigationLink(destination: MeetingsScreen()) {
+                    Label("Meetings", systemImage: "person.2.wave.2")
+                }
+            }
             NavigationLink(destination: ServerConnectionView()) {
                 HStack {
                     Label("Workspace server", systemImage: "server.rack")

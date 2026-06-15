@@ -59,6 +59,12 @@ final class AppEnvironment: ObservableObject {
     /// The active workspace, or nil in personal mode.
     var activeOrg: OrgMembership? { orgs.first { $0.id == activeOrgID } }
 
+    // MARK: Meetings (enterprise — needs an active workspace)
+
+    @Published private(set) var meetings: [Meeting] = []
+    @Published private(set) var meetingsLoading = false
+    @Published private(set) var meetingsStatus = ""
+
     // MARK: Settings (server-backed, cross-device)
 
     @Published private(set) var outputLanguage = SharedStore.outputLanguage   // "hinglish" | "english"
@@ -305,6 +311,7 @@ final class AppEnvironment: ObservableObject {
         activeOrgID = nil
         personalMode = true
         SharedStore.activeOrgID = nil
+        meetings = []
         cancelLearningReview()
     }
 
@@ -601,6 +608,75 @@ final class AppEnvironment: ObservableObject {
             _ = handleUnauthorized(error)
             return false
         }
+    }
+
+    // MARK: Meetings
+
+    func refreshMeetings() async {
+        guard account != nil, !personalMode else { meetings = []; return }
+        meetingsLoading = true
+        defer { meetingsLoading = false }
+        do {
+            meetings = try await gateway.listMeetings(status: nil)
+            meetingsStatus = ""
+        } catch {
+            if handleUnauthorized(error) { return }
+            meetingsStatus = meetingError(error)
+        }
+    }
+
+    func meetingDetail(_ id: String) async -> MeetingDetail? {
+        do { return try await gateway.meetingDetail(id: id) }
+        catch { _ = handleUnauthorized(error); return nil }
+    }
+
+    @discardableResult
+    func createMeeting(title: String, participantIDs: [String]) async -> Meeting? {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        do {
+            let meeting = try await gateway.createMeeting(title: trimmed, agenda: nil, participantIDs: participantIDs, durationMinutes: nil)
+            await refreshMeetings()
+            return meeting
+        } catch {
+            if handleUnauthorized(error) { return nil }
+            meetingsStatus = meetingError(error)
+            return nil
+        }
+    }
+
+    func startMeeting(_ id: String) async {
+        do { try await gateway.startMeeting(id: id); await refreshMeetings() }
+        catch { if handleUnauthorized(error) { return }; meetingsStatus = meetingError(error) }
+    }
+
+    func endMeeting(_ id: String) async {
+        do { try await gateway.endMeeting(id: id); await refreshMeetings() }
+        catch { if handleUnauthorized(error) { return }; meetingsStatus = meetingError(error) }
+    }
+
+    func meetingShareURL(_ id: String) async -> URL? {
+        do {
+            let link = try await gateway.meetingGuestLink(id: id)
+            if let invite = link.inviteURL, let url = URL(string: invite) { return url }
+            return URL(string: BuildConfig.gatewayBaseURL.absoluteString + "/join/" + link.token)
+        } catch { _ = handleUnauthorized(error); return nil }
+    }
+
+    func orgMembers() async -> [OrgMember] {
+        guard let org = activeOrgID else { return [] }
+        do { return try await gateway.listOrgMembers(orgID: org) }
+        catch { _ = handleUnauthorized(error); return [] }
+    }
+
+    /// Friendly message for common meeting failures (403 = no active workspace or
+    /// missing the meeting-creator role).
+    private func meetingError(_ error: Error) -> String {
+        if let g = error as? GatewayError, case let .server(status, _, message) = g {
+            if status == 403 { return message ?? "You need an active workspace (and permission) for meetings." }
+            return message ?? "Couldn't reach meetings."
+        }
+        return "Couldn't reach meetings."
     }
 
     // MARK: Learning review
