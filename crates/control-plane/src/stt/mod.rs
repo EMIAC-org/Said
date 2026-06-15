@@ -25,7 +25,7 @@ async fn call_deepgram_batch(
     tag: &str,
 ) -> Result<String, String> {
     let url = "https://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true";
-    let client = reqwest::Client::new();
+    let client = &*crate::HTTP_CLIENT;
     let resp = client
         .post(url)
         .header("Authorization", format!("Token {api_key}"))

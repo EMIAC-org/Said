@@ -249,6 +249,11 @@ pub fn enforce_roman_hinglish(text: &str) -> String {
 ///   - Common Unicode punctuation (smart quotes, em dash, etc)
 /// Called as a post-LLM sanitizer for Hinglish mode.
 pub fn strip_non_latin_scripts(text: &str) -> String {
+    // Fast path: pure-ASCII output (the common Roman-Hinglish case) keeps every
+    // char, so the filter+collect is a wasted full re-allocation. Short-circuit.
+    if text.is_ascii() {
+        return text.to_string();
+    }
     text.chars()
         .filter(|c| {
             c.is_ascii()

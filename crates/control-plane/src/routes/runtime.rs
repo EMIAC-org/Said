@@ -2452,18 +2452,8 @@ pub async fn voice_wav(
     }))
 }
 
-fn deepseek_base_url() -> String {
-    std::env::var("DEEPSEEK_BASE_URL")
-        .unwrap_or_else(|_| "https://api.deepseek.com".to_string())
-        .trim()
-        .trim_end_matches('/')
-        .to_string()
-}
-
-fn deepseek_message_polish_model() -> String {
-    std::env::var("DEEPSEEK_MESSAGE_POLISH_MODEL")
-        .unwrap_or_else(|_| "deepseek-v4-flash".to_string())
-}
+// DeepSeek base-url + model are read once at startup into AppState
+// (deepseek_base_url / deepseek_message_polish_model).
 
 fn build_message_polish_system_prompt() -> String {
     "You are a stateless text processing utility. Your sole function is to transform input text into a professional English format.\n\n\
@@ -2504,12 +2494,13 @@ fn scrub_message_polish_output(output: &str) -> String {
 }
 
 async fn call_deepseek_message_polish(
+    state: &AppState,
     api_key: &str,
     system_prompt: &str,
     user_message: &str,
 ) -> Result<String, (StatusCode, Json<Value>)> {
-    let model = deepseek_message_polish_model();
-    let url = format!("{}/v1/chat/completions", deepseek_base_url());
+    let model = state.deepseek_message_polish_model.clone();
+    let url = format!("{}/v1/chat/completions", state.deepseek_base_url);
     let estimated_input_tokens = user_message.len() / 4;
     let max_tokens = (estimated_input_tokens * 2 + 256).min(4096);
     let body = json!({
@@ -2525,7 +2516,7 @@ async fn call_deepseek_message_polish(
         ]
     });
 
-    let client = reqwest::Client::new();
+    let client = &*crate::HTTP_CLIENT;
     let resp = client
         .post(&url)
         .header("Authorization", format!("Bearer {api_key}"))
@@ -2596,12 +2587,12 @@ pub async fn message_polish(
         return Err(json_error(StatusCode::BAD_REQUEST, "text is required"));
     }
 
-    let api_key = std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
-        json_error(
+    if state.deepseek_api_key.trim().is_empty() {
+        return Err(json_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "DEEPSEEK_API_KEY is not configured on the server",
-        )
-    })?;
+        ));
+    }
 
     let run_id = create_runtime_session(
         &state,
@@ -2625,27 +2616,18 @@ pub async fn message_polish(
     let user_message = build_message_polish_user_message(text);
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
 
-    let model = deepseek_message_polish_model();
+    let model = state.deepseek_message_polish_model.clone();
     let model_start = Instant::now();
-    let raw_output = call_deepseek_message_polish(&api_key, &system_prompt, &user_message).await?;
+    let raw_output = call_deepseek_message_polish(
+        &state,
+        &state.deepseek_api_key,
+        &system_prompt,
+        &user_message,
+    )
+    .await?;
     let output = scrub_message_polish_output(&raw_output);
     let model_ms = model_start.elapsed().as_millis() as i64;
     let total_ms = total_start.elapsed().as_millis() as i64;
-
-    insert_stage_event(
-        &state,
-        run_id,
-        "message_polish_model",
-        "ok",
-        None,
-        None,
-        json!({
-            "model": model,
-            "input_chars": text.chars().count(),
-            "output_chars": output.chars().count(),
-        }),
-    )
-    .await?;
 
     tracing::info!(
         "[runtime] message polish done account={} run_id={} model={} output_chars={} model_ms={} total_ms={}",
@@ -2656,6 +2638,31 @@ pub async fn message_polish(
         model_ms,
         total_ms,
     );
+
+    // Telemetry stage event is non-essential to the response — write it after
+    // returning so it never blocks the polished text (#5).
+    {
+        let bg_state = state.clone();
+        let bg_model = model.clone();
+        let input_chars = text.chars().count();
+        let output_chars = output.chars().count();
+        tokio::spawn(async move {
+            let _ = insert_stage_event(
+                &bg_state,
+                run_id,
+                "message_polish_model",
+                "ok",
+                None,
+                None,
+                json!({
+                    "model": bg_model,
+                    "input_chars": input_chars,
+                    "output_chars": output_chars,
+                }),
+            )
+            .await;
+        });
+    }
 
     Ok(Json(MessagePolishResponse {
         run_id: run_id.to_string(),
@@ -2718,19 +2725,22 @@ pub async fn voice_polish(
     let prompt_start = Instant::now();
     let formatted_transcript = crate::number_format::apply(transcript);
     if formatted_transcript != transcript {
-        insert_stage_event(
-            &state,
-            run_id,
-            "formatter_pre",
-            "ok",
-            None,
-            None,
-            json!({
-                "input_chars": transcript.chars().count(),
-                "output_chars": formatted_transcript.chars().count()
-            }),
-        )
-        .await?;
+        // Telemetry only — fire-and-forget so it never gates the model call (#4).
+        let bg = state.clone();
+        let input_chars = transcript.chars().count();
+        let output_chars = formatted_transcript.chars().count();
+        tokio::spawn(async move {
+            let _ = insert_stage_event(
+                &bg,
+                run_id,
+                "formatter_pre",
+                "ok",
+                None,
+                None,
+                json!({"input_chars": input_chars, "output_chars": output_chars}),
+            )
+            .await;
+        });
     }
     let system_prompt = build_voice_system_prompt(
         &req.output_language,
@@ -2782,16 +2792,22 @@ pub async fn voice_polish(
         merged_vocab.len(),
     );
 
-    insert_stage_event(
-        &state,
-        run_id,
-        "prompt_built",
-        "ok",
-        Some(prompt_ms),
-        None,
-        json!({"prompt_version": "core-fidelity-2.3.3"}),
-    )
-    .await?;
+    {
+        // Telemetry only — fire-and-forget so it never gates the model call (#4).
+        let bg = state.clone();
+        tokio::spawn(async move {
+            let _ = insert_stage_event(
+                &bg,
+                run_id,
+                "prompt_built",
+                "ok",
+                Some(prompt_ms),
+                None,
+                json!({"prompt_version": "core-fidelity-2.3.3"}),
+            )
+            .await;
+        });
+    }
 
     let model_start = Instant::now();
     let output = call_groq(
@@ -2806,21 +2822,7 @@ pub async fn voice_polish(
     let total_ms = total_start.elapsed().as_millis() as i64;
 
     let output = match output {
-        Ok(output) => {
-            let _ = update_credential_used(&state, credential.credential_id).await;
-            insert_provider_usage(
-                &state,
-                run_id,
-                &credential,
-                "groq",
-                Some(model),
-                Some(model_ms),
-                "ok",
-                None,
-            )
-            .await?;
-            output
-        }
+        Ok(output) => output,
         Err(err) => {
             let _ = insert_stage_event(
                 &state,
@@ -2848,57 +2850,45 @@ pub async fn voice_polish(
         }
     };
 
+    // Deterministic post-processing runs inline (it computes the final output),
+    // but its telemetry stage events are RECORDED here and written later — every
+    // DB write is deferred to a single post-response spawn so nothing blocks the
+    // polished text returning to the client (#2).
+    let mut deferred_events: Vec<(&'static str, Option<i64>, Value)> = Vec::new();
+
     let output =
         crate::voice_polish_standalone::enforce_output_script(&output, &req.output_language);
     let restored = restore_literal_tokens(&formatted_transcript, &output, &merged_vocab);
     let restored = restore_numeric_literal_tokens(&formatted_transcript, &restored);
     if restored != output {
-        insert_stage_event(
-            &state,
-            run_id,
+        deferred_events.push((
             "protected_resolver",
-            "ok",
             None,
-            None,
-            json!({
-                "safe_vocab_terms": merged_vocab.len(),
-                "changed": true
-            }),
-        )
-        .await?;
+            json!({"safe_vocab_terms": merged_vocab.len(), "changed": true}),
+        ));
     }
     let output = crate::number_format::apply(&restored);
     let output = restore_numeric_literal_tokens(&formatted_transcript, &output);
     if output != restored {
-        insert_stage_event(
-            &state,
-            run_id,
+        deferred_events.push((
             "formatter_post",
-            "ok",
-            None,
             None,
             json!({
                 "input_chars": restored.chars().count(),
                 "output_chars": output.chars().count()
             }),
-        )
-        .await?;
+        ));
     }
     let email_output = crate::format_recover::recover_emails(&output);
     let output = if email_output != output {
-        insert_stage_event(
-            &state,
-            run_id,
+        deferred_events.push((
             "email_recover_post",
-            "ok",
-            None,
             None,
             json!({
                 "input_chars": output.chars().count(),
                 "output_chars": email_output.chars().count()
             }),
-        )
-        .await?;
+        ));
         email_output
     } else {
         output
@@ -2909,50 +2899,17 @@ pub async fn voice_polish(
     let (output, resolver_applied, resolver_skipped) =
         apply_exact_resolver(&output, &formatted_transcript, &server_memory);
     if resolver_applied > 0 {
-        insert_stage_event(
-            &state,
-            run_id,
+        deferred_events.push((
             "exact_resolver",
-            "ok",
-            None,
             None,
             json!({
                 "evidence_count": server_memory.replacements.len(),
                 "applied_count": resolver_applied,
                 "skipped_count": resolver_skipped,
             }),
-        )
-        .await?;
+        ));
     }
-
-    insert_stage_event(
-        &state,
-        run_id,
-        "llm_complete",
-        "ok",
-        Some(model_ms),
-        None,
-        json!({"model": model}),
-    )
-    .await?;
-    mark_runtime_session(&state, run_id, "completed", None).await?;
-
-    let org_id_for_history = primary_org_id(&state, user.account_id).await.ok().flatten();
-    crate::routes::runtime_history::write_history_from_runtime(
-        &state,
-        user.account_id,
-        org_id_for_history,
-        run_id,
-        req.client_run_id.as_deref(),
-        None,
-        transcript,
-        &output,
-        model,
-        "server_polish",
-        None,
-        Some(model_ms),
-    )
-    .await;
+    deferred_events.push(("llm_complete", Some(model_ms), json!({"model": model})));
 
     tracing::info!(
         "[runtime] voice polish done account={} run_id={} model={} output_chars={} model_ms={} total_ms={}",
@@ -2963,6 +2920,57 @@ pub async fn voice_polish(
         model_ms,
         total_ms,
     );
+
+    // Defer all telemetry/billing/history writes off the response path (#2/#3).
+    // create_runtime_session already committed the parent row (run_id is in the
+    // response), so these children satisfy their FKs. Errors are logged, never
+    // surfaced — a telemetry write must not turn a successful polish into a 500.
+    {
+        let bg_state = state.clone();
+        let bg_credential = credential.clone();
+        let bg_transcript = transcript.to_string();
+        let bg_output = output.clone();
+        let bg_client_run_id = req.client_run_id.clone();
+        let bg_account_id = user.account_id;
+        // #3: reuse the org already resolved + membership-validated by
+        // resolve_tenant instead of re-deriving it via primary_org_id.
+        let org_id_for_history = tenant_ctx.active_org_id;
+        tokio::spawn(async move {
+            let _ = update_credential_used(&bg_state, bg_credential.credential_id).await;
+            let _ = insert_provider_usage(
+                &bg_state,
+                run_id,
+                &bg_credential,
+                "groq",
+                Some(model),
+                Some(model_ms),
+                "ok",
+                None,
+            )
+            .await;
+            for (name, latency_ms, payload) in deferred_events {
+                let _ =
+                    insert_stage_event(&bg_state, run_id, name, "ok", latency_ms, None, payload)
+                        .await;
+            }
+            let _ = mark_runtime_session(&bg_state, run_id, "completed", None).await;
+            crate::routes::runtime_history::write_history_from_runtime(
+                &bg_state,
+                bg_account_id,
+                org_id_for_history,
+                run_id,
+                bg_client_run_id.as_deref(),
+                None,
+                &bg_transcript,
+                &bg_output,
+                model,
+                "server_polish",
+                None,
+                Some(model_ms),
+            )
+            .await;
+        });
+    }
 
     Ok(Json(VoicePolishResponse {
         run_id: run_id.to_string(),
@@ -3120,16 +3128,25 @@ fn decrypt_secret(
         .map_err(|_| json_error(StatusCode::BAD_REQUEST, "credential is not valid UTF-8"))
 }
 
-fn runtime_cipher(state: &AppState) -> Result<Aes256Gcm, (StatusCode, Json<Value>)> {
-    let secret = state.runtime_credentials_key.trim();
+/// Derive the AES-256-GCM cipher from the raw credentials key. Called once at
+/// startup (see `main.rs`) and cached in `AppState.runtime_cipher`. Returns
+/// None when the key is unconfigured / too short.
+pub fn derive_runtime_cipher(secret: &str) -> Option<Aes256Gcm> {
+    let secret = secret.trim();
     if secret.len() < 16 {
-        return Err(json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "RUNTIME_CREDENTIALS_KEY is not configured",
-        ));
+        return None;
     }
     let key = Sha256::digest(secret.as_bytes());
-    Ok(Aes256Gcm::new_from_slice(&key).expect("sha256 produces 32-byte key"))
+    Some(Aes256Gcm::new_from_slice(&key).expect("sha256 produces 32-byte key"))
+}
+
+fn runtime_cipher(state: &AppState) -> Result<Aes256Gcm, (StatusCode, Json<Value>)> {
+    state.runtime_cipher.clone().ok_or_else(|| {
+        json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "RUNTIME_CREDENTIALS_KEY is not configured",
+        )
+    })
 }
 
 fn last4(secret: &str) -> String {
@@ -3545,7 +3562,7 @@ fn default_output_language() -> String {
 }
 
 fn default_selected_model() -> String {
-    "fast".to_string()
+    "smart".to_string()
 }
 
 fn default_runtime_mode() -> String {
@@ -3768,7 +3785,7 @@ async fn call_groq(
         ]
     });
 
-    let client = reqwest::Client::new();
+    let client = &*crate::HTTP_CLIENT;
     let resp = client
         .post(GROQ_ENDPOINT)
         .header("Authorization", format!("Bearer {api_key}"))

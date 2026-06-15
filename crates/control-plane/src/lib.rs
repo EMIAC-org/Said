@@ -23,8 +23,8 @@ pub mod tenant;
 pub mod vocab_worker;
 pub mod voice_polish_standalone;
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use axum::{
     Router,
@@ -34,6 +34,20 @@ use axum::{
     routing::{delete, get, patch, post},
 };
 use tower_http::cors::{Any, CorsLayer};
+
+/// Process-global pooled HTTP client for all outbound provider calls (Groq,
+/// DeepSeek, Deepgram batch). Reusing one client keeps connections warm, so
+/// each request reuses a keep-alive connection instead of doing a fresh
+/// DNS+TCP+TLS handshake. Built lazily, once, for the lifetime of the process.
+pub static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(16)
+        .tcp_keepalive(Duration::from_secs(60))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .expect("failed to build shared HTTP client")
+});
 
 // ── Lark config ──────────────────────────────────────────────────────────────
 
@@ -63,6 +77,14 @@ pub struct AppState {
     pub divo_base_url: String,
     /// Secret used to encrypt BYOK provider credentials before storing them.
     pub runtime_credentials_key: String,
+    /// AES-256-GCM cipher derived once at startup from `runtime_credentials_key`
+    /// (None when the key is unconfigured). Avoids re-running the SHA-256 KDF +
+    /// AES key schedule on every credential decrypt.
+    pub runtime_cipher: Option<aes_gcm::Aes256Gcm>,
+    /// DeepSeek config read once at startup (message polish / Option+1).
+    pub deepseek_api_key: String,
+    pub deepseek_base_url: String,
+    pub deepseek_message_polish_model: String,
 }
 
 // ── Router constructor ───────────────────────────────────────────────────────

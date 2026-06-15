@@ -69,7 +69,9 @@ async fn call_groq(
         ]
     });
 
-    let client = reqwest::Client::new();
+    // dev's pooled keep-alive client (avoids a fresh DNS+TCP+TLS handshake per
+    // call); anugra's 429-retry loop below drives the actual request.
+    let client = &*crate::HTTP_CLIENT;
 
     // Retry transient 429s (Groq TPM limit) with the server-advised backoff
     // instead of failing the whole dictation. 8B on the on-demand tier is only

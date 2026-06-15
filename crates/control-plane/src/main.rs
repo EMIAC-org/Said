@@ -135,6 +135,18 @@ async fn main() {
         !cli.runtime_credentials_key.trim().is_empty(),
     );
 
+    // Derive the credential cipher + read DeepSeek config once at startup so the
+    // per-request hot path doesn't re-run the KDF or hit the environment.
+    let runtime_cipher = routes::runtime::derive_runtime_cipher(&cli.runtime_credentials_key);
+    let deepseek_api_key = std::env::var("DEEPSEEK_API_KEY").unwrap_or_default();
+    let deepseek_base_url = std::env::var("DEEPSEEK_BASE_URL")
+        .unwrap_or_else(|_| "https://api.deepseek.com".to_string())
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let deepseek_message_polish_model = std::env::var("DEEPSEEK_MESSAGE_POLISH_MODEL")
+        .unwrap_or_else(|_| "deepseek-v4-flash".to_string());
+
     let state = AppState {
         db,
         started_at: Arc::new(Instant::now()),
@@ -147,6 +159,10 @@ async fn main() {
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
         divo_base_url: cli.divo_base_url,
         runtime_credentials_key: cli.runtime_credentials_key,
+        runtime_cipher,
+        deepseek_api_key,
+        deepseek_base_url,
+        deepseek_message_polish_model,
     };
 
     let app = build_router(state);
