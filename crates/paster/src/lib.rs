@@ -1875,7 +1875,11 @@ mod imp {
             // initial+typed insertion (the app mutated it) — refuse to edit at a
             // guessed offset rather than risk garbling existing content.
             assert_eq!(
-                find_current_recording_span(Some("Hello world"), "wildly different content", "spoken"),
+                find_current_recording_span(
+                    Some("Hello world"),
+                    "wildly different content",
+                    "spoken"
+                ),
                 None
             );
         }
