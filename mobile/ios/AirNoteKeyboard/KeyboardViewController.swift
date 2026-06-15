@@ -173,6 +173,19 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: Recording
 
+    /// Build the screen context sent to the polish server: the recent words
+    /// before the cursor act as a name/term tiebreaker (the iOS equivalent of the
+    /// desktop's screen context), redacted to just the field hint when the
+    /// surrounding text looks sensitive. The server caps screen_context at 500.
+    private func buildScreenContext() -> String {
+        let ctx = ContextReader(documentProxy: textDocumentProxy).read()
+        let before = ctx.beforeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !before.isEmpty, !Redaction.containsSensitiveKey(before) else {
+            return ctx.fieldHint
+        }
+        return "\(ctx.fieldHint): \(String(before.suffix(240)))"
+    }
+
     private func startRecording() {
         cancelFinalizeTimer()
         clearTeachable()
@@ -208,7 +221,7 @@ final class KeyboardViewController: UIInputViewController {
             selectedModel: SharedStore.selectedModel,
             outputLanguage: SharedStore.outputLanguage,
             safeVocabTerms: SharedStore.safeVocabTerms,
-            screenContext: ContextReader(documentProxy: textDocumentProxy).read().fieldHint
+            screenContext: buildScreenContext()
         )
 
         Task { [weak self] in
