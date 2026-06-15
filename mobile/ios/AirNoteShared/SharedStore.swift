@@ -32,6 +32,7 @@ public enum SharedStore {
         static let keyboardLivePartial = "airnote.shared.kbd_live_partial"
         static let learnedAliases = "airnote.shared.learned_aliases"
         static let customGatewayURL = "airnote.shared.custom_gateway_url"
+        static let recentGatewayURLs = "airnote.shared.recent_gateway_urls"
     }
 
     /// Locally cached learned corrections (heard -> meant), captured whenever the
@@ -149,6 +150,23 @@ public enum SharedStore {
         set { set(Key.customGatewayURL, newValue) }
     }
 
+    /// Recently-used control-plane URLs (newest first, max 5) so the enterprise
+    /// connect screen can offer one-tap reconnect — mirrors the desktop's recent
+    /// workspaces list.
+    public static var recentGatewayURLs: [String] {
+        get { (defaults?.array(forKey: Key.recentGatewayURLs) as? [String]) ?? [] }
+        set { defaults?.set(Array(newValue.prefix(5)), forKey: Key.recentGatewayURLs) }
+    }
+
+    /// Push a URL to the front of the recents list (deduped, capped).
+    public static func rememberGatewayURL(_ url: String) {
+        let u = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !u.isEmpty else { return }
+        var list = recentGatewayURLs.filter { $0.caseInsensitiveCompare(u) != .orderedSame }
+        list.insert(u, at: 0)
+        recentGatewayURLs = list
+    }
+
     // MARK: Dictation preferences (so the keyboard can request the right model/language)
 
     public static var outputLanguage: String {
@@ -156,8 +174,11 @@ public enum SharedStore {
         set { set(Key.outputLanguage, newValue) }
     }
 
+    /// The desktop removed its model picker and always uses the higher-quality
+    /// model; iOS matches that — always "smart". (Setter kept so settings-sync
+    /// writes don't error; the getter intentionally ignores the stored value.)
     public static var selectedModel: String {
-        get { string(Key.selectedModel) ?? "fast" }
+        get { "smart" }
         set { set(Key.selectedModel, newValue) }
     }
 

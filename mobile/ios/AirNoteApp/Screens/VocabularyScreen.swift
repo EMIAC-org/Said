@@ -7,6 +7,7 @@ struct VocabularyScreen: View {
     @State private var heardAs = ""
     @State private var adding = false
     @State private var aliases: [LearnedAliasPair] = []
+    @State private var searchText = ""
     @FocusState private var termFocused: Bool
 
     var body: some View {
@@ -17,7 +18,7 @@ struct VocabularyScreen: View {
                     VStack(spacing: 16) {
                         statsCard
                         addCard
-                        if !aliases.isEmpty { correctionsCard }
+                        if !filteredAliases.isEmpty { correctionsCard }
                         learnedCard
                     }
                     .padding(.horizontal, 16)
@@ -27,6 +28,7 @@ struct VocabularyScreen: View {
             }
             .navigationTitle("Vocabulary")
             .navigationBarTitleDisplayMode(.large)
+            .searchable(text: $searchText, prompt: "Search names & corrections")
             .task {
                 aliases = SharedStore.learnedAliases
                 await env.refreshVocabulary()
@@ -36,6 +38,28 @@ struct VocabularyScreen: View {
                 await env.refreshVocabulary()
             }
         }
+    }
+
+    private var filteredAliases: [LearnedAliasPair] {
+        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return aliases }
+        return aliases.filter { $0.correct.lowercased().contains(q) || $0.heard.lowercased().contains(q) }
+    }
+
+    private var filteredEvents: [RuntimeLearningEvent] {
+        let base = env.learnedEvents.filter { !$0.learnedTerms.isEmpty }
+        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return base }
+        return base.filter { event in event.learnedTerms.contains { $0.lowercased().contains(q) } }
+    }
+
+    /// Stop applying a taught correction on-device (removes it from the App Group
+    /// cache the resolver reads before insertion).
+    private func deleteAlias(_ pair: LearnedAliasPair) {
+        var current = SharedStore.learnedAliases
+        current.removeAll { $0.heard == pair.heard && $0.correct == pair.correct }
+        SharedStore.learnedAliases = current
+        aliases = current
     }
 
     private var statsCard: some View {
@@ -97,7 +121,8 @@ struct VocabularyScreen: View {
             SectionHeader("Corrections AirNote applies")
             AirNoteCard(padding: 14) {
                 VStack(alignment: .leading, spacing: 10) {
-                    ForEach(Array(aliases.prefix(20).enumerated()), id: \.offset) { index, pair in
+                    let shown = Array(filteredAliases.prefix(20))
+                    ForEach(Array(shown.enumerated()), id: \.offset) { index, pair in
                         HStack(spacing: 8) {
                             Text(pair.correct)
                                 .font(.subheadline.weight(.semibold))
@@ -110,12 +135,21 @@ struct VocabularyScreen: View {
                                 .foregroundStyle(AirNoteDesign.muted)
                                 .lineLimit(1)
                             Spacer(minLength: 0)
+                            Button {
+                                deleteAlias(pair)
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.caption2)
+                                    .foregroundStyle(AirNoteDesign.danger)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Remove correction \(pair.correct)")
                         }
-                        if index < min(aliases.count, 20) - 1 {
+                        if index < shown.count - 1 {
                             Divider().overlay(AirNoteDesign.border)
                         }
                     }
-                    Text("Applied on your device to every dictation, before it's inserted.")
+                    Text("Applied on your device to every dictation, before it's inserted. Tap the trash to stop applying one.")
                         .font(.caption2)
                         .foregroundStyle(AirNoteDesign.muted)
                         .padding(.top, 2)
@@ -128,7 +162,7 @@ struct VocabularyScreen: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader("Recently learned")
             AirNoteCard(padding: 14) {
-                let events = env.learnedEvents.filter { !$0.learnedTerms.isEmpty }
+                let events = filteredEvents
                 if env.vocabLoading && events.isEmpty {
                     InlineLoading(text: "Loading learned terms…")
                 } else if events.isEmpty {

@@ -248,6 +248,29 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    /// Manual-token sign-in fallback (enterprise): the user pastes a session
+    /// token (e.g. from the server's web sign-in) when the Lark deep-link flow
+    /// can't complete. Mirrors the desktop connect form's "paste token" option.
+    @discardableResult
+    func signInWithToken(_ rawToken: String) async -> Bool {
+        let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return false }
+        isAuthenticating = true
+        authError = nil
+        defer { isAuthenticating = false }
+        do {
+            let response = try await gateway.restoreSession(token: token)
+            authTokens.persist(accessToken: response.token, account: response.account)
+            account = response.account
+            await loadWorkspaceState()
+            phase = isOnboardingComplete ? .ready : .onboarding
+            return true
+        } catch {
+            authError = "That sign-in token wasn't accepted. Check it and try again."
+            return false
+        }
+    }
+
     func signOut() {
         signOutLocally()
         phase = .onboarding
@@ -304,7 +327,9 @@ final class AppEnvironment: ObservableObject {
     func refreshRuntimeStatus() async {
         do {
             let status = try await gateway.runtimeStatus()
-            dictationAvailable = status.activeCredentialCount > 0
+            // dictationAvailable is owned by refreshCredentials — it needs BOTH
+            // required providers (deepgram + groq), not just any active credential
+            // (an optional Gemini key alone must not flip it on).
             runtimeStatusLabel = status.activeCredentialCount > 0
                 ? (status.serverMemoryReady ? "Personalized" : "Ready")
                 : "Setting up dictation"
@@ -333,16 +358,15 @@ final class AppEnvironment: ObservableObject {
         guard settings.version >= settingsVersion else { return }
         settingsVersion = settings.version
         outputLanguage = settings.outputLanguage
-        selectedModel = settings.selectedModel
+        selectedModel = "smart"   // model picker removed — always Smart, matching desktop
         tonePreset = settings.tonePreset
         learningEnabled = settings.learningEnabled
         SharedStore.outputLanguage = settings.outputLanguage
-        SharedStore.selectedModel = settings.selectedModel
+        SharedStore.selectedModel = "smart"   // model picker removed — always Smart
         SharedStore.tonePreset = settings.tonePreset
     }
 
     func setOutputLanguage(_ value: String) async { await patch(.init(outputLanguage: value)) { self.outputLanguage = value; SharedStore.outputLanguage = value } }
-    func setSelectedModel(_ value: String) async { await patch(.init(selectedModel: value)) { self.selectedModel = value; SharedStore.selectedModel = value } }
     func setTonePreset(_ value: String) async { await patch(.init(tonePreset: value)) { self.tonePreset = value; SharedStore.tonePreset = value } }
     func setLearningEnabled(_ value: Bool) async { await patch(.init(learningEnabled: value)) { self.learningEnabled = value } }
 
@@ -468,6 +492,9 @@ final class AppEnvironment: ObservableObject {
         guard account != nil else { credentials = []; return }
         do {
             credentials = try await gateway.listCredentials()
+            // Dictation needs BOTH required providers (deepgram + groq); an
+            // optional Gemini key alone must not turn this on.
+            dictationAvailable = missingRequiredProviders.isEmpty
         } catch {
             _ = handleUnauthorized(error)
         }
@@ -503,6 +530,7 @@ final class AppEnvironment: ObservableObject {
         credentials.removeAll { $0.id == credential.id }
         do {
             try await gateway.deleteCredential(id: credential.id)
+            dictationAvailable = missingRequiredProviders.isEmpty
             await refreshRuntimeStatus()
         } catch {
             if handleUnauthorized(error) { return }

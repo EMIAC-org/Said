@@ -78,10 +78,6 @@ struct SettingsScreen: View {
                 Text("Hinglish").tag("hinglish")
                 Text("English").tag("english")
             }
-            Picker("Voice quality", selection: modelBinding) {
-                Text("Fast").tag("fast")
-                Text("Higher quality").tag("smart")
-            }
             Picker("Tone", selection: toneBinding) {
                 ForEach(AirNoteTone.all, id: \.key) { tone in
                     Text(tone.label).tag(tone.key)
@@ -106,9 +102,6 @@ struct SettingsScreen: View {
 
     private var languageBinding: Binding<String> {
         Binding(get: { env.outputLanguage }, set: { value in Task { await env.setOutputLanguage(value) } })
-    }
-    private var modelBinding: Binding<String> {
-        Binding(get: { env.selectedModel }, set: { value in Task { await env.setSelectedModel(value) } })
     }
     private var toneBinding: Binding<String> {
         Binding(get: { env.tonePreset }, set: { value in Task { await env.setTonePreset(value) } })

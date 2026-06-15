@@ -32,6 +32,15 @@ struct ProviderKeysView: View {
                         getKeyURL: URL(string: "https://console.groq.com/keys")!,
                         placeholder: "gsk_…"
                     )
+                    ProviderKeyCard(
+                        provider: "gemini",
+                        name: "Gemini",
+                        role: "Sharper learning (optional)",
+                        badge: "✦",
+                        color: Color(red: 0.26, green: 0.52, blue: 0.96),
+                        getKeyURL: URL(string: "https://aistudio.google.com/app/apikey")!,
+                        placeholder: "Paste your Gemini key"
+                    )
                     if !env.credentialStatus.isEmpty {
                         Text(env.credentialStatus)
                             .font(.caption)
@@ -53,7 +62,7 @@ struct ProviderKeysView: View {
                 Text("Two free keys power AirNote")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(AirNoteDesign.foreground)
-                Text("Add your own Deepgram and Groq keys — both have free tiers that cover daily use. They're stored encrypted on AirNote's servers under your account and used only for your dictation.")
+                Text("Add your own Deepgram and Groq keys — both have free tiers that cover daily use. A Gemini key is optional and sharpens how AirNote learns your words. Keys are stored encrypted on AirNote's servers under your account and used only for you.")
                     .font(.caption)
                     .foregroundStyle(AirNoteDesign.muted)
                     .fixedSize(horizontal: false, vertical: true)
