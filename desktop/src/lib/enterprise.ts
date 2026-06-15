@@ -314,6 +314,39 @@ export async function deactivateWorkspace(): Promise<boolean> {
   }
 }
 
+/** Header that scopes a server request to the connection's active workspace.
+ *  The server's require_active_org gate accepts either this header or a
+ *  previously-activated org, so sending it makes meeting calls robust even if
+ *  the server-side active org drifts. Empty when no workspace is active. */
+function orgHeader(): Record<string, string> {
+  const conn = getConnection();
+  return conn?.activeOrgId ? { "X-AirNote-Org-Id": conn.activeOrgId } : {};
+}
+
+/** Ensure the connection has an active workspace so org-scoped calls (meetings)
+ *  don't 403 with "active workspace required". Returns true when a workspace is
+ *  active (or was just auto-activated), false when the user must pick one.
+ *
+ *  Auto-activates only when the choice is unambiguous (exactly one workspace and
+ *  not in personal mode); with zero or multiple workspaces we let the caller
+ *  guide the user instead of guessing. */
+export async function ensureActiveWorkspace(): Promise<boolean> {
+  const conn = getConnection();
+  const data = await listWorkspaces();
+  // Couldn't reach the server — don't nag if a workspace was already active.
+  if (!data) return !!conn?.activeOrgId;
+  if (data.active_org_id) {
+    if (conn && conn.activeOrgId !== data.active_org_id) {
+      saveConnection({ ...conn, activeOrgId: data.active_org_id });
+    }
+    return true;
+  }
+  if (!data.personal_mode && data.orgs.length === 1) {
+    return await activateWorkspace(data.orgs[0].id);
+  }
+  return false;
+}
+
 interface LocalEnterpriseStatus {
   connected: boolean;
   license_tier?: string;
@@ -696,7 +729,7 @@ export async function listMeetings(
     const url = serverUrl.replace(/\/+$/, "");
     const qs = status ? `?status=${status}` : "";
     const res = await fetch(`${url}/v1/meetings${qs}`, {
-      headers: { Authorization: `Bearer ${jwt}` },
+      headers: { Authorization: `Bearer ${jwt}`, ...orgHeader() },
     });
     if (!res.ok) return [];
     const data = await res.json();
@@ -724,6 +757,7 @@ export async function createMeeting(
     headers: {
       Authorization: `Bearer ${jwt}`,
       "Content-Type": "application/json",
+      ...orgHeader(),
     },
     body: JSON.stringify(body),
   });
@@ -743,7 +777,7 @@ export async function startMeeting(
   const url = normalizeServerUrl(serverUrl);
   const res = await fetch(`${url}/v1/meetings/${meetingId}/start`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${jwt}` },
+    headers: { Authorization: `Bearer ${jwt}`, ...orgHeader() },
   });
   if (!res.ok) {
     throw new Error(await responseErrorMessage(res, "Failed to start meeting"));
