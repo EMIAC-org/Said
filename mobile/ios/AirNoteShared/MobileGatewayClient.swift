@@ -684,14 +684,15 @@ public struct PreviewMobileGatewayClient: MobileGatewayClient {
 #endif
 
 public final class HTTPMobileGatewayClient: MobileGatewayClient {
-    private let baseURL: URL
+    /// Read fresh each request so switching servers (Settings -> Server) takes
+    /// effect immediately, without an app relaunch.
+    private var baseURL: URL { BuildConfig.gatewayBaseURL }
     private let session: URLSession
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private let authTokenProvider: GatewayAuthTokenProvider?
 
-    public init(baseURL: URL, session: URLSession = .shared, authTokenProvider: GatewayAuthTokenProvider? = nil) {
-        self.baseURL = baseURL
+    public init(baseURL _: URL = BuildConfig.gatewayBaseURL, session: URLSession = .shared, authTokenProvider: GatewayAuthTokenProvider? = nil) {
         self.session = session
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()

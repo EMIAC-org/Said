@@ -55,7 +55,7 @@ struct ServerConnectionView: View {
                         Label("Reset to AirNote default", systemImage: "arrow.uturn.backward")
                     }
                 } footer: {
-                    Text("Currently connected to: \(BuildConfig.gatewayBaseURL.absoluteString)\n\nThe app and the keyboard both use this server. After changing it, sign out and sign back in so your session matches the new server.")
+                    Text("Currently connected to: \(BuildConfig.gatewayBaseURL.absoluteString)\n\nThe app and the keyboard both use this server. Saving signs you out so you can sign in to the new server.")
                 }
             }
             .scrollContentBackground(.hidden)
@@ -114,7 +114,10 @@ struct ServerConnectionView: View {
     private func save() {
         guard let base = normalizedURL else { return }
         SharedStore.customGatewayURL = base.absoluteString
-        status = .ok("Saved — \(base.absoluteString). Sign out and back in to finish.")
+        status = .ok("Connected to \(base.host ?? "the new server"). Sign in to continue.")
+        // Clients read the URL fresh; signing out lands on sign-in for the new
+        // server, so no app relaunch is needed.
+        env.signOut()
     }
 
     private func reset() {

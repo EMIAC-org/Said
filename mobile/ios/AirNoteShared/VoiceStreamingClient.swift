@@ -134,7 +134,8 @@ public struct VoiceStreamConfig: Equatable {
 public final class VoiceStreamingClient {
     public var onUpdate: ((VoiceStreamUpdate) -> Void)?
 
-    private let baseURL: URL
+    /// Read fresh each connection so switching servers takes effect immediately.
+    private var baseURL: URL { BuildConfig.gatewayBaseURL }
     private let urlSession: URLSession
     private let audioSession: AVAudioSession
     private let audioEngine = AVAudioEngine()
@@ -164,11 +165,10 @@ public final class VoiceStreamingClient {
     private var prewarmedURL: URL?
 
     public init(
-        baseURL: URL = BuildConfig.gatewayBaseURL,
+        baseURL _: URL = BuildConfig.gatewayBaseURL,
         urlSession: URLSession = .shared,
         audioSession: AVAudioSession = .sharedInstance()
     ) {
-        self.baseURL = baseURL
         self.urlSession = urlSession
         self.audioSession = audioSession
     }
