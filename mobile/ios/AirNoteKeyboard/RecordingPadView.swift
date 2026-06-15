@@ -107,6 +107,15 @@ final class RecordingPadView: UIView {
         ])
     }
 
+    /// Keep the look correct when the host app flips light/dark while the keyboard
+    /// is up. Adaptive UIColors update themselves; cgColor-based borders don't.
+    override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+        super.traitCollectionDidChange(previous)
+        guard traitCollection.userInterfaceStyle != previous?.userInterfaceStyle else { return }
+        backgroundColor = KeyboardTheme.keyboardBackground
+        voiceSurface?.layer.borderColor = KeyboardTheme.border.cgColor
+    }
+
     /// Swap ONLY the voice surface for the new state — the keys stay put, so
     /// state changes never flash the whole keyboard. The surface settles in with
     /// a soft spring (Wispr-style). Returns without animating identical states.
@@ -502,6 +511,10 @@ final class RecordingPadView: UIView {
     private func rebuildKeys() {
         guard let keys = keyboardStack else { return }
         keys.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        keys.addArrangedSubview(makeKeyboardHandle())
+        // Collapsed = compact voice mode: just the handle (frees screen space; tap
+        // the handle to bring the keyboard up to edit, then collapse it again).
+        guard !SharedStore.keyboardKeysCollapsed else { return }
         let rows: [[String]]
         switch layoutMode {
         case .letters:
@@ -589,6 +602,33 @@ final class RecordingPadView: UIView {
         let v = UIView()
         v.widthAnchor.constraint(equalToConstant: width).isActive = true
         return v
+    }
+
+    /// A slim handle that collapses/expands the typing keys, so the keyboard can
+    /// shrink to just the voice surface while dictating and pop back up to edit.
+    private func makeKeyboardHandle() -> UIView {
+        let collapsed = SharedStore.keyboardKeysCollapsed
+        let button = UIButton(type: .system)
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: collapsed ? "keyboard.chevron.compact.up" : "chevron.down")
+        config.title = collapsed ? "Keyboard" : nil
+        config.imagePadding = 6
+        config.baseForegroundColor = KeyboardTheme.muted
+        config.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 10)
+        button.configuration = config
+        button.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
+        button.addAction(UIAction { [weak self] _ in self?.toggleKeysCollapsed() }, for: .touchUpInside)
+        button.accessibilityLabel = collapsed ? "Show keyboard" : "Hide keyboard"
+        let row = UIStackView(arrangedSubviews: [UIView(), button, UIView()])
+        row.axis = .horizontal
+        row.distribution = .fill
+        return row
+    }
+
+    private func toggleKeysCollapsed() {
+        SharedStore.keyboardKeysCollapsed.toggle()
+        rebuildKeys()
+        UIView.animate(withDuration: 0.18) { self.layoutIfNeeded() }
     }
 
     /// Character key — letters follow the shift state; everything else inserts literally.

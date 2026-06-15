@@ -34,6 +34,7 @@ public enum SharedStore {
         static let customGatewayURL = "airnote.shared.custom_gateway_url"
         static let recentGatewayURLs = "airnote.shared.recent_gateway_urls"
         static let activeOrgID = "airnote.shared.active_org_id"
+        static let keyboardKeysCollapsed = "airnote.shared.keyboard_keys_collapsed"
     }
 
     /// Locally cached learned corrections (heard -> meant), captured whenever the
@@ -175,6 +176,13 @@ public enum SharedStore {
     public static var activeOrgID: String? {
         get { string(Key.activeOrgID) }
         set { set(Key.activeOrgID, newValue) }
+    }
+
+    /// Whether the keyboard's typing keys are collapsed (compact voice mode): the
+    /// keyboard shrinks to the voice surface + a handle; tap to bring keys back.
+    public static var keyboardKeysCollapsed: Bool {
+        get { defaults?.bool(forKey: Key.keyboardKeysCollapsed) ?? false }
+        set { defaults?.set(newValue, forKey: Key.keyboardKeysCollapsed) }
     }
 
     // MARK: Dictation preferences (so the keyboard can request the right model/language)

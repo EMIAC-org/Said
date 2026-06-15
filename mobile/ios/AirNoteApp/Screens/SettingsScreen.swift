@@ -13,11 +13,13 @@ struct SettingsScreen: View {
                 AirNoteBackground()
                 Form {
                     accountSection
+                    if !env.personalMode { enterpriseSection }
                     workspaceSection
                     dictationSection
                     permissionsSection
                     appearanceSection
                     privacySection
+                    helpSection
                     aboutSection
                 }
                 .scrollContentBackground(.hidden)
@@ -77,14 +79,6 @@ struct SettingsScreen: View {
                         .lineLimit(1).truncationMode(.tail)
                 }
             }
-            if !env.personalMode {
-                NavigationLink(destination: MeetingsScreen()) {
-                    Label("Meetings", systemImage: "person.2.wave.2")
-                }
-                NavigationLink(destination: DivoScreen()) {
-                    Label("Divo (AI chat)", systemImage: "sparkles")
-                }
-            }
             NavigationLink(destination: ServerConnectionView()) {
                 HStack {
                     Label("Workspace server", systemImage: "server.rack")
@@ -98,7 +92,43 @@ struct SettingsScreen: View {
         } header: {
             Text("Workspace")
         } footer: {
-            Text("Switch between your personal account and any enterprise workspace you belong to — Meetings and Divo use the active workspace. The server is the control-plane the app and keyboard connect to.")
+            Text("Switch between your personal account and any enterprise workspace you belong to. The server is the control-plane the app and keyboard connect to.")
+        }
+    }
+
+    // MARK: Enterprise
+
+    private var enterpriseSection: some View {
+        Section {
+            NavigationLink(destination: MeetingsScreen()) {
+                Label("Meetings", systemImage: "person.2.wave.2")
+            }
+            NavigationLink(destination: DivoScreen()) {
+                Label("Divo — AI chat", systemImage: "sparkles")
+            }
+        } header: {
+            Text("Enterprise")
+        } footer: {
+            Text("Meetings and Divo for \(env.activeOrg?.name ?? "your workspace").")
+        }
+    }
+
+    // MARK: Help & sharing
+
+    private var helpSection: some View {
+        Section {
+            if let inviteURL = URL(string: "https://airnote.emiactech.com") {
+                ShareLink(item: inviteURL) {
+                    Label("Invite a friend", systemImage: "person.badge.plus")
+                }
+            }
+            if let bugURL = URL(string: BuildConfig.gatewayBaseURL.absoluteString + "/report-bug") {
+                Link(destination: bugURL) {
+                    Label("Report a bug", systemImage: "ladybug")
+                }
+            }
+        } header: {
+            Text("Help")
         }
     }
 
