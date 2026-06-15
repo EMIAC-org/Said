@@ -8350,6 +8350,10 @@ fn env_bool(name: &str, default: bool) -> bool {
 fn resolve_whisper_cpp_config() -> Result<WhisperCppConfig, String> {
     let binary = env_path("AIRNOTE_WHISPER_CPP_BIN")
         .or_else(|| env_path("WHISPER_CPP_BIN"))
+        // Bundled sidecar inside the shipped .app (build-dmg.sh copies whisper-cli
+        // into Contents/MacOS next to the app binary). Preferred over PATH so a
+        // packaged install transcribes without any dev tooling present.
+        .or_else(find_bundled_whisper_cli)
         .or_else(|| find_on_path("whisper-cli"))
         .or_else(|| find_on_path("main"))
         .ok_or_else(|| {
@@ -8419,6 +8423,12 @@ fn resolve_whisper_cpp_config() -> Result<WhisperCppConfig, String> {
             // whose folder has no Silero model, so also check the app's data
             // models dir where the VAD model is downloaded.
             .or_else(|| find_silero_vad_model(&said_core::paths::data_dir().join("models")))
+            // Bundled with the shipped .app (Contents/MacOS or Contents/Resources/models).
+            .or_else(|| {
+                bundled_models_dirs()
+                    .iter()
+                    .find_map(|d| find_silero_vad_model(d))
+            })
     } else {
         None
     };
@@ -8462,6 +8472,40 @@ fn resolve_whisper_cpp_config() -> Result<WhisperCppConfig, String> {
         vad_min_silence_ms,
         romanize,
     })
+}
+
+/// Locate a `whisper-cli` binary bundled inside the shipped app. The DMG build
+/// copies it into `Contents/MacOS` next to the app executable; the dev/release
+/// target dirs are also walked so `just dev` finds a synced copy. None if absent
+/// (callers then fall back to PATH).
+fn find_bundled_whisper_cli() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let mut dir = exe.parent().map(|p| p.to_path_buf());
+    for _ in 0..8 {
+        if let Some(d) = dir {
+            candidates.push(d.join("whisper-cli"));
+            candidates.push(d.join("debug").join("whisper-cli"));
+            candidates.push(d.join("release").join("whisper-cli"));
+            dir = d.parent().map(|p| p.to_path_buf());
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// Directories inside a shipped `.app` where bundled models may live, relative
+/// to the app executable (`Contents/MacOS/<exe>`): the executable's own folder
+/// and `Contents/Resources/models`. Empty/absent dirs are harmless — callers
+/// scan each for the file they need.
+fn bundled_models_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(d) = exe.parent() {
+            dirs.push(d.to_path_buf());
+            dirs.push(d.join("..").join("Resources").join("models"));
+        }
+    }
+    dirs
 }
 
 /// Find a Silero VAD ggml model (`ggml-silero-*.bin`) in `dir`, preferring the

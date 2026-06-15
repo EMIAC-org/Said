@@ -774,6 +774,10 @@ export default function App() {
                   setSettingsSection("meeting");
                   setSettingsOpen(true);
                 }}
+                onOpenWorkspaces={() => {
+                  setSettingsSection("enterprise");
+                  setSettingsOpen(true);
+                }}
                 onJoinMeeting={(id) => {
                   setLiveMeetingId(id);
                   setActiveView("live-meeting");
