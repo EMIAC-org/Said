@@ -1281,10 +1281,13 @@ fn text_block(text: &str) -> serde_json::Value {
 }
 
 fn bullet_block(text: &str) -> serde_json::Value {
+    // block_type 12 (bullet) MUST use the "bullet" key — using "text" makes Lark
+    // reject the whole children batch with "invalid param" (1770001). Lark renders
+    // the bullet glyph itself, so no manual "•" prefix.
     serde_json::json!({
         "block_type": 12,
-        "text": {
-            "elements": [{ "text_run": { "content": format!("\u{2022} {text}") } }]
+        "bullet": {
+            "elements": [{ "text_run": { "content": text } }]
         }
     })
 }
@@ -1325,12 +1328,10 @@ fn rich_block(block_type: u8, key: &str, text: &str) -> serde_json::Value {
     })
 }
 
-/// A bullet block (matches the proven block_type-12 + "text" shape used
-/// elsewhere) with a leading glyph and inline `**bold**`.
+/// A bullet block (block_type 12 + the required "bullet" key) with inline
+/// `**bold**`. Lark renders the bullet glyph, so the content carries no "•".
 fn bullet_rich_block(text: &str) -> serde_json::Value {
-    let mut elements = vec![serde_json::json!({ "text_run": { "content": "\u{2022} " } })];
-    elements.extend(inline_elements(text));
-    serde_json::json!({ "block_type": 12, "text": { "elements": elements } })
+    serde_json::json!({ "block_type": 12, "bullet": { "elements": inline_elements(text) } })
 }
 
 /// Render the LLM's lightweight Markdown summary into Docx blocks: ATX headings
@@ -1547,6 +1548,10 @@ mod tests {
             blocks[0]["heading2"]["elements"][0]["text_run"]["content"],
             "Section"
         );
+        // Bullets MUST use the "bullet" key, not "text" — Lark rejects "text"
+        // (1770001) and fails the entire children batch (empty doc).
+        assert!(blocks[1]["bullet"].is_object());
+        assert!(blocks[1]["text"].is_null());
     }
 
     #[test]
