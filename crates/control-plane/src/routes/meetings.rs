@@ -11,7 +11,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -727,6 +727,301 @@ pub async fn push_tasks(
     }
 
     Ok(Json(json!({ "pushed": pushed, "skipped": skipped })))
+}
+
+// ── POST /v1/meetings/:id/export-lark ─────────────────────────────────────────
+// Export locally-generated meeting minutes (the desktop holds them) to a
+// beautifully formatted Lark Docx, then create Lark Tasks for assigned items so
+// owners get pinged and the items land on their to-do lists.
+
+#[derive(Deserialize)]
+pub struct ExportLarkItem {
+    pub title: String,
+    #[serde(default)]
+    pub assignee: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ExportLarkBody {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub action_items: Vec<ExportLarkItem>,
+    #[serde(default)]
+    pub decisions: Vec<String>,
+}
+
+/// Resolve a free-text assignee name (from the local meeting AI) to a Lark
+/// user_id via org_members, best-effort: exact case-insensitive match first,
+/// then a first-name / contains match. Returns None when nothing reasonable
+/// matches (the item still appears in the doc, just without a Lark task).
+fn resolve_lark_user_id(
+    name: &str,
+    members: &[(Option<String>, Option<String>)],
+) -> Option<String> {
+    let needle = name.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return None;
+    }
+    // Exact (case-insensitive) name match.
+    if let Some((_, Some(uid))) = members.iter().find(|(n, uid)| {
+        uid.is_some()
+            && n.as_deref()
+                .map(|n| n.trim().eq_ignore_ascii_case(&needle))
+                .unwrap_or(false)
+    }) {
+        return Some(uid.clone());
+    }
+    // First-name / substring match (one direction only, longer than 2 chars).
+    members
+        .iter()
+        .find(|(n, uid)| {
+            uid.is_some()
+                && n.as_deref()
+                    .map(|n| {
+                        let n = n.trim().to_ascii_lowercase();
+                        needle.len() > 2 && (n.starts_with(&needle) || n.contains(&needle))
+                    })
+                    .unwrap_or(false)
+        })
+        .and_then(|(_, uid)| uid.clone())
+}
+
+pub async fn export_lark(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Path(meeting_id): Path<Uuid>,
+    Json(body): Json<ExportLarkBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
+
+    // Verify the meeting belongs to this org; pull its title/time for the header.
+    let meeting: Option<(String, DateTime<Utc>, i32)> = sqlx::query_as(
+        "SELECT title, created_at, duration_minutes FROM meetings WHERE id = $1 AND org_id = $2",
+    )
+    .bind(meeting_id)
+    .bind(org_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    let Some((db_title, created_at, duration_minutes)) = meeting else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "meeting not found", "code": "not_found"})),
+        ));
+    };
+
+    let lark = state.lark.clone();
+    if lark.app_id.is_empty() || lark.app_secret.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Lark isn't configured for this workspace — ask an admin to connect it.",
+                "code": "lark_not_configured",
+            })),
+        ));
+    }
+
+    let title = if body.title.trim().is_empty() {
+        db_title
+    } else {
+        body.title.trim().to_string()
+    };
+    let doc_title = format!("Meeting Minutes \u{2014} {title}");
+    let meta_line = format!(
+        "{} \u{00B7} {} min",
+        created_at.format("%b %d, %Y %H:%M UTC"),
+        duration_minutes
+    );
+
+    // Org members (for assignee → Lark user_id resolution + task creation).
+    let members: Vec<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT lark_name, lark_user_id FROM org_members WHERE org_id = $1")
+            .bind(org_id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(db_err)?;
+
+    let action_items: Vec<(String, Option<String>)> = body
+        .action_items
+        .iter()
+        .map(|i| (i.title.clone(), i.assignee.clone()))
+        .collect();
+
+    let folder_token = std::env::var("LARK_MINUTES_FOLDER_TOKEN")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+
+    // Create the doc as the *user* so it lands in their own Lark Drive — no
+    // shared folder needed. (A shared folder is still honored if configured.)
+    // Requires the caller to have signed in with Lark.
+    let user_token = user_lark_token(&state, user.account_id, org_id).await?;
+
+    // 1) Create the doc (in the user's Drive, or the shared folder if set).
+    let document_id =
+        crate::lark_sync::create_doc_with_token(&user_token, &doc_title, folder_token.as_deref())
+            .await
+            .map_err(|e| lark_error_response("could not create the Lark doc", &e))?;
+
+    // 2) Fill it with beautifully formatted blocks.
+    let blocks = crate::lark_sync::build_minutes_blocks(
+        &title,
+        &meta_line,
+        &body.summary,
+        &action_items,
+        &body.decisions,
+    );
+    let mut content_warning: Option<String> = None;
+    if let Err(e) =
+        crate::lark_sync::insert_blocks_with_token(&user_token, &document_id, &blocks).await
+    {
+        tracing::warn!("export_lark: block insert failed for {meeting_id}: {e}");
+        content_warning =
+            Some("the doc was created but some formatting could not be written".into());
+    }
+
+    // 3) Ask Lark for the canonical doc URL (no hard-coded tenant domain).
+    let url = crate::lark_sync::fetch_doc_url(&user_token, &document_id)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_default();
+
+    // 4) Create Lark tasks for assigned action items so owners get pinged and
+    //    the items land on their to-do lists (best-effort, never fails export).
+    let mut tasks_created = 0u32;
+    for item in &body.action_items {
+        let Some(name) = item.assignee.as_deref() else {
+            continue;
+        };
+        let Some(uid) = resolve_lark_user_id(name, &members) else {
+            continue;
+        };
+        let desc = format!("From meeting: {title}\n{url}");
+        match crate::lark_sync::create_lark_task(
+            &lark.app_id,
+            &lark.app_secret,
+            &item.title,
+            Some(&desc),
+            Some(&uid),
+        )
+        .await
+        {
+            Ok(_) => tasks_created += 1,
+            Err(e) => tracing::warn!("export_lark: task create failed for '{name}': {e}"),
+        }
+    }
+
+    Ok(Json(json!({
+        "ok": true,
+        "url": url,
+        "document_id": document_id,
+        "in_shared_folder": folder_token.is_some(),
+        "tasks_created": tasks_created,
+        "content_warning": content_warning,
+    })))
+}
+
+/// A valid Lark *user* access_token for the caller, refreshing it when it's
+/// near expiry. The doc is created under this identity so it lands in the
+/// user's own Drive. Errors clearly if the account isn't linked to Lark.
+async fn user_lark_token(
+    state: &AppState,
+    account_id: Uuid,
+    org_id: Uuid,
+) -> Result<String, (StatusCode, Json<Value>)> {
+    let row: Option<(String, String, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT access_token, refresh_token, token_expires_at
+           FROM lark_tokens WHERE account_id = $1 AND org_id = $2",
+    )
+    .bind(account_id)
+    .bind(org_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    let Some((access_token, refresh_token, expires_at)) = row else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Sign in with Lark to export — your account isn't linked to Lark.",
+                "code": "lark_not_linked",
+            })),
+        ));
+    };
+
+    // Still valid (with a 2-minute safety margin)?
+    if expires_at > Utc::now() + Duration::minutes(2) {
+        return Ok(access_token);
+    }
+
+    // Expired/near-expiry → refresh and persist.
+    let refreshed = crate::lark_client::refresh_access_token(
+        &state.lark.app_id,
+        &state.lark.app_secret,
+        &refresh_token,
+    )
+    .await
+    // A failed refresh almost always means the stored refresh token is expired
+    // or revoked → the user must re-authorize, so surface it as reauth-required.
+    .map_err(|_| {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Your Lark session expired — reconnect Lark (Settings → Enterprise) and try again.",
+                "code": "lark_reauth_required",
+            })),
+        )
+    })?;
+
+    let new_expires = Utc::now() + Duration::seconds(refreshed.expires_in);
+    sqlx::query(
+        "UPDATE lark_tokens
+            SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = now()
+          WHERE account_id = $4 AND org_id = $5",
+    )
+    .bind(&refreshed.access_token)
+    .bind(&refreshed.refresh_token)
+    .bind(new_expires)
+    .bind(account_id)
+    .bind(org_id)
+    .execute(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    Ok(refreshed.access_token)
+}
+
+/// Map a Lark API error string into an HTTP response. Authorization/scope
+/// failures (e.g. 99991679, "unauthorized", missing privileges) become a
+/// distinct `lark_reauth_required` code so the desktop can guide the user to
+/// reconnect Lark instead of showing a dead-end error.
+fn lark_error_response(context: &str, e: &str) -> (StatusCode, Json<Value>) {
+    let lower = e.to_lowercase();
+    let needs_reauth = lower.contains("99991679")
+        || lower.contains("unauthorized")
+        || lower.contains("permission")
+        || lower.contains("re-authorization")
+        || lower.contains("privilege")
+        || lower.contains("forbidden")
+        || lower.contains("scope");
+    if needs_reauth {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Lark needs you to reconnect with the latest permissions — open Settings → Enterprise, sign in with Lark again, then retry.",
+                "code": "lark_reauth_required",
+            })),
+        )
+    } else {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": format!("{context}: {e}"), "code": "lark_error"})),
+        )
+    }
 }
 
 fn db_err(_e: sqlx::Error) -> (StatusCode, Json<Value>) {

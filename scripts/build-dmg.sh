@@ -92,6 +92,23 @@ cp "$SIDECAR_SRC" "$SIDECAR_DEST"
 chmod +x "$SIDECAR_DEST"
 ok "synced to $SIDECAR_DEST"
 
+# ── Bundle the DeepSeek meeting-summary key into the build ───────────────────
+# DeepSeek is the bundled meeting-AI provider; its key is baked in at compile
+# time via option_env!("DEEPSEEK_API_KEY") in meeting_engine.rs (users cannot
+# change it). Pull it from .env if not already in the environment, then touch
+# meeting_engine.rs so the value is re-baked (option_env! is captured at compile
+# time and won't refresh on its own).
+if [ -z "${DEEPSEEK_API_KEY:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
+  DEEPSEEK_API_KEY="$(grep -E '^DEEPSEEK_API_KEY=' "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"'')"
+fi
+if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+  export DEEPSEEK_API_KEY
+  touch "$TAURI_DIR/src/meeting_engine.rs"
+  ok "DeepSeek summary key will be bundled into the build"
+else
+  warn "DEEPSEEK_API_KEY not set — meeting summaries will fail until a key is bundled"
+fi
+
 # ── Tauri build ──────────────────────────────────────────────────────────────
 step "Run tauri build (--target $TARGET)"
 cd "$DESKTOP_DIR"

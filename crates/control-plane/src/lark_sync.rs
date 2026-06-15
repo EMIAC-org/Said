@@ -378,15 +378,15 @@ pub async fn create_lark_task(
     Ok(data.task.guid)
 }
 
-/// Create a Lark Docx document.
-pub async fn create_lark_doc(
-    app_id: &str,
-    app_secret: &str,
+/// Create a Lark Docx document with an explicit bearer token (a user's
+/// `access_token` → the doc is owned by that user and lands in their Drive; or
+/// an `app_access_token` → owned by the app). `folder_token` is optional;
+/// without it the doc goes to the token owner's space root.
+pub async fn create_doc_with_token(
+    token: &str,
     title: &str,
     folder_token: Option<&str>,
 ) -> Result<String, String> {
-    let token = get_app_access_token(app_id, app_secret).await?;
-
     let mut body = serde_json::json!({ "title": title });
     if let Some(ft) = folder_token {
         body["folder_token"] = serde_json::json!(ft);
@@ -401,26 +401,75 @@ pub async fn create_lark_doc(
         .send()
         .await
         .map_err(|e| {
-            tracing::error!("create_lark_doc request failed: {e}");
-            format!("create_lark_doc request failed: {e}")
+            tracing::error!("create_doc_with_token request failed: {e}");
+            format!("create doc request failed: {e}")
         })?;
 
     let envelope: LarkEnvelope<DocData> = resp.json().await.map_err(|e| {
-        tracing::error!("create_lark_doc parse failed: {e}");
-        format!("create_lark_doc parse failed: {e}")
+        tracing::error!("create_doc_with_token parse failed: {e}");
+        format!("create doc parse failed: {e}")
     })?;
 
     if envelope.code != 0 {
         let msg = envelope.msg.as_deref().unwrap_or("unknown");
-        tracing::error!("create_lark_doc API error {}: {msg}", envelope.code);
+        tracing::error!("create_doc_with_token API error {}: {msg}", envelope.code);
         return Err(format!("Lark API error {}: {msg}", envelope.code));
     }
 
-    let data = envelope
+    envelope
         .data
-        .ok_or_else(|| "create_lark_doc: code 0 but no data".to_string())?;
+        .map(|data| data.document.document_id)
+        .ok_or_else(|| "create doc: code 0 but no data".to_string())
+}
 
-    Ok(data.document.document_id)
+/// Create a Lark Docx document owned by the app (tenant token).
+pub async fn create_lark_doc(
+    app_id: &str,
+    app_secret: &str,
+    title: &str,
+    folder_token: Option<&str>,
+) -> Result<String, String> {
+    let token = get_app_access_token(app_id, app_secret).await?;
+    create_doc_with_token(&token, title, folder_token).await
+}
+
+/// Fetch the browseable URL for a docx via the Drive metadata API. Avoids
+/// hard-coding a tenant domain — Lark returns the canonical link. Returns
+/// Ok(None) if the API doesn't include a URL.
+pub async fn fetch_doc_url(token: &str, document_id: &str) -> Result<Option<String>, String> {
+    #[derive(serde::Deserialize)]
+    struct Metas {
+        metas: Vec<Meta>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Meta {
+        url: Option<String>,
+    }
+    let body = serde_json::json!({
+        "request_docs": [{ "doc_token": document_id, "doc_type": "docx" }],
+        "with_url": true
+    });
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("https://open.larksuite.com/open-apis/drive/v1/metas/batch_query")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json; charset=utf-8")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("fetch_doc_url request failed: {e}"))?;
+    let envelope: LarkEnvelope<Metas> = resp
+        .json()
+        .await
+        .map_err(|e| format!("fetch_doc_url parse failed: {e}"))?;
+    if envelope.code != 0 {
+        let msg = envelope.msg.as_deref().unwrap_or("unknown");
+        return Err(format!("Lark API error {}: {msg}", envelope.code));
+    }
+    Ok(envelope
+        .data
+        .and_then(|d| d.metas.into_iter().next())
+        .and_then(|m| m.url))
 }
 
 /// Append structured blocks (heading, text, bullet) to a Lark Docx document.
@@ -1232,12 +1281,172 @@ fn text_block(text: &str) -> serde_json::Value {
 }
 
 fn bullet_block(text: &str) -> serde_json::Value {
+    // block_type 12 (bullet) MUST use the "bullet" key — using "text" makes Lark
+    // reject the whole children batch with "invalid param" (1770001). Lark renders
+    // the bullet glyph itself, so no manual "•" prefix.
     serde_json::json!({
         "block_type": 12,
-        "text": {
-            "elements": [{ "text_run": { "content": format!("\u{2022} {text}") } }]
+        "bullet": {
+            "elements": [{ "text_run": { "content": text } }]
         }
     })
+}
+
+/// A horizontal divider block.
+fn divider_block() -> serde_json::Value {
+    serde_json::json!({ "block_type": 22, "divider": {} })
+}
+
+/// Parse one line of lightweight Markdown into Docx text_run elements, honoring
+/// `**bold**` spans. Other inline markers are left as literal text. Splitting on
+/// `**` flips a bold toggle: even segments are normal, odd segments are bold.
+fn inline_elements(text: &str) -> Vec<serde_json::Value> {
+    let mut elements = Vec::new();
+    let mut bold = false;
+    for segment in text.split("**") {
+        if !segment.is_empty() {
+            elements.push(serde_json::json!({
+                "text_run": {
+                    "content": segment,
+                    "text_element_style": { "bold": bold }
+                }
+            }));
+        }
+        bold = !bold;
+    }
+    if elements.is_empty() {
+        elements.push(serde_json::json!({ "text_run": { "content": "" } }));
+    }
+    elements
+}
+
+/// A heading/paragraph block with inline `**bold**` rendered.
+fn rich_block(block_type: u8, key: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "block_type": block_type,
+        key: { "elements": inline_elements(text) }
+    })
+}
+
+/// A bullet block (block_type 12 + the required "bullet" key) with inline
+/// `**bold**`. Lark renders the bullet glyph, so the content carries no "•".
+fn bullet_rich_block(text: &str) -> serde_json::Value {
+    serde_json::json!({ "block_type": 12, "bullet": { "elements": inline_elements(text) } })
+}
+
+/// Render the LLM's lightweight Markdown summary into Docx blocks: ATX headings
+/// (`#`/`##`/`###`), bullet lists (`-`/`*`/`+`/`•`), and paragraphs, with
+/// `**bold**` spans. Blank lines are dropped. This makes the MoM read like a
+/// real document using only the proven block-insert path (no markdown-convert
+/// API dependency).
+fn markdown_to_blocks(md: &str) -> Vec<serde_json::Value> {
+    let mut blocks = Vec::new();
+    for raw in md.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("### ") {
+            blocks.push(rich_block(5, "heading3", rest.trim()));
+        } else if let Some(rest) = trimmed.strip_prefix("## ") {
+            blocks.push(rich_block(4, "heading2", rest.trim()));
+        } else if let Some(rest) = trimmed.strip_prefix("# ") {
+            // Demote H1 so it doesn't compete with the document title.
+            blocks.push(rich_block(4, "heading2", rest.trim()));
+        } else if let Some(rest) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("+ "))
+            .or_else(|| trimmed.strip_prefix("\u{2022} "))
+        {
+            blocks.push(bullet_rich_block(rest.trim()));
+        } else {
+            blocks.push(rich_block(2, "text", trimmed));
+        }
+    }
+    blocks
+}
+
+/// Build the full block list for a beautiful meeting-minutes doc: title,
+/// metadata line, divider, summary (rendered Markdown), Action Items, Decisions.
+/// Pure (no I/O) so it can be unit-tested.
+pub fn build_minutes_blocks(
+    title: &str,
+    meta_line: &str,
+    summary_md: &str,
+    action_items: &[(String, Option<String>)],
+    decisions: &[String],
+) -> Vec<serde_json::Value> {
+    let mut blocks = vec![heading_block(3, title)];
+    if !meta_line.trim().is_empty() {
+        blocks.push(text_block(meta_line));
+    }
+    blocks.push(divider_block());
+
+    if !summary_md.trim().is_empty() {
+        blocks.push(heading_block(4, "\u{1F4CC} Summary"));
+        blocks.extend(markdown_to_blocks(summary_md));
+    }
+
+    if !action_items.is_empty() {
+        blocks.push(heading_block(4, "\u{2705} Action Items"));
+        for (item_title, owner) in action_items {
+            let line = match owner {
+                Some(o) if !o.trim().is_empty() => {
+                    format!("**{}** \u{2014} {}", o.trim(), item_title.trim())
+                }
+                _ => item_title.trim().to_string(),
+            };
+            blocks.push(bullet_rich_block(&line));
+        }
+    }
+
+    if !decisions.is_empty() {
+        blocks.push(heading_block(4, "\u{1F3AF} Decisions"));
+        for d in decisions {
+            if !d.trim().is_empty() {
+                blocks.push(bullet_rich_block(d.trim()));
+            }
+        }
+    }
+
+    blocks
+}
+
+/// Insert pre-built blocks into a Docx document with an explicit bearer token
+/// (batches of 50 children).
+pub async fn insert_blocks_with_token(
+    token: &str,
+    document_id: &str,
+    blocks: &[serde_json::Value],
+) -> Result<(), String> {
+    if blocks.is_empty() {
+        return Ok(());
+    }
+    let url = format!(
+        "https://open.larksuite.com/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children"
+    );
+    let client = reqwest::Client::new();
+    for chunk in blocks.chunks(50) {
+        let body = serde_json::json!({ "children": chunk });
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json; charset=utf-8")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("insert_doc_blocks request failed: {e}"))?;
+        let envelope: LarkEnvelope<serde_json::Value> = resp
+            .json()
+            .await
+            .map_err(|e| format!("insert_doc_blocks parse failed: {e}"))?;
+        if envelope.code != 0 {
+            let msg = envelope.msg.as_deref().unwrap_or("unknown");
+            return Err(format!("Lark API error {}: {msg}", envelope.code));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1312,5 +1521,59 @@ mod tests {
                 .unwrap_or_default()
                 .contains("10:00 AM")
         }));
+    }
+
+    #[test]
+    fn inline_elements_splits_bold_spans() {
+        let els = inline_elements("plain **bold** tail");
+        assert_eq!(els.len(), 3);
+        assert_eq!(els[0]["text_run"]["content"], "plain ");
+        assert_eq!(els[0]["text_run"]["text_element_style"]["bold"], false);
+        assert_eq!(els[1]["text_run"]["content"], "bold");
+        assert_eq!(els[1]["text_run"]["text_element_style"]["bold"], true);
+        // An empty string still yields one (empty) run so a block is never invalid.
+        assert_eq!(inline_elements("").len(), 1);
+    }
+
+    #[test]
+    fn markdown_to_blocks_maps_headings_bullets_and_text() {
+        let blocks = markdown_to_blocks("## Section\n- first\n* second\nplain line\n\n### Sub");
+        let types: Vec<i64> = blocks
+            .iter()
+            .map(|b| b["block_type"].as_i64().unwrap())
+            .collect();
+        // heading2, bullet, bullet, text, heading3 — blank line dropped.
+        assert_eq!(types, vec![4, 12, 12, 2, 5]);
+        assert_eq!(
+            blocks[0]["heading2"]["elements"][0]["text_run"]["content"],
+            "Section"
+        );
+        // Bullets MUST use the "bullet" key, not "text" — Lark rejects "text"
+        // (1770001) and fails the entire children batch (empty doc).
+        assert!(blocks[1]["bullet"].is_object());
+        assert!(blocks[1]["text"].is_null());
+    }
+
+    #[test]
+    fn build_minutes_blocks_has_title_summary_actions_decisions() {
+        let blocks = build_minutes_blocks(
+            "Weekly Sync",
+            "Jun 15, 2026 10:00 UTC \u{00B7} 30 min",
+            "## Recap\n- shipped export",
+            &[("Ship the docs".into(), Some("Rahul".into()))],
+            &["Use DeepSeek for summaries".into()],
+        );
+        // First block is the H1 title.
+        assert_eq!(blocks[0]["block_type"], 3);
+        assert_eq!(
+            blocks[0]["heading1"]["elements"][0]["text_run"]["content"],
+            "Weekly Sync"
+        );
+        // The owner is bolded inside the action-item bullet.
+        let json = serde_json::to_string(&blocks).unwrap();
+        assert!(json.contains("\u{2705} Action Items"));
+        assert!(json.contains("\u{1F3AF} Decisions"));
+        assert!(json.contains("Rahul"));
+        assert!(json.contains("Use DeepSeek for summaries"));
     }
 }
