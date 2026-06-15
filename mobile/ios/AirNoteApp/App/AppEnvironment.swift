@@ -578,47 +578,42 @@ final class AppEnvironment: ObservableObject {
         do {
             let result = try await gateway.listOrgs()
             orgs = result.orgs
-            activeOrgID = result.activeOrgID
-            personalMode = result.personalMode
-            SharedStore.activeOrgID = result.activeOrgID
+            // The active workspace is a LOCAL choice — we never change the server
+            // session, so the voice/dictation runtime always stays on the personal
+            // account and can't be regressed by a workspace that lacks its own
+            // keys. Keep the chosen org unless the user is no longer a member.
+            if let active = activeOrgID, !result.orgs.contains(where: { $0.id == active }) {
+                activeOrgID = nil
+                SharedStore.activeOrgID = nil
+            }
+            personalMode = activeOrgID == nil
         } catch {
             _ = handleUnauthorized(error)
         }
     }
 
+    /// Select a workspace for org-scoped features (Meetings, Divo). Local-only:
+    /// the org is sent as the X-AirNote-Org-Id header on those requests; the
+    /// server session is deliberately NOT activated, so personal dictation stays
+    /// on the personal account.
     @discardableResult
     func activateWorkspace(_ id: String) async -> Bool {
         workspaceWorking = true
         defer { workspaceWorking = false }
-        do {
-            _ = try await gateway.activateOrg(id: id)
-            // Set the active org BEFORE reloading so requests carry the header.
-            SharedStore.activeOrgID = id
-            activeOrgID = id
-            personalMode = false
-            await loadWorkspaceState()   // settings/status/orgs now scoped to this workspace
-            return true
-        } catch {
-            _ = handleUnauthorized(error)
-            return false
-        }
+        SharedStore.activeOrgID = id
+        activeOrgID = id
+        personalMode = false
+        await refreshMeetings()
+        return true
     }
 
     @discardableResult
     func usePersonalMode() async -> Bool {
-        workspaceWorking = true
-        defer { workspaceWorking = false }
-        do {
-            _ = try await gateway.deactivateOrg()
-            SharedStore.activeOrgID = nil
-            activeOrgID = nil
-            personalMode = true
-            await loadWorkspaceState()
-            return true
-        } catch {
-            _ = handleUnauthorized(error)
-            return false
-        }
+        SharedStore.activeOrgID = nil
+        activeOrgID = nil
+        personalMode = true
+        meetings = []
+        return true
     }
 
     // MARK: Meetings

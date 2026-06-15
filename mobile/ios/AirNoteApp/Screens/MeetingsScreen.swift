@@ -352,7 +352,7 @@ private struct CreateMeetingSheet: View {
             }
             .task {
                 loadingMembers = true
-                members = (await env.orgMembers()).filter { $0.accountId != env.account?.id }
+                members = (await env.orgMembers()).filter { $0.accountId != (env.account?.id ?? "") }
                 loadingMembers = false
             }
         }
