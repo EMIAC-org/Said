@@ -23,6 +23,7 @@ import {
   Search,
   Sparkles,
   Star,
+  Building2,
   Trash2,
   Video,
   X,
@@ -30,6 +31,7 @@ import {
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import {
   createMeeting,
+  ensureActiveWorkspace,
   getConnection,
   listMeetings,
   repairEnterpriseConnection,
@@ -967,6 +969,8 @@ interface MeetingsViewProps {
   onFocusConsumed?: () => void;
   /** Open Settings → Meeting (to download/select a transcription model). */
   onConfigureModels?: () => void;
+  /** Open Settings → Enterprise (to select/activate a workspace). */
+  onOpenWorkspaces?: () => void;
 }
 
 export function MeetingsView({
@@ -974,10 +978,14 @@ export function MeetingsView({
   focusMeetingId,
   onFocusConsumed,
   onConfigureModels,
+  onOpenWorkspaces,
 }: MeetingsViewProps) {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // True when the user has no active workspace to scope meetings to — rendered
+  // as a guided "pick a workspace" panel instead of a generic load error.
+  const [needsWorkspace, setNeedsWorkspace] = useState(false);
   const [creating, setCreating] = useState(false);
   const [dateFilter, setDateFilter] = useState<"all" | "today" | "week" | "archived">("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -1021,6 +1029,9 @@ export function MeetingsView({
     setLoading(true);
     setError("");
     try {
+      // Make sure an org is active so the list is scoped and New Meeting won't
+      // 403. If the user must pick a workspace, surface the guided panel.
+      setNeedsWorkspace(!(await ensureActiveWorkspace()));
       const result = (await listMeetings(conn.serverUrl, conn.jwt)) as Meeting[];
       setMeetings(result);
       // Enrich the list with locally-cached AI titles, word counts, and counts
@@ -1097,6 +1108,15 @@ export function MeetingsView({
       setError("Not connected to enterprise server");
       return;
     }
+    // Meetings are workspace-scoped: ensure one is active (auto-activating a
+    // sole workspace) before creating, else guide the user to pick one rather
+    // than failing with a 403 "active workspace required".
+    if (!(await ensureActiveWorkspace())) {
+      setNeedsWorkspace(true);
+      setError("");
+      return;
+    }
+    setNeedsWorkspace(false);
     setCreating(true);
     setError("");
     try {
@@ -1865,6 +1885,23 @@ export function MeetingsView({
             <div className="flex h-full flex-col items-center justify-center gap-3 opacity-60">
               <Loader2 size={20} className="animate-spin text-muted-foreground" />
               <p className="text-[12px] text-muted-foreground">Loading meetings...</p>
+            </div>
+          ) : needsWorkspace ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+              <Building2 size={28} className="text-muted-foreground" />
+              <p className="text-[13px] font-semibold text-foreground">
+                Select a workspace to start meetings
+              </p>
+              <p className="max-w-[240px] text-[12px] text-muted-foreground">
+                Meetings are saved to your workspace. Choose one to create and view meetings.
+              </p>
+              <button
+                onClick={() => onOpenWorkspaces?.()}
+                className="rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors"
+                style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+              >
+                Choose workspace
+              </button>
             </div>
           ) : error ? (
             <div className="flex h-full flex-col items-center justify-center gap-3">
