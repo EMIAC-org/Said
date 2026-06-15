@@ -2641,6 +2641,8 @@ async fn patch_preferences(
             hot.language = p.language.clone();
             hot.stt_provider = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
             hot.deepgram_key = p.deepgram_api_key.clone().unwrap_or_default();
+            // Let meeting AI use the Groq key saved in Settings → API keys.
+            meeting_engine::set_runtime_groq_api_key(p.groq_api_key.clone());
         }
         Err(e) => tracing::warn!("[patch_prefs] backend error: {e}"),
     }
@@ -7466,6 +7468,10 @@ fn main() {
                                 .ok()
                                 .and_then(|p| p.deepgram_api_key.clone())
                                 .unwrap_or_default();
+                            // Seed meeting AI's Groq key from Settings → API keys.
+                            meeting_engine::set_runtime_groq_api_key(
+                                prefs_res.as_ref().ok().and_then(|p| p.groq_api_key.clone()),
+                            );
                             let stt_bias = stt_bias_res.unwrap_or_default();
                             tracing::info!(
                                 "[hot_cache] seeded mode={} keyterms={} replacements={}",

@@ -7699,6 +7699,28 @@ fn meeting_ai_config() -> Result<MeetingCleanupConfig, String> {
     )
 }
 
+/// Groq API key synced from Preferences (Settings → API keys) by the desktop.
+/// Lets meeting AI use the user's saved key without a shell env var.
+static RUNTIME_GROQ_API_KEY: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// Called by the desktop whenever Preferences load/change. Empty/blank clears it.
+pub fn set_runtime_groq_api_key(key: Option<String>) {
+    let cleaned = key.and_then(|k| {
+        let t = k.trim().to_string();
+        (!t.is_empty()).then_some(t)
+    });
+    if let Ok(mut slot) = RUNTIME_GROQ_API_KEY.write() {
+        *slot = cleaned;
+    }
+}
+
+fn runtime_groq_api_key() -> Option<String> {
+    RUNTIME_GROQ_API_KEY
+        .read()
+        .ok()
+        .and_then(|slot| slot.clone())
+}
+
 fn meeting_provider_config(
     provider: String,
     model: String,
@@ -7709,10 +7731,15 @@ fn meeting_provider_config(
         .find_map(|name| env_nonempty(name));
     match provider.as_str() {
         "groq" => {
+            // Priority: explicit per-meeting override env → key saved in Settings
+            // (Preferences) → ambient GROQ_API_KEY shell env.
             let api_key = override_key
                 .clone()
+                .or_else(runtime_groq_api_key)
                 .or_else(|| env_nonempty("GROQ_API_KEY"))
-                .ok_or_else(|| "GROQ_API_KEY not set; meeting AI not run with Groq".to_string())?;
+                .ok_or_else(|| {
+                    "no Groq API key — set it in Settings → API keys (or GROQ_API_KEY)".to_string()
+                })?;
             Ok(MeetingCleanupConfig {
                 provider,
                 url: GROQ_MEETING_CLEANUP_URL.to_string(),

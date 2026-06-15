@@ -2209,7 +2209,7 @@ export function SettingsView({
               <SecretInput
                 icon={<Zap size={12} style={{ color: "hsl(var(--primary))" }} />}
                 label="Groq API Key"
-                helper="Used by normal voice polish, repair, classification, and fallbacks."
+                helper="Used by voice polish, repair, classification, meeting transcript cleanup & summaries, and fallbacks."
                 placeholder="gsk_..."
                 value={groqKey}
                 visible={showGroq}
