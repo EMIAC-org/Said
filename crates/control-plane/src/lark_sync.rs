@@ -378,15 +378,15 @@ pub async fn create_lark_task(
     Ok(data.task.guid)
 }
 
-/// Create a Lark Docx document.
-pub async fn create_lark_doc(
-    app_id: &str,
-    app_secret: &str,
+/// Create a Lark Docx document with an explicit bearer token (a user's
+/// `access_token` → the doc is owned by that user and lands in their Drive; or
+/// an `app_access_token` → owned by the app). `folder_token` is optional;
+/// without it the doc goes to the token owner's space root.
+pub async fn create_doc_with_token(
+    token: &str,
     title: &str,
     folder_token: Option<&str>,
 ) -> Result<String, String> {
-    let token = get_app_access_token(app_id, app_secret).await?;
-
     let mut body = serde_json::json!({ "title": title });
     if let Some(ft) = folder_token {
         body["folder_token"] = serde_json::json!(ft);
@@ -401,26 +401,75 @@ pub async fn create_lark_doc(
         .send()
         .await
         .map_err(|e| {
-            tracing::error!("create_lark_doc request failed: {e}");
-            format!("create_lark_doc request failed: {e}")
+            tracing::error!("create_doc_with_token request failed: {e}");
+            format!("create doc request failed: {e}")
         })?;
 
     let envelope: LarkEnvelope<DocData> = resp.json().await.map_err(|e| {
-        tracing::error!("create_lark_doc parse failed: {e}");
-        format!("create_lark_doc parse failed: {e}")
+        tracing::error!("create_doc_with_token parse failed: {e}");
+        format!("create doc parse failed: {e}")
     })?;
 
     if envelope.code != 0 {
         let msg = envelope.msg.as_deref().unwrap_or("unknown");
-        tracing::error!("create_lark_doc API error {}: {msg}", envelope.code);
+        tracing::error!("create_doc_with_token API error {}: {msg}", envelope.code);
         return Err(format!("Lark API error {}: {msg}", envelope.code));
     }
 
-    let data = envelope
+    envelope
         .data
-        .ok_or_else(|| "create_lark_doc: code 0 but no data".to_string())?;
+        .map(|data| data.document.document_id)
+        .ok_or_else(|| "create doc: code 0 but no data".to_string())
+}
 
-    Ok(data.document.document_id)
+/// Create a Lark Docx document owned by the app (tenant token).
+pub async fn create_lark_doc(
+    app_id: &str,
+    app_secret: &str,
+    title: &str,
+    folder_token: Option<&str>,
+) -> Result<String, String> {
+    let token = get_app_access_token(app_id, app_secret).await?;
+    create_doc_with_token(&token, title, folder_token).await
+}
+
+/// Fetch the browseable URL for a docx via the Drive metadata API. Avoids
+/// hard-coding a tenant domain — Lark returns the canonical link. Returns
+/// Ok(None) if the API doesn't include a URL.
+pub async fn fetch_doc_url(token: &str, document_id: &str) -> Result<Option<String>, String> {
+    #[derive(serde::Deserialize)]
+    struct Metas {
+        metas: Vec<Meta>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Meta {
+        url: Option<String>,
+    }
+    let body = serde_json::json!({
+        "request_docs": [{ "doc_token": document_id, "doc_type": "docx" }],
+        "with_url": true
+    });
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("https://open.larksuite.com/open-apis/drive/v1/metas/batch_query")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json; charset=utf-8")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("fetch_doc_url request failed: {e}"))?;
+    let envelope: LarkEnvelope<Metas> = resp
+        .json()
+        .await
+        .map_err(|e| format!("fetch_doc_url parse failed: {e}"))?;
+    if envelope.code != 0 {
+        let msg = envelope.msg.as_deref().unwrap_or("unknown");
+        return Err(format!("Lark API error {}: {msg}", envelope.code));
+    }
+    Ok(envelope
+        .data
+        .and_then(|d| d.metas.into_iter().next())
+        .and_then(|m| m.url))
 }
 
 /// Append structured blocks (heading, text, bullet) to a Lark Docx document.
@@ -1363,17 +1412,16 @@ pub fn build_minutes_blocks(
     blocks
 }
 
-/// Insert pre-built blocks into a Docx document (batches of 50 children).
-pub async fn insert_doc_blocks(
-    app_id: &str,
-    app_secret: &str,
+/// Insert pre-built blocks into a Docx document with an explicit bearer token
+/// (batches of 50 children).
+pub async fn insert_blocks_with_token(
+    token: &str,
     document_id: &str,
     blocks: &[serde_json::Value],
 ) -> Result<(), String> {
     if blocks.is_empty() {
         return Ok(());
     }
-    let token = get_app_access_token(app_id, app_secret).await?;
     let url = format!(
         "https://open.larksuite.com/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children"
     );

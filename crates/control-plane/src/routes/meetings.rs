@@ -11,7 +11,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -856,20 +856,21 @@ pub async fn export_lark(
         .ok()
         .filter(|s| !s.trim().is_empty());
 
-    // 1) Create the doc (optionally in the shared minutes folder).
-    let document_id = crate::lark_sync::create_lark_doc(
-        &lark.app_id,
-        &lark.app_secret,
-        &doc_title,
-        folder_token.as_deref(),
-    )
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({"error": format!("could not create the Lark doc: {e}"), "code": "lark_error"})),
-        )
-    })?;
+    // Create the doc as the *user* so it lands in their own Lark Drive — no
+    // shared folder needed. (A shared folder is still honored if configured.)
+    // Requires the caller to have signed in with Lark.
+    let user_token = user_lark_token(&state, user.account_id, org_id).await?;
+
+    // 1) Create the doc (in the user's Drive, or the shared folder if set).
+    let document_id =
+        crate::lark_sync::create_doc_with_token(&user_token, &doc_title, folder_token.as_deref())
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({"error": format!("could not create the Lark doc: {e}"), "code": "lark_error"})),
+                )
+            })?;
 
     // 2) Fill it with beautifully formatted blocks.
     let blocks = crate::lark_sync::build_minutes_blocks(
@@ -881,20 +882,18 @@ pub async fn export_lark(
     );
     let mut content_warning: Option<String> = None;
     if let Err(e) =
-        crate::lark_sync::insert_doc_blocks(&lark.app_id, &lark.app_secret, &document_id, &blocks)
-            .await
+        crate::lark_sync::insert_blocks_with_token(&user_token, &document_id, &blocks).await
     {
         tracing::warn!("export_lark: block insert failed for {meeting_id}: {e}");
         content_warning =
             Some("the doc was created but some formatting could not be written".into());
     }
 
-    // 3) Build the browseable URL.
-    let base = std::env::var("LARK_DOC_URL_BASE")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "https://www.larksuite.com".to_string());
-    let url = format!("{}/docx/{}", base.trim_end_matches('/'), document_id);
+    // 3) Ask Lark for the canonical doc URL (no hard-coded tenant domain).
+    let url = crate::lark_sync::fetch_doc_url(&user_token, &document_id)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_default();
 
     // 4) Create Lark tasks for assigned action items so owners get pinged and
     //    the items land on their to-do lists (best-effort, never fails export).
@@ -929,6 +928,73 @@ pub async fn export_lark(
         "tasks_created": tasks_created,
         "content_warning": content_warning,
     })))
+}
+
+/// A valid Lark *user* access_token for the caller, refreshing it when it's
+/// near expiry. The doc is created under this identity so it lands in the
+/// user's own Drive. Errors clearly if the account isn't linked to Lark.
+async fn user_lark_token(
+    state: &AppState,
+    account_id: Uuid,
+    org_id: Uuid,
+) -> Result<String, (StatusCode, Json<Value>)> {
+    let row: Option<(String, String, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT access_token, refresh_token, token_expires_at
+           FROM lark_tokens WHERE account_id = $1 AND org_id = $2",
+    )
+    .bind(account_id)
+    .bind(org_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    let Some((access_token, refresh_token, expires_at)) = row else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Sign in with Lark to export — your account isn't linked to Lark.",
+                "code": "lark_not_linked",
+            })),
+        ));
+    };
+
+    // Still valid (with a 2-minute safety margin)?
+    if expires_at > Utc::now() + Duration::minutes(2) {
+        return Ok(access_token);
+    }
+
+    // Expired/near-expiry → refresh and persist.
+    let refreshed = crate::lark_client::refresh_access_token(
+        &state.lark.app_id,
+        &state.lark.app_secret,
+        &refresh_token,
+    )
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(
+                json!({"error": format!("Lark session refresh failed: {e}"), "code": "lark_error"}),
+            ),
+        )
+    })?;
+
+    let new_expires = Utc::now() + Duration::seconds(refreshed.expires_in);
+    sqlx::query(
+        "UPDATE lark_tokens
+            SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = now()
+          WHERE account_id = $4 AND org_id = $5",
+    )
+    .bind(&refreshed.access_token)
+    .bind(&refreshed.refresh_token)
+    .bind(new_expires)
+    .bind(account_id)
+    .bind(org_id)
+    .execute(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    Ok(refreshed.access_token)
 }
 
 fn db_err(_e: sqlx::Error) -> (StatusCode, Json<Value>) {
