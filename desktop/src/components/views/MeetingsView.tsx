@@ -1445,10 +1445,14 @@ export function MeetingsView({
   // URL on the meeting so "Open in Lark" appears afterwards.
   const [larkExporting, setLarkExporting] = useState(false);
   const [larkError, setLarkError] = useState<string | null>(null);
+  // When the failure is an auth/scope problem, we offer a "Reconnect Lark"
+  // action instead of a dead-end error.
+  const [larkNeedsReauth, setLarkNeedsReauth] = useState(false);
   const handleExportToLark = useCallback(async () => {
     if (!selectedMeeting || !meetingAi?.summary?.trim()) return;
     setLarkExporting(true);
     setLarkError(null);
+    setLarkNeedsReauth(false);
     try {
       const result = await exportMeetingToLark(selectedMeeting.id, {
         title: meetingAi.title?.trim() || selectedMeeting.title,
@@ -1471,6 +1475,12 @@ export function MeetingsView({
         if (result.url) void openExternal(result.url);
       } else {
         setLarkError(result.message);
+        // Codes that mean "the Lark login needs refreshing" → offer reconnect.
+        setLarkNeedsReauth(
+          result.code === "lark_reauth_required" ||
+            result.code === "lark_not_linked" ||
+            result.code === "unauthorized",
+        );
       }
     } finally {
       setLarkExporting(false);
@@ -2271,9 +2281,24 @@ export function MeetingsView({
                   </div>
                 </div>
                 {larkError ? (
-                  <p className="mb-3 text-[12px]" style={{ color: "hsl(0 70% 70%)" }}>
-                    Lark export: {larkError}
-                  </p>
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    <p className="text-[12px]" style={{ color: "hsl(0 70% 70%)" }}>
+                      Lark export: {larkError}
+                    </p>
+                    {larkNeedsReauth ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpenWorkspaces?.()}
+                        className="rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors"
+                        style={{
+                          background: "hsl(var(--primary))",
+                          color: "hsl(var(--primary-foreground))",
+                        }}
+                      >
+                        Reconnect Lark
+                      </button>
+                    ) : null}
+                  </div>
                 ) : null}
                 {meetingAiLoading ? (
                   <div className="flex items-center gap-3 text-[14px] text-muted-foreground">
