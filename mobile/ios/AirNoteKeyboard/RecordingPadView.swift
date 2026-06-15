@@ -24,6 +24,15 @@ final class RecordingPadView: UIView {
     private var waveBarHeights: [NSLayoutConstraint] = []
     private var waveLevels: [CGFloat] = []
 
+    // Full typing-keyboard state (letters / numbers / symbols layers, shift, delete-repeat).
+    private enum ShiftState { case off, on, locked }
+    private enum KeyboardLayout { case letters, symbols, moreSymbols }
+    private var shiftState: ShiftState = .off
+    private var layoutMode: KeyboardLayout = .letters
+    private weak var keyboardStack: UIStackView?
+    private var deleteRepeatTimer: Timer?
+    private var lastShiftTap: Date?
+
     /// Update the live transcript shown while recording, without a full re-render.
     func setLivePartial(_ text: String) {
         liveLabel?.text = text.isEmpty ? " " : text
@@ -41,8 +50,8 @@ final class RecordingPadView: UIView {
         } else {
             waveLevels = Array(repeating: lvl, count: waveBarHeights.count)
         }
-        let minH: CGFloat = 6
-        let maxH: CGFloat = 26
+        let minH: CGFloat = 5
+        let maxH: CGFloat = 32
         for (index, constraint) in waveBarHeights.enumerated() {
             let sample = index < waveLevels.count ? waveLevels[index] : lvl
             // Gamma < 1 lifts quiet speech so the bars still move at low volume.
@@ -68,6 +77,8 @@ final class RecordingPadView: UIView {
         build()
     }
 
+    deinit { deleteRepeatTimer?.invalidate() }
+
     private func build() {
         backgroundColor = KeyboardTheme.keyboardBackground
 
@@ -79,8 +90,13 @@ final class RecordingPadView: UIView {
         let surface = makeVoiceSurface()
         voiceSurface = surface
         rootStack.addArrangedSubview(surface)
-        makeKeyboardRows().forEach { rootStack.addArrangedSubview($0) }
-        rootStack.addArrangedSubview(makeBottomRow())
+        let keys = UIStackView()
+        keys.axis = .vertical
+        keys.spacing = 7
+        keys.alignment = .fill
+        keyboardStack = keys
+        rootStack.addArrangedSubview(keys)
+        rebuildKeys()
 
         addSubview(rootStack)
         NSLayoutConstraint.activate([
@@ -296,7 +312,7 @@ final class RecordingPadView: UIView {
         bars.axis = .horizontal
         bars.alignment = .center
         bars.distribution = .equalCentering
-        bars.spacing = 5
+        bars.spacing = 4
         bars.translatesAutoresizingMaskIntoConstraints = false
 
         // While recording, the bars are driven by the REAL mic level (setAudioLevel)
@@ -326,7 +342,7 @@ final class RecordingPadView: UIView {
             bars.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             bars.topAnchor.constraint(equalTo: container.topAnchor, constant: 2),
             bars.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -2),
-            bars.widthAnchor.constraint(equalToConstant: 132)
+            bars.widthAnchor.constraint(equalToConstant: 172)
         ])
         container.accessibilityLabel = "Audio level"
         return container
@@ -481,68 +497,204 @@ final class RecordingPadView: UIView {
         return row
     }
 
-    private func makeKeyboardRows() -> [UIView] {
-        [
-            makeKeyRow(["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"]),
-            makeKeyRow(["A", "S", "D", "F", "G", "H", "J", "K", "L"]),
-            makeKeyRow(["Z", "X", "C", "V", "B", "N", "M"])
-        ]
+    // MARK: - Full typing keyboard (letters / numbers / symbols, shift, delete-repeat)
+
+    private func rebuildKeys() {
+        guard let keys = keyboardStack else { return }
+        keys.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let rows: [[String]]
+        switch layoutMode {
+        case .letters:
+            rows = [
+                ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
+                ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
+                ["z", "x", "c", "v", "b", "n", "m"]
+            ]
+        case .symbols:
+            rows = [
+                ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+                ["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""],
+                [".", ",", "?", "!", "'"]
+            ]
+        case .moreSymbols:
+            rows = [
+                ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="],
+                ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"],
+                [".", ",", "?", "!", "'"]
+            ]
+        }
+        keys.addArrangedSubview(charRow(rows[0]))
+        keys.addArrangedSubview(charRow(rows[1], inset: layoutMode == .letters ? 18 : 0))
+        keys.addArrangedSubview(thirdRow(rows[2]))
+        keys.addArrangedSubview(bottomRow())
     }
 
-    private func makeKeyRow(_ keys: [String]) -> UIView {
-        let row = UIStackView()
+    private func charRow(_ chars: [String], inset: CGFloat = 0) -> UIView {
+        let inner = UIStackView()
+        inner.axis = .horizontal
+        inner.spacing = 5
+        inner.distribution = .fillEqually
+        chars.forEach { inner.addArrangedSubview(charKey($0)) }
+        guard inset > 0 else { return inner }
+        let row = UIStackView(arrangedSubviews: [fixedSpacer(inset / 2), inner, fixedSpacer(inset / 2)])
         row.axis = .horizontal
         row.spacing = 5
-        row.distribution = .fillEqually
-        for key in keys {
-            row.addArrangedSubview(keyButton(key))
-        }
+        row.distribution = .fill
         return row
     }
 
-    private func makeBottomRow() -> UIView {
-        let next = NextKeyboardButton()
-        next.addTarget(self, action: #selector(nextKeyboardTapped), for: .touchUpInside)
+    private func thirdRow(_ chars: [String]) -> UIView {
+        let leading: UIButton
+        if layoutMode == .letters {
+            leading = shiftKey()
+        } else {
+            leading = layoutToggleKey(layoutMode == .symbols ? "#+=" : "123",
+                                      to: layoutMode == .symbols ? .moreSymbols : .symbols)
+        }
+        let inner = UIStackView()
+        inner.axis = .horizontal
+        inner.spacing = 5
+        inner.distribution = .fillEqually
+        chars.forEach { inner.addArrangedSubview(charKey($0)) }
+        let del = deleteKey()
+        let row = UIStackView(arrangedSubviews: [leading, inner, del])
+        row.axis = .horizontal
+        row.spacing = 5
+        row.distribution = .fill
+        leading.widthAnchor.constraint(equalToConstant: 46).isActive = true
+        del.widthAnchor.constraint(equalToConstant: 46).isActive = true
+        return row
+    }
 
-        let space = keyButton(" ")
-        space.setTitle("space", for: .normal)
-        space.accessibilityLabel = "Space"
-
-        let delete = UIButton(type: .system)
-        var config = UIButton.Configuration.filled()
-        config.image = UIImage(systemName: "delete.left")
-        config.baseForegroundColor = KeyboardTheme.foreground
-        config.baseBackgroundColor = KeyboardTheme.secondarySurface
-        config.background.cornerRadius = KeyboardTheme.radius
-        delete.configuration = config
-        delete.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
-        delete.accessibilityLabel = "Delete"
-        delete.heightAnchor.constraint(equalToConstant: KeyboardTheme.keyHeight).isActive = true
-
-        let row = UIStackView(arrangedSubviews: [next, space, delete])
+    private func bottomRow() -> UIView {
+        let modeKey = layoutToggleKey(layoutMode == .letters ? "123" : "ABC",
+                                      to: layoutMode == .letters ? .symbols : .letters)
+        let globe = NextKeyboardButton()
+        globe.addTarget(self, action: #selector(nextKeyboardTapped), for: .touchUpInside)
+        globe.heightAnchor.constraint(equalToConstant: KeyboardTheme.keyHeight).isActive = true
+        let space = spaceKey()
+        let ret = specialKey(title: "return")
+        ret.addAction(UIAction { [weak self] _ in self?.onKeyTap?("\n") }, for: .touchUpInside)
+        let row = UIStackView(arrangedSubviews: [modeKey, globe, space, ret])
         row.axis = .horizontal
         row.spacing = 6
         row.distribution = .fill
-        next.widthAnchor.constraint(equalToConstant: 52).isActive = true
-        delete.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        modeKey.widthAnchor.constraint(equalToConstant: 46).isActive = true
+        globe.widthAnchor.constraint(equalToConstant: 46).isActive = true
+        ret.widthAnchor.constraint(equalToConstant: 96).isActive = true
         return row
     }
 
-    private func keyButton(_ key: String) -> UIButton {
+    private func fixedSpacer(_ width: CGFloat) -> UIView {
+        let v = UIView()
+        v.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return v
+    }
+
+    /// Character key — letters follow the shift state; everything else inserts literally.
+    private func charKey(_ ch: String) -> UIButton {
+        let isLetter = ch.count == 1 && ch.rangeOfCharacter(from: .letters) != nil
+        let display = (isLetter && shiftState != .off) ? ch.uppercased() : ch
+        let button = baseKey(title: display, background: KeyboardTheme.keyBackground, fontSize: 22)
+        button.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.onKeyTap?(display)
+            if isLetter, self.shiftState == .on {
+                self.shiftState = .off
+                self.rebuildKeys()
+            }
+        }, for: .touchUpInside)
+        button.accessibilityLabel = display
+        return button
+    }
+
+    private func spaceKey() -> UIButton {
+        let button = baseKey(title: "space", background: KeyboardTheme.keyBackground, fontSize: 15)
+        button.addAction(UIAction { [weak self] _ in self?.onKeyTap?(" ") }, for: .touchUpInside)
+        button.accessibilityLabel = "Space"
+        return button
+    }
+
+    private func shiftKey() -> UIButton {
+        let icon: String
+        switch shiftState {
+        case .off: icon = "shift"
+        case .on: icon = "shift.fill"
+        case .locked: icon = "capslock.fill"
+        }
+        let button = baseKey(title: nil, systemImage: icon, background: KeyboardTheme.secondarySurface, fontSize: 18)
+        button.addAction(UIAction { [weak self] _ in self?.shiftTapped() }, for: .touchUpInside)
+        button.accessibilityLabel = "Shift"
+        return button
+    }
+
+    private func shiftTapped() {
+        let now = Date()
+        switch shiftState {
+        case .off:
+            if let last = lastShiftTap, now.timeIntervalSince(last) < 0.3 {
+                shiftState = .locked
+            } else {
+                shiftState = .on
+            }
+        case .on, .locked:
+            shiftState = .off
+        }
+        lastShiftTap = now
+        rebuildKeys()
+    }
+
+    private func layoutToggleKey(_ title: String, to mode: KeyboardLayout) -> UIButton {
+        let button = baseKey(title: title, background: KeyboardTheme.secondarySurface, fontSize: 16, weight: .medium)
+        button.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.layoutMode = mode
+            if mode != .letters { self.shiftState = .off }
+            self.rebuildKeys()
+        }, for: .touchUpInside)
+        button.accessibilityLabel = title
+        return button
+    }
+
+    private func deleteKey() -> UIButton {
+        let button = baseKey(title: nil, systemImage: "delete.left", background: KeyboardTheme.secondarySurface, fontSize: 18)
+        button.addTarget(self, action: #selector(deleteTouchDown), for: .touchDown)
+        button.addTarget(self, action: #selector(deleteTouchUp), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        button.accessibilityLabel = "Delete"
+        return button
+    }
+
+    @objc private func deleteTouchDown() {
+        onDelete?()
+        deleteRepeatTimer?.invalidate()
+        deleteRepeatTimer = Timer.scheduledTimer(withTimeInterval: 0.11, repeats: true) { [weak self] _ in
+            self?.onDelete?()
+        }
+    }
+
+    @objc private func deleteTouchUp() {
+        deleteRepeatTimer?.invalidate()
+        deleteRepeatTimer = nil
+    }
+
+    private func specialKey(title: String) -> UIButton {
+        baseKey(title: title, background: KeyboardTheme.secondarySurface, fontSize: 16, weight: .medium)
+    }
+
+    private func baseKey(title: String?, systemImage: String? = nil, background: UIColor, fontSize: CGFloat, weight: UIFont.Weight = .regular) -> UIButton {
         let button = UIButton(type: .system)
         var config = UIButton.Configuration.filled()
-        config.title = key
-        config.baseForegroundColor = KeyboardTheme.foreground   // adaptive — was always-white (invisible in light mode)
-        config.baseBackgroundColor = KeyboardTheme.keyBackground
+        config.title = title
+        if let systemImage { config.image = UIImage(systemName: systemImage) }
+        config.baseForegroundColor = KeyboardTheme.foreground
+        config.baseBackgroundColor = background
         config.background.cornerRadius = KeyboardTheme.radius
-        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
+        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 4, bottom: 6, trailing: 4)
         button.configuration = config
-        button.titleLabel?.font = .systemFont(ofSize: 22, weight: .regular)
+        if title != nil {
+            button.titleLabel?.font = .systemFont(ofSize: fontSize, weight: weight)
+        }
         button.heightAnchor.constraint(equalToConstant: KeyboardTheme.keyHeight).isActive = true
-        button.addAction(UIAction { [weak self] _ in
-            self?.onKeyTap?(key.lowercased())
-        }, for: .touchUpInside)
-        button.accessibilityLabel = key == " " ? "Space" : key
         return button
     }
 
@@ -707,10 +859,10 @@ final class RecordingPadView: UIView {
 
     private var waveformHeights: [CGFloat] {
         switch state {
-        case .recording: return [12, 24, 36, 20, 30, 18, 34, 22]
-        case .processing, .teaching: return [16, 16, 26, 26, 16, 16, 26, 26]
-        case .insertReady, .secureCopyReady: return [14, 22, 28, 22, 14, 22, 28, 22]
-        default: return [8, 12, 18, 12, 8, 12, 18, 12]
+        case .recording: return [10, 18, 28, 36, 24, 32, 20, 34, 22, 30, 16, 26, 12]
+        case .processing, .teaching: return [14, 18, 24, 28, 22, 16, 26, 20, 28, 22, 16, 24, 18]
+        case .insertReady, .secureCopyReady: return [12, 18, 24, 28, 22, 16, 26, 20, 24, 18, 14, 22, 16]
+        default: return [7, 10, 14, 18, 12, 9, 16, 11, 15, 10, 8, 13, 9]
         }
     }
 
