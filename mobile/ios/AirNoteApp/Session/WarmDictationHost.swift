@@ -35,8 +35,11 @@ final class WarmDictationHost: ObservableObject {
         return m < 0 ? .infinity : TimeInterval(max(1, m) * 60)
     }
     private var neverExpires: Bool { SharedStore.sessionDurationMinutes < 0 }
-    private let silenceAutoStop: TimeInterval = 2.6
-    private let speechLevelThreshold: Float = 0.05
+    // Generous silence window so natural pauses never clip words (the user can
+    // still tap the mic to stop sooner). Lower speech threshold keeps soft/
+    // trailing speech from being misread as silence.
+    private let silenceAutoStop: TimeInterval = 4.0
+    private let speechLevelThreshold: Float = 0.04
 
     private init() {
         streamer.onUpdate = { [weak self] update in

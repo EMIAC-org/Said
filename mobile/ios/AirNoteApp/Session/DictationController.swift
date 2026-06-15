@@ -40,10 +40,10 @@ final class DictationController: ObservableObject {
     /// Auto-stop after this much *continuous* silence once the user has actually
     /// spoken. Generous enough to ride over natural between-sentence pauses so it
     /// never clips words; the user can still tap stop to end sooner.
-    var silenceAutoStopSeconds: Double = 2.6
+    var silenceAutoStopSeconds: Double = 4.0
     /// Level above which we consider the user to be speaking (forgiving of quiet
-    /// speech so soft talkers aren't cut off).
-    private let speechLevelThreshold: Float = 0.05
+    /// speech so soft talkers aren't cut off mid-word).
+    private let speechLevelThreshold: Float = 0.04
     @Published private(set) var lastLatencyMS: Int?
     @Published private(set) var errorMessage: String?
     @Published private(set) var result: DictationResult?
