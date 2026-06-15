@@ -7,7 +7,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use said_recorder::{CHANNELS, SAMPLE_RATE, resample_to_16k};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -3313,9 +3313,9 @@ fn run_mic_capture(
     }
 
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| report_ready_error(&ready_tx, "no input device found".to_string()))?;
+    let device =
+        said_recorder::select_input_device(&host).map_err(|e| report_ready_error(&ready_tx, e))?;
+    let device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
     let default_config = device
         .default_input_config()
         .map_err(|e| report_ready_error(&ready_tx, format!("no default input config: {e}")))?;
@@ -3324,6 +3324,13 @@ fn run_mic_capture(
     let native_channels = default_config.channels();
     let sample_format = default_config.sample_format();
     let config = default_config.config();
+    tracing::info!(
+        input_device = %device_name,
+        native_rate,
+        native_channels,
+        ?sample_format,
+        "[meeting_engine] opened mic input"
+    );
     let (audio_tx, audio_rx) = mpsc::sync_channel::<Vec<i16>>(AUDIO_QUEUE_DEPTH);
     let dropped_chunks = Arc::new(AtomicU64::new(0));
     let writer =

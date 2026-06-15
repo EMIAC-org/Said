@@ -10,6 +10,7 @@ pub const SAMPLE_RATE: u32 = 16_000;
 pub const CHANNELS: u16 = 1;
 pub const MIN_DURATION_S: f32 = 0.5;
 const STOP_REPLY_TIMEOUT: Duration = Duration::from_secs(3);
+const ALLOW_BLUETOOTH_MIC_ENV: &str = "AIRNOTE_ALLOW_BLUETOOTH_MIC";
 
 // ── Internal command ──────────────────────────────────────────────────────────
 
@@ -84,7 +85,7 @@ impl AudioRecorder {
 
     pub fn start(&mut self) -> Result<(), String> {
         let host = cpal::default_host();
-        let _device = host.default_input_device().ok_or("no input device found")?;
+        let device = select_input_device(&host)?;
 
         let frames: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
         let frames_for_reply = Arc::clone(&frames);
@@ -104,14 +105,7 @@ impl AudioRecorder {
         self.level_rx = Some(level_rx);
 
         std::thread::spawn(move || {
-            let host = cpal::default_host();
-            let device = match host.default_input_device() {
-                Some(d) => d,
-                None => {
-                    let _ = ready_tx.send(Err("no input device found".into()));
-                    return;
-                }
-            };
+            let device_name = device.name().unwrap_or_else(|_| "unknown".into());
 
             let default_config = match device.default_input_config() {
                 Ok(c) => c,
@@ -267,6 +261,7 @@ impl AudioRecorder {
             }
 
             let _ = ready_tx.send(Ok(native_rate));
+            println!("[rec] opened input '{device_name}' at {native_rate}Hz {sample_format:?}");
 
             if let Ok(RecCmd::Stop(reply)) = cmd_rx.recv() {
                 // `stream` drops here → chunk_tx_cb drops → all senders gone → chunk_rx sees close
@@ -390,9 +385,8 @@ impl AudioRecorder {
 
     pub fn preflight() -> Result<String, String> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or("no input device found — check microphone connection")?;
+        let device = select_input_device(&host)
+            .map_err(|_| "no input device found — check microphone connection".to_string())?;
         let name = device.name().unwrap_or_else(|_| "unknown".into());
         Ok(name)
     }
@@ -401,5 +395,312 @@ impl AudioRecorder {
 impl Default for AudioRecorder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Pick a microphone without forcing Bluetooth headsets into low-quality call
+/// mode when a local/USB microphone is available.
+pub fn select_input_device(host: &cpal::Host) -> Result<cpal::Device, String> {
+    let default = host.default_input_device().ok_or("no input device found")?;
+    let default_name = device_name(&default);
+
+    if bluetooth_mic_allowed() || !should_avoid_input(&default_name) {
+        return Ok(default);
+    }
+
+    match fallback_input_device(host, &default_name) {
+        Some(device) => {
+            let fallback_name = device_name(&device);
+            eprintln!(
+                "[rec] default input '{default_name}' looks like a Bluetooth headset; using '{fallback_name}' to avoid headset audio mode"
+            );
+            Ok(device)
+        }
+        None => {
+            eprintln!(
+                "[rec] default input '{default_name}' looks like a Bluetooth headset, but no alternate microphone is available"
+            );
+            Ok(default)
+        }
+    }
+}
+
+fn device_name(device: &cpal::Device) -> String {
+    device.name().unwrap_or_else(|_| "unknown".into())
+}
+
+fn fallback_input_device(host: &cpal::Host, default_name: &str) -> Option<cpal::Device> {
+    let default_key = comparable_device_name(default_name);
+    let mut first_usable = None;
+
+    let devices = match host.input_devices() {
+        Ok(devices) => devices,
+        Err(e) => {
+            eprintln!("[rec] failed to enumerate input devices: {e}");
+            return None;
+        }
+    };
+
+    for device in devices {
+        let name = device_name(&device);
+        if comparable_device_name(&name) == default_key
+            || input_name_looks_bluetooth(&name)
+            || input_name_looks_virtual(&name)
+            || device.default_input_config().is_err()
+        {
+            continue;
+        }
+
+        if input_name_looks_local_mic(&name) {
+            return Some(device);
+        }
+
+        if first_usable.is_none() {
+            first_usable = Some(device);
+        }
+    }
+
+    first_usable
+}
+
+fn should_avoid_input(default_name: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    if let Ok(true) = macos_audio::default_input_is_bluetooth() {
+        return true;
+    }
+
+    input_name_looks_bluetooth(default_name)
+}
+
+fn bluetooth_mic_allowed() -> bool {
+    std::env::var(ALLOW_BLUETOOTH_MIC_ENV)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn input_name_looks_bluetooth(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let compact = compact_device_name(&lower);
+    const NEEDLES: &[&str] = &[
+        "airpods",
+        "airpod",
+        "beats",
+        "bluetooth",
+        "hands-free",
+        "hands free",
+        "handsfree",
+        "quietcomfort",
+        "wh-1000",
+        "wf-1000",
+        "linkbuds",
+        "galaxy buds",
+        "pixel buds",
+        "oneplus buds",
+        "nothing ear",
+        "freebuds",
+    ];
+    const COMPACT_NEEDLES: &[&str] = &[
+        "wh1000",
+        "wf1000",
+        "galaxybuds",
+        "pixelbuds",
+        "oneplusbuds",
+        "nothingear",
+        "freebuds",
+        "quietcomfort",
+    ];
+
+    NEEDLES.iter().any(|needle| lower.contains(needle))
+        || COMPACT_NEEDLES
+            .iter()
+            .any(|needle| compact.contains(needle))
+}
+
+fn input_name_looks_local_mic(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("macbook")
+        || lower.contains("built-in")
+        || lower.contains("internal microphone")
+        || lower.contains("studio display")
+        || lower.contains("display microphone")
+}
+
+fn input_name_looks_virtual(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    [
+        "aggregate device",
+        "background music",
+        "blackhole",
+        "loopback",
+        "multi-output",
+        "soundflower",
+        "virtual",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn comparable_device_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase()
+}
+
+fn compact_device_name(name: &str) -> String {
+    name.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+mod macos_audio {
+    use std::ffi::c_void;
+
+    type AudioObjectID = u32;
+    type AudioDeviceID = u32;
+    type OSStatus = i32;
+    type Boolean = u8;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct AudioObjectPropertyAddress {
+        m_selector: u32,
+        m_scope: u32,
+        m_element: u32,
+    }
+
+    const K_AUDIO_OBJECT_SYSTEM_OBJECT: AudioObjectID = 1;
+    const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_INPUT_DEVICE: u32 = fourcc(*b"dIn ");
+    const K_AUDIO_DEVICE_PROPERTY_TRANSPORT_TYPE: u32 = fourcc(*b"tran");
+    const K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH: u32 = fourcc(*b"blue");
+    const K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH_LE: u32 = fourcc(*b"blea");
+    const K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL: u32 = fourcc(*b"glob");
+    const K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: u32 = 0;
+
+    const fn fourcc(bytes: [u8; 4]) -> u32 {
+        ((bytes[0] as u32) << 24)
+            | ((bytes[1] as u32) << 16)
+            | ((bytes[2] as u32) << 8)
+            | bytes[3] as u32
+    }
+
+    #[link(name = "CoreAudio", kind = "framework")]
+    unsafe extern "C" {
+        fn AudioObjectGetPropertyData(
+            in_object_id: AudioObjectID,
+            in_address: *const AudioObjectPropertyAddress,
+            in_qualifier_data_size: u32,
+            in_qualifier_data: *const c_void,
+            io_data_size: *mut u32,
+            out_data: *mut c_void,
+        ) -> OSStatus;
+
+        fn AudioObjectHasProperty(
+            in_object_id: AudioObjectID,
+            in_address: *const AudioObjectPropertyAddress,
+        ) -> Boolean;
+    }
+
+    pub fn default_input_is_bluetooth() -> Result<bool, String> {
+        let transport = default_input_transport_type()?;
+        Ok(is_bluetooth_transport(transport))
+    }
+
+    fn is_bluetooth_transport(transport: u32) -> bool {
+        matches!(
+            transport,
+            K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH | K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH_LE
+        )
+    }
+
+    fn default_input_device() -> Result<AudioDeviceID, String> {
+        let address = AudioObjectPropertyAddress {
+            m_selector: K_AUDIO_HARDWARE_PROPERTY_DEFAULT_INPUT_DEVICE,
+            m_scope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+            m_element: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+        };
+        let mut device: AudioDeviceID = 0;
+        let mut size = std::mem::size_of::<AudioDeviceID>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                K_AUDIO_OBJECT_SYSTEM_OBJECT,
+                &address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                (&mut device as *mut AudioDeviceID).cast::<c_void>(),
+            )
+        };
+        if status == 0 && device != 0 {
+            Ok(device)
+        } else {
+            Err(format!(
+                "AudioObjectGetPropertyData(default input) status={status}"
+            ))
+        }
+    }
+
+    fn default_input_transport_type() -> Result<u32, String> {
+        let device = default_input_device()?;
+        let address = AudioObjectPropertyAddress {
+            m_selector: K_AUDIO_DEVICE_PROPERTY_TRANSPORT_TYPE,
+            m_scope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+            m_element: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+        };
+        if unsafe { AudioObjectHasProperty(device, &address) } == 0 {
+            return Err("default input device has no transport type property".into());
+        }
+
+        let mut transport: u32 = 0;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                device,
+                &address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                (&mut transport as *mut u32).cast::<c_void>(),
+            )
+        };
+        if status == 0 {
+            Ok(transport)
+        } else {
+            Err(format!(
+                "AudioObjectGetPropertyData(input transport) status={status}"
+            ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{input_name_looks_bluetooth, input_name_looks_local_mic, input_name_looks_virtual};
+
+    #[test]
+    fn detects_common_bluetooth_headset_inputs() {
+        assert!(input_name_looks_bluetooth("Abhishek's AirPods Pro"));
+        assert!(input_name_looks_bluetooth("WH-1000XM5"));
+        assert!(input_name_looks_bluetooth("Bose QuietComfort Ultra"));
+        assert!(input_name_looks_bluetooth("Galaxy Buds2 Pro"));
+        assert!(input_name_looks_bluetooth("Bluetooth Headset"));
+    }
+
+    #[test]
+    fn keeps_local_mics_as_safe_fallbacks() {
+        assert!(input_name_looks_local_mic("MacBook Pro Microphone"));
+        assert!(input_name_looks_local_mic("Built-in Microphone"));
+        assert!(input_name_looks_local_mic("Studio Display Microphone"));
+        assert!(!input_name_looks_bluetooth("MacBook Pro Microphone"));
+    }
+
+    #[test]
+    fn filters_virtual_inputs_from_bluetooth_fallbacks() {
+        assert!(input_name_looks_virtual("BlackHole 2ch"));
+        assert!(input_name_looks_virtual("Loopback Audio"));
+        assert!(input_name_looks_virtual("Soundflower (2ch)"));
     }
 }
