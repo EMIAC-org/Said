@@ -66,7 +66,10 @@ const ASR_MIN_PEAK_FOR_TRANSCRIPTION: f32 = 0.006;
 // random scripts (ja/ko/es) on near-silent mic / speaker bleed. Pure-Hindi
 // meetings should pick a language explicitly (per-meeting selector / env
 // AIRNOTE_MEETING_MIC_WHISPER_LANGUAGE=hi).
-const DEFAULT_WHISPER_LANGUAGE: &str = "en";
+// Meetings are Hindi/Hinglish-first, so the transcription language is fixed to
+// Hindi (the romanizer then renders Devanagari → Roman Hinglish). Power users
+// can still override per track via AIRNOTE_MEETING_(MIC|SYSTEM)_WHISPER_LANGUAGE.
+const DEFAULT_WHISPER_LANGUAGE: &str = "hi";
 const DEFAULT_WHISPER_MAX_CONTEXT_TOKENS: i32 = 0;
 const DEFAULT_WHISPER_SUPPRESS_NON_SPEECH: bool = true;
 // Keep temperature fallback ENABLED: it recovers failed decodes and is what the
