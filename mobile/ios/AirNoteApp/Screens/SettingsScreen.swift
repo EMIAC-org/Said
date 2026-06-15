@@ -188,7 +188,14 @@ struct SettingsScreen: View {
     private var aboutSection: some View {
         Section {
             LabeledContent("Version", value: "\(AppInfo.version) (\(AppInfo.build))")
-            LabeledContent("Workspace", value: BuildConfig.gatewayBaseURL.host ?? "AirNote")
+            NavigationLink(destination: ServerConnectionView()) {
+                HStack {
+                    Text("Server")
+                    Spacer()
+                    Text(BuildConfig.gatewayBaseURL.host ?? "AirNote")
+                        .foregroundStyle(AirNoteDesign.muted)
+                }
+            }
             LabeledContent("Runtime", value: env.runtimeStatusLabel)
         } header: {
             Text("About")

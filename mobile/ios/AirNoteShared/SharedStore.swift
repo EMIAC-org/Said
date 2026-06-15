@@ -31,6 +31,7 @@ public enum SharedStore {
         static let safeVocabTerms = "airnote.shared.safe_vocab_terms"
         static let keyboardLivePartial = "airnote.shared.kbd_live_partial"
         static let learnedAliases = "airnote.shared.learned_aliases"
+        static let customGatewayURL = "airnote.shared.custom_gateway_url"
     }
 
     /// Locally cached learned corrections (heard -> meant), captured whenever the
@@ -136,6 +137,16 @@ public enum SharedStore {
     public static var accountJSON: String? {
         get { string(Key.accountJSON) }
         set { set(Key.accountJSON, newValue) }
+    }
+
+    // MARK: Server connection (enterprise / self-hosted override)
+
+    /// Enterprise/self-hosted override for the control-plane server URL. When set,
+    /// BuildConfig.gatewayBaseURL returns this so BOTH the app and the keyboard
+    /// extension talk to the chosen server. nil = use the built-in default.
+    public static var customGatewayURL: String? {
+        get { string(Key.customGatewayURL) }
+        set { set(Key.customGatewayURL, newValue) }
     }
 
     // MARK: Dictation preferences (so the keyboard can request the right model/language)
