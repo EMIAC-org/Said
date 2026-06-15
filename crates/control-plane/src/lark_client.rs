@@ -44,13 +44,29 @@ struct AppTokenResponse {
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Build the Lark OAuth authorize URL that the browser should redirect to.
+///
+/// We request an explicit `scope` so the issued user_access_token carries the
+/// permissions meeting-minutes export needs (create a Lark doc as the user,
+/// read its share URL, create tasks) on top of the identity scope. Some tenants
+/// don't grant app permissions to user tokens unless they're requested here.
+/// Lark accumulates granted scopes across authorizations, so adding these does
+/// not strip a user's previously-granted permissions. Overridable via
+/// `LARK_OAUTH_SCOPES` (space-separated) if a tenant needs a different set.
 pub fn build_oauth_url(app_id: &str, redirect_uri: &str, state: &str) -> String {
     let encoded_redirect = urlencoding::encode(redirect_uri);
+    let scopes = std::env::var("LARK_OAUTH_SCOPES")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            "contact:user.base:readonly docx:document drive:drive task:task".to_string()
+        });
+    let encoded_scope = urlencoding::encode(&scopes);
     format!(
         "https://open.larksuite.com/open-apis/authen/v1/authorize\
          ?app_id={app_id}\
          &redirect_uri={encoded_redirect}\
          &response_type=code\
+         &scope={encoded_scope}\
          &state={state}"
     )
 }
