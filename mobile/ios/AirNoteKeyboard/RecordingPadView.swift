@@ -42,7 +42,7 @@ final class RecordingPadView: UIView {
             waveLevels = Array(repeating: lvl, count: waveBarHeights.count)
         }
         let minH: CGFloat = 6
-        let maxH: CGFloat = 34
+        let maxH: CGFloat = 26
         for (index, constraint) in waveBarHeights.enumerated() {
             let sample = index < waveLevels.count ? waveLevels[index] : lvl
             // Gamma < 1 lifts quiet speech so the bars still move at low volume.
@@ -97,6 +97,10 @@ final class RecordingPadView: UIView {
     func update(state: KeyboardState, canTeachFix: Bool, animated: Bool) {
         self.state = state
         self.canTeachFix = canTeachFix
+        // Drop references to the previous surface's waveform constraints so
+        // setAudioLevel can never mutate detached views.
+        waveBarHeights.removeAll()
+        waveLevels.removeAll()
 
         let newSurface = makeVoiceSurface()
         if let old = voiceSurface {
@@ -135,25 +139,29 @@ final class RecordingPadView: UIView {
 
         let stack = UIStackView()
         stack.axis = .vertical
-        stack.spacing = 8
+        stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        stack.addArrangedSubview(makeStatusRow())
-        stack.addArrangedSubview(makeWaveform())
-        if case .recording = state {
-            stack.addArrangedSubview(makeLiveTranscript())
-        }
-
         if let preview = previewText {
+            // Result: the polished text is the focus.
+            stack.addArrangedSubview(makeStatusRow())
             stack.addArrangedSubview(makePreview(preview))
             stack.addArrangedSubview(makeResultActions())
         } else if let message = recoveryMessage {
+            // Recovery: explain + a labelled repair/open button.
+            stack.addArrangedSubview(makeStatusRow())
             stack.addArrangedSubview(ErrorDrawer(message: message))
             stack.addArrangedSubview(makePrimaryActions())
-        } else if canTeachFix, isPostInsertState {
-            stack.addArrangedSubview(makePostInsertActions())
         } else {
-            stack.addArrangedSubview(makePrimaryActions())
+            // Hero: a single Mic Orb IS the primary action (tap to start/stop),
+            // with a compact mode pill above and the title/waveform/live words
+            // below — Wispr-style, replacing the dense status row + 3-button triage.
+            stack.addArrangedSubview(makePill())
+            stack.addArrangedSubview(makeOrb())
+            stack.addArrangedSubview(makeTitleBlock())
+            if isActiveWaveform { stack.addArrangedSubview(makeWaveform()) }
+            if case .recording = state { stack.addArrangedSubview(makeLiveTranscript()) }
+            if canTeachFix, isPostInsertState { stack.addArrangedSubview(makePostInsertActions()) }
         }
 
         surface.addSubview(stack)
@@ -164,6 +172,95 @@ final class RecordingPadView: UIView {
             stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -10)
         ])
         return surface
+    }
+
+    // MARK: - Wispr-style hero (Mic Orb + pill + title)
+
+    /// A single compact mode·language pill, trailing-aligned — replaces the two
+    /// always-on chips in the hero states.
+    private func makePill() -> UIView {
+        let pill = makeChip("\(SharedStore.tonePreset.capitalized) · \(SharedStore.outputLanguage.capitalized)")
+        pill.accessibilityLabel = "Mode: \(SharedStore.tonePreset.capitalized), \(SharedStore.outputLanguage.capitalized)"
+        let row = UIStackView(arrangedSubviews: [UIView(), pill])
+        row.axis = .horizontal
+        return row
+    }
+
+    /// The hero: a large circular Mic Orb that IS the primary action (tap to
+    /// start/stop/open per state). Breathes while recording, pops on success.
+    private func makeOrb() -> UIView {
+        let size: CGFloat = 60
+        let orb = UIButton(type: .custom)
+        orb.translatesAutoresizingMaskIntoConstraints = false
+        orb.backgroundColor = orbFill
+        orb.layer.cornerRadius = size / 2
+        orb.layer.borderWidth = 2
+        orb.layer.borderColor = orbRing.cgColor
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(
+            systemName: primaryActionIcon,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
+        )
+        config.baseForegroundColor = orbTint
+        orb.configuration = config
+        orb.isUserInteractionEnabled = !isPrimaryActionDisabled
+        orb.alpha = isPrimaryActionDisabled ? 0.7 : 1.0
+        orb.addTarget(self, action: #selector(primaryTapped), for: .touchUpInside)
+        orb.accessibilityLabel = primaryActionTitle
+        if case .recording = state { addRecordingPulse(to: orb) }
+        if isCelebration { addPop(to: orb) }
+
+        let wrap = UIView()
+        wrap.addSubview(orb)
+        NSLayoutConstraint.activate([
+            orb.widthAnchor.constraint(equalToConstant: size),
+            orb.heightAnchor.constraint(equalToConstant: size),
+            orb.centerXAnchor.constraint(equalTo: wrap.centerXAnchor),
+            orb.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 2),
+            orb.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -2)
+        ])
+        return wrap
+    }
+
+    /// Centered title + subtitle under the orb.
+    private func makeTitleBlock() -> UIView {
+        let title = UILabel()
+        title.font = .preferredFont(forTextStyle: .headline)
+        title.adjustsFontForContentSizeCategory = true
+        title.textColor = KeyboardTheme.foreground
+        title.text = titleText
+        title.textAlignment = .center
+
+        let subtitle = UILabel()
+        subtitle.font = .preferredFont(forTextStyle: .caption1)
+        subtitle.adjustsFontForContentSizeCategory = true
+        subtitle.textColor = KeyboardTheme.muted
+        subtitle.text = subtitleText
+        subtitle.textAlignment = .center
+        subtitle.numberOfLines = 2
+
+        let block = UIStackView(arrangedSubviews: [title, subtitle])
+        block.axis = .vertical
+        block.alignment = .center
+        block.spacing = 1
+        block.accessibilityLabel = "\(titleText), \(subtitleText)"
+        return block
+    }
+
+    /// Orb fill — danger tint while recording, otherwise the state's accent/success.
+    private var orbFill: UIColor {
+        if case .recording = state { return KeyboardTheme.danger.withAlphaComponent(0.16) }
+        return statusColor.withAlphaComponent(0.14)
+    }
+
+    private var orbRing: UIColor {
+        if case .recording = state { return KeyboardTheme.danger.withAlphaComponent(0.6) }
+        return statusColor.withAlphaComponent(0.55)
+    }
+
+    private var orbTint: UIColor {
+        if case .recording = state { return KeyboardTheme.danger }
+        return statusColor
     }
 
     private func makeStatusRow() -> UIView {
@@ -194,21 +291,13 @@ final class RecordingPadView: UIView {
 
     private func makeWaveform() -> UIView {
         let container = UIView()
-        container.backgroundColor = KeyboardTheme.secondarySurface
-        container.layer.cornerRadius = KeyboardTheme.radius
-
-        let label = UILabel()
-        label.font = .preferredFont(forTextStyle: .caption1)
-        label.adjustsFontForContentSizeCategory = true
-        label.textColor = KeyboardTheme.muted
-        label.text = subtitleText
-        label.numberOfLines = 1
 
         let bars = UIStackView()
         bars.axis = .horizontal
         bars.alignment = .center
         bars.distribution = .equalCentering
         bars.spacing = 5
+        bars.translatesAutoresizingMaskIntoConstraints = false
 
         // While recording, the bars are driven by the REAL mic level (setAudioLevel)
         // for a live waveform. In other active states (processing/teaching) there is
@@ -232,22 +321,14 @@ final class RecordingPadView: UIView {
             bars.addArrangedSubview(bar)
         }
 
-        let row = UIStackView(arrangedSubviews: [bars, label])
-        row.axis = .horizontal
-        row.spacing = 10
-        row.alignment = .center
-        row.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(row)
-
+        container.addSubview(bars)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
-            row.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
-            bars.widthAnchor.constraint(equalToConstant: 72)
+            bars.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            bars.topAnchor.constraint(equalTo: container.topAnchor, constant: 2),
+            bars.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -2),
+            bars.widthAnchor.constraint(equalToConstant: 132)
         ])
-
-        container.accessibilityLabel = subtitleText
+        container.accessibilityLabel = "Audio level"
         return container
     }
 
@@ -293,7 +374,7 @@ final class RecordingPadView: UIView {
         label.text = " "
         label.font = .preferredFont(forTextStyle: .body)
         label.adjustsFontForContentSizeCategory = true
-        label.numberOfLines = 3
+        label.numberOfLines = 2
         label.textColor = KeyboardTheme.foreground
         label.backgroundColor = KeyboardTheme.secondarySurface
         label.layer.cornerRadius = KeyboardTheme.radius
@@ -482,18 +563,29 @@ final class RecordingPadView: UIView {
         return button
     }
 
-    private func makeChip(_ text: String) -> UILabel {
+    private func makeChip(_ text: String) -> UIView {
         let label = UILabel()
         label.text = text
         label.font = .preferredFont(forTextStyle: .caption2)
         label.adjustsFontForContentSizeCategory = true
         label.textColor = KeyboardTheme.accent
-        label.backgroundColor = KeyboardTheme.accent.withAlphaComponent(0.11)
-        label.layer.cornerRadius = KeyboardTheme.radius
-        label.layer.masksToBounds = true
         label.textAlignment = .center
-        label.widthAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
-        return label
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        // Padded capsule so glyphs never touch the rounded corners.
+        let chip = UIView()
+        chip.backgroundColor = KeyboardTheme.accent.withAlphaComponent(0.12)
+        chip.layer.cornerRadius = 11
+        chip.layer.masksToBounds = true
+        chip.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 9),
+            label.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -9),
+            label.topAnchor.constraint(equalTo: chip.topAnchor, constant: 3),
+            label.bottomAnchor.constraint(equalTo: chip.bottomAnchor, constant: -3)
+        ])
+        chip.accessibilityLabel = text
+        return chip
     }
 
     private var statusIcon: String {
