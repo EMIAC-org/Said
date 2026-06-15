@@ -600,6 +600,9 @@ public protocol MobileGatewayClient {
     func analyzeEdit(recordingID: String, transcript: String, aiOutput: String, userKept: String) async throws -> RuntimeLearningAnalysis
     func confirmLearning(recordingID: String, items: [RuntimeLearningCandidate]) async throws -> RuntimeLearningConfirmResult
     func sendEvent(_ event: MobileEvent) async throws
+    func listOrgs() async throws -> OrgsResponse
+    func activateOrg(id: String) async throws -> OrgActivateResponse
+    func deactivateOrg() async throws -> OrgActivateResponse
 }
 
 public typealias GatewayAuthTokenProvider = () -> String?
@@ -680,6 +683,9 @@ public struct PreviewMobileGatewayClient: MobileGatewayClient {
         RuntimeLearningConfirmResult(learnedCount: items.count, blockedCount: 0, learnedTerms: items.map(\.corrected), status: "accepted")
     }
     public func sendEvent(_ event: MobileEvent) async throws {}
+    public func listOrgs() async throws -> OrgsResponse { OrgsResponse(orgs: [], activeOrgID: nil, personalMode: true) }
+    public func activateOrg(id: String) async throws -> OrgActivateResponse { OrgActivateResponse(activeOrgID: id, personalMode: false) }
+    public func deactivateOrg() async throws -> OrgActivateResponse { OrgActivateResponse(activeOrgID: nil, personalMode: true) }
 }
 #endif
 
@@ -769,6 +775,37 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         let (data, response) = try await session.data(for: urlRequest)
         try Self.validate(data, response: response)
         return try decoder.decode(RuntimeSettingsResponse.self, from: data)
+    }
+
+    public func listOrgs() async throws -> OrgsResponse {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/orgs"))
+        urlRequest.httpMethod = "GET"
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode(OrgsResponse.self, from: data)
+    }
+
+    public func activateOrg(id: String) async throws -> OrgActivateResponse {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/orgs/\(id)/activate"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = Data("{}".utf8)
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode(OrgActivateResponse.self, from: data)
+    }
+
+    public func deactivateOrg() async throws -> OrgActivateResponse {
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("v1/orgs/deactivate"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = Data("{}".utf8)
+        authorize(&urlRequest)
+        let (data, response) = try await session.data(for: urlRequest)
+        try Self.validate(data, response: response)
+        return try decoder.decode(OrgActivateResponse.self, from: data)
     }
 
     public func createSession(_ request: MobileSessionRequest) async throws -> MobileSessionResponse {
@@ -1010,13 +1047,15 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
     }
 
     private func authorize(_ request: inout URLRequest) {
-        guard
-            let token = authTokenProvider?()?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !token.isEmpty
-        else {
-            return
+        if let token = authTokenProvider?()?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        // Scope org-aware endpoints (meetings, divo, org settings) to the active
+        // workspace. Only sent when an org is active — personal mode sends no
+        // header, so the personal dictation runtime is unaffected.
+        if let org = SharedStore.activeOrgID, !org.isEmpty {
+            request.setValue(org, forHTTPHeaderField: "X-AirNote-Org-Id")
+        }
     }
 
     private struct AuthBody: Encodable {

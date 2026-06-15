@@ -67,6 +67,16 @@ struct SettingsScreen: View {
 
     private var workspaceSection: some View {
         Section {
+            NavigationLink(destination: WorkspaceSwitcherView()) {
+                HStack {
+                    Label("Active workspace", systemImage: "building.2")
+                    Spacer()
+                    Text(env.personalMode ? "Personal" : (env.activeOrg?.name ?? "Workspace"))
+                        .font(.caption)
+                        .foregroundStyle(AirNoteDesign.muted)
+                        .lineLimit(1).truncationMode(.tail)
+                }
+            }
             NavigationLink(destination: ServerConnectionView()) {
                 HStack {
                     Label("Workspace server", systemImage: "server.rack")
@@ -80,7 +90,7 @@ struct SettingsScreen: View {
         } header: {
             Text("Workspace")
         } footer: {
-            Text("The server your dictation, keyboard, and account connect to. Tap to switch to a self-hosted or enterprise control-plane.")
+            Text("Switch between your personal account and any enterprise workspace you belong to — Meetings and Divo use the active workspace. The server is the control-plane the app and keyboard connect to.")
         }
     }
 

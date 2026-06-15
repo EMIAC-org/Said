@@ -33,6 +33,7 @@ public enum SharedStore {
         static let learnedAliases = "airnote.shared.learned_aliases"
         static let customGatewayURL = "airnote.shared.custom_gateway_url"
         static let recentGatewayURLs = "airnote.shared.recent_gateway_urls"
+        static let activeOrgID = "airnote.shared.active_org_id"
     }
 
     /// Locally cached learned corrections (heard -> meant), captured whenever the
@@ -165,6 +166,15 @@ public enum SharedStore {
         var list = recentGatewayURLs.filter { $0.caseInsensitiveCompare(u) != .orderedSame }
         list.insert(u, at: 0)
         recentGatewayURLs = list
+    }
+
+    /// The active workspace (org) id, or nil for personal mode. Read by the
+    /// gateway client to send the `X-AirNote-Org-Id` header on org-scoped
+    /// endpoints (meetings, divo). Lives in the App Group so the keyboard's
+    /// client carries the same workspace.
+    public static var activeOrgID: String? {
+        get { string(Key.activeOrgID) }
+        set { set(Key.activeOrgID, newValue) }
     }
 
     // MARK: Dictation preferences (so the keyboard can request the right model/language)

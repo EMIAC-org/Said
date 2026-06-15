@@ -50,6 +50,15 @@ final class AppEnvironment: ObservableObject {
     /// Providers the runtime needs for end-to-end dictation.
     static let requiredProviders = ["deepgram", "groq"]
 
+    // MARK: Workspace / orgs (enterprise)
+
+    @Published private(set) var orgs: [OrgMembership] = []
+    @Published private(set) var activeOrgID: String? = SharedStore.activeOrgID
+    @Published private(set) var personalMode = SharedStore.activeOrgID == nil
+    @Published private(set) var workspaceWorking = false
+    /// The active workspace, or nil in personal mode.
+    var activeOrg: OrgMembership? { orgs.first { $0.id == activeOrgID } }
+
     // MARK: Settings (server-backed, cross-device)
 
     @Published private(set) var outputLanguage = SharedStore.outputLanguage   // "hinglish" | "english"
@@ -292,6 +301,10 @@ final class AppEnvironment: ObservableObject {
         credentials = []
         vocabTermCount = 0
         vocabAliasCount = 0
+        orgs = []
+        activeOrgID = nil
+        personalMode = true
+        SharedStore.activeOrgID = nil
         cancelLearningReview()
     }
 
@@ -321,7 +334,8 @@ final class AppEnvironment: ObservableObject {
         async let history: Void = refreshHistory()
         async let credentials: Void = refreshCredentials()
         async let vocabulary: Void = refreshVocabulary()
-        _ = await (status, settings, history, credentials, vocabulary)
+        async let workspaces: Void = refreshOrgs()
+        _ = await (status, settings, history, credentials, vocabulary, workspaces)
     }
 
     func refreshRuntimeStatus() async {
@@ -536,6 +550,56 @@ final class AppEnvironment: ObservableObject {
             if handleUnauthorized(error) { return }
             credentials = snapshot
             credentialStatus = "Couldn't remove that key."
+        }
+    }
+
+    // MARK: Workspace (orgs)
+
+    func refreshOrgs() async {
+        guard account != nil else { return }
+        do {
+            let result = try await gateway.listOrgs()
+            orgs = result.orgs
+            activeOrgID = result.activeOrgID
+            personalMode = result.personalMode
+            SharedStore.activeOrgID = result.activeOrgID
+        } catch {
+            _ = handleUnauthorized(error)
+        }
+    }
+
+    @discardableResult
+    func activateWorkspace(_ id: String) async -> Bool {
+        workspaceWorking = true
+        defer { workspaceWorking = false }
+        do {
+            _ = try await gateway.activateOrg(id: id)
+            // Set the active org BEFORE reloading so requests carry the header.
+            SharedStore.activeOrgID = id
+            activeOrgID = id
+            personalMode = false
+            await loadWorkspaceState()   // settings/status/orgs now scoped to this workspace
+            return true
+        } catch {
+            _ = handleUnauthorized(error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func usePersonalMode() async -> Bool {
+        workspaceWorking = true
+        defer { workspaceWorking = false }
+        do {
+            _ = try await gateway.deactivateOrg()
+            SharedStore.activeOrgID = nil
+            activeOrgID = nil
+            personalMode = true
+            await loadWorkspaceState()
+            return true
+        } catch {
+            _ = handleUnauthorized(error)
+            return false
         }
     }
 
