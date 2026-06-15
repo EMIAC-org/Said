@@ -100,6 +100,23 @@ cd "$DESKTOP_DIR"
 npm run tauri:build -- --target "$TARGET"
 ok "tauri build finished"
 
+# ── Bundle whisper-cli (meeting transcription engine) + Silero VAD ───────────
+# Without these a packaged install can't transcribe meetings (no whisper-cli on
+# a clean Mac's PATH) and VAD stays off (no Silero model). whisper-cli is copied
+# next to the app binary (Contents/MacOS); Silero goes in Contents/Resources/
+# models. The runtime resolver in meeting_engine.rs looks in both spots.
+step "Build & bundle whisper-cli + Silero VAD"
+"$REPO_ROOT/scripts/build-whisper-cli.sh" "$TARGET"
+WHISPER_CLI_SRC="$REPO_ROOT/target/$TARGET/release/whisper-cli"
+[ -x "$WHISPER_CLI_SRC" ] || fail "whisper-cli not built (see scripts/build-whisper-cli.sh)"
+cp "$WHISPER_CLI_SRC" "$APP_PATH/Contents/MacOS/whisper-cli"
+chmod +x "$APP_PATH/Contents/MacOS/whisper-cli"
+mkdir -p "$APP_PATH/Contents/Resources/models"
+cp "$REPO_ROOT"/target/whisper-models/ggml-silero-*.bin \
+   "$APP_PATH/Contents/Resources/models/" 2>/dev/null \
+  || warn "no Silero model to bundle (VAD will stay off)"
+ok "whisper-cli + Silero bundled into app"
+
 # ── Post-verify: Developer ID signing ────────────────────────────────────────
 step "Sign with Developer ID"
 
@@ -124,6 +141,16 @@ ENTITLEMENTS="$TAURI_DIR/AirNote.entitlements"
 
 codesign --force --options runtime --sign "$SIGN_ID" --entitlements "$ENTITLEMENTS" "$EMBEDDED_BACKEND" 2>&1 | sed 's/^/  /'
 ok "sidecar signed"
+
+# whisper-cli is a nested executable — sign it before the outer bundle (same
+# hardened-runtime + entitlements as the sidecar) so the deep seal is valid.
+EMBEDDED_WHISPER="$APP_PATH/Contents/MacOS/whisper-cli"
+if [ -x "$EMBEDDED_WHISPER" ]; then
+  codesign --force --options runtime --sign "$SIGN_ID" --entitlements "$ENTITLEMENTS" "$EMBEDDED_WHISPER" 2>&1 | sed 's/^/  /'
+  ok "whisper-cli signed"
+else
+  warn "whisper-cli not embedded — meetings will not transcribe in this build"
+fi
 
 codesign --force --deep --options runtime --sign "$SIGN_ID" --entitlements "$ENTITLEMENTS" "$APP_PATH" 2>&1 | sed 's/^/  /'
 ok "app bundle signed"
