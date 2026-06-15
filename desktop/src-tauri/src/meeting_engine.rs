@@ -7715,7 +7715,10 @@ pub fn set_runtime_groq_api_key(key: Option<String>) {
 }
 
 fn runtime_groq_api_key() -> Option<String> {
-    RUNTIME_GROQ_API_KEY.read().ok().and_then(|slot| slot.clone())
+    RUNTIME_GROQ_API_KEY
+        .read()
+        .ok()
+        .and_then(|slot| slot.clone())
 }
 
 fn meeting_provider_config(
