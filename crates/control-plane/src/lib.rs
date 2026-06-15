@@ -336,6 +336,10 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/meetings/:id/push-tasks",
             post(routes::meetings::push_tasks),
         )
+        .route(
+            "/v1/meetings/:id/export-lark",
+            post(routes::meetings::export_lark),
+        )
         // Enterprise — Guest browser capture
         .route("/join/:token", get(routes::guest::guest_page))
         .route("/join/:token/auth", post(routes::guest::guest_auth))

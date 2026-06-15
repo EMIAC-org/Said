@@ -32,11 +32,13 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import {
   createMeeting,
   ensureActiveWorkspace,
+  exportMeetingToLark,
   getConnection,
   listMeetings,
   repairEnterpriseConnection,
   startMeeting,
 } from "@/lib/enterprise";
+import { openExternal } from "@/lib/invoke";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
 import {
   MeetingRichText,
@@ -1438,6 +1440,43 @@ export function MeetingsView({
     await navigator.clipboard.writeText(text);
   }, [meetingAi?.summary]);
 
+  // Export the locally-generated minutes to a beautifully formatted Lark Docx
+  // (server-side) and create Lark tasks for assigned owners. Persists the doc
+  // URL on the meeting so "Open in Lark" appears afterwards.
+  const [larkExporting, setLarkExporting] = useState(false);
+  const [larkError, setLarkError] = useState<string | null>(null);
+  const handleExportToLark = useCallback(async () => {
+    if (!selectedMeeting || !meetingAi?.summary?.trim()) return;
+    setLarkExporting(true);
+    setLarkError(null);
+    try {
+      const result = await exportMeetingToLark(selectedMeeting.id, {
+        title: meetingAi.title?.trim() || selectedMeeting.title,
+        summary: meetingAi.summary,
+        action_items: (meetingAi.action_items ?? []).map((a) => ({
+          title: a.title,
+          assignee: a.assignee ?? null,
+        })),
+        decisions: (meetingAi.decisions ?? []).map((d) => d.text).filter(Boolean),
+      });
+      if (result.ok) {
+        const mid = selectedMeeting.id;
+        await invoke("meeting_engine_set_meeting_lark_doc", { meetingId: mid, url: result.url }).catch(
+          () => {},
+        );
+        setOverviews((prev) => ({
+          ...prev,
+          [mid]: { ...(prev[mid] ?? {}), lark_doc_url: result.url },
+        }));
+        if (result.url) void openExternal(result.url);
+      } else {
+        setLarkError(result.message);
+      }
+    } finally {
+      setLarkExporting(false);
+    }
+  }, [selectedMeeting, meetingAi]);
+
   const copyTranscript = useCallback(async () => {
     const text = artifacts?.transcript?.trim();
     if (!text) return;
@@ -2192,8 +2231,50 @@ export function MeetingsView({
                       onClick={handleReanalyze}
                     />
                     <CopyButton label="Copy" disabled={!meetingAi?.summary} onCopy={copySummary} />
+                    {(() => {
+                      const larkUrl = selectedMeeting
+                        ? overviews[selectedMeeting.id]?.lark_doc_url ?? null
+                        : null;
+                      return (
+                        <>
+                          <ToolbarButton
+                            icon={<ExternalLink size={14} />}
+                            label={
+                              larkExporting
+                                ? "Exporting…"
+                                : larkUrl
+                                  ? "Re-export to Lark"
+                                  : "Export to Lark"
+                            }
+                            disabled={!meetingAi?.summary || larkExporting}
+                            onClick={() => void handleExportToLark()}
+                          />
+                          {larkUrl ? (
+                            <button
+                              type="button"
+                              onClick={() => void openExternal(larkUrl)}
+                              className="h-10 rounded-lg px-3 text-[12px] font-bold transition-colors"
+                              style={{
+                                background: "hsl(142 50% 12%)",
+                                border: "1px solid hsl(142 56% 36%)",
+                                color: "hsl(142 72% 62%)",
+                              }}
+                            >
+                              <span className="flex items-center gap-2">
+                                <ExternalLink size={14} /> Open in Lark
+                              </span>
+                            </button>
+                          ) : null}
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
+                {larkError ? (
+                  <p className="mb-3 text-[12px]" style={{ color: "hsl(0 70% 70%)" }}>
+                    Lark export: {larkError}
+                  </p>
+                ) : null}
                 {meetingAiLoading ? (
                   <div className="flex items-center gap-3 text-[14px] text-muted-foreground">
                     <Loader2 size={16} className="animate-spin" />
