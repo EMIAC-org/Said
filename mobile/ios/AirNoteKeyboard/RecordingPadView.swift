@@ -19,10 +19,39 @@ final class RecordingPadView: UIView {
     private let rootStack = UIStackView()
     private var voiceSurface: UIView?
     private weak var liveLabel: UILabel?
+    /// Height constraints of the live waveform bars, driven by the real mic level
+    /// while recording (see setAudioLevel). Empty in non-recording states.
+    private var waveBarHeights: [NSLayoutConstraint] = []
+    private var waveLevels: [CGFloat] = []
 
     /// Update the live transcript shown while recording, without a full re-render.
     func setLivePartial(_ text: String) {
         liveLabel?.text = text.isEmpty ? " " : text
+    }
+
+    /// Drive the live waveform from the real mic level (0...1) while recording.
+    /// Pushes the newest sample in on the right and scrolls older samples left so
+    /// the bars track the user's voice instead of a canned animation loop.
+    func setAudioLevel(_ level: Float) {
+        guard !waveBarHeights.isEmpty else { return }
+        let lvl = CGFloat(min(1, max(0, level)))
+        if waveLevels.count == waveBarHeights.count {
+            waveLevels.removeFirst()
+            waveLevels.append(lvl)
+        } else {
+            waveLevels = Array(repeating: lvl, count: waveBarHeights.count)
+        }
+        let minH: CGFloat = 6
+        let maxH: CGFloat = 34
+        for (index, constraint) in waveBarHeights.enumerated() {
+            let sample = index < waveLevels.count ? waveLevels[index] : lvl
+            // Gamma < 1 lifts quiet speech so the bars still move at low volume.
+            let shaped = pow(sample, 0.7)
+            constraint.constant = minH + shaped * (maxH - minH)
+        }
+        UIView.animate(withDuration: 0.07, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+            self.layoutIfNeeded()
+        }
     }
 
     init(state: KeyboardState, canTeachFix: Bool = false) {
@@ -181,13 +210,23 @@ final class RecordingPadView: UIView {
         bars.distribution = .equalCentering
         bars.spacing = 5
 
+        // While recording, the bars are driven by the REAL mic level (setAudioLevel)
+        // for a live waveform. In other active states (processing/teaching) there is
+        // no live audio, so fall back to the canned "breathing" animation.
+        waveBarHeights.removeAll()
+        let isLive = (state == .recording)
+        if isLive { waveLevels = Array(repeating: 0.12, count: waveformHeights.count) }
+
         for (index, height) in waveformHeights.enumerated() {
             let bar = UIView()
             bar.backgroundColor = statusColor.withAlphaComponent(isActiveWaveform ? 0.95 : 0.45)
             bar.layer.cornerRadius = 3
             bar.widthAnchor.constraint(equalToConstant: 6).isActive = true
-            bar.heightAnchor.constraint(equalToConstant: height).isActive = true
-            if isActiveWaveform {
+            let heightConstraint = bar.heightAnchor.constraint(equalToConstant: isLive ? 6 : height)
+            heightConstraint.isActive = true
+            if isLive {
+                waveBarHeights.append(heightConstraint)
+            } else if isActiveWaveform {
                 addWaveAnimation(to: bar, index: index)
             }
             bars.addArrangedSubview(bar)

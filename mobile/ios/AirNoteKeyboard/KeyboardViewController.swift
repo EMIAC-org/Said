@@ -286,7 +286,11 @@ final class KeyboardViewController: UIInputViewController {
                 break
             case .error(let error):
                 self.handleStreamError(error)
-            case .status, .sessionReady, .guardWarning, .level:
+            case .level(let lvl):
+                // Drive the live waveform from the real mic level on the keyboard's
+                // own dictation path (previously a no-op — bars were faked).
+                if self.isRecording { self.pad?.setAudioLevel(lvl) }
+            case .status, .sessionReady, .guardWarning:
                 break
             }
         }
