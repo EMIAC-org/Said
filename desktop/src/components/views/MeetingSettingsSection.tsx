@@ -11,22 +11,6 @@ const LANG_KEYS = [
 ] as const;
 const MODEL_KEY = "AIRNOTE_WHISPER_CPP_MODEL";
 
-const LANGUAGES: { value: string; label: string }[] = [
-  { value: "", label: "Auto-detect" },
-  { value: "en", label: "English" },
-  { value: "hi", label: "Hindi (हिन्दी)" },
-  { value: "es", label: "Spanish" },
-  { value: "fr", label: "French" },
-  { value: "de", label: "German" },
-  { value: "it", label: "Italian" },
-  { value: "pt", label: "Portuguese" },
-  { value: "ja", label: "Japanese" },
-  { value: "zh", label: "Chinese" },
-  { value: "ru", label: "Russian" },
-  { value: "ar", label: "Arabic" },
-  { value: "ko", label: "Korean" },
-];
-
 interface InstalledModel {
   name: string;
   path: string;
@@ -59,7 +43,6 @@ function prettyModelName(name: string): string {
 }
 
 export function MeetingSettingsSection() {
-  const [language, setLanguage] = useState<string>("");
   const [installed, setInstalled] = useState<InstalledModel[]>([]);
   const [catalog, setCatalog] = useState<CatalogModel[]>([]);
   const [loading, setLoading] = useState(true);
@@ -80,7 +63,12 @@ export function MeetingSettingsSection() {
         invoke<CatalogModel[]>("meeting_whisper_model_catalog"),
       ]);
       if (!mounted.current) return;
-      setLanguage(settings[LANG_KEYS[0]] ?? settings[LANG_KEYS[2]] ?? "");
+      // Meeting language is fixed to Hindi in the engine. Clear any stale
+      // per-track language overrides a previous build's picker may have stored,
+      // so the Hindi default always wins.
+      LANG_KEYS.forEach((key) => {
+        if (settings[key]) void invoke("meeting_settings_set", { key, value: null }).catch(() => {});
+      });
       setInstalled(models);
       setCatalog(cat);
       setError(null);
@@ -116,20 +104,6 @@ export function MeetingSettingsSection() {
       void unlistenP.then((fn) => fn());
     };
   }, [refresh]);
-
-  const setLang = useCallback(async (value: string) => {
-    setLanguage(value);
-    try {
-      await Promise.all(
-        LANG_KEYS.map((key) =>
-          invoke("meeting_settings_set", { key, value: value || null }),
-        ),
-      );
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
 
   const selectModel = useCallback(
     async (path: string) => {
@@ -214,28 +188,6 @@ export function MeetingSettingsSection() {
           </button>
         </div>
       ) : null}
-
-      {/* Language */}
-      <section>
-        <h3 className="text-[14px] font-bold text-foreground">Meeting language</h3>
-        <p className="mt-1 text-[12px] text-muted-foreground">
-          Language for transcribing your mic and the system audio. Set this to your meeting's
-          language for the most accurate transcript; "Auto-detect" lets Whisper guess (less reliable
-          on quiet or mixed audio). Applies to your next meeting.
-        </p>
-        <select
-          value={language}
-          onChange={(e) => void setLang(e.target.value)}
-          className="mt-3 h-9 w-full max-w-xs rounded-lg px-3 text-[13px] text-foreground outline-none"
-          style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--surface-4))" }}
-        >
-          {LANGUAGES.map((l) => (
-            <option key={l.value} value={l.value}>
-              {l.label}
-            </option>
-          ))}
-        </select>
-      </section>
 
       {/* Model */}
       <section>
