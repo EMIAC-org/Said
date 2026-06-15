@@ -5,11 +5,16 @@ name: Mac Test Build (no publish)
 # artifact. Does NOT create a release, write latest.json/beta.json, bump a
 # manifest, or notify any shipped client in any way.
 #
-# Notarization is intentionally skipped (it is only needed for public
-# distribution). Install the artifact locally and clear the quarantine attr:
-#   xattr -dr com.apple.quarantine /Applications/AirNote.app
+# Signed with the EMIAC Developer ID AND notarized + stapled, so the DMG opens
+# with no Gatekeeper friction. Still NON-PUBLISHING: artifact only, no release,
+# no latest.json/beta.json, no manifest bump.
+#
+# Dispatch by pushing the current branch state to `ci/mac-test` (the push trigger
+# below); anugra pushes never trigger it (wrong branch).
 
 on:
+  push:
+    branches: ['ci/mac-test']
   workflow_dispatch: {}
 
 permissions:
@@ -157,6 +162,30 @@ jobs:
           codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG_OUT"
           codesign -dv --verbose=2 "$DMG_OUT"
           echo "DMG created + signed: $DMG_OUT"
+
+      - name: Notarize and staple DMG
+        timeout-minutes: 30
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: 96ZQGP7L3B
+        run: |
+          set -euo pipefail
+          : "${APPLE_ID:?APPLE_ID secret required for notarization}"
+          : "${APPLE_APP_SPECIFIC_PASSWORD:?APPLE_APP_SPECIFIC_PASSWORD secret required}"
+          DMG_OUT="target/aarch64-apple-darwin/release/bundle/dmg/${PRODUCT_NAME}_${{ steps.ver.outputs.version }}_aarch64-test.dmg"
+          test -f "$DMG_OUT"
+          defaults write com.apple.gke.notary.tool nt-upload-connection-timeout 300 || true
+          xcrun notarytool submit "$DMG_OUT" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --timeout 25m \
+            --wait \
+            --verbose
+          xcrun stapler staple "$DMG_OUT"
+          spctl --assess --type open --context context:primary-signature -v "$DMG_OUT"
+          echo "DMG signed, notarized, stapled, Gatekeeper-verified: $DMG_OUT"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
