@@ -35,6 +35,7 @@ public enum SharedStore {
         static let recentGatewayURLs = "airnote.shared.recent_gateway_urls"
         static let activeOrgID = "airnote.shared.active_org_id"
         static let keyboardKeysCollapsed = "airnote.shared.keyboard_keys_collapsed"
+        static let workspaceChosenPersonal = "airnote.shared.workspace_chosen_personal"
     }
 
     /// Locally cached learned corrections (heard -> meant), captured whenever the
@@ -183,6 +184,13 @@ public enum SharedStore {
     public static var keyboardKeysCollapsed: Bool {
         get { defaults?.bool(forKey: Key.keyboardKeysCollapsed) ?? false }
         set { defaults?.set(newValue, forKey: Key.keyboardKeysCollapsed) }
+    }
+
+    /// True once the user explicitly chose Personal mode, so we stop auto-selecting
+    /// their workspace on launch.
+    public static var workspaceChosenPersonal: Bool {
+        get { defaults?.bool(forKey: Key.workspaceChosenPersonal) ?? false }
+        set { defaults?.set(newValue, forKey: Key.workspaceChosenPersonal) }
     }
 
     // MARK: Dictation preferences (so the keyboard can request the right model/language)

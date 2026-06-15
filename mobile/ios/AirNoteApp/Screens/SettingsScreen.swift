@@ -13,7 +13,7 @@ struct SettingsScreen: View {
                 AirNoteBackground()
                 Form {
                     accountSection
-                    if !env.personalMode { enterpriseSection }
+                    if !env.orgs.isEmpty { enterpriseSection }
                     workspaceSection
                     dictationSection
                     permissionsSection

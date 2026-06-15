@@ -579,12 +579,18 @@ final class AppEnvironment: ObservableObject {
             let result = try await gateway.listOrgs()
             orgs = result.orgs
             // The active workspace is a LOCAL choice — we never change the server
-            // session, so the voice/dictation runtime always stays on the personal
-            // account and can't be regressed by a workspace that lacks its own
-            // keys. Keep the chosen org unless the user is no longer a member.
+            // session, so voice/dictation always stays on the personal account.
+            // Drop a stale selection if no longer a member.
             if let active = activeOrgID, !result.orgs.contains(where: { $0.id == active }) {
                 activeOrgID = nil
                 SharedStore.activeOrgID = nil
+            }
+            // Auto-select the user's workspace (like the desktop uses the primary
+            // org) so Meetings/Divo appear without a manual step — unless they
+            // explicitly chose Personal mode.
+            if activeOrgID == nil, !SharedStore.workspaceChosenPersonal, let first = result.orgs.first {
+                activeOrgID = first.id
+                SharedStore.activeOrgID = first.id
             }
             personalMode = activeOrgID == nil
         } catch {
@@ -601,6 +607,7 @@ final class AppEnvironment: ObservableObject {
         workspaceWorking = true
         defer { workspaceWorking = false }
         SharedStore.activeOrgID = id
+        SharedStore.workspaceChosenPersonal = false
         activeOrgID = id
         personalMode = false
         await refreshMeetings()
@@ -610,6 +617,7 @@ final class AppEnvironment: ObservableObject {
     @discardableResult
     func usePersonalMode() async -> Bool {
         SharedStore.activeOrgID = nil
+        SharedStore.workspaceChosenPersonal = true
         activeOrgID = nil
         personalMode = true
         meetings = []
