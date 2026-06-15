@@ -58,7 +58,10 @@ pub fn build_oauth_url(app_id: &str, redirect_uri: &str, state: &str) -> String 
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
-            "contact:user.base:readonly docx:document drive:drive task:task".to_string()
+            // task:task:write is the v2 task scope (the suffix-less task:task is
+            // the legacy/ungrantable one). docx:document + drive:drive cover the
+            // doc create + URL fetch.
+            "contact:user.base:readonly docx:document drive:drive task:task:write".to_string()
         });
     let encoded_scope = urlencoding::encode(&scopes);
     format!(

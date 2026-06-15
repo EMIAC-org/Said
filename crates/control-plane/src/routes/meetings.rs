@@ -865,12 +865,7 @@ pub async fn export_lark(
     let document_id =
         crate::lark_sync::create_doc_with_token(&user_token, &doc_title, folder_token.as_deref())
             .await
-            .map_err(|e| {
-                (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({"error": format!("could not create the Lark doc: {e}"), "code": "lark_error"})),
-                )
-            })?;
+            .map_err(|e| lark_error_response("could not create the Lark doc", &e))?;
 
     // 2) Fill it with beautifully formatted blocks.
     let blocks = crate::lark_sync::build_minutes_blocks(
@@ -970,12 +965,15 @@ async fn user_lark_token(
         &refresh_token,
     )
     .await
-    .map_err(|e| {
+    // A failed refresh almost always means the stored refresh token is expired
+    // or revoked → the user must re-authorize, so surface it as reauth-required.
+    .map_err(|_| {
         (
-            StatusCode::BAD_GATEWAY,
-            Json(
-                json!({"error": format!("Lark session refresh failed: {e}"), "code": "lark_error"}),
-            ),
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Your Lark session expired — reconnect Lark (Settings → Enterprise) and try again.",
+                "code": "lark_reauth_required",
+            })),
         )
     })?;
 
@@ -995,6 +993,35 @@ async fn user_lark_token(
     .map_err(db_err)?;
 
     Ok(refreshed.access_token)
+}
+
+/// Map a Lark API error string into an HTTP response. Authorization/scope
+/// failures (e.g. 99991679, "unauthorized", missing privileges) become a
+/// distinct `lark_reauth_required` code so the desktop can guide the user to
+/// reconnect Lark instead of showing a dead-end error.
+fn lark_error_response(context: &str, e: &str) -> (StatusCode, Json<Value>) {
+    let lower = e.to_lowercase();
+    let needs_reauth = lower.contains("99991679")
+        || lower.contains("unauthorized")
+        || lower.contains("permission")
+        || lower.contains("re-authorization")
+        || lower.contains("privilege")
+        || lower.contains("forbidden")
+        || lower.contains("scope");
+    if needs_reauth {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Lark needs you to reconnect with the latest permissions — open Settings → Enterprise, sign in with Lark again, then retry.",
+                "code": "lark_reauth_required",
+            })),
+        )
+    } else {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": format!("{context}: {e}"), "code": "lark_error"})),
+        )
+    }
 }
 
 fn db_err(_e: sqlx::Error) -> (StatusCode, Json<Value>) {
