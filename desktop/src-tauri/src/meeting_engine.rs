@@ -95,7 +95,7 @@ Return EXACTLY the same numbered lines, in the same order, with the same count. 
 const GATEWAY_MEETING_CLEANUP_URL: &str = "https://gateway.outreachdeal.com/v1/chat/completions";
 const GROQ_MEETING_CLEANUP_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
 const DEEPSEEK_MEETING_CLEANUP_URL: &str = "https://api.deepseek.com/chat/completions";
-const DEFAULT_MEETING_CLEANUP_PROVIDER: &str = "groq";
+const DEFAULT_MEETING_CLEANUP_PROVIDER: &str = "deepseek";
 const DEFAULT_GATEWAY_MEETING_CLEANUP_MODEL: &str = "gemini-2.5-flash";
 const DEFAULT_GROQ_MEETING_CLEANUP_MODEL: &str = "llama-3.3-70b-versatile";
 const DEFAULT_DEEPSEEK_MEETING_CLEANUP_MODEL: &str = "deepseek-v4-pro";
@@ -2000,14 +2000,37 @@ enum JobOutcome {
 /// won't change the result).
 fn classify_meeting_job_error(message: &str) -> JobOutcome {
     let m = message.to_ascii_lowercase();
+    // Transient classes are checked first so a message that happens to contain
+    // a terminal-ish word but is really a rate-limit / network / disk blip still
+    // retries instead of permanently failing the meeting.
+    let transient = m.contains("rate-limit")
+        || m.contains("rate limit")
+        || m.contains("429")
+        || m.contains("timed out")
+        || m.contains("timeout")
+        || m.contains("network")
+        || m.contains("connection")
+        || m.contains("temporarily")
+        || m.contains("disk")
+        || m.contains("no space");
+    if transient {
+        return JobOutcome::Retry(message.to_string());
+    }
     let terminal = m.contains("no confident speech")
         || m.contains("below speech threshold")
         || m.contains("empty")
         || m.contains("no audio")
         || m.contains("api key")
         || m.contains("_api_key")
+        || m.contains("authentication failed")
+        || m.contains("unauthorized")
         || m.contains("missing whisper")
         || m.contains("whisper.cpp binary")
+        || m.contains("whisper.cpp crashed")
+        || m.contains("binary not found")
+        || m.contains("model file is missing")
+        || m.contains("reinstall")
+        || m.contains("no such file")
         || m.contains("no transcribable");
     if terminal {
         JobOutcome::Terminal(message.to_string())
@@ -5418,6 +5441,23 @@ fn transcribe_with_whisper_cpp_for(
             .arg(config.vad_min_silence_ms.to_string());
     }
 
+    // Re-validate just before spawn: the model or binary can disappear between
+    // config resolution (enqueue) and execution (a user deletes a model, disk
+    // cleanup, a broken symlink). Fail with a clear, terminal message instead of
+    // letting whisper-cli emit a cryptic error that retries forever.
+    if !is_usable_whisper_model(&config.model) {
+        return Err(format!(
+            "whisper model file is missing or corrupt: {} — reinstall it from Settings → Meeting",
+            config.model.display()
+        ));
+    }
+    if !config.binary.is_file() {
+        return Err(format!(
+            "whisper.cpp binary not found at {} — the transcription engine is missing from this build",
+            config.binary.display()
+        ));
+    }
+
     let started = Instant::now();
     let child = cmd
         .spawn()
@@ -5427,14 +5467,23 @@ fn transcribe_with_whisper_cpp_for(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        // No output on a non-zero exit almost always means a crash (OOM / SIGSEGV
+        // in ggml, or a corrupt model) — give an actionable hint.
+        if detail.is_empty() {
+            return Err(format!(
+                "whisper.cpp crashed ({}, no output) — likely out of memory or a corrupt model; try a smaller model",
+                output.status
+            ));
+        }
         return Err(format!(
             "whisper.cpp exited with {}: {}",
             output.status,
-            truncate_error(if stderr.trim().is_empty() {
-                stdout.trim()
-            } else {
-                stderr.trim()
-            })
+            truncate_error(detail)
         ));
     }
 
@@ -7390,18 +7439,21 @@ fn extract_json_object(content: &str) -> Option<String> {
     Some(text[start..=end].to_string())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct CleanupChatResponse {
+    #[serde(default)]
     choices: Vec<CleanupChatChoice>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct CleanupChatChoice {
+    #[serde(default)]
     message: CleanupChatMessage,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct CleanupChatMessage {
+    #[serde(default)]
     content: String,
 }
 
@@ -7489,6 +7541,38 @@ fn cleanup_meeting_transcript_with_llm(
     })
 }
 
+/// Backoff before retrying a transient meeting-LLM failure. On HTTP 429 it
+/// honors the provider's `Retry-After` (seconds, clamped) so a rate-limited
+/// long meeting pauses briefly instead of hammering the same window and failing;
+/// otherwise exponential backoff with a ceiling.
+fn meeting_llm_retry_delay(status_code: u16, retry_after: Option<&str>, attempt: u32) -> Duration {
+    let shift = attempt.saturating_sub(1).min(5);
+    if status_code == 429 {
+        if let Some(secs) = retry_after.and_then(|h| h.trim().parse::<u64>().ok()) {
+            return Duration::from_secs(secs.clamp(1, 30));
+        }
+        return Duration::from_millis((2_000u64 << shift).min(30_000));
+    }
+    Duration::from_millis((800u64 << shift).min(8_000))
+}
+
+/// Human-readable, classified error for a non-2xx meeting-LLM response. The
+/// wording is actionable (points at the API key / model) and also feeds the
+/// downstream terminal-vs-retry classifier.
+fn meeting_llm_status_error(provider: &str, status: u16, body: &str) -> String {
+    let detail = truncate_error(body.trim());
+    match status {
+        401 | 403 => format!(
+            "meeting AI authentication failed ({status}) for '{provider}' — the API key is missing, invalid, or expired. {detail}"
+        ),
+        429 => format!("meeting AI rate-limited ({status}) by '{provider}'. {detail}"),
+        400 | 404 | 422 => format!(
+            "meeting AI bad request ({status}) for '{provider}' — likely an unsupported model or parameter. {detail}"
+        ),
+        _ => format!("meeting AI provider error ({status}) from '{provider}': {detail}"),
+    }
+}
+
 fn complete_meeting_llm(
     system_prompt: &str,
     user_prompt: &str,
@@ -7535,39 +7619,63 @@ fn complete_meeting_llm(
             Err(e) => {
                 if attempt < MEETING_LLM_MAX_ATTEMPTS {
                     tracing::warn!(attempt, error = %e, "[meeting_engine] LLM request errored; retrying");
-                    thread::sleep(Duration::from_millis(800 * attempt as u64));
+                    thread::sleep(meeting_llm_retry_delay(0, None, attempt));
                     continue;
                 }
-                return Err(format!("meeting AI request failed: {e}"));
+                let hint = if e.is_timeout() {
+                    " — provider timed out; increase AIRNOTE_MEETING_AI_TIMEOUT_SECS or switch provider"
+                } else {
+                    " — check network / provider availability"
+                };
+                return Err(format!(
+                    "meeting AI request to '{}' failed: {e}{hint}",
+                    config.provider
+                ));
             }
         };
         let status = response.status();
         if status.is_success() {
             break response;
         }
+        // Only transient classes are retried; auth (401/403) and bad-request
+        // (400/404/422) fail fast with a clear message instead of looping.
         let retryable = status.as_u16() == 429 || status.is_server_error();
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let status_code = status.as_u16();
         let body_text = response.text().unwrap_or_default();
         if retryable && attempt < MEETING_LLM_MAX_ATTEMPTS {
-            tracing::warn!(attempt, %status, "[meeting_engine] LLM transient error; retrying");
-            thread::sleep(Duration::from_millis(800 * attempt as u64));
+            let delay = meeting_llm_retry_delay(status_code, retry_after.as_deref(), attempt);
+            tracing::warn!(attempt, %status, delay_ms = delay.as_millis() as u64, "[meeting_engine] LLM transient error; retrying");
+            thread::sleep(delay);
             continue;
         }
-        return Err(format!(
-            "meeting AI provider error {status}: {}",
-            truncate_error(body_text.trim())
+        return Err(meeting_llm_status_error(
+            &config.provider,
+            status_code,
+            &body_text,
         ));
     };
 
-    let response: CleanupChatResponse = response
-        .json()
-        .map_err(|e| format!("meeting AI response parse failed: {e}"))?;
+    let response: CleanupChatResponse = response.json().map_err(|e| {
+        format!(
+            "meeting AI response from '{}' was unreadable (malformed or truncated): {e}",
+            config.provider
+        )
+    })?;
     let content = response
         .choices
         .first()
         .map(|choice| choice.message.content.as_str())
         .unwrap_or("");
     if content.trim().is_empty() {
-        return Err("meeting AI returned an empty response".to_string());
+        return Err(format!(
+            "meeting AI ('{}') returned an empty response",
+            config.provider
+        ));
     }
 
     Ok(MeetingLlmCompletion {
@@ -7610,25 +7718,67 @@ fn complete_meeting_llm_streaming(
         .build()
         .map_err(|e| format!("meeting AI client failed: {e}"))?;
     let started = Instant::now();
-    let response = client
-        .post(&config.url)
-        .header(&config.auth_header_name, &config.auth_header_value)
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .map_err(|e| format!("meeting AI request failed: {e}"))?;
-    let status = response.status();
-    if !status.is_success() {
+    // Retry the connect/handshake (before any tokens stream) on transient
+    // failures, same policy as the non-streaming path. Once the 2xx stream
+    // starts we don't retry — a mid-stream drop is handled below.
+    const MEETING_LLM_MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 0;
+    let response = loop {
+        attempt += 1;
+        let send_result = client
+            .post(&config.url)
+            .header(&config.auth_header_name, &config.auth_header_value)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send();
+        let response = match send_result {
+            Ok(response) => response,
+            Err(e) => {
+                if attempt < MEETING_LLM_MAX_ATTEMPTS {
+                    tracing::warn!(attempt, error = %e, "[meeting_engine] chat LLM request errored; retrying");
+                    thread::sleep(meeting_llm_retry_delay(0, None, attempt));
+                    continue;
+                }
+                let hint = if e.is_timeout() {
+                    " — provider timed out; increase AIRNOTE_MEETING_CHAT_TIMEOUT_SECS or switch provider"
+                } else {
+                    " — check network / provider availability"
+                };
+                return Err(format!(
+                    "meeting AI request to '{}' failed: {e}{hint}",
+                    config.provider
+                ));
+            }
+        };
+        let status = response.status();
+        if status.is_success() {
+            break response;
+        }
+        let retryable = status.as_u16() == 429 || status.is_server_error();
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let status_code = status.as_u16();
         let body_text = response.text().unwrap_or_default();
-        return Err(format!(
-            "meeting AI provider error {status}: {}",
-            truncate_error(body_text.trim())
+        if retryable && attempt < MEETING_LLM_MAX_ATTEMPTS {
+            let delay = meeting_llm_retry_delay(status_code, retry_after.as_deref(), attempt);
+            tracing::warn!(attempt, %status, delay_ms = delay.as_millis() as u64, "[meeting_engine] chat LLM transient error; retrying");
+            thread::sleep(delay);
+            continue;
+        }
+        return Err(meeting_llm_status_error(
+            &config.provider,
+            status_code,
+            &body_text,
         ));
-    }
+    };
 
     let mut reader = std::io::BufReader::new(response);
     let mut line = String::new();
     let mut content = String::new();
+    let mut saw_done = false;
     loop {
         line.clear();
         let read = reader
@@ -7645,6 +7795,7 @@ fn complete_meeting_llm_streaming(
             continue;
         }
         if data == "[DONE]" {
+            saw_done = true;
             break;
         }
         let Ok(chunk) = serde_json::from_str::<ChatStreamChunk>(data) else {
@@ -7662,7 +7813,19 @@ fn complete_meeting_llm_streaming(
     }
 
     if content.trim().is_empty() {
-        return Err("meeting AI returned an empty response".to_string());
+        return Err(format!(
+            "meeting AI ('{}') returned an empty response",
+            config.provider
+        ));
+    }
+    // Stream ended without the [DONE] sentinel — the connection dropped
+    // mid-answer. Keep the partial text (better than nothing for chat) but flag
+    // it so it's not silently treated as complete.
+    if !saw_done {
+        tracing::warn!(
+            provider = %config.provider,
+            "[meeting_engine] chat stream ended without [DONE]; answer may be truncated"
+        );
     }
 
     Ok(MeetingLlmCompletion {
@@ -7728,6 +7891,18 @@ fn runtime_groq_api_key() -> Option<String> {
         .and_then(|slot| slot.clone())
 }
 
+/// DeepSeek API key baked into the build at compile time. DeepSeek is the
+/// bundled meeting-summary provider and its key is fixed — users cannot change
+/// it. Set `DEEPSEEK_API_KEY` in the build environment to bake it in (build-dmg.sh
+/// exports it from `.env`). Returns None in dev builds where it wasn't baked, so
+/// the caller falls back to a runtime env var.
+fn bundled_deepseek_api_key() -> Option<String> {
+    option_env!("DEEPSEEK_API_KEY")
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+}
+
 fn meeting_provider_config(
     provider: String,
     model: String,
@@ -7768,7 +7943,8 @@ fn meeting_provider_config(
                     }
                 })
                 .ok_or_else(|| {
-                    "GATEWAY_API_KEY not set; meeting AI not run with Gateway".to_string()
+                    "no Gateway API key — set GATEWAY_API_KEY (gateway meeting AI provider)"
+                        .to_string()
                 })?;
             Ok(MeetingCleanupConfig {
                 provider,
@@ -7779,10 +7955,17 @@ fn meeting_provider_config(
             })
         }
         "deepseek" => {
-            let api_key = override_key
+            // DeepSeek key is bundled into the build and fixed — not user-configurable.
+            // Release builds bake it in via option_env! (DEEPSEEK_API_KEY set at build
+            // time); dev builds fall back to a runtime DEEPSEEK_API_KEY env var.
+            let api_key = bundled_deepseek_api_key()
+                .or(override_key)
                 .or_else(|| env_nonempty("DEEPSEEK_API_KEY"))
                 .ok_or_else(|| {
-                    "DEEPSEEK_API_KEY not set; meeting AI not run with DeepSeek".to_string()
+                    // End-users can't fix this (the key is bundled at build time);
+                    // keep it honest but actionable for whoever ships the build.
+                    "meeting AI unavailable — no DeepSeek key in this build (bundle DEEPSEEK_API_KEY at build time, or set it as an env var)"
+                        .to_string()
                 })?;
             Ok(MeetingCleanupConfig {
                 provider,
@@ -8466,6 +8649,14 @@ fn resolve_whisper_cpp_config() -> Result<WhisperCppConfig, String> {
     } else {
         None
     };
+    // VAD is on by default but degrades to off when no Silero model is found.
+    // Surface that explicitly so a missing model is diagnosable rather than a
+    // silent quality regression.
+    if env_bool("AIRNOTE_MEETING_VAD", true) && vad_model.is_none() {
+        tracing::warn!(
+            "[meeting_engine] VAD enabled but no Silero model found — running whisper without silence filtering"
+        );
+    }
     let vad_threshold = env_f32("AIRNOTE_MEETING_VAD_THRESHOLD", DEFAULT_VAD_THRESHOLD);
     let vad_speech_pad_ms = env_i32_at_least(
         "AIRNOTE_MEETING_VAD_SPEECH_PAD_MS",
@@ -8996,6 +9187,66 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_meeting_job_error_routes_transient_vs_terminal() {
+        let retry = |m: &str| matches!(classify_meeting_job_error(m), JobOutcome::Retry(_));
+        let terminal = |m: &str| matches!(classify_meeting_job_error(m), JobOutcome::Terminal(_));
+
+        // Transient — must retry, never permanently fail the meeting.
+        assert!(retry("meeting AI rate-limited (429) by 'deepseek'."));
+        assert!(retry(
+            "meeting AI request to 'deepseek' failed: operation timed out"
+        ));
+        assert!(retry("network connection reset"));
+        assert!(retry("disk write failed: no space left on device"));
+
+        // Terminal — looping won't help; fail fast with the clear message.
+        assert!(terminal(
+            "meeting AI authentication failed (401) for 'deepseek'"
+        ));
+        assert!(terminal(
+            "whisper model file is missing or corrupt: /m.bin — reinstall it from Settings → Meeting"
+        ));
+        assert!(terminal("whisper.cpp crashed (exit signal 11, no output)"));
+        assert!(terminal(
+            "whisper.cpp returned no confident speech transcript"
+        ));
+        assert!(terminal(
+            "whisper.cpp binary not found at /x — engine missing"
+        ));
+
+        // A rate-limit that mentions a terminal-ish word still retries.
+        assert!(retry("rate limit reached; response was empty this minute"));
+    }
+
+    #[test]
+    fn meeting_llm_retry_delay_honors_retry_after_and_caps() {
+        // 429 with a sane Retry-After is honored.
+        assert_eq!(
+            meeting_llm_retry_delay(429, Some("10"), 1),
+            Duration::from_secs(10)
+        );
+        // 429 with an excessive Retry-After is clamped to the 30s ceiling.
+        assert_eq!(
+            meeting_llm_retry_delay(429, Some("600"), 1),
+            Duration::from_secs(30)
+        );
+        // 429 with no header → exponential (2s, then 4s).
+        assert_eq!(
+            meeting_llm_retry_delay(429, None, 1),
+            Duration::from_millis(2_000)
+        );
+        assert_eq!(
+            meeting_llm_retry_delay(429, None, 2),
+            Duration::from_millis(4_000)
+        );
+        // Non-429 transient (5xx / network) uses the shorter ramp.
+        assert_eq!(
+            meeting_llm_retry_delay(500, None, 1),
+            Duration::from_millis(800)
+        );
+    }
 
     #[test]
     fn start_creates_session_without_audio_tracks_when_capture_disabled() {
