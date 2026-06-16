@@ -134,28 +134,31 @@ final class WarmDictationHost: ObservableObject {
     /// the warm engine ONLY if the user's session intent is ON, the mic is already
     /// granted (never prompts here — this is a silent lifecycle hook), and no
     /// dictation is in flight. Sets the session persistent ("until I stop it").
+    /// Called on app foreground. We do NOT start the mic engine here — starting it
+    /// on a cold app launch is unreliable and was breaking dictation. The warm
+    /// engine is armed the proven way: after the first foreground dictation
+    /// (DictationController.finish → warmUp). Here we only keep the notch honest.
     func ensureSessionActive() {
-        guard SharedStore.sessionEnabled else { syncLiveActivity(); return }
-        guard PermissionManager.currentMicPermission() == .granted else { syncLiveActivity(); return }
-        guard !isStreaming else { return }
-        SharedStore.sessionDurationMinutes = -1   // persistent: never auto-expires
-        isSessionActive = true
-        if streamer.isWarmEngineRunning {
-            extendWarmWindow()
-            prewarm()
-            syncLiveActivity()
-        } else {
-            warmUp()   // starts the engine, then syncs the Activity (with retry)
-        }
+        if SharedStore.sessionEnabled, streamer.isWarmEngineRunning { extendWarmWindow() }
+        syncLiveActivity()
     }
 
-    /// Turn the session ON/OFF from the header toggle / the notch Stop button. ON
-    /// starts it now (a foreground user gesture); OFF ends the warm session, stops
-    /// it re-arming, and clears the notch.
+    /// Turn the session ON/OFF from the header toggle / the notch Stop button. OFF
+    /// ends the warm session + clears the notch. ON sets the intent and, since this
+    /// is a deliberate foreground gesture, warms the engine if it isn't already.
     func setSessionEnabled(_ on: Bool) {
         SharedStore.sessionEnabled = on
         isSessionActive = on
-        if on { ensureSessionActive() } else { endWarmSession() }
+        if on {
+            SharedStore.sessionDurationMinutes = -1
+            if streamer.isWarmEngineRunning {
+                extendWarmWindow(); prewarm(); syncLiveActivity()
+            } else {
+                warmUp()
+            }
+        } else {
+            endWarmSession()
+        }
     }
 
     // MARK: Dynamic Island Live Activity
