@@ -50,7 +50,7 @@ final class RecordingPadView: UIView {
         } else {
             waveLevels = Array(repeating: lvl, count: waveBarHeights.count)
         }
-        let minH: CGFloat = 5
+        let minH: CGFloat = 8
         let maxH: CGFloat = 32
         for (index, constraint) in waveBarHeights.enumerated() {
             let sample = index < waveLevels.count ? waveLevels[index] : lvl
@@ -114,6 +114,7 @@ final class RecordingPadView: UIView {
         guard traitCollection.userInterfaceStyle != previous?.userInterfaceStyle else { return }
         backgroundColor = KeyboardTheme.keyboardBackground
         voiceSurface?.layer.borderColor = KeyboardTheme.border.cgColor
+        voiceSurface?.layer.shadowColor = KeyboardTheme.cardShadow.cgColor
     }
 
     /// Swap ONLY the voice surface for the new state — the keys stay put, so
@@ -153,18 +154,19 @@ final class RecordingPadView: UIView {
     private func makeVoiceSurface() -> UIView {
         let surface = UIView()
         surface.backgroundColor = KeyboardTheme.surfaceBackground
-        surface.layer.cornerRadius = KeyboardTheme.radius
+        surface.layer.cornerRadius = KeyboardTheme.surfaceRadius
+        surface.layer.cornerCurve = .continuous
         surface.layer.borderWidth = 1
         surface.layer.borderColor = KeyboardTheme.border.cgColor
-        // Soft elevation for depth (premium feel) — the keys stay flat below it.
-        surface.layer.shadowColor = UIColor.black.cgColor
-        surface.layer.shadowOpacity = 0.12
-        surface.layer.shadowRadius = 7
-        surface.layer.shadowOffset = CGSize(width: 0, height: 2)
+        // Soft, ink-tinted elevation for depth (premium feel) — the keys stay flat below it.
+        surface.layer.shadowColor = KeyboardTheme.cardShadow.cgColor
+        surface.layer.shadowOpacity = 0.10
+        surface.layer.shadowRadius = 16
+        surface.layer.shadowOffset = CGSize(width: 0, height: 6)
 
         let stack = UIStackView()
         stack.axis = .vertical
-        stack.spacing = 6
+        stack.spacing = 9
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         if let preview = previewText {
@@ -191,10 +193,10 @@ final class RecordingPadView: UIView {
 
         surface.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 10),
-            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -10),
-            stack.topAnchor.constraint(equalTo: surface.topAnchor, constant: 10),
-            stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -10)
+            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: surface.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -14)
         ])
         return surface
     }
@@ -214,25 +216,41 @@ final class RecordingPadView: UIView {
     /// The hero: a large circular Mic Orb that IS the primary action (tap to
     /// start/stop/open per state). Breathes while recording, pops on success.
     private func makeOrb() -> UIView {
-        let size: CGFloat = 60
+        let size: CGFloat = 76
+        let isRec: Bool = { if case .recording = state { return true } else { return false } }()
         let orb = UIButton(type: .custom)
         orb.translatesAutoresizingMaskIntoConstraints = false
-        orb.backgroundColor = orbFill
         orb.layer.cornerRadius = size / 2
-        orb.layer.borderWidth = 2
-        orb.layer.borderColor = orbRing.cgColor
+        orb.layer.cornerCurve = .continuous
+        // Saturated vertical gradient — reads as a premium sphere vs a flat tint disc.
+        let gradient = CAGradientLayer()
+        gradient.frame = CGRect(x: 0, y: 0, width: size, height: size)
+        gradient.colors = isRec ? KeyboardTheme.recordingGradientStops : KeyboardTheme.accentGradientStops
+        gradient.startPoint = CGPoint(x: 0.5, y: 0)
+        gradient.endPoint = CGPoint(x: 0.5, y: 1)
+        gradient.cornerRadius = size / 2
+        gradient.cornerCurve = .continuous
+        orb.layer.insertSublayer(gradient, at: 0)
+        // Glossy white rim + colored halo glow (the single biggest premium tell).
+        orb.layer.borderWidth = 1
+        orb.layer.borderColor = UIColor.white.withAlphaComponent(0.25).cgColor
+        orb.layer.shadowColor = (isRec ? KeyboardTheme.danger : KeyboardTheme.accent).cgColor
+        orb.layer.shadowOpacity = 0.38
+        orb.layer.shadowRadius = 16
+        orb.layer.shadowOffset = CGSize(width: 0, height: 4)
+        orb.layer.shadowPath = UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: size, height: size)).cgPath
         var config = UIButton.Configuration.plain()
         config.image = UIImage(
             systemName: primaryActionIcon,
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 26, weight: .semibold)
         )
-        config.baseForegroundColor = orbTint
+        config.baseForegroundColor = .white
         orb.configuration = config
         orb.isUserInteractionEnabled = !isPrimaryActionDisabled
         orb.alpha = isPrimaryActionDisabled ? 0.7 : 1.0
         orb.addTarget(self, action: #selector(primaryTapped), for: .touchUpInside)
         orb.accessibilityLabel = primaryActionTitle
-        if case .recording = state { addRecordingPulse(to: orb) }
+        if isRec { addRecordingPulse(to: orb) }
         if isCelebration { addPop(to: orb) }
 
         let wrap = UIView()
@@ -241,8 +259,8 @@ final class RecordingPadView: UIView {
             orb.widthAnchor.constraint(equalToConstant: size),
             orb.heightAnchor.constraint(equalToConstant: size),
             orb.centerXAnchor.constraint(equalTo: wrap.centerXAnchor),
-            orb.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 2),
-            orb.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -2)
+            orb.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 6),
+            orb.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -6)
         ])
         return wrap
     }
@@ -267,25 +285,9 @@ final class RecordingPadView: UIView {
         let block = UIStackView(arrangedSubviews: [title, subtitle])
         block.axis = .vertical
         block.alignment = .center
-        block.spacing = 1
+        block.spacing = 3
         block.accessibilityLabel = "\(titleText), \(subtitleText)"
         return block
-    }
-
-    /// Orb fill — danger tint while recording, otherwise the state's accent/success.
-    private var orbFill: UIColor {
-        if case .recording = state { return KeyboardTheme.danger.withAlphaComponent(0.16) }
-        return statusColor.withAlphaComponent(0.14)
-    }
-
-    private var orbRing: UIColor {
-        if case .recording = state { return KeyboardTheme.danger.withAlphaComponent(0.6) }
-        return statusColor.withAlphaComponent(0.55)
-    }
-
-    private var orbTint: UIColor {
-        if case .recording = state { return KeyboardTheme.danger }
-        return statusColor
     }
 
     private func makeStatusRow() -> UIView {
@@ -406,7 +408,8 @@ final class RecordingPadView: UIView {
         label.lineBreakMode = .byTruncatingHead
         label.textColor = KeyboardTheme.foreground
         label.backgroundColor = KeyboardTheme.secondarySurface
-        label.layer.cornerRadius = KeyboardTheme.radius
+        label.layer.cornerRadius = KeyboardTheme.tileRadius
+        label.layer.cornerCurve = .continuous
         label.layer.masksToBounds = true
         label.accessibilityLabel = "Live transcript"
         liveLabel = label
@@ -424,7 +427,8 @@ final class RecordingPadView: UIView {
         label.lineBreakMode = .byWordWrapping
         label.textColor = KeyboardTheme.foreground
         label.backgroundColor = KeyboardTheme.secondarySurface
-        label.layer.cornerRadius = KeyboardTheme.radius
+        label.layer.cornerRadius = KeyboardTheme.tileRadius
+        label.layer.cornerCurve = .continuous
         label.layer.masksToBounds = true
         label.accessibilityLabel = "Insert preview. \(text)"
         return label
@@ -633,10 +637,25 @@ final class RecordingPadView: UIView {
         button.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
         button.addAction(UIAction { [weak self] _ in self?.toggleKeysCollapsed() }, for: .touchUpInside)
         button.accessibilityLabel = collapsed ? "Show keyboard" : "Hide keyboard"
-        let row = UIStackView(arrangedSubviews: [UIView(), button, UIView()])
-        row.axis = .horizontal
-        row.distribution = .fill
-        return row
+        let buttonRow = UIStackView(arrangedSubviews: [UIView(), button, UIView()])
+        buttonRow.axis = .horizontal
+        buttonRow.distribution = .fill
+
+        // A small grabber bar above the pill — reads as a draggable sheet handle.
+        let grabber = UIView()
+        grabber.backgroundColor = KeyboardTheme.muted.withAlphaComponent(0.35)
+        grabber.layer.cornerRadius = 2
+        grabber.translatesAutoresizingMaskIntoConstraints = false
+        grabber.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        grabber.heightAnchor.constraint(equalToConstant: 4).isActive = true
+        let grabberRow = UIStackView(arrangedSubviews: [UIView(), grabber, UIView()])
+        grabberRow.axis = .horizontal
+        grabberRow.distribution = .fill
+
+        let column = UIStackView(arrangedSubviews: [grabberRow, buttonRow])
+        column.axis = .vertical
+        column.spacing = 5
+        return column
     }
 
     private func toggleKeysCollapsed() {

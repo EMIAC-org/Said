@@ -36,8 +36,24 @@ enum KeyboardTheme {
 
     static var secondaryButtonForeground: UIColor { foreground }
     static let radius: CGFloat = 8
+    static let surfaceRadius: CGFloat = 18
+    static let tileRadius: CGFloat = 12
     static let keyHeight: CGFloat = 40
     static let actionHeight: CGFloat = 36
+
+    /// Deeper accent stop for the Mic Orb's vertical gradient (premium sphere look).
+    static let accentDeep = UIColor(red: 0.42, green: 0.52, blue: 0.92, alpha: 1.0)
+    static var accentGradientStops: [CGColor] { [accent.cgColor, accentDeep.cgColor] }
+    static var recordingGradientStops: [CGColor] {
+        [UIColor(red: 0.98, green: 0.42, blue: 0.46, alpha: 1.0).cgColor, danger.cgColor]
+    }
+    /// Soft, ink-tinted card shadow (reads modern on white; pure black on dark).
+    static var cardShadow: UIColor {
+        adaptiveColor(
+            dark: UIColor.black,
+            light: UIColor(red: 0.07, green: 0.09, blue: 0.18, alpha: 1.0)
+        )
+    }
 
     static var keyboardBackground: UIColor {
         adaptiveColor(
