@@ -180,7 +180,14 @@ final class WarmDictationHost: ObservableObject {
     /// orphan left by a force-quit, so reopening AirNote reconciles + clears it.
     private func syncLiveActivity() {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        if liveActivity == nil { liveActivity = Activity<DictationSessionAttributes>.activities.first }
+        // Drop a stale handle — the Stop intent ends the Activity from its OWN
+        // process, leaving our reference pointing at a dead Activity. Without this,
+        // a later Resume would `update()` the corpse and the notch would never come
+        // back. Re-adopt only a genuinely live Activity.
+        if let held = liveActivity, held.activityState != .active { liveActivity = nil }
+        if liveActivity == nil {
+            liveActivity = Activity<DictationSessionAttributes>.activities.first { $0.activityState == .active }
+        }
         // Tie the notch to the session INTENT (the toggle / sessionEnabled), not the
         // instantaneous engine state — so it appears reliably while the session is
         // on and clears when turned off, without flickering off on a momentary
