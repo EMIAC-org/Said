@@ -395,32 +395,37 @@ final class RecordingPadView: UIView {
     /// Live transcript shown while recording — words appear as the user speaks
     /// (the warm app streams romanized partials over the App Group).
     private func makeLiveTranscript() -> UIView {
-        let label = UILabel()
+        let label = PaddedLabel()
         label.text = " "
         label.font = .preferredFont(forTextStyle: .body)
         label.adjustsFontForContentSizeCategory = true
-        label.numberOfLines = 2
+        // Wrap across up to 5 lines and keep the LATEST words visible (truncate the
+        // head, not the tail) so a long Hinglish sentence is readable as a
+        // paragraph instead of one clipped line.
+        label.numberOfLines = 5
+        label.lineBreakMode = .byTruncatingHead
         label.textColor = KeyboardTheme.foreground
         label.backgroundColor = KeyboardTheme.secondarySurface
         label.layer.cornerRadius = KeyboardTheme.radius
         label.layer.masksToBounds = true
-        label.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
         label.accessibilityLabel = "Live transcript"
         liveLabel = label
         return label
     }
 
     private func makePreview(_ text: String) -> UIView {
-        let label = UILabel()
+        let label = PaddedLabel()
         label.text = text
         label.font = .preferredFont(forTextStyle: .subheadline)
         label.adjustsFontForContentSizeCategory = true
-        label.numberOfLines = 2
+        // Show the whole polished result, wrapped, so the user can read and edit it
+        // (capped so a very long result doesn't make the keyboard huge).
+        label.numberOfLines = 8
+        label.lineBreakMode = .byWordWrapping
         label.textColor = KeyboardTheme.foreground
         label.backgroundColor = KeyboardTheme.secondarySurface
         label.layer.cornerRadius = KeyboardTheme.radius
         label.layer.masksToBounds = true
-        label.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
         label.accessibilityLabel = "Insert preview. \(text)"
         return label
     }
@@ -993,5 +998,32 @@ final class RecordingPadView: UIView {
 
     @objc private func nextKeyboardTapped() {
         onNextKeyboard?()
+    }
+}
+
+/// A UILabel that actually insets its text — UILabel ignores directionalLayoutMargins
+/// for text, which is why the transcript/preview looked cramped against the rounded
+/// surface. This pads the text inside the background on all four sides and sizes
+/// itself (and wraps) correctly.
+private final class PaddedLabel: UILabel {
+    var insets = UIEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+
+    override func drawText(in rect: CGRect) {
+        super.drawText(in: rect.inset(by: insets))
+    }
+
+    override var intrinsicContentSize: CGSize {
+        let base = super.intrinsicContentSize
+        return CGSize(width: base.width + insets.left + insets.right,
+                      height: base.height + insets.top + insets.bottom)
+    }
+
+    override func textRect(forBounds bounds: CGRect, limitedToNumberOfLines numberOfLines: Int) -> CGRect {
+        var rect = super.textRect(forBounds: bounds.inset(by: insets), limitedToNumberOfLines: numberOfLines)
+        rect.origin.x -= insets.left
+        rect.origin.y -= insets.top
+        rect.size.width += insets.left + insets.right
+        rect.size.height += insets.top + insets.bottom
+        return rect
     }
 }

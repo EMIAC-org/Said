@@ -451,15 +451,17 @@ final class KeyboardViewController: UIInputViewController {
         let recordingID = RequestId.make()
         Task { [weak self] in
             guard let self else { return }
-            var learnedTerm: String?
+            var learnedTerms: [String] = []
 
-            // The user EXPLICITLY taught this edit — store it on-device directly
-            // (addLearnedAlias self-gates on safety). An explicit teach must never
-            // be silently dropped by the server's automatic-learning gate, which is
-            // why "ankur gupta → anugra" stopped sticking.
-            if let seg = TeachFixDiff.changedSegment(original: original, edited: edited),
-               SharedStore.addLearnedAlias(heard: seg.heard, correct: seg.correct) {
-                learnedTerm = seg.correct
+            // The user EXPLICITLY taught this edit — store EACH changed word-run as
+            // its own exact rule (word-level LCS diff), so correcting several words
+            // in one go teaches each precisely instead of collapsing them.
+            // addLearnedAlias self-gates on safety; an explicit teach is never
+            // dropped by the server's automatic-learning gate.
+            for seg in TeachFixDiff.changedSegments(original: original, edited: edited) {
+                if SharedStore.addLearnedAlias(heard: seg.heard, correct: seg.correct) {
+                    learnedTerms.append(seg.correct)
+                }
             }
 
             // Best-effort: teach the server too (cross-device memory + learned
@@ -469,8 +471,8 @@ final class KeyboardViewController: UIInputViewController {
             ) {
                 for candidate in analysis.candidates {
                     if SharedStore.addLearnedAlias(heard: candidate.original, correct: candidate.corrected),
-                       learnedTerm == nil {
-                        learnedTerm = candidate.corrected
+                       !learnedTerms.contains(candidate.corrected) {
+                        learnedTerms.append(candidate.corrected)
                     }
                 }
                 let learnable = analysis.candidates.filter(\.learnable)
@@ -481,10 +483,10 @@ final class KeyboardViewController: UIInputViewController {
 
             await MainActor.run {
                 self.clearTeachable()
-                if let term = learnedTerm {
-                    self.setState(.learned("Learned “\(term)” — AirNote will use it next time."))
-                } else {
+                if learnedTerms.isEmpty {
                     self.setState(.learned("That edit's too common to learn — try a name, brand, or full term."))
+                } else {
+                    self.setState(.learned("Learned “\(learnedTerms.joined(separator: "”, “"))” — AirNote will use it next time."))
                 }
             }
         }

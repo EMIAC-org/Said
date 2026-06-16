@@ -69,4 +69,53 @@ public enum TeachFixDiff {
         guard !heard.isEmpty, !correct.isEmpty else { return nil }
         return (heard, correct)
     }
+
+    /// EVERY changed word-run between the inserted text and the user's edit, via a
+    /// word-level LCS: the common words are anchors, and each gap between anchors
+    /// is its own original→corrected pair. So correcting several words in one go —
+    /// even non-adjacent ("jaan … ladle" → "jai … laddu") — teaches each one
+    /// exactly, instead of collapsing them into a single wrong whole-phrase rule.
+    public static func changedSegments(original: String, edited: String) -> [(heard: String, correct: String)] {
+        let o = original.split { $0 == " " || $0 == "\t" || $0 == "\n" }.map(String.init)
+        let e = edited.split { $0 == " " || $0 == "\t" || $0 == "\n" }.map(String.init)
+        guard !o.isEmpty, !e.isEmpty else { return [] }
+
+        // LCS length DP over case-insensitive token equality.
+        let n = o.count, m = e.count
+        var dp = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            for j in stride(from: m - 1, through: 0, by: -1) {
+                if o[i].caseInsensitiveCompare(e[j]) == .orderedSame {
+                    dp[i][j] = dp[i + 1][j + 1] + 1
+                } else {
+                    dp[i][j] = max(dp[i + 1][j], dp[i][j + 1])
+                }
+            }
+        }
+        // Backtrack to the matched anchor index-pairs.
+        var anchors: [(Int, Int)] = []
+        var i = 0, j = 0
+        while i < n, j < m {
+            if o[i].caseInsensitiveCompare(e[j]) == .orderedSame {
+                anchors.append((i, j)); i += 1; j += 1
+            } else if dp[i + 1][j] >= dp[i][j + 1] {
+                i += 1
+            } else {
+                j += 1
+            }
+        }
+        // Each gap (between anchors, and the trailing gap via the sentinel) where
+        // BOTH sides have words is a real substitution — a learnable pair. Pure
+        // insertions/deletions (one side empty) are skipped.
+        var segments: [(heard: String, correct: String)] = []
+        var oi = 0, ei = 0
+        for (mo, me) in anchors + [(n, m)] {
+            if oi < mo, ei < me {
+                segments.append((o[oi..<mo].joined(separator: " "), e[ei..<me].joined(separator: " ")))
+            }
+            oi = mo + 1
+            ei = me + 1
+        }
+        return segments
+    }
 }
