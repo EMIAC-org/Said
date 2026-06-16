@@ -102,15 +102,32 @@ private struct HistoryCard: View {
     /// stays scannable — matches the desktop's 50-word truncation.
     private static let truncateWords = 50
 
-    private var words: [Substring] {
-        item.displayText.split { $0 == " " || $0 == "\t" || $0 == "\n" }
+    private var wordCount: Int {
+        item.displayText.split { $0 == " " || $0 == "\t" || $0 == "\n" }.count
     }
 
-    private var isLong: Bool { words.count > Self.truncateWords }
+    private var isLong: Bool { wordCount > Self.truncateWords }
 
     private var shownText: String {
         guard isLong, !expanded else { return item.displayText }
-        return words.prefix(Self.truncateWords).joined(separator: " ") + "…"
+        // Cut at the end of the Nth word in the ORIGINAL string so newlines/tabs
+        // and runs of spaces survive, then strip trailing separators/punctuation
+        // before the ellipsis so we never render "word,…" or a doubled "…".
+        let s = item.displayText
+        var seen = 0, inWord = false
+        var cut = s.endIndex
+        for idx in s.indices {
+            let isSep = s[idx] == " " || s[idx] == "\t" || s[idx] == "\n"
+            if !isSep, !inWord {
+                inWord = true; seen += 1
+            } else if isSep, inWord {
+                inWord = false
+                if seen >= Self.truncateWords { cut = idx; break }
+            }
+        }
+        var prefix = String(s[s.startIndex..<cut])
+        while let last = prefix.last, last.isWhitespace || last.isPunctuation { prefix.removeLast() }
+        return prefix + " …"
     }
 
     private var hasHeard: Bool {
@@ -143,7 +160,7 @@ private struct HistoryCard: View {
                         .font(.caption2)
                         .foregroundStyle(AirNoteDesign.muted)
                     Text("·").font(.caption2).foregroundStyle(AirNoteDesign.muted)
-                    Text("\(words.count) word\(words.count == 1 ? "" : "s")")
+                    Text("\(wordCount) word\(wordCount == 1 ? "" : "s")")
                         .font(.caption2)
                         .foregroundStyle(AirNoteDesign.muted)
                         .monospacedDigit()

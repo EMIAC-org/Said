@@ -854,7 +854,7 @@ final class AppEnvironment: ObservableObject {
 
         var learned: [String] = []
         for seg in TeachFixDiff.changedSegments(original: original, edited: edited) {
-            if SharedStore.addLearnedAlias(heard: seg.heard, correct: seg.correct) {
+            if SharedStore.addLearnedAlias(heard: seg.heard, correct: seg.correct), !learned.contains(seg.correct) {
                 learned.append(seg.correct)
             }
         }
@@ -877,6 +877,10 @@ final class AppEnvironment: ObservableObject {
         }
 
         await refreshVocabulary()
+        // refreshVocabulary may have triggered a sign-out (session expiry); don't
+        // clobber that state with a stale success/failure message for a review
+        // sheet that's already gone.
+        guard learningItem?.id == item.id else { return }
         if learned.isEmpty {
             learningStatus = "That edit's too common to learn — try a name or brand."
         } else {

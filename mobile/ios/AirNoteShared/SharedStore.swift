@@ -56,12 +56,14 @@ public enum SharedStore {
     }
 
     /// Record a taught correction (newest first, deduped, only if it's a real
-    /// heard≠meant pair that passes the resolver's safety gate).
+    /// heard≠meant pair that passes the resolver's STORE-time safety gate — which
+    /// rejects homophone/word-swaps that would corrupt ordinary dictation once
+    /// auto-applied).
     @discardableResult
     public static func addLearnedAlias(heard: String, correct: String) -> Bool {
         let h = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         let c = correct.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard LearnedAliasResolver.isSafe(heard: h, correct: c) else { return false }
+        guard LearnedAliasResolver.isSafeToLearn(heard: h, correct: c) else { return false }
         let pair = LearnedAliasPair(heard: h, correct: c)
         var current = learnedAliases.filter {
             !($0.heard.caseInsensitiveCompare(h) == .orderedSame && $0.correct == c)

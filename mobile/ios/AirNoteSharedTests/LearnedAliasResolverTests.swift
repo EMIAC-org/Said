@@ -107,11 +107,64 @@ final class LearnedAliasResolverTests: XCTestCase {
         XCTAssertFalse(LearnedAliasResolver.isSafe(heard: "great", correct: "awful"))
     }
 
+    func testEditDistanceCapBlocksHalfWordRewrites() {
+        // The single-word apply gate caps distance at 2, so a distinct word that
+        // merely shares an onset can't ride in.
+        XCTAssertFalse(LearnedAliasResolver.isSafe(heard: "breakfast", correct: "breakdown"))
+        XCTAssertTrue(LearnedAliasResolver.isSafe(heard: "jaan", correct: "jai"))
+    }
+
     func testEditDistanceSanity() {
         XCTAssertEqual(LearnedAliasResolver.editDistance("jaan", "jai"), 2)
         XCTAssertEqual(LearnedAliasResolver.editDistance("ladle", "laddu"), 2)
         XCTAssertEqual(LearnedAliasResolver.editDistance("abc", "abc"), 0)
         XCTAssertEqual(LearnedAliasResolver.editDistance("", "abc"), 3)
+    }
+
+    // MARK: STORE-time gate — homophone / word-swap corruption guard
+    //
+    // These are the cases the adversarial review reproduced: teaching a real-word
+    // homophone once would otherwise become a permanent global rewrite that
+    // corrupts correct dictation. isSafeToLearn must refuse them while still
+    // learning genuine name mis-hearings.
+
+    func testHomophonesAreNeverLearned() {
+        // High-frequency homophones (caught by the common-word backstop).
+        XCTAssertFalse(LearnedAliasResolver.isSafeToLearn(heard: "their", correct: "there"))
+        XCTAssertFalse(LearnedAliasResolver.isSafeToLearn(heard: "loose", correct: "lose"))
+        XCTAssertFalse(LearnedAliasResolver.isSafeToLearn(heard: "were", correct: "where"))
+        XCTAssertFalse(LearnedAliasResolver.isSafeToLearn(heard: "week", correct: "weak"))
+        XCTAssertFalse(LearnedAliasResolver.isSafeToLearn(heard: "form", correct: "from"))
+    }
+
+    func testRealWordSwapsNotInCommonListAreStillRefused() {
+        // Not in the common-word list, but both are real dictionary words — the
+        // dictionary check must still refuse them.
+        XCTAssertFalse(LearnedAliasResolver.isSafeToLearn(heard: "desert", correct: "dessert"))
+        XCTAssertFalse(LearnedAliasResolver.isSafeToLearn(heard: "advice", correct: "advise"))
+    }
+
+    func testGenuineNameMishearingsAreLearned() {
+        // At least one side is a coined term the dictionary doesn't know → learn it.
+        XCTAssertTrue(LearnedAliasResolver.isSafeToLearn(heard: "jaan", correct: "jai"))
+        XCTAssertTrue(LearnedAliasResolver.isSafeToLearn(heard: "ladle", correct: "laddu"))
+        XCTAssertTrue(LearnedAliasResolver.isSafeToLearn(heard: "anukar", correct: "Anugra"))
+    }
+
+    func testMultiWordRephraseIsNotLearned() {
+        // All-ordinary-words multi-word edit is a rephrase, not a name fix.
+        XCTAssertFalse(LearnedAliasResolver.isSafeToLearn(heard: "see you tomorrow", correct: "call me later"))
+    }
+
+    func testMultiWordNameCorrectionIsLearned() {
+        XCTAssertTrue(LearnedAliasResolver.isSafeToLearn(heard: "ankur gupta", correct: "anugra"))
+        XCTAssertTrue(LearnedAliasResolver.isSafeToLearn(heard: "super base", correct: "Supabase"))
+    }
+
+    func testApplyGateRejectsCommonHomophone() {
+        // Defense in depth: even the cheap apply-time gate rejects a common
+        // homophone, so a stale stored rule can't corrupt output.
+        XCTAssertFalse(LearnedAliasResolver.isSafe(heard: "their", correct: "there"))
     }
 
     // MARK: End-to-end — diff → safety gate → apply (the whole learn-from-edit path)
@@ -123,7 +176,7 @@ final class LearnedAliasResolverTests: XCTestCase {
         // 4) Next dictation of the same phrase is auto-corrected.
         var learned: [LearnedAliasPair] = []
         for seg in TeachFixDiff.changedSegments(original: "jaan bhavani ladle", edited: "jai bhavani laddu") {
-            if LearnedAliasResolver.isSafe(heard: seg.heard, correct: seg.correct) {
+            if LearnedAliasResolver.isSafeToLearn(heard: seg.heard, correct: seg.correct) {
                 learned.append(LearnedAliasPair(heard: seg.heard, correct: seg.correct))
             }
         }
@@ -140,7 +193,7 @@ final class LearnedAliasResolverTests: XCTestCase {
         // "ankur gupta" -> "anugra" (multi-word) learns, then applies to new text.
         var learned: [LearnedAliasPair] = []
         for seg in TeachFixDiff.changedSegments(original: "tell ankur gupta hi", edited: "tell anugra hi") {
-            if LearnedAliasResolver.isSafe(heard: seg.heard, correct: seg.correct) {
+            if LearnedAliasResolver.isSafeToLearn(heard: seg.heard, correct: seg.correct) {
                 learned.append(LearnedAliasPair(heard: seg.heard, correct: seg.correct))
             }
         }

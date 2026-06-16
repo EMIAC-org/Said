@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// A single learned correction: the STT mis-heard `heard`, the user meant
 /// `correct`. Stored locally (App Group) when the user teaches, so the client
@@ -18,17 +21,48 @@ public struct LearnedAliasPair: Codable, Equatable, Hashable {
 /// Deliberately EXACT and conservative — ported from the desktop's proven
 /// server-side resolver and the research consensus: whole-word/boundary-gated
 /// match only (never substrings), longest-phrase-first, the target's stored
-/// casing wins, common words are never touched, and a correction is only applied
-/// when the target looks like a name/brand/code (capital, digit, or symbol) so an
-/// ordinary lowercase word can't be hijacked. No fuzzy/phonetic matching — that
-/// over-corrects; instead each specific mis-spelling is stored as its own rule.
+/// casing wins, and common words are never touched.
+///
+/// Two gates, deliberately separated (storage is stricter than application):
+/// - `isSafeToLearn` (store-time, rare): rejects homophone/word-swaps and
+///   all-ordinary-word rephrases using the system dictionary, so a real word can
+///   never become a permanent global rewrite. A single lowercase target is only
+///   learned when it looks like a name mis-hearing (shared onset + tiny edit
+///   distance) AND isn't a real dictionary word on both sides.
+/// - `isSafe` (apply-time, every dictation): a cheap structural backstop. Every
+///   stored rule has already passed `isSafeToLearn`, so this only needs to be
+///   fast, not exhaustive.
 public enum LearnedAliasResolver {
-    /// Common English + Hinglish words a learned alias must never involve.
+    /// Common English + Hinglish words (incl. classic homophones) a learned alias
+    /// must never involve — the cheap apply-time backstop for over-correction.
     private static let commonWords: Set<String> = [
-        "the", "a", "an", "is", "to", "and", "of", "in", "on", "for", "it", "i",
-        "you", "me", "we", "they", "this", "that", "be", "do", "go", "can", "will",
-        "main", "mein", "mai", "hai", "ho", "ka", "ke", "ki", "ko", "se", "par",
-        "pe", "kya", "nahi", "haan", "bhai", "yaar", "kaam", "time", "data",
+        // English function + very high frequency
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "to", "too",
+        "two", "of", "in", "on", "at", "and", "or", "but", "not", "no", "for",
+        "it", "its", "i", "you", "your", "he", "she", "we", "they", "them", "this",
+        "that", "these", "those", "do", "does", "did", "go", "can", "could", "will",
+        "would", "should", "have", "has", "had", "get", "got", "with", "width",
+        "from", "form", "as", "if", "then", "than", "so", "my", "me", "him", "her",
+        "our", "their", "there", "here", "hear", "where", "wear", "what", "when",
+        "who", "why", "how", "which", "all", "any", "some", "more", "most", "now",
+        "new", "knew", "know", "see", "sea", "say", "said", "way", "day", "time",
+        "year", "week", "weak", "well", "man", "men", "woman", "women", "sun",
+        "son", "sit", "site", "set", "let", "put", "run", "ran", "won", "one",
+        "want", "wont", "big", "bad", "bed", "bag", "top", "car", "care", "bar",
+        "bare", "bear", "off", "out", "about", "up", "down", "left", "right",
+        "write", "read", "red", "road", "rode", "by", "buy", "bye", "pay", "paid",
+        "plan", "plane", "plain", "quite", "quiet", "quit", "loose", "lose",
+        "advice", "advise", "desert", "dessert", "brake", "break", "personal",
+        "personnel", "weather", "whether", "gray", "grey", "cot", "cut", "cat",
+        "hop", "hope", "test", "text", "piece", "peace", "four", "nice", "life",
+        "like", "good", "great", "small", "long", "short", "data", "very", "just",
+        // Hinglish high frequency
+        "main", "mein", "mai", "hai", "hain", "ho", "hota", "hoti", "ka", "ke",
+        "ki", "ko", "se", "par", "pe", "kya", "nahi", "nahin", "haan", "bhai",
+        "yaar", "kaam", "acha", "accha", "theek", "thik", "bahut", "kuch", "sab",
+        "abhi", "kal", "aaj", "kar", "karo", "kyun", "kaise", "kaisa", "kahan",
+        "yahan", "wahan", "tum", "aap", "hum", "mera", "meri", "tera", "liye",
+        "wala", "wali", "bas", "phir", "toh",
     ]
 
     public static func apply(_ output: String, transcript: String, aliases: [LearnedAliasPair]) -> String {
@@ -55,8 +89,11 @@ public enum LearnedAliasResolver {
         return result
     }
 
-    // MARK: Safety (ported from is_runtime_exact_alias_safe)
+    // MARK: Safety
 
+    /// Apply-time gate — cheap, runs on EVERY dictation via `apply()`. A rule only
+    /// reaches the stored set after passing the stricter `isSafeToLearn`, so this
+    /// is a fast structural backstop, not the primary guard.
     static func isSafe(heard: String, correct: String) -> Bool {
         let h = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         let c = correct.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -65,14 +102,58 @@ public enum LearnedAliasResolver {
         guard wordCount(h) <= 5, wordCount(c) <= 5 else { return false }
         guard !isCommon(hn), !isCommon(cn) else { return false }
         // A protected target (Name/brand/code) or a multi-word phrase is always
-        // safe to learn.
+        // safe to apply.
         let targetIsProtected = c.contains { $0.isUppercase || $0.isNumber || "_-./@".contains($0) }
         if targetIsProtected || wordCount(h) > 1 { return true }
         // A single lowercase word (a name typed lowercase, e.g. "jaan" -> "jai") is
-        // allowed ONLY when it looks like a real STT mis-hearing — shared onset +
-        // close spelling — so a rephrase ("hello" -> "world") is never learned as a
-        // rewrite rule. (Matches the desktop, which learns lowercase names.)
-        return hn.first == cn.first && editDistance(hn, cn) <= max(1, max(hn.count, cn.count) * 6 / 10)
+        // applied ONLY when it looks like a real STT mis-hearing — shared onset +
+        // a TINY edit distance (cap 2) so a distinct word ("breakfast" ->
+        // "breakdown") can't ride in. A rephrase ("hello" -> "world") is rejected
+        // by the onset mismatch.
+        return hn.first == cn.first && editDistance(hn, cn) <= 2
+    }
+
+    /// Store-time gate — stricter; the user (or server) is about to PERSIST a rule
+    /// that will auto-apply to every future dictation, so reject anything that
+    /// would corrupt ordinary speech. Uses the system dictionary so a real
+    /// word -> real word swap (a homophone like "their" -> "there") is refused,
+    /// while a name mis-hearing ("jaan" -> "jai", "ladle" -> "laddu") is kept.
+    public static func isSafeToLearn(heard: String, correct: String) -> Bool {
+        guard isSafe(heard: heard, correct: correct) else { return false }
+        let h = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        let c = correct.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hn = h.lowercased(), cn = c.lowercased()
+        let protectedTarget = c.contains { $0.isUppercase || $0.isNumber || "_-./@".contains($0) }
+        if protectedTarget { return true }
+        if wordCount(h) > 1 || wordCount(c) > 1 {
+            // Multi-word, lowercase: allow a name/term correction (some token is a
+            // coined word), refuse an all-ordinary-words rephrase like
+            // "see you tomorrow" -> "call me later".
+            let tokens = (hn + " " + cn).split { $0 == " " || $0 == "\t" || $0 == "\n" }.map(String.init)
+            return tokens.contains { !isCommon($0) && !isRealWord($0) }
+        }
+        // Single lowercase word: refuse only if BOTH sides are real dictionary
+        // words (a homophone/word swap); allow when either side is a coined
+        // term/name the dictionary doesn't know.
+        return !(isRealWord(hn) && isRealWord(cn))
+    }
+
+    /// Whether the system dictionary recognises `word` (a real English word). Used
+    /// only at store time. Returns false (treat as a coined term) when no spell
+    /// checker is available — the structural gates still apply.
+    static func isRealWord(_ word: String) -> Bool {
+        let w = word.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard w.count >= 2 else { return false }
+        #if canImport(UIKit)
+        let checker = UITextChecker()
+        let range = NSRange(location: 0, length: w.utf16.count)
+        let misspelled = checker.rangeOfMisspelledWord(
+            in: w, range: range, startingAt: 0, wrap: false, language: "en_US"
+        )
+        return misspelled.location == NSNotFound
+        #else
+        return false
+        #endif
     }
 
     /// Levenshtein edit distance, for the single-word mis-hearing check.
