@@ -30,6 +30,7 @@ final class KeyboardViewController: UIInputViewController {
     // the app. Edits made after switching keyboards/apps remain invisible.
     private var lastInsertedText: String?
     private var insertPrefix: String?
+    private var insertSuffix: String?
     private var teachExpiry: Date?
     private var teachTimer: Timer?
     /// How long the "Teach a fix" affordance stays available after an insertion.
@@ -396,6 +397,9 @@ final class KeyboardViewController: UIInputViewController {
         guard !trimmed.isEmpty else { clearTeachable(); return }
         lastInsertedText = insertedText
         insertPrefix = prefix
+        // Capture the text AFTER our insertion too, so a later edit ANYWHERE in the
+        // insertion (not just at the end) can be reconstructed from both sides.
+        insertSuffix = textDocumentProxy.documentContextAfterInput ?? ""
         teachExpiry = Date().addingTimeInterval(teachWindow)
         teachTimer?.invalidate()
         teachTimer = Timer.scheduledTimer(withTimeInterval: teachWindow, repeats: false) { [weak self] _ in
@@ -412,6 +416,7 @@ final class KeyboardViewController: UIInputViewController {
     private func clearTeachable() {
         lastInsertedText = nil
         insertPrefix = nil
+        insertSuffix = nil
         teachExpiry = nil
         teachTimer?.invalidate()
         teachTimer = nil
@@ -422,11 +427,14 @@ final class KeyboardViewController: UIInputViewController {
     private func teachLastFix() {
         guard let inserted = lastInsertedText else { return }
         let currentBefore = textDocumentProxy.documentContextBeforeInput ?? ""
+        let currentAfter = textDocumentProxy.documentContextAfterInput ?? ""
         let edited: String
         switch TeachFixDiff.evaluate(
             insertedText: inserted,
             insertPrefix: insertPrefix ?? "",
-            currentBeforeCursor: currentBefore
+            currentBeforeCursor: currentBefore,
+            insertSuffix: insertSuffix ?? "",
+            currentAfterCursor: currentAfter
         ) {
         case .empty:
             setState(.learned("Fix the text first, then tap Teach a fix."))

@@ -22,13 +22,24 @@ public enum TeachFixDiff {
     public static func evaluate(
         insertedText: String,
         insertPrefix: String,
-        currentBeforeCursor: String
+        currentBeforeCursor: String,
+        insertSuffix: String = "",
+        currentAfterCursor: String = ""
     ) -> Outcome {
-        var editedRaw = currentBeforeCursor
+        // The user may leave the cursor mid-insertion (e.g. fix "jaan"->"jai" and
+        // not move to the end), so reconstruct the WHOLE edited insertion from both
+        // sides: drop the captured prefix from the before-cursor text and the
+        // captured suffix from the after-cursor text, then join. Reading only the
+        // before-cursor text captured a partial edit and over-replaced the phrase.
+        var beforePart = currentBeforeCursor
         if !insertPrefix.isEmpty, currentBeforeCursor.hasPrefix(insertPrefix) {
-            editedRaw = String(currentBeforeCursor.dropFirst(insertPrefix.count))
+            beforePart = String(currentBeforeCursor.dropFirst(insertPrefix.count))
         }
-        let edited = editedRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var afterPart = currentAfterCursor
+        if !insertSuffix.isEmpty, currentAfterCursor.hasSuffix(insertSuffix) {
+            afterPart = String(currentAfterCursor.dropLast(insertSuffix.count))
+        }
+        let edited = (beforePart + afterPart).trimmingCharacters(in: .whitespacesAndNewlines)
         let original = insertedText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !edited.isEmpty else { return .empty }
