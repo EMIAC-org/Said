@@ -149,13 +149,6 @@ public final class VoiceStreamingClient {
     private var receiveTask: Task<Void, Never>?
     private var isStopping = false
     private var didReceiveTerminalEvent = false
-    /// Audio frames must not reach the socket until voice.start has been sent, or
-    /// the server drops the leading PCM and the first words are clipped. Opened only
-    /// after the start handshake succeeds.
-    private var didSendStart = false
-    /// Serialises outbound audio frames so frame N+1 never overtakes frame N on the
-    /// cooperative pool (independent Tasks don't preserve submission order).
-    private var audioSendTail: Task<Void, Never>?
     private var interruptionObservers: [NSObjectProtocol] = []
     private var currentSession: MobileSessionResponse?
     private var latestTranscript = ""
@@ -199,7 +192,6 @@ public final class VoiceStreamingClient {
 
         do {
             try await task.send(.string(config.startPayloadJSON(sampleRate: 16_000)))
-            openAudioGate()
             try await startAudioEngine()
         } catch {
             await cancel()
@@ -308,7 +300,6 @@ public final class VoiceStreamingClient {
         receiveTask = Task { [weak self] in await self?.receiveLoop() }
         do {
             try await task.send(.string(config.startPayloadJSON(sampleRate: 16_000)))
-            openAudioGate()
         } catch {
             // The pre-warmed socket had died — open a fresh one and retry once so
             // a stale warm socket never costs the user a failed dictation.
@@ -318,7 +309,6 @@ public final class VoiceStreamingClient {
             receiveTask?.cancel()
             receiveTask = Task { [weak self] in await self?.receiveLoop() }
             try await fresh.send(.string(config.startPayloadJSON(sampleRate: 16_000)))
-            openAudioGate()
         }
         let maxSeconds = session.maxRecordingSeconds ?? BuildConfig.maxRecordingSeconds
         maxDurationTask = Task { [weak self] in
@@ -352,16 +342,12 @@ public final class VoiceStreamingClient {
     }
 
     private func startAudioEngine() async throws {
-        // Always open the mic as a MIXABLE session. When alone this captures exactly
-        // like a normal recorder; when a VoIP meeting/call (Zoom/Meet/Teams) is
-        // active it shares the mic so the user can dictate notes WITHOUT ducking or
-        // interrupting the other participants. We mix unconditionally because there
-        // is no reliable runtime "in a meeting" signal — `isOtherAudioPlaying` is
-        // false during muted/silent moments, and an exclusive `.record` session
-        // activates ALONGSIDE a meeting without throwing (then rudely ducks it) — and
-        // mixing-when-alone is harmless. (A cellular/PSTN call is an iOS hard limit:
-        // the baseband owns the mic and no category lets a third-party app capture it.)
-        try configureCaptureSession()
+        try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
+        // Low-latency capture: request a short I/O buffer BEFORE activating (the
+        // OS only honours "preferred" values while inactive). ~5ms trims capture
+        // latency and yields finer audio chunks that reach the server sooner.
+        try? audioSession.setPreferredIOBufferDuration(0.005)
+        try audioSession.setActive(true, options: [])
 
         let input = audioEngine.inputNode
         let inputFormat = input.inputFormat(forBus: 0)
@@ -387,27 +373,6 @@ public final class VoiceStreamingClient {
         audioEngine.prepare()
         try audioEngine.start()
         installAudioObservers()
-    }
-
-    /// Configure + activate the capture session. `.playAndRecord` + `.mixWithOthers`
-    /// (no ducking) so dictation coexists with an active call/meeting; identical
-    /// capture when alone.
-    private func configureCaptureSession() throws {
-        var options: AVAudioSession.CategoryOptions = [.mixWithOthers]
-        // Only offer the Bluetooth headset mic when another app is actually active
-        // (a meeting) — recording forces a connected BT device from A2DP to
-        // call-quality HFP, which pauses the user's music. For a SOLO dictation we
-        // leave it off so AirPods keep playing music and we capture the (better)
-        // built-in mic — restoring the pre-meeting-fix behavior.
-        if audioSession.isOtherAudioPlaying {
-            if #available(iOS 26.0, *) { options.insert(.allowBluetoothHFP) } else { options.insert(.allowBluetooth) }
-        }
-        try audioSession.setCategory(.playAndRecord, mode: .measurement, options: options)
-        // Low-latency capture: request a short I/O buffer BEFORE activating (the
-        // OS only honours "preferred" values while inactive). ~5ms trims capture
-        // latency and yields finer audio chunks that reach the server sooner.
-        try? audioSession.setPreferredIOBufferDuration(0.005)
-        try audioSession.setActive(true, options: [])
     }
 
     private func stopAudioEngine() {
@@ -449,17 +414,9 @@ public final class VoiceStreamingClient {
         }
 
         emit(.level(averageLevel(buffer)))
-        // Gate + serialise the send: frames must wait for voice.start (else the
-        // server drops the lead and clips the first words) and must not overtake
-        // one another (independent Tasks don't preserve order). Each send awaits its
-        // predecessor; the audio thread never blocks on the network.
-        stateQueue.sync {
-            guard !isStopping, !didReceiveTerminalEvent, didSendStart, let task = webSocket else { return }
-            let previous = audioSendTail
-            audioSendTail = Task {
-                await previous?.value
-                try? await task.send(.data(data))
-            }
+        guard let task = audioSendTarget() else { return }
+        Task {
+            try? await task.send(.data(data))
         }
     }
 
@@ -612,16 +569,7 @@ public final class VoiceStreamingClient {
             webSocket = task
             isStopping = false
             didReceiveTerminalEvent = false
-            didSendStart = false
-            audioSendTail?.cancel()
-            audioSendTail = nil
         }
-    }
-
-    /// Open the audio gate once voice.start is on the wire — frames sent before
-    /// this would be dropped by the server (Deepgram not yet connected).
-    private func openAudioGate() {
-        stateQueue.sync { didSendStart = true }
     }
 
     private func currentWebSocket() -> URLSessionWebSocketTask? {
@@ -633,6 +581,13 @@ public final class VoiceStreamingClient {
     private func setWebSocket(_ task: URLSessionWebSocketTask?) {
         stateQueue.sync {
             webSocket = task
+        }
+    }
+
+    private func audioSendTarget() -> URLSessionWebSocketTask? {
+        stateQueue.sync {
+            guard !isStopping, !didReceiveTerminalEvent else { return nil }
+            return webSocket
         }
     }
 
@@ -732,13 +687,6 @@ public final class VoiceStreamingClient {
         }
 
         switch reason {
-        // Stop cleanly on a route change and let the caller re-establish a fresh
-        // engine on the new route. (We deliberately tear down rather than ignore
-        // these: AVAudioEngine does NOT migrate a running input tap when the
-        // hardware route changes — e.g. plugging in headphones / connecting AirPods
-        // mid-dictation — so keeping the old engine alive would silently deliver no
-        // audio. Surviving mid-meeting route churn without a restart needs proper
-        // AVAudioEngineConfigurationChange handling — a tested follow-up.)
         case .oldDeviceUnavailable, .newDeviceAvailable, .noSuitableRouteForCategory, .routeConfigurationChange:
             Task { [weak self] in
                 await self?.stopAfterAudioSystemChange(status: "audio_route_changed")
