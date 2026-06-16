@@ -31,6 +31,7 @@ import {
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import {
   createMeeting,
+  deleteMeeting,
   ensureActiveWorkspace,
   exportMeetingToLark,
   getConnection,
@@ -1034,6 +1035,15 @@ export function MeetingsView({
       // Make sure an org is active so the list is scoped and New Meeting won't
       // 403. If the user must pick a workspace, surface the guided panel.
       setNeedsWorkspace(!(await ensureActiveWorkspace()));
+      // Reconcile: the engine records meetings it discarded locally as empty
+      // (immediate stop / no audio / killed mid-recording). Delete their cloud
+      // records so abandoned "Quick meeting" entries never linger in the list.
+      try {
+        const discarded = await invoke<string[]>("meeting_engine_take_discarded_meeting_ids");
+        await Promise.all(discarded.map((id) => deleteMeeting(conn.serverUrl, conn.jwt, id)));
+      } catch {
+        /* best-effort cleanup */
+      }
       const result = (await listMeetings(conn.serverUrl, conn.jwt)) as Meeting[];
       setMeetings(result);
       // Enrich the list with locally-cached AI titles, word counts, and counts
@@ -1820,12 +1830,17 @@ export function MeetingsView({
     const id = pendingDelete.id;
     setPendingDelete(null);
     try {
+      // Permanent delete: local artifacts AND the cloud record, so it's gone
+      // everywhere (not just hidden on this device).
       await invoke("meeting_engine_delete_meeting_files", { meetingId: id });
-      await refreshOverviews();
+      const conn = getConnection();
+      if (conn) await deleteMeeting(conn.serverUrl, conn.jwt, id);
+      setSelectedMeetingId((cur) => (cur === id ? null : cur));
+      await fetchMeetings();
     } catch (err) {
       console.warn("[meeting] delete files failed:", err);
     }
-  }, [pendingDelete, refreshOverviews]);
+  }, [pendingDelete, fetchMeetings]);
 
   const detailTabs: Array<{ id: DetailTab; label: string; icon: ReactNode }> = [
     { id: "summary", label: "Summary", icon: <Sparkles size={15} /> },
