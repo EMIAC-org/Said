@@ -383,14 +383,16 @@ public final class VoiceStreamingClient {
     /// (no ducking) so dictation coexists with an active call/meeting; identical
     /// capture when alone.
     private func configureCaptureSession() throws {
-        // Allow a Bluetooth headset mic (common in meetings — AirPods etc.).
-        let bluetoothInput: AVAudioSession.CategoryOptions
-        if #available(iOS 26.0, *) { bluetoothInput = .allowBluetoothHFP } else { bluetoothInput = .allowBluetooth }
-        try audioSession.setCategory(
-            .playAndRecord,
-            mode: .measurement,
-            options: [.mixWithOthers, bluetoothInput]
-        )
+        var options: AVAudioSession.CategoryOptions = [.mixWithOthers]
+        // Only offer the Bluetooth headset mic when another app is actually active
+        // (a meeting) — recording forces a connected BT device from A2DP to
+        // call-quality HFP, which pauses the user's music. For a SOLO dictation we
+        // leave it off so AirPods keep playing music and we capture the (better)
+        // built-in mic — restoring the pre-meeting-fix behavior.
+        if audioSession.isOtherAudioPlaying {
+            if #available(iOS 26.0, *) { options.insert(.allowBluetoothHFP) } else { options.insert(.allowBluetooth) }
+        }
+        try audioSession.setCategory(.playAndRecord, mode: .measurement, options: options)
         // Low-latency capture: request a short I/O buffer BEFORE activating (the
         // OS only honours "preferred" values while inactive). ~5ms trims capture
         // latency and yields finer audio chunks that reach the server sooner.
