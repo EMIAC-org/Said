@@ -193,22 +193,44 @@ struct InlineLoading: View {
 
 // MARK: - Avatar
 
+/// Profile avatar accent palette — a contained cosmetic personalization that
+/// tints the avatar (not the whole app theme). Index 0 is the app default.
+enum ProfileAccent {
+    static let palette: [Color] = [
+        AirNoteDesign.accent,
+        Color(red: 0.55, green: 0.40, blue: 0.95), // purple
+        Color(red: 0.93, green: 0.40, blue: 0.62), // pink
+        Color(red: 0.16, green: 0.70, blue: 0.62), // teal
+        Color(red: 0.96, green: 0.58, blue: 0.20), // amber
+        Color(red: 0.27, green: 0.72, blue: 0.42), // green
+    ]
+
+    static func color(_ index: Int) -> Color {
+        palette.indices.contains(index) ? palette[index] : palette[0]
+    }
+}
+
 struct AccountAvatar: View {
     var email: String
     var size: CGFloat = 40
+    /// Optional display name — its initial wins over the email's when present.
+    var name: String? = nil
+    /// Avatar tint; defaults to the app accent so existing call sites are unchanged.
+    var tint: Color = AirNoteDesign.accent
 
     private var initial: String {
-        String(email.first ?? "A").uppercased()
+        let source = (name?.isEmpty == false) ? name! : email
+        return String(source.first ?? "A").uppercased()
     }
 
     var body: some View {
         Circle()
-            .fill(AirNoteDesign.accent.opacity(0.16))
+            .fill(tint.opacity(0.16))
             .frame(width: size, height: size)
             .overlay(
                 Text(initial)
                     .font(.system(size: size * 0.42, weight: .bold, design: .rounded))
-                    .foregroundStyle(AirNoteDesign.accent)
+                    .foregroundStyle(tint)
             )
             .accessibilityHidden(true)
     }

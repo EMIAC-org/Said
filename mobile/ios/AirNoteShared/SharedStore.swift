@@ -36,6 +36,8 @@ public enum SharedStore {
         static let activeOrgID = "airnote.shared.active_org_id"
         static let keyboardKeysCollapsed = "airnote.shared.keyboard_keys_collapsed"
         static let workspaceChosenPersonal = "airnote.shared.workspace_chosen_personal"
+        static let profileDisplayName = "airnote.shared.profile_display_name"
+        static let profileAccentIndex = "airnote.shared.profile_accent_index"
     }
 
     /// Locally cached learned corrections (heard -> meant), captured whenever the
@@ -195,6 +197,19 @@ public enum SharedStore {
     public static var workspaceChosenPersonal: Bool {
         get { defaults?.bool(forKey: Key.workspaceChosenPersonal) ?? false }
         set { defaults?.set(newValue, forKey: Key.workspaceChosenPersonal) }
+    }
+
+    /// User-chosen display name for the profile/avatar. Empty falls back to email.
+    public static var profileDisplayName: String {
+        get { string(Key.profileDisplayName) ?? "" }
+        set { set(Key.profileDisplayName, newValue.isEmpty ? nil : newValue) }
+    }
+
+    /// Index into the profile accent palette (0 = app default blue). Tints the
+    /// avatar across the app — purely cosmetic personalization.
+    public static var profileAccentIndex: Int {
+        get { defaults?.integer(forKey: Key.profileAccentIndex) ?? 0 }
+        set { defaults?.set(newValue, forKey: Key.profileAccentIndex) }
     }
 
     // MARK: Dictation preferences (so the keyboard can request the right model/language)

@@ -39,18 +39,27 @@ struct SettingsScreen: View {
 
     private var accountSection: some View {
         Section {
-            HStack(spacing: 12) {
-                AccountAvatar(email: env.account?.email ?? "A", size: 44)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(env.account?.email ?? "Not signed in")
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    Text((env.account?.licenseTier ?? "free").capitalized + " plan")
-                        .font(.caption)
-                        .foregroundStyle(AirNoteDesign.muted)
+            NavigationLink {
+                ProfileScreen()
+            } label: {
+                HStack(spacing: 12) {
+                    AccountAvatar(
+                        email: env.account?.email ?? "A",
+                        size: 44,
+                        name: env.profileDisplayName,
+                        tint: ProfileAccent.color(env.profileAccentIndex)
+                    )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(env.profileDisplayName.isEmpty ? (env.account?.email ?? "Not signed in") : env.profileDisplayName)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                        Text((env.account?.licenseTier ?? "free").capitalized + " plan · Edit profile")
+                            .font(.caption)
+                            .foregroundStyle(AirNoteDesign.muted)
+                    }
                 }
+                .padding(.vertical, 4)
             }
-            .padding(.vertical, 4)
             Button(role: .destructive) { confirmSignOut = true } label: {
                 Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
             }

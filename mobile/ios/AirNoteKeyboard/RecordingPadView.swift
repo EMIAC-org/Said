@@ -613,15 +613,24 @@ final class RecordingPadView: UIView {
     /// shrink to just the voice surface while dictating and pop back up to edit.
     private func makeKeyboardHandle() -> UIView {
         let collapsed = SharedStore.keyboardKeysCollapsed
+        // Collapsed: a prominent accent pill ("Show keyboard") so it's obvious the
+        // QWERTY can come back. Expanded: a subtle "Hide keyboard" grabber — a tap
+        // either way folds the keys to the voice surface (WhisperFlow-style).
+        let tint = collapsed ? KeyboardTheme.accent : KeyboardTheme.muted
         let button = UIButton(type: .system)
         var config = UIButton.Configuration.plain()
-        config.image = UIImage(systemName: collapsed ? "keyboard.chevron.compact.up" : "chevron.down")
-        config.title = collapsed ? "Keyboard" : nil
+        config.image = UIImage(
+            systemName: collapsed ? "keyboard.chevron.compact.up" : "chevron.compact.down",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .bold)
+        )
+        config.title = collapsed ? "Show keyboard" : "Hide keyboard"
         config.imagePadding = 6
-        config.baseForegroundColor = KeyboardTheme.muted
-        config.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 10)
+        config.baseForegroundColor = tint
+        config.background.backgroundColor = tint.withAlphaComponent(collapsed ? 0.14 : 0.08)
+        config.background.cornerRadius = 16
+        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16)
         button.configuration = config
-        button.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
+        button.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
         button.addAction(UIAction { [weak self] _ in self?.toggleKeysCollapsed() }, for: .touchUpInside)
         button.accessibilityLabel = collapsed ? "Show keyboard" : "Hide keyboard"
         let row = UIStackView(arrangedSubviews: [UIView(), button, UIView()])
@@ -632,8 +641,15 @@ final class RecordingPadView: UIView {
 
     private func toggleKeysCollapsed() {
         SharedStore.keyboardKeysCollapsed.toggle()
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        // Only the typing keys rebuild; the voice surface (and any active waveform
+        // constraints) is left untouched, so folding never disturbs dictation.
         rebuildKeys()
-        UIView.animate(withDuration: 0.18) { self.layoutIfNeeded() }
+        UIView.animate(
+            withDuration: 0.34, delay: 0,
+            usingSpringWithDamping: 0.82, initialSpringVelocity: 0.4,
+            options: [.curveEaseOut, .allowUserInteraction]
+        ) { self.layoutIfNeeded() }
     }
 
     /// Character key — letters follow the shift state; everything else inserts literally.

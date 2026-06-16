@@ -65,6 +65,17 @@ struct DashboardScreen: View {
                 text: env.dictationAvailable ? "Ready" : "Setup",
                 color: env.dictationAvailable ? AirNoteDesign.success : AirNoteDesign.warning
             )
+            NavigationLink {
+                ProfileScreen()
+            } label: {
+                AccountAvatar(
+                    email: env.account?.email ?? "A",
+                    size: 38,
+                    name: env.profileDisplayName,
+                    tint: ProfileAccent.color(env.profileAccentIndex)
+                )
+            }
+            .accessibilityLabel("Your profile")
         }
     }
 

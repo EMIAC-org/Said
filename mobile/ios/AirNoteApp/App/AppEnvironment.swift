@@ -79,6 +79,11 @@ final class AppEnvironment: ObservableObject {
     @Published private(set) var selectedModel = SharedStore.selectedModel     // "fast" | "smart"
     @Published private(set) var tonePreset = SharedStore.tonePreset           // "work" | "casual" | "email" | "notes"
     @Published private(set) var learningEnabled = true
+    /// Local-only cosmetic profile prefs, mirrored here so avatars across the app
+    /// repaint immediately on edit (SharedStore alone isn't observable). Both
+    /// write through to SharedStore so the keyboard extension + cold launch agree.
+    @Published private(set) var profileDisplayName = SharedStore.profileDisplayName
+    @Published private(set) var profileAccentIndex = SharedStore.profileAccentIndex
     @Published private(set) var settingsLoaded = false
     /// Highest settings version applied so far. Guards against an older, slower
     /// PATCH response overwriting a newer one when the user changes settings fast.
@@ -401,6 +406,19 @@ final class AppEnvironment: ObservableObject {
     func setOutputLanguage(_ value: String) async { await patch(.init(outputLanguage: value)) { self.outputLanguage = value; SharedStore.outputLanguage = value } }
     func setTonePreset(_ value: String) async { await patch(.init(tonePreset: value)) { self.tonePreset = value; SharedStore.tonePreset = value } }
     func setLearningEnabled(_ value: Bool) async { await patch(.init(learningEnabled: value)) { self.learningEnabled = value } }
+
+    /// Cosmetic, local-only — no server round-trip; write through to SharedStore so
+    /// the keyboard extension sees the same value.
+    func setProfileDisplayName(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        profileDisplayName = trimmed
+        SharedStore.profileDisplayName = trimmed
+    }
+
+    func setProfileAccentIndex(_ value: Int) {
+        profileAccentIndex = value
+        SharedStore.profileAccentIndex = value
+    }
 
     private func patch(_ patch: RuntimeSettingsPatch, optimistic: () -> Void) async {
         optimistic()
