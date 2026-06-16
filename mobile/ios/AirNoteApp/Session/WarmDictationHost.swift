@@ -181,8 +181,11 @@ final class WarmDictationHost: ObservableObject {
     private func syncLiveActivity() {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         if liveActivity == nil { liveActivity = Activity<DictationSessionAttributes>.activities.first }
-        let show = SharedStore.sessionEnabled && streamer.isWarmEngineRunning
-        if show {
+        // Tie the notch to the session INTENT (the toggle / sessionEnabled), not the
+        // instantaneous engine state — so it appears reliably while the session is
+        // on and clears when turned off, without flickering off on a momentary
+        // engine dip or a scene transition (which made it never appear).
+        if SharedStore.sessionEnabled {
             let content = ActivityContent(
                 state: DictationSessionAttributes.ContentState(listening: false, active: true),
                 staleDate: nil
@@ -198,6 +201,10 @@ final class WarmDictationHost: ObservableObject {
             endLiveActivity()
         }
     }
+
+    /// Reconcile only the notch (no engine start) — safe to call from any scene
+    /// phase, including background.
+    func reconcileNotch() { syncLiveActivity() }
 
     private func endLiveActivity() {
         let held = liveActivity

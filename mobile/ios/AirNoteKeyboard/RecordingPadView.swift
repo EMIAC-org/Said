@@ -185,14 +185,12 @@ final class RecordingPadView: UIView {
                 stack.addArrangedSubview(makePrimaryActions())
             }
         } else {
-            // Hero: a single Mic Orb IS the primary action (tap to start/stop),
-            // with a compact mode pill above and the title/waveform/live words
-            // below — Wispr-style, replacing the dense status row + 3-button triage.
+            // Hero: a LIVE AUDIO WAVEFORM is the primary action (tap to start/stop) —
+            // it forms real waves as you speak. A compact mode pill above + a short
+            // title below.
             stack.addArrangedSubview(makePill())
-            stack.addArrangedSubview(makeOrb())
+            stack.addArrangedSubview(makeWaveButton())
             stack.addArrangedSubview(makeTitleBlock())
-            if isActiveWaveform { stack.addArrangedSubview(makeWaveform()) }
-            if case .recording = state { stack.addArrangedSubview(makeLiveTranscript()) }
             if canTeachFix, isPostInsertState { stack.addArrangedSubview(makePostInsertActions()) }
         }
 
@@ -268,6 +266,40 @@ final class RecordingPadView: UIView {
             orb.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -6)
         ])
         return wrap
+    }
+
+    /// A tappable "wave bar" — the LIVE audio waveform IS the record button (tap to
+    /// start/stop). Idle shows a faint static waveform; while recording it forms
+    /// real waves from the mic level (setAudioLevel drives the bars). Replaces the
+    /// Mic Orb.
+    private func makeWaveButton() -> UIView {
+        let isRec: Bool = { if case .recording = state { return true } else { return false } }()
+        let accent = isRec ? KeyboardTheme.danger : KeyboardTheme.accent
+        let button = UIControl()
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.heightAnchor.constraint(equalToConstant: 64).isActive = true
+        button.backgroundColor = accent.withAlphaComponent(0.10)
+        button.layer.cornerRadius = 18
+        button.layer.cornerCurve = .continuous
+        button.layer.borderWidth = 1
+        button.layer.borderColor = accent.withAlphaComponent(0.30).cgColor
+        button.isUserInteractionEnabled = !isPrimaryActionDisabled
+        button.alpha = isPrimaryActionDisabled ? 0.55 : 1.0
+        button.addTarget(self, action: #selector(primaryTapped), for: .touchUpInside)
+        button.accessibilityLabel = primaryActionTitle
+
+        let wave = makeWaveform()
+        wave.isUserInteractionEnabled = false   // taps pass through to the button
+        wave.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(wave)
+        NSLayoutConstraint.activate([
+            wave.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            wave.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            wave.leadingAnchor.constraint(greaterThanOrEqualTo: button.leadingAnchor, constant: 12),
+            wave.trailingAnchor.constraint(lessThanOrEqualTo: button.trailingAnchor, constant: -12)
+        ])
+        if isRec { addRecordingPulse(to: button) }
+        return button
     }
 
     /// Centered title + subtitle under the orb.

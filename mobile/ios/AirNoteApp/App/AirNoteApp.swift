@@ -25,10 +25,14 @@ struct AirNoteApp: App {
                         WarmDictationHost.shared.startObserving()
                         environment.permissions.refreshAll()
                         environment.checkKeyboardHandoffRequest()
+                        // Foreground: arm the warm session (iOS only starts the mic
+                        // here) — this also creates the notch.
+                        WarmDictationHost.shared.ensureSessionActive()
+                    } else {
+                        // Background/inactive: just reconcile the notch (never try to
+                        // start the mic from the background).
+                        WarmDictationHost.shared.reconcileNotch()
                     }
-                    // Reconcile the notch with the REAL session state on every
-                    // transition: session live → notch shows, session dead → gone.
-                    WarmDictationHost.shared.ensureSessionActive()
                 }
         }
     }
