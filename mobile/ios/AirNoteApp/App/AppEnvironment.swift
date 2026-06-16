@@ -561,11 +561,30 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    /// Catch the most common BYOK mistake — pasting the wrong provider's key into
+    /// the wrong field — since the server stores the key without validating it and
+    /// a wrong key otherwise fails silently at dictation time. Returns a hint string
+    /// when the key clearly doesn't match the provider, else nil.
+    private static func keyFormatHint(provider: String, key: String) -> String? {
+        switch provider.lowercased() {
+        case "groq":
+            return key.hasPrefix("gsk_") ? nil : "A Groq key starts with \u{201C}gsk_\u{201D}. Check you pasted the Groq key (not Deepgram/Gemini)."
+        case "gemini":
+            return key.hasPrefix("AIza") ? nil : "A Gemini key starts with \u{201C}AIza\u{201D}. Check you pasted the Gemini key."
+        default:
+            return nil   // Deepgram keys have no fixed prefix
+        }
+    }
+
     @discardableResult
     func saveProviderKey(provider: String, secret: String) async -> Bool {
         let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 8 else {
             credentialStatus = "That key looks too short."
+            return false
+        }
+        if let hint = Self.keyFormatHint(provider: provider, key: trimmed) {
+            credentialStatus = hint
             return false
         }
         credentialWorking = true
