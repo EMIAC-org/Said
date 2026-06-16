@@ -9,6 +9,7 @@ import {
   Download,
   ExternalLink,
   FileText,
+  Layers,
   ListChecks,
   Loader2,
   MessageSquare,
@@ -41,6 +42,7 @@ import {
 } from "@/lib/enterprise";
 import { openExternal } from "@/lib/invoke";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
+import { DigestView } from "@/components/views/DigestView";
 import {
   MeetingRichText,
   parseMeetingSummary,
@@ -1458,6 +1460,8 @@ export function MeetingsView({
   // When the failure is an auth/scope problem, we offer a "Reconnect Lark"
   // action instead of a dead-end error.
   const [larkNeedsReauth, setLarkNeedsReauth] = useState(false);
+  // Meetings list vs cross-meeting Digest mode.
+  const [viewMode, setViewMode] = useState<"meetings" | "digest">("meetings");
   const handleExportToLark = useCallback(async () => {
     if (!selectedMeeting || !meetingAi?.summary?.trim()) return;
     setLarkExporting(true);
@@ -1872,7 +1876,35 @@ export function MeetingsView({
           </button>
         </div>
       ) : null}
-      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+      <div
+        className="flex flex-shrink-0 items-center gap-1 px-4 py-2"
+        style={{ borderBottom: "1px solid hsl(var(--surface-4))" }}
+      >
+        {(
+          [
+            { id: "meetings" as const, label: "Meetings", icon: <Video size={13} /> },
+            { id: "digest" as const, label: "Digest", icon: <Layers size={13} /> },
+          ]
+        ).map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setViewMode(t.id)}
+            className="flex h-7 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold"
+            style={{
+              background: viewMode === t.id ? "hsl(var(--surface-4))" : "transparent",
+              color: viewMode === t.id ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
+            }}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {viewMode === "digest" ? <DigestView meetings={meetings} overviews={overviews} /> : null}
+      <div
+        className={`relative min-h-0 flex-1 overflow-hidden ${viewMode === "meetings" ? "flex" : "hidden"}`}
+      >
       <aside className="flex w-[240px] flex-shrink-0 flex-col xl:w-[330px]" style={{ borderRight: "1px solid hsl(var(--surface-4))" }}>
         <div className="px-4 pb-3 pt-5">
           <div className="flex items-center justify-between">
