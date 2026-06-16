@@ -65,6 +65,13 @@ bump VERSION:
 dmg TARGET="aarch64-apple-darwin":
     ./scripts/build-dmg.sh {{TARGET}}
 
+# Build a local test DMG from the current checkout.
+# No version bump, push, deploy, notarization, or updater artifacts.
+#   just local-dmg
+#   just local-dmg x86_64-apple-darwin
+local-dmg TARGET="aarch64-apple-darwin":
+    ./scripts/build-local-dmg.sh {{TARGET}}
+
 # Tag and push a release. Run `just bump <version>` first, commit the
 # changes, then `just release <version>` to fire the Release workflow.
 #   just release 0.2.0

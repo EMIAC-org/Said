@@ -29,7 +29,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [adminTrailingSlash(), react(), tailwindcss()],
-    base: '/admin/',
+    base: '/',
     appType: 'spa',
     build: {
       outDir: 'dist',
