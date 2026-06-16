@@ -97,7 +97,6 @@ final class RecordingPadView: UIView {
         keyboardStack = keys
         rootStack.addArrangedSubview(keys)
         rebuildKeys()
-        updateKeyboardVisibility()
 
         addSubview(rootStack)
         NSLayoutConstraint.activate([
@@ -136,7 +135,6 @@ final class RecordingPadView: UIView {
         }
         rootStack.insertArrangedSubview(newSurface, at: 0)
         voiceSurface = newSurface
-        updateKeyboardVisibility()
 
         guard animated else { return }
         newSurface.alpha = 0
@@ -155,194 +153,57 @@ final class RecordingPadView: UIView {
 
     private func makeVoiceSurface() -> UIView {
         let surface = UIView()
+        surface.backgroundColor = KeyboardTheme.surfaceBackground
+        surface.layer.cornerRadius = KeyboardTheme.surfaceRadius
+        surface.layer.cornerCurve = .continuous
+        surface.layer.borderWidth = 1
+        surface.layer.borderColor = KeyboardTheme.border.cgColor
+        // Soft, ink-tinted elevation for depth (premium feel) — the keys stay flat below it.
+        surface.layer.shadowColor = KeyboardTheme.cardShadow.cgColor
+        surface.layer.shadowOpacity = 0.10
+        surface.layer.shadowRadius = 16
+        surface.layer.shadowOffset = CGSize(width: 0, height: 6)
+
         let stack = UIStackView()
         stack.axis = .vertical
         stack.spacing = 9
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        // The idle bar floats flat on the keyboard (Wispr-style); every other state
-        // is a rounded card panel.
-        var flat = false
-
         if let preview = previewText {
-            // Result: the polished text is the focus (Insert / Copy / Save / Teach).
+            // Result: the polished text is the focus.
             stack.addArrangedSubview(makeStatusRow())
             stack.addArrangedSubview(makePreview(preview))
             stack.addArrangedSubview(makeResultActions())
         } else if let message = recoveryMessage {
             if isOpenAppExplainer {
+                // A polished "open the app once" page instead of a plain error.
                 stack.addArrangedSubview(makeOpenAppExplainer())
             } else {
+                // Recovery: explain + a labelled repair/open button.
                 stack.addArrangedSubview(makeStatusRow())
                 stack.addArrangedSubview(ErrorDrawer(message: message))
                 stack.addArrangedSubview(makePrimaryActions())
             }
-        } else if case .recording = state {
-            // Wispr listening view (the QWERTY is hidden behind it).
-            stack.spacing = 8
-            makeListeningContent(into: stack)
-        } else if case .processing = state {
-            stack.addArrangedSubview(makeProcessingRow())
-        } else if canTeachFix, isPostInsertState {
-            // Just inserted: re-record + teach a correction.
-            stack.addArrangedSubview(makeStatusRow())
-            stack.addArrangedSubview(makePostInsertActions())
         } else {
-            // Idle: a slim bar (fold · mode chip · mic), flat on the keyboard.
-            flat = true
-            stack.addArrangedSubview(makeIdleBar())
+            // Hero: a single Mic Orb IS the primary action (tap to start/stop),
+            // with a compact mode pill above and the title/waveform/live words
+            // below — Wispr-style, replacing the dense status row + 3-button triage.
+            stack.addArrangedSubview(makePill())
+            stack.addArrangedSubview(makeOrb())
+            stack.addArrangedSubview(makeTitleBlock())
+            if isActiveWaveform { stack.addArrangedSubview(makeWaveform()) }
+            if case .recording = state { stack.addArrangedSubview(makeLiveTranscript()) }
+            if canTeachFix, isPostInsertState { stack.addArrangedSubview(makePostInsertActions()) }
         }
 
-        if !flat {
-            surface.backgroundColor = KeyboardTheme.surfaceBackground
-            surface.layer.cornerRadius = KeyboardTheme.surfaceRadius
-            surface.layer.cornerCurve = .continuous
-            surface.layer.borderWidth = 1
-            surface.layer.borderColor = KeyboardTheme.border.cgColor
-            surface.layer.shadowColor = KeyboardTheme.cardShadow.cgColor
-            surface.layer.shadowOpacity = 0.10
-            surface.layer.shadowRadius = 16
-            surface.layer.shadowOffset = CGSize(width: 0, height: 6)
-        }
-
-        let inset: CGFloat = flat ? 4 : 14
         surface.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: inset),
-            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -inset),
-            stack.topAnchor.constraint(equalTo: surface.topAnchor, constant: inset),
-            stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -inset)
+            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: surface.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -14)
         ])
         return surface
-    }
-
-    /// True only when a focused panel should fill the keyboard area (the QWERTY is
-    /// hidden). NEVER hide the keys where manual typing is expected — recovery /
-    /// secure / result states keep the QWERTY so typing still works.
-    private var showsKeyboard: Bool {
-        switch state {
-        case .recording, .processing, .dictatingInApp:
-            return false
-        default:
-            return !SharedStore.keyboardKeysCollapsed
-        }
-    }
-
-    private func updateKeyboardVisibility() {
-        keyboardStack?.isHidden = !showsKeyboard
-    }
-
-    // MARK: - Wispr idle bar + listening view
-
-    /// A circular gradient mic/stop button — the primary action (routes via
-    /// `primaryTapped`, so idle → start, recording → stop).
-    private func makeMicButton(size: CGFloat, recording: Bool) -> UIButton {
-        let btn = UIButton(type: .custom)
-        btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.widthAnchor.constraint(equalToConstant: size).isActive = true
-        btn.heightAnchor.constraint(equalToConstant: size).isActive = true
-        btn.layer.cornerRadius = size / 2
-        btn.layer.cornerCurve = .continuous
-        let grad = CAGradientLayer()
-        grad.frame = CGRect(x: 0, y: 0, width: size, height: size)
-        grad.colors = recording ? KeyboardTheme.recordingGradientStops : KeyboardTheme.accentGradientStops
-        grad.startPoint = CGPoint(x: 0.5, y: 0)
-        grad.endPoint = CGPoint(x: 0.5, y: 1)
-        grad.cornerRadius = size / 2
-        grad.cornerCurve = .continuous
-        btn.layer.insertSublayer(grad, at: 0)
-        btn.layer.shadowColor = (recording ? KeyboardTheme.danger : KeyboardTheme.accent).cgColor
-        btn.layer.shadowOpacity = 0.32
-        btn.layer.shadowRadius = 9
-        btn.layer.shadowOffset = CGSize(width: 0, height: 3)
-        btn.layer.shadowPath = UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: size, height: size)).cgPath
-        var config = UIButton.Configuration.plain()
-        config.image = UIImage(
-            systemName: recording ? "stop.fill" : "mic.fill",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: size * 0.4, weight: .bold)
-        )
-        config.baseForegroundColor = .white
-        btn.configuration = config
-        btn.isUserInteractionEnabled = !isPrimaryActionDisabled
-        btn.alpha = isPrimaryActionDisabled ? 0.55 : 1.0
-        btn.addTarget(self, action: #selector(primaryTapped), for: .touchUpInside)
-        btn.accessibilityLabel = recording ? "Stop" : "Start recording"
-        if recording { addRecordingPulse(to: btn) }
-        return btn
-    }
-
-    private func makeIdleBar() -> UIView {
-        let collapsed = SharedStore.keyboardKeysCollapsed
-        let menu = UIButton(type: .system)
-        var mc = UIButton.Configuration.plain()
-        mc.image = UIImage(
-            systemName: collapsed ? "keyboard.chevron.compact.up" : "line.3.horizontal",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
-        )
-        mc.baseForegroundColor = KeyboardTheme.muted
-        mc.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 6, bottom: 8, trailing: 6)
-        menu.configuration = mc
-        menu.addAction(UIAction { [weak self] _ in self?.toggleKeysCollapsed() }, for: .touchUpInside)
-        menu.accessibilityLabel = collapsed ? "Show keyboard" : "Hide keyboard"
-
-        let chip = makeChip("\(SharedStore.tonePreset.capitalized) · \(SharedStore.outputLanguage.capitalized)")
-        let mic = makeMicButton(size: 40, recording: false)
-
-        let row = UIStackView(arrangedSubviews: [menu, UIView(), chip, mic])
-        row.axis = .horizontal
-        row.alignment = .center
-        row.spacing = 8
-        return row
-    }
-
-    private func makeListeningContent(into stack: UIStackView) {
-        let chip = makeChip("\(SharedStore.tonePreset.capitalized) · \(SharedStore.outputLanguage.capitalized)")
-        let stop = makeMicButton(size: 46, recording: true)
-        let topRow = UIStackView(arrangedSubviews: [UIView(), chip, stop])
-        topRow.axis = .horizontal
-        topRow.alignment = .center
-        topRow.spacing = 10
-
-        let title = UILabel()
-        title.text = "Listening"
-        title.font = .preferredFont(forTextStyle: .headline)
-        title.adjustsFontForContentSizeCategory = true
-        title.textColor = KeyboardTheme.foreground
-        title.textAlignment = .center
-
-        let mic = UILabel()
-        mic.text = "iPhone Microphone"
-        mic.font = .preferredFont(forTextStyle: .caption1)
-        mic.adjustsFontForContentSizeCategory = true
-        mic.textColor = KeyboardTheme.muted
-        mic.textAlignment = .center
-
-        stack.addArrangedSubview(topRow)
-        stack.addArrangedSubview(makeWaveform())
-        stack.addArrangedSubview(title)
-        stack.addArrangedSubview(mic)
-        stack.setCustomSpacing(2, after: title)
-        stack.setCustomSpacing(8, after: mic)
-        stack.addArrangedSubview(makeLiveTranscript())
-    }
-
-    private func makeProcessingRow() -> UIView {
-        let spinner = UIActivityIndicatorView(style: .medium)
-        spinner.color = KeyboardTheme.accent
-        spinner.startAnimating()
-        let label = UILabel()
-        label.text = subtitleText
-        label.font = .preferredFont(forTextStyle: .subheadline)
-        label.adjustsFontForContentSizeCategory = true
-        label.textColor = KeyboardTheme.foreground
-        let inner = UIStackView(arrangedSubviews: [spinner, label])
-        inner.axis = .horizontal
-        inner.spacing = 10
-        inner.alignment = .center
-        let row = UIStackView(arrangedSubviews: [UIView(), inner, UIView()])
-        row.axis = .horizontal
-        row.distribution = .fill
-        return row
     }
 
     // MARK: - Wispr-style hero (Mic Orb + pill + title)
@@ -763,8 +624,9 @@ final class RecordingPadView: UIView {
     private func rebuildKeys() {
         guard let keys = keyboardStack else { return }
         keys.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        // Collapsed → empty + hidden; the idle bar's fold button brings the QWERTY
-        // back (showsKeyboard/updateKeyboardVisibility hide the whole stack).
+        keys.addArrangedSubview(makeKeyboardHandle())
+        // Collapsed = compact voice mode: just the handle (frees screen space; tap
+        // the handle to bring the keyboard up to edit, then collapse it again).
         guard !SharedStore.keyboardKeysCollapsed else { return }
         let rows: [[String]]
         switch layoutMode {
@@ -903,10 +765,9 @@ final class RecordingPadView: UIView {
     private func toggleKeysCollapsed() {
         SharedStore.keyboardKeysCollapsed.toggle()
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        // Only the typing keys rebuild; the voice surface (and any active waveform
+        // constraints) is left untouched, so folding never disturbs dictation.
         rebuildKeys()
-        // Rebuild the idle bar so its fold icon flips, and show/hide the QWERTY.
-        // Only reachable from the idle bar, so state is never .recording here.
-        update(state: state, canTeachFix: canTeachFix, animated: false)
         UIView.animate(
             withDuration: 0.34, delay: 0,
             usingSpringWithDamping: 0.82, initialSpringVelocity: 0.4,

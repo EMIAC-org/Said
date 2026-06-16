@@ -79,13 +79,21 @@ final class WarmDictationHost: ObservableObject {
     /// keyboard simply falls back to the foreground handoff.
     func warmUp() {
         Task { @MainActor in
-            do {
-                try await streamer.startWarmEngine()
-                extendWarmWindow()
-                prewarm()
-            } catch {
-                SharedStore.sessionWarmUntil = nil
+            for attempt in 0..<3 {
+                do {
+                    try await streamer.startWarmEngine()
+                    extendWarmWindow()
+                    prewarm()
+                    syncLiveActivity()   // engine is warm → show the notch
+                    return
+                } catch {
+                    // The mic engine can fail to start during the app-launch
+                    // transition; back off briefly and retry before giving up.
+                    if attempt < 2 { try? await Task.sleep(nanoseconds: 450_000_000) }
+                }
             }
+            SharedStore.sessionWarmUntil = nil
+            syncLiveActivity()   // never started → don't leave a stale notch
         }
     }
 
@@ -117,6 +125,7 @@ final class WarmDictationHost: ObservableObject {
         SharedStore.sessionWarmUntil = nil
         warmUntil = nil
         streamer.stopWarmEngine()
+        syncLiveActivity()   // engine stopped → clear the notch
     }
 
     // MARK: Session intent (Wispr-style persistent session)
@@ -126,33 +135,27 @@ final class WarmDictationHost: ObservableObject {
     /// granted (never prompts here — this is a silent lifecycle hook), and no
     /// dictation is in flight. Sets the session persistent ("until I stop it").
     func ensureSessionActive() {
-        // Always reconcile the Dynamic Island Live Activity with the session intent,
-        // even when we early-return (e.g. session off, or mic not yet granted).
-        defer { syncLiveActivity() }
-        guard SharedStore.sessionEnabled else { return }
-        guard PermissionManager.currentMicPermission() == .granted else { return }
+        guard SharedStore.sessionEnabled else { syncLiveActivity(); return }
+        guard PermissionManager.currentMicPermission() == .granted else { syncLiveActivity(); return }
         guard !isStreaming else { return }
         SharedStore.sessionDurationMinutes = -1   // persistent: never auto-expires
+        isSessionActive = true
         if streamer.isWarmEngineRunning {
             extendWarmWindow()
             prewarm()
+            syncLiveActivity()
         } else {
-            warmUp()
+            warmUp()   // starts the engine, then syncs the Activity (with retry)
         }
-        isSessionActive = true
     }
 
-    /// Turn the session ON/OFF from the header toggle. ON starts it now (this is a
-    /// foreground user gesture); OFF ends the warm session and stops it re-arming.
+    /// Turn the session ON/OFF from the header toggle / the notch Stop button. ON
+    /// starts it now (a foreground user gesture); OFF ends the warm session, stops
+    /// it re-arming, and clears the notch.
     func setSessionEnabled(_ on: Bool) {
         SharedStore.sessionEnabled = on
         isSessionActive = on
-        if on {
-            ensureSessionActive()
-        } else {
-            endWarmSession()
-            syncLiveActivity()
-        }
+        if on { ensureSessionActive() } else { endWarmSession() }
     }
 
     // MARK: Dynamic Island Live Activity
@@ -160,25 +163,40 @@ final class WarmDictationHost: ObservableObject {
     #if canImport(ActivityKit)
     private var liveActivity: Activity<DictationSessionAttributes>?
 
-    /// Reconcile the Live Activity with the session: show it (with a Stop button)
-    /// while the session is genuinely active, and KEEP it (flipped to a Resume
-    /// button) when paused — so the user can stop OR resume from the Dynamic Island.
-    /// Idempotent; adopts an orphan left by a hard app kill.
+    /// Show the Dynamic Island Activity ONLY while the warm session is genuinely
+    /// running, and END it the instant the session stops (Stop button / interruption
+    /// / sign-out / session off) so the notch clears and reflects reality. Adopts an
+    /// orphan left by a force-quit, so reopening AirNote reconciles + clears it.
     private func syncLiveActivity() {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         if liveActivity == nil { liveActivity = Activity<DictationSessionAttributes>.activities.first }
-        let active = SharedStore.sessionEnabled && PermissionManager.currentMicPermission() == .granted
-        let content = ActivityContent(
-            state: DictationSessionAttributes.ContentState(listening: false, active: active),
-            staleDate: nil
-        )
-        if let activity = liveActivity {
-            Task { await activity.update(content) }
-        } else if active {
-            // Only START a new Activity when the session genuinely goes active.
-            liveActivity = try? Activity.request(
-                attributes: DictationSessionAttributes(), content: content, pushType: nil
+        let show = SharedStore.sessionEnabled && streamer.isWarmEngineRunning
+        if show {
+            let content = ActivityContent(
+                state: DictationSessionAttributes.ContentState(listening: false, active: true),
+                staleDate: nil
             )
+            if let activity = liveActivity {
+                Task { await activity.update(content) }
+            } else {
+                liveActivity = try? Activity.request(
+                    attributes: DictationSessionAttributes(), content: content, pushType: nil
+                )
+            }
+        } else {
+            endLiveActivity()
+        }
+    }
+
+    private func endLiveActivity() {
+        let held = liveActivity
+        liveActivity = nil
+        Task {
+            await held?.end(nil, dismissalPolicy: .immediate)
+            // Reap any orphan (e.g. one left after a force-quit) so it can't linger.
+            for activity in Activity<DictationSessionAttributes>.activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
         }
     }
     #else
