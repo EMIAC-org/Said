@@ -258,7 +258,7 @@ final class KeyboardViewController: UIInputViewController {
     /// Never let the keyboard hang on "Polishing" if the server goes silent.
     private func startFinalizeTimer() {
         finalizeTimer?.invalidate()
-        finalizeTimer = Timer.scheduledTimer(withTimeInterval: 14, repeats: false) { [weak self] _ in
+        finalizeTimer = Timer.scheduledTimer(withTimeInterval: 18, repeats: false) { [weak self] _ in
             guard let self else { return }
             if case .processing = self.state {
                 self.warmActive = false
@@ -512,9 +512,11 @@ final class KeyboardViewController: UIInputViewController {
             setState(.recording)
             DarwinSignal.shared.post(DarwinSignal.startDictation)
             ackTimer?.invalidate()
-            ackTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+            ackTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
                 guard let self, self.warmActive, !self.gotAck else { return }
-                // The warm app was suspended after all — fall back to the handoff.
+                // No ack after 5s — the warm app is genuinely gone (not just slow),
+                // so fall back to the handoff. (The app now acks immediately on
+                // wake, so a live session never reaches this.)
                 self.warmActive = false
                 self.coldHandoff()
             }

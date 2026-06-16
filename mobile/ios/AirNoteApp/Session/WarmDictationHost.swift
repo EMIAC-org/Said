@@ -134,11 +134,15 @@ final class WarmDictationHost: ObservableObject {
             safeVocabTerms: SharedStore.safeVocabTerms,
             screenContext: nil
         )
+        // Tell the keyboard IMMEDIATELY that the warm app is alive and handling
+        // this — before opening the (pre-warmed) socket — so it keeps the in-place
+        // recording UI instead of flashing the "open AirNote" handoff. If the
+        // socket then fails, dictationFailed corrects it.
+        DarwinSignal.shared.post(DarwinSignal.dictationAck)
         do {
             try await streamer.beginStreaming(session: session, config: config)
             isStreaming = true
             extendWarmWindow()
-            DarwinSignal.shared.post(DarwinSignal.dictationAck)
         } catch {
             DarwinSignal.shared.post(DarwinSignal.dictationFailed)
         }
@@ -146,7 +150,9 @@ final class WarmDictationHost: ObservableObject {
 
     private func stopDictation() async {
         guard isStreaming else { return }
-        if maxLevel < 0.035 {
+        // Only TRUE silence counts as "didn't catch" — quiet-but-real speech
+        // (0.02–0.04) must still go to the server, not flash a false failure.
+        if maxLevel < 0.02 {
             await streamer.endStreaming()
             isStreaming = false
             DarwinSignal.shared.post(DarwinSignal.dictationFailed)
