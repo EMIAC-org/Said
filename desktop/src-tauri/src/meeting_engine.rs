@@ -7228,6 +7228,1172 @@ fn answer_meeting_question(
     })
 }
 
+// ============================ Cross-meeting digest ============================
+//
+// A "digest" synthesizes ONE combined report across many meetings (a multi-select
+// or a date range). It runs entirely on the desktop: per-meeting summaries and
+// transcripts live as local files, so we read them here and reuse the same LLM
+// helpers as single-meeting intelligence/chat. Selection (ids/titles/dates) comes
+// from the caller (the cloud meeting list).
+
+/// Synthesis input budget (chars). Per-meeting summaries are packed up to this;
+/// larger selections fall back to map-reduce (summarize batches, then merge).
+const DEFAULT_MEETING_DIGEST_INPUT_CHAR_BUDGET: usize = 120_000;
+/// Per-meeting summary cap (chars) inside the synthesis input so one giant MoM
+/// can't crowd out the others.
+const DEFAULT_DIGEST_MEETING_SUMMARY_CAP: usize = 6_000;
+/// Char budget for the pooled transcript excerpts in a digest chat turn.
+const DEFAULT_MEETING_DIGEST_CHAT_CHAR_BUDGET: usize = 60_000;
+
+const MEETING_DIGEST_SYSTEM_PROMPT: &str = r####"You are AirNote's cross-meeting digest engine.
+
+You are given material from MULTIPLE meetings. Each block starts with "### <title> (<date>)" and contains that meeting's Summary, Decisions, and Action items. Synthesize ONE combined digest across all of them.
+
+Use only the supplied material. Do not invent meetings, people, decisions, dates, or action items. If the material is itself a set of partial digests, merge them faithfully.
+
+Produce:
+- "title": a concise, specific heading (3-8 words) naming the overall theme of the period (e.g. "Sentinel Rollout & Pricing Week"). No dates, no quotes, no trailing period. Never generic like "Meeting notes".
+- "executive_summary": clean Markdown plain text (no HTML). A tight, client-ready overview of the whole period: what was worked on across the meetings, how topics progressed, what was decided, and what is still open. Use short paragraphs and "- " bullets. Connect related points ACROSS meetings when the material supports it. Do not merely concatenate per-meeting summaries.
+- "themes": recurring topics that span the meetings. Each: { "title", "detail" (1-3 sentences), "meetings": [titles that touched this theme] }. Cluster related discussion; omit one-off trivia. Roughly 3-7 themes for a rich set, fewer for a small one.
+- "decisions": de-duplicated decisions across all meetings. Each: { "text", "meeting" (source meeting title), "date" }. Only explicit agreements or final choices. Merge duplicates that recur across meetings (keep the clearest wording, cite the earliest meeting).
+- "action_items": de-duplicated action items across all meetings. Each: { "title", "owner" (person if explicitly named, else null), "meeting", "date" }. Only firm commitments. Merge duplicates.
+- "trends": short bullets describing how things changed across the meetings (e.g. "Pricing discussed in 3 meetings, narrowed to per-seat"). Only when the material shows progression. May be empty.
+- "open_items": unresolved questions or things still pending across the period. May be empty.
+
+Return only valid JSON with this exact shape:
+{
+  "title": "concise specific period title, 3-8 words",
+  "executive_summary": "Markdown-compatible overview with short paragraphs and bullets",
+  "themes": [ { "title": "Theme", "detail": "1-3 sentences", "meetings": ["Meeting title"] } ],
+  "decisions": [ { "text": "explicit decision", "meeting": "source meeting title", "date": "date if known else empty" } ],
+  "action_items": [ { "title": "firm action", "owner": "person if explicit else null", "meeting": "source meeting title", "date": "date if known else empty" } ],
+  "trends": ["short trend bullet"],
+  "open_items": ["unresolved item"]
+}"####;
+
+const MEETING_DIGEST_VERIFIER_SYSTEM_PROMPT: &str = r####"You are AirNote's strict cross-meeting digest verifier.
+
+Use only the supplied source material and draft JSON. Return only valid JSON with the same shape as the draft.
+
+Rules:
+- Keep the "title" concise (3-8 words) and specific; replace it only if generic, inaccurate, or unsupported.
+- Keep the executive_summary detailed and Markdown-formatted; remove any claim, decision, risk, or expectation not supported by the source material. Do not collapse it into one line.
+- Keep a decision only if the source shows explicit agreement or a final choice; merge duplicates; preserve its source-meeting attribution.
+- Keep an action item only if the source shows a firm commitment; set "owner" to null unless a person is explicitly named; merge duplicates.
+- Drop themes, trends, and open_items not grounded in the source material.
+- If uncertain about an item, remove it."####;
+
+const MEETING_DIGEST_CHAT_SYSTEM_PROMPT: &str = r####"You are AirNote's cross-meeting Q&A engine.
+
+Answer the user's question using ONLY the supplied cross-meeting digest summary and the per-meeting transcript excerpts. Each excerpt is grouped under "## <meeting title · date>"; lines may carry [mm:ss] timestamps and "[…]" marks omitted spans.
+- Draw on multiple meetings when relevant, and compare or contrast them when the question asks.
+- Always attribute facts to their meeting (cite the meeting title/date, and the timestamp when useful).
+- If the answer is not present in the provided material, say so plainly. Do not infer owners, decisions, dates, or commitments beyond the material.
+- Be concise and well-structured."####;
+
+/// One meeting in a digest request, supplied by the caller (from the cloud list).
+#[derive(Clone, Debug, Deserialize)]
+pub struct DigestMeetingRef {
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    date: String,
+}
+
+/// Per-meeting material gathered locally before synthesis.
+#[derive(Clone, Debug)]
+struct DigestCard {
+    id: String,
+    title: String,
+    date: String,
+    summary: String,
+    decisions: Vec<String>,
+    actions: Vec<(String, Option<String>)>,
+}
+
+// LLM synthesis output (deserialized from the model's JSON).
+#[derive(Debug, Deserialize)]
+struct DigestPayload {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    executive_summary: Option<String>,
+    #[serde(default)]
+    themes: Vec<DigestThemePayload>,
+    #[serde(default)]
+    decisions: Vec<DigestDecisionPayload>,
+    #[serde(default)]
+    action_items: Vec<DigestActionPayload>,
+    #[serde(default)]
+    trends: Vec<String>,
+    #[serde(default)]
+    open_items: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DigestThemePayload {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    detail: Option<String>,
+    #[serde(default)]
+    meetings: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DigestDecisionPayload {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    meeting: Option<String>,
+    #[serde(default)]
+    date: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DigestActionPayload {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    meeting: Option<String>,
+    #[serde(default)]
+    date: Option<String>,
+}
+
+// Validated, serialized digest returned to the frontend.
+#[derive(Clone, Debug, Serialize)]
+pub struct DigestTheme {
+    title: String,
+    detail: String,
+    meetings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DigestDecisionItem {
+    text: String,
+    meeting: String,
+    date: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DigestActionItem {
+    title: String,
+    owner: Option<String>,
+    meeting: String,
+    date: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DigestPerMeeting {
+    id: String,
+    title: String,
+    date: String,
+    recap: String,
+    has_intelligence: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DigestSkipped {
+    id: String,
+    title: String,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DigestResult {
+    /// Stable key for the selection (frontend cache + chat reset key).
+    id: String,
+    title: String,
+    date_range: String,
+    meeting_count: usize,
+    included_meeting_ids: Vec<String>,
+    skipped: Vec<DigestSkipped>,
+    executive_summary: String,
+    themes: Vec<DigestTheme>,
+    decisions: Vec<DigestDecisionItem>,
+    action_items: Vec<DigestActionItem>,
+    trends: Vec<String>,
+    open_items: Vec<String>,
+    per_meeting: Vec<DigestPerMeeting>,
+    /// Pre-rendered Markdown for Lark export / copy.
+    markdown: String,
+    provider: String,
+    model: String,
+    latency_ms: u64,
+}
+
+/// Truncate to `max_chars` on a char boundary, appending " …" when cut.
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(max_chars).collect();
+    out.push_str(" …");
+    out
+}
+
+/// A one-line recap of a meeting summary: flatten whitespace, then truncate.
+fn digest_meeting_recap(summary: &str, max_chars: usize) -> String {
+    let flat = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&flat, max_chars)
+}
+
+/// "title · date" label used in prompts and chat grouping.
+fn digest_meeting_label(r: &DigestMeetingRef) -> String {
+    let title = if r.title.trim().is_empty() {
+        "Untitled meeting"
+    } else {
+        r.title.trim()
+    };
+    if r.date.trim().is_empty() {
+        title.to_string()
+    } else {
+        format!("{title} · {}", r.date.trim())
+    }
+}
+
+/// Date range string from the (chronologically ordered) refs.
+fn digest_date_range(refs: &[DigestMeetingRef]) -> String {
+    let dates: Vec<&str> = refs
+        .iter()
+        .map(|r| r.date.trim())
+        .filter(|d| !d.is_empty())
+        .collect();
+    match (dates.first(), dates.last()) {
+        (Some(f), Some(l)) if f == l => (*f).to_string(),
+        (Some(f), Some(l)) => format!("{f} – {l}"),
+        _ => String::new(),
+    }
+}
+
+/// Order-independent cache key for a selection + missing-data strategy.
+fn digest_cache_key(ids: &[String], missing: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut sorted: Vec<&String> = ids.iter().collect();
+    sorted.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for id in sorted {
+        id.hash(&mut hasher);
+    }
+    missing.to_ascii_lowercase().hash(&mut hasher);
+    format!("digest-{:016x}", hasher.finish())
+}
+
+/// Greedily pack blocks (by char length) into batches under `budget`.
+fn pack_into_batches(block_lens: &[usize], budget: usize) -> Vec<Vec<usize>> {
+    let mut batches: Vec<Vec<usize>> = Vec::new();
+    let mut cur: Vec<usize> = Vec::new();
+    let mut cur_len = 0usize;
+    for (i, &len) in block_lens.iter().enumerate() {
+        if !cur.is_empty() && cur_len + len > budget {
+            batches.push(std::mem::take(&mut cur));
+            cur_len = 0;
+        }
+        cur.push(i);
+        cur_len += len;
+    }
+    if !cur.is_empty() {
+        batches.push(cur);
+    }
+    batches
+}
+
+/// Render one meeting as a synthesis-input block (summary capped).
+fn build_meeting_block(card: &DigestCard, summary_cap: usize) -> String {
+    let mut s = String::new();
+    if card.date.trim().is_empty() {
+        s.push_str(&format!("### {}\n", card.title));
+    } else {
+        s.push_str(&format!("### {} ({})\n", card.title, card.date));
+    }
+    s.push_str("Summary:\n");
+    s.push_str(&truncate_chars(&card.summary, summary_cap));
+    s.push('\n');
+    if !card.decisions.is_empty() {
+        s.push_str("Decisions:\n");
+        for d in &card.decisions {
+            let d = d.trim();
+            if !d.is_empty() {
+                s.push_str(&format!("- {d}\n"));
+            }
+        }
+    }
+    if !card.actions.is_empty() {
+        s.push_str("Action items:\n");
+        for (title, owner) in &card.actions {
+            let title = title.trim();
+            if title.is_empty() {
+                continue;
+            }
+            match owner.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+                Some(o) => s.push_str(&format!("- {o} — {title}\n")),
+                None => s.push_str(&format!("- {title}\n")),
+            }
+        }
+    }
+    s
+}
+
+/// Compact text rendering of a batch result, used as input to the merge pass.
+fn render_partial_digest(p: &DigestPayload) -> String {
+    let mut s = String::new();
+    let title = p
+        .title
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("Partial digest");
+    s.push_str(&format!("### Partial digest: {title}\n"));
+    if let Some(exec) = p.executive_summary.as_deref().map(str::trim) {
+        if !exec.is_empty() {
+            s.push_str("Summary:\n");
+            s.push_str(exec);
+            s.push('\n');
+        }
+    }
+    if !p.decisions.is_empty() {
+        s.push_str("Decisions:\n");
+        for d in &p.decisions {
+            if let Some(t) = d.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                s.push_str(&format!("- {t}\n"));
+            }
+        }
+    }
+    if !p.action_items.is_empty() {
+        s.push_str("Action items:\n");
+        for a in &p.action_items {
+            if let Some(t) = a.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                match a.owner.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+                    Some(o) => s.push_str(&format!("- {o} — {t}\n")),
+                    None => s.push_str(&format!("- {t}\n")),
+                }
+            }
+        }
+    }
+    s
+}
+
+/// Render the final digest as Markdown (consumed by Lark export + copy + the
+/// in-app report). Avoids `_italics_` since the Lark converter only honors
+/// `**bold**`, headings, and bullets.
+fn render_digest_markdown(r: &DigestResult) -> String {
+    let mut s = String::new();
+    s.push_str(&format!("# {}\n\n", r.title));
+    let mut meta = String::new();
+    if !r.date_range.is_empty() {
+        meta.push_str(&r.date_range);
+        meta.push_str(" · ");
+    }
+    meta.push_str(&format!(
+        "{} meeting{}",
+        r.meeting_count,
+        if r.meeting_count == 1 { "" } else { "s" }
+    ));
+    s.push_str(&format!("{meta}\n\n"));
+    if !r.skipped.is_empty() {
+        s.push_str(&format!(
+            "{} meeting{} skipped (not analyzed).\n\n",
+            r.skipped.len(),
+            if r.skipped.len() == 1 { "" } else { "s" }
+        ));
+    }
+    if !r.executive_summary.is_empty() {
+        s.push_str("## Executive Summary\n\n");
+        s.push_str(r.executive_summary.trim());
+        s.push_str("\n\n");
+    }
+    if !r.themes.is_empty() {
+        s.push_str("## Key Themes\n\n");
+        for t in &r.themes {
+            s.push_str(&format!("### {}\n\n", t.title));
+            if !t.detail.is_empty() {
+                s.push_str(t.detail.trim());
+                s.push_str("\n\n");
+            }
+            if !t.meetings.is_empty() {
+                s.push_str(&format!("Meetings: {}\n\n", t.meetings.join(", ")));
+            }
+        }
+    }
+    let source_suffix = |meeting: &str, date: &str| -> String {
+        let mut src = meeting.trim().to_string();
+        if !date.trim().is_empty() {
+            if src.is_empty() {
+                src = date.trim().to_string();
+            } else {
+                src.push_str(&format!(", {}", date.trim()));
+            }
+        }
+        src
+    };
+    if !r.decisions.is_empty() {
+        s.push_str("## Decisions\n\n");
+        for d in &r.decisions {
+            let src = source_suffix(&d.meeting, &d.date);
+            if src.is_empty() {
+                s.push_str(&format!("- {}\n", d.text));
+            } else {
+                s.push_str(&format!("- {} — {}\n", d.text, src));
+            }
+        }
+        s.push('\n');
+    }
+    if !r.action_items.is_empty() {
+        s.push_str("## Action Items\n\n");
+        let mut groups: Vec<(String, Vec<&DigestActionItem>)> = Vec::new();
+        for a in &r.action_items {
+            let owner = a
+                .owner
+                .as_deref()
+                .map(str::trim)
+                .filter(|o| !o.is_empty())
+                .unwrap_or("Unassigned")
+                .to_string();
+            if let Some(g) = groups.iter_mut().find(|(o, _)| *o == owner) {
+                g.1.push(a);
+            } else {
+                groups.push((owner, vec![a]));
+            }
+        }
+        for (owner, items) in &groups {
+            s.push_str(&format!("**{owner}**\n\n"));
+            for a in items {
+                let src = source_suffix(&a.meeting, &a.date);
+                if src.is_empty() {
+                    s.push_str(&format!("- {}\n", a.title));
+                } else {
+                    s.push_str(&format!("- {} — {}\n", a.title, src));
+                }
+            }
+            s.push('\n');
+        }
+    }
+    if !r.trends.is_empty() {
+        s.push_str("## Trends\n\n");
+        for t in &r.trends {
+            s.push_str(&format!("- {t}\n"));
+        }
+        s.push('\n');
+    }
+    if !r.open_items.is_empty() {
+        s.push_str("## Open Items\n\n");
+        for o in &r.open_items {
+            s.push_str(&format!("- {o}\n"));
+        }
+        s.push('\n');
+    }
+    if !r.per_meeting.is_empty() {
+        s.push_str("## Meetings\n\n");
+        for m in &r.per_meeting {
+            if m.date.trim().is_empty() {
+                s.push_str(&format!("### {}\n\n", m.title));
+            } else {
+                s.push_str(&format!("### {} ({})\n\n", m.title, m.date));
+            }
+            if !m.recap.is_empty() {
+                s.push_str(m.recap.trim());
+                s.push_str("\n\n");
+            } else if !m.has_intelligence {
+                s.push_str("Not analyzed.\n\n");
+            }
+        }
+    }
+    s.trim_end().to_string()
+}
+
+/// Read a meeting's transcript text from its folder (final preferred).
+fn read_meeting_transcript_text(dir: &Path) -> Option<String> {
+    for name in [
+        "meeting.transcript.final.txt",
+        "meeting.transcript.txt",
+        "mic.transcript.txt",
+    ] {
+        if let Ok(text) = fs::read_to_string(dir.join(name)) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Pool transcript excerpts across meetings within `budget` chars. Each meeting
+/// is allocated a relevance-weighted slice (floored so every meeting is
+/// represented), then excerpted via the single-meeting retrieval-lite assembler,
+/// and grouped under a `## label` header for citations.
+fn assemble_multi_meeting_context(
+    meetings: &[(String, String)],
+    question: &str,
+    budget: usize,
+) -> String {
+    let live: Vec<&(String, String)> = meetings
+        .iter()
+        .filter(|(_, t)| !t.trim().is_empty())
+        .collect();
+    if live.is_empty() {
+        return String::new();
+    }
+    if live.len() == 1 {
+        let (label, text) = live[0];
+        let excerpt = assemble_chat_transcript_context(text, question, budget);
+        return format!("## {label}\n{excerpt}");
+    }
+    let n = live.len();
+    let q_terms = chat_tokenize(question);
+    // Relevance weight: distinct query terms present in a sample of each transcript.
+    let weights: Vec<usize> = live
+        .iter()
+        .map(|(_, text)| {
+            let sample: String = text.chars().take(16_000).collect();
+            let toks = chat_tokenize(&sample);
+            q_terms
+                .iter()
+                .filter(|qt| toks.iter().any(|tk| tk == *qt))
+                .count()
+        })
+        .collect();
+    let total_w: usize = weights.iter().sum();
+    let floor = (budget / (n * 3)).max(800);
+    let remainder = budget.saturating_sub(floor * n);
+    let mut out = String::new();
+    for (idx, (label, text)) in live.iter().enumerate() {
+        // Relevance-weighted share of the remaining budget; equal split when no
+        // query terms matched any meeting (total_w == 0) or on overflow.
+        let extra = remainder
+            .checked_mul(weights[idx])
+            .and_then(|num| num.checked_div(total_w))
+            .unwrap_or(remainder / n);
+        let excerpt = assemble_chat_transcript_context(text, question, floor + extra);
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(&format!("## {label}\n{excerpt}"));
+    }
+    out
+}
+
+/// One synthesis pass: draft → optional verify → parse JSON into a payload.
+fn synthesize_digest_payload(
+    input_text: &str,
+    config: &MeetingCleanupConfig,
+) -> Result<(DigestPayload, MeetingLlmCompletion), String> {
+    let completion = complete_meeting_llm(
+        MEETING_DIGEST_SYSTEM_PROMPT,
+        input_text,
+        config.clone(),
+        meeting_ai_timeout(),
+        meeting_ai_max_tokens(),
+    )?;
+    let completion = if meeting_ai_verification_enabled() {
+        let draft = completion.content.clone();
+        let verify_prompt = format!(
+            "Source material:\n<<<MATERIAL\n{input_text}\nMATERIAL>>>\n\nDraft JSON:\n<<<JSON\n{draft}\nJSON>>>"
+        );
+        match complete_meeting_llm(
+            MEETING_DIGEST_VERIFIER_SYSTEM_PROMPT,
+            &verify_prompt,
+            config.clone(),
+            meeting_ai_timeout(),
+            meeting_ai_max_tokens(),
+        ) {
+            Ok(v) => MeetingLlmCompletion {
+                content: v.content,
+                provider: v.provider,
+                model: v.model,
+                latency_ms: completion.latency_ms.saturating_add(v.latency_ms),
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "[meeting_engine] digest verify failed; using draft");
+                completion
+            }
+        }
+    } else {
+        completion
+    };
+    let json = extract_json_object(&completion.content)
+        .ok_or_else(|| "digest synthesis returned no JSON object".to_string())?;
+    let payload: DigestPayload =
+        serde_json::from_str(&json).map_err(|e| format!("digest JSON parse failed: {e}"))?;
+    Ok((payload, completion))
+}
+
+/// Blocking digest build: gather local per-meeting material, synthesize (with
+/// map-reduce for large selections), and assemble the result + Markdown.
+fn run_meeting_digest(refs: Vec<DigestMeetingRef>, missing: &str) -> Result<DigestResult, String> {
+    let generate_missing = missing.eq_ignore_ascii_case("generate");
+    let mut cards: Vec<DigestCard> = Vec::new();
+    let mut skipped: Vec<DigestSkipped> = Vec::new();
+    let mut per_meeting: Vec<DigestPerMeeting> = Vec::new();
+
+    for r in &refs {
+        let fallback_title = if r.title.trim().is_empty() {
+            "Untitled meeting".to_string()
+        } else {
+            r.title.trim().to_string()
+        };
+        let dir = match meeting_dir_for_id(&r.id) {
+            Ok(dir) => dir,
+            Err(e) => {
+                skipped.push(DigestSkipped {
+                    id: r.id.clone(),
+                    title: fallback_title.clone(),
+                    reason: format!("invalid meeting id: {e}"),
+                });
+                per_meeting.push(DigestPerMeeting {
+                    id: r.id.clone(),
+                    title: fallback_title,
+                    date: r.date.clone(),
+                    recap: String::new(),
+                    has_intelligence: false,
+                });
+                continue;
+            }
+        };
+        let mut intel = load_cached_meeting_intelligence_from_dir(&dir)
+            .ok()
+            .flatten();
+        if intel.is_none() && generate_missing {
+            match read_meeting_transcript_text(&dir) {
+                Some(text) => {
+                    match run_meeting_intelligence(
+                        MeetingAiTranscript {
+                            source: "cached-final".to_string(),
+                            text,
+                        },
+                        Some(dir.clone()),
+                    ) {
+                        Ok(generated) => intel = Some(generated),
+                        Err(e) => skipped.push(DigestSkipped {
+                            id: r.id.clone(),
+                            title: fallback_title.clone(),
+                            reason: format!("analysis failed: {e}"),
+                        }),
+                    }
+                }
+                None => skipped.push(DigestSkipped {
+                    id: r.id.clone(),
+                    title: fallback_title.clone(),
+                    reason: "no transcript on this device to analyze".to_string(),
+                }),
+            }
+        }
+        match intel {
+            Some(intel) => {
+                let title = if !r.title.trim().is_empty() {
+                    r.title.trim().to_string()
+                } else if !intel.title.trim().is_empty() {
+                    intel.title.trim().to_string()
+                } else {
+                    "Untitled meeting".to_string()
+                };
+                per_meeting.push(DigestPerMeeting {
+                    id: r.id.clone(),
+                    title: title.clone(),
+                    date: r.date.clone(),
+                    recap: digest_meeting_recap(&intel.summary, 280),
+                    has_intelligence: true,
+                });
+                cards.push(DigestCard {
+                    id: r.id.clone(),
+                    title,
+                    date: r.date.clone(),
+                    summary: intel.summary,
+                    decisions: intel.decisions.into_iter().map(|d| d.text).collect(),
+                    actions: intel
+                        .action_items
+                        .into_iter()
+                        .map(|a| (a.title, a.assignee))
+                        .collect(),
+                });
+            }
+            None => {
+                if !generate_missing {
+                    skipped.push(DigestSkipped {
+                        id: r.id.clone(),
+                        title: fallback_title.clone(),
+                        reason: "not analyzed yet".to_string(),
+                    });
+                }
+                per_meeting.push(DigestPerMeeting {
+                    id: r.id.clone(),
+                    title: fallback_title,
+                    date: r.date.clone(),
+                    recap: String::new(),
+                    has_intelligence: false,
+                });
+            }
+        }
+    }
+
+    if cards.is_empty() {
+        return Err("None of the selected meetings have a summary on this device yet. Analyze at least one meeting (or choose \"Generate missing\") and try again.".to_string());
+    }
+
+    let summary_cap = env_u64(
+        "AIRNOTE_MEETING_DIGEST_SUMMARY_CAP",
+        DEFAULT_DIGEST_MEETING_SUMMARY_CAP as u64,
+    ) as usize;
+    let budget = env_u64(
+        "AIRNOTE_MEETING_DIGEST_INPUT_CHAR_BUDGET",
+        DEFAULT_MEETING_DIGEST_INPUT_CHAR_BUDGET as u64,
+    ) as usize;
+    let blocks: Vec<String> = cards
+        .iter()
+        .map(|c| build_meeting_block(c, summary_cap))
+        .collect();
+    let lens: Vec<usize> = blocks.iter().map(String::len).collect();
+    let batches = pack_into_batches(&lens, budget);
+
+    let config = meeting_ai_config()?;
+    let (payload, provider, model, latency_ms) = if batches.len() <= 1 {
+        let input = blocks.join("\n\n");
+        let (payload, completion) = synthesize_digest_payload(&input, &config)?;
+        (
+            payload,
+            completion.provider,
+            completion.model,
+            completion.latency_ms,
+        )
+    } else {
+        // Map-reduce: summarize each batch, then merge the partial digests.
+        let mut partials: Vec<String> = Vec::new();
+        let mut total_latency = 0u64;
+        for batch in &batches {
+            let input = batch
+                .iter()
+                .map(|&i| blocks[i].as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let (payload, completion) = synthesize_digest_payload(&input, &config)?;
+            total_latency = total_latency.saturating_add(completion.latency_ms);
+            partials.push(render_partial_digest(&payload));
+        }
+        let (payload, completion) = synthesize_digest_payload(&partials.join("\n\n"), &config)?;
+        (
+            payload,
+            completion.provider,
+            completion.model,
+            total_latency.saturating_add(completion.latency_ms),
+        )
+    };
+
+    let included_meeting_ids: Vec<String> = cards.iter().map(|c| c.id.clone()).collect();
+    let title = nonempty_trimmed(payload.title.unwrap_or_default())
+        .map(|t| normalize_meeting_title(&t))
+        .unwrap_or_else(|| "Meeting Digest".to_string());
+    let themes: Vec<DigestTheme> = payload
+        .themes
+        .into_iter()
+        .filter_map(|t| {
+            let title = nonempty_trimmed(t.title.unwrap_or_default())?;
+            Some(DigestTheme {
+                title,
+                detail: t.detail.unwrap_or_default().trim().to_string(),
+                meetings: t
+                    .meetings
+                    .into_iter()
+                    .filter_map(nonempty_trimmed)
+                    .collect(),
+            })
+        })
+        .collect();
+    let decisions: Vec<DigestDecisionItem> = payload
+        .decisions
+        .into_iter()
+        .filter_map(|d| {
+            let text = nonempty_trimmed(d.text.unwrap_or_default())?;
+            Some(DigestDecisionItem {
+                text,
+                meeting: d.meeting.unwrap_or_default().trim().to_string(),
+                date: d.date.unwrap_or_default().trim().to_string(),
+            })
+        })
+        .collect();
+    let action_items: Vec<DigestActionItem> = payload
+        .action_items
+        .into_iter()
+        .filter_map(|a| {
+            let title = nonempty_trimmed(a.title.unwrap_or_default())?;
+            Some(DigestActionItem {
+                title,
+                owner: a.owner.and_then(nonempty_trimmed),
+                meeting: a.meeting.unwrap_or_default().trim().to_string(),
+                date: a.date.unwrap_or_default().trim().to_string(),
+            })
+        })
+        .collect();
+    let trends: Vec<String> = payload
+        .trends
+        .into_iter()
+        .filter_map(nonempty_trimmed)
+        .collect();
+    let open_items: Vec<String> = payload
+        .open_items
+        .into_iter()
+        .filter_map(nonempty_trimmed)
+        .collect();
+
+    let mut result = DigestResult {
+        id: digest_cache_key(&included_meeting_ids, missing),
+        title,
+        date_range: digest_date_range(&refs),
+        meeting_count: cards.len(),
+        included_meeting_ids,
+        skipped,
+        executive_summary: payload
+            .executive_summary
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        themes,
+        decisions,
+        action_items,
+        trends,
+        open_items,
+        per_meeting,
+        markdown: String::new(),
+        provider,
+        model,
+        latency_ms,
+    };
+    result.markdown = render_digest_markdown(&result);
+    Ok(result)
+}
+
+/// Blocking digest chat: load each meeting's summary + transcript, assemble a
+/// layered context (digest + per-meeting summaries + pooled transcript
+/// excerpts), and stream the answer.
+fn run_digest_chat(
+    refs: Vec<DigestMeetingRef>,
+    question: &str,
+    digest_summary: Option<&str>,
+    on_delta: impl FnMut(&str),
+) -> Result<MeetingChatResult, String> {
+    let question = question.trim();
+    if question.is_empty() {
+        return Err("question is empty".to_string());
+    }
+    let mut summaries: Vec<(String, String)> = Vec::new();
+    let mut transcripts: Vec<(String, String)> = Vec::new();
+    for r in &refs {
+        let Ok(dir) = meeting_dir_for_id(&r.id) else {
+            continue;
+        };
+        let label = digest_meeting_label(r);
+        if let Ok(Some(intel)) = load_cached_meeting_intelligence_from_dir(&dir) {
+            let summary = intel.summary.trim().to_string();
+            if !summary.is_empty() {
+                summaries.push((label.clone(), summary));
+            }
+        }
+        if let Some(text) = read_meeting_transcript_text(&dir) {
+            transcripts.push((label, text));
+        }
+    }
+    if summaries.is_empty() && transcripts.is_empty() {
+        return Err("None of the selected meetings have a local transcript or summary to chat about on this device.".to_string());
+    }
+
+    let config = meeting_ai_config()?;
+    let budget = env_u64(
+        "AIRNOTE_MEETING_DIGEST_CHAT_CHAR_BUDGET",
+        DEFAULT_MEETING_DIGEST_CHAT_CHAR_BUDGET as u64,
+    ) as usize;
+    let transcript_context = assemble_multi_meeting_context(&transcripts, question, budget);
+
+    let mut intel_block = String::new();
+    if let Some(digest) = digest_summary.map(str::trim).filter(|d| !d.is_empty()) {
+        intel_block.push_str("Cross-meeting digest summary:\n");
+        intel_block.push_str(digest);
+        intel_block.push_str("\n\n");
+    }
+    if !summaries.is_empty() {
+        intel_block.push_str("Per-meeting summaries:\n");
+        for (label, summary) in &summaries {
+            intel_block.push_str(&format!(
+                "## {label}\n{}\n\n",
+                truncate_chars(summary, 1_800)
+            ));
+        }
+    }
+    let transcript_section = if transcript_context.trim().is_empty() {
+        "(No transcript excerpts available; rely on the summaries above.)".to_string()
+    } else {
+        transcript_context
+    };
+    let labels = refs
+        .iter()
+        .map(digest_meeting_label)
+        .collect::<Vec<_>>()
+        .join("; ");
+    let user_prompt = format!(
+        "Selected meetings: {}\n\nMeeting intelligence:\n<<<INTEL\n{}\nINTEL>>>\n\nTranscript excerpts (most relevant to the question; \"## meeting\" groups, [mm:ss] timestamps, [...] = omitted spans):\n<<<TRANSCRIPTS\n{}\nTRANSCRIPTS>>>\n\nQuestion:\n{}",
+        labels,
+        intel_block.trim(),
+        transcript_section,
+        question
+    );
+    let completion = complete_meeting_llm_streaming(
+        MEETING_DIGEST_CHAT_SYSTEM_PROMPT,
+        &user_prompt,
+        config,
+        meeting_chat_timeout(),
+        meeting_ai_max_tokens(),
+        on_delta,
+    )
+    .inspect_err(|e| {
+        tracing::warn!(error = %e, "[meeting_engine] digest chat request failed");
+    })?;
+    let answer = strip_llm_code_fences(&completion.content);
+    if answer.trim().is_empty() {
+        return Err("digest chat returned an empty answer".to_string());
+    }
+    Ok(MeetingChatResult {
+        status: "completed".to_string(),
+        provider: completion.provider,
+        model: completion.model,
+        latency_ms: completion.latency_ms,
+        transcript_source: format!("{} meetings", refs.len()),
+        answer,
+    })
+}
+
+/// Synthesize a combined digest across the selected meetings.
+#[tauri::command]
+pub async fn meeting_engine_generate_digest(
+    refs: Vec<DigestMeetingRef>,
+    missing: Option<String>,
+) -> Result<DigestResult, String> {
+    if refs.is_empty() {
+        return Err("Select at least one meeting to build a digest.".to_string());
+    }
+    let missing = missing.unwrap_or_else(|| "skip".to_string());
+    tauri::async_runtime::spawn_blocking(move || run_meeting_digest(refs, &missing))
+        .await
+        .map_err(|e| format!("digest task failed: {e}"))?
+}
+
+/// Chat across the selected meetings, streaming the answer token-by-token.
+#[tauri::command]
+pub async fn meeting_engine_digest_chat(
+    app: AppHandle,
+    request_id: String,
+    question: String,
+    refs: Vec<DigestMeetingRef>,
+    digest_summary: Option<String>,
+) -> Result<MeetingChatResult, String> {
+    if refs.is_empty() {
+        return Err("No meetings selected for this chat.".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        run_digest_chat(refs, &question, digest_summary.as_deref(), |delta| {
+            let _ = app.emit(
+                MEETING_CHAT_DELTA_EVENT,
+                MeetingChatDelta {
+                    request_id: request_id.clone(),
+                    delta: delta.to_string(),
+                },
+            );
+        })
+    })
+    .await
+    .map_err(|e| format!("digest chat task failed: {e}"))?
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+
+    fn rf(id: &str, title: &str, date: &str) -> DigestMeetingRef {
+        DigestMeetingRef {
+            id: id.to_string(),
+            title: title.to_string(),
+            date: date.to_string(),
+        }
+    }
+
+    #[test]
+    fn truncate_chars_keeps_short_and_cuts_long() {
+        assert_eq!(truncate_chars("  hi  ", 10), "hi");
+        let long = "a".repeat(50);
+        let out = truncate_chars(&long, 10);
+        assert_eq!(out.chars().count(), 12); // 10 + " …"
+        assert!(out.ends_with(" …"));
+        // Multi-byte safe (no panic on char boundary).
+        let unicode = "नमस्ते दुनिया यह एक परीक्षण है".repeat(3);
+        let _ = truncate_chars(&unicode, 5);
+    }
+
+    #[test]
+    fn pack_into_batches_splits_on_budget() {
+        assert!(pack_into_batches(&[], 100).is_empty());
+        assert_eq!(pack_into_batches(&[10, 20, 30], 100), vec![vec![0, 1, 2]]);
+        assert_eq!(
+            pack_into_batches(&[60, 60, 60], 100),
+            vec![vec![0], vec![1], vec![2]]
+        );
+        assert_eq!(
+            pack_into_batches(&[40, 40, 40, 40], 100),
+            vec![vec![0, 1], vec![2, 3]]
+        );
+        // A single oversized block still gets its own batch.
+        assert_eq!(pack_into_batches(&[500], 100), vec![vec![0]]);
+    }
+
+    #[test]
+    fn build_meeting_block_caps_summary_and_lists_items() {
+        let card = DigestCard {
+            id: "m1".into(),
+            title: "Pricing Sync".into(),
+            date: "16 Jun 2026".into(),
+            summary: "x".repeat(20_000),
+            decisions: vec!["Ship per-seat pricing".into(), "  ".into()],
+            actions: vec![
+                ("Draft the deck".into(), Some("Abhishek".into())),
+                ("Email finance".into(), None),
+            ],
+        };
+        let block = build_meeting_block(&card, 100);
+        assert!(block.contains("### Pricing Sync (16 Jun 2026)"));
+        assert!(block.contains("Summary:"));
+        assert!(block.contains(" …")); // summary truncated
+        assert!(block.contains("- Ship per-seat pricing"));
+        assert!(block.contains("- Abhishek — Draft the deck"));
+        assert!(block.contains("- Email finance"));
+        assert!(!block.contains("-  \n")); // blank decision dropped
+    }
+
+    #[test]
+    fn date_range_handles_same_and_span_and_empty() {
+        assert_eq!(
+            digest_date_range(&[rf("a", "A", "16 Jun 2026"), rf("b", "B", "16 Jun 2026")]),
+            "16 Jun 2026"
+        );
+        assert_eq!(
+            digest_date_range(&[rf("a", "A", "10 Jun 2026"), rf("b", "B", "16 Jun 2026")]),
+            "10 Jun 2026 – 16 Jun 2026"
+        );
+        assert_eq!(digest_date_range(&[rf("a", "A", "")]), "");
+    }
+
+    #[test]
+    fn cache_key_is_order_independent_and_strategy_sensitive() {
+        let a = digest_cache_key(&["m2".into(), "m1".into()], "skip");
+        let b = digest_cache_key(&["m1".into(), "m2".into()], "skip");
+        assert_eq!(a, b, "key must not depend on id order");
+        let c = digest_cache_key(&["m1".into(), "m2".into()], "generate");
+        assert_ne!(b, c, "strategy must change the key");
+    }
+
+    #[test]
+    fn multi_meeting_context_represents_every_meeting() {
+        let meetings = vec![
+            (
+                "Alpha · d1".to_string(),
+                "[00:01] we discussed the banana supply chain\n[00:02] and shipping costs"
+                    .to_string(),
+            ),
+            (
+                "Beta · d2".to_string(),
+                "[00:01] the cat sat\n[00:02] on the mat".to_string(),
+            ),
+        ];
+        let ctx = assemble_multi_meeting_context(&meetings, "banana", 10_000);
+        assert!(ctx.contains("## Alpha · d1"));
+        assert!(ctx.contains("## Beta · d2"));
+        assert!(ctx.contains("banana"));
+        // Empty transcripts are skipped entirely.
+        let with_empty = vec![
+            ("Gamma".to_string(), "   ".to_string()),
+            ("Delta".to_string(), "[00:01] hello world".to_string()),
+        ];
+        let ctx2 = assemble_multi_meeting_context(&with_empty, "hello", 10_000);
+        assert!(!ctx2.contains("## Gamma"));
+        assert!(ctx2.contains("## Delta"));
+    }
+
+    #[test]
+    fn render_markdown_has_sections_and_groups_actions_by_owner() {
+        let result = DigestResult {
+            id: "digest-x".into(),
+            title: "Sentinel Week".into(),
+            date_range: "10 Jun – 16 Jun 2026".into(),
+            meeting_count: 2,
+            included_meeting_ids: vec!["m1".into(), "m2".into()],
+            skipped: vec![DigestSkipped {
+                id: "m3".into(),
+                title: "Untitled".into(),
+                reason: "not analyzed yet".into(),
+            }],
+            executive_summary: "We aligned on pricing and rollout.".into(),
+            themes: vec![DigestTheme {
+                title: "Pricing".into(),
+                detail: "Discussed across two meetings.".into(),
+                meetings: vec!["Kickoff".into(), "Review".into()],
+            }],
+            decisions: vec![DigestDecisionItem {
+                text: "Ship per-seat".into(),
+                meeting: "Kickoff".into(),
+                date: "10 Jun 2026".into(),
+            }],
+            action_items: vec![
+                DigestActionItem {
+                    title: "Draft deck".into(),
+                    owner: Some("Abhishek".into()),
+                    meeting: "Kickoff".into(),
+                    date: String::new(),
+                },
+                DigestActionItem {
+                    title: "Send invite".into(),
+                    owner: Some("Abhishek".into()),
+                    meeting: "Review".into(),
+                    date: String::new(),
+                },
+                DigestActionItem {
+                    title: "Book room".into(),
+                    owner: None,
+                    meeting: "Review".into(),
+                    date: String::new(),
+                },
+            ],
+            trends: vec!["Scope narrowed".into()],
+            open_items: vec!["Confirm legal".into()],
+            per_meeting: vec![DigestPerMeeting {
+                id: "m1".into(),
+                title: "Kickoff".into(),
+                date: "10 Jun 2026".into(),
+                recap: "Set the agenda.".into(),
+                has_intelligence: true,
+            }],
+            markdown: String::new(),
+            provider: "deepseek".into(),
+            model: "deepseek-v4-pro".into(),
+            latency_ms: 1,
+        };
+        let md = render_digest_markdown(&result);
+        assert!(md.starts_with("# Sentinel Week"));
+        assert!(md.contains("10 Jun – 16 Jun 2026 · 2 meetings"));
+        assert!(md.contains("1 meeting skipped (not analyzed)."));
+        assert!(md.contains("## Executive Summary"));
+        assert!(md.contains("## Key Themes"));
+        assert!(md.contains("Meetings: Kickoff, Review"));
+        assert!(md.contains("## Decisions"));
+        assert!(md.contains("- Ship per-seat — Kickoff, 10 Jun 2026"));
+        assert!(md.contains("## Action Items"));
+        assert!(md.contains("**Abhishek**"));
+        assert!(md.contains("**Unassigned**"));
+        // Abhishek's two items grouped under one heading.
+        assert_eq!(md.matches("**Abhishek**").count(), 1);
+        assert!(md.contains("## Meetings"));
+        assert!(md.contains("### Kickoff (10 Jun 2026)"));
+        assert!(!md.contains('_')); // no italics that Lark would render literally
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct MeetingIntelligencePayload {
     #[serde(default)]
