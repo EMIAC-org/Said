@@ -134,13 +134,21 @@ final class WarmDictationHost: ObservableObject {
     /// the warm engine ONLY if the user's session intent is ON, the mic is already
     /// granted (never prompts here — this is a silent lifecycle hook), and no
     /// dictation is in flight. Sets the session persistent ("until I stop it").
-    /// Called on app foreground. We do NOT start the mic engine here — starting it
-    /// on a cold app launch is unreliable and was breaking dictation. The warm
-    /// engine is armed the proven way: after the first foreground dictation
-    /// (DictationController.finish → warmUp). Here we only keep the notch honest.
+    /// Called on app foreground: when the session intent is ON and the mic is
+    /// granted, ARM the warm engine now (this is the Wispr "session starts when the
+    /// app opens" behavior) so the keyboard can dictate in-place. The app is
+    /// foreground here, which is the one place iOS lets the mic start.
     func ensureSessionActive() {
-        if SharedStore.sessionEnabled, streamer.isWarmEngineRunning { extendWarmWindow() }
-        syncLiveActivity()
+        guard SharedStore.sessionEnabled else { syncLiveActivity(); return }
+        guard PermissionManager.currentMicPermission() == .granted else { syncLiveActivity(); return }
+        guard !isStreaming else { return }
+        SharedStore.sessionDurationMinutes = -1   // persistent: never auto-expires
+        isSessionActive = true
+        if streamer.isWarmEngineRunning {
+            extendWarmWindow(); prewarm(); syncLiveActivity()
+        } else {
+            warmUp()   // starts the engine (with retry), then syncs the notch
+        }
     }
 
     /// Turn the session ON/OFF from the header toggle / the notch Stop button. OFF
