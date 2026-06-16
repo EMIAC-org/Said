@@ -1,19 +1,19 @@
 import ActivityKit
 import AirNoteShared
+import AppIntents
 import SwiftUI
 import WidgetKit
 
-/// The Dynamic Island + Lock Screen presentation of the warm dictation session.
-/// The Dynamic Island always renders on a dark background, so foreground colors
-/// here are light regardless of the app's light-mode-first palette.
+/// The Dynamic Island + Lock Screen presentation of the warm dictation session,
+/// with Stop / Resume controls. The Dynamic Island always renders on a dark
+/// background, so foreground colors here are light regardless of the app palette.
 @available(iOS 16.1, *)
 struct DictationSessionLiveActivity: Widget {
     private static let accent = Color(red: 0.62, green: 0.70, blue: 0.98)
 
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DictationSessionAttributes.self) { context in
-            // Lock Screen / notification banner.
-            LockScreenView(listening: context.state.listening)
+            LockScreenView(state: context.state)
                 .activityBackgroundTint(Color.black.opacity(0.86))
                 .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
@@ -22,9 +22,10 @@ struct DictationSessionLiveActivity: Widget {
                     WaveMark(color: Self.accent)
                         .frame(width: 30, height: 26)
                         .padding(.leading, 4)
+                        .opacity(context.state.active ? 1 : 0.45)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    Image(systemName: context.state.listening ? "waveform" : "mic.fill")
+                    Image(systemName: context.state.active ? "waveform" : "pause.circle.fill")
                         .font(.title3)
                         .foregroundStyle(Self.accent)
                         .padding(.trailing, 6)
@@ -34,32 +35,63 @@ struct DictationSessionLiveActivity: Widget {
                         Text("AirNote")
                             .font(.subheadline.weight(.bold))
                             .foregroundStyle(.white)
-                        Text(context.state.listening ? "Listening…" : "Session on")
+                        Text(context.state.active ? "Session on" : "Paused")
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.7))
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text("Tap the AirNote mic in any app to dictate")
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.6))
+                    SessionButton(active: context.state.active, accent: Self.accent)
                 }
             } compactLeading: {
-                WaveMark(color: Self.accent).frame(width: 20, height: 16)
+                WaveMark(color: Self.accent)
+                    .frame(width: 20, height: 16)
+                    .opacity(context.state.active ? 1 : 0.45)
             } compactTrailing: {
-                Image(systemName: context.state.listening ? "waveform" : "mic.fill")
+                Image(systemName: context.state.active ? "waveform" : "pause.fill")
                     .foregroundStyle(Self.accent)
             } minimal: {
-                WaveMark(color: Self.accent).frame(width: 16, height: 14)
+                WaveMark(color: Self.accent)
+                    .frame(width: 16, height: 14)
+                    .opacity(context.state.active ? 1 : 0.45)
             }
             .keylineTint(Self.accent)
         }
     }
 }
 
+/// The Stop / Resume control, driven by App Intents.
+@available(iOS 16.1, *)
+private struct SessionButton: View {
+    var active: Bool
+    var accent: Color
+
+    var body: some View {
+        if #available(iOS 17.0, *) {
+            if active {
+                Button(intent: StopSessionIntent()) {
+                    Label("Stop session", systemImage: "stop.fill")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .tint(accent)
+            } else {
+                Button(intent: ResumeSessionIntent()) {
+                    Label("Resume session", systemImage: "mic.fill")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .tint(accent)
+            }
+        } else {
+            Text(active ? "Tap the AirNote mic in any app" : "Open AirNote to resume")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.6))
+        }
+    }
+}
+
 @available(iOS 16.1, *)
 private struct LockScreenView: View {
-    var listening: Bool
+    var state: DictationSessionAttributes.ContentState
     private let accent = Color(red: 0.62, green: 0.70, blue: 0.98)
 
     var body: some View {
@@ -71,17 +103,19 @@ private struct LockScreenView: View {
                         startPoint: .top, endPoint: .bottom
                     ))
                     .frame(width: 40, height: 40)
+                    .opacity(state.active ? 1 : 0.5)
                 WaveMark(color: .white).frame(width: 22, height: 18)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text("AirNote")
                     .font(.headline)
                     .foregroundStyle(.white)
-                Text(listening ? "Listening…" : "Session on — tap the AirNote mic in any app")
+                Text(state.active ? "Session on — tap the AirNote mic in any app" : "Session paused")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.7))
             }
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
+            SessionButton(active: state.active, accent: accent)
         }
         .padding(14)
     }

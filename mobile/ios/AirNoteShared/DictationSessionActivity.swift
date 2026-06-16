@@ -13,7 +13,12 @@ public struct DictationSessionAttributes: ActivityAttributes {
     public struct ContentState: Codable, Hashable {
         /// True while actively dictating; false when the session is warm/ready.
         public var listening: Bool
-        public init(listening: Bool) { self.listening = listening }
+        /// True when the session is on (show Stop); false when paused (show Resume).
+        public var active: Bool
+        public init(listening: Bool, active: Bool = true) {
+            self.listening = listening
+            self.active = active
+        }
     }
 
     public init() {}

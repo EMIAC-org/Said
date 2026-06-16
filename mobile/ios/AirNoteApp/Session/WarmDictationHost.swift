@@ -67,6 +67,11 @@ final class WarmDictationHost: ObservableObject {
         DarwinSignal.shared.observe(DarwinSignal.stopDictation) { [weak self] in
             Task { @MainActor in await self?.stopDictation() }
         }
+        // The Dynamic Island Stop/Resume buttons flip SharedStore.sessionEnabled,
+        // then signal us to reconcile the warm engine + the Activity.
+        DarwinSignal.shared.observe(DarwinSignal.sessionControl) { [weak self] in
+            Task { @MainActor in self?.setSessionEnabled(SharedStore.sessionEnabled) }
+        }
     }
 
     /// Called (while foreground) right after a handoff dictation completes, to
@@ -155,34 +160,25 @@ final class WarmDictationHost: ObservableObject {
     #if canImport(ActivityKit)
     private var liveActivity: Activity<DictationSessionAttributes>?
 
-    /// Reconcile the Live Activity with the session intent: show one while the
-    /// session is on (adopting an orphan left by a hard app kill), end it when off.
-    /// Idempotent — safe to call on every foreground / ensureSessionActive().
+    /// Reconcile the Live Activity with the session: show it (with a Stop button)
+    /// while the session is genuinely active, and KEEP it (flipped to a Resume
+    /// button) when paused — so the user can stop OR resume from the Dynamic Island.
+    /// Idempotent; adopts an orphan left by a hard app kill.
     private func syncLiveActivity() {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         if liveActivity == nil { liveActivity = Activity<DictationSessionAttributes>.activities.first }
-        if SharedStore.sessionEnabled {
-            guard liveActivity == nil else { return }
-            let content = ActivityContent(
-                state: DictationSessionAttributes.ContentState(listening: false), staleDate: nil
-            )
+        let active = SharedStore.sessionEnabled && PermissionManager.currentMicPermission() == .granted
+        let content = ActivityContent(
+            state: DictationSessionAttributes.ContentState(listening: false, active: active),
+            staleDate: nil
+        )
+        if let activity = liveActivity {
+            Task { await activity.update(content) }
+        } else if active {
+            // Only START a new Activity when the session genuinely goes active.
             liveActivity = try? Activity.request(
                 attributes: DictationSessionAttributes(), content: content, pushType: nil
             )
-        } else {
-            endLiveActivity()
-        }
-    }
-
-    private func endLiveActivity() {
-        let held = liveActivity
-        liveActivity = nil
-        Task {
-            await held?.end(nil, dismissalPolicy: .immediate)
-            // Reap any orphaned activities (e.g. after a hard app kill + relaunch off).
-            for activity in Activity<DictationSessionAttributes>.activities {
-                await activity.end(nil, dismissalPolicy: .immediate)
-            }
         }
     }
     #else

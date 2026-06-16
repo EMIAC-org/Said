@@ -23,6 +23,9 @@ public final class DarwinSignal {
     /// — drive the live waveform so the bars track the user's voice (the warm/handoff
     /// path can't capture audio in-process, so the app pipes the level across).
     public static let liveLevel = "com.emiac.airnote.signal.level"
+    /// Live Activity (Dynamic Island) → app: the session ON/OFF intent changed in
+    /// SharedStore.sessionEnabled (the Stop/Resume button) — reconcile the session.
+    public static let sessionControl = "com.emiac.airnote.signal.session"
 
     private var handlers: [String: () -> Void] = [:]
     private let lock = NSLock()
