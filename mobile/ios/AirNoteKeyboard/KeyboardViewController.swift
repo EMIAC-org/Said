@@ -103,6 +103,12 @@ final class KeyboardViewController: UIInputViewController {
         pad?.stopDeleteTimer()
         streamer.onUpdate = nil
         streamer.hardStop()
+        for name in [
+            DarwinSignal.dictationAck, DarwinSignal.resultReady, DarwinSignal.dictationFailed,
+            DarwinSignal.livePartial, DarwinSignal.liveLevel,
+        ] {
+            DarwinSignal.shared.stopObserving(name)
+        }
     }
 
     override func textDidChange(_ textInput: UITextInput?) {

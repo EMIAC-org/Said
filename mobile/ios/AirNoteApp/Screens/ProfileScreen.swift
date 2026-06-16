@@ -249,7 +249,7 @@ struct ProfileScreen: View {
         Binding(get: { env.outputLanguage }, set: { value in Task { await env.setOutputLanguage(value) } })
     }
     private var toneBinding: Binding<String> {
-        Binding(get: { env.tonePreset }, set: { value in Task { await env.setTonePreset(value) } })
+        Binding(get: { AirNoteTone.coerced(env.tonePreset) }, set: { value in Task { await env.setTonePreset(value) } })
     }
     private var learningBinding: Binding<Bool> {
         Binding(get: { env.learningEnabled }, set: { value in Task { await env.setLearningEnabled(value) } })

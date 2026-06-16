@@ -149,6 +149,13 @@ public final class VoiceStreamingClient {
     private var receiveTask: Task<Void, Never>?
     private var isStopping = false
     private var didReceiveTerminalEvent = false
+    /// Audio frames must not reach the socket until voice.start has been sent, or
+    /// the server drops the leading PCM and the first words are clipped. Opened only
+    /// after the start handshake succeeds.
+    private var didSendStart = false
+    /// Serialises outbound audio frames so frame N+1 never overtakes frame N on the
+    /// cooperative pool (independent Tasks don't preserve submission order).
+    private var audioSendTail: Task<Void, Never>?
     private var interruptionObservers: [NSObjectProtocol] = []
     private var currentSession: MobileSessionResponse?
     private var latestTranscript = ""
@@ -192,6 +199,7 @@ public final class VoiceStreamingClient {
 
         do {
             try await task.send(.string(config.startPayloadJSON(sampleRate: 16_000)))
+            openAudioGate()
             try await startAudioEngine()
         } catch {
             await cancel()
@@ -300,6 +308,7 @@ public final class VoiceStreamingClient {
         receiveTask = Task { [weak self] in await self?.receiveLoop() }
         do {
             try await task.send(.string(config.startPayloadJSON(sampleRate: 16_000)))
+            openAudioGate()
         } catch {
             // The pre-warmed socket had died — open a fresh one and retry once so
             // a stale warm socket never costs the user a failed dictation.
@@ -309,6 +318,7 @@ public final class VoiceStreamingClient {
             receiveTask?.cancel()
             receiveTask = Task { [weak self] in await self?.receiveLoop() }
             try await fresh.send(.string(config.startPayloadJSON(sampleRate: 16_000)))
+            openAudioGate()
         }
         let maxSeconds = session.maxRecordingSeconds ?? BuildConfig.maxRecordingSeconds
         maxDurationTask = Task { [weak self] in
@@ -439,9 +449,17 @@ public final class VoiceStreamingClient {
         }
 
         emit(.level(averageLevel(buffer)))
-        guard let task = audioSendTarget() else { return }
-        Task {
-            try? await task.send(.data(data))
+        // Gate + serialise the send: frames must wait for voice.start (else the
+        // server drops the lead and clips the first words) and must not overtake
+        // one another (independent Tasks don't preserve order). Each send awaits its
+        // predecessor; the audio thread never blocks on the network.
+        stateQueue.sync {
+            guard !isStopping, !didReceiveTerminalEvent, didSendStart, let task = webSocket else { return }
+            let previous = audioSendTail
+            audioSendTail = Task {
+                await previous?.value
+                try? await task.send(.data(data))
+            }
         }
     }
 
@@ -594,7 +612,16 @@ public final class VoiceStreamingClient {
             webSocket = task
             isStopping = false
             didReceiveTerminalEvent = false
+            didSendStart = false
+            audioSendTail?.cancel()
+            audioSendTail = nil
         }
+    }
+
+    /// Open the audio gate once voice.start is on the wire — frames sent before
+    /// this would be dropped by the server (Deepgram not yet connected).
+    private func openAudioGate() {
+        stateQueue.sync { didSendStart = true }
     }
 
     private func currentWebSocket() -> URLSessionWebSocketTask? {
@@ -606,13 +633,6 @@ public final class VoiceStreamingClient {
     private func setWebSocket(_ task: URLSessionWebSocketTask?) {
         stateQueue.sync {
             webSocket = task
-        }
-    }
-
-    private func audioSendTarget() -> URLSessionWebSocketTask? {
-        stateQueue.sync {
-            guard !isStopping, !didReceiveTerminalEvent else { return nil }
-            return webSocket
         }
     }
 

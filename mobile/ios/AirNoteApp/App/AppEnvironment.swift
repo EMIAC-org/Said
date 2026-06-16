@@ -119,11 +119,18 @@ final class AppEnvironment: ObservableObject {
 
     private let onboardingCompleteKey = "airnote.onboarding.complete"
     private var didBootstrap = false
+    private var cancellables = Set<AnyCancellable>()
 
     init(gateway: (any MobileGatewayClient)? = nil, authTokens: GatewayAuthTokenBox = GatewayAuthTokenBox()) {
         self.authTokens = authTokens
         self.gateway = gateway ?? GatewayEnvironment.makeClient(authTokenProvider: { authTokens.accessToken })
         self.account = authTokens.account
+        // Forward the nested PermissionManager's changes so views observing this
+        // environment re-render when mic / keyboard permission state updates (e.g.
+        // after the user returns from iOS Settings).
+        permissions.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
     // MARK: Lifecycle

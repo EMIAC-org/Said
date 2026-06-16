@@ -948,28 +948,30 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         var dataLines: [String] = []
         var content: String?
         var thread = threadID
+        // Dispatch a buffered SSE event; returns true if the stream should end.
+        func dispatch() throws -> Bool {
+            defer { event = ""; dataLines = [] }
+            let dataStr = dataLines.joined(separator: "\n")
+            guard !dataStr.isEmpty else { return false }
+            let obj = (try? JSONSerialization.jsonObject(with: Data(dataStr.utf8))) as? [String: Any]
+            switch event {
+            case "error":
+                throw GatewayError.server(status: 0, code: nil, message: (obj?["message"] as? String) ?? "Divo error")
+            case "done":
+                if let msg = obj?["message"] as? [String: Any] {
+                    content = msg["content"] as? String
+                    thread = (msg["threadId"] as? String) ?? thread
+                }
+            case "meta":
+                thread = (obj?["threadId"] as? String) ?? thread
+            default:
+                break
+            }
+            return event == "done"
+        }
         for try await line in bytes.lines {
             if line.isEmpty {
-                let dataStr = dataLines.joined(separator: "\n")
-                if !dataStr.isEmpty {
-                    let obj = (try? JSONSerialization.jsonObject(with: Data(dataStr.utf8))) as? [String: Any]
-                    switch event {
-                    case "error":
-                        throw GatewayError.server(status: 0, code: nil, message: (obj?["message"] as? String) ?? "Divo error")
-                    case "done":
-                        if let msg = obj?["message"] as? [String: Any] {
-                            content = msg["content"] as? String
-                            thread = (msg["threadId"] as? String) ?? thread
-                        }
-                    case "meta":
-                        thread = (obj?["threadId"] as? String) ?? thread
-                    default:
-                        break
-                    }
-                }
-                if event == "done" || event == "error" { break }
-                event = ""
-                dataLines = []
+                if try dispatch() { break }
                 continue
             }
             if line.hasPrefix(":") { continue }
@@ -979,6 +981,9 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
                 dataLines.append(String(line.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces))
             }
         }
+        // Flush a final event that arrived at EOF without a trailing blank line
+        // (SSE spec dispatches on end-of-stream) so a successful answer isn't lost.
+        _ = try dispatch()
         guard let content, !content.isEmpty else { throw GatewayError.invalidResponse }
         return DivoChatResult(content: content, threadID: thread)
     }

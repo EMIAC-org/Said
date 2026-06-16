@@ -21,6 +21,18 @@ struct AirNoteTone: Identifiable {
     static func label(for key: String) -> String {
         all.first { $0.key == key }?.label ?? key.capitalized
     }
+
+    /// Coerce a stale/unknown tone value (e.g. the legacy "work"/"email"/"notes"
+    /// vocabulary, or a default that predates this list) to a real picker tag, so
+    /// the Settings/Profile tone picker can never render blank.
+    static func coerced(_ key: String) -> String {
+        if all.contains(where: { $0.key == key }) { return key }
+        switch key {
+        case "work", "email": return "professional"
+        case "notes": return "concise"
+        default: return "professional"
+        }
+    }
 }
 
 // MARK: - Stat tile

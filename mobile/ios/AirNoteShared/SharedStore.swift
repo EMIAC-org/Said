@@ -64,8 +64,12 @@ public enum SharedStore {
     /// auto-applied).
     @discardableResult
     public static func addLearnedAlias(heard: String, correct: String) -> Bool {
-        let h = heard.trimmingCharacters(in: .whitespacesAndNewlines)
-        let c = correct.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip surrounding whitespace AND sentence punctuation so a diff that
+        // captured "jai," stores the bare word "jai" and fires on later plain
+        // occurrences (internal punctuation like node.js / n8n is untouched).
+        let strip = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".,;:!?\"'…"))
+        let h = heard.trimmingCharacters(in: strip)
+        let c = correct.trimmingCharacters(in: strip)
         guard LearnedAliasResolver.isSafeToLearn(heard: h, correct: c) else { return false }
         let pair = LearnedAliasPair(heard: h, correct: c)
         var current = learnedAliases.filter {
