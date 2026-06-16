@@ -39,6 +39,7 @@ public enum SharedStore {
         static let workspaceChosenPersonal = "airnote.shared.workspace_chosen_personal"
         static let profileDisplayName = "airnote.shared.profile_display_name"
         static let profileAccentIndex = "airnote.shared.profile_accent_index"
+        static let sessionEnabled = "airnote.shared.session_enabled"
     }
 
     /// Locally cached learned corrections (heard -> meant), captured whenever the
@@ -222,6 +223,15 @@ public enum SharedStore {
     public static var profileAccentIndex: Int {
         get { defaults?.integer(forKey: Key.profileAccentIndex) ?? 0 }
         set { defaults?.set(newValue, forKey: Key.profileAccentIndex) }
+    }
+
+    /// The user's session ON/OFF intent (Wispr-style): when ON, the app keeps the
+    /// mic warm in the background so the keyboard can dictate in-place without
+    /// re-opening the app. Defaults ON. Distinct from the live `sessionWarmUntil`
+    /// runtime stamp and the Settings duration picker (`sessionDurationMinutes`).
+    public static var sessionEnabled: Bool {
+        get { defaults?.object(forKey: Key.sessionEnabled) as? Bool ?? true }
+        set { defaults?.set(newValue, forKey: Key.sessionEnabled) }
     }
 
     // MARK: Dictation preferences (so the keyboard can request the right model/language)

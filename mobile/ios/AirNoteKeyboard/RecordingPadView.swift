@@ -175,10 +175,15 @@ final class RecordingPadView: UIView {
             stack.addArrangedSubview(makePreview(preview))
             stack.addArrangedSubview(makeResultActions())
         } else if let message = recoveryMessage {
-            // Recovery: explain + a labelled repair/open button.
-            stack.addArrangedSubview(makeStatusRow())
-            stack.addArrangedSubview(ErrorDrawer(message: message))
-            stack.addArrangedSubview(makePrimaryActions())
+            if isOpenAppExplainer {
+                // A polished "open the app once" page instead of a plain error.
+                stack.addArrangedSubview(makeOpenAppExplainer())
+            } else {
+                // Recovery: explain + a labelled repair/open button.
+                stack.addArrangedSubview(makeStatusRow())
+                stack.addArrangedSubview(ErrorDrawer(message: message))
+                stack.addArrangedSubview(makePrimaryActions())
+            }
         } else {
             // Hero: a single Mic Orb IS the primary action (tap to start/stop),
             // with a compact mode pill above and the title/waveform/live words
@@ -446,6 +451,105 @@ final class RecordingPadView: UIView {
         row.spacing = 8
         row.alignment = .fill
         return row
+    }
+
+    /// True for the recovery states whose fix is simply "open AirNote".
+    private var isOpenAppExplainer: Bool {
+        switch state {
+        case .needsMainAppSession, .staleSession, .needsFullAccess: return true
+        default: return false
+        }
+    }
+
+    /// A polished "open the app once" page — a gradient logo badge, a friendly
+    /// headline + explanation, and a prominent Open button — shown instead of the
+    /// plain error drawer for the states where the fix is just to open AirNote.
+    private func makeOpenAppExplainer() -> UIView {
+        let badgeSize: CGFloat = 54
+        let badge = UIView()
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        badge.layer.cornerRadius = 16
+        badge.layer.cornerCurve = .continuous
+        let grad = CAGradientLayer()
+        grad.frame = CGRect(x: 0, y: 0, width: badgeSize, height: badgeSize)
+        grad.colors = KeyboardTheme.accentGradientStops
+        grad.startPoint = CGPoint(x: 0.5, y: 0)
+        grad.endPoint = CGPoint(x: 0.5, y: 1)
+        grad.cornerRadius = 16
+        grad.cornerCurve = .continuous
+        badge.layer.insertSublayer(grad, at: 0)
+        badge.layer.shadowColor = KeyboardTheme.accent.cgColor
+        badge.layer.shadowOpacity = 0.35
+        badge.layer.shadowRadius = 12
+        badge.layer.shadowOffset = CGSize(width: 0, height: 4)
+        badge.layer.shadowPath = UIBezierPath(roundedRect: CGRect(x: 0, y: 0, width: badgeSize, height: badgeSize), cornerRadius: 16).cgPath
+        let glyph = UIImageView(image: UIImage(
+            systemName: "waveform",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 24, weight: .bold)
+        ))
+        glyph.tintColor = .white
+        glyph.translatesAutoresizingMaskIntoConstraints = false
+        badge.addSubview(glyph)
+        NSLayoutConstraint.activate([
+            badge.widthAnchor.constraint(equalToConstant: badgeSize),
+            badge.heightAnchor.constraint(equalToConstant: badgeSize),
+            glyph.centerXAnchor.constraint(equalTo: badge.centerXAnchor),
+            glyph.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
+        ])
+
+        let title = UILabel()
+        title.font = .preferredFont(forTextStyle: .headline)
+        title.adjustsFontForContentSizeCategory = true
+        title.textColor = KeyboardTheme.foreground
+        title.text = explainerTitle
+        title.textAlignment = .center
+        title.numberOfLines = 2
+
+        let subtitle = UILabel()
+        subtitle.font = .preferredFont(forTextStyle: .subheadline)
+        subtitle.adjustsFontForContentSizeCategory = true
+        subtitle.textColor = KeyboardTheme.muted
+        subtitle.text = explainerSubtitle
+        subtitle.textAlignment = .center
+        subtitle.numberOfLines = 4
+
+        let open = actionButton(title: "Open AirNote", systemImage: "arrow.up.forward.app.fill", color: KeyboardTheme.accent)
+        open.addTarget(self, action: #selector(primaryTapped), for: .touchUpInside)
+        open.accessibilityHint = "Opens the AirNote app"
+        let openRow = UIStackView(arrangedSubviews: [open])
+        openRow.axis = .horizontal
+        openRow.alignment = .fill
+
+        let stack = UIStackView(arrangedSubviews: [badge, title, subtitle, openRow])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 9
+        stack.setCustomSpacing(14, after: subtitle)
+        openRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        stack.accessibilityLabel = "\(explainerTitle). \(explainerSubtitle)"
+        return stack
+    }
+
+    private var explainerTitle: String {
+        switch state {
+        case .needsMainAppSession: return "Open AirNote once"
+        case .staleSession: return "Wake AirNote up"
+        case .needsFullAccess: return "Turn on Full Access"
+        default: return "Open AirNote"
+        }
+    }
+
+    private var explainerSubtitle: String {
+        switch state {
+        case .needsMainAppSession:
+            return "Open the app and sign in once. Then come back here and dictate in any app — no need to reopen it."
+        case .staleSession:
+            return "Your session went to sleep. Tap to reopen AirNote, then dictate from here again."
+        case .needsFullAccess:
+            return "AirNote needs Full Access for cloud dictation. Manual typing keeps working in the meantime."
+        default:
+            return "Tap to open AirNote."
+        }
     }
 
     /// A slow, soft breathing scale on the Stop button while recording — signals

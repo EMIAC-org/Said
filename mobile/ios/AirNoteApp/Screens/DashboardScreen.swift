@@ -47,6 +47,43 @@ struct DashboardScreen: View {
         }
     }
 
+    /// Wispr-style session on/off: when on, the mic stays warm so the keyboard can
+    /// dictate in-place without re-opening the app. Shown once dictation can work.
+    @ViewBuilder private var sessionControl: some View {
+        if env.dictationAvailable {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(warmHost.isSessionActive ? AirNoteDesign.success : AirNoteDesign.muted)
+                    .frame(width: 7, height: 7)
+                Text(warmHost.isSessionActive ? "On" : "Off")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(AirNoteDesign.muted)
+                Toggle("", isOn: sessionBinding)
+                    .labelsHidden()
+                    .tint(AirNoteDesign.success)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Dictation session")
+            .accessibilityValue(warmHost.isSessionActive ? "On" : "Off")
+        } else {
+            AirNoteStatusPill(systemImage: "clock.fill", text: "Setup", color: AirNoteDesign.warning)
+        }
+    }
+
+    private var sessionBinding: Binding<Bool> {
+        Binding(
+            get: { warmHost.isSessionActive },
+            set: { on in
+                Task {
+                    if on, env.permissions.micPermission != .granted {
+                        _ = await env.permissions.requestMic()
+                    }
+                    WarmDictationHost.shared.setSessionEnabled(on)
+                }
+            }
+        )
+    }
+
     private var header: some View {
         HStack(spacing: 12) {
             AirNoteLogoTile(size: 42)
@@ -60,11 +97,7 @@ struct DashboardScreen: View {
                     .lineLimit(1)
             }
             Spacer()
-            AirNoteStatusPill(
-                systemImage: env.dictationAvailable ? "bolt.fill" : "clock.fill",
-                text: env.dictationAvailable ? "Ready" : "Setup",
-                color: env.dictationAvailable ? AirNoteDesign.success : AirNoteDesign.warning
-            )
+            sessionControl
             NavigationLink {
                 ProfileScreen()
             } label: {

@@ -13,6 +13,9 @@ struct AirNoteApp: App {
                 .task {
                     WarmDictationHost.shared.startObserving()
                     await environment.bootstrap()
+                    // Wispr-style: the session turns on when the app opens (no-op
+                    // unless the user's session intent is ON and the mic is granted).
+                    WarmDictationHost.shared.ensureSessionActive()
                 }
                 .onOpenURL { url in
                     Task { await environment.handleDeepLink(url) }
@@ -22,6 +25,7 @@ struct AirNoteApp: App {
                         WarmDictationHost.shared.startObserving()
                         environment.permissions.refreshAll()
                         environment.checkKeyboardHandoffRequest()
+                        WarmDictationHost.shared.ensureSessionActive()
                     }
                 }
         }

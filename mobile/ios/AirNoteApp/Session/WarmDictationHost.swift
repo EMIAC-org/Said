@@ -18,6 +18,12 @@ final class WarmDictationHost: ObservableObject {
     /// When the warm session expires (drives the in-app "keyboard ready" status).
     @Published private(set) var warmUntil: Date?
 
+    /// The user's session ON/OFF intent (Wispr-style), surfaced for the header
+    /// toggle. Reflects SharedStore.sessionEnabled — NOT the transient warm-engine
+    /// state (which tears down + re-arms every dictation), so the toggle never
+    /// flickers off mid-use.
+    @Published private(set) var isSessionActive: Bool = SharedStore.sessionEnabled
+
     private let streamer = VoiceStreamingClient()
     private let gateway = GatewayEnvironment.makeClient()
     private var warmWindowTask: Task<Void, Never>?
@@ -103,6 +109,34 @@ final class WarmDictationHost: ObservableObject {
         SharedStore.sessionWarmUntil = nil
         warmUntil = nil
         streamer.stopWarmEngine()
+    }
+
+    // MARK: Session intent (Wispr-style persistent session)
+
+    /// Auto-start entry — idempotent, safe to call on every app foreground. Starts
+    /// the warm engine ONLY if the user's session intent is ON, the mic is already
+    /// granted (never prompts here — this is a silent lifecycle hook), and no
+    /// dictation is in flight. Sets the session persistent ("until I stop it").
+    func ensureSessionActive() {
+        guard SharedStore.sessionEnabled else { return }
+        guard PermissionManager.currentMicPermission() == .granted else { return }
+        guard !isStreaming else { return }
+        SharedStore.sessionDurationMinutes = -1   // persistent: never auto-expires
+        if streamer.isWarmEngineRunning {
+            extendWarmWindow()
+            prewarm()
+        } else {
+            warmUp()
+        }
+        isSessionActive = true
+    }
+
+    /// Turn the session ON/OFF from the header toggle. ON starts it now (this is a
+    /// foreground user gesture); OFF ends the warm session and stops it re-arming.
+    func setSessionEnabled(_ on: Bool) {
+        SharedStore.sessionEnabled = on
+        isSessionActive = on
+        if on { ensureSessionActive() } else { endWarmSession() }
     }
 
     // MARK: Streaming
