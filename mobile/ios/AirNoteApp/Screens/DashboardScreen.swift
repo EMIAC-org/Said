@@ -17,9 +17,6 @@ struct DashboardScreen: View {
                         header
                         recordCard
                         tryAnywhereCard
-                        if env.permissions.keyboard == .ready && env.dictationAvailable {
-                            keyboardSessionCard
-                        }
                         if !env.missingRequiredProviders.isEmpty {
                             voiceKeysNudge
                         }
