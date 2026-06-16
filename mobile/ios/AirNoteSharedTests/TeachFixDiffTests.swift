@@ -73,4 +73,61 @@ final class TeachFixDiffTests: XCTestCase {
         )
         XCTAssertEqual(outcome, .edited("Jhansi"))
     }
+
+    // MARK: Both-sides reconstruction (cursor left mid-insertion)
+
+    func testReconstructsEditFromBothSidesOfCursor() {
+        // We inserted "jaan bhavani ladle", the user fixed "jaan"->"jai" and left
+        // the cursor right after "jai". Reading only the before-cursor text would
+        // capture just "jai" and over-replace; both sides reconstruct the whole edit.
+        let outcome = TeachFixDiff.evaluate(
+            insertedText: "jaan bhavani ladle",
+            insertPrefix: "",
+            currentBeforeCursor: "jai",
+            insertSuffix: "",
+            currentAfterCursor: " bhavani ladle"
+        )
+        XCTAssertEqual(outcome, .edited("jai bhavani ladle"))
+    }
+
+    // MARK: changedSegments (every changed word-run is its own pair)
+
+    private func pairs(_ original: String, _ edited: String) -> [[String]] {
+        TeachFixDiff.changedSegments(original: original, edited: edited).map { [$0.heard, $0.correct] }
+    }
+
+    func testSingleWordCorrectionIsOnePair() {
+        XCTAssertEqual(pairs("jaan bhavani ladle", "jai bhavani ladle"), [["jaan", "jai"]])
+    }
+
+    func testTwoNonAdjacentCorrectionsStaySeparate() {
+        // The exact bug the user hit: "jaan … ladle" -> "jai … laddu" must teach
+        // TWO precise rules, not collapse "jaan bhavani ladle" -> "jai".
+        XCTAssertEqual(
+            pairs("jaan bhavani ladle", "jai bhavani laddu"),
+            [["jaan", "jai"], ["ladle", "laddu"]]
+        )
+    }
+
+    func testAdjacentChangesAreOneSpan() {
+        // Adjacent edits with no anchor between them are indistinguishable from a
+        // phrase correction, so they form a single span.
+        XCTAssertEqual(pairs("ankur gupta hello", "anugra das hello"), [["ankur gupta", "anugra das"]])
+    }
+
+    func testWholeReplacementCollapsesWhenNoCommonWords() {
+        XCTAssertEqual(pairs("jaan bhavani ladle", "jai"), [["jaan bhavani ladle", "jai"]])
+    }
+
+    func testNoChangeYieldsNoPairs() {
+        XCTAssertTrue(pairs("hello world", "hello world").isEmpty)
+    }
+
+    func testPureInsertionYieldsNoPair() {
+        XCTAssertTrue(pairs("hello", "hello world").isEmpty)
+    }
+
+    func testPureDeletionYieldsNoPair() {
+        XCTAssertTrue(pairs("hello world", "hello").isEmpty)
+    }
 }

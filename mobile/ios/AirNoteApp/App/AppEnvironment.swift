@@ -759,7 +759,7 @@ final class AppEnvironment: ObservableObject {
         learningItem = item
         learningDraftText = item.displayText
         learningCandidates = []
-        learningStatus = "Edit the kept text, then analyze the correction"
+        learningStatus = "Fix the text, then tap Learn."
         learningWorking = false
     }
 
@@ -834,6 +834,56 @@ final class AppEnvironment: ObservableObject {
         } catch {
             if handleUnauthorized(error) { return }
             learningStatus = "Could not confirm learning"
+        }
+    }
+
+    /// One-step History learn: the user fixes the kept text and taps Learn. We
+    /// compute the word-level diff locally (each changed word-run -> its own exact
+    /// rule, stored on-device immediately so it applies even if the server's
+    /// auto-learn gate rejects it) and best-effort teach the server too. No
+    /// separate "analyze" step.
+    func learnFromHistory(kept rawKept: String) async {
+        guard let item = learningItem else { return }
+        let original = item.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let edited = rawKept.trimmingCharacters(in: .whitespacesAndNewlines)
+        learningDraftText = edited
+        guard !edited.isEmpty else { learningStatus = "Type what it should have said."; return }
+        guard edited != original else { learningStatus = "No change to learn — edit the text first."; return }
+        learningWorking = true
+        defer { learningWorking = false }
+
+        var learned: [String] = []
+        for seg in TeachFixDiff.changedSegments(original: original, edited: edited) {
+            if SharedStore.addLearnedAlias(heard: seg.heard, correct: seg.correct) {
+                learned.append(seg.correct)
+            }
+        }
+
+        if let analysis = try? await gateway.analyzeEdit(
+            recordingID: item.learningRecordingID,
+            transcript: item.transcriptText.isEmpty ? original : item.transcriptText,
+            aiOutput: item.learningAIOutput,
+            userKept: edited
+        ) {
+            for c in analysis.candidates {
+                if SharedStore.addLearnedAlias(heard: c.original, correct: c.corrected), !learned.contains(c.corrected) {
+                    learned.append(c.corrected)
+                }
+            }
+            let learnable = analysis.candidates.filter(\.learnable)
+            if !learnable.isEmpty {
+                _ = try? await gateway.confirmLearning(recordingID: item.learningRecordingID, items: learnable)
+            }
+        }
+
+        await refreshVocabulary()
+        if learned.isEmpty {
+            learningStatus = "That edit's too common to learn — try a name or brand."
+        } else {
+            learningStatus = "✓ Learned \(learned.joined(separator: ", ")) — AirNote will use it next time."
+            let reviewedID = item.id
+            try? await Task.sleep(nanoseconds: 1_100_000_000)
+            if learningItem?.id == reviewedID { cancelLearningReview() }
         }
     }
 

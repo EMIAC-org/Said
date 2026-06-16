@@ -62,12 +62,35 @@ public enum LearnedAliasResolver {
         let c = correct.trimmingCharacters(in: .whitespacesAndNewlines)
         let hn = h.lowercased(), cn = c.lowercased()
         guard h.count >= 2, !hn.isEmpty, !cn.isEmpty, hn != cn else { return false }
-        guard wordCount(h) <= 4, wordCount(c) <= 4 else { return false }
+        guard wordCount(h) <= 5, wordCount(c) <= 5 else { return false }
         guard !isCommon(hn), !isCommon(cn) else { return false }
-        // The target must look like a custom term (name/brand/code), not an
-        // ordinary lowercase word — else we'd risk rewriting normal speech.
+        // A protected target (Name/brand/code) or a multi-word phrase is always
+        // safe to learn.
         let targetIsProtected = c.contains { $0.isUppercase || $0.isNumber || "_-./@".contains($0) }
-        return targetIsProtected || wordCount(h) > 1
+        if targetIsProtected || wordCount(h) > 1 { return true }
+        // A single lowercase word (a name typed lowercase, e.g. "jaan" -> "jai") is
+        // allowed ONLY when it looks like a real STT mis-hearing — shared onset +
+        // close spelling — so a rephrase ("hello" -> "world") is never learned as a
+        // rewrite rule. (Matches the desktop, which learns lowercase names.)
+        return hn.first == cn.first && editDistance(hn, cn) <= max(1, max(hn.count, cn.count) * 6 / 10)
+    }
+
+    /// Levenshtein edit distance, for the single-word mis-hearing check.
+    static func editDistance(_ a: String, _ b: String) -> Int {
+        let s = Array(a), t = Array(b)
+        if s.isEmpty { return t.count }
+        if t.isEmpty { return s.count }
+        var prev = Array(0...t.count)
+        var cur = Array(repeating: 0, count: t.count + 1)
+        for i in 1...s.count {
+            cur[0] = i
+            for j in 1...t.count {
+                let cost = s[i - 1] == t[j - 1] ? 0 : 1
+                cur[j] = Swift.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            }
+            swap(&prev, &cur)
+        }
+        return prev[t.count]
     }
 
     private static func isCommon(_ normalized: String) -> Bool {

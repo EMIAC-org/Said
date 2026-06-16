@@ -95,33 +95,69 @@ struct HistoryScreen: View {
 private struct HistoryCard: View {
     @EnvironmentObject private var env: AppEnvironment
     var item: RuntimeHistoryItem
+    @State private var expanded = false
+    @State private var copied = false
+
+    /// Long Hinglish dictations are collapsed behind "Read more" so the timeline
+    /// stays scannable — matches the desktop's 50-word truncation.
+    private static let truncateWords = 50
+
+    private var words: [Substring] {
+        item.displayText.split { $0 == " " || $0 == "\t" || $0 == "\n" }
+    }
+
+    private var isLong: Bool { words.count > Self.truncateWords }
+
+    private var shownText: String {
+        guard isLong, !expanded else { return item.displayText }
+        return words.prefix(Self.truncateWords).joined(separator: " ") + "…"
+    }
+
+    private var hasHeard: Bool {
+        !item.transcriptText.isEmpty && item.transcriptText != item.displayText
+    }
 
     var body: some View {
         AirNoteCard(padding: 14) {
             VStack(alignment: .leading, spacing: 10) {
-                Text(item.displayText)
+                Text(shownText)
                     .font(.subheadline)
                     .foregroundStyle(AirNoteDesign.foreground)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                if !item.transcriptText.isEmpty, item.transcriptText != item.displayText {
-                    Text(item.transcriptText)
+                if isLong {
+                    Button(expanded ? "Show less" : "Read more") { expanded.toggle() }
+                        .font(.caption.weight(.bold))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(AirNoteDesign.accent)
+                }
+                if hasHeard {
+                    Text("Heard: \(item.transcriptText)")
                         .font(.caption)
                         .foregroundStyle(AirNoteDesign.muted)
-                        .lineLimit(2)
+                        .lineLimit(expanded ? nil : 2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 10) {
                     Text(item.createdAt, style: .time)
                         .font(.caption2)
                         .foregroundStyle(AirNoteDesign.muted)
+                    Text("·").font(.caption2).foregroundStyle(AirNoteDesign.muted)
+                    Text("\(words.count) word\(words.count == 1 ? "" : "s")")
+                        .font(.caption2)
+                        .foregroundStyle(AirNoteDesign.muted)
+                        .monospacedDigit()
                     Spacer()
                     Button {
                         UIPasteboard.general.string = item.displayText
+                        copied = true
+                        Task { try? await Task.sleep(nanoseconds: 1_500_000_000); copied = false }
                     } label: {
-                        Image(systemName: "doc.on.doc")
+                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(AirNoteDesign.accent)
+                    .foregroundStyle(copied ? AirNoteDesign.success : AirNoteDesign.accent)
+                    .accessibilityLabel("Copy text")
                     Button {
                         env.startLearningReview(item)
                     } label: {
@@ -133,18 +169,38 @@ private struct HistoryCard: View {
                     .foregroundStyle(AirNoteDesign.accent)
                     .accessibilityLabel("Teach a correction")
                     .accessibilityHint("Fix this dictation to teach AirNote the right spelling")
-                    Button(role: .destructive) {
-                        Task { await env.deleteHistoryItem(item) }
+                    Menu {
+                        ShareLink(item: item.displayText) {
+                            Label("Share text", systemImage: "square.and.arrow.up")
+                        }
+                        Button {
+                            UIPasteboard.general.string = item.displayText
+                        } label: {
+                            Label("Copy text", systemImage: "doc.on.doc")
+                        }
+                        if hasHeard {
+                            Button {
+                                UIPasteboard.general.string = item.transcriptText
+                            } label: {
+                                Label("Copy heard (STT)", systemImage: "waveform")
+                            }
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            Task { await env.deleteHistoryItem(item) }
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
                     } label: {
-                        Image(systemName: "trash")
+                        Image(systemName: "ellipsis.circle")
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(AirNoteDesign.danger)
+                    .menuStyle(.borderlessButton)
+                    .foregroundStyle(AirNoteDesign.muted)
+                    .accessibilityLabel("More options")
                 }
                 .font(.system(size: 15, weight: .semibold))
             }
         }
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -153,7 +209,6 @@ struct LearningReviewSheet: View {
     @EnvironmentObject private var env: AppEnvironment
     @Environment(\.dismiss) private var dismiss
     @State private var draftText = ""
-    @State private var selectedIDs: Set<String> = []
 
     private var learningStatusColor: Color {
         let status = env.learningStatus
@@ -199,60 +254,14 @@ struct LearningReviewSheet: View {
                         }
                     }
 
-                    if !env.learningCandidates.isEmpty {
-                        AirNoteCard {
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack {
-                                    AirNoteSectionLabel(text: "Teach AirNote")
-                                    Spacer()
-                                    Text("\(selectedIDs.count) of \(env.learningCandidates.count)")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(AirNoteDesign.muted)
-                                }
-                                ForEach(env.learningCandidates) { candidate in
-                                    Button { toggle(candidate.id) } label: {
-                                        HStack(spacing: 10) {
-                                            Image(systemName: selectedIDs.contains(candidate.id) ? "checkmark.circle.fill" : "circle")
-                                                .foregroundStyle(selectedIDs.contains(candidate.id) ? AirNoteDesign.accent : AirNoteDesign.muted)
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(candidate.corrected.isEmpty ? "Correction" : candidate.corrected)
-                                                    .font(.subheadline.weight(.semibold))
-                                                    .foregroundStyle(AirNoteDesign.foreground)
-                                                if !candidate.original.isEmpty {
-                                                    Text("heard as “\(candidate.original)”")
-                                                        .font(.caption)
-                                                        .foregroundStyle(AirNoteDesign.muted)
-                                                }
-                                            }
-                                            Spacer()
-                                            AirNoteChip(text: candidate.termType.replacingOccurrences(of: "_", with: " "))
-                                        }
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .padding(.vertical, 3)
-                                }
-                            }
-                        }
+                    Button {
+                        Task { await env.learnFromHistory(kept: draftText) }
+                    } label: {
+                        Label(env.learningWorking ? "Learning…" : "Learn this fix", systemImage: "checkmark.seal.fill")
+                            .frame(maxWidth: .infinity)
                     }
-
-                    HStack(spacing: 10) {
-                        Button {
-                            Task { await env.analyzeLearningEdit(kept: draftText) }
-                        } label: {
-                            Label(env.learningWorking ? "Analyzing…" : "Analyze", systemImage: "magnifyingglass")
-                        }
-                        .buttonStyle(AirNoteGhostButtonStyle())
-                        .disabled(env.learningWorking || draftText.trimmingCharacters(in: .whitespaces).isEmpty)
-
-                        Button {
-                            Task { await env.confirmLearning(selectedIDs: selectedIDs) }
-                        } label: {
-                            Label("Learn", systemImage: "checkmark.seal.fill")
-                        }
-                        .buttonStyle(AirNotePrimaryButtonStyle())
-                        .disabled(env.learningWorking || selectedIDs.isEmpty)
-                    }
+                    .buttonStyle(AirNotePrimaryButtonStyle())
+                    .disabled(env.learningWorking || draftText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
                 .padding(18)
             }
@@ -265,13 +274,5 @@ struct LearningReviewSheet: View {
             }
         }
         .onAppear { draftText = env.learningDraftText }
-        .onChange(of: env.learningCandidates) { _, candidates in
-            // Pre-select every safe candidate; the user can deselect any.
-            selectedIDs = Set(candidates.filter(\.learnable).map(\.id))
-        }
-    }
-
-    private func toggle(_ id: String) {
-        if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
     }
 }

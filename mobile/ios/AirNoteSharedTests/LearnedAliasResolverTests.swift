@@ -89,4 +89,67 @@ final class LearnedAliasResolverTests: XCTestCase {
         XCTAssertFalse(LearnedAliasResolver.isSafe(heard: "abc", correct: "abc"))
         XCTAssertFalse(LearnedAliasResolver.isSafe(heard: "a", correct: "Anugra")) // too short
     }
+
+    // MARK: Single lowercase word — the user's real case
+
+    func testLowercaseMishearingIsLearned() {
+        // "jaan" -> "jai" and "ladle" -> "laddu" are lowercase single words but
+        // clear STT mis-hearings (shared onset, close spelling). These MUST learn —
+        // this is exactly what the user reported wasn't working.
+        XCTAssertTrue(LearnedAliasResolver.isSafe(heard: "jaan", correct: "jai"))
+        XCTAssertTrue(LearnedAliasResolver.isSafe(heard: "ladle", correct: "laddu"))
+    }
+
+    func testLowercaseRephraseIsRejected() {
+        // A different word entirely (different onset) is a rephrase, not a
+        // mis-hearing — never learn it as a blanket rewrite.
+        XCTAssertFalse(LearnedAliasResolver.isSafe(heard: "hello", correct: "world"))
+        XCTAssertFalse(LearnedAliasResolver.isSafe(heard: "great", correct: "awful"))
+    }
+
+    func testEditDistanceSanity() {
+        XCTAssertEqual(LearnedAliasResolver.editDistance("jaan", "jai"), 2)
+        XCTAssertEqual(LearnedAliasResolver.editDistance("ladle", "laddu"), 2)
+        XCTAssertEqual(LearnedAliasResolver.editDistance("abc", "abc"), 0)
+        XCTAssertEqual(LearnedAliasResolver.editDistance("", "abc"), 3)
+    }
+
+    // MARK: End-to-end — diff → safety gate → apply (the whole learn-from-edit path)
+
+    func testMultiWordTeachThenApply() {
+        // 1) The user fixed "jaan bhavani ladle" -> "jai bhavani laddu".
+        // 2) The diff isolates each changed word.
+        // 3) The safety gate keeps both (lowercase mis-hearings).
+        // 4) Next dictation of the same phrase is auto-corrected.
+        var learned: [LearnedAliasPair] = []
+        for seg in TeachFixDiff.changedSegments(original: "jaan bhavani ladle", edited: "jai bhavani laddu") {
+            if LearnedAliasResolver.isSafe(heard: seg.heard, correct: seg.correct) {
+                learned.append(LearnedAliasPair(heard: seg.heard, correct: seg.correct))
+            }
+        }
+        XCTAssertEqual(learned.count, 2)
+        let out = LearnedAliasResolver.apply(
+            "jaan bhavani ladle",
+            transcript: "jaan bhavani ladle",
+            aliases: learned
+        )
+        XCTAssertEqual(out, "jai bhavani laddu")
+    }
+
+    func testTaughtNameLearnedFromHistoryAppliesLater() {
+        // "ankur gupta" -> "anugra" (multi-word) learns, then applies to new text.
+        var learned: [LearnedAliasPair] = []
+        for seg in TeachFixDiff.changedSegments(original: "tell ankur gupta hi", edited: "tell anugra hi") {
+            if LearnedAliasResolver.isSafe(heard: seg.heard, correct: seg.correct) {
+                learned.append(LearnedAliasPair(heard: seg.heard, correct: seg.correct))
+            }
+        }
+        XCTAssertFalse(learned.isEmpty)
+        let out = LearnedAliasResolver.apply(
+            "ankur gupta is here",
+            transcript: "ankur gupta is here",
+            aliases: learned
+        )
+        XCTAssertEqual(out, "anugra is here")
+    }
 }
