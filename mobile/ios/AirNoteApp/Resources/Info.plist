@@ -48,6 +48,8 @@
 	<array>
 		<string>audio</string>
 	</array>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>AirNote records only after you tap record so it can transcribe and polish your dictation.</string>
 	<key>UIApplicationSceneManifest</key>

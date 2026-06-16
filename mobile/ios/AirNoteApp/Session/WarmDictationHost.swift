@@ -1,6 +1,9 @@
 import AirNoteShared
 import Foundation
 import UIKit
+#if canImport(ActivityKit)
+import ActivityKit
+#endif
 
 /// Keeps the microphone warm in the background after a dictation so the keyboard
 /// can dictate IN-PLACE (no app re-foreground) — the Wispr "session" model.
@@ -118,6 +121,9 @@ final class WarmDictationHost: ObservableObject {
     /// granted (never prompts here — this is a silent lifecycle hook), and no
     /// dictation is in flight. Sets the session persistent ("until I stop it").
     func ensureSessionActive() {
+        // Always reconcile the Dynamic Island Live Activity with the session intent,
+        // even when we early-return (e.g. session off, or mic not yet granted).
+        defer { syncLiveActivity() }
         guard SharedStore.sessionEnabled else { return }
         guard PermissionManager.currentMicPermission() == .granted else { return }
         guard !isStreaming else { return }
@@ -136,8 +142,52 @@ final class WarmDictationHost: ObservableObject {
     func setSessionEnabled(_ on: Bool) {
         SharedStore.sessionEnabled = on
         isSessionActive = on
-        if on { ensureSessionActive() } else { endWarmSession() }
+        if on {
+            ensureSessionActive()
+        } else {
+            endWarmSession()
+            syncLiveActivity()
+        }
     }
+
+    // MARK: Dynamic Island Live Activity
+
+    #if canImport(ActivityKit)
+    private var liveActivity: Activity<DictationSessionAttributes>?
+
+    /// Reconcile the Live Activity with the session intent: show one while the
+    /// session is on (adopting an orphan left by a hard app kill), end it when off.
+    /// Idempotent — safe to call on every foreground / ensureSessionActive().
+    private func syncLiveActivity() {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        if liveActivity == nil { liveActivity = Activity<DictationSessionAttributes>.activities.first }
+        if SharedStore.sessionEnabled {
+            guard liveActivity == nil else { return }
+            let content = ActivityContent(
+                state: DictationSessionAttributes.ContentState(listening: false), staleDate: nil
+            )
+            liveActivity = try? Activity.request(
+                attributes: DictationSessionAttributes(), content: content, pushType: nil
+            )
+        } else {
+            endLiveActivity()
+        }
+    }
+
+    private func endLiveActivity() {
+        let held = liveActivity
+        liveActivity = nil
+        Task {
+            await held?.end(nil, dismissalPolicy: .immediate)
+            // Reap any orphaned activities (e.g. after a hard app kill + relaunch off).
+            for activity in Activity<DictationSessionAttributes>.activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
+    }
+    #else
+    private func syncLiveActivity() {}
+    #endif
 
     // MARK: Streaming
 
