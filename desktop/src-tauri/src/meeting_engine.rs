@@ -7371,21 +7371,21 @@ struct DigestActionPayload {
 }
 
 // Validated, serialized digest returned to the frontend.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DigestTheme {
     title: String,
     detail: String,
     meetings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DigestDecisionItem {
     text: String,
     meeting: String,
     date: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DigestActionItem {
     title: String,
     owner: Option<String>,
@@ -7393,7 +7393,7 @@ pub struct DigestActionItem {
     date: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DigestPerMeeting {
     id: String,
     title: String,
@@ -7402,14 +7402,14 @@ pub struct DigestPerMeeting {
     has_intelligence: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DigestSkipped {
     id: String,
     title: String,
     reason: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DigestResult {
     /// Stable key for the selection (frontend cache + chat reset key).
     id: String,
@@ -7430,6 +7430,9 @@ pub struct DigestResult {
     provider: String,
     model: String,
     latency_ms: u64,
+    /// When this digest was generated (ms since epoch); 0 for legacy snapshots.
+    #[serde(default)]
+    created_at: u64,
 }
 
 /// Truncate to `max_chars` on a char boundary, appending " …" when cut.
@@ -8066,8 +8069,10 @@ fn run_meeting_digest(refs: Vec<DigestMeetingRef>, missing: &str) -> Result<Dige
         provider,
         model,
         latency_ms,
+        created_at: now_ms(),
     };
     result.markdown = render_digest_markdown(&result);
+    save_digest_to_history(&result);
     Ok(result)
 }
 
@@ -8167,6 +8172,99 @@ fn run_digest_chat(
         transcript_source: format!("{} meetings", refs.len()),
         answer,
     })
+}
+
+fn digests_dir() -> PathBuf {
+    said_core::paths::data_dir()
+        .join("meetings")
+        .join(".digests")
+}
+
+/// Validate a digest id before using it in a path (prevents traversal).
+fn safe_digest_id(id: &str) -> bool {
+    id.starts_with("digest-")
+        && id.len() <= 64
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Persist a generated digest so it survives tab switches and app restarts.
+/// Keyed by the digest id (same selection+strategy overwrites in place).
+fn save_digest_to_history(result: &DigestResult) {
+    if !safe_digest_id(&result.id) {
+        return;
+    }
+    let dir = digests_dir();
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join(format!("{}.json", result.id));
+    match serde_json::to_vec_pretty(result) {
+        Ok(bytes) => {
+            if let Err(e) = write_atomic(&path, bytes) {
+                tracing::warn!(error = %e, "[meeting_engine] failed to save digest history");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "[meeting_engine] failed to serialize digest"),
+    }
+}
+
+/// Lightweight entry for the digest history panel.
+#[derive(Clone, Debug, Serialize)]
+pub struct DigestHistoryEntry {
+    id: String,
+    title: String,
+    date_range: String,
+    meeting_count: usize,
+    created_at: u64,
+}
+
+/// List saved digests, most recent first.
+#[tauri::command]
+pub fn meeting_engine_list_digests() -> Vec<DigestHistoryEntry> {
+    let mut out: Vec<DigestHistoryEntry> = Vec::new();
+    let Ok(entries) = fs::read_dir(digests_dir()) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(bytes) = fs::read(&path) {
+            if let Ok(d) = serde_json::from_slice::<DigestResult>(&bytes) {
+                out.push(DigestHistoryEntry {
+                    id: d.id,
+                    title: d.title,
+                    date_range: d.date_range,
+                    meeting_count: d.meeting_count,
+                    created_at: d.created_at,
+                });
+            }
+        }
+    }
+    out.sort_by_key(|e| std::cmp::Reverse(e.created_at));
+    out
+}
+
+/// Load a saved digest by id.
+#[tauri::command]
+pub fn meeting_engine_get_digest(id: String) -> Option<DigestResult> {
+    if !safe_digest_id(&id) {
+        return None;
+    }
+    let path = digests_dir().join(format!("{id}.json"));
+    fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
+/// Delete a saved digest from history.
+#[tauri::command]
+pub fn meeting_engine_delete_digest(id: String) -> bool {
+    if !safe_digest_id(&id) {
+        return false;
+    }
+    fs::remove_file(digests_dir().join(format!("{id}.json"))).is_ok()
 }
 
 /// Synthesize a combined digest across the selected meetings.
@@ -8380,6 +8478,7 @@ mod digest_tests {
             provider: "deepseek".into(),
             model: "deepseek-v4-pro".into(),
             latency_ms: 1,
+            created_at: 0,
         };
         let md = render_digest_markdown(&result);
         assert!(md.starts_with("# Sentinel Week"));
