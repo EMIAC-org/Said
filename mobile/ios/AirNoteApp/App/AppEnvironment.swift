@@ -488,10 +488,13 @@ final class AppEnvironment: ObservableObject {
         guard !trimmedTerm.isEmpty else { return false }
         let alias = heardAs.trimmingCharacters(in: .whitespacesAndNewlines)
         let aliases: [(heard: String, correct: String)] = alias.isEmpty ? [] : [(alias, trimmedTerm)]
+        // Store the user's explicit heard→meant alias on-device immediately
+        // (addLearnedAlias self-gates on safety) so it applies to dictation even if
+        // the server's auto-learning gate rejects it.
+        let storedLocally = !alias.isEmpty && SharedStore.addLearnedAlias(heard: alias, correct: trimmedTerm)
         do {
             let result = try await gateway.addVocabulary(terms: [trimmedTerm], aliases: aliases)
-            if result.learnedCount > 0 {
-                if !alias.isEmpty { SharedStore.addLearnedAlias(heard: alias, correct: trimmedTerm) }
+            if result.learnedCount > 0 || storedLocally {
                 vocabStatus = "Added \(trimmedTerm)"
                 await refreshVocabulary()
                 return true
@@ -504,6 +507,7 @@ final class AppEnvironment: ObservableObject {
             }
         } catch {
             if handleUnauthorized(error) { return false }
+            if storedLocally { vocabStatus = "Added \(trimmedTerm)"; await refreshVocabulary(); return true }
             vocabStatus = "Couldn't add that term"
             return false
         }
@@ -812,28 +816,21 @@ final class AppEnvironment: ObservableObject {
         learningWorking = true
         defer { learningWorking = false }
         do {
-            let result = try await gateway.confirmLearning(recordingID: item.learningRecordingID, items: items)
-            if result.learnedCount > 0 {
-                // Cache the heard→meant mapping locally so the client applies it
-                // to future dictation output (the server's streaming path won't).
-                for candidate in items {
-                    SharedStore.addLearnedAlias(heard: candidate.original, correct: candidate.corrected)
-                }
-                learningStatus = "✓ Learned \(result.learnedTerms.isEmpty ? "\(result.learnedCount) correction\(result.learnedCount == 1 ? "" : "s")" : result.learnedTerms.joined(separator: ", "))"
-                learningCandidates = []
-                await refreshVocabulary()
-                // Show the success briefly, then close the sheet (if still open).
-                let reviewedID = item.id
-                try? await Task.sleep(nanoseconds: 1_100_000_000)
-                if learningItem?.id == reviewedID { cancelLearningReview() }
-            } else if result.blockedCount > 0 {
-                // The server blocks corrections that are too common or unsafe.
-                learningStatus = "That's too common to learn as a custom term."
-                learningCandidates = []
-            } else {
-                learningStatus = "Nothing new to learn here"
-                learningCandidates = []
+            // Store the user's chosen corrections on-device immediately (each call
+            // self-gates on safety) so they apply to dictation even if the server's
+            // auto-learning gate rejects them.
+            for candidate in items {
+                SharedStore.addLearnedAlias(heard: candidate.original, correct: candidate.corrected)
             }
+            let result = try await gateway.confirmLearning(recordingID: item.learningRecordingID, items: items)
+            let names = result.learnedTerms.isEmpty ? items.map(\.corrected) : result.learnedTerms
+            learningStatus = "✓ Learned \(names.joined(separator: ", ")) — AirNote will use it next time."
+            learningCandidates = []
+            await refreshVocabulary()
+            // Show the success briefly, then close the sheet (if still open).
+            let reviewedID = item.id
+            try? await Task.sleep(nanoseconds: 1_100_000_000)
+            if learningItem?.id == reviewedID { cancelLearningReview() }
         } catch {
             if handleUnauthorized(error) { return }
             learningStatus = "Could not confirm learning"

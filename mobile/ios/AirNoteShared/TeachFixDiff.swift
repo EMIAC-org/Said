@@ -35,4 +35,27 @@ public enum TeachFixDiff {
         guard edited != original else { return .unchanged }
         return .edited(edited)
     }
+
+    /// The minimal changed word-span between what we inserted and what the user
+    /// edited it to — strips the common leading/trailing words so a fixed name
+    /// ("ankur gupta" → "anugra") is isolated from the surrounding sentence and
+    /// can be stored as a precise heard→meant rule.
+    public static func changedSegment(original: String, edited: String) -> (heard: String, correct: String)? {
+        let o = original.split { $0 == " " || $0 == "\t" || $0 == "\n" }.map(String.init)
+        let e = edited.split { $0 == " " || $0 == "\t" || $0 == "\n" }.map(String.init)
+        guard !o.isEmpty, !e.isEmpty else { return nil }
+        var start = 0
+        while start < o.count, start < e.count, o[start].caseInsensitiveCompare(e[start]) == .orderedSame {
+            start += 1
+        }
+        var oEnd = o.count, eEnd = e.count
+        while oEnd > start, eEnd > start, o[oEnd - 1].caseInsensitiveCompare(e[eEnd - 1]) == .orderedSame {
+            oEnd -= 1
+            eEnd -= 1
+        }
+        let heard = o[start..<oEnd].joined(separator: " ")
+        let correct = e[start..<eEnd].joined(separator: " ")
+        guard !heard.isEmpty, !correct.isEmpty else { return nil }
+        return (heard, correct)
+    }
 }

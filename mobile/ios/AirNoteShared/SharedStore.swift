@@ -57,16 +57,18 @@ public enum SharedStore {
 
     /// Record a taught correction (newest first, deduped, only if it's a real
     /// heard≠meant pair that passes the resolver's safety gate).
-    public static func addLearnedAlias(heard: String, correct: String) {
+    @discardableResult
+    public static func addLearnedAlias(heard: String, correct: String) -> Bool {
         let h = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         let c = correct.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard LearnedAliasResolver.isSafe(heard: h, correct: c) else { return }
+        guard LearnedAliasResolver.isSafe(heard: h, correct: c) else { return false }
         let pair = LearnedAliasPair(heard: h, correct: c)
         var current = learnedAliases.filter {
             !($0.heard.caseInsensitiveCompare(h) == .orderedSame && $0.correct == c)
         }
         current.insert(pair, at: 0)
         learnedAliases = current
+        return true
     }
 
     /// The latest live (already romanized) partial transcript during a warm

@@ -443,43 +443,40 @@ final class KeyboardViewController: UIInputViewController {
         let recordingID = RequestId.make()
         Task { [weak self] in
             guard let self else { return }
-            do {
-                let analysis = try await self.gateway.analyzeEdit(
-                    recordingID: recordingID,
-                    transcript: original,
-                    aiOutput: original,
-                    userKept: edited
-                )
+            var learnedTerm: String?
+
+            // The user EXPLICITLY taught this edit — store it on-device directly
+            // (addLearnedAlias self-gates on safety). An explicit teach must never
+            // be silently dropped by the server's automatic-learning gate, which is
+            // why "ankur gupta → anugra" stopped sticking.
+            if let seg = TeachFixDiff.changedSegment(original: original, edited: edited),
+               SharedStore.addLearnedAlias(heard: seg.heard, correct: seg.correct) {
+                learnedTerm = seg.correct
+            }
+
+            // Best-effort: teach the server too (cross-device memory + learned
+            // events) and store any extra safe segments it isolates.
+            if let analysis = try? await self.gateway.analyzeEdit(
+                recordingID: recordingID, transcript: original, aiOutput: original, userKept: edited
+            ) {
+                for candidate in analysis.candidates {
+                    if SharedStore.addLearnedAlias(heard: candidate.original, correct: candidate.corrected),
+                       learnedTerm == nil {
+                        learnedTerm = candidate.corrected
+                    }
+                }
                 let learnable = analysis.candidates.filter(\.learnable)
-                guard !learnable.isEmpty else {
-                    await MainActor.run {
-                        self.clearTeachable()
-                        self.setState(.learned("Nothing new to teach in that edit."))
-                    }
-                    return
+                if !learnable.isEmpty {
+                    _ = try? await self.gateway.confirmLearning(recordingID: recordingID, items: learnable)
                 }
-                let result = try await self.gateway.confirmLearning(recordingID: recordingID, items: learnable)
-                await MainActor.run {
-                    self.clearTeachable()
-                    if result.learnedCount > 0 {
-                        // Cache heard→meant locally so it's applied to future output.
-                        for candidate in learnable {
-                            SharedStore.addLearnedAlias(heard: candidate.original, correct: candidate.corrected)
-                        }
-                        let terms = result.learnedTerms.isEmpty
-                            ? "\(result.learnedCount) correction\(result.learnedCount == 1 ? "" : "s")"
-                            : result.learnedTerms.joined(separator: ", ")
-                        self.setState(.learned("Learned \(terms) — AirNote will use it next time."))
-                    } else if result.blockedCount > 0 {
-                        self.setState(.learned("That's too common to learn as a custom word."))
-                    } else {
-                        self.setState(.learned("Nothing new to teach here."))
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    // Keep the insertion teachable so the user can retry.
-                    self.setState(.learned("Couldn't teach that just now — try again."))
+            }
+
+            await MainActor.run {
+                self.clearTeachable()
+                if let term = learnedTerm {
+                    self.setState(.learned("Learned “\(term)” — AirNote will use it next time."))
+                } else {
+                    self.setState(.learned("That edit's too common to learn — try a name, brand, or full term."))
                 }
             }
         }
