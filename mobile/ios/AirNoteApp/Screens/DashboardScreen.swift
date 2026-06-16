@@ -16,6 +16,7 @@ struct DashboardScreen: View {
                     VStack(spacing: 16) {
                         header
                         recordCard
+                        tryAnywhereCard
                         if env.permissions.keyboard == .ready && env.dictationAvailable {
                             keyboardSessionCard
                         }
@@ -44,6 +45,34 @@ struct DashboardScreen: View {
         }
         .sheet(isPresented: $showDictation) {
             NavigationStack { DictationSheet(env: env, showsDoneButton: false) }
+        }
+    }
+
+    /// A friendly "go use it anywhere" nudge once the session is live — mirrors
+    /// Wispr's "Try Flow in any app" card.
+    @ViewBuilder private var tryAnywhereCard: some View {
+        if env.dictationAvailable && warmHost.isSessionActive {
+            AirNoteCard(padding: 16) {
+                HStack(spacing: 14) {
+                    ZStack {
+                        Circle().fill(AirNoteDesign.accent.opacity(0.14)).frame(width: 44, height: 44)
+                        Image(systemName: "keyboard")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(AirNoteDesign.accent)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Try AirNote in any app")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(AirNoteDesign.foreground)
+                        Text("Open Messages, Mail, or Slack, switch to the AirNote keyboard, and tap the mic.")
+                            .font(.caption)
+                            .foregroundStyle(AirNoteDesign.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .accessibilityElement(children: .combine)
         }
     }
 
