@@ -30,6 +30,7 @@ public enum SharedStore {
         static let sessionDurationMinutes = "airnote.shared.session_duration_minutes"
         static let safeVocabTerms = "airnote.shared.safe_vocab_terms"
         static let keyboardLivePartial = "airnote.shared.kbd_live_partial"
+        static let keyboardLiveLevel = "airnote.shared.kbd_live_level"
         static let learnedAliases = "airnote.shared.learned_aliases"
         static let customGatewayURL = "airnote.shared.custom_gateway_url"
         static let recentGatewayURLs = "airnote.shared.recent_gateway_urls"
@@ -81,6 +82,13 @@ public enum SharedStore {
     public static var keyboardLivePartial: String {
         get { defaults?.string(forKey: Key.keyboardLivePartial) ?? "" }
         set { defaults?.set(newValue, forKey: Key.keyboardLivePartial) }
+    }
+
+    /// Latest mic level (0...1) the warm app is capturing, so the keyboard can drive
+    /// its live waveform from the real voice (it can't capture audio in-process).
+    public static var keyboardLiveLevel: Double {
+        get { defaults?.double(forKey: Key.keyboardLiveLevel) ?? 0 }
+        set { defaults?.set(newValue, forKey: Key.keyboardLiveLevel) }
     }
 
     /// The user's learned vocabulary (names/brands they've taught), cached by the

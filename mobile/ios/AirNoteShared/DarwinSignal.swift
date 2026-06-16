@@ -19,6 +19,10 @@ public final class DarwinSignal {
     /// App → keyboard: a new live (romanized) partial transcript is in
     /// SharedStore.keyboardLivePartial — show words as the user speaks.
     public static let livePartial = "com.emiac.airnote.signal.partial"
+    /// App → keyboard: a fresh mic level (0...1) is in SharedStore.keyboardLiveLevel
+    /// — drive the live waveform so the bars track the user's voice (the warm/handoff
+    /// path can't capture audio in-process, so the app pipes the level across).
+    public static let liveLevel = "com.emiac.airnote.signal.level"
 
     private var handlers: [String: () -> Void] = [:]
     private let lock = NSLock()

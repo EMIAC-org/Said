@@ -26,6 +26,7 @@ final class WarmDictationHost: ObservableObject {
     private var maxLevel: Float = 0
     private var lastLoudAt: Date?
     private var lastPartialAt = Date.distantPast
+    private var lastLevelAt = Date.distantPast
     private var observing = false
 
     /// How long the mic stays warm after the last dictation (extends on each use),
@@ -166,6 +167,7 @@ final class WarmDictationHost: ObservableObject {
         switch update {
         case .level(let value):
             maxLevel = max(maxLevel, value)
+            publishLiveLevel(value)
             if value > speechLevelThreshold {
                 lastLoudAt = Date()
             } else if isStreaming, maxLevel > speechLevelThreshold, let last = lastLoudAt,
@@ -204,9 +206,22 @@ final class WarmDictationHost: ObservableObject {
         DarwinSignal.shared.post(DarwinSignal.livePartial)
     }
 
+    /// Pipe the live mic level (0...1) to the keyboard, throttled to ~20fps, so its
+    /// waveform tracks the user's voice during an in-place dictation. The keyboard
+    /// extension can't capture audio itself, so the warm app relays the level.
+    private func publishLiveLevel(_ level: Float) {
+        let now = Date()
+        if now.timeIntervalSince(lastLevelAt) < 0.05 { return }
+        lastLevelAt = now
+        SharedStore.keyboardLiveLevel = Double(max(0, min(1, level)))
+        DarwinSignal.shared.post(DarwinSignal.liveLevel)
+    }
+
     private func clearLivePartial() {
         lastPartialAt = .distantPast
+        lastLevelAt = .distantPast
         SharedStore.keyboardLivePartial = ""
+        SharedStore.keyboardLiveLevel = 0
     }
 
     private func deliver(transcript: String, polished: String) {

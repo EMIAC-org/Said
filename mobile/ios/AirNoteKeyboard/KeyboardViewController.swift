@@ -61,6 +61,9 @@ final class KeyboardViewController: UIInputViewController {
         DarwinSignal.shared.observe(DarwinSignal.livePartial) { [weak self] in
             self?.handleLivePartial()
         }
+        DarwinSignal.shared.observe(DarwinSignal.liveLevel) { [weak self] in
+            self?.handleLiveLevel()
+        }
         reportHealth()
         recomputeIdleState()
         render()
@@ -565,6 +568,14 @@ final class KeyboardViewController: UIInputViewController {
         guard warmActive, case .recording = state else { return }
         let text = SharedStore.keyboardLivePartial
         if !text.isEmpty { pad?.setLivePartial(text) }
+    }
+
+    /// Drive the live waveform from the real mic level the warm app relays, so the
+    /// bars track the user's voice during a warm/handoff dictation (the keyboard
+    /// can't capture audio itself, so this is the only reactive source for it).
+    private func handleLiveLevel() {
+        guard warmActive, case .recording = state else { return }
+        pad?.setAudioLevel(Float(SharedStore.keyboardLiveLevel))
     }
 
     /// On returning to the keyboard, insert any polished text the app produced for
