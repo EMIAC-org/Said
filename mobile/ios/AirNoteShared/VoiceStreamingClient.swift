@@ -342,12 +342,16 @@ public final class VoiceStreamingClient {
     }
 
     private func startAudioEngine() async throws {
-        try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
-        // Low-latency capture: request a short I/O buffer BEFORE activating (the
-        // OS only honours "preferred" values while inactive). ~5ms trims capture
-        // latency and yields finer audio chunks that reach the server sooner.
-        try? audioSession.setPreferredIOBufferDuration(0.005)
-        try audioSession.setActive(true, options: [])
+        // Always open the mic as a MIXABLE session. When alone this captures exactly
+        // like a normal recorder; when a VoIP meeting/call (Zoom/Meet/Teams) is
+        // active it shares the mic so the user can dictate notes WITHOUT ducking or
+        // interrupting the other participants. We mix unconditionally because there
+        // is no reliable runtime "in a meeting" signal — `isOtherAudioPlaying` is
+        // false during muted/silent moments, and an exclusive `.record` session
+        // activates ALONGSIDE a meeting without throwing (then rudely ducks it) — and
+        // mixing-when-alone is harmless. (A cellular/PSTN call is an iOS hard limit:
+        // the baseband owns the mic and no category lets a third-party app capture it.)
+        try configureCaptureSession()
 
         let input = audioEngine.inputNode
         let inputFormat = input.inputFormat(forBus: 0)
@@ -373,6 +377,25 @@ public final class VoiceStreamingClient {
         audioEngine.prepare()
         try audioEngine.start()
         installAudioObservers()
+    }
+
+    /// Configure + activate the capture session. `.playAndRecord` + `.mixWithOthers`
+    /// (no ducking) so dictation coexists with an active call/meeting; identical
+    /// capture when alone.
+    private func configureCaptureSession() throws {
+        // Allow a Bluetooth headset mic (common in meetings — AirPods etc.).
+        let bluetoothInput: AVAudioSession.CategoryOptions
+        if #available(iOS 26.0, *) { bluetoothInput = .allowBluetoothHFP } else { bluetoothInput = .allowBluetooth }
+        try audioSession.setCategory(
+            .playAndRecord,
+            mode: .measurement,
+            options: [.mixWithOthers, bluetoothInput]
+        )
+        // Low-latency capture: request a short I/O buffer BEFORE activating (the
+        // OS only honours "preferred" values while inactive). ~5ms trims capture
+        // latency and yields finer audio chunks that reach the server sooner.
+        try? audioSession.setPreferredIOBufferDuration(0.005)
+        try audioSession.setActive(true, options: [])
     }
 
     private func stopAudioEngine() {
@@ -687,6 +710,13 @@ public final class VoiceStreamingClient {
         }
 
         switch reason {
+        // Stop cleanly on a route change and let the caller re-establish a fresh
+        // engine on the new route. (We deliberately tear down rather than ignore
+        // these: AVAudioEngine does NOT migrate a running input tap when the
+        // hardware route changes — e.g. plugging in headphones / connecting AirPods
+        // mid-dictation — so keeping the old engine alive would silently deliver no
+        // audio. Surviving mid-meeting route churn without a restart needs proper
+        // AVAudioEngineConfigurationChange handling — a tested follow-up.)
         case .oldDeviceUnavailable, .newDeviceAvailable, .noSuitableRouteForCategory, .routeConfigurationChange:
             Task { [weak self] in
                 await self?.stopAfterAudioSystemChange(status: "audio_route_changed")
