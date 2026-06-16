@@ -25,8 +25,10 @@ struct AirNoteApp: App {
                         WarmDictationHost.shared.startObserving()
                         environment.permissions.refreshAll()
                         environment.checkKeyboardHandoffRequest()
-                        WarmDictationHost.shared.ensureSessionActive()
                     }
+                    // Reconcile the notch with the REAL session state on every
+                    // transition: session live → notch shows, session dead → gone.
+                    WarmDictationHost.shared.ensureSessionActive()
                 }
         }
     }
