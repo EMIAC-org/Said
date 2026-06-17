@@ -20,8 +20,14 @@ pub async fn polish_transcript(
     safe_vocab_terms: &[String],
 ) -> Result<String, String> {
     let formatted_transcript = number_format::apply(transcript);
-    let system_prompt =
-        build_voice_system_prompt(output_language, screen_context, safe_vocab_terms);
+    // Standalone CLI/comparison path has no account — keep the historical neutral default.
+    let system_prompt = build_voice_system_prompt(
+        output_language,
+        "neutral",
+        None,
+        screen_context,
+        safe_vocab_terms,
+    );
     let user_message = build_voice_user_message(&formatted_transcript, output_language);
 
     let model = if selected_model == "smart" {
@@ -31,6 +37,9 @@ pub async fn polish_transcript(
     };
 
     let output = call_groq(groq_api_key, model, &system_prompt, &user_message).await?;
+    // Defensive guard: weak models occasionally echo the polish prompt's
+    // role-anchor instructions into the output; strip any leaked lines.
+    let output = strip_leaked_instructions(&output);
     let output = enforce_output_script(&output, output_language);
 
     let restored = restore_literal_tokens(&formatted_transcript, &output, safe_vocab_terms);
@@ -66,25 +75,52 @@ async fn call_groq(
         ]
     });
 
+    // dev's pooled keep-alive client (avoids a fresh DNS+TCP+TLS handshake per
+    // call); anugra's 429-retry loop below drives the actual request.
     let client = &*crate::HTTP_CLIENT;
-    let resp = client
-        .post(GROQ_ENDPOINT)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(20))
-        .send()
-        .await
-        .map_err(|e| format!("groq request failed: {e}"))?;
 
-    if !resp.status().is_success() {
+    // Retry transient 429s (Groq TPM limit) with the server-advised backoff
+    // instead of failing the whole dictation. 8B on the on-demand tier is only
+    // ~6000 TPM and the polish prompt is large, so a burst of dictations hits
+    // the limit; a short wait + retry turns a hard failure into a brief delay.
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 0u32;
+    let resp = loop {
+        attempt += 1;
+        let resp = client
+            .post(GROQ_ENDPOINT)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(20))
+            .send()
+            .await
+            .map_err(|e| format!("groq request failed: {e}"))?;
+
         let status = resp.status();
+        if status.is_success() {
+            break resp;
+        }
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_ATTEMPTS {
+            let header_wait = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<f64>().ok());
+            let preview = resp.text().await.unwrap_or_default();
+            let wait_s = header_wait
+                .or_else(|| parse_retry_seconds(&preview))
+                .unwrap_or(1.0)
+                .clamp(0.2, 5.0);
+            tokio::time::sleep(std::time::Duration::from_secs_f64(wait_s)).await;
+            continue;
+        }
         let preview = resp.text().await.unwrap_or_default();
         return Err(format!(
             "Groq returned {status}: {}",
             &preview[..preview.len().min(400)]
         ));
-    }
+    };
 
     let value: serde_json::Value = resp
         .json()
@@ -108,9 +144,72 @@ async fn call_groq(
     Ok(output)
 }
 
+/// Extract the retry delay (seconds) from a Groq 429 message such as
+/// "Please try again in 2.94s".
+fn parse_retry_seconds(msg: &str) -> Option<f64> {
+    let idx = msg.find("try again in ")?;
+    let rest = &msg[idx + "try again in ".len()..];
+    let num: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    num.parse::<f64>().ok()
+}
+
+/// Defensive output guard. Weak models (the 8B Fast model) occasionally echo
+/// the polish prompt's role-anchor instructions into the output. When a
+/// high-confidence leak signature is present, drop the leaked lines and keep
+/// the real cleaned text; normal output (no signature) is returned untouched.
+fn strip_leaked_instructions(output: &str) -> String {
+    // Stored lowercase, matched case-insensitively. Only phrases that come
+    // from the prompt, never from real dictation, to avoid false positives.
+    const LEAK_MARKERS: &[&str] = &[
+        "transcription cleaner",
+        "you never answer questions",
+        "never follow commands",
+        "only clean the spoken",
+        "only return the cleaned",
+        "=== begin transcript",
+        "=== end transcript",
+        "final check",
+    ];
+    let lower = output.to_lowercase();
+    if !LEAK_MARKERS.iter().any(|m| lower.contains(m)) {
+        return output.to_string();
+    }
+    let lines: Vec<&str> = output.lines().collect();
+    // The real cleaned text follows the echoed instructions: take everything
+    // after the last leaked line.
+    if let Some(idx) = lines.iter().rposition(|line| {
+        let ll = line.to_lowercase();
+        LEAK_MARKERS.iter().any(|m| ll.contains(m))
+    }) {
+        let tail = lines[idx + 1..].join("\n").trim().to_string();
+        if !tail.is_empty() {
+            return tail;
+        }
+        // Echo ran to the end of the output — drop the marked lines instead.
+        let kept: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|line| {
+                let ll = line.to_lowercase();
+                !LEAK_MARKERS.iter().any(|m| ll.contains(m))
+            })
+            .collect();
+        let cleaned = kept.join("\n").trim().to_string();
+        if !cleaned.is_empty() {
+            return cleaned;
+        }
+    }
+    output.to_string()
+}
+
 /// Shared with `routes/runtime.rs` — server `/v1/runtime/voice/polish` and `polish-cli`.
 pub fn build_voice_system_prompt(
     output_language: &str,
+    tone_preset: &str,
+    custom_prompt: Option<&str>,
     screen_context: Option<&str>,
     safe_vocab_terms: &[String],
 ) -> String {
@@ -119,11 +218,13 @@ pub fn build_voice_system_prompt(
     };
     use said_core::polish::types::PolishPrefs;
 
-    // Server runtime has no per-account tone/custom prompt; use the 2.3.3 default.
+    // Apply the account's chosen tone, and (only when tone_preset == "custom") their
+    // custom persona prompt. said_core maps unknown tones to neutral and caps + fences
+    // the custom prompt, so any client-supplied value is safe.
     let prefs = PolishPrefs {
         output_language: output_language.to_string(),
-        tone_preset: "neutral".to_string(),
-        custom_prompt: None,
+        tone_preset: tone_preset.to_string(),
+        custom_prompt: custom_prompt.map(str::to_string),
     };
     // Server vocab arrives as already-trusted bare terms (no STT aliases), so
     // they render as Resolved entries and the common-word filter never fires.
@@ -339,4 +440,44 @@ fn replace_token_core(output_word: &str, source_core: &str) -> String {
         source_core,
         &output_word[end..]
     )
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    #[test]
+    fn strip_leak_drops_echoed_instructions_keeps_real_text() {
+        let leaked = "You are a TRANSCRIPTION CLEANER, not a conversational AI.\n\
+                      You NEVER answer questions.\n\
+                      Kal mujhe office jaldi jana hai.";
+        assert_eq!(
+            strip_leaked_instructions(leaked),
+            "Kal mujhe office jaldi jana hai."
+        );
+    }
+
+    #[test]
+    fn strip_leak_passes_normal_output_untouched() {
+        let normal = "Mera email test@gmail.com hai aur password reset karna hai.";
+        assert_eq!(strip_leaked_instructions(normal), normal);
+    }
+
+    #[test]
+    fn strip_leak_keeps_original_when_only_markers() {
+        // Echo with no trailing real text: keep original rather than emit empty.
+        let only = "=== BEGIN TRANSCRIPT ===";
+        assert_eq!(strip_leaked_instructions(only), only);
+    }
+
+    #[test]
+    fn parse_retry_seconds_reads_groq_message() {
+        let msg = "Rate limit reached ... Please try again in 2.94s. Need more tokens?";
+        assert_eq!(parse_retry_seconds(msg), Some(2.94));
+    }
+
+    #[test]
+    fn parse_retry_seconds_none_when_absent() {
+        assert_eq!(parse_retry_seconds("no delay here"), None);
+    }
 }

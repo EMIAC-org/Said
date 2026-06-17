@@ -1,0 +1,676 @@
+import AVFoundation
+import UIKit
+import AirNoteShared
+
+/// AirNote's custom keyboard. With Full Access it records and streams audio
+/// directly to the server (no dependency on the main app being open), then
+/// inserts the polished text at the cursor.
+final class KeyboardViewController: UIInputViewController {
+    private let streamer = VoiceStreamingClient()
+    private let pasteboard = UIPasteboard.general
+    private lazy var gateway = GatewayEnvironment.makeClient()
+
+    private var state: KeyboardState = .ready
+    private var pad: RecordingPadView?
+    private var currentResult: BridgeResult?
+    private var resultSeq: UInt64 = 0
+    private var isRecording = false
+    private var finalizeTimer: Timer?
+    private var warmActive = false
+    private var gotAck = false
+    private var ackTimer: Timer?
+
+    // MARK: In-place "Teach a fix"
+    //
+    // iOS won't let the keyboard read other apps' text in general, but while
+    // AirNote's keyboard IS the active keyboard it can read the text around the
+    // cursor (textDocumentProxy). So after we insert a result, if the user fixes
+    // a word using this keyboard, we can diff what we inserted against the
+    // corrected text and teach it — the only correction path iOS permits outside
+    // the app. Edits made after switching keyboards/apps remain invisible.
+    private var lastInsertedText: String?
+    private var insertPrefix: String?
+    private var insertSuffix: String?
+    private var teachExpiry: Date?
+    private var teachTimer: Timer?
+    /// How long the "Teach a fix" affordance stays available after an insertion.
+    private let teachWindow: TimeInterval = 120
+
+    private var canTeachFix: Bool {
+        guard lastInsertedText != nil, let expiry = teachExpiry else { return false }
+        return expiry > Date()
+    }
+
+    // MARK: Lifecycle
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        streamer.onUpdate = { [weak self] update in
+            self?.handle(update)
+        }
+        DarwinSignal.shared.observe(DarwinSignal.dictationAck) { [weak self] in
+            self?.gotAck = true
+            self?.ackTimer?.invalidate()
+        }
+        DarwinSignal.shared.observe(DarwinSignal.resultReady) { [weak self] in
+            self?.handleWarmResult()
+        }
+        DarwinSignal.shared.observe(DarwinSignal.dictationFailed) { [weak self] in
+            self?.handleWarmFailed()
+        }
+        DarwinSignal.shared.observe(DarwinSignal.livePartial) { [weak self] in
+            self?.handleLivePartial()
+        }
+        DarwinSignal.shared.observe(DarwinSignal.liveLevel) { [weak self] in
+            self?.handleLiveLevel()
+        }
+        reportHealth()
+        recomputeIdleState()
+        render()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        reportHealth()
+        // Returning from an app-handoff dictation? Insert the result the app left
+        // for us, then we're done.
+        if consumePendingDictation() { return }
+        if !isRecording { recomputeIdleState(); render() }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        // Tear down whether recording OR mid-polish (.processing) — the system can
+        // unload the keyboard process the instant it disappears, so release audio
+        // + the socket now, synchronously.
+        isRecording = false
+        warmActive = false
+        ackTimer?.invalidate()
+        ackTimer = nil
+        finalizeTimer?.invalidate()
+        finalizeTimer = nil
+        teachTimer?.invalidate()
+        teachTimer = nil
+        pad?.stopDeleteTimer()
+        streamer.hardStop()
+    }
+
+    deinit {
+        // Clear the callback first so no event can fire on a deallocating self,
+        // then tear down synchronously.
+        finalizeTimer?.invalidate()
+        teachTimer?.invalidate()
+        pad?.stopDeleteTimer()
+        streamer.onUpdate = nil
+        streamer.hardStop()
+        for name in [
+            DarwinSignal.dictationAck, DarwinSignal.resultReady, DarwinSignal.dictationFailed,
+            DarwinSignal.livePartial, DarwinSignal.liveLevel,
+        ] {
+            DarwinSignal.shared.stopObserving(name)
+        }
+    }
+
+    override func textDidChange(_ textInput: UITextInput?) {
+        // Re-evaluate the secure-field gate when focus moves, but never disturb
+        // an in-flight recording or a pending result.
+        guard !isRecording, currentResult == nil else { return }
+        // While a fresh insertion is still teachable, hold the post-insert state
+        // so the "Teach a fix" affordance stays put as the user edits the text.
+        if canTeachFix { return }
+        // Only re-render when the secure-field gate actually flips — re-rendering
+        // on every keystroke would needlessly churn the voice surface.
+        let previous = state
+        recomputeIdleState()
+        if state != previous { render(animated: true) }
+    }
+
+    // MARK: Health handshake (lets the main app know the keyboard is enabled + Full Access)
+
+    private func reportHealth() {
+        SharedStore.recordKeyboardHealth(hasFullAccess: hasFullAccess, at: Date())
+    }
+
+    // MARK: State
+
+    private func recomputeIdleState() {
+        if !hasFullAccess {
+            state = .needsFullAccess
+        } else if SharedStore.accessToken == nil {
+            state = .needsMainAppSession   // "Open AirNote to sign in"
+        } else if TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField {
+            state = .unsupportedSecureField
+        } else {
+            state = .ready
+        }
+    }
+
+    private func render(animated: Bool = false) {
+        // Build the pad once; afterwards only the voice surface is swapped, so the
+        // keys never flash and state changes settle in with a soft spring. If the
+        // pad ever got detached from the view (system view reload), rebuild it so
+        // the keyboard can never end up blank.
+        if let pad, pad.superview === view {
+            pad.update(state: state, canTeachFix: canTeachFix, animated: animated)
+            return
+        }
+        view.subviews.forEach { $0.removeFromSuperview() }
+        let pad = RecordingPadView(state: state, canTeachFix: canTeachFix)
+        pad.translatesAutoresizingMaskIntoConstraints = false
+        pad.onStart = { [weak self] in self?.requestAppDictation() }
+        pad.onStop = { [weak self] in self?.stopRecording() }
+        pad.onInsert = { [weak self] in self?.insertResult() }
+        pad.onCopy = { [weak self] in self?.copyResult() }
+        pad.onSave = { [weak self] in self?.saveResult() }
+        pad.onTeachFix = { [weak self] in self?.teachLastFix() }
+        pad.onOpenApp = { [weak self] in self?.openMainApp() }
+        pad.onKeyTap = { [weak self] text in self?.textDocumentProxy.insertText(text) }
+        pad.onDelete = { [weak self] in self?.textDocumentProxy.deleteBackward() }
+        pad.onNextKeyboard = { [weak self] in self?.advanceToNextInputMode() }
+        view.addSubview(pad)
+        NSLayoutConstraint.activate([
+            pad.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            pad.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            pad.topAnchor.constraint(equalTo: view.topAnchor),
+            pad.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        self.pad = pad
+    }
+
+    private func setState(_ newState: KeyboardState) {
+        guard newState != state else { return }
+        state = newState
+        render(animated: true)
+    }
+
+    // MARK: Recording
+
+    /// Build the screen context sent to the polish server: the recent words
+    /// before the cursor act as a name/term tiebreaker (the iOS equivalent of the
+    /// desktop's screen context), redacted to just the field hint when the
+    /// surrounding text looks sensitive. The server caps screen_context at 500.
+    private func buildScreenContext() -> String {
+        let ctx = ContextReader(documentProxy: textDocumentProxy).read()
+        let before = ctx.beforeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !before.isEmpty, !Redaction.containsSensitiveKey(before) else {
+            return ctx.fieldHint
+        }
+        return "\(ctx.fieldHint): \(String(before.suffix(240)))"
+    }
+
+    private func startRecording() {
+        cancelFinalizeTimer()
+        clearTeachable()
+        guard hasFullAccess else { setState(.needsFullAccess); return }
+        guard let token = SharedStore.accessToken, !token.isEmpty else {
+            setState(.needsMainAppSession)
+            return
+        }
+        // The keyboard cannot itself prompt for the mic — only the container app
+        // can. If it isn't granted yet, send the user to AirNote to grant it.
+        guard AVAudioApplication.shared.recordPermission == .granted else {
+            setState(.error("Open AirNote once to allow the microphone."))
+            return
+        }
+
+        currentResult = nil
+        isRecording = true
+        setState(.recording)
+
+        let runID = RequestId.make()
+        let session = MobileSessionResponse(
+            sessionID: runID,
+            sessionToken: token,
+            expiresAt: Date().addingTimeInterval(15 * 60),
+            streamingEnabled: true,
+            currentVocabHash: "keyboard",
+            voiceWSURL: "/v1/runtime/voice/ws?token=\(token)",
+            batchURL: "/v1/runtime/voice/wav",
+            maxRecordingSeconds: BuildConfig.maxRecordingSeconds
+        )
+        let config = VoiceStreamConfig(
+            runID: runID,
+            selectedModel: SharedStore.selectedModel,
+            outputLanguage: SharedStore.outputLanguage,
+            safeVocabTerms: SharedStore.safeVocabTerms,
+            screenContext: buildScreenContext()
+        )
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.streamer.start(session: session, config: config)
+            } catch let error as VoiceStreamError {
+                await MainActor.run { self.handleStreamError(error) }
+            } catch {
+                await MainActor.run {
+                    self.isRecording = false
+                    self.setState(.error("Couldn't start recording. Try again."))
+                }
+            }
+        }
+    }
+
+    private func stopRecording() {
+        if warmActive {
+            setState(.processing("Polishing"))
+            DarwinSignal.shared.post(DarwinSignal.stopDictation)
+            startFinalizeTimer()   // result-ready safety net
+            return
+        }
+        guard isRecording else { return }
+        isRecording = false
+        setState(.processing("Polishing"))
+        startFinalizeTimer()
+        Task { await streamer.stop() }
+    }
+
+    /// Never let the keyboard hang on "Polishing" if the server goes silent.
+    private func startFinalizeTimer() {
+        finalizeTimer?.invalidate()
+        finalizeTimer = Timer.scheduledTimer(withTimeInterval: 18, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            if case .processing = self.state {
+                self.warmActive = false
+                self.streamer.hardStop()
+                self.currentResult = nil
+                self.setState(.error("That took too long — tap the mic and try again."))
+            }
+        }
+    }
+
+    private func cancelFinalizeTimer() {
+        finalizeTimer?.invalidate()
+        finalizeTimer = nil
+    }
+
+    // MARK: Streaming updates
+
+    private func handle(_ update: VoiceStreamUpdate) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            switch update {
+            case .interimTranscript(let text):
+                // Show live words in the keyboard's OWN dictation path — previously
+                // only the warm/handoff path streamed partials; the direct stream
+                // flipped to .recording but never showed the transcript.
+                if self.isRecording {
+                    self.setState(.recording)
+                    let shown = HinglishScript.enforceRomanHinglish(text)
+                    if !shown.isEmpty { self.pad?.setLivePartial(shown) }
+                }
+            case .finalTranscript:
+                // A per-utterance final mid-recording doesn't mean the user is
+                // done — keep recording until they tap stop (which sets .processing).
+                if !self.isRecording { self.setState(.processing("Polishing")) }
+            case .polishStarted, .polishDelta:
+                self.setState(.processing("Polishing"))
+            case .final(let final):
+                self.finish(transcript: final.transcript, polished: final.polished)
+            case .done:
+                break
+            case .error(let error):
+                self.handleStreamError(error)
+            case .level(let lvl):
+                // Drive the live waveform from the real mic level on the keyboard's
+                // own dictation path (previously a no-op — bars were faked).
+                if self.isRecording { self.pad?.setAudioLevel(lvl) }
+            case .status, .sessionReady, .guardWarning:
+                break
+            }
+        }
+    }
+
+    private func finish(transcript: String, polished: String) {
+        cancelFinalizeTimer()
+        isRecording = false
+        resultSeq += 1
+        // Guarantee Roman Hinglish, then apply the user's taught corrections
+        // on-device — the server streaming path doesn't apply learned aliases, so
+        // mirror DictationController / WarmDictationHost here or a taught name/brand
+        // fix is silently dropped on the keyboard's own dictation.
+        let transcript = HinglishScript.enforceRomanHinglish(transcript)
+        let polished = LearnedAliasResolver.apply(
+            HinglishScript.enforceRomanHinglish(polished),
+            transcript: transcript,
+            aliases: SharedStore.learnedAliases
+        )
+        let secure = TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField
+        let result = BridgeResult(
+            resultSeq: resultSeq,
+            sessionID: "keyboard",
+            clientRequestID: RequestId.make(),
+            requestID: RequestId.make(),
+            state: .final,
+            transcript: transcript,
+            polished: polished.isEmpty ? transcript : polished,
+            language: SharedStore.outputLanguage == "english" ? .en : .hinglish,
+            style: .work,
+            latencyMS: 0,
+            expiresAt: Date().addingTimeInterval(10 * 60),
+            insertPolicy: secure ? .copyOnly : .insertAtCursor,
+            learningAllowed: true
+        )
+        currentResult = result
+        setState(secure ? .secureCopyReady(result) : .insertReady(result))
+    }
+
+    private func handleStreamError(_ error: VoiceStreamError) {
+        cancelFinalizeTimer()
+        isRecording = false
+        currentResult = nil
+        if error.isCredentialMissing {
+            setState(.error("Add your Deepgram and Groq keys in the AirNote app (Settings → Voice keys)."))
+        } else {
+            setState(.error(error.message))
+        }
+    }
+
+    // MARK: Result actions
+
+    private func insertResult() {
+        guard let result = currentResult else { return }
+        if case .secureCopyReady = state {
+            copyResult()
+            return
+        }
+        let prefix = textDocumentProxy.documentContextBeforeInput ?? ""
+        let inserter = TextInsertion(documentProxy: textDocumentProxy)
+        if inserter.insert(result) {
+            currentResult = nil
+            captureTeachable(insertedText: result.polished, prefix: prefix)
+            setState(.inserted)
+        } else {
+            copyResult()
+        }
+    }
+
+    private func copyResult() {
+        guard let result = currentResult else { return }
+        pasteboard.string = result.polished
+        currentResult = nil
+        setState(.copied)
+    }
+
+    private func saveResult() {
+        // The server already persists completed runtime sessions to history, so
+        // "save" simply acknowledges and clears the pending result.
+        currentResult = nil
+        setState(.savedToHistory)
+    }
+
+    // MARK: In-place "Teach a fix"
+
+    private func captureTeachable(insertedText: String, prefix: String) {
+        let trimmed = insertedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { clearTeachable(); return }
+        lastInsertedText = insertedText
+        insertPrefix = prefix
+        // Capture the text AFTER our insertion too, so a later edit ANYWHERE in the
+        // insertion (not just at the end) can be reconstructed from both sides.
+        insertSuffix = textDocumentProxy.documentContextAfterInput ?? ""
+        teachExpiry = Date().addingTimeInterval(teachWindow)
+        teachTimer?.invalidate()
+        teachTimer = Timer.scheduledTimer(withTimeInterval: teachWindow, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.clearTeachable()
+            // Drop the now-stale "Teach a fix" affordance if we're still idle.
+            if !self.isRecording, self.currentResult == nil {
+                self.recomputeIdleState()
+                self.render()
+            }
+        }
+    }
+
+    private func clearTeachable() {
+        lastInsertedText = nil
+        insertPrefix = nil
+        insertSuffix = nil
+        teachExpiry = nil
+        teachTimer?.invalidate()
+        teachTimer = nil
+    }
+
+    /// Diff what we inserted against the text the user edited in-place (read via
+    /// textDocumentProxy while AirNote's keyboard is active) and teach the fix.
+    private func teachLastFix() {
+        guard let inserted = lastInsertedText else { return }
+        let currentBefore = textDocumentProxy.documentContextBeforeInput ?? ""
+        let currentAfter = textDocumentProxy.documentContextAfterInput ?? ""
+        let edited: String
+        switch TeachFixDiff.evaluate(
+            insertedText: inserted,
+            insertPrefix: insertPrefix ?? "",
+            currentBeforeCursor: currentBefore,
+            insertSuffix: insertSuffix ?? "",
+            currentAfterCursor: currentAfter
+        ) {
+        case .empty:
+            setState(.learned("Fix the text first, then tap Teach a fix."))
+            return
+        case .unchanged:
+            setState(.learned("No change to teach — it looks the same."))
+            return
+        case .edited(let corrected):
+            edited = corrected
+        }
+        let original = inserted.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        setState(.teaching)
+        let recordingID = RequestId.make()
+        Task { [weak self] in
+            guard let self else { return }
+            var learnedTerms: [String] = []
+
+            // The user EXPLICITLY taught this edit — store EACH changed word-run as
+            // its own exact rule (word-level LCS diff), so correcting several words
+            // in one go teaches each precisely instead of collapsing them.
+            // addLearnedAlias self-gates on safety; an explicit teach is never
+            // dropped by the server's automatic-learning gate.
+            for seg in TeachFixDiff.changedSegments(original: original, edited: edited) {
+                if SharedStore.addLearnedAlias(heard: seg.heard, correct: seg.correct) {
+                    learnedTerms.append(seg.correct)
+                }
+            }
+
+            // Best-effort: teach the server too (cross-device memory + learned
+            // events) and store any extra safe segments it isolates.
+            if let analysis = try? await self.gateway.analyzeEdit(
+                recordingID: recordingID, transcript: original, aiOutput: original, userKept: edited
+            ) {
+                for candidate in analysis.candidates {
+                    if SharedStore.addLearnedAlias(heard: candidate.original, correct: candidate.corrected),
+                       !learnedTerms.contains(candidate.corrected) {
+                        learnedTerms.append(candidate.corrected)
+                    }
+                }
+                let learnable = analysis.candidates.filter(\.learnable)
+                if !learnable.isEmpty {
+                    _ = try? await self.gateway.confirmLearning(recordingID: recordingID, items: learnable)
+                }
+            }
+
+            await MainActor.run {
+                self.clearTeachable()
+                if learnedTerms.isEmpty {
+                    self.setState(.learned("That edit's too common to learn — try a name, brand, or full term."))
+                } else {
+                    self.setState(.learned("Learned “\(learnedTerms.joined(separator: "”, “"))” — AirNote will use it next time."))
+                }
+            }
+        }
+    }
+
+    // MARK: App-handoff dictation
+    //
+    // iOS does not permit microphone capture inside a keyboard extension (the OS
+    // denies AVAudioEngine.start with "extension doesn't have entitlements to
+    // record audio"). So we ask the main app to record; it polishes the text and
+    // leaves it in the App Group for us to insert when the user swipes back.
+
+    private func requestAppDictation() {
+        cancelFinalizeTimer()
+        clearTeachable()
+        guard hasFullAccess else { setState(.needsFullAccess); return }
+        guard let token = SharedStore.accessToken, !token.isEmpty else {
+            setState(.needsMainAppSession)
+            return
+        }
+        SharedStore.clearKeyboardDictation()
+        SharedStore.keyboardDictationRequestedAt = Date()
+        currentResult = nil
+
+        if SharedStore.isSessionWarm {
+            // In-place: the app is holding the mic warm in the background. Signal
+            // it and record right here — no app switch.
+            warmActive = true
+            gotAck = false
+            setState(.recording)
+            DarwinSignal.shared.post(DarwinSignal.startDictation)
+            ackTimer?.invalidate()
+            ackTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
+                guard let self, self.warmActive, !self.gotAck else { return }
+                // No ack after 5s — the warm app is genuinely gone (not just slow),
+                // so fall back to the handoff. (The app now acks immediately on
+                // wake, so a live session never reaches this.)
+                self.warmActive = false
+                self.coldHandoff()
+            }
+        } else {
+            coldHandoff()
+        }
+    }
+
+    private func coldHandoff() {
+        // The request timestamp is already written by requestAppDictation. iOS
+        // usually won't let a keyboard open its app, so this is best-effort; if it
+        // doesn't open, the user opens AirNote and it auto-starts from the
+        // pending request. Either way, the first dictation establishes the warm
+        // session and the rest are in-place.
+        setState(.dictatingInApp)
+        openURLInApp("airnote://dictate")
+    }
+
+    private func handleWarmResult() {
+        ackTimer?.invalidate()
+        warmActive = false
+        cancelFinalizeTimer()
+        if !consumePendingDictation() {
+            recomputeIdleState()
+            render()
+        }
+    }
+
+    private func handleWarmFailed() {
+        ackTimer?.invalidate()
+        cancelFinalizeTimer()
+        warmActive = false
+        setState(.error("Didn't catch that — tap the mic and speak."))
+    }
+
+    /// Show the live (already romanized) transcript the warm app is producing, so
+    /// the user sees words appear as they speak — without a full re-render.
+    private func handleLivePartial() {
+        guard warmActive, case .recording = state else { return }
+        let text = SharedStore.keyboardLivePartial
+        if !text.isEmpty { pad?.setLivePartial(text) }
+    }
+
+    /// Drive the live waveform from the real mic level the warm app relays, so the
+    /// bars track the user's voice during a warm/handoff dictation (the keyboard
+    /// can't capture audio itself, so this is the only reactive source for it).
+    private func handleLiveLevel() {
+        guard warmActive, case .recording = state else { return }
+        pad?.setAudioLevel(Float(SharedStore.keyboardLiveLevel))
+    }
+
+    /// On returning to the keyboard, insert any polished text the app produced for
+    /// a request newer than ours. Returns true if a result was handled.
+    @discardableResult
+    private func consumePendingDictation() -> Bool {
+        guard
+            let raw = SharedStore.pendingKeyboardText, !raw.isEmpty,
+            let producedAt = SharedStore.pendingKeyboardTextAt,
+            let requestedAt = SharedStore.keyboardDictationRequestedAt,
+            producedAt >= requestedAt
+        else { return false }
+
+        SharedStore.clearKeyboardDictation()
+        let text = HinglishScript.enforceRomanHinglish(raw)
+        let secure = TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField
+        resultSeq += 1
+        let result = BridgeResult(
+            resultSeq: resultSeq,
+            sessionID: "keyboard",
+            clientRequestID: RequestId.make(),
+            requestID: RequestId.make(),
+            state: .final,
+            transcript: text,
+            polished: text,
+            language: SharedStore.outputLanguage == "english" ? .en : .hinglish,
+            style: .work,
+            latencyMS: 0,
+            expiresAt: Date().addingTimeInterval(10 * 60),
+            insertPolicy: secure ? .copyOnly : .insertAtCursor,
+            learningAllowed: true
+        )
+        currentResult = result
+
+        if secure {
+            setState(.secureCopyReady(result))
+        } else {
+            // Capture the text already before the cursor so a later "Teach a fix"
+            // can isolate the user's edited version of just our insertion.
+            let prefix = textDocumentProxy.documentContextBeforeInput ?? ""
+            if TextInsertion(documentProxy: textDocumentProxy).insert(result) {
+                currentResult = nil
+                captureTeachable(insertedText: text, prefix: prefix)
+                setState(.inserted)
+            } else {
+                // Insertion failed (no proxy / restricted) — fall back to clipboard.
+                pasteboard.string = text
+                currentResult = nil
+                setState(.copied)
+            }
+        }
+        return true
+    }
+
+    // MARK: Open container app
+
+    private func openMainApp() {
+        openURLInApp("airnote://open")
+    }
+
+    @discardableResult
+    private func openURLInApp(_ string: String) -> Bool {
+        guard let url = URL(string: string) else { return false }
+        // Keyboard extensions are built with APPLICATION_EXTENSION_API_ONLY, so
+        // UIApplication.open isn't callable directly. Walk the responder chain and
+        // dynamically invoke an open selector — the standard extension hack. Try
+        // the modern open:options:completionHandler: first, then legacy openURL:.
+        let openURL = NSSelectorFromString("openURL:")
+        let openOptions = NSSelectorFromString("open:options:completionHandler:")
+        var responder: UIResponder? = self
+        while let current = responder {
+            if let app = current as? UIApplication {
+                app.perform(openURL, with: url)
+                NSLog("AirNoteKeyboard: opened via UIApplication in responder chain")
+                return true
+            }
+            if current.responds(to: openOptions) {
+                _ = current.perform(openOptions, with: url, with: [:])
+                NSLog("AirNoteKeyboard: opened via open:options: on %@", String(describing: type(of: current)))
+                return true
+            }
+            if current.responds(to: openURL) {
+                current.perform(openURL, with: url)
+                NSLog("AirNoteKeyboard: opened via openURL: on %@", String(describing: type(of: current)))
+                return true
+            }
+            responder = current.next
+        }
+        NSLog("AirNoteKeyboard: NO responder could open %@ — manual open required", string)
+        return false
+    }
+}

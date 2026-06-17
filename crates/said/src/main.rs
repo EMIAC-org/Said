@@ -656,6 +656,10 @@ async fn stream_polish_and_paste(
 
     let mut typed_any = false;
     let mut failed_any = false;
+    // Accumulate exactly what we stream into the field so a partial/RESET run can
+    // reconcile ONLY our own draft — never Cmd+A select-all, which would delete the
+    // user's pre-existing field text. Mirrors the desktop app.
+    let mut typed_text = String::new();
 
     while let Some(token) = token_rx.recv().await {
         if token == RESET_SENTINEL {
@@ -663,7 +667,10 @@ async fn stream_polish_and_paste(
             continue;
         }
         match said_paster::type_text(&token) {
-            Ok(true) => typed_any = true,
+            Ok(true) => {
+                typed_text.push_str(&token);
+                typed_any = true;
+            }
             Ok(false) => failed_any = true,
             Err(e) => {
                 failed_any = true;
@@ -677,8 +684,17 @@ async fn stream_polish_and_paste(
         .map_err(|e| format!("llm task join failed: {e}"))??;
 
     if typed_any && failed_any {
-        said_paster::paste_replacing(&result.polished)
-            .map_err(|e| format!("paste replacing failed: {e}"))?;
+        // Partial / RESET: replace only the draft we typed with the final output,
+        // anchored to our own span (backspace-based, never select-all). If the span
+        // can't be located we keep the streamed draft rather than risk clobbering
+        // the user's surrounding text.
+        if !result.polished.is_empty() {
+            if let Err(e) =
+                said_paster::reconcile_current_recording(None, &typed_text, &result.polished)
+            {
+                warn!("[airnote] reconcile failed, keeping streamed draft: {e}");
+            }
+        }
     } else if !typed_any {
         said_paster::paste(&result.polished).map_err(|e| format!("paste failed: {e}"))?;
     }
