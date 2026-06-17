@@ -2893,6 +2893,66 @@ pub fn meeting_engine_list_meetings(
     out
 }
 
+/// Max transcript words for a meeting to count as "empty" — silence/noise that
+/// whisper turned into a word or two. Above this it has real content.
+const EMPTY_MEETING_MAX_WORDS: usize = 5;
+
+/// A locally-stored meeting with effectively no content: never analyzed, not
+/// favorited, no user-set title, and only a few transcript words.
+fn meeting_is_empty(dir: &Path, id: &str, overrides: &MeetingOverrides) -> bool {
+    if let Some(ov) = overrides.get(id) {
+        if ov.favorite || ov.title.is_some() {
+            return false;
+        }
+    }
+    if dir.join("meeting.ai.json").is_file() {
+        return false;
+    }
+    meeting_dir_word_count(dir) < EMPTY_MEETING_MAX_WORDS
+}
+
+/// Delete every empty meeting on this device (silence/noise recordings never
+/// acted on). Returns how many were removed. The active recording, and any
+/// analyzed / favorited / renamed meeting, are always kept.
+#[tauri::command]
+pub fn meeting_engine_clear_empty_meetings(state: State<'_, MeetingEngineState>) -> usize {
+    let active_id = state
+        .session
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|session| session.session_id.clone()));
+    let overrides = read_meeting_overrides();
+    let root = said_core::paths::data_dir().join("meetings");
+    let Ok(entries) = fs::read_dir(&root) else {
+        return 0;
+    };
+    let mut cleared = 0usize;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Some(id) = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if id.starts_with('.') || safe_meeting_dir_id(Some(&id)).is_none() {
+            continue;
+        }
+        // Never touch the meeting that's currently recording.
+        if active_id.as_deref() == Some(id.as_str()) {
+            continue;
+        }
+        if meeting_is_empty(&dir, &id, &overrides) && fs::remove_dir_all(&dir).is_ok() {
+            cleared += 1;
+        }
+    }
+    cleared
+}
+
 #[cfg(test)]
 mod local_list_tests {
     use super::*;

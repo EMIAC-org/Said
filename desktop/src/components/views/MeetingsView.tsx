@@ -7,6 +7,7 @@ import {
   ChevronDown,
   Copy,
   Download,
+  Eraser,
   ExternalLink,
   FileText,
   Layers,
@@ -961,6 +962,7 @@ export function MeetingsView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [dateFilter, setDateFilter] = useState<"all" | "today" | "week" | "archived">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<Record<string, MeetingSearchHit> | null>(null);
@@ -1073,6 +1075,21 @@ export function MeetingsView({
       setCreating(false);
     }
   }, [onJoinMeeting, hasModel, onConfigureModels]);
+
+  // Clear empty meetings — silence/noise recordings (few words, never analyzed,
+  // not favorited or renamed) that pile up. Analyzed/favorited/named meetings and
+  // the active recording are always kept.
+  const handleClearEmpty = useCallback(async () => {
+    setClearing(true);
+    try {
+      await invoke<number>("meeting_engine_clear_empty_meetings");
+      await fetchMeetings();
+    } catch (err) {
+      console.warn("[meeting] clear empty failed:", err);
+    } finally {
+      setClearing(false);
+    }
+  }, [fetchMeetings]);
 
   // Debounced full-text search across title/tags/summary/notes/decisions/
   // actions/transcript (heavy fields are read locally by the backend).
@@ -1836,6 +1853,13 @@ export function MeetingsView({
               <p className="text-[11px] text-muted-foreground">{liveCount} live · {endedCount} ended</p>
             </div>
             <div className="flex items-center gap-1.5">
+              <IconButton
+                label="Clear empty meetings"
+                disabled={clearing || loading}
+                onClick={() => void handleClearEmpty()}
+              >
+                <Eraser size={13} className={clearing ? "animate-pulse" : ""} />
+              </IconButton>
               <IconButton label="Refresh meetings" disabled={loading} onClick={() => void fetchMeetings()}>
                 <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
               </IconButton>
