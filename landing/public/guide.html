@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AirNote — User Guide</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; }
+    :root {
+      color-scheme: dark;
+      --bg: #090a0d;
+      --panel: #11141a;
+      --panel-2: #151922;
+      --line: rgba(255,255,255,.09);
+      --text: #eef2f7;
+      --muted: #9aa5b4;
+      --soft: #677489;
+      --green: #62e6b8;
+      --blue: #78a8ff;
+      --amber: #f5c86a;
+      --red: #ff7b88;
+      --purple: #c5a3ff;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(120,168,255,.13), transparent 30%),
+        radial-gradient(circle at 86% 10%, rgba(98,230,184,.10), transparent 28%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .w { max-width: 980px; margin: 0 auto; padding: 46px 22px 66px; }
+    .hero {
+      display: grid;
+      grid-template-columns: 1.05fr .95fr;
+      gap: 22px;
+      align-items: end;
+      margin-bottom: 26px;
+    }
+    .brand { display: flex; align-items: center; gap: 9px; margin-bottom: 18px; }
+    .brand svg { width: 24px; height: 24px; color: var(--green); }
+    .brand span { font-weight: 800; font-size: 14px; letter-spacing: .01em; }
+    h1 { font-size: clamp(32px, 5vw, 54px); line-height: 1.02; letter-spacing: -.045em; max-width: 620px; }
+    .sub { color: var(--muted); font-size: 15px; margin-top: 14px; max-width: 600px; }
+    h2 {
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--text);
+      margin: 34px 0 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+      letter-spacing: .01em;
+    }
+    h3 { font-size: 13px; font-weight: 800; margin-bottom: 5px; }
+    p { color: var(--muted); font-size: 13px; margin-bottom: 9px; }
+    strong { color: var(--text); }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .grid.two { grid-template-columns: repeat(2, 1fr); }
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.02));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      min-height: 100px;
+    }
+    .card p { font-size: 12px; margin: 0; }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      height: 20px;
+      padding: 0 7px;
+      border-radius: 5px;
+      font-size: 10px;
+      font-weight: 800;
+      color: #07110d;
+      background: var(--green);
+      margin-bottom: 9px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0 16px; }
+    th {
+      text-align: left;
+      padding: 7px 8px;
+      color: var(--soft);
+      font-weight: 800;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      border-bottom: 1px solid var(--line);
+    }
+    td { padding: 8px; border-bottom: 1px solid rgba(255,255,255,.055); color: var(--muted); vertical-align: top; }
+    td:first-child { color: var(--text); white-space: nowrap; }
+    .k {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 25px;
+      height: 23px;
+      padding: 0 7px;
+      border-radius: 5px;
+      background: #1b2029;
+      border: 1px solid rgba(255,255,255,.13);
+      box-shadow: inset 0 -1px 0 rgba(255,255,255,.08);
+      font-family: "SF Mono", ui-monospace, monospace;
+      font-size: 11px;
+      font-weight: 800;
+      color: var(--text);
+    }
+    .kc { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    .note {
+      border-left: 2px solid var(--green);
+      padding: 8px 12px;
+      margin: 12px 0;
+      background: rgba(98,230,184,.045);
+      border-radius: 0 7px 7px 0;
+    }
+    .note p { margin: 0; font-size: 12px; }
+    .demo {
+      position: relative;
+      overflow: hidden;
+      min-height: 210px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.04), transparent),
+        #0d1016;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .screen {
+      position: relative;
+      height: 166px;
+      border-radius: 7px;
+      background: #171b23;
+      border: 1px solid rgba(255,255,255,.08);
+      overflow: hidden;
+    }
+    .screen::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 50%;
+      width: 120px;
+      height: 18px;
+      transform: translateX(-50%);
+      background: #050506;
+      border-radius: 0 0 11px 11px;
+      z-index: 3;
+    }
+    .menubar {
+      height: 25px;
+      background: rgba(255,255,255,.06);
+      border-bottom: 1px solid rgba(255,255,255,.06);
+    }
+    .window {
+      position: absolute;
+      left: 20px;
+      right: 20px;
+      top: 44px;
+      bottom: 18px;
+      border-radius: 7px;
+      background: #0f131b;
+      border: 1px solid rgba(255,255,255,.08);
+      padding: 13px;
+      color: #cbd5e1;
+      font-size: 11px;
+    }
+    .hud {
+      position: absolute;
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%);
+      height: 34px;
+      min-width: 148px;
+      padding: 0 14px;
+      border-radius: 18px;
+      background: #050506;
+      border: 1px solid rgba(255,255,255,.08);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      font-size: 11px;
+      font-weight: 800;
+      box-shadow: 0 18px 45px rgba(0,0,0,.4);
+      z-index: 5;
+    }
+    .bars { display: inline-flex; align-items: center; gap: 3px; height: 18px; }
+    .bars i {
+      display: block;
+      width: 3px;
+      height: 7px;
+      border-radius: 2px;
+      background: var(--green);
+      animation: bar 1s ease-in-out infinite;
+    }
+    .bars i:nth-child(2) { animation-delay: .13s; }
+    .bars i:nth-child(3) { animation-delay: .26s; }
+    .bars i:nth-child(4) { animation-delay: .39s; }
+    .bars i:nth-child(5) { animation-delay: .52s; }
+    @keyframes bar { 0%, 100% { height: 6px; opacity: .55; } 50% { height: 18px; opacity: 1; } }
+    .polish-demo .hud {
+      animation: polishHud 7s ease-in-out infinite;
+    }
+    .polish-demo .draft, .polish-demo .final {
+      position: absolute;
+      left: 13px;
+      right: 13px;
+      top: 13px;
+      transition: opacity .4s;
+    }
+    .polish-demo .draft { color: #8b95a6; animation: draftFade 7s ease-in-out infinite; }
+    .polish-demo .final { color: #e8f7ef; animation: finalFade 7s ease-in-out infinite; }
+    @keyframes draftFade { 0%, 45% { opacity: 1; } 56%, 100% { opacity: .08; } }
+    @keyframes finalFade { 0%, 52% { opacity: .08; } 62%, 100% { opacity: 1; } }
+    @keyframes polishHud {
+      0%, 26% { width: 148px; color: white; }
+      38%, 60% { width: 210px; color: var(--amber); }
+      72%, 100% { width: 166px; color: var(--green); }
+    }
+    .move-demo .hud {
+      animation: moveHud 8s ease-in-out infinite;
+      outline: 0 solid rgba(120,168,255,0);
+    }
+    .move-demo .crosshair {
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, transparent 49.7%, rgba(120,168,255,.2) 50%, transparent 50.3%),
+        linear-gradient(0deg, transparent 49.7%, rgba(120,168,255,.15) 50%, transparent 50.3%);
+      opacity: 0;
+      animation: gridOn 8s ease-in-out infinite;
+      pointer-events: none;
+    }
+    @keyframes gridOn { 0%, 18%, 72%, 100% { opacity: 0; } 28%, 62% { opacity: 1; } }
+    @keyframes moveHud {
+      0%, 20% { left: 50%; bottom: 16px; outline-width: 0; }
+      34%, 50% { left: 28%; bottom: 74px; outline: 2px solid rgba(120,168,255,.45); }
+      65%, 100% { left: 50%; bottom: 16px; outline-width: 0; }
+    }
+    .select-demo .window {
+      font-size: 12px;
+      line-height: 1.55;
+      padding: 0;
+    }
+    .select-demo .before,
+    .select-demo .after {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      top: 12px;
+      min-height: 84px;
+      padding: 10px;
+      border-radius: 6px;
+    }
+    .select-demo .before {
+      color: #e7edf7;
+      background: rgba(120,168,255,.15);
+      border: 1px solid rgba(120,168,255,.26);
+      animation: beforeText 6s ease-in-out infinite;
+    }
+    .select-demo .after {
+      color: #d8fff0;
+      background: rgba(98,230,184,.08);
+      border: 1px solid rgba(98,230,184,.18);
+      animation: afterText 6s ease-in-out infinite;
+    }
+    .select-demo .mini-cursor {
+      position: absolute;
+      left: 34px;
+      bottom: 12px;
+      width: 54px;
+      height: 22px;
+      border-radius: 5px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: #1b2029;
+      border: 1px solid rgba(255,255,255,.13);
+      color: var(--text);
+      font-family: "SF Mono", ui-monospace, monospace;
+      font-size: 11px;
+      font-weight: 900;
+      animation: keyTap 6s ease-in-out infinite;
+    }
+    @keyframes beforeText {
+      0%, 45% { opacity: 1; transform: translateY(0); }
+      56%, 100% { opacity: 0; transform: translateY(-5px); }
+    }
+    @keyframes afterText {
+      0%, 50% { opacity: 0; transform: translateY(6px); }
+      64%, 100% { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes keyTap {
+      0%, 25% { opacity: 0; transform: translateY(4px) scale(.96); }
+      34%, 58% { opacity: 1; transform: translateY(0) scale(1); }
+      70%, 100% { opacity: 0; transform: translateY(4px) scale(.96); }
+    }
+    .bug-demo { min-height: 330px; }
+    .bug-demo .screen {
+      height: 286px;
+      background: #e8ecf8;
+    }
+    .bug-demo .menubar {
+      background: rgba(12,14,26,.05);
+      border-bottom-color: rgba(12,14,26,.08);
+    }
+    .bug-demo .window {
+      left: 18px;
+      right: 18px;
+      top: 39px;
+      bottom: 14px;
+      padding: 0;
+      overflow: hidden;
+      background: #fff;
+      border: 1px solid #dfe3ef;
+      box-shadow: 0 18px 42px rgba(22,27,45,.13);
+      color: #0c0e1a;
+    }
+    .bug-page-mini {
+      height: 100%;
+      padding: 17px 19px;
+      transform-origin: top left;
+      font-size: 8px;
+      line-height: 1.35;
+    }
+    .bug-page-mini h3 {
+      color: #0c0e1a;
+      font-size: 21px;
+      line-height: 1.05;
+      letter-spacing: -.04em;
+      margin: 0 0 6px;
+    }
+    .bug-page-mini .mini-sub {
+      color: #697292;
+      font-size: 10px;
+      margin: 0 0 13px;
+      max-width: 360px;
+    }
+    .bug-mini-grid {
+      display: grid;
+      grid-template-columns: 1fr 106px;
+      gap: 10px;
+    }
+    .bug-mini-label {
+      color: #737b9a;
+      display: block;
+      font-size: 8px;
+      font-weight: 900;
+      letter-spacing: .11em;
+      margin: 8px 0 5px;
+      text-transform: uppercase;
+    }
+    .bug-mini-input,
+    .bug-mini-textarea,
+    .bug-mini-select,
+    .bug-mini-upload,
+    .bug-mini-meta {
+      border: 1px solid #dfe3ef;
+      background: #f7f8fc;
+      border-radius: 8px;
+    }
+    .bug-mini-input {
+      height: 24px;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      color: #7d8291;
+      font-size: 10px;
+    }
+    .bug-mini-textarea {
+      height: 58px;
+      padding: 9px 10px;
+      color: #7d8291;
+      font-size: 10px;
+    }
+    .bug-mini-select {
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 9px;
+      color: #111421;
+      font-size: 10px;
+    }
+    .bug-mini-upload {
+      height: 44px;
+      padding: 9px 10px;
+      border-style: dashed;
+      color: #697292;
+      animation: uploadPulse 6s ease-in-out infinite;
+    }
+    .bug-mini-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .bug-mini-meta {
+      height: 24px;
+      display: flex;
+      align-items: center;
+      padding: 0 9px;
+      color: #111421;
+      font-size: 10px;
+    }
+    .submit-chip {
+      margin-top: 10px;
+      width: 100%;
+      height: 30px;
+      border-radius: 9px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: #0c0e1a;
+      color: #fff;
+      font-weight: 900;
+      font-size: 10px;
+      animation: submitPulse 6s ease-in-out infinite;
+    }
+    @keyframes uploadPulse {
+      0%, 35% { border-color: rgba(120,168,255,.42); }
+      50%, 100% { border-color: rgba(98,230,184,.54); background: rgba(98,230,184,.09); }
+    }
+    @keyframes submitPulse {
+      0%, 60% { opacity: .55; transform: translateY(0); }
+      72%, 100% { opacity: 1; transform: translateY(-1px); }
+    }
+    .step {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 9px 0;
+      border-bottom: 1px solid rgba(255,255,255,.055);
+    }
+    .step:last-child { border-bottom: 0; }
+    .num {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(120,168,255,.14);
+      color: var(--blue);
+      font-size: 11px;
+      font-weight: 900;
+      flex: 0 0 auto;
+    }
+    .step p { margin: 0; font-size: 12px; }
+    .ex {
+      background: #0f1218;
+      border: 1px solid rgba(255,255,255,.075);
+      border-radius: 8px;
+      padding: 12px 13px;
+      margin: 8px 0 10px;
+      font-size: 12px;
+    }
+    .in { color: #778398; }
+    .arrow { color: #495164; font-family: ui-monospace, monospace; font-size: 11px; margin: 5px 0; }
+    .out { color: var(--green); }
+    .footer { margin-top: 34px; color: #414957; font-size: 11px; text-align: center; }
+    @media (max-width: 760px) {
+      .w {
+        width: min(100%, 560px);
+        padding: 30px 14px 48px;
+      }
+      .hero, .grid, .grid.two {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+      .hero { align-items: start; margin-bottom: 18px; }
+      h1 { font-size: clamp(30px, 10vw, 42px); max-width: 11ch; }
+      .sub { font-size: 14px; max-width: 34ch; }
+      h2 { margin-top: 26px; }
+      table, tbody, tr, td, th { display: block; width: 100%; }
+      th { display: none; }
+      tr {
+        padding: 10px 0;
+        border-bottom: 1px solid rgba(255,255,255,.06);
+      }
+      td {
+        border-bottom: 0;
+        padding: 3px 0;
+      }
+      td:first-child { white-space: normal; }
+      td:first-child + td { font-size: 12px; }
+      .k { min-width: 24px; height: 22px; padding: 0 6px; }
+      .card { padding: 13px; min-height: auto; }
+      .step { padding: 8px 0; }
+      .demo {
+        min-height: 190px;
+        padding: 10px;
+        border-radius: 7px;
+      }
+      .screen { height: 156px; }
+      .screen::before { width: 96px; height: 16px; }
+      .window {
+        left: 12px;
+        right: 12px;
+        top: 38px;
+        bottom: 14px;
+        padding: 10px;
+      }
+      .polish-demo .draft,
+      .polish-demo .final {
+        left: 10px;
+        right: 10px;
+        top: 10px;
+        font-size: 10px;
+        line-height: 1.45;
+      }
+      .select-demo .before,
+      .select-demo .after {
+        left: 9px;
+        right: 9px;
+        top: 9px;
+        min-height: 74px;
+        font-size: 10px;
+        line-height: 1.35;
+      }
+      .select-demo .mini-cursor { left: 24px; bottom: 9px; }
+      .hud {
+        min-width: 126px;
+        height: 31px;
+        font-size: 10px;
+      }
+      .bug-demo { min-height: 330px; }
+      .bug-demo .screen { height: 286px; }
+      .bug-demo .window {
+        left: 10px;
+        right: 10px;
+        top: 35px;
+        bottom: 10px;
+      }
+      .bug-page-mini { padding: 13px; }
+      .bug-page-mini h3 { font-size: 18px; }
+      .bug-page-mini .mini-sub {
+        font-size: 8px;
+        margin-bottom: 8px;
+      }
+      .bug-mini-grid,
+      .bug-mini-row {
+        grid-template-columns: 1fr;
+        gap: 5px;
+      }
+      .bug-mini-label { margin: 5px 0 3px; font-size: 7px; }
+      .bug-mini-textarea { height: 38px; }
+      .bug-mini-select,
+      .bug-mini-input,
+      .bug-mini-meta { height: 20px; font-size: 8px; }
+      .bug-mini-upload { height: 30px; font-size: 8px; padding: 6px 8px; }
+      .submit-chip { height: 24px; font-size: 8px; margin-top: 7px; }
+    }
+    @media (max-width: 390px) {
+      .w { padding-left: 10px; padding-right: 10px; }
+      h1 { max-width: 10ch; }
+      .demo { min-height: 176px; }
+      .screen { height: 144px; }
+      .bug-demo { min-height: 318px; }
+      .bug-demo .screen { height: 274px; }
+      .bug-page-mini { padding: 10px; }
+    }
+  </style>
+</head>
+<body>
+<div class="w">
+  <section class="hero">
+    <div>
+      <div class="brand">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="3" y="8.5" width="3" height="7" rx="1.5"/><rect x="8" y="4.5" width="3" height="15" rx="1.5"/><rect x="13" y="2.5" width="3" height="19" rx="1.5"/><rect x="18" y="6.5" width="3" height="11" rx="1.5"/></svg>
+        <span>AirNote</span>
+      </div>
+      <h1>Speak anywhere. Polish only when you choose.</h1>
+      <p class="sub">AirNote types into the active app, keeps the small status pill visible, and gives you focused shortcuts for dictation, message polish, and HUD placement.</p>
+    </div>
+    <div class="demo polish-demo">
+      <div class="screen">
+        <div class="menubar"></div>
+        <div class="window">
+          <div class="draft">hello aron i am done with detailed documentation can walk you through approach and finalise scope before execution</div>
+          <div class="final">Hello Aaron, I have completed the detailed documentation. I can walk you through the approach, and then we can finalize the scope before proceeding with execution.</div>
+        </div>
+        <div class="hud"><span class="bars"><i></i><i></i><i></i><i></i><i></i></span><span>Polishing</span></div>
+      </div>
+    </div>
+  </section>
+
+  <h2>Core Shortcuts</h2>
+  <table>
+    <tr>
+      <th>Shortcut</th>
+      <th>What it does</th>
+    </tr>
+    <tr>
+      <td><span class="k">Fn</span> hold</td>
+      <td>Record while held. Release to process and type the final output into the active app.</td>
+    </tr>
+    <tr>
+      <td><span class="kc"><span class="k">Fn</span><span class="k">Space</span></span></td>
+      <td>Long dictation lock. Start recording, lock it, then press <span class="k">Fn</span> again to finish.</td>
+    </tr>
+    <tr>
+      <td><span class="kc"><span class="k">⇧</span><span class="k">⌘</span><span class="k">Space</span></span></td>
+      <td>Toggle <strong>Polish Mode</strong> for voice dictation. When on, AirNote waits and pastes the polished message once.</td>
+    </tr>
+    <tr>
+      <td><span class="kc"><span class="k">⌥</span><span class="k">1</span></span></td>
+      <td><strong>Polish selected message</strong>. Select text in any app, press left Option + 1, and AirNote replaces only that selection with polished English.</td>
+    </tr>
+    <tr>
+      <td><span class="kc"><span class="k">⌥</span><span class="k">2</span></span></td>
+      <td>Selected-text English conversion/cleanup shortcut.</td>
+    </tr>
+    <tr>
+      <td><span class="kc"><span class="k">⌥</span><span class="k">5</span></span></td>
+      <td>Selected-text Hinglish shortcut.</td>
+    </tr>
+    <tr>
+      <td><span class="kc"><span class="k">⌃</span><span class="k">⌘</span><span class="k">V</span></span></td>
+      <td>Paste the last AirNote output again if the target app rejected the first paste.</td>
+    </tr>
+  </table>
+
+  <div class="note">
+    <p><strong>Rule of thumb:</strong> normal dictation is fast and direct. Polish Mode is for messages that should sound professional, so it intentionally waits for the final polished version and pastes once.</p>
+  </div>
+
+  <h2>Polish Mode Workflow</h2>
+  <div class="grid two">
+    <div class="demo polish-demo">
+      <div class="screen">
+        <div class="menubar"></div>
+        <div class="window">
+          <div class="draft">bhai client ko bol do ki documentation done hai and we can discuss scope today evening</div>
+          <div class="final">Hi, the documentation is complete. We can review the approach and finalize the scope during the call this evening.</div>
+        </div>
+        <div class="hud"><span class="bars"><i></i><i></i><i></i><i></i><i></i></span><span>Polish Mode</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="tag">Voice mode</div>
+      <div class="step"><span class="num">1</span><p>Press <span class="kc"><span class="k">⇧</span><span class="k">⌘</span><span class="k">Space</span></span>. The pill shows <strong>Polish mode on</strong>.</p></div>
+      <div class="step"><span class="num">2</span><p>Speak normally with <span class="k">Fn</span>. AirNote transcribes first, then runs a message-polish pass.</p></div>
+      <div class="step"><span class="num">3</span><p>The target app receives only the final polished message. No draft text is streamed into the field.</p></div>
+    </div>
+  </div>
+
+  <h2>Move The Status Pill</h2>
+  <div class="grid two">
+    <div class="card">
+      <div class="tag">Placement</div>
+      <div class="step"><span class="num">1</span><p>Press <span class="kc"><span class="k">⇧</span><span class="k">⌘</span><span class="k">/</span></span> to make the status pill movable.</p></div>
+      <div class="step"><span class="num">2</span><p>Drag the pill anywhere that feels comfortable for your screen.</p></div>
+      <div class="step"><span class="num">3</span><p>Press <span class="kc"><span class="k">⇧</span><span class="k">⌘</span><span class="k">.</span></span> to reset it to the centered default position.</p></div>
+    </div>
+    <div class="demo move-demo">
+      <div class="screen">
+        <div class="menubar"></div>
+        <div class="crosshair"></div>
+        <div class="window">The pill can sit near the bottom, near the notch, or wherever it does not block your work.</div>
+        <div class="hud">Drag me</div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Polish Selected Text With Option + 1</h2>
+  <div class="grid two">
+    <div class="demo select-demo">
+      <div class="screen">
+        <div class="menubar"></div>
+        <div class="window">
+          <div class="before">Let me know if you want to jump on call right away i will set it up in few minutes and then you can query anything in Zoho Books using your Claude account.</div>
+          <div class="after">Please let me know if you would like to get on a call right away. I can set it up in a few minutes, and then you can ask anything about Zoho Books using your Claude account.</div>
+          <div class="mini-cursor">⌥ 1</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="tag">Selected text</div>
+      <div class="step"><span class="num">1</span><p>Select the rough message in Slack, WhatsApp, Gmail, Chrome, Notes, or any editable app.</p></div>
+      <div class="step"><span class="num">2</span><p>Press <span class="kc"><span class="k">⌥</span><span class="k">1</span></span>. Use the left Option key if your keyboard has two.</p></div>
+      <div class="step"><span class="num">3</span><p>AirNote replaces only the selected text. It should not hit Enter or send the message.</p></div>
+    </div>
+  </div>
+
+  <h2>What Polish Means</h2>
+  <div class="ex">
+    <div class="in">Input: Hello Aaron, I'm done with detailed documentation. I can walk you through approach and then finalise scope before execution. Let me know time for evening call as per your time zone.</div>
+    <div class="arrow">Option + 1 / Polish Mode output</div>
+    <div class="out">Hello Aaron, I have completed the detailed documentation. I can walk you through the approach, and then we can finalize the scope before proceeding with execution. Please let me know a suitable time for the evening call based on your time zone.</div>
+  </div>
+  <p>Polish Mode improves language and structure, but it should preserve names, numbers, rates, dates, legal/commercial facts, questions, and intent.</p>
+
+  <h2>Report A Bug</h2>
+  <div class="grid two">
+    <div class="card">
+      <div class="tag">Support flow</div>
+      <div class="step"><span class="num">1</span><p>Open AirNote and click <strong>Report bug</strong> in the sidebar.</p></div>
+      <div class="step"><span class="num">2</span><p>AirNote opens the control-plane bug form with a secure report token plus app version, platform, and device details.</p></div>
+      <div class="step"><span class="num">3</span><p>Describe what happened. Attach a screenshot if it helps. The report appears in the admin <strong>Bugs</strong> page for the team.</p></div>
+    </div>
+    <div class="demo bug-demo">
+      <div class="screen">
+        <div class="menubar"></div>
+        <div class="window">
+          <div class="bug-page-mini">
+            <h3>Report a bug</h3>
+            <p class="mini-sub">Tell us what happened in AirNote. Add a screenshot if it helps. This goes straight to the control plane.</p>
+            <span class="bug-mini-label">Short title</span>
+            <div class="bug-mini-input">e.g. Dictation pasted into the wrong field</div>
+            <div class="bug-mini-grid">
+              <div>
+                <span class="bug-mini-label">What happened?</span>
+                <div class="bug-mini-textarea">Steps, expected behavior, actual behavior...</div>
+              </div>
+              <div>
+                <span class="bug-mini-label">Severity</span>
+                <div class="bug-mini-select"><span>Normal</span><span>⌄</span></div>
+              </div>
+            </div>
+            <span class="bug-mini-label">Screenshot optional</span>
+            <div class="bug-mini-upload">PNG/JPG/WebP up to roughly 4 MB</div>
+            <div class="bug-mini-row">
+              <div><span class="bug-mini-label">App version</span><div class="bug-mini-meta">2.3.2</div></div>
+              <div><span class="bug-mini-label">Platform</span><div class="bug-mini-meta">macOS</div></div>
+              <div><span class="bug-mini-label">Device ID</span><div class="bug-mini-meta">auto</div></div>
+            </div>
+            <div class="submit-chip">Submit bug report</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Learning And Vocabulary</h2>
+  <div class="grid">
+    <div class="card">
+      <div class="tag">Personal</div>
+      <h3>Your Mac learns locally</h3>
+      <p>Edit a proper noun, brand, acronym, or code word after dictation. AirNote learns that correction on your machine.</p>
+    </div>
+    <div class="card">
+      <div class="tag">Company</div>
+      <h3>Company bucket</h3>
+      <p>Enterprise users can receive approved company-wide words on day one, without rebuilding personal vocabulary from scratch.</p>
+    </div>
+    <div class="card">
+      <div class="tag">Safety</div>
+      <h3>Common words are blocked</h3>
+      <p>Common Hindi, Hinglish, and English words should not become aliases for company terms.</p>
+    </div>
+  </div>
+
+  <h2>Permissions Needed</h2>
+  <table>
+    <tr><td><strong>Accessibility</strong></td><td>Types or replaces text in the focused app.</td></tr>
+    <tr><td><strong>Input Monitoring</strong></td><td>Detects global shortcuts like Fn, Option + 1, and Shift + Command + Space.</td></tr>
+    <tr><td><strong>Microphone</strong></td><td>Records your voice for dictation.</td></tr>
+  </table>
+
+  <p class="footer">AirNote v2.3 · EMIAC · May 2026</p>
+</div>
+</body>
+</html>
