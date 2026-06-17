@@ -135,13 +135,7 @@ const releaseDownloads = [
     version: "2.3.7",
     date: "Jun 15, 2026",
     title: "Bluetooth-safe dictation",
-    downloads: [
-      {
-        platform: "Mac",
-        label: "Mac DMG",
-        href: "https://airnote.emiactech.com/releases/2.3.7/AirNote_2.3.7_aarch64.dmg",
-      },
-    ],
+    downloads: [],
   },
   {
     version: "2.3.6",
