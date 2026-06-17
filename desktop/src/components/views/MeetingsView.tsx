@@ -963,6 +963,8 @@ export function MeetingsView({
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [meetingInProgress, setMeetingInProgress] = useState(false);
+  const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
   const [dateFilter, setDateFilter] = useState<"all" | "today" | "week" | "archived">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<Record<string, MeetingSearchHit> | null>(null);
@@ -1061,6 +1063,20 @@ export function MeetingsView({
       setError("Install a transcription model first (Settings → Meeting).");
       onConfigureModels?.();
       return;
+    }
+    // Never start a second meeting while one is already recording — show a popup
+    // (with a jump-to-it action) instead of silently stopping the first.
+    try {
+      const status = await invoke<{ active: boolean; session_id?: string | null }>(
+        "meeting_engine_get_status",
+      );
+      if (status.active) {
+        setActiveMeetingId(status.session_id ?? null);
+        setMeetingInProgress(true);
+        return;
+      }
+    } catch {
+      /* status check failed — fall through and let the engine handle it */
     }
     setCreating(true);
     setError("");
@@ -2423,6 +2439,48 @@ export function MeetingsView({
         )}
       </main>
       </div>
+
+      {meetingInProgress && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-6"
+          style={{ background: "hsl(0 0% 0% / 0.55)" }}
+          onClick={() => setMeetingInProgress(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl p-5"
+            style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-[15px] font-bold text-foreground">A meeting is already in progress</h3>
+            <p className="mt-1.5 text-[13px] text-muted-foreground">
+              Finish the current meeting before starting a new one.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setMeetingInProgress(false)}
+                className="h-9 rounded-lg px-3 text-[12px] font-bold"
+                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+              >
+                Cancel
+              </button>
+              {activeMeetingId ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMeetingInProgress(false);
+                    onJoinMeeting?.(activeMeetingId);
+                  }}
+                  className="h-9 rounded-lg px-3 text-[12px] font-bold"
+                  style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+                >
+                  Open it
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
