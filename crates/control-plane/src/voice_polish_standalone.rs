@@ -20,8 +20,9 @@ pub async fn polish_transcript(
     safe_vocab_terms: &[String],
 ) -> Result<String, String> {
     let formatted_transcript = number_format::apply(transcript);
+    // Standalone CLI/comparison path has no account — keep the historical neutral default.
     let system_prompt =
-        build_voice_system_prompt(output_language, screen_context, safe_vocab_terms);
+        build_voice_system_prompt(output_language, "neutral", None, screen_context, safe_vocab_terms);
     let user_message = build_voice_user_message(&formatted_transcript, output_language);
 
     let model = if selected_model == "smart" {
@@ -202,6 +203,8 @@ fn strip_leaked_instructions(output: &str) -> String {
 /// Shared with `routes/runtime.rs` — server `/v1/runtime/voice/polish` and `polish-cli`.
 pub fn build_voice_system_prompt(
     output_language: &str,
+    tone_preset: &str,
+    custom_prompt: Option<&str>,
     screen_context: Option<&str>,
     safe_vocab_terms: &[String],
 ) -> String {
@@ -210,11 +213,13 @@ pub fn build_voice_system_prompt(
     };
     use said_core::polish::types::PolishPrefs;
 
-    // Server runtime has no per-account tone/custom prompt; use the 2.3.3 default.
+    // Apply the account's chosen tone, and (only when tone_preset == "custom") their
+    // custom persona prompt. said_core maps unknown tones to neutral and caps + fences
+    // the custom prompt, so any client-supplied value is safe.
     let prefs = PolishPrefs {
         output_language: output_language.to_string(),
-        tone_preset: "neutral".to_string(),
-        custom_prompt: None,
+        tone_preset: tone_preset.to_string(),
+        custom_prompt: custom_prompt.map(str::to_string),
     };
     // Server vocab arrives as already-trusted bare terms (no STT aliases), so
     // they render as Resolved entries and the common-word filter never fires.
