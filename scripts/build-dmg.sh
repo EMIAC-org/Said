@@ -264,10 +264,14 @@ hdiutil detach "$DMG_DEV" -force >/dev/null
 ok "DMG verified — AirNote.app inside is correctly signed and mounts cleanly"
 
 # ── Notarize the DMG ─────────────────────────────────────────────────────────
-# Requires APPLE_ID and APPLE_APP_SPECIFIC_PASSWORD env vars.
-# Skip notarization if credentials are not set (local dev builds).
+# Supports either:
+#   1. APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD/APPLE_PASSWORD (+ optional APPLE_TEAM_ID)
+#   2. APPLE_KEYCHAIN_PROFILE from `xcrun notarytool store-credentials`
+# If AIRNOTE_REQUIRE_NOTARIZATION=1, fail instead of producing an unnotarized DMG.
 APPLE_ID_EMAIL="${APPLE_ID:-}"
-APPLE_ASP="${APPLE_APP_SPECIFIC_PASSWORD:-}"
+APPLE_ASP="${APPLE_APP_SPECIFIC_PASSWORD:-${APPLE_PASSWORD:-}}"
+APPLE_NOTARY_PROFILE="${APPLE_KEYCHAIN_PROFILE:-}"
+REQUIRE_NOTARIZATION="${AIRNOTE_REQUIRE_NOTARIZATION:-0}"
 
 if [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ]; then
   step "Notarize DMG with Apple"
@@ -279,7 +283,22 @@ if [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ]; then
     --timeout "$NOTARY_TIMEOUT" \
     --wait 2>&1 | sed 's/^/  /'
   ok "notarization submitted"
+elif [ -n "$APPLE_NOTARY_PROFILE" ]; then
+  step "Notarize DMG with Apple keychain profile: $APPLE_NOTARY_PROFILE"
+  NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-25m}"
+  xcrun notarytool submit "$DMG_OUT" \
+    --keychain-profile "$APPLE_NOTARY_PROFILE" \
+    --timeout "$NOTARY_TIMEOUT" \
+    --wait 2>&1 | sed 's/^/  /'
+  ok "notarization submitted"
+elif [ "$REQUIRE_NOTARIZATION" = "1" ]; then
+  fail "notarization required but no APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD or APPLE_KEYCHAIN_PROFILE is available"
+else
+  warn "notarization credentials not set — skipping notarization"
+  warn "DMG is signed but NOT notarized (users will see 'identified developer' warning)"
+fi
 
+if [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ] || [ -n "$APPLE_NOTARY_PROFILE" ]; then
   step "Staple notarization ticket"
   xcrun stapler staple "$DMG_OUT" 2>&1 | sed 's/^/  /'
   ok "stapled"
@@ -287,9 +306,6 @@ if [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ]; then
   step "Verify notarization"
   spctl --assess --type open --context context:primary-signature -v "$DMG_OUT" 2>&1 | sed 's/^/  /'
   ok "DMG is signed + notarized — ready for distribution"
-else
-  warn "APPLE_ID and APPLE_APP_SPECIFIC_PASSWORD not set — skipping notarization"
-  warn "DMG is signed but NOT notarized (users will see 'identified developer' warning)"
 fi
 
 # ── Output ───────────────────────────────────────────────────────────────────
