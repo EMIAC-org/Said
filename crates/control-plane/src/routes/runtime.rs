@@ -2040,6 +2040,32 @@ fn runtime_error_payload(
     payload
 }
 
+/// Load the account's polish persona (tone_preset + custom_prompt) from
+/// `runtime_user_settings` for the voice prompt. Best-effort: a missing row or a
+/// query error must NEVER fail a dictation, so both fall back to the neutral
+/// default that the voice path used before per-account tone existed.
+async fn account_polish_persona(state: &AppState, account_id: Uuid) -> (String, Option<String>) {
+    let (tone_preset, custom_prompt) = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT tone_preset, custom_prompt FROM runtime_user_settings WHERE account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| ("neutral".to_string(), None));
+    // Map legacy mobile use-case tone names onto the canonical said_core vocabulary
+    // the desktop already uses (the iOS picker matches these; this only rescues a
+    // value persisted by an older client). Canonical + unknown values pass through —
+    // said_core maps anything it doesn't recognise to neutral.
+    let tone_preset = match tone_preset.as_str() {
+        "work" | "email" => "professional".to_string(),
+        "notes" => "concise".to_string(),
+        _ => tone_preset,
+    };
+    (tone_preset, custom_prompt)
+}
+
 async fn polish_runtime_transcript(
     state: &AppState,
     account_id: Uuid,
@@ -2067,9 +2093,15 @@ async fn polish_runtime_transcript(
         .await?;
     }
 
+    let (tone_preset, custom_prompt) = account_polish_persona(state, account_id).await;
     let prompt_start = Instant::now();
-    let system_prompt =
-        build_voice_system_prompt(output_language, screen_context, safe_vocab_terms);
+    let system_prompt = build_voice_system_prompt(
+        output_language,
+        &tone_preset,
+        custom_prompt.as_deref(),
+        screen_context,
+        safe_vocab_terms,
+    );
     let user_message = build_voice_user_message(&formatted_transcript, output_language);
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
     insert_stage_event(
@@ -2742,8 +2774,11 @@ pub async fn voice_polish(
             .await;
         });
     }
+    let (tone_preset, custom_prompt) = account_polish_persona(&state, user.account_id).await;
     let system_prompt = build_voice_system_prompt(
         &req.output_language,
+        &tone_preset,
+        custom_prompt.as_deref(),
         req.screen_context.as_deref(),
         &merged_vocab,
     );
@@ -5662,7 +5697,7 @@ mod tests {
 
     #[test]
     fn server_voice_prompt_forbids_normal_word_translation() {
-        let prompt = build_voice_system_prompt("hinglish", None, &[]);
+        let prompt = build_voice_system_prompt("hinglish", "neutral", None, None, &[]);
         let user = build_voice_user_message("hello भाई कैसे हो", "hinglish");
 
         assert!(prompt.contains("\"hello\" stays \"hello\""));

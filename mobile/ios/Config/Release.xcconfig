@@ -1,0 +1,2 @@
+// The $() trick preserves the final URL as https://... in xcconfig values.
+AIRNOTE_GATEWAY_BASE_URL = https:/$()/airnote.emiactech.com

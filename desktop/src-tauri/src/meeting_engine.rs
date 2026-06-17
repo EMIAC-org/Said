@@ -12,6 +12,19 @@ use said_recorder::{CHANNELS, SAMPLE_RATE, resample_to_16k};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
+trait LockRecoverExt<T> {
+    fn lock_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockRecoverExt<T> for Mutex<T> {
+    fn lock_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|poison| {
+            tracing::warn!("[meeting_engine] recovered poisoned mutex");
+            poison.into_inner()
+        })
+    }
+}
+
 const STATUS_EVENT: &str = "meeting-engine-state";
 const LIVE_TRANSCRIPT_EVENT: &str = "meeting-engine-live-transcript";
 const PHASE: &str = "system_audio_capture";
@@ -1039,7 +1052,7 @@ impl MeetingEngineState {
     ) -> MeetingEngineStatus {
         self.muted.store(false, Ordering::SeqCst);
 
-        let mut session = self.session.lock().expect("meeting engine lock poisoned");
+        let mut session = self.session.lock_recover();
         // Guard: if a DIFFERENT meeting is already active, finalize it before
         // starting the new one. Otherwise the init block below is skipped (it
         // only runs when `session.is_none()`), capture is silently re-armed, and
@@ -1060,7 +1073,7 @@ impl MeetingEngineState {
                         "[meeting_engine] start_session called for a different meeting while one is active; stopping the previous meeting first"
                     );
                     self.stop();
-                    session = self.session.lock().expect("meeting engine lock poisoned");
+                    session = self.session.lock_recover();
                 }
             }
         }
@@ -1096,28 +1109,12 @@ impl MeetingEngineState {
                 mic_wav_path,
                 system_wav_path,
             });
-            *self
-                .last_mic_summary
-                .lock()
-                .expect("meeting engine lock poisoned") = None;
-            *self
-                .last_system_summary
-                .lock()
-                .expect("meeting engine lock poisoned") = None;
-            *self
-                .system_error
-                .lock()
-                .expect("meeting engine lock poisoned") = None;
-            *self.audio.lock().expect("meeting engine lock poisoned") =
-                MeetingAudioSnapshot::default();
-            *self
-                .transcription
-                .lock()
-                .expect("meeting engine lock poisoned") = TranscriptionSnapshot::default();
-            *self
-                .live_transcript
-                .lock()
-                .expect("meeting engine lock poisoned") = LiveTranscriptSnapshot {
+            *self.last_mic_summary.lock_recover() = None;
+            *self.last_system_summary.lock_recover() = None;
+            *self.system_error.lock_recover() = None;
+            *self.audio.lock_recover() = MeetingAudioSnapshot::default();
+            *self.transcription.lock_recover() = TranscriptionSnapshot::default();
+            *self.live_transcript.lock_recover() = LiveTranscriptSnapshot {
                 session_id: Some(live_session_id),
                 ..LiveTranscriptSnapshot::default()
             };
@@ -1135,11 +1132,7 @@ impl MeetingEngineState {
     }
 
     fn stop(&self) -> MeetingEngineStatus {
-        let session = self
-            .session
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
+        let session = self.session.lock_recover().clone();
         let system_summary = self.stop_system_capture();
         let mic_summary = self.stop_mic_capture();
         self.stop_live_transcript();
@@ -1152,7 +1145,7 @@ impl MeetingEngineState {
         self.active.store(false, Ordering::SeqCst);
         self.muted.store(false, Ordering::SeqCst);
         self.generation.fetch_add(1, Ordering::SeqCst);
-        let mut session_guard = self.session.lock().expect("meeting engine lock poisoned");
+        let mut session_guard = self.session.lock_recover();
         *session_guard = None;
         drop(session_guard);
 
@@ -1181,56 +1174,16 @@ impl MeetingEngineState {
         let active = self.active.load(Ordering::SeqCst);
         let muted = self.muted.load(Ordering::SeqCst);
         let generation = self.generation.load(Ordering::SeqCst);
-        let session = self
-            .session
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
-        let mic_running = self
-            .mic
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .is_some();
-        let system_running = self
-            .system
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .is_some();
-        let summary = self
-            .last_mic_summary
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
-        let system_summary = self
-            .last_system_summary
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
-        let last_error = self
-            .last_error
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
-        let system_error = self
-            .system_error
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
-        let transcription = self
-            .transcription
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
-        let live_transcript = self
-            .live_transcript
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
-        let audio = self
-            .audio
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
+        let session = self.session.lock_recover().clone();
+        let mic_running = self.mic.lock_recover().is_some();
+        let system_running = self.system.lock_recover().is_some();
+        let summary = self.last_mic_summary.lock_recover().clone();
+        let system_summary = self.last_system_summary.lock_recover().clone();
+        let last_error = self.last_error.lock_recover().clone();
+        let system_error = self.system_error.lock_recover().clone();
+        let transcription = self.transcription.lock_recover().clone();
+        let live_transcript = self.live_transcript.lock_recover().clone();
+        let audio = self.audio.lock_recover().clone();
 
         let capture_running = active && !muted && (mic_running || system_running);
         let mic_wav_path = session
@@ -1349,30 +1302,18 @@ impl MeetingEngineState {
     }
 
     fn ensure_live_transcript(&self, app: Option<AppHandle>) {
-        if self
-            .live_transcript_handle
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .is_some()
-        {
+        if self.live_transcript_handle.lock_recover().is_some() {
             return;
         }
 
-        let session = self
-            .session
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
+        let session = self.session.lock_recover().clone();
         let Some(session) = session else {
             self.set_live_transcript_error("meeting session is not initialized".to_string());
             return;
         };
 
         if !env_bool("AIRNOTE_MEETING_LIVE_TRANSCRIPT_ENABLED", true) {
-            let mut live = self
-                .live_transcript
-                .lock()
-                .expect("meeting engine lock poisoned");
+            let mut live = self.live_transcript.lock_recover();
             live.session_id = Some(session.session_id);
             live.running = false;
             live.status = "disabled".to_string();
@@ -1391,10 +1332,7 @@ impl MeetingEngineState {
         match start_live_transcript_worker(session, config, Arc::clone(&self.live_transcript), app)
         {
             Ok(handle) => {
-                *self
-                    .live_transcript_handle
-                    .lock()
-                    .expect("meeting engine lock poisoned") = Some(handle);
+                *self.live_transcript_handle.lock_recover() = Some(handle);
             }
             Err(e) => {
                 self.set_live_transcript_error(e);
@@ -1403,11 +1341,7 @@ impl MeetingEngineState {
     }
 
     fn stop_live_transcript(&self) {
-        let handle = self
-            .live_transcript_handle
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .take();
+        let handle = self.live_transcript_handle.lock_recover().take();
         let Some(mut handle) = handle else {
             return;
         };
@@ -1429,46 +1363,30 @@ impl MeetingEngineState {
     }
 
     fn live_transcript_payload(&self) -> MeetingLiveTranscriptPayload {
-        self.live_transcript
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .payload()
+        self.live_transcript.lock_recover().payload()
     }
 
     fn live_audio_sender(&self) -> Option<mpsc::SyncSender<LiveAudioChunk>> {
         self.live_transcript_handle
-            .lock()
-            .expect("meeting engine lock poisoned")
+            .lock_recover()
             .as_ref()
             .map(|handle| handle.audio_tx.clone())
     }
 
     fn set_live_transcript_error(&self, error: String) {
         tracing::warn!(error = %error, "[meeting_engine] live transcript unavailable");
-        let mut live = self
-            .live_transcript
-            .lock()
-            .expect("meeting engine lock poisoned");
+        let mut live = self.live_transcript.lock_recover();
         live.running = false;
         live.status = "skipped".to_string();
         live.error = Some(error);
     }
 
     fn ensure_mic_capture(&self) {
-        if self
-            .mic
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .is_some()
-        {
+        if self.mic.lock_recover().is_some() {
             return;
         }
 
-        let session = self
-            .session
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
+        let session = self.session.lock_recover().clone();
         let Some(session) = session else {
             self.set_last_error(Some("meeting session is not initialized".to_string()));
             return;
@@ -1487,7 +1405,7 @@ impl MeetingEngineState {
             self.live_audio_sender(),
         ) {
             Ok(handle) => {
-                *self.mic.lock().expect("meeting engine lock poisoned") = Some(handle);
+                *self.mic.lock_recover() = Some(handle);
                 self.set_last_error(None);
             }
             Err(e) => {
@@ -1498,25 +1416,13 @@ impl MeetingEngineState {
     }
 
     fn ensure_system_capture(&self) {
-        if self
-            .system
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .is_some()
-        {
+        if self.system.lock_recover().is_some() {
             return;
         }
 
-        let session = self
-            .session
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
+        let session = self.session.lock_recover().clone();
         let Some(session) = session else {
-            *self
-                .system_error
-                .lock()
-                .expect("meeting engine lock poisoned") =
+            *self.system_error.lock_recover() =
                 Some("meeting session is not initialized".to_string());
             return;
         };
@@ -1534,28 +1440,18 @@ impl MeetingEngineState {
             self.live_audio_sender(),
         ) {
             Ok(handle) => {
-                *self.system.lock().expect("meeting engine lock poisoned") = Some(handle);
-                *self
-                    .system_error
-                    .lock()
-                    .expect("meeting engine lock poisoned") = None;
+                *self.system.lock_recover() = Some(handle);
+                *self.system_error.lock_recover() = None;
             }
             Err(e) => {
                 tracing::warn!(error = %e, "[meeting_engine] system audio capture failed to start");
-                *self
-                    .system_error
-                    .lock()
-                    .expect("meeting engine lock poisoned") = Some(e);
+                *self.system_error.lock_recover() = Some(e);
             }
         }
     }
 
     fn stop_mic_capture(&self) -> Option<MicCaptureSummary> {
-        let handle = self
-            .mic
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .take();
+        let handle = self.mic.lock_recover().take();
         let mut handle = handle?;
 
         let _ = handle.stop_tx.send(());
@@ -1570,10 +1466,7 @@ impl MeetingEngineState {
                     peak = summary.peak,
                     "[meeting_engine] mic capture finalized"
                 );
-                *self
-                    .last_mic_summary
-                    .lock()
-                    .expect("meeting engine lock poisoned") = Some(summary.clone());
+                *self.last_mic_summary.lock_recover() = Some(summary.clone());
                 self.set_last_error(None);
                 if let Some(join) = handle.join.take() {
                     let _ = join.join();
@@ -1598,11 +1491,7 @@ impl MeetingEngineState {
     }
 
     fn stop_system_capture(&self) -> Option<SystemCaptureSummary> {
-        let handle = self
-            .system
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .take();
+        let handle = self.system.lock_recover().take();
         let mut handle = handle?;
 
         let _ = handle.stop_tx.send(());
@@ -1617,14 +1506,8 @@ impl MeetingEngineState {
                     peak = summary.peak,
                     "[meeting_engine] system audio capture finalized"
                 );
-                *self
-                    .last_system_summary
-                    .lock()
-                    .expect("meeting engine lock poisoned") = Some(summary.clone());
-                *self
-                    .system_error
-                    .lock()
-                    .expect("meeting engine lock poisoned") = None;
+                *self.last_system_summary.lock_recover() = Some(summary.clone());
+                *self.system_error.lock_recover() = None;
                 if let Some(join) = handle.join.take() {
                     let _ = join.join();
                 }
@@ -1632,10 +1515,7 @@ impl MeetingEngineState {
             }
             Ok(Err(e)) => {
                 tracing::warn!(error = %e, "[meeting_engine] system audio capture finalize failed");
-                *self
-                    .system_error
-                    .lock()
-                    .expect("meeting engine lock poisoned") = Some(e);
+                *self.system_error.lock_recover() = Some(e);
                 if let Some(join) = handle.join.take() {
                     let _ = join.join();
                 }
@@ -1644,10 +1524,7 @@ impl MeetingEngineState {
             Err(e) => {
                 let message = format!("timed out while stopping system audio capture: {e}");
                 tracing::warn!(error = %message, "[meeting_engine] system audio capture stop timed out");
-                *self
-                    .system_error
-                    .lock()
-                    .expect("meeting engine lock poisoned") = Some(message);
+                *self.system_error.lock_recover() = Some(message);
                 None
             }
         }
@@ -1660,7 +1537,7 @@ impl MeetingEngineState {
         system_summary: Option<SystemCaptureSummary>,
     ) -> Option<MeetingTranscriptionPlan> {
         let Some(mic_summary) = mic_summary else {
-            *self.audio.lock().expect("meeting engine lock poisoned") = MeetingAudioSnapshot {
+            *self.audio.lock_recover() = MeetingAudioSnapshot {
                 status: "skipped_missing_mic_audio".to_string(),
                 error: Some("mic capture did not produce a WAV".to_string()),
                 ..MeetingAudioSnapshot::default()
@@ -1676,7 +1553,7 @@ impl MeetingEngineState {
         };
 
         let Some(session) = session else {
-            *self.audio.lock().expect("meeting engine lock poisoned") = MeetingAudioSnapshot {
+            *self.audio.lock_recover() = MeetingAudioSnapshot {
                 status: "skipped_missing_session".to_string(),
                 error: Some("meeting session was not available for audio merge".to_string()),
                 ..MeetingAudioSnapshot::default()
@@ -1693,12 +1570,11 @@ impl MeetingEngineState {
         };
 
         let Some(system_summary) = system_summary else {
-            *self.audio.lock().expect("meeting engine lock poisoned") = MeetingAudioSnapshot {
+            *self.audio.lock_recover() = MeetingAudioSnapshot {
                 status: "skipped_missing_system_audio".to_string(),
                 error: self
                     .system_error
-                    .lock()
-                    .expect("meeting engine lock poisoned")
+                    .lock_recover()
                     .clone()
                     .or_else(|| Some("system capture did not produce a WAV".to_string())),
                 ..MeetingAudioSnapshot::default()
@@ -1712,7 +1588,7 @@ impl MeetingEngineState {
                 samples_written = system_summary.samples_written,
                 "[meeting_engine] system audio below speech threshold; transcribing mic only"
             );
-            *self.audio.lock().expect("meeting engine lock poisoned") = MeetingAudioSnapshot {
+            *self.audio.lock_recover() = MeetingAudioSnapshot {
                 status: "skipped_silent_system_audio".to_string(),
                 error: Some("system audio was silent; transcribing mic only".to_string()),
                 ..MeetingAudioSnapshot::default()
@@ -1724,7 +1600,7 @@ impl MeetingEngineState {
             Ok(merged) => {
                 let output_paths = transcript_paths_for_stem(&session.artifact_dir, "meeting");
                 let source_wavs = vec![mic_summary.path.clone(), system_summary.path.clone()];
-                *self.audio.lock().expect("meeting engine lock poisoned") = MeetingAudioSnapshot {
+                *self.audio.lock_recover() = MeetingAudioSnapshot {
                     status: "completed".to_string(),
                     merged_path: Some(merged.summary.path.clone()),
                     source_activity_path: Some(merged.source_activity_path.clone()),
@@ -1742,7 +1618,7 @@ impl MeetingEngineState {
             }
             Err(e) => {
                 tracing::warn!(error = %e, "[meeting_engine] meeting audio merge failed");
-                *self.audio.lock().expect("meeting engine lock poisoned") = MeetingAudioSnapshot {
+                *self.audio.lock_recover() = MeetingAudioSnapshot {
                     status: "failed".to_string(),
                     error: Some(e),
                     ..MeetingAudioSnapshot::default()
@@ -1862,10 +1738,7 @@ impl MeetingEngineState {
     }
 
     fn set_last_error(&self, error: Option<String>) {
-        *self
-            .last_error
-            .lock()
-            .expect("meeting engine lock poisoned") = error;
+        *self.last_error.lock_recover() = error;
     }
 
     fn emit_status(&self, app: &AppHandle) -> MeetingEngineStatus {
@@ -1878,7 +1751,7 @@ impl MeetingEngineState {
     fn install_fake_mic_capture_for_test(&self) {
         let (stop_tx, _stop_rx) = mpsc::channel();
         let (_done_tx, done_rx) = mpsc::channel();
-        *self.mic.lock().expect("meeting engine lock poisoned") = Some(MicCaptureHandle {
+        *self.mic.lock_recover() = Some(MicCaptureHandle {
             stop_tx,
             done_rx,
             join: None,
@@ -1889,7 +1762,7 @@ impl MeetingEngineState {
     fn install_fake_system_capture_for_test(&self) {
         let (stop_tx, _stop_rx) = mpsc::channel();
         let (_done_tx, done_rx) = mpsc::channel();
-        *self.system.lock().expect("meeting engine lock poisoned") = Some(SystemCaptureHandle {
+        *self.system.lock_recover() = Some(SystemCaptureHandle {
             stop_tx,
             done_rx,
             join: None,
@@ -2068,7 +1941,12 @@ fn meeting_job_worker_loop(
                 }
                 let now = now_ms();
                 if let Some(pos) = inner.pending.iter().position(|j| j.not_before_ms <= now) {
-                    let job = inner.pending.remove(pos).expect("position valid");
+                    let Some(job) = inner.pending.remove(pos) else {
+                        tracing::warn!(
+                            "[meeting_engine] ready job disappeared before dequeue; retrying"
+                        );
+                        continue;
+                    };
                     inner.in_flight = Some(job.meeting_id.clone());
                     break job;
                 }
@@ -2143,9 +2021,7 @@ fn run_transcription_job(
         write_meeting_state(dir, MEETING_PHASE_TRANSCRIBING, None);
     }
     {
-        let mut transcription = transcription_state
-            .lock()
-            .expect("meeting engine lock poisoned");
+        let mut transcription = transcription_state.lock_recover();
         transcription.text_path = Some(transcript_paths.text.clone());
         transcription.json_path = Some(transcript_paths.json.clone());
         transcription.language = Some(DEFAULT_WHISPER_LANGUAGE.to_string());
@@ -2173,9 +2049,7 @@ fn run_transcription_job(
         let message = "meeting WAV tracks are empty; skipping transcription".to_string();
         let cleanup = MeetingCleanupSnapshot::skipped("skipped_no_audio", message.clone());
         {
-            let mut transcription = transcription_state
-                .lock()
-                .expect("meeting engine lock poisoned");
+            let mut transcription = transcription_state.lock_recover();
             transcription.running = false;
             transcription.status = "skipped_empty_audio".to_string();
             transcription.cleanup = cleanup.clone();
@@ -2211,9 +2085,7 @@ fn run_transcription_job(
         Err(e) => {
             let cleanup = MeetingCleanupSnapshot::skipped("skipped_missing_whisper", e.clone());
             {
-                let mut transcription = transcription_state
-                    .lock()
-                    .expect("meeting engine lock poisoned");
+                let mut transcription = transcription_state.lock_recover();
                 transcription.running = false;
                 transcription.status = "skipped_missing_whisper".to_string();
                 transcription.cleanup = cleanup.clone();
@@ -2243,9 +2115,7 @@ fn run_transcription_job(
     };
 
     {
-        let mut transcription = transcription_state
-            .lock()
-            .expect("meeting engine lock poisoned");
+        let mut transcription = transcription_state.lock_recover();
         transcription.language = Some(config.language.clone());
         transcription.model = Some(config.model.to_string_lossy().to_string());
     }
@@ -2262,9 +2132,7 @@ fn run_transcription_job(
                 .map(|config| config.model.clone())
                 .unwrap_or_else(|_| meeting_cleanup_model(&cleanup_provider));
             {
-                let mut transcription = transcription_state
-                    .lock()
-                    .expect("meeting engine lock poisoned");
+                let mut transcription = transcription_state.lock_recover();
                 transcription.status = "cleaning".to_string();
                 transcription.latency_ms = Some(done.latency_ms);
                 transcription.text = Some(done.transcript.clone());
@@ -2361,9 +2229,7 @@ fn run_transcription_job(
             };
 
             {
-                let mut transcription = transcription_state
-                    .lock()
-                    .expect("meeting engine lock poisoned");
+                let mut transcription = transcription_state.lock_recover();
                 transcription.running = false;
                 transcription.status = "completed".to_string();
                 transcription.latency_ms = Some(done.latency_ms);
@@ -2443,9 +2309,7 @@ fn run_transcription_job(
                 Some(e.clone()),
             );
             {
-                let mut transcription = transcription_state
-                    .lock()
-                    .expect("meeting engine lock poisoned");
+                let mut transcription = transcription_state.lock_recover();
                 transcription.running = false;
                 transcription.status = "failed".to_string();
                 transcription.cleanup =
@@ -3911,7 +3775,7 @@ fn start_live_transcript_worker(
         .map_err(|e| format!("failed to create live transcript directory: {e}"))?;
 
     {
-        let mut live = snapshot.lock().expect("meeting engine lock poisoned");
+        let mut live = snapshot.lock_recover();
         live.session_id = Some(session.session_id.clone());
         live.running = true;
         live.status = "running".to_string();
@@ -4001,7 +3865,7 @@ fn run_live_transcript_worker(
         true,
     );
 
-    let mut live = snapshot.lock().expect("meeting engine lock poisoned");
+    let mut live = snapshot.lock_recover();
     live.running = false;
     if live.status == "running" {
         live.status = "stopped".to_string();
@@ -4036,7 +3900,7 @@ fn drain_live_ready_windows(
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "[meeting_engine] live transcript window failed");
-                    let mut live = snapshot.lock().expect("meeting engine lock poisoned");
+                    let mut live = snapshot.lock_recover();
                     live.error = Some(e);
                     if live.status == "running" {
                         live.status = "running_with_errors".to_string();
@@ -4065,7 +3929,7 @@ fn append_live_transcript_chunk(
     chunk: MeetingLiveTranscriptChunk,
 ) {
     {
-        let mut live = snapshot.lock().expect("meeting engine lock poisoned");
+        let mut live = snapshot.lock_recover();
         live.chunks.push(chunk.clone());
         live.status = "running".to_string();
         live.error = None;
@@ -4746,10 +4610,7 @@ pub fn meeting_engine_get_processing_status(
     // Fine-grained stage. The global transcription snapshot only describes the
     // in-flight meeting, so we only trust it when THIS meeting is in flight.
     let stage = if in_flight {
-        let snapshot = state
-            .transcription
-            .lock()
-            .expect("meeting engine lock poisoned");
+        let snapshot = state.transcription.lock_recover();
         match snapshot.status.as_str() {
             "running" | "" => "transcribing",
             "cleaning" => "cleaning",
@@ -6119,9 +5980,7 @@ fn run_final_diarization_stage(
     };
 
     {
-        let mut transcription = transcription_state
-            .lock()
-            .expect("meeting engine lock poisoned");
+        let mut transcription = transcription_state.lock_recover();
         transcription.status = "final_diarizing".to_string();
         transcription.final_diarization =
             MeetingFinalDiarizationSnapshot::running(config.provider.clone(), &paths);
@@ -7009,20 +6868,11 @@ fn meeting_intelligence_artifact_dirs(
         );
     }
 
-    if let Some(session) = state
-        .session
-        .lock()
-        .expect("meeting engine lock poisoned")
-        .clone()
-    {
+    if let Some(session) = state.session.lock_recover().clone() {
         dirs.push(session.artifact_dir);
     }
 
-    let transcription = state
-        .transcription
-        .lock()
-        .expect("meeting engine lock poisoned")
-        .clone();
+    let transcription = state.transcription.lock_recover().clone();
     for path in [
         transcription.final_diarization.transcript_json_path,
         transcription.final_diarization.diarization_json_path,
@@ -11788,11 +11638,7 @@ mod tests {
         let plan = state
             .prepare_transcription_source(Some(&session), Some(mic), Some(system))
             .unwrap();
-        let audio = state
-            .audio
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
+        let audio = state.audio.lock_recover().clone();
 
         assert_eq!(plan.mic.path, mic_path);
         assert_eq!(
@@ -11854,11 +11700,7 @@ mod tests {
         let plan = state
             .prepare_transcription_source(Some(&session), Some(mic), Some(system))
             .unwrap();
-        let audio = state
-            .audio
-            .lock()
-            .expect("meeting engine lock poisoned")
-            .clone();
+        let audio = state.audio.lock_recover().clone();
 
         assert_eq!(plan.system.as_ref().map(|summary| &summary.path), None);
         assert!(plan.output_paths.text.ends_with("meeting.transcript.txt"));
