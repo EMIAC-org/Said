@@ -30,14 +30,11 @@ use tracing::{debug, info, warn};
 
 /// Confidence threshold — words below this get [word?XX%] markers for the LLM.
 const LOW_CONFIDENCE_THRESHOLD: f64 = 0.85;
-/// Buffered command capacity while the WebSocket is connecting or briefly slow.
-///
-/// The recorder's CoreAudio callback uses a small non-blocking channel so it
-/// never stalls the audio thread. The bridge thread drains that channel into
-/// this actor-facing queue, which absorbs slow WS connects without dropping
-/// early speech.
-const AUDIO_BRIDGE_BUFFER_CHUNKS: usize = 4096;
-const COMMAND_BUFFER_CHUNKS: usize = AUDIO_BRIDGE_BUFFER_CHUNKS + 128;
+/// Bound the live-stream backlog so release/finalize is not starved behind old
+/// audio chunks. The full WAV still goes through HTTP batch STT on fallback, so
+/// dropping live-only chunks is safer than letting a stale stream run for 45s.
+const AUDIO_BRIDGE_BUFFER_CHUNKS: usize = 64;
+const COMMAND_BUFFER_CHUNKS: usize = AUDIO_BRIDGE_BUFFER_CHUNKS + 16;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const FINALIZE_WITH_TEXT_RESULT_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -943,6 +940,7 @@ pub fn spawn_audio_bridge_with_echo_gate(
         let sync_rx: mpsc::Receiver<Vec<f32>> = chunk_recv.rx;
         let mut bridged_chunks = 0usize;
         let mut dropped_echo_chunks = 0usize;
+        let mut dropped_backpressure_chunks = 0usize;
         while let Ok(chunk_f32) = sync_rx.recv() {
             let resampled = resample_to_16k(&chunk_f32, native_rate);
             if let Some(gate) = &echo_gate {
@@ -977,16 +975,25 @@ pub fn spawn_audio_bridge_with_echo_gate(
             if let Some(mirror_tx) = &mirror_tx {
                 let _ = mirror_tx.send(AudioMirrorCommand::Pcm(pcm.clone()));
             }
-            if session_tx
-                .blocking_send(SessionCommand::Audio {
-                    id: recording_id.clone(),
-                    pcm,
-                })
-                .is_err()
-            {
-                break;
+            match session_tx.try_send(SessionCommand::Audio {
+                id: recording_id.clone(),
+                pcm,
+            }) {
+                Ok(()) => {
+                    bridged_chunks += 1;
+                }
+                Err(tokio_mpsc::error::TrySendError::Full(_)) => {
+                    dropped_backpressure_chunks += 1;
+                    if dropped_backpressure_chunks == 1 || dropped_backpressure_chunks % 100 == 0 {
+                        debug!(
+                            "[dg_session] live audio backlog full id={} dropped={} queued_limit={}",
+                            recording_id, dropped_backpressure_chunks, COMMAND_BUFFER_CHUNKS
+                        );
+                    }
+                    continue;
+                }
+                Err(tokio_mpsc::error::TrySendError::Closed(_)) => break,
             }
-            bridged_chunks += 1;
         }
         if let Some(mirror_tx) = &mirror_tx {
             let _ = mirror_tx.send(AudioMirrorCommand::Finalize);
@@ -995,7 +1002,7 @@ pub fn spawn_audio_bridge_with_echo_gate(
             id: recording_id.clone(),
         });
         debug!(
-            "[dg_session] audio bridge closed id={recording_id} chunks={bridged_chunks} echo_dropped={dropped_echo_chunks}"
+            "[dg_session] audio bridge closed id={recording_id} chunks={bridged_chunks} echo_dropped={dropped_echo_chunks} backlog_dropped={dropped_backpressure_chunks}"
         );
     });
 }
@@ -1328,10 +1335,10 @@ mod tests {
     }
 
     #[test]
-    fn audio_bridge_buffer_covers_slow_ws_connects() {
+    fn audio_bridge_backlog_is_bounded_so_finalize_is_not_starved() {
         assert!(
-            AUDIO_BRIDGE_BUFFER_CHUNKS >= 4096,
-            "audio bridge must absorb several seconds of mic chunks while WS connects"
+            AUDIO_BRIDGE_BUFFER_CHUNKS <= 128,
+            "live stream backlog must stay small so release/finalize is prompt"
         );
     }
 
