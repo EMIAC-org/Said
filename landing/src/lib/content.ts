@@ -17,6 +17,7 @@ export const nav = {
   links: [
     { label: "Home", href: "#top" },
     { label: "Pricing", href: "#pricing" },
+    { label: "Guide", href: "/guide" },
     { label: "Changelog", href: "/changelog" },
   ],
   cta: { label: "Download", href: downloads.mac.latestDmg },
@@ -672,6 +673,7 @@ export const footer = {
       links: [
         { label: "Features", href: "#features" },
         { label: "Pricing", href: "#pricing" },
+        { label: "Guide", href: "/guide" },
         { label: "Download", href: downloads.mac.latestDmg },
         { label: "Changelog", href: "/changelog" },
       ],
@@ -679,8 +681,8 @@ export const footer = {
     {
       heading: "Resources",
       links: [
-        { label: "Shortcuts", href: "#" },
-        { label: "API", href: "#" },
+        { label: "User guide", href: "/guide" },
+        { label: "Shortcuts", href: "/guide#shortcuts" },
         { label: "Status", href: "#" },
       ],
     },

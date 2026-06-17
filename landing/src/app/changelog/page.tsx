@@ -571,6 +571,9 @@ export default function ChangelogPage() {
           <a href="/#pricing" className="rounded-full px-4 py-2 transition-colors hover:bg-white/8 hover:text-white">
             Pricing
           </a>
+          <a href="/guide" className="rounded-full px-4 py-2 transition-colors hover:bg-white/8 hover:text-white">
+            Guide
+          </a>
           <a
             href={downloads.mac.latestDmg}
             className="rounded-full bg-white px-4 py-2 font-medium text-ink-900 transition-colors hover:bg-ink-50"
@@ -596,6 +599,10 @@ export default function ChangelogPage() {
               <a href="#downloads" className="block transition-colors hover:text-white">
                 #Downloads
               </a>
+              <a href="/guide" className="mt-5 flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-white/70 transition-colors hover:bg-white/8 hover:text-white">
+                <BookOpen className="h-4 w-4" />
+                User guide
+              </a>
             </nav>
           </div>
         </aside>
@@ -620,6 +627,13 @@ export default function ChangelogPage() {
                 className="inline-flex h-11 items-center rounded-full border border-white/10 bg-black/20 px-5 text-sm font-medium text-white/75 backdrop-blur-md transition-colors hover:bg-white/8 hover:text-white"
               >
                 Previous versions
+              </a>
+              <a
+                href="/guide"
+                className="inline-flex h-11 items-center gap-2 rounded-full border border-white/10 bg-black/20 px-5 text-sm font-medium text-white/75 backdrop-blur-md transition-colors hover:bg-white/8 hover:text-white"
+              >
+                <BookOpen className="h-4 w-4" />
+                User guide
               </a>
             </div>
           </header>
