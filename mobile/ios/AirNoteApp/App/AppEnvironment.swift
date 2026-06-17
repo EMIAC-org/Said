@@ -117,6 +117,19 @@ final class AppEnvironment: ObservableObject {
     let authTokens: GatewayAuthTokenBox
     let gateway: any MobileGatewayClient
 
+    /// Local master copy of the user's BYOK provider keys (iOS Keychain), mirrored to
+    /// the server vault. Lets the phone self-heal after a server credential-key
+    /// rotation — the same local-master + auto-re-mirror pattern the desktop uses
+    /// (`crates/backend/src/routes/runtime_credentials.rs:sync_saved_provider_credentials`).
+    private let byokStore: SecureStore = KeychainSecureStore()
+    /// Keychain item names for each provider's locally-held secret.
+    private static let byokKeychainKeys = [
+        "deepgram": "byok.deepgram", "groq": "byok.groq", "gemini": "byok.gemini",
+    ]
+    /// In-memory throttle so foreground re-mirrors don't hammer the vault. A fresh
+    /// launch always re-mirrors (this resets to nil), via loadWorkspaceState().
+    private var lastByokSync: Date?
+
     private let onboardingCompleteKey = "airnote.onboarding.complete"
     private var didBootstrap = false
     private var cancellables = Set<AnyCancellable>()
@@ -335,6 +348,8 @@ final class AppEnvironment: ObservableObject {
         divoThreads = []
         divoMessages = []
         divoActiveThreadID = nil
+        clearLocalProviderKeys()
+        lastByokSync = nil
         cancelLearningReview()
     }
 
@@ -366,6 +381,9 @@ final class AppEnvironment: ObservableObject {
         async let vocabulary: Void = refreshVocabulary()
         async let workspaces: Void = refreshOrgs()
         _ = await (status, settings, history, credentials, vocabulary, workspaces)
+        // Self-heal BYOK: re-mirror any locally-held keys to the vault on every
+        // sign-in/launch, so a server credential-key rotation never strands the phone.
+        await syncProviderKeysToVault()
     }
 
     func refreshRuntimeStatus() async {
@@ -591,6 +609,10 @@ final class AppEnvironment: ObservableObject {
         defer { credentialWorking = false }
         do {
             _ = try await gateway.saveCredential(provider: provider, secret: trimmed)
+            // Keep a local master so the phone can re-mirror (self-heal) if the
+            // server's credential key later rotates — like the desktop does.
+            storeProviderKeyLocally(provider: provider, secret: trimmed)
+            lastByokSync = Date()
             credentialStatus = "\(provider.capitalized) key saved"
             await refreshCredentials()
             await refreshRuntimeStatus()   // flips dictationAvailable once both keys exist
@@ -610,12 +632,60 @@ final class AppEnvironment: ObservableObject {
         credentials.removeAll { $0.id == credential.id }
         do {
             try await gateway.deleteCredential(id: credential.id)
+            clearLocalProviderKey(credential.provider)
             dictationAvailable = missingRequiredProviders.isEmpty
             await refreshRuntimeStatus()
         } catch {
             if handleUnauthorized(error) { return }
             credentials = snapshot
             credentialStatus = "Couldn't remove that key."
+        }
+    }
+
+    // MARK: BYOK self-healing (local master + auto-re-mirror to the vault)
+
+    private func storeProviderKeyLocally(provider: String, secret: String) {
+        guard let item = Self.byokKeychainKeys[provider.lowercased()] else { return }
+        try? byokStore.write(Data(secret.utf8), for: item)
+    }
+
+    private func localProviderKey(_ provider: String) -> String? {
+        guard let item = Self.byokKeychainKeys[provider.lowercased()],
+              let data = try? byokStore.read(item),
+              let secret = String(data: data, encoding: .utf8),
+              !secret.isEmpty
+        else { return nil }
+        return secret
+    }
+
+    private func clearLocalProviderKey(_ provider: String) {
+        guard let item = Self.byokKeychainKeys[provider.lowercased()] else { return }
+        try? byokStore.delete(item)
+    }
+
+    private func clearLocalProviderKeys() {
+        for item in Self.byokKeychainKeys.values { try? byokStore.delete(item) }
+    }
+
+    /// Re-upload locally-held provider keys to the server vault. Re-encrypts them with
+    /// the server's CURRENT credential key, so a server-side rotation that stranded the
+    /// vault (made stored secrets undecryptable) self-heals — no manual re-paste. Mirrors
+    /// the desktop's `sync_saved_provider_credentials`. Best-effort + silent; throttled
+    /// to avoid hammering the vault on every foreground (pass force on a decrypt failure).
+    func syncProviderKeysToVault(force: Bool = false) async {
+        guard account != nil else { return }
+        if !force, let last = lastByokSync, Date().timeIntervalSince(last) < 300 { return }
+        var uploadedAny = false
+        for provider in Self.requiredProviders + ["gemini"] {
+            guard let secret = localProviderKey(provider) else { continue }
+            if (try? await gateway.saveCredential(provider: provider, secret: secret)) != nil {
+                uploadedAny = true
+            }
+        }
+        if uploadedAny {
+            lastByokSync = Date()
+            // The vault is freshly re-encrypted; reflect availability.
+            await refreshCredentials()
         }
     }
 

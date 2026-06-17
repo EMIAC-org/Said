@@ -203,6 +203,13 @@ final class DictationController: ObservableObject {
         if unavailable {
             phase = .unavailable
             errorMessage = "Add your Deepgram and Groq keys in Settings → Voice keys to turn on dictation."
+        } else if message.lowercased().contains("decrypt") {
+            // The server has the keys but couldn't decrypt them (its credential key
+            // rotated). Re-mirror our local copies to heal the vault for the next
+            // dictation; if we hold no local copy, tell the user to re-enter once.
+            phase = .failed
+            errorMessage = "Your saved voice keys couldn't be read — re-enter them in Settings → Voice keys."
+            Task { await env.syncProviderKeysToVault(force: true) }
         } else {
             phase = .failed
             errorMessage = message

@@ -25,6 +25,9 @@ struct AirNoteApp: App {
                         WarmDictationHost.shared.startObserving()
                         environment.permissions.refreshAll()
                         environment.checkKeyboardHandoffRequest()
+                        // Re-mirror BYOK keys (throttled) so a server credential-key
+                        // rotation self-heals before the next dictation.
+                        Task { await environment.syncProviderKeysToVault() }
                         // Foreground: arm the warm session (iOS only starts the mic
                         // here) — this also creates the notch.
                         WarmDictationHost.shared.ensureSessionActive()
