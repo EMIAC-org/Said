@@ -131,31 +131,7 @@ const releaseDownloads = [
     version: "2.3.6",
     date: "Jun 2026",
     title: "Stable desktop release",
-    downloads: [
-      {
-        platform: "Mac",
-        label: "Mac DMG",
-        href: "https://airnote.emiactech.com/releases/2.3.6/AirNote_2.3.6_aarch64.dmg",
-      },
-      { platform: "Windows", label: "Windows", href: downloads.windows.latestSetup },
-    ],
-  },
-  {
-    version: "2.3.5",
-    date: "Jun 2026",
-    title: "Previous stable",
-    downloads: [
-      {
-        platform: "Mac",
-        label: "Mac DMG",
-        href: "https://airnote.emiactech.com/releases/2.3.5/AirNote_2.3.5_aarch64.dmg",
-      },
-      {
-        platform: "Windows",
-        label: "Windows",
-        href: "https://airnote.emiactech.com/releases/2.3.5/AirNote_2.3.5_x64-setup.exe",
-      },
-    ],
+    downloads: [],
   },
 ];
 
@@ -715,7 +691,7 @@ export default function ChangelogPage() {
               <Headphones className="h-4 w-4" />
               #Downloads
             </div>
-            <h2 className="text-3xl font-semibold tracking-tight text-white">Last three versions</h2>
+            <h2 className="text-3xl font-semibold tracking-tight text-white">Stable downloads</h2>
             <div className="mt-7 divide-y divide-white/10 rounded-2xl border border-white/10 bg-white/[0.035]">
               {releaseDownloads.map((release) => (
                 <div key={release.version} className="grid gap-4 p-5 md:grid-cols-[1fr_auto] md:items-center">
@@ -729,16 +705,22 @@ export default function ChangelogPage() {
                     <p className="mt-3 text-sm text-white/62">{release.title}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {release.downloads.map((download) => (
-                      <a
-                        key={download.href}
-                        href={download.href}
-                        className="inline-flex h-10 items-center gap-2 rounded-full border border-white/10 bg-black/20 px-4 text-sm font-medium text-white/78 transition-colors hover:bg-white/10 hover:text-white"
-                      >
-                        <DownloadIcon platform={download.platform} />
-                        {download.label}
-                      </a>
-                    ))}
+                    {release.downloads.length > 0 ? (
+                      release.downloads.map((download) => (
+                        <a
+                          key={download.href}
+                          href={download.href}
+                          className="inline-flex h-10 items-center gap-2 rounded-full border border-white/10 bg-black/20 px-4 text-sm font-medium text-white/78 transition-colors hover:bg-white/10 hover:text-white"
+                        >
+                          <DownloadIcon platform={download.platform} />
+                          {download.label}
+                        </a>
+                      ))
+                    ) : (
+                      <span className="inline-flex h-10 items-center rounded-full border border-white/10 bg-black/20 px-4 text-sm font-medium text-white/45">
+                        Archived artifact unavailable
+                      </span>
+                    )}
                   </div>
                 </div>
               ))}
