@@ -737,6 +737,122 @@ struct BackendState(Arc<Mutex<Option<BackendEndpoint>>>);
 /// When Tauri drops managed state on exit, Drop fires → SIGTERM → SIGKILL.
 struct BackendHandleState(Mutex<Option<backend::BackendHandle>>);
 
+fn backend_health_ok(client: &reqwest::blocking::Client, ep: &BackendEndpoint) -> bool {
+    client
+        .get(format!("{}/v1/health/ping", ep.url))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+fn backend_watchdog_app_is_idle(app: &tauri::AppHandle) -> bool {
+    app.try_state::<SharedApp>()
+        .map(|shared| {
+            shared
+                .0
+                .lock()
+                .map(|d| d.state == desktop::AppState::Idle)
+                .unwrap_or_else(|p| p.into_inner().state == desktop::AppState::Idle)
+        })
+        .unwrap_or(true)
+}
+
+fn install_backend_handle(
+    app: &tauri::AppHandle,
+    handle: backend::BackendHandle,
+) -> BackendEndpoint {
+    let ep = handle.endpoint();
+    if let Some(pid) = handle.pid() {
+        backend_guard::write_pid_file(pid);
+    }
+    match app.state::<BackendState>().0.lock() {
+        Ok(mut slot) => *slot = Some(ep.clone()),
+        Err(p) => *p.into_inner() = Some(ep.clone()),
+    }
+    match app.state::<BackendHandleState>().0.lock() {
+        Ok(mut slot) => *slot = Some(handle),
+        Err(p) => *p.into_inner() = Some(handle),
+    }
+    ep
+}
+
+fn start_backend_watchdog(app: tauri::AppHandle, using_external_backend: bool) {
+    if using_external_backend {
+        return;
+    }
+
+    let _ = std::thread::Builder::new()
+        .name("backend-watchdog".to_string())
+        .spawn(move || {
+            let client = reqwest::blocking::Client::new();
+            let mut failed_checks = 0u32;
+            loop {
+                std::thread::sleep(Duration::from_secs(10));
+
+                if !backend_watchdog_app_is_idle(&app) {
+                    failed_checks = 0;
+                    continue;
+                }
+
+                let current = app
+                    .state::<BackendState>()
+                    .0
+                    .lock()
+                    .map(|slot| slot.clone())
+                    .unwrap_or_else(|p| p.into_inner().clone());
+                if current
+                    .as_ref()
+                    .is_some_and(|ep| backend_health_ok(&client, ep))
+                {
+                    failed_checks = 0;
+                    continue;
+                }
+
+                failed_checks += 1;
+                if failed_checks < 3 {
+                    continue;
+                }
+
+                tracing::error!(
+                    "[backend-watchdog] backend unreachable for {failed_checks} checks — respawning"
+                );
+                diag::breadcrumb("backend_watchdog:respawn");
+                said_core::reporter::report_event(
+                    "backend.unreachable",
+                    said_core::reporter::Severity::Error,
+                    serde_json::json!({ "failed_checks": failed_checks }),
+                );
+
+                match backend::spawn() {
+                    Ok(handle) => {
+                        let ep_notifications = handle.endpoint();
+                        let ep_runtime_ws = handle.endpoint();
+                        let ep = install_backend_handle(&app, handle);
+                        failed_checks = 0;
+                        tracing::warn!("[backend-watchdog] backend recovered at {}", ep.url);
+                        said_core::reporter::report_event(
+                            "backend.recovered",
+                            said_core::reporter::Severity::Warning,
+                            serde_json::json!({ "url": ep.url }),
+                        );
+                        let _ = app.emit("backend-recovered", serde_json::json!({ "url": ep.url }));
+                        start_runtime_notification_listener(app.clone(), ep_notifications);
+                        server_runtime_stream::start_persistent_runtime_connection(ep_runtime_ws);
+                    }
+                    Err(e) => {
+                        tracing::error!("[backend-watchdog] respawn failed: {e}");
+                        said_core::reporter::report_event(
+                            "backend.respawn_failed",
+                            said_core::reporter::Severity::Error,
+                            serde_json::json!({ "error": e.to_string() }),
+                        );
+                    }
+                }
+            }
+        });
+}
+
 /// Owns the currently running post-paste edit watcher. Starting a new watcher
 /// cancels the previous one so rapid recordings cannot stack poll loops.
 struct EditWatcherState(Mutex<Option<CancellationToken>>);
@@ -1673,55 +1789,61 @@ fn show_meeting_pill(app: tauri::AppHandle) {
 
     #[cfg(target_os = "macos")]
     {
-        if let Ok(panel) = app.get_webview_panel("meeting-pill") {
-            panel.show();
-            panel.order_front_regardless();
-            return;
-        }
-        match PanelBuilder::<_, MeetingPillPanel>::new(&app, "meeting-pill")
-            .url(tauri::WebviewUrl::App(url.into()))
-            .title("AirNote Meeting")
-            .size(tauri::Size::Logical(tauri::LogicalSize::new(
-                MEETING_PILL_W,
-                MEETING_PILL_H,
-            )))
-            .position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
-            .level(PanelLevel::Custom(28))
-            .floating(true)
-            .hides_on_deactivate(false)
-            .works_when_modal(true)
-            .ignores_mouse_events(false)
-            .has_shadow(false)
-            .transparent(true)
-            .style_mask(StyleMask::empty().borderless().nonactivating_panel())
-            .collection_behavior(
-                CollectionBehavior::new()
-                    .can_join_all_spaces()
-                    .full_screen_auxiliary(),
-            )
-            .no_activate(true)
-            .with_window(|window| {
-                window
-                    .decorations(false)
-                    .always_on_top(true)
-                    .visible_on_all_workspaces(true)
-                    .skip_taskbar(true)
-                    .focused(false)
-                    .resizable(false)
-                    .shadow(false)
-                    .transparent(true)
-            })
-            .build()
-        {
-            Ok(panel) => {
+        let app_for_main = app.clone();
+        if let Err(e) = run_on_main_guarded(&app, "meeting_pill.show", move || {
+            if let Ok(panel) = app_for_main.get_webview_panel("meeting-pill") {
                 panel.show();
                 panel.order_front_regardless();
-                make_pill_transparent_macos(&app);
-                tracing::info!("[meeting-pill] NSPanel created");
+                return;
             }
-            Err(e) => tracing::warn!("[meeting-pill] panel create failed: {e}"),
+            match PanelBuilder::<_, MeetingPillPanel>::new(&app_for_main, "meeting-pill")
+                .url(tauri::WebviewUrl::App(url.into()))
+                .title("AirNote Meeting")
+                .size(tauri::Size::Logical(tauri::LogicalSize::new(
+                    MEETING_PILL_W,
+                    MEETING_PILL_H,
+                )))
+                .position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+                .level(PanelLevel::Custom(28))
+                .floating(true)
+                .hides_on_deactivate(false)
+                .works_when_modal(true)
+                .ignores_mouse_events(false)
+                .has_shadow(false)
+                .transparent(true)
+                .style_mask(StyleMask::empty().borderless().nonactivating_panel())
+                .collection_behavior(
+                    CollectionBehavior::new()
+                        .can_join_all_spaces()
+                        .full_screen_auxiliary(),
+                )
+                .no_activate(true)
+                .with_window(|window| {
+                    window
+                        .decorations(false)
+                        .always_on_top(true)
+                        .visible_on_all_workspaces(true)
+                        .skip_taskbar(true)
+                        .focused(false)
+                        .resizable(false)
+                        .shadow(false)
+                        .transparent(true)
+                })
+                .build()
+            {
+                Ok(panel) => {
+                    panel.show();
+                    panel.order_front_regardless();
+                    make_pill_transparent_macos(&app_for_main);
+                    tracing::info!("[meeting-pill] NSPanel created");
+                }
+                Err(e) => tracing::warn!("[meeting-pill] panel create failed: {e}"),
+            }
+            make_pill_transparent_macos(&app_for_main);
+        }) {
+            tracing::warn!("[meeting-pill] schedule show on main thread failed: {e}");
         }
-        make_pill_transparent_macos(&app);
+        return;
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -1760,13 +1882,25 @@ fn show_meeting_pill(app: tauri::AppHandle) {
 fn hide_meeting_pill(app: tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
-        if let Ok(panel) = app.get_webview_panel("meeting-pill") {
-            panel.hide();
-            return;
+        let app_for_main = app.clone();
+        if let Err(e) = run_on_main_guarded(&app, "meeting_pill.hide", move || {
+            if let Ok(panel) = app_for_main.get_webview_panel("meeting-pill") {
+                panel.hide();
+                return;
+            }
+            if let Some(w) = app_for_main.get_webview_window("meeting-pill") {
+                let _ = w.hide();
+            }
+        }) {
+            tracing::warn!("[meeting-pill] schedule hide on main thread failed: {e}");
         }
+        return;
     }
-    if let Some(w) = app.get_webview_window("meeting-pill") {
-        let _ = w.hide();
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(w) = app.get_webview_window("meeting-pill") {
+            let _ = w.hide();
+        }
     }
 }
 
@@ -7082,8 +7216,9 @@ fn alnum_word_core(word: &str) -> &str {
         .find(|c: char| c.is_alphanumeric())
         .unwrap_or(word.len());
     let end = word
-        .rfind(|c: char| c.is_alphanumeric())
-        .map(|i| i + word[i..].chars().next().unwrap().len_utf8())
+        .char_indices()
+        .rfind(|(_, c)| c.is_alphanumeric())
+        .map(|(i, c)| i + c.len_utf8())
         .unwrap_or(start);
     &word[start..end]
 }
@@ -7197,9 +7332,16 @@ fn main() {
         .create(true)
         .append(true)
         .open(&log_path)
-        .expect("cannot open said.log");
-    // Three tracing layers: log file (always) + stderr (for `cargo run`
-    // visibility) + Sentry (forwards ERROR events only).
+        .map_err(|e| {
+            eprintln!(
+                "[main] cannot open log file {}: {e}; continuing with stderr logging only",
+                log_path.display()
+            );
+            e
+        })
+        .ok();
+    // Tracing layers: log file when writable, stderr (for `cargo run`
+    // visibility), Sentry, and diagnostics reporter.
     {
         use tracing_subscriber::fmt;
         use tracing_subscriber::prelude::*;
@@ -7207,19 +7349,27 @@ fn main() {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| "info,said_hotkey=debug,said_paster=debug".into());
 
-        let file_layer = fmt::layer()
-            .with_ansi(false)
-            .with_writer(std::sync::Mutex::new(log_file));
-
-        let stderr_layer = fmt::layer().with_ansi(true).with_writer(std::io::stderr);
-
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(file_layer)
-            .with(stderr_layer)
-            .with(said_core::telemetry::tracing_layer())
-            .with(said_core::reporter::tracing_layer())
-            .init();
+        if let Some(log_file) = log_file {
+            let file_layer = fmt::layer()
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(log_file));
+            let stderr_layer = fmt::layer().with_ansi(true).with_writer(std::io::stderr);
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(file_layer)
+                .with(stderr_layer)
+                .with(said_core::telemetry::tracing_layer())
+                .with(said_core::reporter::tracing_layer())
+                .init();
+        } else {
+            let stderr_layer = fmt::layer().with_ansi(true).with_writer(std::io::stderr);
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(stderr_layer)
+                .with(said_core::telemetry::tracing_layer())
+                .with(said_core::reporter::tracing_layer())
+                .init();
+        }
     }
     tracing::info!(
         "[main] said desktop starting — log file: {}",
@@ -7234,7 +7384,7 @@ fn main() {
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
 
-    builder
+    let app_result = builder
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![AUTOSTART_ARG]),
@@ -7250,8 +7400,7 @@ fn main() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .setup({
-            let shared   = Arc::clone(&shared_app);
-            let back_arc = Arc::clone(&backend_arc);
+            let shared = Arc::clone(&shared_app);
             move |app| {
                 #[cfg(target_os = "macos")]
                 {
@@ -7371,18 +7520,9 @@ fn main() {
                         let ep_recovery = handle.endpoint();
                         let ep_notifications = handle.endpoint();
                         let ep_runtime_ws = handle.endpoint();
-                        if let Some(pid) = handle.pid() {
-                            backend_guard::write_pid_file(pid);
-                        }
-                        match back_arc.lock() {
-                            Ok(mut slot) => *slot = Some(ep.clone()),
-                            Err(p) => *p.into_inner() = Some(ep.clone()),
-                        }
                         // Store the full handle so Drop kills the child on app exit.
                         // Without this the child outlives the app (zombie leak).
-                        if let Ok(mut h) = app.state::<BackendHandleState>().0.lock() {
-                            *h = Some(handle);
-                        }
+                        let _ = install_backend_handle(app.handle(), handle);
                         tracing::info!("[main] backend daemon ready");
 
                         start_runtime_notification_listener(
@@ -7575,6 +7715,7 @@ fn main() {
                         // App continues without backend; commands return errors.
                     }
                 }
+                start_backend_watchdog(app.handle().clone(), using_external_backend);
 
                 // signal_hook's iterator module is `cfg(not(windows))` upstream —
                 // POSIX signals don't exist on Windows the same way (Ctrl+C is
@@ -7706,11 +7847,18 @@ fn main() {
                             .and_then(|v| v.parse().ok())
                             .filter(|&n| n >= 5)
                             .unwrap_or(60);
+                        let stuck_recording_secs: u64 =
+                            std::env::var("AIRNOTE_HEAL_RECORDING_SECS")
+                                .ok()
+                                .and_then(|v| v.parse().ok())
+                                .filter(|&n| n >= 30)
+                                .unwrap_or(180);
                         let tick_secs = (stuck_secs / 4).clamp(2, 15);
                         let mut interval =
                             tokio::time::interval(std::time::Duration::from_secs(tick_secs));
                         interval.tick().await; // skip the immediate first tick
                         let mut processing_secs: u64 = 0;
+                        let mut recording_secs: u64 = 0;
                         loop {
                             interval.tick().await;
                             let state = shared_sw
@@ -7719,6 +7867,7 @@ fn main() {
                                 .unwrap_or_else(|p| p.into_inner().state);
                             if state == desktop::AppState::Processing {
                                 processing_secs += tick_secs;
+                                recording_secs = 0;
                                 if processing_secs >= stuck_secs {
                                     tracing::warn!(
                                         "[heal] processing state stuck ~{processing_secs}s — healing"
@@ -7726,8 +7875,42 @@ fn main() {
                                     heal_stuck_state(&app_sw, "watchdog_stuck_processing");
                                     processing_secs = 0;
                                 }
+                            } else if state == desktop::AppState::Recording {
+                                processing_secs = 0;
+                                recording_secs += tick_secs;
+                                let long_locked = app_sw
+                                    .try_state::<LongDictationState>()
+                                    .map(|s| s.locked.load(Ordering::SeqCst))
+                                    .unwrap_or(false);
+                                if !long_locked && recording_secs >= stuck_recording_secs {
+                                    tracing::error!(
+                                        "[heal] recording state stuck ~{recording_secs}s — auto-finishing"
+                                    );
+                                    diag::breadcrumb("heal:stuck_recording_finish");
+                                    said_core::reporter::report_event(
+                                        "state.recording_stuck_auto_finish",
+                                        said_core::reporter::Severity::Error,
+                                        serde_json::json!({
+                                            "recording_secs": recording_secs,
+                                            "trail": diag::breadcrumbs(20),
+                                        }),
+                                    );
+                                    let shared_finish = Arc::clone(&shared_sw);
+                                    let app_finish = app_sw.clone();
+                                    let backend_finish =
+                                        Arc::clone(&app_sw.state::<BackendState>().0);
+                                    std::thread::spawn(move || {
+                                        do_finish_recording(
+                                            shared_finish,
+                                            app_finish,
+                                            backend_finish,
+                                        );
+                                    });
+                                    recording_secs = 0;
+                                }
                             } else {
                                 processing_secs = 0;
+                                recording_secs = 0;
                             }
                         }
                     });
@@ -8296,44 +8479,61 @@ fn main() {
             toggle_meeting_mute,
             get_meeting_stt_status,
         ])
-        .build(tauri::generate_context!())
-        .expect("failed to build AirNote desktop")
-        .run(|app, event| {
-            // Seatbelt: the RunEvent loop runs on the AppKit main thread, so a panic
-            // here would SIGABRT the app — catch + recover.
-            guard_panics("run_event", || match event {
-                tauri::RunEvent::Ready => {
-                    if launched_from_autostart() {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.hide();
-                        }
-                        tracing::info!("[main] launch-at-login startup — main window left hidden");
-                    } else {
-                        show_main_window(app);
+        .build(tauri::generate_context!());
+
+    let app = match app_result {
+        Ok(app) => app,
+        Err(e) => {
+            tracing::error!("[main] failed to build AirNote desktop: {e}");
+            said_core::reporter::report_event(
+                "desktop.build_failed",
+                said_core::reporter::Severity::Fatal,
+                serde_json::json!({ "error": e.to_string() }),
+            );
+            eprintln!("[main] failed to build AirNote desktop: {e}");
+            return;
+        }
+    };
+
+    app.run(|app, event| {
+        // Seatbelt: the RunEvent loop runs on the AppKit main thread, so a panic
+        // here would SIGABRT the app — catch + recover.
+        guard_panics("run_event", || match event {
+            tauri::RunEvent::Ready => {
+                if launched_from_autostart() {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.hide();
                     }
-                }
-                #[cfg(target_os = "macos")]
-                tauri::RunEvent::Reopen { has_visible_windows, .. } if !has_visible_windows => {
+                    tracing::info!("[main] launch-at-login startup — main window left hidden");
+                } else {
                     show_main_window(app);
                 }
-                tauri::RunEvent::ExitRequested { code, api, .. } if code.is_none() => {
-                    // Window closed / Cmd+Q — hide instead of quit for accessory-app UX.
-                    api.prevent_exit();
+            }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } if !has_visible_windows => {
+                show_main_window(app);
+            }
+            tauri::RunEvent::ExitRequested { code, api, .. } if code.is_none() => {
+                // Window closed / Cmd+Q — hide instead of quit for accessory-app UX.
+                api.prevent_exit();
+            }
+            tauri::RunEvent::Exit => {
+                // Finalize any in-progress recording (valid WAV headers +
+                // fsync + recovery breadcrumb) and stop the job worker before
+                // tearing down the backend — otherwise an active recording is
+                // abandoned with a stale header and the whisper child orphans.
+                app.state::<meeting_engine::MeetingEngineState>().shutdown();
+                if let Ok(mut guard) = app.state::<BackendHandleState>().0.lock() {
+                    drop(guard.take());
                 }
-                tauri::RunEvent::Exit => {
-                    // Finalize any in-progress recording (valid WAV headers +
-                    // fsync + recovery breadcrumb) and stop the job worker before
-                    // tearing down the backend — otherwise an active recording is
-                    // abandoned with a stale header and the whisper child orphans.
-                    app.state::<meeting_engine::MeetingEngineState>().shutdown();
-                    if let Ok(mut guard) = app.state::<BackendHandleState>().0.lock() {
-                        drop(guard.take());
-                    }
-                    backend_guard::clear_pid_file();
-                }
-                _ => {}
-            });
+                backend_guard::clear_pid_file();
+            }
+            _ => {}
         });
+    });
 }
 
 // ── Tests for the meaningful-edit gate ────────────────────────────────────────

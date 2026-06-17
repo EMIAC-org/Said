@@ -212,7 +212,10 @@ fn poll_health(base_url: &str, timeout_ms: u64) -> Result<(), String> {
 fn free_port() -> Result<u16, String> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
         .map_err(|e| format!("failed to bind ephemeral port: {e}"))?;
-    Ok(listener.local_addr().unwrap().port())
+    listener
+        .local_addr()
+        .map(|addr| addr.port())
+        .map_err(|e| format!("failed to read ephemeral port: {e}"))
 }
 
 /// Backend binary filename. `.exe` on Windows; bare name everywhere else.

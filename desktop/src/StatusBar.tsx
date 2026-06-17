@@ -661,6 +661,13 @@ export default function StatusBar() {
           ? prev
           : { kind: "processing", phase: "stt" },
       );
+    } else if (snap.state === "idle") {
+      if (restorePinnedUpdate(`auto-update-ready-${source}-idle`)) return;
+      setBar((prev) => {
+        if (prev.kind === "update_ready") return prev;
+        if (prev.kind.startsWith("divo")) return prev;
+        return { kind: "idle" };
+      });
     }
   };
 
@@ -735,7 +742,6 @@ export default function StatusBar() {
         setBar((prev) => {
           if (prev.kind === "error") return prev;
           if (prev.kind === "confirming" || prev.kind === "negative_confirm" || prev.kind === "reviewing") return prev;
-          if (prev.kind === "processing") return prev;
           if (prev.kind === "done" || prev.kind === "pasted" || prev.kind === "manual_paste") return prev;
           if (prev.kind === "update_ready") return prev;
           if (prev.kind.startsWith("divo")) return prev; // Divo flow owns the HUD
