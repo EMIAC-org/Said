@@ -1,0 +1,466 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================== Theme palettes ============================== */
+
+/* Single dark page-chrome palette. Page bg, text, cards, borders all stay
+   dark regardless of which atmospheric mode is selected — the toggle only
+   shifts the hero card's sky. */
+:root {
+  --bg: #0d0d12;
+  --surface: #16161c;
+  --surface-2: #1e1e26;
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --text: #F5F5F6;
+  --text-dim: #A1A1AA;
+  --text-dimmer: #71717A;
+
+  /* Brand chrome — matches the Airnote desktop app palette.
+     Primary = periwinkle (Tailwind indigo-300). Success = green-400.
+     Amber/yellow is intentionally absent from brand chrome. */
+  --accent: #a5b4fc;
+  --accent-soft: #c7d2fe;
+  --accent-deep: #818cf8;
+  --accent-success: #4ade80;
+
+  /* Tailwind ink-* tokens (RGB triplets so Tailwind can do <alpha-value>).
+     Kept as CSS-var indirection for future flexibility even though the
+     values are the same in every theme today. */
+  --ink-default-rgb: 13 13 18;
+  --ink-50-rgb: 245 245 246;
+  --ink-100-rgb: 228 228 231;
+  --ink-200-rgb: 161 161 170;
+  --ink-300-rgb: 113 113 122;
+  --ink-400-rgb: 82 82 91;
+  --ink-500-rgb: 63 63 70;
+  --ink-600-rgb: 39 39 42;
+  --ink-700-rgb: 28 28 31;
+  --ink-800-rgb: 22 22 28;
+  --ink-900-rgb: 13 13 18;
+
+  /* Default hero atmosphere — night. Each [data-theme] block below
+     overrides the four hero stops. */
+  --hero-bg-top: #08152e;
+  --hero-bg-mid: #142a55;
+  --hero-bg-low: #234077;
+  --hero-bg-bot: #3e5a8e;
+
+  /* Per-mode overlay strength (alpha values consumed by .hero-highlight-top
+     and .hero-horizon-warm utility classes). Defaults = night values. */
+  --hero-highlight-strength: 0.32;
+  --hero-warm-strength: 0;
+
+  color-scheme: dark;
+}
+
+/* Day — vivid daytime sky: deeper blue zenith fading to soft pale-blue
+   horizon. Saturated to match a real bright-noon sky (and the reference
+   landing page) rather than the pale washed-out blue we shipped before.
+   Highlight modest, no warm horizon (clean sky). */
+[data-theme="day"] {
+  --hero-bg-top: #2d7cd1;
+  --hero-bg-mid: #5aa0e0;
+  --hero-bg-low: #a4caec;
+  --hero-bg-bot: #dde7f1;
+  --hero-highlight-strength: 0.18;
+  --hero-warm-strength: 0;
+}
+
+/* Dusk — twilight: deep navy → indigo → warm purple-pink horizon.
+   Subtle highlight (purple base shouldn't be washed out), strong warm
+   horizon — the signature glow that makes dusk feel like dusk. */
+[data-theme="dusk"] {
+  --hero-bg-top: #0e1140;
+  --hero-bg-mid: #232a6e;
+  --hero-bg-low: #5a3e8e;
+  --hero-bg-bot: #a8688e;
+  --hero-highlight-strength: 0.14;
+  --hero-warm-strength: 0.32;
+}
+
+/* Night — cool dark sky, no warmth. Strong highlight so the sky reads
+   as "lit by something" instead of flat black. */
+[data-theme="night"] {
+  --hero-bg-top: #08152e;
+  --hero-bg-mid: #142a55;
+  --hero-bg-low: #234077;
+  --hero-bg-bot: #3e5a8e;
+  --hero-highlight-strength: 0.32;
+  --hero-warm-strength: 0;
+}
+
+/* ============================== Base styles ================================ */
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-feature-settings: "ss01", "cv11";
+    transition: background-color 400ms cubic-bezier(0.22, 1, 0.36, 1),
+                color 400ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  ::selection {
+    background: var(--accent);
+    color: #0d0d12;
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+/* ============================== Utilities ================================== */
+
+@layer utilities {
+  /* Subtle film-grain overlay on the page body */
+  .noise::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    opacity: 0.025;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .container-page {
+    max-width: 72rem;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+
+  .hairline {
+    border: 1px solid var(--border);
+    transition: border-color 400ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .hairline-strong {
+    border: 1px solid var(--border-strong);
+    transition: border-color 400ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  /* Theme-aware hero atmospheric base. Reused by HeroBackdrop and HeroDemo
+     so the cinematic scene shifts to daytime in light mode and dusk in
+     dark mode — without breaking the seamless collapse between them. */
+  .hero-base-gradient {
+    background: linear-gradient(
+      180deg,
+      var(--hero-bg-top) 0%,
+      var(--hero-bg-mid) 35%,
+      var(--hero-bg-low) 70%,
+      var(--hero-bg-bot) 100%
+    );
+    /* Slow + symmetric easing so the mode change feels like the sky
+       actually shifting through a time of day, not a CSS snap. */
+    transition: background 800ms cubic-bezier(0.65, 0, 0.35, 1);
+  }
+
+  /* "Sunlit" top-center highlight ellipse. Strength varies per mode via
+     --hero-highlight-strength: bright zenith in Day, subtle in Dusk,
+     strong in Night (so the dark sky still reads as "lit"). */
+  .hero-highlight-top {
+    background: radial-gradient(
+      ellipse 70% 50% at 50% 0%,
+      rgba(255, 255, 255, var(--hero-highlight-strength)) 0%,
+      transparent 60%
+    );
+    transition: background 800ms cubic-bezier(0.65, 0, 0.35, 1);
+  }
+
+  /* Warm peach/orange horizon glow. Only visible in Dusk (signature glow);
+     Day and Night both set --hero-warm-strength to 0. */
+  .hero-horizon-warm {
+    background: radial-gradient(
+      ellipse 50% 30% at 80% 100%,
+      rgba(255, 180, 140, var(--hero-warm-strength)) 0%,
+      transparent 60%
+    );
+    transition: background 800ms cubic-bezier(0.65, 0, 0.35, 1);
+  }
+
+  /* Edge photos for the hero — a profile portrait on the left and an
+     outdoor laptop scene on the right. Each is masked at its inner edge
+     so the photo bleeds smoothly into the sky gradient between them.
+     Both photos share an outdoor blue-sky environment so they read as
+     one continuous scene. */
+  .hero-edge-photo-person {
+    -webkit-mask-image: linear-gradient(
+      to right,
+      black 0%,
+      black 50%,
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to right,
+      black 0%,
+      black 50%,
+      transparent 100%
+    );
+  }
+  /* Laptop mask: a diagonal fade from the bottom-right corner (fully
+     visible) toward the top-left (fully transparent). The radial
+     mask reads as the laptop "emerging" from the screen edge — only
+     the bottom-right corner shows, the rest dissolves into the sky. */
+  .hero-edge-photo-laptop {
+    -webkit-mask-image: radial-gradient(
+      ellipse 95% 95% at 100% 100%,
+      black 30%,
+      rgba(0, 0, 0, 0.65) 55%,
+      transparent 90%
+    );
+    mask-image: radial-gradient(
+      ellipse 95% 95% at 100% 100%,
+      black 30%,
+      rgba(0, 0, 0, 0.65) 55%,
+      transparent 90%
+    );
+  }
+}
+
+/* =============================== LogoStrip ================================= */
+
+/* Tiled letter-noise background — a quiet "typography wallpaper" anchored
+   behind the "Used by those who move fast" headline. Inline SVG (data URI)
+   so it ships with the CSS bundle and never makes a network request.
+   Tile is 240×240; letters drawn at low opacity with mild rotation so the
+   field reads as ambient texture rather than legible text. */
+.letter-noise-bg {
+  background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27240%27%20height%3D%27240%27%20viewBox%3D%270%200%20240%20240%27%3E%3Cg%20fill%3D%27%23ffffff%27%20fill-opacity%3D%270.045%27%20font-family%3D%27Georgia%2C%20serif%27%20font-size%3D%2742%27%3E%3Ctext%20x%3D%2710%27%20y%3D%2750%27%20transform%3D%27rotate(-8%2010%2050)%27%3Ea%3C%2Ftext%3E%3Ctext%20x%3D%2790%27%20y%3D%2738%27%20transform%3D%27rotate(6%2090%2038)%27%3Et%3C%2Ftext%3E%3Ctext%20x%3D%27170%27%20y%3D%2756%27%20transform%3D%27rotate(-12%20170%2056)%27%3En%3C%2Ftext%3E%3Ctext%20x%3D%2735%27%20y%3D%27118%27%20transform%3D%27rotate(10%2035%20118)%27%3Ee%3C%2Ftext%3E%3Ctext%20x%3D%27120%27%20y%3D%27130%27%20transform%3D%27rotate(-4%20120%20130)%27%3Eo%3C%2Ftext%3E%3Ctext%20x%3D%27195%27%20y%3D%27122%27%20transform%3D%27rotate(8%20195%20122)%27%3Er%3C%2Ftext%3E%3Ctext%20x%3D%2718%27%20y%3D%27200%27%20transform%3D%27rotate(-6%2018%20200)%27%3Ei%3C%2Ftext%3E%3Ctext%20x%3D%2798%27%20y%3D%27212%27%20transform%3D%27rotate(12%2098%20212)%27%3Es%3C%2Ftext%3E%3Ctext%20x%3D%27180%27%20y%3D%27198%27%20transform%3D%27rotate(-10%20180%20198)%27%3Ec%3C%2Ftext%3E%3C%2Fg%3E%3C%2Fsvg%3E");
+  background-repeat: repeat;
+}
+
+/* Dense character grid — sits behind the "Communication isn't one-size-
+   fits-all" headline. Uniform 6×6 grid of uppercase letters at very low
+   opacity, repeating. Suggests a word-search puzzle / "the world is made
+   of words" texture without ever becoming legible. */
+.character-grid-bg {
+  background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27264%27%20height%3D%27264%27%20viewBox%3D%270%200%20264%20264%27%3E%3Cg%20fill%3D%27%23ffffff%27%20fill-opacity%3D%270.08%27%20font-family%3D%27ui-monospace%2C%20Menlo%2C%20monospace%27%20font-size%3D%2716%27%20text-anchor%3D%27middle%27%3E%3Ctext%20x%3D%2722%27%20y%3D%2730%27%3EA%3C%2Ftext%3E%3Ctext%20x%3D%2766%27%20y%3D%2730%27%3EH%3C%2Ftext%3E%3Ctext%20x%3D%27110%27%20y%3D%2730%27%3EM%3C%2Ftext%3E%3Ctext%20x%3D%27154%27%20y%3D%2730%27%3EE%3C%2Ftext%3E%3Ctext%20x%3D%27198%27%20y%3D%2730%27%3EX%3C%2Ftext%3E%3Ctext%20x%3D%27242%27%20y%3D%2730%27%3EK%3C%2Ftext%3E%3Ctext%20x%3D%2722%27%20y%3D%2774%27%3EN%3C%2Ftext%3E%3Ctext%20x%3D%2766%27%20y%3D%2774%27%3ES%3C%2Ftext%3E%3Ctext%20x%3D%27110%27%20y%3D%2774%27%3EY%3C%2Ftext%3E%3Ctext%20x%3D%27154%27%20y%3D%2774%27%3EW%3C%2Ftext%3E%3Ctext%20x%3D%27198%27%20y%3D%2774%27%3EV%3C%2Ftext%3E%3Ctext%20x%3D%27242%27%20y%3D%2774%27%3EF%3C%2Ftext%3E%3Ctext%20x%3D%2722%27%20y%3D%27118%27%3EQ%3C%2Ftext%3E%3Ctext%20x%3D%2766%27%20y%3D%27118%27%3ER%3C%2Ftext%3E%3Ctext%20x%3D%27110%27%20y%3D%27118%27%3EU%3C%2Ftext%3E%3Ctext%20x%3D%27154%27%20y%3D%27118%27%3EI%3C%2Ftext%3E%3Ctext%20x%3D%27198%27%20y%3D%27118%27%3ED%3C%2Ftext%3E%3Ctext%20x%3D%27242%27%20y%3D%27118%27%3EJ%3C%2Ftext%3E%3Ctext%20x%3D%2722%27%20y%3D%27162%27%3EL%3C%2Ftext%3E%3Ctext%20x%3D%2766%27%20y%3D%27162%27%3EP%3C%2Ftext%3E%3Ctext%20x%3D%27110%27%20y%3D%27162%27%3EB%3C%2Ftext%3E%3Ctext%20x%3D%27154%27%20y%3D%27162%27%3EC%3C%2Ftext%3E%3Ctext%20x%3D%27198%27%20y%3D%27162%27%3ET%3C%2Ftext%3E%3Ctext%20x%3D%27242%27%20y%3D%27162%27%3EZ%3C%2Ftext%3E%3Ctext%20x%3D%2722%27%20y%3D%27206%27%3EO%3C%2Ftext%3E%3Ctext%20x%3D%2766%27%20y%3D%27206%27%3EG%3C%2Ftext%3E%3Ctext%20x%3D%27110%27%20y%3D%27206%27%3EH%3C%2Ftext%3E%3Ctext%20x%3D%27154%27%20y%3D%27206%27%3EV%3C%2Ftext%3E%3Ctext%20x%3D%27198%27%20y%3D%27206%27%3EA%3C%2Ftext%3E%3Ctext%20x%3D%27242%27%20y%3D%27206%27%3EN%3C%2Ftext%3E%3Ctext%20x%3D%2722%27%20y%3D%27250%27%3EI%3C%2Ftext%3E%3Ctext%20x%3D%2766%27%20y%3D%27250%27%3EE%3C%2Ftext%3E%3Ctext%20x%3D%27110%27%20y%3D%27250%27%3EW%3C%2Ftext%3E%3Ctext%20x%3D%27154%27%20y%3D%27250%27%3EZ%3C%2Ftext%3E%3Ctext%20x%3D%27198%27%20y%3D%27250%27%3EF%3C%2Ftext%3E%3Ctext%20x%3D%27242%27%20y%3D%27250%27%3EL%3C%2Ftext%3E%3C%2Fg%3E%3C%2Fsvg%3E");
+  background-repeat: repeat;
+}
+
+/* =========================== Feature showcase glow ========================= */
+
+/* Per-accent hover halo for the showcase cards. The transform-on-hover is
+   handled by Tailwind utilities; this utility supplies the colored shadow
+   that matches each card's accent. Pre-set on the card so the transition
+   eases in/out smoothly rather than snapping. */
+.feature-card {
+  transition:
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.feature-card:hover {
+  transform: translateY(-4px);
+}
+/* Iteration 15+17 accent set — matched 1:1 to the six showcase cards.
+   Meeting card flipped from amber → cyan in iter-17 to drop the yellow
+   warmth from brand-adjacent surfaces. */
+.feature-glow-violet:hover  { box-shadow: 0 24px 48px -16px rgba(167, 139, 250, 0.36); }
+.feature-glow-emerald:hover { box-shadow: 0 24px 48px -16px rgba( 52, 211, 153, 0.36); }
+.feature-glow-rose:hover    { box-shadow: 0 24px 48px -16px rgba(251, 113, 133, 0.36); }
+.feature-glow-sky:hover     { box-shadow: 0 24px 48px -16px rgba( 56, 189, 248, 0.36); }
+.feature-glow-green:hover   { box-shadow: 0 24px 48px -16px rgba( 74, 222, 128, 0.36); }
+.feature-glow-cyan:hover    { box-shadow: 0 24px 48px -16px rgba( 34, 211, 238, 0.36); }
+
+/* ======================= Feature carousel scroll-snap ====================== */
+
+/* Horizontal scroll-snap container — used by FeatureGrid's showcase row.
+   The user drives the scroll directly (touch swipe, trackpad horizontal,
+   keyboard arrows); cards snap to the start so the leftmost card is always
+   fully visible. Scrollbar is visually hidden but the row stays keyboard-
+   navigable. */
+.scroll-snap-x {
+  overflow-x: auto;
+  overflow-y: visible;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  scroll-padding-left: 24px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.scroll-snap-x::-webkit-scrollbar {
+  display: none;
+}
+.scroll-snap-card {
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+
+/* Generic scrollbar-hide utility — used by the Adaptability chat panel
+   whose conversation can overflow vertically as messages stack. The scroll
+   itself stays active (programmatic and wheel-driven), only the chrome is
+   hidden so the chat reads as a clean iMessage-style panel. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Soft horizontal edge fade so cards drift in/out of the viewport at
+   the gutters. The fade is intentionally generous on the right side —
+   the upcoming card is more visibly translucent until the user scrolls,
+   matching the editorial pattern from the reference. */
+.fade-edges-x {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    black 4%,
+    black 88%,
+    rgba(0, 0, 0, 0.4) 96%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    black 4%,
+    black 88%,
+    rgba(0, 0, 0, 0.4) 96%,
+    transparent 100%
+  );
+}
+
+/* Magenta eyebrow token — used on FeatureGrid's "What's inside" kicker.
+   The single warm accent in an otherwise neutral header stack. */
+.feature-eyebrow {
+  color: #d864e8;
+}
+
+/* ============================ Marquee mask ================================= */
+
+.mask-fade {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 10%,
+    black 90%,
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 10%,
+    black 90%,
+    transparent
+  );
+}
+
+/* ============================ FAQ accordion ================================ */
+
+@keyframes faqDown {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: var(--radix-accordion-content-height);
+    opacity: 1;
+  }
+}
+@keyframes faqUp {
+  from {
+    height: var(--radix-accordion-content-height);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
+.animate-faqDown {
+  animation: faqDown 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.animate-faqUp {
+  animation: faqUp 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* =============================== WhisperFlow =============================== */
+
+@keyframes wfBar {
+  0%, 100% { transform: scaleY(0.18); }
+  50% { transform: scaleY(1); }
+}
+.animate-wfBar {
+  animation: wfBar 1.4s ease-in-out infinite;
+  transform-origin: bottom;
+}
+
+@keyframes cloudPulseA {
+  0% { transform: scale(1); opacity: 0.55; }
+  100% { transform: scale(1.7); opacity: 0; }
+}
+@keyframes cloudPulseB {
+  0% { transform: scale(1); opacity: 0.4; }
+  100% { transform: scale(2.0); opacity: 0; }
+}
+.animate-cloudPulseA { animation: cloudPulseA 2.2s ease-out infinite; }
+.animate-cloudPulseB { animation: cloudPulseB 2.2s ease-out 0.6s infinite; }
+
+@keyframes caret {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+.animate-caret { animation: caret 1s steps(2) infinite; }
+
+@keyframes flowProgress {
+  0% { left: -34%; }
+  100% { left: 100%; }
+}
+.animate-flowProgress { animation: flowProgress 6s linear infinite; }
+
+/* =========================== Keyboard hotkey glow ========================== */
+
+@keyframes keyHighlight {
+  0%, 100% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.4),
+      inset 0 -2px 0 rgba(0, 0, 0, 0.25),
+      0 2px 4px rgba(0, 0, 0, 0.5),
+      0 0 0 0 rgba(165, 180, 252, 0.55);
+  }
+  50% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.4),
+      inset 0 -2px 0 rgba(0, 0, 0, 0.25),
+      0 2px 4px rgba(0, 0, 0, 0.5),
+      0 0 0 10px rgba(165, 180, 252, 0);
+  }
+}
+.animate-keyHighlight {
+  animation: keyHighlight 2.2s ease-out infinite;
+}
+
+/* ========================== Reduced motion override ======================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

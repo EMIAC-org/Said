@@ -25,10 +25,11 @@ function formatElapsed(ms: number): string {
  * never waits for the first transcript.
  */
 export function MeetingPill() {
-  // Latched meeting start. Once we learn the engine's real start time we keep it
-  // (a transient active=false poll can't reset it). Falls back to mount time so
-  // the timer always advances even before the first status poll lands.
-  const fallbackStart = useRef<number>(Date.now());
+  // Always reflect the CURRENT meeting's start time from the engine, so the timer
+  // is correct for every meeting — a freshly-started one reads its own start, not
+  // a stale value latched from a previous meeting or the pill's mount time. Reset
+  // when no meeting is active. (The pill window persists across meetings, so we
+  // must re-sync rather than latch once.)
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [, setTick] = useState(0);
 
@@ -39,10 +40,12 @@ export function MeetingPill() {
         const status = await invoke<EngineStatus>("meeting_engine_get_status");
         if (cancelled) return;
         if (status.active && status.started_at_ms) {
-          setStartedAt((prev) => prev ?? status.started_at_ms!); // latch once
+          setStartedAt(status.started_at_ms);
+        } else if (!status.active) {
+          setStartedAt(null);
         }
       } catch {
-        /* engine not ready — keep ticking from the fallback */
+        /* engine not ready — keep the last known start */
       }
     };
     void poll();
@@ -58,7 +61,7 @@ export function MeetingPill() {
     return () => window.clearInterval(id);
   }, []);
 
-  const elapsed = Date.now() - (startedAt ?? fallbackStart.current);
+  const elapsed = startedAt ? Math.max(0, Date.now() - startedAt) : 0;
 
   // Drag vs click: track pointer movement on press; a real drag starts the
   // native window drag, a clean press (no movement) restores the app.

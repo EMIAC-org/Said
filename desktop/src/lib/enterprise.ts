@@ -314,15 +314,6 @@ export async function deactivateWorkspace(): Promise<boolean> {
   }
 }
 
-/** Header that scopes a server request to the connection's active workspace.
- *  The server's require_active_org gate accepts either this header or a
- *  previously-activated org, so sending it makes meeting calls robust even if
- *  the server-side active org drifts. Empty when no workspace is active. */
-function orgHeader(): Record<string, string> {
-  const conn = getConnection();
-  return conn?.activeOrgId ? { "X-AirNote-Org-Id": conn.activeOrgId } : {};
-}
-
 /** Ensure the connection has an active workspace so org-scoped calls (meetings)
  *  don't 403 with "active workspace required". Returns true when a workspace is
  *  active (or was just auto-activated), false when the user must pick one.
@@ -719,90 +710,6 @@ export async function getMyOrg(
   }
 }
 
-/** List meetings for the user's org */
-export async function listMeetings(
-  serverUrl: string,
-  jwt: string,
-  status?: string,
-): Promise<any[]> {
-  try {
-    const url = serverUrl.replace(/\/+$/, "");
-    const qs = status ? `?status=${status}` : "";
-    const res = await fetch(`${url}/v1/meetings${qs}`, {
-      headers: { Authorization: `Bearer ${jwt}`, ...orgHeader() },
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.meetings ?? [];
-  } catch {
-    return [];
-  }
-}
-
-/** Create a meeting in the user's org */
-export async function createMeeting(
-  serverUrl: string,
-  jwt: string,
-  body: {
-    title: string;
-    agenda?: string | null;
-    participant_ids: string[];
-    scheduled_at?: string | null;
-    duration_minutes?: number;
-  },
-): Promise<any> {
-  const url = normalizeServerUrl(serverUrl);
-  const res = await fetch(`${url}/v1/meetings`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${jwt}`,
-      "Content-Type": "application/json",
-      ...orgHeader(),
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, "Failed to create meeting"));
-  }
-  const data = await res.json().catch(() => ({}));
-  return data.meeting;
-}
-
-/** Mark a meeting live */
-export async function startMeeting(
-  serverUrl: string,
-  jwt: string,
-  meetingId: string,
-): Promise<void> {
-  const url = normalizeServerUrl(serverUrl);
-  const res = await fetch(`${url}/v1/meetings/${meetingId}/start`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${jwt}`, ...orgHeader() },
-  });
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, "Failed to start meeting"));
-  }
-}
-
-/** Delete a meeting record (server). Used to clean up empty/abandoned meetings.
- *  Idempotent + best-effort: never throws, returns whether it succeeded. */
-export async function deleteMeeting(
-  serverUrl: string,
-  jwt: string,
-  meetingId: string,
-): Promise<boolean> {
-  try {
-    const url = normalizeServerUrl(serverUrl);
-    const res = await fetch(`${url}/v1/meetings/${meetingId}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${jwt}`, ...orgHeader() },
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 // ── OpenAI integration ───────────────────────────────────────────────────────
 
 export interface OpenAIStatus {
@@ -879,27 +786,6 @@ export async function completeOpenAIConnect(
   }
 }
 
-/** Sync a completed meeting's AI results (tasks, doc, notifications) to Lark */
-export async function syncMeetingToLark(meetingId: string): Promise<{
-  tasks_synced: number;
-  doc_id?: string;
-  messages_sent: number;
-} | null> {
-  try {
-    const conn = getConnection();
-    if (!conn) return null;
-    const url = conn.serverUrl.replace(/\/+$/, "");
-    const res = await fetch(`${url}/v1/meetings/${meetingId}/sync-to-lark`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${conn.jwt}` },
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
 export interface LarkExportPayload {
   title: string;
   summary: string;
@@ -912,13 +798,13 @@ export type LarkExportResult =
   | { ok: false; code: string; message: string };
 
 /**
- * Export a meeting's locally-generated minutes to a Lark Docx document. The
- * desktop holds the content, so it is sent in the body; the control-plane
- * creates the doc with the org's Lark app. Returns a categorized result so the
+ * Export locally-generated minutes (a single meeting or a digest) to a Lark Docx
+ * document. Meetings are local-only, so there is no cloud meeting record — the
+ * desktop sends the rendered content to a meeting-less endpoint; the control-plane
+ * creates the doc with the user's Lark token. Returns a categorized result so the
  * UI can distinguish "not connected" / "not configured" / "API error" / etc.
  */
 export async function exportMeetingToLark(
-  meetingId: string,
   payload: LarkExportPayload,
 ): Promise<LarkExportResult> {
   const conn = getConnection();
@@ -927,7 +813,7 @@ export async function exportMeetingToLark(
   }
   const url = conn.serverUrl.replace(/\/+$/, "");
   try {
-    const res = await fetch(`${url}/v1/meetings/${meetingId}/export-lark`, {
+    const res = await fetch(`${url}/v1/lark/export-doc`, {
       method: "POST",
       headers: { Authorization: `Bearer ${conn.jwt}`, "Content-Type": "application/json" },
       body: JSON.stringify(payload),

@@ -32,18 +32,38 @@ async fn main() {
         .create(true)
         .append(true)
         .open(&log_path)
-        .expect("cannot open backend.log");
+        .map_err(|e| {
+            eprintln!(
+                "[backend] cannot open log file {}: {e}; continuing with stderr logging only",
+                log_path.display()
+            );
+            e
+        })
+        .ok();
 
-    let filter = EnvFilter::from_default_env().add_directive("said_backend=debug".parse().unwrap());
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_ansi(false)
-        .with_writer(std::sync::Mutex::new(log_file));
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(file_layer)
-        .with(said_core::telemetry::tracing_layer())
-        .with(said_core::reporter::tracing_layer())
-        .init();
+    let filter = EnvFilter::from_default_env().add_directive(
+        "said_backend=debug"
+            .parse()
+            .unwrap_or_else(|_| tracing_subscriber::filter::LevelFilter::DEBUG.into()),
+    );
+    if let Some(log_file) = log_file {
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(log_file));
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(file_layer)
+            .with(said_core::telemetry::tracing_layer())
+            .with(said_core::reporter::tracing_layer())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+            .with(said_core::telemetry::tracing_layer())
+            .with(said_core::reporter::tracing_layer())
+            .init();
+    }
 
     start_parent_death_watch();
 
@@ -73,7 +93,29 @@ async fn main() {
     );
 
     // ── Open DB + ensure default user ─────────────────────────────────────────
-    let pool = said_backend::store::open(&db_path);
+    let pool = match std::panic::catch_unwind(|| said_backend::store::open(&db_path)) {
+        Ok(pool) => pool,
+        Err(payload) => {
+            let summary = if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown store startup panic".to_string()
+            };
+            tracing::error!("[backend] database startup failed: {summary}");
+            said_core::reporter::report_event(
+                "backend.database_startup_failed",
+                said_core::reporter::Severity::Fatal,
+                serde_json::json!({
+                    "error": summary,
+                    "db_path": db_path.display().to_string(),
+                }),
+            );
+            eprintln!("[backend] database startup failed: {summary}");
+            return;
+        }
+    };
     let user_id = said_backend::store::ensure_default_user(&pool);
     let secret = std::env::var("POLISH_SHARED_SECRET").unwrap_or_else(|_| "dev-secret".into());
 
@@ -81,7 +123,10 @@ async fn main() {
         .pool_max_idle_per_host(4)
         .pool_idle_timeout(std::time::Duration::from_secs(90))
         .build()
-        .expect("failed to build shared HTTP client");
+        .unwrap_or_else(|e| {
+            tracing::warn!("[backend] shared HTTP client build failed ({e}); using default client");
+            reqwest::Client::new()
+        });
 
     let wd = std::sync::Arc::new(said_backend::watchdog::WatchdogState::new());
 
@@ -145,9 +190,18 @@ async fn main() {
 
     // ── Bind listener ─────────────────────────────────────────────────────────
     let addr = format!("127.0.0.1:{}", cli.port);
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .unwrap_or_else(|e| panic!("failed to bind {addr}: {e}"));
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!("[backend] failed to bind {addr}: {e}");
+            said_core::reporter::report_event(
+                "backend.bind_failed",
+                said_core::reporter::Severity::Fatal,
+                serde_json::json!({ "addr": addr, "error": e.to_string() }),
+            );
+            return;
+        }
+    };
 
     info!("airnote-backend listening on http://{addr}");
 
@@ -212,11 +266,19 @@ async fn main() {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{SignalKind, signal};
-            let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM listener");
-            let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT listener");
-            tokio::select! {
-                _ = sigterm.recv() => info!("received SIGTERM — shutting down"),
-                _ = sigint.recv()  => info!("received SIGINT — shutting down"),
+            let sigterm = signal(SignalKind::terminate());
+            let sigint = signal(SignalKind::interrupt());
+            match (sigterm, sigint) {
+                (Ok(mut sigterm), Ok(mut sigint)) => {
+                    tokio::select! {
+                        _ = sigterm.recv() => info!("received SIGTERM — shutting down"),
+                        _ = sigint.recv()  => info!("received SIGINT — shutting down"),
+                    }
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    tracing::warn!("[backend] failed to install unix signal listener: {e}");
+                    std::future::pending::<()>().await;
+                }
             }
         }
         #[cfg(not(unix))]
@@ -226,10 +288,17 @@ async fn main() {
         }
     };
 
-    axum::serve(listener, router)
+    if let Err(e) = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown)
         .await
-        .expect("server error");
+    {
+        tracing::error!("[backend] server error: {e}");
+        said_core::reporter::report_event(
+            "backend.server_error",
+            said_core::reporter::Severity::Fatal,
+            serde_json::json!({ "error": e.to_string() }),
+        );
+    }
 
     info!("airnote-backend stopped");
 }

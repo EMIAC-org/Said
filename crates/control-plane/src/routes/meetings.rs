@@ -16,6 +16,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
+
 use crate::{AppState, auth::AuthUser, tenant};
 
 // ── Request / response types ────────────────────────────────────────────────
@@ -219,6 +223,73 @@ pub async fn create(
 
 // ── GET /v1/meetings ────────────────────────────────────────────────────────
 
+/// SQL fragment (table alias `m`) matching an "abandoned empty" meeting: it has
+/// no streamed transcript and no summary, AND it either ended within a minute
+/// (recorded nothing) or is stuck `live` for many hours (the app was force-quit
+/// before `/end`). A REAL meeting streams `transcript_chunks` to the hub live, so
+/// it can never match — that, plus the duration guard, makes this safe even if a
+/// real meeting's WebSocket dropped. Empty meetings pile up because "New Meeting"
+/// creates the cloud record eagerly (before any audio); this is the server-side,
+/// creator-independent cleanup that the previous device-local cleanup could not do.
+const EMPTY_MEETING_PREDICATE: &str = "
+    NOT EXISTS (SELECT 1 FROM transcript_chunks t WHERE t.meeting_id = m.id)
+    AND NOT EXISTS (SELECT 1 FROM meeting_summaries s WHERE s.meeting_id = m.id)
+    AND (
+        (m.status = 'ended' AND COALESCE(m.ended_at - m.started_at, interval '0') < interval '60 seconds')
+        OR (m.status = 'live' AND m.started_at < now() - interval '12 hours')
+    )";
+
+/// Per-org throttle so the reap runs at most once every couple of minutes no
+/// matter how often the meetings list is polled. In-memory is fine: a missed
+/// reap just happens on the next list call.
+static REAP_LAST: LazyLock<Mutex<HashMap<Uuid, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Delete abandoned empty meetings for an org. A 30-minute grace lets the
+/// desktop's own per-session cleanup (and any late transcript delivery) settle
+/// first. Children cascade via `ON DELETE CASCADE`.
+async fn reap_empty_meetings(db: &crate::store::Db, org_id: Uuid) -> Result<u64, sqlx::Error> {
+    let sql = format!(
+        "DELETE FROM meetings m
+          WHERE m.org_id = $1
+            AND m.created_at < now() - interval '30 minutes'
+            AND ({EMPTY_MEETING_PREDICATE})"
+    );
+    let affected = sqlx::query(&sql)
+        .bind(org_id)
+        .execute(db)
+        .await?
+        .rows_affected();
+    if affected > 0 {
+        tracing::info!(%org_id, reaped = affected, "[meetings] reaped abandoned empty meetings");
+    }
+    Ok(affected)
+}
+
+/// Fire-and-forget, throttled reap. Never blocks the request — the list query's
+/// own filter already hides empties immediately; this just keeps the table tidy.
+fn maybe_reap_empty_meetings(state: &AppState, org_id: Uuid) {
+    {
+        let mut last = match REAP_LAST.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let now = Instant::now();
+        if let Some(prev) = last.get(&org_id) {
+            if now.duration_since(*prev) < std::time::Duration::from_secs(120) {
+                return;
+            }
+        }
+        last.insert(org_id, now);
+    }
+    let db = state.db.clone();
+    tokio::spawn(async move {
+        if let Err(e) = reap_empty_meetings(&db, org_id).await {
+            tracing::warn!(%org_id, error = %e, "[meetings] empty-meeting reap failed");
+        }
+    });
+}
+
 pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -226,6 +297,11 @@ pub async fn list(
     Query(query): Query<ListMeetingsQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
+
+    // Self-healing cleanup: drop abandoned empty meetings for this org (throttled,
+    // off the request path). The query filter below also hides them immediately,
+    // so even a brand-new user inherits a clean list instead of the org's backlog.
+    maybe_reap_empty_meetings(&state, org_id);
 
     let meetings: Vec<(
         Uuid,
@@ -242,26 +318,26 @@ pub async fn list(
         Option<String>,
         String,
     )> = if let Some(status) = &query.status {
-        sqlx::query_as(
+        sqlx::query_as(&format!(
             "SELECT id, title, agenda, status, created_by, started_at, ended_at, created_at,
                     scheduled_at, duration_minutes, lark_calendar_id, lark_event_id, lark_event_status
-                   FROM meetings
-                  WHERE org_id = $1 AND status = $2
-                  ORDER BY created_at DESC",
-        )
+                   FROM meetings m
+                  WHERE m.org_id = $1 AND m.status = $2 AND NOT ({EMPTY_MEETING_PREDICATE})
+                  ORDER BY m.created_at DESC"
+        ))
         .bind(org_id)
         .bind(status)
         .fetch_all(&state.db)
         .await
         .map_err(db_err)?
     } else {
-        sqlx::query_as(
+        sqlx::query_as(&format!(
             "SELECT id, title, agenda, status, created_by, started_at, ended_at, created_at,
                     scheduled_at, duration_minutes, lark_calendar_id, lark_event_id, lark_event_status
-                   FROM meetings
-                  WHERE org_id = $1
-                  ORDER BY created_at DESC",
-        )
+                   FROM meetings m
+                  WHERE m.org_id = $1 AND NOT ({EMPTY_MEETING_PREDICATE})
+                  ORDER BY m.created_at DESC"
+        ))
         .bind(org_id)
         .fetch_all(&state.db)
         .await
@@ -948,6 +1024,86 @@ pub async fn export_lark(
         "document_id": document_id,
         "in_shared_folder": folder_token.is_some(),
         "tasks_created": tasks_created,
+        "content_warning": content_warning,
+    })))
+}
+
+/// POST /v1/lark/export-doc — create a Lark Doc straight from a title + markdown
+/// summary, with NO cloud meeting record. Meetings are local-only now, so the
+/// desktop sends the rendered content here directly (single meeting or digest).
+/// Doc-only: this is the thin Lark surface we keep server-side because it holds
+/// the user's OAuth token. Reuses the same doc builder as `export_lark`.
+pub async fn export_doc(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Json(body): Json<ExportLarkBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
+
+    let lark = state.lark.clone();
+    if lark.app_id.is_empty() || lark.app_secret.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Lark isn't configured for this workspace — ask an admin to connect it.",
+                "code": "lark_not_configured",
+            })),
+        ));
+    }
+
+    let title = if body.title.trim().is_empty() {
+        "Meeting Notes".to_string()
+    } else {
+        body.title.trim().to_string()
+    };
+    let doc_title = format!("Meeting Minutes \u{2014} {title}");
+
+    let action_items: Vec<(String, Option<String>)> = body
+        .action_items
+        .iter()
+        .map(|i| (i.title.clone(), i.assignee.clone()))
+        .collect();
+
+    let folder_token = std::env::var("LARK_MINUTES_FOLDER_TOKEN")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+
+    // Create the doc as the user so it lands in their own Lark Drive.
+    let user_token = user_lark_token(&state, user.account_id, org_id).await?;
+
+    let document_id =
+        crate::lark_sync::create_doc_with_token(&user_token, &doc_title, folder_token.as_deref())
+            .await
+            .map_err(|e| lark_error_response("could not create the Lark doc", &e))?;
+
+    let blocks = crate::lark_sync::build_minutes_blocks(
+        &title,
+        "",
+        &body.summary,
+        &action_items,
+        &body.decisions,
+    );
+    let mut content_warning: Option<String> = None;
+    if let Err(e) =
+        crate::lark_sync::insert_blocks_with_token(&user_token, &document_id, &blocks).await
+    {
+        tracing::warn!("export_doc: block insert failed: {e}");
+        content_warning =
+            Some("the doc was created but some formatting could not be written".into());
+    }
+
+    let url = crate::lark_sync::fetch_doc_url(&user_token, &document_id)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_default();
+
+    Ok(Json(json!({
+        "ok": true,
+        "url": url,
+        "document_id": document_id,
+        "in_shared_folder": folder_token.is_some(),
+        "tasks_created": 0,
         "content_warning": content_warning,
     })))
 }

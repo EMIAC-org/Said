@@ -18,7 +18,6 @@ import { TelemetryUserPage } from './pages/TelemetryUserPage'
 import { RuntimeUserPage } from './pages/RuntimeUserPage'
 import { BugsPage } from './pages/BugsPage'
 import { DiagnosticsPage } from './pages/DiagnosticsPage'
-import { ChangelogPage } from './pages/ChangelogPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { LiveMeetingPage } from './pages/LiveMeetingPage'
 import { OnboardingPage } from './pages/OnboardingPage'
@@ -58,7 +57,6 @@ createRoot(document.getElementById('app')!).render(
           </Routes>
         ) : (
           <Routes>
-            <Route path="/changelog" element={<ChangelogPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         )}

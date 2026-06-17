@@ -25,7 +25,10 @@ fn slot() -> &'static Mutex<ListenerSlot> {
 }
 
 pub fn stop_listener() {
-    let mut guard = slot().lock().expect("enterprise oauth listener lock");
+    let mut guard = slot().lock().unwrap_or_else(|poison| {
+        tracing::warn!("[enterprise-oauth] recovered poisoned listener lock");
+        poison.into_inner()
+    });
     if let Some(tx) = guard.shutdown.take() {
         let _ = tx.send(());
     }
@@ -106,7 +109,10 @@ pub async fn start_listener(app: AppHandle) -> Result<u16, String> {
 
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     {
-        let mut guard = slot().lock().expect("enterprise oauth listener lock");
+        let mut guard = slot().lock().unwrap_or_else(|poison| {
+            tracing::warn!("[enterprise-oauth] recovered poisoned listener lock");
+            poison.into_inner()
+        });
         guard.shutdown = Some(shutdown_tx);
     }
 

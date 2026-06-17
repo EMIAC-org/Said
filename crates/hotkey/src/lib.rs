@@ -536,17 +536,18 @@ mod imp {
             LAST_IM_GRANTED.store(true, Ordering::Relaxed);
             tracing::info!("[hotkey] Input Monitoring newly granted — restarting hold listener");
 
-            let (on_press, on_release) = HOLD_CALLBACKS.get().unwrap();
-            let p = Arc::clone(on_press);
-            let r = Arc::clone(on_release);
-            std::thread::spawn(move || unsafe {
-                HOLD_STATE = Some(HoldState {
-                    on_press: p,
-                    on_release: r,
-                    is_down: false,
+            if let Some((on_press, on_release)) = HOLD_CALLBACKS.get() {
+                let p = Arc::clone(on_press);
+                let r = Arc::clone(on_release);
+                std::thread::spawn(move || unsafe {
+                    HOLD_STATE = Some(HoldState {
+                        on_press: p,
+                        on_release: r,
+                        is_down: false,
+                    });
+                    run_tap(hold_tap_callback, &raw mut HOLD_TAP);
                 });
-                run_tap(hold_tap_callback, &raw mut HOLD_TAP);
-            });
+            }
         }
         true
     }
@@ -641,6 +642,26 @@ mod imp {
         event: ffi::CGEventRef,
         _user_info: *mut std::ffi::c_void,
     ) -> ffi::CGEventRef {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            hold_tap_callback_inner(event_type, event)
+        }));
+        match result {
+            Ok(ret) => ret,
+            Err(_) => unsafe {
+                tracing::error!("[hotkey] recovered panic inside CGEventTap callback");
+                if let Some(ref mut s) = HOLD_STATE {
+                    s.is_down = false;
+                }
+                DIVO_IS_DOWN.store(false, Ordering::SeqCst);
+                DIVO_TAINTED.store(false, Ordering::SeqCst);
+                DIVO_STARTED.store(false, Ordering::SeqCst);
+                DIVO_GEN.fetch_add(1, Ordering::SeqCst);
+                event
+            },
+        }
+    }
+
+    unsafe fn hold_tap_callback_inner(event_type: u32, event: ffi::CGEventRef) -> ffi::CGEventRef {
         unsafe {
             rearm_if_disabled(event_type, HOLD_TAP);
 

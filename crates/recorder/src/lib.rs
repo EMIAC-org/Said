@@ -185,7 +185,13 @@ impl AudioRecorder {
                 if mono.is_empty() {
                     return;
                 }
-                frames_cb.lock().unwrap().extend_from_slice(&mono);
+                match frames_cb.lock() {
+                    Ok(mut frames) => frames.extend_from_slice(&mono),
+                    Err(poison) => {
+                        eprintln!("[rec] recovered poisoned audio buffer lock in callback");
+                        poison.into_inner().extend_from_slice(&mono);
+                    }
+                }
                 let _ = chunk_tx_cb.try_send(mono.clone());
                 let sum_sq = mono.iter().map(|s| s * s).sum::<f32>();
                 let rms = (sum_sq / mono.len() as f32).sqrt();
@@ -266,7 +272,13 @@ impl AudioRecorder {
             if let Ok(RecCmd::Stop(reply)) = cmd_rx.recv() {
                 // `stream` drops here → chunk_tx_cb drops → all senders gone → chunk_rx sees close
                 drop(stream);
-                let data = frames_for_reply.lock().unwrap().clone();
+                let data = match frames_for_reply.lock() {
+                    Ok(frames) => frames.clone(),
+                    Err(poison) => {
+                        eprintln!("[rec] recovered poisoned audio buffer lock while stopping");
+                        poison.into_inner().clone()
+                    }
+                };
                 let _ = reply.send((data, native_rate));
             }
         });

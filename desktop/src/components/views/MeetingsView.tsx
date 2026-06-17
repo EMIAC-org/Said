@@ -7,8 +7,10 @@ import {
   ChevronDown,
   Copy,
   Download,
+  Eraser,
   ExternalLink,
   FileText,
+  Layers,
   ListChecks,
   Loader2,
   MessageSquare,
@@ -23,28 +25,18 @@ import {
   Search,
   Sparkles,
   Star,
-  Building2,
   Trash2,
   Video,
   X,
 } from "lucide-react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import {
-  createMeeting,
-  deleteMeeting,
-  ensureActiveWorkspace,
-  exportMeetingToLark,
-  getConnection,
-  listMeetings,
-  repairEnterpriseConnection,
-  startMeeting,
-} from "@/lib/enterprise";
+import { exportMeetingToLark } from "@/lib/enterprise";
 import { openExternal } from "@/lib/invoke";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
+import { DigestView } from "@/components/views/DigestView";
 import {
   MeetingRichText,
-  parseMeetingSummary,
-  renderInlineMarkdown,
+  MeetingSummaryContent,
   stripInlineMarkdown,
   summaryLead,
 } from "@/lib/meetingMarkdown";
@@ -70,6 +62,51 @@ interface MeetingOverview {
   hidden: boolean;
   has_local_files: boolean;
   lark_doc_url?: string | null;
+}
+
+// Local meeting list entry from `meeting_engine_list_meetings` — meetings are a
+// single-device, on-device feature now (no control-plane list).
+interface LocalMeetingSummary {
+  id: string;
+  title: string;
+  status: "live" | "ended";
+  created_at_ms: number;
+  tags: string[];
+  action_count: number;
+  decision_count: number;
+  word_count: number;
+  has_intelligence: boolean;
+  favorite: boolean;
+  hidden: boolean;
+  has_local_files: boolean;
+  lark_doc_url?: string | null;
+}
+
+function localToMeeting(m: LocalMeetingSummary): Meeting {
+  return {
+    id: m.id,
+    title: m.title,
+    status: m.status,
+    created_at: new Date(m.created_at_ms).toISOString(),
+    scheduled_at: null,
+    agenda: null,
+    participants_count: 1,
+  };
+}
+
+function localToOverview(m: LocalMeetingSummary): MeetingOverview {
+  return {
+    title: m.title,
+    tags: m.tags,
+    action_count: m.action_count,
+    decision_count: m.decision_count,
+    word_count: m.word_count,
+    has_intelligence: m.has_intelligence,
+    favorite: m.favorite,
+    hidden: m.hidden,
+    has_local_files: m.has_local_files,
+    lark_doc_url: m.lark_doc_url ?? null,
+  };
 }
 
 interface MeetingSearchHit {
@@ -190,68 +227,6 @@ function tagColor(label: string): string {
     hash = (hash * 31 + label.charCodeAt(i)) | 0;
   }
   return TAG_COLORS[Math.abs(hash) % TAG_COLORS.length];
-}
-
-function MeetingSummaryContent({ summary }: { summary: string }) {
-  const blocks = parseMeetingSummary(summary);
-  let headingSeen = false;
-  return (
-    <div className="mt-7 space-y-4">
-      {blocks.map((block, index) => {
-        if (block.kind === "heading") {
-          const firstHeading = !headingSeen;
-          headingSeen = true;
-          return (
-            <div
-              key={`${block.kind}-${index}-${block.text}`}
-              className={firstHeading ? "flex items-center gap-3" : "flex items-center gap-3 border-t pt-7 mt-2"}
-              style={firstHeading ? undefined : { borderColor: "hsl(var(--surface-4))" }}
-            >
-              {block.index ? (
-                <span
-                  className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg text-[12px] font-bold"
-                  style={{ background: "hsl(var(--primary) / 0.16)", color: "hsl(var(--primary))" }}
-                >
-                  {block.index}
-                </span>
-              ) : (
-                <span className="h-4 w-1 flex-shrink-0 rounded-full" style={{ background: "hsl(var(--primary))" }} />
-              )}
-              <h3 className="text-[18px] font-bold tracking-tight text-foreground">{block.text}</h3>
-            </div>
-          );
-        }
-        if (block.kind === "quote") {
-          return (
-            <blockquote
-              key={`${block.kind}-${index}-${block.text}`}
-              className="rounded-r-lg border-l-[3px] py-1 pl-4 text-[15px] italic leading-8 text-muted-foreground"
-              style={{ borderColor: "hsl(var(--primary) / 0.7)", background: "hsl(var(--primary) / 0.05)" }}
-            >
-              {renderInlineMarkdown(block.text)}
-            </blockquote>
-          );
-        }
-        if (block.kind === "bullet") {
-          return (
-            <div key={`${block.kind}-${index}-${block.text}`} className="flex gap-3 text-[16px] leading-8 text-muted-foreground">
-              {block.emoji ? (
-                <span className="mt-0.5 flex-shrink-0 text-[16px] leading-8">{block.emoji}</span>
-              ) : (
-                <span className="mt-3.5 h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ background: "hsl(var(--primary))" }} />
-              )}
-              <p className="max-w-[100ch]">{renderInlineMarkdown(block.text)}</p>
-            </div>
-          );
-        }
-        return (
-          <p key={`${block.kind}-${index}-${block.text}`} className="max-w-[102ch] text-[16px] leading-8 text-muted-foreground">
-            {renderInlineMarkdown(block.text)}
-          </p>
-        );
-      })}
-    </div>
-  );
 }
 
 function MeetingCard({
@@ -986,10 +961,10 @@ export function MeetingsView({
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  // True when the user has no active workspace to scope meetings to — rendered
-  // as a guided "pick a workspace" panel instead of a generic load error.
-  const [needsWorkspace, setNeedsWorkspace] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [meetingInProgress, setMeetingInProgress] = useState(false);
+  const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
   const [dateFilter, setDateFilter] = useState<"all" | "today" | "week" | "archived">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<Record<string, MeetingSearchHit> | null>(null);
@@ -1023,39 +998,16 @@ export function MeetingsView({
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const fetchMeetings = useCallback(async () => {
-    const conn = getConnection();
-    if (!conn) {
-      setError("Not connected to enterprise server");
-      setLoading(false);
-      return;
-    }
     setLoading(true);
     setError("");
     try {
-      // Make sure an org is active so the list is scoped and New Meeting won't
-      // 403. If the user must pick a workspace, surface the guided panel.
-      setNeedsWorkspace(!(await ensureActiveWorkspace()));
-      // Reconcile: the engine records meetings it discarded locally as empty
-      // (immediate stop / no audio / killed mid-recording). Delete their cloud
-      // records so abandoned "Quick meeting" entries never linger in the list.
-      try {
-        const discarded = await invoke<string[]>("meeting_engine_take_discarded_meeting_ids");
-        await Promise.all(discarded.map((id) => deleteMeeting(conn.serverUrl, conn.jwt, id)));
-      } catch {
-        /* best-effort cleanup */
-      }
-      const result = (await listMeetings(conn.serverUrl, conn.jwt)) as Meeting[];
-      setMeetings(result);
-      // Enrich the list with locally-cached AI titles, word counts, and counts
-      // in a single batch call so every card reflects its own analysis.
-      const ids = result.map((meeting) => meeting.id);
-      if (ids.length > 0) {
-        invoke<Record<string, MeetingOverview>>("meeting_engine_get_meeting_overviews", {
-          meetingIds: ids,
-        })
-          .then((map) => setOverviews(map))
-          .catch(() => {});
-      }
+      // Meetings are local-only: the list is the set of meeting folders on this
+      // device, enumerated by the engine (no control-plane).
+      const local = await invoke<LocalMeetingSummary[]>("meeting_engine_list_meetings");
+      setMeetings(local.map(localToMeeting));
+      const map: Record<string, MeetingOverview> = {};
+      for (const m of local) map[m.id] = localToOverview(m);
+      setOverviews(map);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load meetings");
     } finally {
@@ -1063,21 +1015,18 @@ export function MeetingsView({
     }
   }, []);
 
-  // Re-read overviews for the current list (used after a local mutation so the
-  // backend stays the single source of truth for title/favorite/hidden/tags).
+  // Re-read the local list after a mutation (rename/favorite/hide) so the cards
+  // reflect the updated overrides registry, without the loading flash.
   const refreshOverviews = useCallback(async () => {
-    const ids = meetings.map((meeting) => meeting.id);
-    if (ids.length === 0) return;
     try {
-      const map = await invoke<Record<string, MeetingOverview>>(
-        "meeting_engine_get_meeting_overviews",
-        { meetingIds: ids },
-      );
+      const local = await invoke<LocalMeetingSummary[]>("meeting_engine_list_meetings");
+      const map: Record<string, MeetingOverview> = {};
+      for (const m of local) map[m.id] = localToOverview(m);
       setOverviews(map);
     } catch {
       /* best-effort */
     }
-  }, [meetings]);
+  }, []);
 
   useEffect(() => {
     void fetchMeetings();
@@ -1115,39 +1064,48 @@ export function MeetingsView({
       onConfigureModels?.();
       return;
     }
-    const conn = getConnection();
-    if (!conn) {
-      setError("Not connected to enterprise server");
-      return;
+    // Never start a second meeting while one is already recording — show a popup
+    // (with a jump-to-it action) instead of silently stopping the first.
+    try {
+      const status = await invoke<{ active: boolean; session_id?: string | null }>(
+        "meeting_engine_get_status",
+      );
+      if (status.active) {
+        setActiveMeetingId(status.session_id ?? null);
+        setMeetingInProgress(true);
+        return;
+      }
+    } catch {
+      /* status check failed — fall through and let the engine handle it */
     }
-    // Meetings are workspace-scoped: ensure one is active (auto-activating a
-    // sole workspace) before creating, else guide the user to pick one rather
-    // than failing with a 403 "active workspace required".
-    if (!(await ensureActiveWorkspace())) {
-      setNeedsWorkspace(true);
-      setError("");
-      return;
-    }
-    setNeedsWorkspace(false);
     setCreating(true);
     setError("");
     try {
-      const activeConn = await repairEnterpriseConnection(conn);
-      const meeting = await createMeeting(activeConn.serverUrl, activeConn.jwt, {
-        title: `Quick meeting ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
-        agenda: null,
-        participant_ids: [activeConn.accountId],
-        duration_minutes: 30,
-      });
-      await startMeeting(activeConn.serverUrl, activeConn.jwt, meeting.id);
-      await fetchMeetings();
-      onJoinMeeting?.(meeting.id);
+      // Local-only: allocate a fresh on-device meeting id and open the recorder.
+      // No cloud record is created, so an abandoned meeting leaves nothing behind.
+      const id = await invoke<string>("meeting_engine_new_local_meeting");
+      onJoinMeeting?.(id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create meeting");
     } finally {
       setCreating(false);
     }
-  }, [fetchMeetings, onJoinMeeting, hasModel, onConfigureModels]);
+  }, [onJoinMeeting, hasModel, onConfigureModels]);
+
+  // Clear empty meetings — silence/noise recordings (few words, never analyzed,
+  // not favorited or renamed) that pile up. Analyzed/favorited/named meetings and
+  // the active recording are always kept.
+  const handleClearEmpty = useCallback(async () => {
+    setClearing(true);
+    try {
+      await invoke<number>("meeting_engine_clear_empty_meetings");
+      await fetchMeetings();
+    } catch (err) {
+      console.warn("[meeting] clear empty failed:", err);
+    } finally {
+      setClearing(false);
+    }
+  }, [fetchMeetings]);
 
   // Debounced full-text search across title/tags/summary/notes/decisions/
   // actions/transcript (heavy fields are read locally by the backend).
@@ -1458,13 +1416,15 @@ export function MeetingsView({
   // When the failure is an auth/scope problem, we offer a "Reconnect Lark"
   // action instead of a dead-end error.
   const [larkNeedsReauth, setLarkNeedsReauth] = useState(false);
+  // Meetings list vs cross-meeting Digest mode.
+  const [viewMode, setViewMode] = useState<"meetings" | "digest">("meetings");
   const handleExportToLark = useCallback(async () => {
     if (!selectedMeeting || !meetingAi?.summary?.trim()) return;
     setLarkExporting(true);
     setLarkError(null);
     setLarkNeedsReauth(false);
     try {
-      const result = await exportMeetingToLark(selectedMeeting.id, {
+      const result = await exportMeetingToLark({
         title: meetingAi.title?.trim() || selectedMeeting.title,
         summary: meetingAi.summary,
         action_items: (meetingAi.action_items ?? []).map((a) => ({
@@ -1830,11 +1790,8 @@ export function MeetingsView({
     const id = pendingDelete.id;
     setPendingDelete(null);
     try {
-      // Permanent delete: local artifacts AND the cloud record, so it's gone
-      // everywhere (not just hidden on this device).
+      // Local-only permanent delete: remove the on-device artifacts.
       await invoke("meeting_engine_delete_meeting_files", { meetingId: id });
-      const conn = getConnection();
-      if (conn) await deleteMeeting(conn.serverUrl, conn.jwt, id);
       setSelectedMeetingId((cur) => (cur === id ? null : cur));
       await fetchMeetings();
     } catch (err) {
@@ -1872,7 +1829,38 @@ export function MeetingsView({
           </button>
         </div>
       ) : null}
-      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+      <div
+        className="flex flex-shrink-0 items-center gap-1 px-4 py-2"
+        style={{ borderBottom: "1px solid hsl(var(--surface-4))" }}
+      >
+        {(
+          [
+            { id: "meetings" as const, label: "Meetings", icon: <Video size={13} /> },
+            { id: "digest" as const, label: "Digest", icon: <Layers size={13} /> },
+          ]
+        ).map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setViewMode(t.id)}
+            className="flex h-7 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold"
+            style={{
+              background: viewMode === t.id ? "hsl(var(--surface-4))" : "transparent",
+              color: viewMode === t.id ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
+            }}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {/* Kept mounted (hidden via CSS) so a generated digest survives tab switches. */}
+      <div className={`min-h-0 flex-1 overflow-hidden ${viewMode === "digest" ? "flex" : "hidden"}`}>
+        <DigestView meetings={meetings} overviews={overviews} />
+      </div>
+      <div
+        className={`relative min-h-0 flex-1 overflow-hidden ${viewMode === "meetings" ? "flex" : "hidden"}`}
+      >
       <aside className="flex w-[240px] flex-shrink-0 flex-col xl:w-[330px]" style={{ borderRight: "1px solid hsl(var(--surface-4))" }}>
         <div className="px-4 pb-3 pt-5">
           <div className="flex items-center justify-between">
@@ -1881,6 +1869,13 @@ export function MeetingsView({
               <p className="text-[11px] text-muted-foreground">{liveCount} live · {endedCount} ended</p>
             </div>
             <div className="flex items-center gap-1.5">
+              <IconButton
+                label="Clear empty meetings"
+                disabled={clearing || loading}
+                onClick={() => void handleClearEmpty()}
+              >
+                <Eraser size={13} className={clearing ? "animate-pulse" : ""} />
+              </IconButton>
               <IconButton label="Refresh meetings" disabled={loading} onClick={() => void fetchMeetings()}>
                 <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
               </IconButton>
@@ -1949,23 +1944,6 @@ export function MeetingsView({
             <div className="flex h-full flex-col items-center justify-center gap-3 opacity-60">
               <Loader2 size={20} className="animate-spin text-muted-foreground" />
               <p className="text-[12px] text-muted-foreground">Loading meetings...</p>
-            </div>
-          ) : needsWorkspace ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-              <Building2 size={28} className="text-muted-foreground" />
-              <p className="text-[13px] font-semibold text-foreground">
-                Select a workspace to start meetings
-              </p>
-              <p className="max-w-[240px] text-[12px] text-muted-foreground">
-                Meetings are saved to your workspace. Choose one to create and view meetings.
-              </p>
-              <button
-                onClick={() => onOpenWorkspaces?.()}
-                className="rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors"
-                style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-              >
-                Choose workspace
-              </button>
             </div>
           ) : error ? (
             <div className="flex h-full flex-col items-center justify-center gap-3">
@@ -2461,6 +2439,48 @@ export function MeetingsView({
         )}
       </main>
       </div>
+
+      {meetingInProgress && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-6"
+          style={{ background: "hsl(0 0% 0% / 0.55)" }}
+          onClick={() => setMeetingInProgress(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl p-5"
+            style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-[15px] font-bold text-foreground">A meeting is already in progress</h3>
+            <p className="mt-1.5 text-[13px] text-muted-foreground">
+              Finish the current meeting before starting a new one.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setMeetingInProgress(false)}
+                className="h-9 rounded-lg px-3 text-[12px] font-bold"
+                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+              >
+                Cancel
+              </button>
+              {activeMeetingId ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMeetingInProgress(false);
+                    onJoinMeeting?.(activeMeetingId);
+                  }}
+                  className="h-9 rounded-lg px-3 text-[12px] font-bold"
+                  style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+                >
+                  Open it
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

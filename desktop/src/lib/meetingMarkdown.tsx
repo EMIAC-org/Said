@@ -122,6 +122,71 @@ export function parseMeetingSummary(summary: string): MeetingSummaryBlock[] {
   return blocks;
 }
 
+/** Render a meeting summary (or any compatible Markdown) as styled blocks —
+ *  section headings, quotes, emoji bullets, paragraphs. Shared by the meeting
+ *  Summary tab and the cross-meeting Digest report. */
+export function MeetingSummaryContent({ summary }: { summary: string }) {
+  const blocks = parseMeetingSummary(summary);
+  let headingSeen = false;
+  return (
+    <div className="mt-7 space-y-4">
+      {blocks.map((block, index) => {
+        if (block.kind === "heading") {
+          const firstHeading = !headingSeen;
+          headingSeen = true;
+          return (
+            <div
+              key={`${block.kind}-${index}-${block.text}`}
+              className={firstHeading ? "flex items-center gap-3" : "flex items-center gap-3 border-t pt-7 mt-2"}
+              style={firstHeading ? undefined : { borderColor: "hsl(var(--surface-4))" }}
+            >
+              {block.index ? (
+                <span
+                  className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg text-[12px] font-bold"
+                  style={{ background: "hsl(var(--primary) / 0.16)", color: "hsl(var(--primary))" }}
+                >
+                  {block.index}
+                </span>
+              ) : (
+                <span className="h-4 w-1 flex-shrink-0 rounded-full" style={{ background: "hsl(var(--primary))" }} />
+              )}
+              <h3 className="text-[18px] font-bold tracking-tight text-foreground">{block.text}</h3>
+            </div>
+          );
+        }
+        if (block.kind === "quote") {
+          return (
+            <blockquote
+              key={`${block.kind}-${index}-${block.text}`}
+              className="rounded-r-lg border-l-[3px] py-1 pl-4 text-[15px] italic leading-8 text-muted-foreground"
+              style={{ borderColor: "hsl(var(--primary) / 0.7)", background: "hsl(var(--primary) / 0.05)" }}
+            >
+              {renderInlineMarkdown(block.text)}
+            </blockquote>
+          );
+        }
+        if (block.kind === "bullet") {
+          return (
+            <div key={`${block.kind}-${index}-${block.text}`} className="flex gap-3 text-[16px] leading-8 text-muted-foreground">
+              {block.emoji ? (
+                <span className="mt-0.5 flex-shrink-0 text-[16px] leading-8">{block.emoji}</span>
+              ) : (
+                <span className="mt-3.5 h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ background: "hsl(var(--primary))" }} />
+              )}
+              <p className="max-w-[100ch]">{renderInlineMarkdown(block.text)}</p>
+            </div>
+          );
+        }
+        return (
+          <p key={`${block.kind}-${index}-${block.text}`} className="max-w-[102ch] text-[16px] leading-8 text-muted-foreground">
+            {renderInlineMarkdown(block.text)}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 export function summaryLead(summary: string): string {
   const firstParagraph = parseMeetingSummary(summary).find((block) => block.kind === "paragraph");
   if (firstParagraph?.kind === "paragraph") return firstParagraph.text;
