@@ -9,8 +9,7 @@ export const downloads = {
   },
   windows: {
     latestVersion: "2.3.6",
-    latestSetup:
-      "https://airnote.emiactech.com/releases/2.3.6/AirNote_2.3.6_x64-setup.exe",
+    latestSetup: "#downloads",
   },
 };
 
@@ -28,7 +27,7 @@ export const hero = {
   subtitle:
     "Turn your voice into polished text. Works in any app on your Mac.",
   ctaMac: { label: "Download for Mac", href: downloads.mac.latestDmg },
-  ctaWindows: { label: "Download for Windows", href: downloads.windows.latestSetup },
+  ctaWindows: { label: "Windows coming soon", href: downloads.windows.latestSetup },
   iphoneLink: { label: "Also available for iPhone", href: "#mobile" },
 };
 
