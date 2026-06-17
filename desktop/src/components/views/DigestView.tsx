@@ -263,19 +263,8 @@ export function DigestView({ meetings, overviews }: DigestViewProps) {
     setTimeout(() => setCopied(false), 1500);
   }, [digest]);
 
-  // Lark export reuses the single-meeting endpoint, so it needs a real cloud
-  // meeting id in the path — pick the first cloud-synced meeting in the set.
-  const firstCloudId = useMemo(
-    () => digest?.included_meeting_ids.find((id) => !id.startsWith("local-")) ?? null,
-    [digest],
-  );
-
   const onExportLark = useCallback(async () => {
     if (!digest) return;
-    if (!firstCloudId) {
-      setLarkError("Lark export needs at least one cloud-synced meeting in the selection.");
-      return;
-    }
     setLarkBusy(true);
     setLarkError(null);
     setLarkReauth(false);
@@ -284,7 +273,7 @@ export function DigestView({ meetings, overviews }: DigestViewProps) {
         setLarkError("Pick a workspace first, then export.");
         return;
       }
-      const result = await exportMeetingToLark(firstCloudId, {
+      const result = await exportMeetingToLark({
         title: digest.title,
         summary: digest.markdown,
         action_items: digest.action_items.map((a) => ({ title: a.title, assignee: a.owner ?? null })),
@@ -304,7 +293,7 @@ export function DigestView({ meetings, overviews }: DigestViewProps) {
     } finally {
       setLarkBusy(false);
     }
-  }, [digest, firstCloudId]);
+  }, [digest]);
 
   const toggleId = useCallback((id: string) => {
     setSelectedIds((prev) => {
