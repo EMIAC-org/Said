@@ -29,54 +29,54 @@ export const metadata: Metadata = {
 };
 
 const latest = {
-  version: "2.3.7",
-  date: "Jun 15, 2026",
-  title: "Bluetooth-safe dictation",
+  version: "2.3.8",
+  date: "Jun 17, 2026",
+  title: "Cleaner stream shutdown",
   intro:
-    "AirNote now avoids the macOS Bluetooth headset mode that could make music, calls, and system audio sound like a low-quality phone stream after dictation.",
+    "AirNote now shuts down the live Deepgram stream more defensively after you release the hotkey, preventing stale microphone sessions from carrying into the next dictation.",
   sections: [
     {
       id: "bluetooth-output",
-      eyebrow: "#Bluetooth Output",
-      title: "Bluetooth playback is no longer muted directly",
+      eyebrow: "#Stream Lifecycle",
+      title: "Dictation streams are cleaned up after release",
       icon: Bluetooth,
       body: [
-        "When the active output device is Bluetooth or Bluetooth LE, AirNote skips the CoreAudio mute/unmute path entirely.",
-        "Built-in speakers, wired output, and USB output still use speaker suppression. Bluetooth output is left alone to avoid corrupting the headset audio profile.",
+        "The desktop app now treats release as a hard lifecycle boundary for the live transcription stream.",
+        "If a warm stream was still holding state from the previous recording, AirNote tears it down before the next capture can reuse stale audio context.",
       ],
       bullets: [
-        "Detects Bluetooth transport through CoreAudio",
-        "Keeps suppression for non-Bluetooth devices",
-        "Prevents reconnect-only recovery loops",
+        "Prevents stale mic streams after release",
+        "Keeps warm-start dictation responsive",
+        "Reduces cross-session carry-over risk",
       ],
     },
     {
       id: "microphone-selection",
-      eyebrow: "#Microphone Selection",
-      title: "AirNote avoids headset microphones when it can",
+      eyebrow: "#Bluetooth Guard",
+      title: "Bluetooth-safe behavior stays in place",
       icon: Mic2,
       body: [
-        "Opening a Bluetooth headset microphone can force macOS into hands-free call mode. AirNote now prefers a built-in, display, or USB microphone when one is available.",
-        "If the Bluetooth mic is the only usable input, recording still works. Admins and testers can override this behavior with AIRNOTE_ALLOW_BLUETOOTH_MIC.",
+        "The Bluetooth output and microphone guards from the previous release remain active.",
+        "AirNote still avoids the macOS headset call-mode path when a safer built-in, display, or USB microphone is available.",
       ],
       bullets: [
-        "Shared by dictation and meeting capture",
-        "Falls back safely when no alternate mic exists",
-        "Logs selected input device for debugging",
+        "Avoids Bluetooth headset mic where possible",
+        "Skips direct Bluetooth output mute paths",
+        "Keeps fallback behavior when no alternate mic exists",
       ],
     },
     {
       id: "meeting-capture",
-      eyebrow: "#Meeting Capture",
-      title: "Meeting mic capture uses the same guard",
+      eyebrow: "#Release Quality",
+      title: "Built from the approved dev preview",
       icon: Radio,
       body: [
-        "The meeting recorder now uses the same input-device selection as normal dictation, so long-running captures do not accidentally degrade Bluetooth playback.",
+        "This release also carries the approved public landing and changelog work that was validated first on the dev environment.",
       ],
       bullets: [
-        "One recorder policy for both flows",
-        "Safer long-running capture sessions",
-        "Same fallback behavior as dictation",
+        "Public changelog moved out of admin",
+        "Latest download buttons wired to stable artifacts",
+        "Dev preview validated before main merge",
       ],
     },
   ],
@@ -87,33 +87,45 @@ const noteGroups = [
     title: "Audio",
     count: 3,
     items: [
-      "Skipped speaker suppression when the default output transport is Bluetooth or Bluetooth LE.",
-      "Added a safer recorder input picker that avoids common Bluetooth headset microphones when another microphone is available.",
-      "Documented AIRNOTE_ALLOW_BLUETOOTH_MIC and AIRNOTE_DISABLE_SPEAKER_SUPPRESSION for local testing.",
+      "Closed stale live transcription streams when the hotkey release cycle completes.",
+      "Kept Bluetooth output and microphone safety behavior from 2.3.7.",
+      "Reduced risk of stale stream state affecting the next dictation.",
     ],
   },
   {
-    title: "Meetings",
+    title: "Website",
     count: 1,
-    items: ["Meeting microphone capture now uses the shared safe input picker before opening a cpal stream."],
+    items: ["Moved the public changelog to the landing site instead of the control-plane admin shell."],
   },
   {
     title: "Verification",
     count: 3,
     items: [
-      "Added tests for common Bluetooth headset input names.",
-      "Added tests for Bluetooth transport detection in speaker suppression.",
-      "Verified recorder tests, focused desktop speaker suppression tests, and desktop cargo check.",
+      "Validated landing typecheck and static export.",
+      "Validated control-plane admin UI typecheck and build.",
+      "Verified production Caddy routes admin assets to the correct control-plane container.",
     ],
   },
 ];
 
 const releaseDownloads = [
   {
-    version: "2.3.7",
-    date: "Jun 15, 2026",
+    version: "2.3.8",
+    date: "Jun 17, 2026",
     title: "Latest stable",
     downloads: [{ platform: "Mac", label: "Mac DMG", href: downloads.mac.latestDmg }],
+  },
+  {
+    version: "2.3.7",
+    date: "Jun 15, 2026",
+    title: "Bluetooth-safe dictation",
+    downloads: [
+      {
+        platform: "Mac",
+        label: "Mac DMG",
+        href: "https://airnote.emiactech.com/releases/2.3.7/AirNote_2.3.7_aarch64.dmg",
+      },
+    ],
   },
   {
     version: "2.3.6",
