@@ -533,7 +533,9 @@ private struct PersonalizeStep: View {
     @EnvironmentObject private var env: AppEnvironment
     var onFinish: () -> Void
     @State private var language = SharedStore.outputLanguage
-    @State private var tone = SharedStore.tonePreset
+    // Coerce any legacy/blank stored value to a canonical tone key so a fresh install
+    // shows a real tone pre-selected (the option list uses AirNoteTone's canonical keys).
+    @State private var tone = AirNoteTone.coerced(SharedStore.tonePreset)
     @State private var saving = false
 
     var body: some View {

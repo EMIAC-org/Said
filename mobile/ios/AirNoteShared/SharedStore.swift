@@ -250,7 +250,9 @@ public enum SharedStore {
     }
 
     public static var tonePreset: String {
-        get { string(Key.tonePreset) ?? "work" }
+        // Canonical said_core default (matches the server's runtime_user_settings
+        // column default); the legacy "work" mapped to neutral and showed no picker selection.
+        get { string(Key.tonePreset) ?? "professional" }
         set { set(Key.tonePreset, newValue) }
     }
 
