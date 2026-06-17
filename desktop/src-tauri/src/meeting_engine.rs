@@ -2748,6 +2748,180 @@ pub fn meeting_engine_get_meeting_overviews(
     overviews
 }
 
+// ===================== Local-only meeting list (no cloud) =====================
+//
+// Meetings are a fully local, single-device feature: the list is the set of
+// meeting folders on disk, not a control-plane query. This is what eliminates
+// empty "Quick meeting" rows at the root — there is no eager cloud record and no
+// org-shared backlog to inherit.
+
+/// One meeting in the local list. Mirrors the fields the meetings UI reads from
+/// the old cloud `Meeting` + the per-meeting `MeetingOverview`, so the frontend
+/// can build both from a single call.
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalMeetingSummary {
+    id: String,
+    title: String,
+    /// "live" while it is the active recording session, otherwise "ended".
+    status: String,
+    /// Creation time (ms since epoch): parsed from a `local-<ms>-<gen>` id, or
+    /// the folder mtime for legacy cloud-id folders.
+    created_at_ms: u64,
+    tags: Vec<String>,
+    action_count: usize,
+    decision_count: usize,
+    word_count: usize,
+    has_intelligence: bool,
+    favorite: bool,
+    hidden: bool,
+    has_local_files: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lark_doc_url: Option<String>,
+}
+
+/// Parse the creation time from a `local-<ms>-<gen>` id; None for other ids.
+fn created_at_from_local_id(id: &str) -> Option<u64> {
+    id.strip_prefix("local-")?.split('-').next()?.parse().ok()
+}
+
+/// Folder mtime in ms — fallback creation time for legacy cloud-id folders.
+fn dir_mtime_ms(dir: &Path) -> u64 {
+    fs::metadata(dir)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Allocate a fresh local meeting id. New meetings are local-only — no cloud
+/// record is created, so abandoned ones never leave an empty "Quick meeting".
+#[tauri::command]
+pub fn meeting_engine_new_local_meeting() -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::SeqCst);
+    format!("local-{}-{}", now_ms(), seq)
+}
+
+/// List every meeting stored locally on this device — the source of truth for
+/// the meetings list (replaces the cloud `GET /v1/meetings`).
+#[tauri::command]
+pub fn meeting_engine_list_meetings(
+    state: State<'_, MeetingEngineState>,
+) -> Vec<LocalMeetingSummary> {
+    let active_id = state
+        .session
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|session| session.session_id.clone()));
+    let overrides = read_meeting_overrides();
+    let root = said_core::paths::data_dir().join("meetings");
+    let Ok(entries) = fs::read_dir(&root) else {
+        return Vec::new();
+    };
+
+    let mut out: Vec<LocalMeetingSummary> = Vec::new();
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Some(id) = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        // Skip the overrides/digests dotfolders and anything not a valid id.
+        if id.starts_with('.') || safe_meeting_dir_id(Some(&id)).is_none() {
+            continue;
+        }
+
+        let is_active = active_id.as_deref() == Some(id.as_str());
+        let has_local_files = RECOVERABLE_MEETING_WAVS
+            .iter()
+            .any(|name| dir.join(name).is_file())
+            || meeting_has_usable_transcript(&dir);
+        let intel = load_cached_meeting_intelligence_from_dir(&dir)
+            .ok()
+            .flatten();
+        let has_intelligence = intel.is_some();
+        // Drop genuinely empty/abandoned folders (no audio, no transcript, no
+        // summary, not currently recording) — they never enter the list.
+        if !has_local_files && !has_intelligence && !is_active {
+            continue;
+        }
+
+        let ov = overrides.get(&id).cloned().unwrap_or_default();
+        let ai_title = intel
+            .as_ref()
+            .map(|i| i.title.trim().to_string())
+            .filter(|t| !t.is_empty());
+        let title = ov
+            .title
+            .clone()
+            .or(ai_title)
+            .unwrap_or_else(|| "Untitled meeting".to_string());
+        let mut tags = intel.as_ref().map(|i| i.tags.clone()).unwrap_or_default();
+        if !ov.dismissed_tags.is_empty() {
+            tags.retain(|tag| {
+                !ov.dismissed_tags
+                    .iter()
+                    .any(|d| d.eq_ignore_ascii_case(tag))
+            });
+        }
+
+        out.push(LocalMeetingSummary {
+            id: id.clone(),
+            title,
+            status: if is_active { "live" } else { "ended" }.to_string(),
+            created_at_ms: created_at_from_local_id(&id).unwrap_or_else(|| dir_mtime_ms(&dir)),
+            tags,
+            action_count: intel.as_ref().map(|i| i.action_items.len()).unwrap_or(0),
+            decision_count: intel.as_ref().map(|i| i.decisions.len()).unwrap_or(0),
+            word_count: meeting_dir_word_count(&dir),
+            has_intelligence,
+            favorite: ov.favorite,
+            hidden: ov.hidden,
+            has_local_files,
+            lark_doc_url: ov.lark_doc_url.clone(),
+        });
+    }
+
+    out.sort_by_key(|m| std::cmp::Reverse(m.created_at_ms));
+    out
+}
+
+#[cfg(test)]
+mod local_list_tests {
+    use super::*;
+
+    #[test]
+    fn created_at_parses_from_local_id_only() {
+        assert_eq!(
+            created_at_from_local_id("local-1718500000123-0"),
+            Some(1_718_500_000_123)
+        );
+        assert_eq!(created_at_from_local_id("local-42-7"), Some(42));
+        assert_eq!(
+            created_at_from_local_id("00460b07-8e36-4b0e-9985-e6219955bbb5"),
+            None
+        );
+        assert_eq!(created_at_from_local_id("local-notanumber-1"), None);
+        assert_eq!(created_at_from_local_id("random"), None);
+    }
+
+    #[test]
+    fn new_local_meeting_ids_are_unique_and_parseable() {
+        let a = meeting_engine_new_local_meeting();
+        let b = meeting_engine_new_local_meeting();
+        assert_ne!(a, b);
+        assert!(a.starts_with("local-"));
+        assert!(created_at_from_local_id(&a).is_some());
+    }
+}
+
 #[tauri::command]
 pub fn meeting_engine_set_meeting_title(
     meeting_id: String,

@@ -1028,6 +1028,86 @@ pub async fn export_lark(
     })))
 }
 
+/// POST /v1/lark/export-doc — create a Lark Doc straight from a title + markdown
+/// summary, with NO cloud meeting record. Meetings are local-only now, so the
+/// desktop sends the rendered content here directly (single meeting or digest).
+/// Doc-only: this is the thin Lark surface we keep server-side because it holds
+/// the user's OAuth token. Reuses the same doc builder as `export_lark`.
+pub async fn export_doc(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Json(body): Json<ExportLarkBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
+
+    let lark = state.lark.clone();
+    if lark.app_id.is_empty() || lark.app_secret.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Lark isn't configured for this workspace — ask an admin to connect it.",
+                "code": "lark_not_configured",
+            })),
+        ));
+    }
+
+    let title = if body.title.trim().is_empty() {
+        "Meeting Notes".to_string()
+    } else {
+        body.title.trim().to_string()
+    };
+    let doc_title = format!("Meeting Minutes \u{2014} {title}");
+
+    let action_items: Vec<(String, Option<String>)> = body
+        .action_items
+        .iter()
+        .map(|i| (i.title.clone(), i.assignee.clone()))
+        .collect();
+
+    let folder_token = std::env::var("LARK_MINUTES_FOLDER_TOKEN")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+
+    // Create the doc as the user so it lands in their own Lark Drive.
+    let user_token = user_lark_token(&state, user.account_id, org_id).await?;
+
+    let document_id =
+        crate::lark_sync::create_doc_with_token(&user_token, &doc_title, folder_token.as_deref())
+            .await
+            .map_err(|e| lark_error_response("could not create the Lark doc", &e))?;
+
+    let blocks = crate::lark_sync::build_minutes_blocks(
+        &title,
+        "",
+        &body.summary,
+        &action_items,
+        &body.decisions,
+    );
+    let mut content_warning: Option<String> = None;
+    if let Err(e) =
+        crate::lark_sync::insert_blocks_with_token(&user_token, &document_id, &blocks).await
+    {
+        tracing::warn!("export_doc: block insert failed: {e}");
+        content_warning =
+            Some("the doc was created but some formatting could not be written".into());
+    }
+
+    let url = crate::lark_sync::fetch_doc_url(&user_token, &document_id)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_default();
+
+    Ok(Json(json!({
+        "ok": true,
+        "url": url,
+        "document_id": document_id,
+        "in_shared_folder": folder_token.is_some(),
+        "tasks_created": 0,
+        "content_warning": content_warning,
+    })))
+}
+
 /// A valid Lark *user* access_token for the caller, refreshing it when it's
 /// near expiry. The doc is created under this identity so it lands in the
 /// user's own Drive. Errors clearly if the account isn't linked to Lark.

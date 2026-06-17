@@ -321,6 +321,8 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/meetings/:id/export-lark",
             post(routes::meetings::export_lark),
         )
+        // Local-only meetings: create a Lark doc with no cloud meeting record.
+        .route("/v1/lark/export-doc", post(routes::meetings::export_doc))
         // Enterprise — Guest browser capture
         .route("/join/:token", get(routes::guest::guest_page))
         .route("/join/:token/auth", post(routes::guest::guest_auth))

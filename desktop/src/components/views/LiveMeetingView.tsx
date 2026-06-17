@@ -232,6 +232,9 @@ interface LiveMeetingViewProps {
 
 export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewProps) {
   void onBack; // onBack reserved for a future in-call back button
+  // Meetings are single-device & local-only: no cloud session, no live
+  // WebSocket, no remote participants. All new meetings get a `local-…` id.
+  const isLocal = meetingId.startsWith("local-");
   const [connected, setConnected] = useState(false);
   const [ended, setEnded] = useState(false);
   const [chunks, setChunks] = useState<TranscriptChunk[]>([]);
@@ -608,7 +611,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
 
   useEffect(() => {
     const conn = getConnection();
-    if (!conn) return;
+    if (!conn || meetingId.startsWith("local-")) return;
 
     let cancelled = false;
     const url = conn.serverUrl.replace(/\/+$/, "");
@@ -634,7 +637,8 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   // WebSocket connection with auto-reconnect and resume protocol
   useEffect(() => {
     const connOrNull = getConnection();
-    if (!connOrNull) return;
+    // Local meetings have no cloud session — skip the live WebSocket entirely.
+    if (!connOrNull || meetingId.startsWith("local-")) return;
 
     // Capture non-null for use in nested closures (TS narrowing doesn't propagate)
     const conn = connOrNull;
@@ -1099,14 +1103,16 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
         </div>
 
         <div className="flex items-center gap-4">
-          {/* Participant count */}
-          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <Users size={12} />
-            <span>{activeParticipants}</span>
-          </div>
+          {!isLocal && (
+            <>
+              {/* Participant count */}
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <Users size={12} />
+                <span>{activeParticipants}</span>
+              </div>
 
-          {/* Connection status */}
-          <div className="flex items-center gap-1.5">
+              {/* Connection status */}
+              <div className="flex items-center gap-1.5">
             {reconnecting ? (
               <>
                 <Loader2 size={12} className="animate-spin" style={{ color: "hsl(38 90% 72%)" }} />
@@ -1147,7 +1153,9 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
                 <WifiOff size={12} style={{ color: "hsl(354 85% 75%)" }} />
               </>
             )}
-          </div>
+              </div>
+            </>
+          )}
 
           <button
             onClick={() => void handleLeave()}
@@ -1352,22 +1360,26 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
             <span>{engineStatusLabel}</span>
           </div>
 
-          <div
-            className="h-8 w-px"
-            style={{ background: "hsl(var(--surface-4))" }}
-          />
+          {!isLocal && (
+            <>
+              <div
+                className="h-8 w-px"
+                style={{ background: "hsl(var(--surface-4))" }}
+              />
 
-          <div className="flex items-center gap-2 px-2 text-[11px] text-muted-foreground">
-            <Users size={13} />
-            <span>{activeParticipants}</span>
-            {reconnecting ? (
-              <Loader2 size={13} className="animate-spin" style={{ color: "hsl(38 90% 72%)" }} />
-            ) : connected ? (
-              <Wifi size={13} style={{ color: "hsl(142 70% 65%)" }} />
-            ) : (
-              <WifiOff size={13} style={{ color: "hsl(354 85% 75%)" }} />
-            )}
-          </div>
+              <div className="flex items-center gap-2 px-2 text-[11px] text-muted-foreground">
+                <Users size={13} />
+                <span>{activeParticipants}</span>
+                {reconnecting ? (
+                  <Loader2 size={13} className="animate-spin" style={{ color: "hsl(38 90% 72%)" }} />
+                ) : connected ? (
+                  <Wifi size={13} style={{ color: "hsl(142 70% 65%)" }} />
+                ) : (
+                  <WifiOff size={13} style={{ color: "hsl(354 85% 75%)" }} />
+                )}
+              </div>
+            </>
+          )}
 
           {isOwner && (
             <button

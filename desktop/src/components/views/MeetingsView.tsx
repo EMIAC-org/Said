@@ -24,22 +24,12 @@ import {
   Search,
   Sparkles,
   Star,
-  Building2,
   Trash2,
   Video,
   X,
 } from "lucide-react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import {
-  createMeeting,
-  deleteMeeting,
-  ensureActiveWorkspace,
-  exportMeetingToLark,
-  getConnection,
-  listMeetings,
-  repairEnterpriseConnection,
-  startMeeting,
-} from "@/lib/enterprise";
+import { exportMeetingToLark } from "@/lib/enterprise";
 import { openExternal } from "@/lib/invoke";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
 import { DigestView } from "@/components/views/DigestView";
@@ -71,6 +61,51 @@ interface MeetingOverview {
   hidden: boolean;
   has_local_files: boolean;
   lark_doc_url?: string | null;
+}
+
+// Local meeting list entry from `meeting_engine_list_meetings` — meetings are a
+// single-device, on-device feature now (no control-plane list).
+interface LocalMeetingSummary {
+  id: string;
+  title: string;
+  status: "live" | "ended";
+  created_at_ms: number;
+  tags: string[];
+  action_count: number;
+  decision_count: number;
+  word_count: number;
+  has_intelligence: boolean;
+  favorite: boolean;
+  hidden: boolean;
+  has_local_files: boolean;
+  lark_doc_url?: string | null;
+}
+
+function localToMeeting(m: LocalMeetingSummary): Meeting {
+  return {
+    id: m.id,
+    title: m.title,
+    status: m.status,
+    created_at: new Date(m.created_at_ms).toISOString(),
+    scheduled_at: null,
+    agenda: null,
+    participants_count: 1,
+  };
+}
+
+function localToOverview(m: LocalMeetingSummary): MeetingOverview {
+  return {
+    title: m.title,
+    tags: m.tags,
+    action_count: m.action_count,
+    decision_count: m.decision_count,
+    word_count: m.word_count,
+    has_intelligence: m.has_intelligence,
+    favorite: m.favorite,
+    hidden: m.hidden,
+    has_local_files: m.has_local_files,
+    lark_doc_url: m.lark_doc_url ?? null,
+  };
 }
 
 interface MeetingSearchHit {
@@ -925,9 +960,6 @@ export function MeetingsView({
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  // True when the user has no active workspace to scope meetings to — rendered
-  // as a guided "pick a workspace" panel instead of a generic load error.
-  const [needsWorkspace, setNeedsWorkspace] = useState(false);
   const [creating, setCreating] = useState(false);
   const [dateFilter, setDateFilter] = useState<"all" | "today" | "week" | "archived">("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -962,39 +994,16 @@ export function MeetingsView({
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const fetchMeetings = useCallback(async () => {
-    const conn = getConnection();
-    if (!conn) {
-      setError("Not connected to enterprise server");
-      setLoading(false);
-      return;
-    }
     setLoading(true);
     setError("");
     try {
-      // Make sure an org is active so the list is scoped and New Meeting won't
-      // 403. If the user must pick a workspace, surface the guided panel.
-      setNeedsWorkspace(!(await ensureActiveWorkspace()));
-      // Reconcile: the engine records meetings it discarded locally as empty
-      // (immediate stop / no audio / killed mid-recording). Delete their cloud
-      // records so abandoned "Quick meeting" entries never linger in the list.
-      try {
-        const discarded = await invoke<string[]>("meeting_engine_take_discarded_meeting_ids");
-        await Promise.all(discarded.map((id) => deleteMeeting(conn.serverUrl, conn.jwt, id)));
-      } catch {
-        /* best-effort cleanup */
-      }
-      const result = (await listMeetings(conn.serverUrl, conn.jwt)) as Meeting[];
-      setMeetings(result);
-      // Enrich the list with locally-cached AI titles, word counts, and counts
-      // in a single batch call so every card reflects its own analysis.
-      const ids = result.map((meeting) => meeting.id);
-      if (ids.length > 0) {
-        invoke<Record<string, MeetingOverview>>("meeting_engine_get_meeting_overviews", {
-          meetingIds: ids,
-        })
-          .then((map) => setOverviews(map))
-          .catch(() => {});
-      }
+      // Meetings are local-only: the list is the set of meeting folders on this
+      // device, enumerated by the engine (no control-plane).
+      const local = await invoke<LocalMeetingSummary[]>("meeting_engine_list_meetings");
+      setMeetings(local.map(localToMeeting));
+      const map: Record<string, MeetingOverview> = {};
+      for (const m of local) map[m.id] = localToOverview(m);
+      setOverviews(map);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load meetings");
     } finally {
@@ -1002,21 +1011,18 @@ export function MeetingsView({
     }
   }, []);
 
-  // Re-read overviews for the current list (used after a local mutation so the
-  // backend stays the single source of truth for title/favorite/hidden/tags).
+  // Re-read the local list after a mutation (rename/favorite/hide) so the cards
+  // reflect the updated overrides registry, without the loading flash.
   const refreshOverviews = useCallback(async () => {
-    const ids = meetings.map((meeting) => meeting.id);
-    if (ids.length === 0) return;
     try {
-      const map = await invoke<Record<string, MeetingOverview>>(
-        "meeting_engine_get_meeting_overviews",
-        { meetingIds: ids },
-      );
+      const local = await invoke<LocalMeetingSummary[]>("meeting_engine_list_meetings");
+      const map: Record<string, MeetingOverview> = {};
+      for (const m of local) map[m.id] = localToOverview(m);
       setOverviews(map);
     } catch {
       /* best-effort */
     }
-  }, [meetings]);
+  }, []);
 
   useEffect(() => {
     void fetchMeetings();
@@ -1054,39 +1060,19 @@ export function MeetingsView({
       onConfigureModels?.();
       return;
     }
-    const conn = getConnection();
-    if (!conn) {
-      setError("Not connected to enterprise server");
-      return;
-    }
-    // Meetings are workspace-scoped: ensure one is active (auto-activating a
-    // sole workspace) before creating, else guide the user to pick one rather
-    // than failing with a 403 "active workspace required".
-    if (!(await ensureActiveWorkspace())) {
-      setNeedsWorkspace(true);
-      setError("");
-      return;
-    }
-    setNeedsWorkspace(false);
     setCreating(true);
     setError("");
     try {
-      const activeConn = await repairEnterpriseConnection(conn);
-      const meeting = await createMeeting(activeConn.serverUrl, activeConn.jwt, {
-        title: `Quick meeting ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
-        agenda: null,
-        participant_ids: [activeConn.accountId],
-        duration_minutes: 30,
-      });
-      await startMeeting(activeConn.serverUrl, activeConn.jwt, meeting.id);
-      await fetchMeetings();
-      onJoinMeeting?.(meeting.id);
+      // Local-only: allocate a fresh on-device meeting id and open the recorder.
+      // No cloud record is created, so an abandoned meeting leaves nothing behind.
+      const id = await invoke<string>("meeting_engine_new_local_meeting");
+      onJoinMeeting?.(id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create meeting");
     } finally {
       setCreating(false);
     }
-  }, [fetchMeetings, onJoinMeeting, hasModel, onConfigureModels]);
+  }, [onJoinMeeting, hasModel, onConfigureModels]);
 
   // Debounced full-text search across title/tags/summary/notes/decisions/
   // actions/transcript (heavy fields are read locally by the backend).
@@ -1405,7 +1391,7 @@ export function MeetingsView({
     setLarkError(null);
     setLarkNeedsReauth(false);
     try {
-      const result = await exportMeetingToLark(selectedMeeting.id, {
+      const result = await exportMeetingToLark({
         title: meetingAi.title?.trim() || selectedMeeting.title,
         summary: meetingAi.summary,
         action_items: (meetingAi.action_items ?? []).map((a) => ({
@@ -1771,11 +1757,8 @@ export function MeetingsView({
     const id = pendingDelete.id;
     setPendingDelete(null);
     try {
-      // Permanent delete: local artifacts AND the cloud record, so it's gone
-      // everywhere (not just hidden on this device).
+      // Local-only permanent delete: remove the on-device artifacts.
       await invoke("meeting_engine_delete_meeting_files", { meetingId: id });
-      const conn = getConnection();
-      if (conn) await deleteMeeting(conn.serverUrl, conn.jwt, id);
       setSelectedMeetingId((cur) => (cur === id ? null : cur));
       await fetchMeetings();
     } catch (err) {
@@ -1921,23 +1904,6 @@ export function MeetingsView({
             <div className="flex h-full flex-col items-center justify-center gap-3 opacity-60">
               <Loader2 size={20} className="animate-spin text-muted-foreground" />
               <p className="text-[12px] text-muted-foreground">Loading meetings...</p>
-            </div>
-          ) : needsWorkspace ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-              <Building2 size={28} className="text-muted-foreground" />
-              <p className="text-[13px] font-semibold text-foreground">
-                Select a workspace to start meetings
-              </p>
-              <p className="max-w-[240px] text-[12px] text-muted-foreground">
-                Meetings are saved to your workspace. Choose one to create and view meetings.
-              </p>
-              <button
-                onClick={() => onOpenWorkspaces?.()}
-                className="rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors"
-                style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-              >
-                Choose workspace
-              </button>
             </div>
           ) : error ? (
             <div className="flex h-full flex-col items-center justify-center gap-3">
