@@ -21,8 +21,13 @@ pub async fn polish_transcript(
 ) -> Result<String, String> {
     let formatted_transcript = number_format::apply(transcript);
     // Standalone CLI/comparison path has no account — keep the historical neutral default.
-    let system_prompt =
-        build_voice_system_prompt(output_language, "neutral", None, screen_context, safe_vocab_terms);
+    let system_prompt = build_voice_system_prompt(
+        output_language,
+        "neutral",
+        None,
+        screen_context,
+        safe_vocab_terms,
+    );
     let user_message = build_voice_user_message(&formatted_transcript, output_language);
 
     let model = if selected_model == "smart" {
