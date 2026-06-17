@@ -3,7 +3,6 @@ import {
   ArrowDownToLine,
   BarChart2,
   Bell,
-  Bluetooth,
   BookOpen,
   Bug,
   CalendarDays,
@@ -29,54 +28,55 @@ export const metadata: Metadata = {
 };
 
 const latest = {
-  version: "2.3.8",
+  version: "2.3.9",
   date: "Jun 17, 2026",
-  title: "Cleaner stream shutdown",
+  title: "Crash-hardened desktop runtime",
   intro:
-    "AirNote now shuts down the live Deepgram stream more defensively after you release the hotkey, preventing stale microphone sessions from carrying into the next dictation.",
+    "AirNote now protects the desktop runtime against the crash paths we saw around hotkeys, backend sidecars, recording teardown, poisoned locks, and stale processing state.",
   sections: [
     {
-      id: "bluetooth-output",
-      eyebrow: "#Stream Lifecycle",
-      title: "Dictation streams are cleaned up after release",
-      icon: Bluetooth,
+      id: "ffi-hotkey-guard",
+      eyebrow: "#Crash Guard",
+      title: "Hotkey and UI callbacks are protected",
+      icon: ShieldCheck,
       body: [
-        "The desktop app now treats release as a hard lifecycle boundary for the live transcription stream.",
-        "If a warm stream was still holding state from the previous recording, AirNote tears it down before the next capture can reuse stale audio context.",
+        "The macOS global hotkey path now catches callback panics before they can cross the system FFI boundary.",
+        "Meeting-pill panel changes now run through the same guarded main-thread path used by the safer status-bar flow.",
       ],
       bullets: [
-        "Prevents stale mic streams after release",
-        "Keeps warm-start dictation responsive",
-        "Reduces cross-session carry-over risk",
+        "Prevents hotkey callback panics from aborting the app",
+        "Keeps AppKit panel changes on the guarded main-thread path",
+        "Reports recoverable UI failures instead of cascading them",
       ],
     },
     {
-      id: "microphone-selection",
-      eyebrow: "#Bluetooth Guard",
-      title: "Bluetooth-safe behavior stays in place",
-      icon: Mic2,
-      body: [
-        "The Bluetooth output and microphone guards from the previous release remain active.",
-        "AirNote still avoids the macOS headset call-mode path when a safer built-in, display, or USB microphone is available.",
-      ],
-      bullets: [
-        "Avoids Bluetooth headset mic where possible",
-        "Skips direct Bluetooth output mute paths",
-        "Keeps fallback behavior when no alternate mic exists",
-      ],
-    },
-    {
-      id: "meeting-capture",
-      eyebrow: "#Release Quality",
-      title: "Built from the approved dev preview",
+      id: "backend-watchdog",
+      eyebrow: "#Sidecar Recovery",
+      title: "Backend sidecar health is watched",
       icon: Radio,
       body: [
-        "This release also carries the approved public landing and changelog work that was validated first on the dev environment.",
+        "The desktop app now checks the local backend while idle and respawns it if health checks keep failing.",
+        "Endpoint and process handles are swapped after a successful recovery, with diagnostics emitted for the failure and respawn path.",
       ],
       bullets: [
-        "Public changelog moved out of admin",
-        "Latest download buttons wired to stable artifacts",
-        "Dev preview validated before main merge",
+        "Idle health checks for the sidecar",
+        "Automatic backend respawn when safe",
+        "Diagnostics events for recovery paths",
+      ],
+    },
+    {
+      id: "recording-watchdogs",
+      eyebrow: "#Recording Stability",
+      title: "Stuck recording and poisoned-lock paths recover",
+      icon: Mic2,
+      body: [
+        "A stuck-recording watchdog can auto-finish sessions that never cleanly return to idle, while intentional long dictation remains excluded.",
+        "Recorder, meeting engine, and enterprise OAuth locks now recover from poisoning instead of turning one panic into repeated failures.",
+      ],
+      bullets: [
+        "Auto-finish guard for stuck recording state",
+        "Poisoned mutex recovery in crash-prone runtime paths",
+        "Bounded Deepgram finalize send so release cannot park forever",
       ],
     },
   ],
@@ -87,33 +87,49 @@ const noteGroups = [
     title: "Audio",
     count: 3,
     items: [
-      "Closed stale live transcription streams when the hotkey release cycle completes.",
-      "Kept Bluetooth output and microphone safety behavior from 2.3.7.",
-      "Reduced risk of stale stream state affecting the next dictation.",
+      "Protected the macOS hotkey callback from crossing FFI with an unwind.",
+      "Added backend sidecar idle health checks and respawn recovery.",
+      "Added stuck-recording auto-finish and bounded Deepgram finalize send.",
     ],
   },
   {
-    title: "Website",
-    count: 1,
-    items: ["Moved the public changelog to the landing site instead of the control-plane admin shell."],
+    title: "Runtime",
+    count: 3,
+    items: [
+      "Recovered poisoned recorder, meeting engine, and enterprise OAuth locks.",
+      "Replaced crash-prone startup unwrap paths with clean reporting fallbacks.",
+      "Cleared stale processing UI when the status bar resync receives an idle snapshot.",
+    ],
   },
   {
     title: "Verification",
     count: 3,
     items: [
-      "Validated landing typecheck and static export.",
-      "Validated control-plane admin UI typecheck and build.",
-      "Verified production Caddy routes admin assets to the correct control-plane container.",
+      "Validated Rust format checks and focused backend/desktop checks.",
+      "Validated desktop TypeScript typecheck.",
+      "Validated focused hotkey, recorder, and desktop test suites.",
     ],
   },
 ];
 
 const releaseDownloads = [
   {
-    version: "2.3.8",
+    version: "2.3.9",
     date: "Jun 17, 2026",
     title: "Latest stable",
     downloads: [{ platform: "Mac", label: "Mac DMG", href: downloads.mac.latestDmg }],
+  },
+  {
+    version: "2.3.8",
+    date: "Jun 17, 2026",
+    title: "Cleaner stream shutdown",
+    downloads: [
+      {
+        platform: "Mac",
+        label: "Mac DMG",
+        href: "https://airnote.emiactech.com/releases/2.3.8/AirNote_2.3.8_aarch64.dmg",
+      },
+    ],
   },
   {
     version: "2.3.7",

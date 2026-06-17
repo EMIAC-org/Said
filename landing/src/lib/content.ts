@@ -3,9 +3,9 @@
 
 export const downloads = {
   mac: {
-    latestVersion: "2.3.8",
+    latestVersion: "2.3.9",
     latestDmg:
-      "https://airnote.emiactech.com/releases/2.3.8/AirNote_2.3.8_aarch64.dmg",
+      "https://airnote.emiactech.com/releases/2.3.9/AirNote_2.3.9_aarch64.dmg",
   },
   windows: {
     latestVersion: "2.3.6",
