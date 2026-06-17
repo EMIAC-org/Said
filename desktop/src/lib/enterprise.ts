@@ -784,6 +784,25 @@ export async function startMeeting(
   }
 }
 
+/** Delete a meeting record (server). Used to clean up empty/abandoned meetings.
+ *  Idempotent + best-effort: never throws, returns whether it succeeded. */
+export async function deleteMeeting(
+  serverUrl: string,
+  jwt: string,
+  meetingId: string,
+): Promise<boolean> {
+  try {
+    const url = normalizeServerUrl(serverUrl);
+    const res = await fetch(`${url}/v1/meetings/${meetingId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${jwt}`, ...orgHeader() },
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 // ── OpenAI integration ───────────────────────────────────────────────────────
 
 export interface OpenAIStatus {

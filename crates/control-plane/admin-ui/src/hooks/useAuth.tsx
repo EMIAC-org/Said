@@ -15,6 +15,10 @@ interface AuthMeResponse extends User {
   }>
 }
 
+interface AuthTokenResponse {
+  token: string
+}
+
 interface AuthCtx {
   user: User | null
   org: OrgResponse | null
@@ -87,9 +91,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string, signup = false) => {
     const endpoint = signup ? '/v1/auth/signup' : '/v1/auth/login'
-    const res = await api(endpoint, { method: 'POST', body: JSON.stringify({ email, password }) })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Authentication failed')
+    const data = await apiJson<AuthTokenResponse>(endpoint, {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    })
     setToken(data.token)
     setHasToken(true)
     setLoading(true)

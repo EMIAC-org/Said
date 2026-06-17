@@ -66,7 +66,10 @@ const ASR_MIN_PEAK_FOR_TRANSCRIPTION: f32 = 0.006;
 // random scripts (ja/ko/es) on near-silent mic / speaker bleed. Pure-Hindi
 // meetings should pick a language explicitly (per-meeting selector / env
 // AIRNOTE_MEETING_MIC_WHISPER_LANGUAGE=hi).
-const DEFAULT_WHISPER_LANGUAGE: &str = "en";
+// Meetings are Hindi/Hinglish-first, so the transcription language is fixed to
+// Hindi (the romanizer then renders Devanagari → Roman Hinglish). Power users
+// can still override per track via AIRNOTE_MEETING_(MIC|SYSTEM)_WHISPER_LANGUAGE.
+const DEFAULT_WHISPER_LANGUAGE: &str = "hi";
 const DEFAULT_WHISPER_MAX_CONTEXT_TOKENS: i32 = 0;
 const DEFAULT_WHISPER_SUPPRESS_NON_SPEECH: bool = true;
 // Keep temperature fallback ENABLED: it recovers failed decodes and is what the
@@ -4629,6 +4632,41 @@ const RECOVERABLE_MEETING_WAVS: [&str; 3] = ["meeting.merged.wav", "mic.wav", "s
 /// Remove a meeting dir that holds no audio and no usable transcript — i.e. an
 /// empty placeholder left by a session that captured nothing. Defensive: refuses
 /// to delete anything that still has recoverable audio or a real transcript.
+/// Cloud meeting ids whose local artifacts were discarded as empty (immediate
+/// stop, denied mic, silence, or a session killed mid-recording). The desktop
+/// drains this on the next meetings refresh and deletes the matching cloud
+/// records, so an abandoned meeting leaves nothing behind — not the local dir,
+/// not the server "Quick meeting". `local-…` placeholders never reach the cloud,
+/// so they are removed silently and not recorded here.
+static DISCARDED_CLOUD_MEETING_IDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Record a removed empty dir for cloud cleanup when it was a cloud-backed
+/// meeting (a real id, not a `local-…` placeholder).
+fn record_discarded_cloud_meeting(dir: &Path) {
+    let Some(id) = dir.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    if id.starts_with("local-") {
+        return;
+    }
+    if let Ok(mut ids) = DISCARDED_CLOUD_MEETING_IDS.lock() {
+        if !ids.iter().any(|existing| existing == id) {
+            ids.push(id.to_string());
+        }
+    }
+}
+
+/// Drain the ids of empty meetings whose local artifacts were discarded. The
+/// desktop calls this and deletes the matching cloud records so empty meetings
+/// never linger server-side. Idempotent: returns each id once.
+#[tauri::command]
+pub fn meeting_engine_take_discarded_meeting_ids() -> Vec<String> {
+    DISCARDED_CLOUD_MEETING_IDS
+        .lock()
+        .map(|mut ids| std::mem::take(&mut *ids))
+        .unwrap_or_default()
+}
+
 fn cleanup_empty_session_dir(dir: &Path) {
     let has_audio = RECOVERABLE_MEETING_WAVS
         .iter()
@@ -4638,6 +4676,7 @@ fn cleanup_empty_session_dir(dir: &Path) {
     }
     match fs::remove_dir_all(dir) {
         Ok(()) => {
+            record_discarded_cloud_meeting(dir);
             tracing::info!(dir = %dir.display(), "[meeting_engine] removed empty meeting dir (no audio captured)")
         }
         Err(e) => {
@@ -4699,13 +4738,15 @@ pub fn gc_orphan_meeting_dirs() {
             .any(|name| dir.join(name).is_file());
         let has_transcript = meeting_has_usable_transcript(&dir);
 
-        let is_local_placeholder = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("local-"));
-        if is_local_placeholder && !has_audio && !has_transcript {
+        // Any empty meeting dir (no audio, no transcript) is junk — a meeting
+        // that was abandoned/killed before capturing anything. Reclaim it. For a
+        // cloud-backed id this also records the meeting for cloud-record deletion
+        // (record_discarded_cloud_meeting ignores `local-…` placeholders), so a
+        // crash mid-recording never leaves an orphan "Quick meeting" server-side.
+        if !has_audio && !has_transcript {
             if fs::remove_dir_all(&dir).is_ok() {
                 removed += 1;
+                record_discarded_cloud_meeting(&dir);
             }
             continue;
         }

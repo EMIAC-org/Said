@@ -46,7 +46,8 @@ use meeting_engine::{
     meeting_engine_set_manual_actions, meeting_engine_set_meeting_favorite,
     meeting_engine_set_meeting_hidden, meeting_engine_set_meeting_lark_doc,
     meeting_engine_set_meeting_title, meeting_engine_set_notes, meeting_engine_start_session,
-    meeting_engine_stop_session, meeting_engine_toggle_mute,
+    meeting_engine_stop_session, meeting_engine_take_discarded_meeting_ids,
+    meeting_engine_toggle_mute,
 };
 use said_core::{AppSnapshot, ProcessSummary};
 use said_paster as paster;
@@ -8272,6 +8273,7 @@ fn main() {
             meeting_engine_set_meeting_lark_doc,
             meeting_engine_dismiss_ai_tag,
             meeting_engine_delete_meeting_files,
+            meeting_engine_take_discarded_meeting_ids,
             meeting_engine_get_notes,
             meeting_engine_set_notes,
             meeting_engine_get_manual_actions,

@@ -624,6 +624,33 @@ pub async fn end(
     })))
 }
 
+// ── DELETE /v1/meetings/:id ────────────────────────────────────────────────
+// Hard-delete a meeting (children cascade via ON DELETE CASCADE). The desktop
+// calls this for meetings it discarded locally as empty (immediate stop / no
+// audio / killed mid-recording) so abandoned "Quick meeting" records never
+// linger. Creator + org scoped; idempotent — an already-gone meeting returns ok
+// so the desktop's reconcile pass can fire freely.
+pub async fn delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Path(meeting_id): Path<Uuid>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let (_, org_id) = tenant::require_active_org(&state, &user, &headers).await?;
+
+    let deleted =
+        sqlx::query("DELETE FROM meetings WHERE id = $1 AND org_id = $2 AND created_by = $3")
+            .bind(meeting_id)
+            .bind(org_id)
+            .bind(user.account_id)
+            .execute(&state.db)
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+
+    Ok(Json(json!({ "deleted": deleted > 0 })))
+}
+
 // ── POST /v1/meetings/:id/push-tasks ───────────────────────────────────────
 
 pub async fn push_tasks(

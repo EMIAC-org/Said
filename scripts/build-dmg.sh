@@ -114,7 +114,12 @@ step "Run tauri build (--target $TARGET)"
 cd "$DESKTOP_DIR"
 [ -d node_modules ] || npm ci
 [ -x "$DESKTOP_DIR/node_modules/.bin/create-dmg" ] || npm ci
-npm run tauri:build -- --target "$TARGET"
+if [ "${AIRNOTE_LOCAL_TEST_DMG:-0}" = "1" ]; then
+  warn "local test mode enabled — disabling updater artifacts for this build"
+  npm run tauri:build -- --target "$TARGET" --config '{"bundle":{"createUpdaterArtifacts":false,"targets":["app"]}}'
+else
+  npm run tauri:build -- --target "$TARGET"
+fi
 ok "tauri build finished"
 
 # ── Bundle whisper-cli (meeting transcription engine) + Silero VAD ───────────

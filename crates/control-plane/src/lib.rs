@@ -325,7 +325,10 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/meetings",
             post(routes::meetings::create).get(routes::meetings::list),
         )
-        .route("/v1/meetings/:id", get(routes::meetings::detail))
+        .route(
+            "/v1/meetings/:id",
+            get(routes::meetings::detail).delete(routes::meetings::delete),
+        )
         .route(
             "/v1/meetings/:id/guest-link",
             post(routes::guest::create_guest_link),
@@ -358,7 +361,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/openai/disconnect", delete(routes::openai::disconnect))
         // Public OAuth redirect (browser flow — desktop app opens this URL)
         .route("/auth/lark", get(routes::lark_auth::desktop_start))
-        // Admin dashboard (React SPA) — static assets first, then catch-all
+        // Admin/public React SPA — static assets first, then catch-all.
+        // `/changelog` is intentionally outside the dashboard shell.
+        .route("/assets/app.css", get(admin_css))
+        .route("/assets/app.js", get(admin_js))
+        .route("/changelog", get(admin_index))
         .route("/admin/assets/app.css", get(admin_css))
         .route("/admin/assets/app.js", get(admin_js))
         .route("/admin/simulator", get(admin_simulator))
