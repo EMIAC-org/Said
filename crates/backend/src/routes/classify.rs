@@ -1067,9 +1067,46 @@ pub async fn classify(
                     .to_string();
                 let term_type = term_type.as_str();
                 if existing_protected.is_none() && matches!(term_type, "phrase" | "other") {
-                    info!(
-                        "[classify] STT_ERROR skipped — not a proper noun (type={term_type}): {corrected:?}"
-                    );
+                    // ── Add-on: "Ask to learn" ──────────────────────────────
+                    // This term is not an obvious proper noun, so we NEVER
+                    // auto-learn it. But it has already cleared every junk gate
+                    // above (common-word, dictionary, numeric, in-kept, script),
+                    // so instead of dropping it silently we offer the user a
+                    // Learn / Skip choice when it looks name-like: a single
+                    // unknown word the user kept (e.g. a lowercase name), or a
+                    // multi-word span with a real name anchor (e.g. "Emiac tech").
+                    // Cheap source-safety only (no LLM): skip the offer if the
+                    // heard form is itself a common / unsafe alias source.
+                    let single = corrected.split_whitespace().count() <= 1;
+                    let looks_offerable = if single {
+                        !clean_surface(corrected).is_empty()
+                    } else {
+                        name_like_span(corrected)
+                    };
+                    let source_safe = original.trim().is_empty()
+                        || (!promotion_gate::is_common_word(original)
+                            && unsafe_stt_source_reason(
+                                &state.pool,
+                                &state.default_user_id,
+                                original,
+                            )
+                            .is_none());
+                    if looks_offerable && source_safe {
+                        review_candidates.push(ReviewCandidate {
+                            original: original.to_string(),
+                            corrected: corrected.to_string(),
+                            term_type: term_type.to_string(),
+                            learnable: true,
+                            tag: "local_ask".to_string(),
+                        });
+                        info!(
+                            "[classify] offering Learn/Skip for name-like {corrected:?} (type={term_type})"
+                        );
+                    } else {
+                        info!(
+                            "[classify] STT_ERROR skipped — not a proper noun (type={term_type}): {corrected:?}"
+                        );
+                    }
                     continue;
                 }
                 if !original.trim().is_empty() {
@@ -1178,6 +1215,23 @@ pub async fn classify(
                                 term_type: term_type.to_string(),
                                 learnable: true,
                                 tag: "local_fallback".to_string(),
+                            });
+                        } else if name_like_span(corrected) {
+                            // ── Add-on: local-mode parity ───────────────────
+                            // Pure-local (no cloud token): mirror the server-mode
+                            // card above. This change already passed every strict
+                            // local gate AND the source-safety checks, so offer a
+                            // Learn / Skip choice instead of dropping it silently.
+                            info!(
+                                "[classify] pure-local Learn/Skip offer {:?} -> {:?}",
+                                original, canonical_for_policy
+                            );
+                            review_candidates.push(ReviewCandidate {
+                                original: original.to_string(),
+                                corrected: corrected.to_string(),
+                                term_type: term_type.to_string(),
+                                learnable: true,
+                                tag: "local_ask".to_string(),
                             });
                         } else {
                             info!(
@@ -1479,17 +1533,42 @@ pub async fn classify(
         }
     }
 
+    // ── Add-on: de-dup + cap the new "Ask to learn" cards ───────────────────
+    // A noisy recording must never fan out into a wall of choices. De-dup all
+    // review candidates by (original, corrected) and cap the new "local_ask"
+    // cards at 8 per recording. Existing tags keep their order and behavior; the
+    // cap only ever removes surplus local_ask offers, never an auto-learn or an
+    // existing review card.
+    {
+        let mut seen: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        let mut ask_count = 0usize;
+        review_candidates.retain(|candidate| {
+            if !seen.insert((candidate.original.clone(), candidate.corrected.clone())) {
+                return false;
+            }
+            if candidate.tag == "local_ask" {
+                ask_count += 1;
+                if ask_count > 8 {
+                    return false;
+                }
+            }
+            true
+        });
+    }
+
     let has_negatives = !negative_terms.is_empty();
     if !review_candidates.is_empty() {
         let local_count = review_candidates.len();
-        // Candidates the server's auto-learn judge already declined are tagged
-        // "local_fallback"; don't re-send them to the same judge (it would just
-        // re-drop them and the review card would vanish). Refine only the rest,
-        // then re-append the local fallbacks verbatim.
-        let (local_fallback, to_refine): (Vec<ReviewCandidate>, Vec<ReviewCandidate>) =
-            review_candidates
-                .into_iter()
-                .partition(|candidate| candidate.tag == "local_fallback");
+        // Candidates the server's auto-learn judge already declined ("local_fallback")
+        // or that we locally chose to offer as a manual choice ("local_ask") must NOT
+        // be re-sent to that judge — it would just re-drop them and the review card
+        // would vanish in logged-in mode. Refine only the rest, then re-append these
+        // verbatim.
+        let (local_only, to_refine): (Vec<ReviewCandidate>, Vec<ReviewCandidate>) =
+            review_candidates.into_iter().partition(|candidate| {
+                candidate.tag == "local_fallback" || candidate.tag == "local_ask"
+            });
         let mut refined = if to_refine.is_empty() {
             to_refine
         } else {
@@ -1503,7 +1582,7 @@ pub async fn classify(
             )
             .await
         };
-        refined.extend(local_fallback);
+        refined.extend(local_only);
         review_candidates = refined;
         info!(
             "[classify] server-refined review candidates: {local_count} -> {}",
@@ -3267,6 +3346,42 @@ fn clean_surface(text: &str) -> String {
     text.trim_matches(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
         .trim()
         .to_string()
+}
+
+/// True when a single token *looks like* a protected name / brand / acronym /
+/// code identifier worth OFFERING to the user as a learnable term. A local
+/// mirror of the control-plane's `looks_like_protected_target`, built only from
+/// existing primitives so the local "Ask to learn" choice agrees with the
+/// server's notion of a name. Rejects empty / common-word / dictionary /
+/// numeric tokens, then requires a proper-noun signal (initial capital, a short
+/// all-caps run, or a digit/dot). Used only to gate the new review-card offers;
+/// it never auto-learns anything.
+fn is_name_like_term(raw: &str) -> bool {
+    let t = clean_surface(raw);
+    if t.is_empty()
+        || promotion_gate::is_common_word(&t)
+        || crate::tier2::is_in_dictionary(&t)
+        || promotion_gate::is_numeric_junk(&t)
+    {
+        return false;
+    }
+    let first_upper = t.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+    let letters: Vec<char> = t.chars().filter(|c| c.is_alphabetic()).collect();
+    let all_caps =
+        !letters.is_empty() && letters.len() <= 8 && letters.iter().all(|c| c.is_uppercase());
+    let has_digit_dot = t.chars().any(|c| c.is_ascii_digit() || c == '.');
+    first_upper || all_caps || has_digit_dot
+}
+
+/// True when a (possibly multi-word) corrected span is worth offering as a
+/// learnable term: 1..=4 words and at least one token is name-like (a real
+/// name/brand anchor like "Emiac" in "Emiac tech"). Because `is_name_like_term`
+/// already excludes common / dictionary / numeric tokens, a span made entirely
+/// of ordinary words ("the market") has no anchor and stays silent, while a
+/// genuine multi-word name is surfaced.
+fn name_like_span(raw: &str) -> bool {
+    let words: Vec<&str> = raw.split_whitespace().collect();
+    !words.is_empty() && words.len() <= 4 && words.iter().any(|&w| is_name_like_term(w))
 }
 
 fn unsafe_stt_source_reason(
