@@ -433,7 +433,7 @@ pub struct ConfirmBatchResponse {
     pub server_owned: bool,
 }
 
-async fn confirm_batch_with_server(
+pub(crate) async fn confirm_batch_with_server(
     state: &AppState,
     body: &ConfirmBatchBody,
 ) -> Option<ConfirmBatchResponse> {

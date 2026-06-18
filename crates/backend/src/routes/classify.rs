@@ -764,6 +764,71 @@ pub async fn classify(
     {
         let learnable_count = server_candidates.iter().filter(|c| c.learnable).count();
         if learnable_count > 0 {
+            // ── Auto-learn a single, clean, server-approved term ─────────────
+            // The server raw judge already vetted these. When there is exactly
+            // ONE learnable candidate and it is K=1-eligible (a protected-looking
+            // proper noun / brand / acronym / code identifier, not a common or
+            // dictionary word), auto-confirm it through the SAME server-owned
+            // confirm path the review-card "Learn" button uses, then fire the
+            // "Learned X" toast — instead of always deferring to a manual card.
+            // Anything ambiguous or multi-candidate still falls through to the
+            // review card below; a failed/blocked server confirm does too.
+            if server_candidates.len() == 1 {
+                let candidate = &server_candidates[0];
+                let auto_learnable = candidate.learnable
+                    && matches!(
+                        candidate.term_type.as_str(),
+                        "brand" | "acronym" | "code_identifier" | "proper_noun"
+                    )
+                    && !promotion_gate::is_common_word(&candidate.corrected)
+                    && !crate::tier2::is_in_dictionary(&candidate.corrected);
+                if auto_learnable {
+                    let alias_source = candidate.original.clone();
+                    let corrected = candidate.corrected.clone();
+                    let confirm_body = crate::routes::confirm::ConfirmBatchBody {
+                        items: vec![crate::routes::confirm::ConfirmBatchItem {
+                            original: alias_source.clone(),
+                            corrected: corrected.clone(),
+                        }],
+                        recording_id: Some(body.recording_id.clone()),
+                    };
+                    if let Some(confirmed) =
+                        crate::routes::confirm::confirm_batch_with_server(&state, &confirm_body)
+                            .await
+                    {
+                        if confirmed.learned_count > 0 {
+                            let term = confirmed
+                                .learned_terms
+                                .first()
+                                .cloned()
+                                .unwrap_or(corrected);
+                            info!(
+                                "[classify] server raw judge auto-confirmed single clean term {:?} — firing learned toast",
+                                term
+                            );
+                            return (
+                                StatusCode::OK,
+                                Json(ClassifyResponse {
+                                    class: analyzer_output.overall_class,
+                                    reason: format!("auto-learned {term:?} (server-confirmed)"),
+                                    pending_id: None,
+                                    learned: true,
+                                    notify: true,
+                                    promoted_count: 1,
+                                    is_repeat: false,
+                                    promoted_terms: vec![term],
+                                    learned_emails,
+                                    queued_terms: vec![],
+                                    changes: analyzer_output.changes,
+                                    ambiguous_terms,
+                                    negative_terms,
+                                    review_candidates: vec![],
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
             let change_count = analyzer_output.changes.len();
             info!(
                 "[classify] server raw learning judge returned {} candidate(s), learnable={} — local alias learning bypassed",
@@ -848,6 +913,15 @@ pub async fn classify(
     let mut learned = false;
     let mut server_memory_terms: Vec<serde_json::Value> = Vec::new();
     let mut server_memory_aliases: Vec<serde_json::Value> = Vec::new();
+
+    // Whether cloud/server-owned learning is active (the device has a cloud
+    // token). Used so that, when the server declines a single-change auto-learn,
+    // we surface a manual review card in server mode but keep the prior silent
+    // drop in pure-local mode (no token) — leaving local-only behavior unchanged.
+    let server_learning_on = users::get_user(&state.pool, &state.default_user_id)
+        .and_then(|u| u.cloud_token)
+        .map(|t| !t.trim().is_empty())
+        .unwrap_or(false);
 
     for change in &analyzer_output.changes {
         // Build edit pair directly from the deterministic change (which already
@@ -1073,7 +1147,7 @@ pub async fn classify(
                     learnable: true,
                     tag: "local_direct_candidate".to_string(),
                 };
-                let Some(server_validated_candidate) = server_validate_direct_candidate(
+                let server_validated_candidate = match server_validate_direct_candidate(
                     &state,
                     &body.recording_id,
                     &transcript,
@@ -1082,12 +1156,37 @@ pub async fn classify(
                     proposed_direct_candidate,
                 )
                 .await
-                else {
-                    info!(
-                        "[classify] STT_ERROR direct learn blocked — server LLM did not validate {:?} -> {:?}",
-                        original, canonical_for_policy
-                    );
-                    continue;
+                {
+                    Some(candidate) => candidate,
+                    None => {
+                        // The server's auto-learn judge declined (or was
+                        // unreachable). This change already passed every strict
+                        // local gate to reach here, so in server mode surface it
+                        // as a manual review card instead of dropping it silently.
+                        // Tagged "local_fallback" so the post-loop server refine
+                        // does NOT re-judge and re-drop it. With no cloud token
+                        // (pure-local) we keep the prior drop so local-only
+                        // behavior is unchanged.
+                        if server_learning_on {
+                            info!(
+                                "[classify] STT_ERROR not server-validated {:?} -> {:?} — routing to manual review card",
+                                original, canonical_for_policy
+                            );
+                            review_candidates.push(ReviewCandidate {
+                                original: original.to_string(),
+                                corrected: corrected.to_string(),
+                                term_type: term_type.to_string(),
+                                learnable: true,
+                                tag: "local_fallback".to_string(),
+                            });
+                        } else {
+                            info!(
+                                "[classify] STT_ERROR direct learn dropped (no server learning) {:?} -> {:?}",
+                                original, canonical_for_policy
+                            );
+                        }
+                        continue;
+                    }
                 };
                 info!(
                     "[classify] STT_ERROR direct learn server-validated: {:?} -> {:?} tag={}",
@@ -1383,15 +1482,29 @@ pub async fn classify(
     let has_negatives = !negative_terms.is_empty();
     if !review_candidates.is_empty() {
         let local_count = review_candidates.len();
-        review_candidates = refine_review_candidates_with_server(
-            &state,
-            &body.recording_id,
-            &transcript,
-            &body.ai_output,
-            &body.user_kept,
-            review_candidates,
-        )
-        .await;
+        // Candidates the server's auto-learn judge already declined are tagged
+        // "local_fallback"; don't re-send them to the same judge (it would just
+        // re-drop them and the review card would vanish). Refine only the rest,
+        // then re-append the local fallbacks verbatim.
+        let (local_fallback, to_refine): (Vec<ReviewCandidate>, Vec<ReviewCandidate>) =
+            review_candidates
+                .into_iter()
+                .partition(|candidate| candidate.tag == "local_fallback");
+        let mut refined = if to_refine.is_empty() {
+            to_refine
+        } else {
+            refine_review_candidates_with_server(
+                &state,
+                &body.recording_id,
+                &transcript,
+                &body.ai_output,
+                &body.user_kept,
+                to_refine,
+            )
+            .await
+        };
+        refined.extend(local_fallback);
+        review_candidates = refined;
         info!(
             "[classify] server-refined review candidates: {local_count} -> {}",
             review_candidates.len()
