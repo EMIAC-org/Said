@@ -200,6 +200,7 @@ private struct AccountStep: View {
     @State private var email = ""
     @State private var password = ""
     @State private var isSignup = true
+    @State private var showServer = false
     @FocusState private var focus: Field?
 
     enum Field { case email, password }
@@ -255,6 +256,16 @@ private struct AccountStep: View {
                     Label("Continue with Lark", systemImage: "person.crop.circle")
                 }
                 .buttonStyle(AirNoteGhostButtonStyle())
+
+                // Escape hatch: if you can't sign in because the server is wrong/down,
+                // change it (or reset to the AirNote default) right from here.
+                Button { showServer = true } label: {
+                    Text("Server: \(BuildConfig.gatewayBaseURL.host ?? "AirNote default") · Change")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(AirNoteDesign.muted)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 2)
             }
         } footer: {
             Button(action: submit) {
@@ -268,6 +279,17 @@ private struct AccountStep: View {
                 .font(.caption2)
                 .foregroundStyle(AirNoteDesign.muted)
                 .frame(maxWidth: .infinity)
+        }
+        .sheet(isPresented: $showServer) {
+            NavigationStack {
+                ServerConnectionView()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showServer = false }
+                        }
+                    }
+            }
+            .environmentObject(env)
         }
     }
 
