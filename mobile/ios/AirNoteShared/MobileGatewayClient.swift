@@ -626,7 +626,9 @@ public protocol MobileGatewayClient {
     func divoListThreads() async throws -> [DivoThreadSummary]
     func divoThread(id: String) async throws -> DivoThread
     func divoChat(message: String, threadID: String?) async throws -> DivoChatResult
-    func messagePolish(text: String) async throws -> String
+    /// Rewrite arbitrary text into a chosen tone/language via the (text-in) runtime
+    /// voice-polish engine. `tonePreset == nil` falls back to the account's saved tone.
+    func rewriteText(_ text: String, tonePreset: String?, outputLanguage: String, screenContext: String?, safeVocabTerms: [String]) async throws -> String
 }
 
 public typealias GatewayAuthTokenProvider = () -> String?
@@ -730,7 +732,7 @@ public struct PreviewMobileGatewayClient: MobileGatewayClient {
     public func divoListThreads() async throws -> [DivoThreadSummary] { [] }
     public func divoThread(id: String) async throws -> DivoThread { DivoThread(id: id, title: "Preview", messages: []) }
     public func divoChat(message: String, threadID: String?) async throws -> DivoChatResult { DivoChatResult(content: "Preview answer.", threadID: threadID ?? "preview") }
-    public func messagePolish(text: String) async throws -> String { "Polished: \(text)" }
+    public func rewriteText(_ text: String, tonePreset: String?, outputLanguage: String, screenContext: String?, safeVocabTerms: [String]) async throws -> String { "Polished: \(text)" }
 }
 #endif
 
@@ -1038,32 +1040,45 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         return DivoChatResult(content: content, threadID: thread)
     }
 
-    public func messagePolish(text: String) async throws -> String {
-        var req = URLRequest(url: baseURL.appendingPathComponent("v1/runtime/message-polish"))
+    public func rewriteText(_ text: String, tonePreset: String?, outputLanguage: String, screenContext: String?, safeVocabTerms: [String]) async throws -> String {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/runtime/voice/polish"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 60
-        req.httpBody = try encoder.encode(MessagePolishBody(text: text, clientRunId: RequestId.make()))
+        req.timeoutInterval = 12
+        req.httpBody = try encoder.encode(RewriteBody(
+            transcript: text,
+            outputLanguage: outputLanguage,
+            selectedModel: "smart",
+            tonePreset: tonePreset,
+            screenContext: screenContext,
+            safeVocabTerms: safeVocabTerms,
+            clientRunId: RequestId.make()
+        ))
         authorize(&req)
         let (data, response) = try await session.data(for: req)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            let message = http.statusCode == 503
-                ? "Message polish isn’t set up on the server yet."
-                : (http.statusCode == 400 ? "Enter some text to polish." : nil)
-            throw GatewayError.from(status: http.statusCode, code: nil, message: message)
-        }
-        return try decoder.decode(MessagePolishResponse.self, from: data).output
+        try Self.validate(data, response: response)
+        return try decoder.decode(RewriteResponse.self, from: data).output
     }
 
-    private struct MessagePolishBody: Encodable {
-        let text: String
+    private struct RewriteBody: Encodable {
+        let transcript: String
+        let outputLanguage: String
+        let selectedModel: String
+        let tonePreset: String?
+        let screenContext: String?
+        let safeVocabTerms: [String]
         let clientRunId: String
         enum CodingKeys: String, CodingKey {
-            case text
+            case transcript
+            case outputLanguage = "output_language"
+            case selectedModel = "selected_model"
+            case tonePreset = "tone_preset"
+            case screenContext = "screen_context"
+            case safeVocabTerms = "safe_vocab_terms"
             case clientRunId = "client_run_id"
         }
     }
-    private struct MessagePolishResponse: Decodable { let output: String }
+    private struct RewriteResponse: Decodable { let output: String }
 
     private struct DivoThreadsEnvelope: Decodable {
         let data: ThreadsData
