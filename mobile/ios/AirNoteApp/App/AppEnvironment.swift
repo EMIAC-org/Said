@@ -78,6 +78,7 @@ final class AppEnvironment: ObservableObject {
     @Published private(set) var outputLanguage = SharedStore.outputLanguage   // "hinglish" | "english"
     @Published private(set) var selectedModel = SharedStore.selectedModel     // "fast" | "smart"
     @Published private(set) var tonePreset = SharedStore.tonePreset           // "work" | "casual" | "email" | "notes"
+    @Published private(set) var customPrompt = ""                             // free-text persona, used when tonePreset == "custom"
     @Published private(set) var learningEnabled = true
     /// Local-only cosmetic profile prefs, mirrored here so avatars across the app
     /// repaint immediately on edit (SharedStore alone isn't observable). Both
@@ -422,6 +423,7 @@ final class AppEnvironment: ObservableObject {
         outputLanguage = settings.outputLanguage
         selectedModel = "smart"   // model picker removed — always Smart, matching desktop
         tonePreset = settings.tonePreset
+        customPrompt = settings.customPrompt ?? ""
         learningEnabled = settings.learningEnabled
         SharedStore.outputLanguage = settings.outputLanguage
         SharedStore.selectedModel = "smart"   // model picker removed — always Smart
@@ -430,6 +432,10 @@ final class AppEnvironment: ObservableObject {
 
     func setOutputLanguage(_ value: String) async { await patch(.init(outputLanguage: value)) { self.outputLanguage = value; SharedStore.outputLanguage = value } }
     func setTonePreset(_ value: String) async { await patch(.init(tonePreset: value)) { self.tonePreset = value; SharedStore.tonePreset = value } }
+    /// Persist the free-text "Custom" persona. The server stores it and applies it on
+    /// every polish (account_polish_persona); nil-omit encoding means other patches
+    /// never clear it.
+    func setCustomPrompt(_ value: String) async { await patch(.init(customPrompt: value)) { self.customPrompt = value } }
     func setLearningEnabled(_ value: Bool) async { await patch(.init(learningEnabled: value)) { self.learningEnabled = value } }
 
     /// Cosmetic, local-only — no server round-trip; write through to SharedStore so

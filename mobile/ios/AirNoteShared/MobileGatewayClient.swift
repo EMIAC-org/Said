@@ -254,6 +254,10 @@ public struct RuntimeSettingsResponse: Codable, Equatable {
     public var serverRuntimeEnabled: Bool
     public var serverAudioRuntimeEnabled: Bool
     public var messagePolishMode: Bool
+    /// Free-text custom polish persona, surfaced as the "Custom" tone. The server
+    /// already stores and applies it (account_polish_persona); optional so older
+    /// servers that omit the field still decode cleanly.
+    public var customPrompt: String? = nil
     public var version: Int
 
     enum CodingKeys: String, CodingKey {
@@ -266,6 +270,7 @@ public struct RuntimeSettingsResponse: Codable, Equatable {
         case serverRuntimeEnabled = "server_runtime_enabled"
         case serverAudioRuntimeEnabled = "server_audio_runtime_enabled"
         case messagePolishMode = "message_polish_mode"
+        case customPrompt = "custom_prompt"
         case version
     }
 }
@@ -503,6 +508,9 @@ public struct RuntimeSettingsPatch: Codable, Equatable {
     public var editCapture: Bool?
     public var learningEnabled: Bool?
     public var messagePolishMode: Bool?
+    /// Custom polish persona text for the "Custom" tone. nil = leave unchanged
+    /// (Swift omits nil optionals on encode, so a normal patch never clears it).
+    public var customPrompt: String?
 
     public init(
         selectedModel: String? = nil,
@@ -511,7 +519,8 @@ public struct RuntimeSettingsPatch: Codable, Equatable {
         autoPaste: Bool? = nil,
         editCapture: Bool? = nil,
         learningEnabled: Bool? = nil,
-        messagePolishMode: Bool? = nil
+        messagePolishMode: Bool? = nil,
+        customPrompt: String? = nil
     ) {
         self.selectedModel = selectedModel
         self.outputLanguage = outputLanguage
@@ -520,6 +529,7 @@ public struct RuntimeSettingsPatch: Codable, Equatable {
         self.editCapture = editCapture
         self.learningEnabled = learningEnabled
         self.messagePolishMode = messagePolishMode
+        self.customPrompt = customPrompt
     }
 
     enum CodingKeys: String, CodingKey {
@@ -530,6 +540,7 @@ public struct RuntimeSettingsPatch: Codable, Equatable {
         case editCapture = "edit_capture"
         case learningEnabled = "learning_enabled"
         case messagePolishMode = "message_polish_mode"
+        case customPrompt = "custom_prompt"
     }
 }
 
@@ -610,9 +621,12 @@ public protocol MobileGatewayClient {
     func endMeeting(id: String) async throws
     func meetingGuestLink(id: String) async throws -> GuestLinkResponse
     func listOrgMembers(orgID: String) async throws -> [OrgMember]
+    func addOrgMember(orgID: String, email: String, role: String) async throws -> OrgMember
+    func setMemberRole(orgID: String, accountID: String, role: String) async throws -> OrgMember
     func divoListThreads() async throws -> [DivoThreadSummary]
     func divoThread(id: String) async throws -> DivoThread
     func divoChat(message: String, threadID: String?) async throws -> DivoChatResult
+    func messagePolish(text: String) async throws -> String
 }
 
 public typealias GatewayAuthTokenProvider = () -> String?
@@ -707,9 +721,16 @@ public struct PreviewMobileGatewayClient: MobileGatewayClient {
     public func endMeeting(id: String) async throws {}
     public func meetingGuestLink(id: String) async throws -> GuestLinkResponse { GuestLinkResponse(token: "preview", inviteURL: nil, guestLink: nil, expiresAt: nil) }
     public func listOrgMembers(orgID: String) async throws -> [OrgMember] { [] }
+    public func addOrgMember(orgID: String, email: String, role: String) async throws -> OrgMember {
+        OrgMember(id: "preview", accountId: "preview", email: email, role: role, larkName: nil)
+    }
+    public func setMemberRole(orgID: String, accountID: String, role: String) async throws -> OrgMember {
+        OrgMember(id: "preview", accountId: accountID, email: "preview@airnote.app", role: role, larkName: nil)
+    }
     public func divoListThreads() async throws -> [DivoThreadSummary] { [] }
     public func divoThread(id: String) async throws -> DivoThread { DivoThread(id: id, title: "Preview", messages: []) }
     public func divoChat(message: String, threadID: String?) async throws -> DivoChatResult { DivoChatResult(content: "Preview answer.", threadID: threadID ?? "preview") }
+    public func messagePolish(text: String) async throws -> String { "Polished: \(text)" }
 }
 #endif
 
@@ -905,6 +926,35 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         return try decoder.decode(OrgMembersResponse.self, from: data).members
     }
 
+    public func addOrgMember(orgID: String, email: String, role: String) async throws -> OrgMember {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/orgs/\(orgID)/members"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try encoder.encode(AddMemberBody(email: email, role: role))
+        authorize(&req)
+        let (data, response) = try await session.data(for: req)
+        try Self.validate(data, response: response)
+        return try decoder.decode(MemberEnvelope.self, from: data).member
+    }
+
+    public func setMemberRole(orgID: String, accountID: String, role: String) async throws -> OrgMember {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/orgs/\(orgID)/members/\(accountID)"))
+        req.httpMethod = "PATCH"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try encoder.encode(SetRoleBody(role: role))
+        authorize(&req)
+        let (data, response) = try await session.data(for: req)
+        try Self.validate(data, response: response)
+        return try decoder.decode(MemberEnvelope.self, from: data).member
+    }
+
+    private struct AddMemberBody: Encodable {
+        let email: String
+        let role: String
+    }
+    private struct SetRoleBody: Encodable { let role: String }
+    private struct MemberEnvelope: Decodable { let member: OrgMember }
+
     // MARK: Divo (SSE chat; server-gated to approved accounts)
 
     public func divoListThreads() async throws -> [DivoThreadSummary] {
@@ -987,6 +1037,33 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         guard let content, !content.isEmpty else { throw GatewayError.invalidResponse }
         return DivoChatResult(content: content, threadID: thread)
     }
+
+    public func messagePolish(text: String) async throws -> String {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/runtime/message-polish"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 60
+        req.httpBody = try encoder.encode(MessagePolishBody(text: text, clientRunId: RequestId.make()))
+        authorize(&req)
+        let (data, response) = try await session.data(for: req)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let message = http.statusCode == 503
+                ? "Message polish isn’t set up on the server yet."
+                : (http.statusCode == 400 ? "Enter some text to polish." : nil)
+            throw GatewayError.from(status: http.statusCode, code: nil, message: message)
+        }
+        return try decoder.decode(MessagePolishResponse.self, from: data).output
+    }
+
+    private struct MessagePolishBody: Encodable {
+        let text: String
+        let clientRunId: String
+        enum CodingKeys: String, CodingKey {
+            case text
+            case clientRunId = "client_run_id"
+        }
+    }
+    private struct MessagePolishResponse: Decodable { let output: String }
 
     private struct DivoThreadsEnvelope: Decodable {
         let data: ThreadsData

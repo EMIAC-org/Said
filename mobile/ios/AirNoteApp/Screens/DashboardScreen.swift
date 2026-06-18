@@ -17,6 +17,7 @@ struct DashboardScreen: View {
                         header
                         recordCard
                         tryAnywhereCard
+                        polishCard
                         if !env.missingRequiredProviders.isEmpty {
                             voiceKeysNudge
                         }
@@ -269,6 +270,32 @@ struct DashboardScreen: View {
             .padding(14)
             .background(AirNoteDesign.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(AirNoteDesign.accent.opacity(0.3), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var polishCard: some View {
+        NavigationLink(destination: PolishScreen()) {
+            HStack(spacing: 12) {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(AirNoteDesign.accent)
+                    .frame(width: 34, height: 34)
+                    .background(AirNoteDesign.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Polish a written message")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AirNoteDesign.foreground)
+                    Text("Clean up text you've already typed — no mic needed.")
+                        .font(.caption)
+                        .foregroundStyle(AirNoteDesign.muted)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(AirNoteDesign.muted)
+            }
+            .padding(14)
+            .background(AirNoteDesign.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(AirNoteDesign.border, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
