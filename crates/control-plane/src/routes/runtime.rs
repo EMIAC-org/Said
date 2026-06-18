@@ -90,6 +90,11 @@ pub struct VoicePolishRequest {
     pub safe_vocab_terms: Vec<String>,
     #[serde(default)]
     pub client_run_id: Option<String>,
+    /// Optional per-request tone override (e.g. the iOS keyboard "rewrite selection"
+    /// picks a tone per tap). When present it wins over the account's saved tone_preset;
+    /// when absent — every existing caller — behavior is byte-for-byte unchanged.
+    #[serde(default)]
+    pub tone_preset: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2044,6 +2049,18 @@ fn runtime_error_payload(
 /// `runtime_user_settings` for the voice prompt. Best-effort: a missing row or a
 /// query error must NEVER fail a dictation, so both fall back to the neutral
 /// default that the voice path used before per-account tone existed.
+/// Normalize a tone value onto the canonical said_core vocabulary — mirrors the mapping
+/// inside `account_polish_persona` so a per-request tone override (e.g. the keyboard
+/// rewrite) shares the same tone keys. Legacy mobile use-case names map across; canonical
+/// and unknown values pass through (said_core maps anything unrecognized to neutral).
+fn normalize_tone_preset(raw: &str) -> String {
+    match raw {
+        "work" | "email" => "professional".to_string(),
+        "notes" => "concise".to_string(),
+        other => other.to_string(),
+    }
+}
+
 async fn account_polish_persona(state: &AppState, account_id: Uuid) -> (String, Option<String>) {
     let (tone_preset, custom_prompt) = sqlx::query_as::<_, (String, Option<String>)>(
         "SELECT tone_preset, custom_prompt FROM runtime_user_settings WHERE account_id = $1",
@@ -2766,7 +2783,18 @@ pub async fn voice_polish(
             .await;
         });
     }
-    let (tone_preset, custom_prompt) = account_polish_persona(&state, user.account_id).await;
+    let (tone_preset, custom_prompt) = match req
+        .tone_preset
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        // Explicit per-request tone override (keyboard rewrite). It wins over the saved
+        // persona and carries no custom prompt. Same normalization account_polish_persona
+        // uses, so the keys stay in sync with build_voice_system_prompt's vocabulary.
+        Some(raw) => (normalize_tone_preset(raw), None),
+        None => account_polish_persona(&state, user.account_id).await,
+    };
     let system_prompt = build_voice_system_prompt(
         &req.output_language,
         &tone_preset,
@@ -5633,6 +5661,27 @@ fn json_error(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_tone_preset_maps_legacy_and_passes_through() {
+        assert_eq!(normalize_tone_preset("work"), "professional");
+        assert_eq!(normalize_tone_preset("email"), "professional");
+        assert_eq!(normalize_tone_preset("notes"), "concise");
+        assert_eq!(normalize_tone_preset("casual"), "casual");
+        assert_eq!(normalize_tone_preset("professional"), "professional");
+        assert_eq!(normalize_tone_preset("neutral"), "neutral");
+    }
+
+    #[test]
+    fn voice_polish_request_tone_preset_is_optional_and_additive() {
+        // Every existing caller omits tone_preset → defaults to None (behavior unchanged).
+        let without: VoicePolishRequest = serde_json::from_str(r#"{"transcript":"hi"}"#).unwrap();
+        assert_eq!(without.tone_preset, None);
+        // New callers (the keyboard rewrite) can send a per-request tone override.
+        let with: VoicePolishRequest =
+            serde_json::from_str(r#"{"transcript":"hi","tone_preset":"casual"}"#).unwrap();
+        assert_eq!(with.tone_preset.as_deref(), Some("casual"));
+    }
 
     #[test]
     fn restores_product_like_token_replaced_by_model() {
