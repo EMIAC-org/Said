@@ -340,6 +340,246 @@ pub async fn members(
     Ok(Json(json!({ "members": members })))
 }
 
+// ── Member management (admin only) ───────────────────────────────────────────
+//   POST  /v1/orgs/:org_id/members              — add/upsert a member by email
+//   PATCH /v1/orgs/:org_id/members/:account_id  — change a member's role
+//
+// Both are purely additive: org_members already has role / UNIQUE(org_id,
+// account_id) / auth_source, so no migration is needed. Add-member is the same
+// upsert used at signup (auth.rs); role-change is a plain UPDATE.
+
+#[derive(Deserialize)]
+pub struct AddMemberBody {
+    pub email: String,
+    pub role: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetRoleBody {
+    pub role: String,
+}
+
+/// The roles an admin may assign. Stored uppercase to match create()/auth.rs.
+fn normalize_role(raw: &str) -> Option<String> {
+    match raw.trim().to_uppercase().as_str() {
+        "COMPANY_ADMIN" => Some("COMPANY_ADMIN".to_string()),
+        "MANAGER" => Some("MANAGER".to_string()),
+        "MEMBER" => Some("MEMBER".to_string()),
+        _ => None,
+    }
+}
+
+/// Admin gate — mirrors vocab.rs::require_admin so the role semantics stay in sync.
+fn require_admin(role: &str) -> Result<(), (StatusCode, Json<Value>)> {
+    if role.eq_ignore_ascii_case("admin")
+        || role.eq_ignore_ascii_case("company_admin")
+        || role.eq_ignore_ascii_case("manager")
+    {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "admin permissions required"})),
+        ))
+    }
+}
+
+type MemberRow = (
+    Uuid,
+    Uuid,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    bool,
+    DateTime<Utc>,
+);
+
+/// Re-read one member as the same MemberInfo shape `members` returns, so the
+/// add/role-change responses match the list exactly.
+async fn fetch_member(
+    state: &AppState,
+    org_id: Uuid,
+    account_id: Uuid,
+) -> Result<Option<MemberInfo>, (StatusCode, Json<Value>)> {
+    let row: Option<MemberRow> = sqlx::query_as(
+        "SELECT om.id,
+                om.account_id,
+                a.email,
+                om.role,
+                om.lark_name,
+                om.lark_avatar_url,
+                om.lark_department,
+                CASE
+                  WHEN om.lark_user_id IS NOT NULL THEN 'lark'
+                  WHEN om.auth_source IS NOT NULL THEN om.auth_source
+                  ELSE 'email'
+                END AS auth_source,
+                (om.lark_user_id IS NOT NULL) AS lark_connected,
+                om.joined_at
+           FROM org_members om
+           JOIN accounts a ON a.id = om.account_id
+          WHERE om.org_id = $1 AND om.account_id = $2",
+    )
+    .bind(org_id)
+    .bind(account_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    Ok(row.map(
+        |(
+            id,
+            account_id,
+            email,
+            role,
+            lark_name,
+            lark_avatar_url,
+            lark_department,
+            auth_source,
+            lark_connected,
+            joined_at,
+        )| MemberInfo {
+            id,
+            account_id,
+            email,
+            role,
+            lark_name,
+            lark_avatar_url,
+            lark_department,
+            auth_source,
+            lark_connected,
+            joined_at,
+        },
+    ))
+}
+
+// ── POST /v1/orgs/:org_id/members ────────────────────────────────────────────
+
+pub async fn add_member(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(org_id): Path<Uuid>,
+    Json(body): Json<AddMemberBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let caller_role = tenant::require_org_membership(&state, user.account_id, org_id).await?;
+    require_admin(&caller_role)?;
+
+    let Some(role) = normalize_role(&body.role) else {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "role must be COMPANY_ADMIN, MANAGER, or MEMBER"})),
+        ));
+    };
+    let email = body.email.trim().to_lowercase();
+    if email.is_empty() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "email is required"})),
+        ));
+    }
+
+    // Add an EXISTING account to the org (signup-by-invite is a separate feature).
+    let target: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM accounts WHERE lower(email) = $1")
+            .bind(&email)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(db_err)?;
+    let Some(account_id) = target else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error": "no AirNote account uses that email yet — they need to sign up first"}),
+            ),
+        ));
+    };
+
+    sqlx::query(
+        "INSERT INTO org_members (org_id, account_id, role, auth_source)
+         VALUES ($1, $2, $3, 'email')
+         ON CONFLICT (org_id, account_id) DO UPDATE SET role = EXCLUDED.role",
+    )
+    .bind(org_id)
+    .bind(account_id)
+    .bind(&role)
+    .execute(&state.db)
+    .await
+    .map_err(db_err)?;
+
+    let member = fetch_member(&state, org_id, account_id).await?;
+    Ok(Json(json!({ "member": member })))
+}
+
+// ── PATCH /v1/orgs/:org_id/members/:account_id ───────────────────────────────
+
+pub async fn set_member_role(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((org_id, account_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<SetRoleBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let caller_role = tenant::require_org_membership(&state, user.account_id, org_id).await?;
+    require_admin(&caller_role)?;
+
+    let Some(role) = normalize_role(&body.role) else {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "role must be COMPANY_ADMIN, MANAGER, or MEMBER"})),
+        ));
+    };
+
+    // Never strip the last admin (would lock everyone out of management).
+    if role == "MEMBER" {
+        let target_is_admin: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM org_members
+                WHERE org_id = $1 AND account_id = $2
+                  AND role IN ('COMPANY_ADMIN', 'MANAGER'))",
+        )
+        .bind(org_id)
+        .bind(account_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(db_err)?;
+        if target_is_admin {
+            let admin_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM org_members
+                    WHERE org_id = $1 AND role IN ('COMPANY_ADMIN', 'MANAGER')",
+            )
+            .bind(org_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(db_err)?;
+            if admin_count <= 1 {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({"error": "can't remove the workspace's last admin"})),
+                ));
+            }
+        }
+    }
+
+    let result =
+        sqlx::query("UPDATE org_members SET role = $1 WHERE org_id = $2 AND account_id = $3")
+            .bind(&role)
+            .bind(org_id)
+            .bind(account_id)
+            .execute(&state.db)
+            .await
+            .map_err(db_err)?;
+    if result.rows_affected() == 0 {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "member not found"})),
+        ));
+    }
+
+    let member = fetch_member(&state, org_id, account_id).await?;
+    Ok(Json(json!({ "member": member })))
+}
+
 fn db_err(_e: sqlx::Error) -> (StatusCode, Json<Value>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
