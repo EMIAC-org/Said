@@ -359,15 +359,28 @@ final class RecordingPadView: UIView {
         title.text = titleText
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let styleChip = makeChip(SharedStore.tonePreset.capitalized)
-        let languageChip = makeChip(SharedStore.outputLanguage.capitalized)
-
-        let row = UIStackView(arrangedSubviews: [icon, title, UIView(), styleChip, languageChip])
+        // The rewrite card carries its own tone/language chips below, so don't
+        // duplicate the saved-mode pills up here (that was confusing + mismatched).
+        let row: UIStackView
+        if isRewriteState {
+            row = UIStackView(arrangedSubviews: [icon, title, UIView()])
+        } else {
+            let styleChip = makeChip(SharedStore.tonePreset.capitalized)
+            let languageChip = makeChip(SharedStore.outputLanguage.capitalized)
+            row = UIStackView(arrangedSubviews: [icon, title, UIView(), styleChip, languageChip])
+        }
         row.axis = .horizontal
         row.spacing = 8
         row.alignment = .center
         row.accessibilityLabel = "\(titleText), \(subtitleText)"
         return row
+    }
+
+    private var isRewriteState: Bool {
+        switch state {
+        case .rewriting, .rewriteReady, .rewritten: return true
+        default: return false
+        }
     }
 
     private func makeWaveform() -> UIView {
@@ -714,18 +727,20 @@ final class RecordingPadView: UIView {
             ) { [weak self] in self?.onRewriteLanguage?(key) })
         }
 
-        let replace = actionButton(title: "Replace", systemImage: "arrow.triangle.2.circlepath", color: KeyboardTheme.accent)
+        // Replace is the hero action — full width so its label never cramps or wraps.
+        let replace = actionButton(title: "Replace", systemImage: "checkmark", color: KeyboardTheme.accent)
         replace.addTarget(self, action: #selector(rewriteConfirmTapped), for: .touchUpInside)
+        // Copy + Cancel sit below as secondary, side by side.
         let copy = actionButton(title: "Copy", systemImage: "doc.on.doc", color: .secondaryLabel)
         copy.addTarget(self, action: #selector(rewriteCopyTapped), for: .touchUpInside)
         let cancel = actionButton(title: "Cancel", systemImage: "xmark", color: .secondaryLabel)
         cancel.addTarget(self, action: #selector(rewriteCancelTapped), for: .touchUpInside)
-        let actionRow = UIStackView(arrangedSubviews: [replace, copy, cancel])
-        actionRow.axis = .horizontal
-        actionRow.spacing = 8
-        actionRow.distribution = .fillEqually
+        let secondary = UIStackView(arrangedSubviews: [copy, cancel])
+        secondary.axis = .horizontal
+        secondary.spacing = 8
+        secondary.distribution = .fillEqually
 
-        let stack = UIStackView(arrangedSubviews: [toneRow, langRow, actionRow])
+        let stack = UIStackView(arrangedSubviews: [toneRow, langRow, replace, secondary])
         stack.axis = .vertical
         stack.spacing = 8
         return stack
@@ -749,12 +764,15 @@ final class RecordingPadView: UIView {
         let button = UIButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
         button.setTitle(title, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
-        button.setTitleColor(selected ? .white : .secondaryLabel, for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+        button.titleLabel?.adjustsFontSizeToFitWidth = true
+        button.titleLabel?.minimumScaleFactor = 0.7
+        button.titleLabel?.lineBreakMode = .byClipping
+        button.setTitleColor(selected ? .white : KeyboardTheme.foreground, for: .normal)
         button.backgroundColor = selected ? KeyboardTheme.accent : KeyboardTheme.accent.withAlphaComponent(0.10)
-        button.layer.cornerRadius = 9
+        button.layer.cornerRadius = 10
         button.layer.cornerCurve = .continuous
-        button.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 34).isActive = true
         button.addAction(UIAction { _ in handler() }, for: .touchUpInside)
         return button
     }
@@ -1089,14 +1107,16 @@ final class RecordingPadView: UIView {
         case .teaching: return "bolt.circle.fill"
         case .learned: return "checkmark.seal.fill"
         case .staleSession, .needsFullAccess, .needsMainAppSession, .error, .unsupportedSecureField: return "exclamationmark.triangle.fill"
+        case .rewriting, .rewriteReady: return "wand.and.stars"
+        case .rewritten: return "checkmark.circle.fill"
         default: return "keyboard"
         }
     }
 
     private var statusColor: UIColor {
         switch state {
-        case .ready, .recording, .dictatingInApp, .processing, .insertReady, .secureCopyReady, .teaching: return KeyboardTheme.accent
-        case .inserted, .copied, .savedToHistory, .learned: return KeyboardTheme.success
+        case .ready, .recording, .dictatingInApp, .processing, .insertReady, .secureCopyReady, .teaching, .rewriting, .rewriteReady: return KeyboardTheme.accent
+        case .inserted, .copied, .savedToHistory, .learned, .rewritten: return KeyboardTheme.success
         case .staleSession, .needsFullAccess, .needsMainAppSession, .error, .unsupportedSecureField: return KeyboardTheme.warning
         default: return KeyboardTheme.teal
         }
