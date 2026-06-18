@@ -160,6 +160,20 @@ type VoiceErrorPayload = {
 
 type PillKind = BarState["kind"];
 
+function isActionPromptKind(kind: PillKind): boolean {
+  return kind === "confirming" || kind === "negative_confirm" || kind === "reviewing";
+}
+
+function keepsHudOverIdle(kind: PillKind): boolean {
+  return kind === "error"
+    || isActionPromptKind(kind)
+    || kind === "done"
+    || kind === "pasted"
+    || kind === "manual_paste"
+    || kind === "update_ready"
+    || kind.startsWith("divo");
+}
+
 const HUD_CANVAS_MIN_WIDTH = 300;
 const VOICE_COMPACT_WIDTH = 150;
 const VOICE_INNER_WIDTH = 280;
@@ -664,8 +678,7 @@ export default function StatusBar() {
     } else if (snap.state === "idle") {
       if (restorePinnedUpdate(`auto-update-ready-${source}-idle`)) return;
       setBar((prev) => {
-        if (prev.kind === "update_ready") return prev;
-        if (prev.kind.startsWith("divo")) return prev;
+        if (keepsHudOverIdle(prev.kind)) return prev;
         return { kind: "idle" };
       });
     }
@@ -740,11 +753,7 @@ export default function StatusBar() {
       } else if (state === "idle") {
         if (restorePinnedUpdate("auto-update-ready-idle")) return;
         setBar((prev) => {
-          if (prev.kind === "error") return prev;
-          if (prev.kind === "confirming" || prev.kind === "negative_confirm" || prev.kind === "reviewing") return prev;
-          if (prev.kind === "done" || prev.kind === "pasted" || prev.kind === "manual_paste") return prev;
-          if (prev.kind === "update_ready") return prev;
-          if (prev.kind.startsWith("divo")) return prev; // Divo flow owns the HUD
+          if (keepsHudOverIdle(prev.kind)) return prev;
           return { kind: "idle" };
         });
       }
@@ -799,7 +808,7 @@ export default function StatusBar() {
       playSound("whoosh");
       setBar({ kind: e.payload.status });
       doneTimer.current = setTimeout(
-        () => setBar({ kind: "idle" }),
+        () => setBar((prev) => isActionPromptKind(prev.kind) ? prev : { kind: "idle" }),
         e.payload.status === "pasted" ? 100 : 5200,
       );
     }).then((fn) => {
@@ -936,7 +945,8 @@ export default function StatusBar() {
 
     // ── Review card — multi-change edit review ────────────────────────
     listen<{ candidates: ReviewCandidate[]; recording_id: string }>("vocab-review", (e) => {
-      if (!notifEnabled("learned")) return;
+      // Review is an actionable prompt, not a passive "word learned" toast.
+      // It must remain visible even if learned-notification toasts are disabled.
       console.info("[status-bar] vocab-review", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
       presentStatusBar("vocab-review");
