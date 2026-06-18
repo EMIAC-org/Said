@@ -319,7 +319,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/orgs/me", get(routes::orgs::me))
         .route("/v1/orgs/:org_id/activate", post(routes::orgs::activate))
         .route("/v1/orgs/deactivate", post(routes::orgs::deactivate))
-        .route("/v1/orgs/:org_id/members", get(routes::orgs::members))
+        .route(
+            "/v1/orgs/:org_id/members",
+            get(routes::orgs::members).post(routes::orgs::add_member),
+        )
+        .route(
+            "/v1/orgs/:org_id/members/:account_id",
+            patch(routes::orgs::set_member_role),
+        )
         // Enterprise — Meetings
         .route(
             "/v1/meetings",
