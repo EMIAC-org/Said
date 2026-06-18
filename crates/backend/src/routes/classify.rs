@@ -765,58 +765,72 @@ pub async fn classify(
         let learnable_count = server_candidates.iter().filter(|c| c.learnable).count();
         if learnable_count > 0 {
             let change_count = analyzer_output.changes.len();
-            info!(
-                "[classify] server raw learning judge returned {} candidate(s), learnable={} — local alias learning bypassed",
-                server_candidates.len(),
-                learnable_count
-            );
-            post_runtime_client_event(
-                state.clone(),
-                "classify_edit_result",
-                body.recording_id.clone(),
-                analyzer_output.overall_class.clone(),
-                hash_text(&body.ai_output),
-                hash_text(&body.user_kept),
-                serde_json::json!({
-                    "learned": false,
-                    "notify": false,
-                    "promoted_count": 0,
-                    "promoted_term_count": 0,
-                    "learned_email_count": learned_emails.len(),
-                    "queued_term_count": 0,
-                    "negative_count": negative_terms.len(),
-                    "review_candidate_count": server_candidates.len(),
-                    "change_count": change_count,
-                    "capture_method": body.capture_method,
-                    "source": "server_raw_learning_judge",
-                    "memory": {
-                        "accepted_terms": [],
-                        "accepted_aliases": [],
-                    },
-                }),
-            );
-            return (
-                StatusCode::OK,
-                Json(ClassifyResponse {
-                    class: analyzer_output.overall_class,
-                    reason: format!(
-                        "server learning judge identified {} review candidate(s)",
-                        server_candidates.len()
-                    ),
-                    pending_id: None,
-                    learned: false,
-                    notify: false,
-                    promoted_count: 0,
-                    is_repeat: false,
-                    promoted_terms: vec![],
-                    learned_emails,
-                    queued_terms: vec![],
-                    changes: analyzer_output.changes,
-                    ambiguous_terms,
-                    negative_terms,
-                    review_candidates: server_candidates,
-                }),
-            );
+            let local_learnable_stt_count = analyzer_output
+                .changes
+                .iter()
+                .filter(|c| matches!(c.reason, ChangeReason::SttError) && c.should_learn)
+                .count();
+            let can_use_existing_single_change_path = server_candidates.len() == 1
+                && learnable_count == 1
+                && local_learnable_stt_count == 1;
+            if can_use_existing_single_change_path {
+                info!(
+                    "[classify] server raw learning judge returned one learnable candidate — continuing through local single-change validation path"
+                );
+            } else {
+                info!(
+                    "[classify] server raw learning judge returned {} candidate(s), learnable={} — local alias learning bypassed",
+                    server_candidates.len(),
+                    learnable_count
+                );
+                post_runtime_client_event(
+                    state.clone(),
+                    "classify_edit_result",
+                    body.recording_id.clone(),
+                    analyzer_output.overall_class.clone(),
+                    hash_text(&body.ai_output),
+                    hash_text(&body.user_kept),
+                    serde_json::json!({
+                        "learned": false,
+                        "notify": false,
+                        "promoted_count": 0,
+                        "promoted_term_count": 0,
+                        "learned_email_count": learned_emails.len(),
+                        "queued_term_count": 0,
+                        "negative_count": negative_terms.len(),
+                        "review_candidate_count": server_candidates.len(),
+                        "change_count": change_count,
+                        "capture_method": body.capture_method,
+                        "source": "server_raw_learning_judge",
+                        "memory": {
+                            "accepted_terms": [],
+                            "accepted_aliases": [],
+                        },
+                    }),
+                );
+                return (
+                    StatusCode::OK,
+                    Json(ClassifyResponse {
+                        class: analyzer_output.overall_class,
+                        reason: format!(
+                            "server learning judge identified {} review candidate(s)",
+                            server_candidates.len()
+                        ),
+                        pending_id: None,
+                        learned: false,
+                        notify: false,
+                        promoted_count: 0,
+                        is_repeat: false,
+                        promoted_terms: vec![],
+                        learned_emails,
+                        queued_terms: vec![],
+                        changes: analyzer_output.changes,
+                        ambiguous_terms,
+                        negative_terms,
+                        review_candidates: server_candidates,
+                    }),
+                );
+            }
         }
     }
 
