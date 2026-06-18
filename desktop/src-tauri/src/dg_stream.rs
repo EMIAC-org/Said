@@ -998,9 +998,26 @@ pub fn spawn_audio_bridge_with_echo_gate(
         if let Some(mirror_tx) = &mirror_tx {
             let _ = mirror_tx.send(AudioMirrorCommand::Finalize);
         }
-        let _ = session_tx.blocking_send(SessionCommand::Finalize {
+        let mut finalize = Some(SessionCommand::Finalize {
             id: recording_id.clone(),
         });
+        let deadline = std::time::Instant::now() + WS_SEND_TIMEOUT;
+        while let Some(cmd) = finalize.take() {
+            match session_tx.try_send(cmd) {
+                Ok(()) => break,
+                Err(tokio_mpsc::error::TrySendError::Full(cmd)) => {
+                    if std::time::Instant::now() >= deadline {
+                        warn!(
+                            "[dg_session] finalize send timed out id={recording_id}; batch fallback will handle release"
+                        );
+                        break;
+                    }
+                    finalize = Some(cmd);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(tokio_mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
         debug!(
             "[dg_session] audio bridge closed id={recording_id} chunks={bridged_chunks} echo_dropped={dropped_echo_chunks} backlog_dropped={dropped_backpressure_chunks}"
         );

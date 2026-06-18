@@ -7,7 +7,7 @@
    ───────────────────────────────────────────────────────────────────────────
    Dark : near-black floor, hairline insets, deep macOS-style glass blur,
           single soft periwinkle accent (no mint/violet noise)
-   Light: warm stone-gray panels on muted gray floor, same periwinkle accent
+   Light: crisp neutral panels on a soft gray floor, same periwinkle accent
    ═══════════════════════════════════════════════════════════════════════════ */
 
 @layer base {
@@ -77,9 +77,8 @@
     --chip-red-bg:          354 80% 62% / 0.14;
     --chip-red-fg:          354 85% 75%;
 
-    /* legacy lime alias → periwinkle */
-    --chip-lime-bg:         226 80% 78% / 0.14;
-    --chip-lime-fg:         226 80% 84%;
+    --chip-lime-bg:         145 65% 52% / 0.13;
+    --chip-lime-fg:         145 65% 68%;
 
     --heat-0:               240 5% 14%;        /* visible on near-black floor */
 
@@ -105,14 +104,14 @@
     --topbar-height:        48px;
   }
 
-  /* ── LIGHT — warm stone gray + periwinkle accent (mirror of dark) ─ */
+  /* ── LIGHT — crisp gray + periwinkle accent (mirror of dark) ─ */
   [data-theme="light"] {
-    --background:           220 14% 87%;       /* muted gray floor */
-    --foreground:           240 8% 12%;        /* near-black text */
-    --card:                 220 12% 91%;        /* lifted panels — not white */
-    --card-foreground:      240 8% 12%;
-    --popover:              220 12% 91%;
-    --popover-foreground:   240 8% 12%;
+    --background:           220 22% 93%;       /* soft gray floor */
+    --foreground:           230 13% 12%;       /* near-black text */
+    --card:                 220 28% 98%;       /* lifted panels */
+    --card-foreground:      230 13% 12%;
+    --popover:              220 28% 98%;
+    --popover-foreground:   230 13% 12%;
 
     --primary:              226 70% 56%;       /* deeper periwinkle for contrast on white */
     --primary-foreground:   0 0% 100%;
@@ -120,10 +119,10 @@
     --accent-violet:        226 70% 56%;
     --accent-violet-soft:   226 70% 56% / 0.10;
 
-    --secondary:            220 12% 89%;
-    --secondary-foreground: 240 8% 18%;
-    --muted:                220 12% 89%;
-    --muted-foreground:     240 6% 45%;
+    --secondary:            220 18% 91%;
+    --secondary-foreground: 230 12% 18%;
+    --muted:                220 18% 91%;
+    --muted-foreground:     230 9% 43%;
 
     --accent:               226 70% 56%;
     --accent-foreground:    0 0% 100%;
@@ -131,30 +130,30 @@
     --destructive:          354 78% 50%;
     --destructive-foreground: 0 0% 100%;
 
-    --border:               220 12% 81%;
-    --input:                220 12% 90%;
+    --border:               220 14% 80%;
+    --input:                220 24% 97%;
     --ring:                 226 70% 56%;
 
     --recording:            354 78% 52%;
 
     /* ── Surface hierarchy (light) ──────────────────────────────────── */
-    --surface-1:            220 14% 85%;       /* sidebar / page floor */
-    --surface-2:            220 12% 88%;       /* mat (lift) */
-    --surface-3:            220 12% 91%;       /* tile / card — stone, not white */
-    --surface-4:            220 12% 83%;       /* chip backplate */
-    --surface-hover:        220 12% 87%;
+    --surface-1:            220 18% 90%;       /* sidebar / rail */
+    --surface-2:            220 20% 94%;       /* page mat */
+    --surface-3:            220 28% 98%;       /* cards / content panels */
+    --surface-4:            220 15% 86%;       /* chips / icon backplates */
+    --surface-hover:        220 20% 92%;
 
     /* Nearly opaque — stops macOS vibrancy dark bleed ("dhabbaa" stains) */
-    --glass-bg:             220 14% 86% / 0.98;
-    --glass-bg-strong:      220 12% 89% / 0.98;
-    --glass-stroke:         220 12% 60% / 0.16;
-    --glass-stroke-strong:  220 12% 55% / 0.20;
-    --glass-highlight:      0 0% 100% / 0.25;
+    --glass-bg:             220 18% 92% / 0.98;
+    --glass-bg-strong:      220 28% 98% / 0.98;
+    --glass-stroke:         220 12% 63% / 0.18;
+    --glass-stroke-strong:  220 12% 58% / 0.24;
+    --glass-highlight:      0 0% 100% / 0.38;
 
     --pill-active-bg:       240 8% 14%;
     --pill-active-fg:       0 0% 100%;
 
-    /* Chip colors — all periwinkle (single accent), keep amber/red */
+    /* Chip colors — semantic tints stay soft in light mode */
     --chip-mint-bg:         226 70% 56% / 0.12;
     --chip-mint-fg:         226 70% 40%;
     --chip-violet-bg:       226 70% 56% / 0.12;
@@ -167,10 +166,10 @@
     --chip-amber-fg:        28 80% 30%;
     --chip-red-bg:          354 78% 50% / 0.13;
     --chip-red-fg:          354 78% 38%;
-    --chip-lime-bg:         226 70% 56% / 0.12;
-    --chip-lime-fg:         226 70% 40%;
+    --chip-lime-bg:         145 55% 42% / 0.12;
+    --chip-lime-fg:         145 55% 28%;
 
-    --heat-0:               220 12% 84%;
+    --heat-0:               220 15% 88%;
 
     --shadow-tile:
       0 1px 0 hsl(220 12% 50% / 0.05) inset,
@@ -184,8 +183,8 @@
       0 20px 50px hsl(220 16% 50% / 0.10);
 
     --mesh-bg:
-      radial-gradient(60% 50% at 10% 0%,  hsl(226 70% 56% / 0.02) 0%, transparent 55%),
-      radial-gradient(50% 50% at 100% 100%, hsl(220 60% 50% / 0.015) 0%, transparent 60%);
+      radial-gradient(60% 50% at 10% 0%,  hsl(226 70% 56% / 0.025) 0%, transparent 55%),
+      radial-gradient(50% 50% at 100% 100%, hsl(200 60% 48% / 0.018) 0%, transparent 60%);
   }
 
   * {
@@ -219,7 +218,7 @@
     --body-overlay: hsl(240 5% 2% / 0.81);
   }
   [data-theme="light"] {
-    --body-overlay: hsl(220 14% 87% / 0.99);
+    --body-overlay: hsl(220 22% 93% / 0.99);
   }
 
   body {
@@ -514,7 +513,7 @@
     background: hsl(var(--surface-4));
   }
   .chip-cyan  { color: hsl(var(--chip-cyan-fg));  background: hsl(var(--chip-cyan-bg));  }
-  .chip-lime  { color: hsl(var(--chip-cyan-fg));  background: hsl(var(--chip-cyan-bg));  } /* legacy */
+  .chip-lime  { color: hsl(var(--chip-lime-fg));  background: hsl(var(--chip-lime-bg));  }
   .chip-blue  { color: hsl(var(--chip-blue-fg));  background: hsl(var(--chip-blue-bg));  }
   .chip-amber { color: hsl(var(--chip-amber-fg)); background: hsl(var(--chip-amber-bg)); }
   .chip-red   { color: hsl(var(--chip-red-fg));   background: hsl(var(--chip-red-bg));   }

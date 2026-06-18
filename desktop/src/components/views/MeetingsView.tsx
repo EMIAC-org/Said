@@ -7,8 +7,10 @@ import {
   ChevronDown,
   Copy,
   Download,
+  Eraser,
   ExternalLink,
   FileText,
+  Layers,
   ListChecks,
   Loader2,
   MessageSquare,
@@ -23,28 +25,18 @@ import {
   Search,
   Sparkles,
   Star,
-  Building2,
   Trash2,
   Video,
   X,
 } from "lucide-react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import {
-  createMeeting,
-  deleteMeeting,
-  ensureActiveWorkspace,
-  exportMeetingToLark,
-  getConnection,
-  listMeetings,
-  repairEnterpriseConnection,
-  startMeeting,
-} from "@/lib/enterprise";
+import { exportMeetingToLark } from "@/lib/enterprise";
 import { openExternal } from "@/lib/invoke";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
+import { DigestView } from "@/components/views/DigestView";
 import {
   MeetingRichText,
-  parseMeetingSummary,
-  renderInlineMarkdown,
+  MeetingSummaryContent,
   stripInlineMarkdown,
   summaryLead,
 } from "@/lib/meetingMarkdown";
@@ -70,6 +62,51 @@ interface MeetingOverview {
   hidden: boolean;
   has_local_files: boolean;
   lark_doc_url?: string | null;
+}
+
+// Local meeting list entry from `meeting_engine_list_meetings` — meetings are a
+// single-device, on-device feature now (no control-plane list).
+interface LocalMeetingSummary {
+  id: string;
+  title: string;
+  status: "live" | "ended";
+  created_at_ms: number;
+  tags: string[];
+  action_count: number;
+  decision_count: number;
+  word_count: number;
+  has_intelligence: boolean;
+  favorite: boolean;
+  hidden: boolean;
+  has_local_files: boolean;
+  lark_doc_url?: string | null;
+}
+
+function localToMeeting(m: LocalMeetingSummary): Meeting {
+  return {
+    id: m.id,
+    title: m.title,
+    status: m.status,
+    created_at: new Date(m.created_at_ms).toISOString(),
+    scheduled_at: null,
+    agenda: null,
+    participants_count: 1,
+  };
+}
+
+function localToOverview(m: LocalMeetingSummary): MeetingOverview {
+  return {
+    title: m.title,
+    tags: m.tags,
+    action_count: m.action_count,
+    decision_count: m.decision_count,
+    word_count: m.word_count,
+    has_intelligence: m.has_intelligence,
+    favorite: m.favorite,
+    hidden: m.hidden,
+    has_local_files: m.has_local_files,
+    lark_doc_url: m.lark_doc_url ?? null,
+  };
 }
 
 interface MeetingSearchHit {
@@ -192,68 +229,6 @@ function tagColor(label: string): string {
   return TAG_COLORS[Math.abs(hash) % TAG_COLORS.length];
 }
 
-function MeetingSummaryContent({ summary }: { summary: string }) {
-  const blocks = parseMeetingSummary(summary);
-  let headingSeen = false;
-  return (
-    <div className="mt-7 space-y-4">
-      {blocks.map((block, index) => {
-        if (block.kind === "heading") {
-          const firstHeading = !headingSeen;
-          headingSeen = true;
-          return (
-            <div
-              key={`${block.kind}-${index}-${block.text}`}
-              className={firstHeading ? "flex items-center gap-3" : "flex items-center gap-3 border-t pt-7 mt-2"}
-              style={firstHeading ? undefined : { borderColor: "hsl(var(--surface-4))" }}
-            >
-              {block.index ? (
-                <span
-                  className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg text-[12px] font-bold"
-                  style={{ background: "hsl(var(--primary) / 0.16)", color: "hsl(var(--primary))" }}
-                >
-                  {block.index}
-                </span>
-              ) : (
-                <span className="h-4 w-1 flex-shrink-0 rounded-full" style={{ background: "hsl(var(--primary))" }} />
-              )}
-              <h3 className="text-[18px] font-bold tracking-tight text-foreground">{block.text}</h3>
-            </div>
-          );
-        }
-        if (block.kind === "quote") {
-          return (
-            <blockquote
-              key={`${block.kind}-${index}-${block.text}`}
-              className="rounded-r-lg border-l-[3px] py-1 pl-4 text-[15px] italic leading-8 text-muted-foreground"
-              style={{ borderColor: "hsl(var(--primary) / 0.7)", background: "hsl(var(--primary) / 0.05)" }}
-            >
-              {renderInlineMarkdown(block.text)}
-            </blockquote>
-          );
-        }
-        if (block.kind === "bullet") {
-          return (
-            <div key={`${block.kind}-${index}-${block.text}`} className="flex gap-3 text-[16px] leading-8 text-muted-foreground">
-              {block.emoji ? (
-                <span className="mt-0.5 flex-shrink-0 text-[16px] leading-8">{block.emoji}</span>
-              ) : (
-                <span className="mt-3.5 h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ background: "hsl(var(--primary))" }} />
-              )}
-              <p className="max-w-[100ch]">{renderInlineMarkdown(block.text)}</p>
-            </div>
-          );
-        }
-        return (
-          <p key={`${block.kind}-${index}-${block.text}`} className="max-w-[102ch] text-[16px] leading-8 text-muted-foreground">
-            {renderInlineMarkdown(block.text)}
-          </p>
-        );
-      })}
-    </div>
-  );
-}
-
 function MeetingCard({
   meeting,
   overview,
@@ -277,11 +252,13 @@ function MeetingCard({
   return (
     <button
       type="button"
-      className="w-full rounded-xl p-4 text-left transition-colors cursor-pointer hover:brightness-110"
+      className="w-full rounded-xl p-4 text-left transition-colors cursor-pointer"
       style={{
-        background: selected ? "hsl(var(--primary) / 0.12)" : "hsl(var(--surface-2))",
-        border: selected ? "1px solid hsl(var(--primary) / 0.34)" : "1px solid hsl(var(--surface-4))",
-        boxShadow: selected ? "0 0 0 1px hsl(var(--primary) / 0.08) inset" : "none",
+        background: selected ? "hsl(var(--primary) / 0.13)" : "hsl(var(--surface-3))",
+        border: selected ? "1px solid hsl(var(--primary) / 0.42)" : "1px solid hsl(var(--border))",
+        boxShadow: selected
+          ? "0 0 0 1px hsl(var(--primary) / 0.10) inset, 0 8px 22px hsl(var(--primary) / 0.08)"
+          : "0 1px 0 hsl(var(--glass-highlight)) inset",
       }}
       onClick={onSelect}
     >
@@ -295,17 +272,17 @@ function MeetingCard({
         <Star
           size={14}
           fill={overview?.favorite ? "hsl(38 90% 72%)" : "none"}
-          style={{ color: overview?.favorite ? "hsl(38 90% 72%)" : "hsl(var(--surface-4))" }}
+          style={{ color: overview?.favorite ? "hsl(38 90% 72%)" : "hsl(var(--muted-foreground) / 0.35)" }}
         />
       </div>
       <div className="mt-4 flex flex-wrap gap-1.5">
-        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(0 0% 0% / 0.55)", color: "hsl(var(--primary))" }}>
+        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(var(--chip-blue-bg))", color: "hsl(var(--chip-blue-fg))" }}>
           Summary
         </span>
-        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(0 0% 0% / 0.55)", color: "hsl(142 70% 65%)" }}>
+        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(var(--chip-lime-bg))", color: "hsl(var(--chip-lime-fg))" }}>
           {actionCount} actions
         </span>
-        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(0 0% 0% / 0.55)", color: "hsl(38 90% 72%)" }}>
+        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(var(--chip-amber-bg))", color: "hsl(var(--chip-amber-fg))" }}>
           {decisionCount} decisions
         </span>
       </div>
@@ -323,7 +300,7 @@ function MeetingCard({
         </div>
       ) : null}
       {searchHit ? (
-        <div className="mt-2.5 border-t pt-2.5" style={{ borderColor: "hsl(var(--surface-4))" }}>
+        <div className="mt-2.5 border-t pt-2.5" style={{ borderColor: "hsl(var(--border))" }}>
           {searchHit.matched_in.length > 0 ? (
             <p className="text-[10px] font-bold uppercase tracking-[0.1em]" style={{ color: "hsl(var(--primary))" }}>
               Match · {searchHit.matched_in.join(", ")}
@@ -356,7 +333,11 @@ function IconButton({
       disabled={disabled}
       onClick={onClick}
       className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors disabled:opacity-40"
-      style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--muted-foreground))" }}
+      style={{
+        background: "hsl(var(--surface-3))",
+        border: "1px solid hsl(var(--border))",
+        color: "hsl(var(--muted-foreground))",
+      }}
     >
       {children}
     </button>
@@ -383,9 +364,9 @@ function ToolbarButton({
       onClick={onClick}
       className="h-10 rounded-lg px-3 text-[12px] font-bold transition-colors disabled:opacity-45"
       style={{
-        background: active ? "hsl(132 38% 12%)" : "hsl(var(--surface-2))",
-        border: active ? "1px solid hsl(132 56% 36%)" : "1px solid hsl(var(--surface-4))",
-        color: active ? "hsl(132 72% 62%)" : "hsl(var(--muted-foreground))",
+        background: active ? "hsl(var(--chip-lime-bg))" : "hsl(var(--surface-3))",
+        border: active ? "1px solid hsl(var(--chip-lime-fg) / 0.26)" : "1px solid hsl(var(--border))",
+        color: active ? "hsl(var(--chip-lime-fg))" : "hsl(var(--muted-foreground))",
       }}
     >
       <span className="flex items-center gap-2">
@@ -432,9 +413,9 @@ function CopyButton({
       onClick={() => void handle()}
       className="h-10 rounded-lg px-3 text-[12px] font-bold transition-colors disabled:opacity-45"
       style={{
-        background: copied ? "hsl(142 50% 12%)" : "hsl(var(--surface-2))",
-        border: copied ? "1px solid hsl(142 56% 36%)" : "1px solid hsl(var(--surface-4))",
-        color: copied ? "hsl(142 72% 62%)" : "hsl(var(--muted-foreground))",
+        background: copied ? "hsl(var(--chip-lime-bg))" : "hsl(var(--surface-3))",
+        border: copied ? "1px solid hsl(var(--chip-lime-fg) / 0.26)" : "1px solid hsl(var(--border))",
+        color: copied ? "hsl(var(--chip-lime-fg))" : "hsl(var(--muted-foreground))",
       }}
     >
       <span className="flex items-center gap-2">
@@ -480,7 +461,7 @@ function MeetingAudioBar({
   return (
     <div
       className="mt-7 flex h-14 items-center gap-4 rounded-xl px-4"
-      style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}
+      style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
     >
       {audioSrc ? (
         <audio
@@ -636,7 +617,7 @@ function TranscriptTab({
       <SpeakerTimeline segments={segments} durationMs={durationMs} />
 
       {segments.length > 0 ? (
-        <div className="mt-7 divide-y" style={{ borderColor: "hsl(var(--surface-4))" }}>
+        <div className="mt-7 divide-y" style={{ borderColor: "hsl(var(--border))" }}>
           {segments.map((segment, index) => (
             <button
               type="button"
@@ -718,7 +699,7 @@ function ActionRows({
           placeholder="Add an action item…"
           maxLength={300}
           className="h-10 min-w-0 flex-1 rounded-lg bg-transparent px-3.5 text-[14px] outline-none"
-          style={{ border: "1px solid hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+          style={{ border: "1px solid hsl(var(--border))", color: "hsl(var(--foreground))" }}
         />
         <button
           type="button"
@@ -741,7 +722,7 @@ function ActionRows({
                 className="mt-0.5 flex h-[18px] w-[18px] flex-shrink-0 items-center justify-center rounded-[4px]"
                 style={{
                   background: action.done ? "hsl(var(--primary))" : "transparent",
-                  border: action.done ? "1px solid hsl(var(--primary))" : "1px solid hsl(var(--surface-4))",
+                  border: action.done ? "1px solid hsl(var(--primary))" : "1px solid hsl(var(--border))",
                   color: "hsl(var(--primary-foreground))",
                 }}
                 title={action.done ? "Mark incomplete" : "Mark complete"}
@@ -790,7 +771,7 @@ function ActionRows({
                   className="mt-1 flex h-[18px] w-[18px] items-center justify-center rounded-[4px]"
                   style={{
                     background: isDone ? "hsl(var(--primary))" : "transparent",
-                    border: isDone ? "1px solid hsl(var(--primary))" : "1px solid hsl(var(--surface-4))",
+                    border: isDone ? "1px solid hsl(var(--primary))" : "1px solid hsl(var(--border))",
                     color: "hsl(var(--primary-foreground))",
                   }}
                   title={isDone ? "Mark incomplete" : "Mark complete"}
@@ -986,10 +967,10 @@ export function MeetingsView({
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  // True when the user has no active workspace to scope meetings to — rendered
-  // as a guided "pick a workspace" panel instead of a generic load error.
-  const [needsWorkspace, setNeedsWorkspace] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [meetingInProgress, setMeetingInProgress] = useState(false);
+  const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
   const [dateFilter, setDateFilter] = useState<"all" | "today" | "week" | "archived">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<Record<string, MeetingSearchHit> | null>(null);
@@ -1023,39 +1004,16 @@ export function MeetingsView({
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const fetchMeetings = useCallback(async () => {
-    const conn = getConnection();
-    if (!conn) {
-      setError("Not connected to enterprise server");
-      setLoading(false);
-      return;
-    }
     setLoading(true);
     setError("");
     try {
-      // Make sure an org is active so the list is scoped and New Meeting won't
-      // 403. If the user must pick a workspace, surface the guided panel.
-      setNeedsWorkspace(!(await ensureActiveWorkspace()));
-      // Reconcile: the engine records meetings it discarded locally as empty
-      // (immediate stop / no audio / killed mid-recording). Delete their cloud
-      // records so abandoned "Quick meeting" entries never linger in the list.
-      try {
-        const discarded = await invoke<string[]>("meeting_engine_take_discarded_meeting_ids");
-        await Promise.all(discarded.map((id) => deleteMeeting(conn.serverUrl, conn.jwt, id)));
-      } catch {
-        /* best-effort cleanup */
-      }
-      const result = (await listMeetings(conn.serverUrl, conn.jwt)) as Meeting[];
-      setMeetings(result);
-      // Enrich the list with locally-cached AI titles, word counts, and counts
-      // in a single batch call so every card reflects its own analysis.
-      const ids = result.map((meeting) => meeting.id);
-      if (ids.length > 0) {
-        invoke<Record<string, MeetingOverview>>("meeting_engine_get_meeting_overviews", {
-          meetingIds: ids,
-        })
-          .then((map) => setOverviews(map))
-          .catch(() => {});
-      }
+      // Meetings are local-only: the list is the set of meeting folders on this
+      // device, enumerated by the engine (no control-plane).
+      const local = await invoke<LocalMeetingSummary[]>("meeting_engine_list_meetings");
+      setMeetings(local.map(localToMeeting));
+      const map: Record<string, MeetingOverview> = {};
+      for (const m of local) map[m.id] = localToOverview(m);
+      setOverviews(map);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load meetings");
     } finally {
@@ -1063,21 +1021,18 @@ export function MeetingsView({
     }
   }, []);
 
-  // Re-read overviews for the current list (used after a local mutation so the
-  // backend stays the single source of truth for title/favorite/hidden/tags).
+  // Re-read the local list after a mutation (rename/favorite/hide) so the cards
+  // reflect the updated overrides registry, without the loading flash.
   const refreshOverviews = useCallback(async () => {
-    const ids = meetings.map((meeting) => meeting.id);
-    if (ids.length === 0) return;
     try {
-      const map = await invoke<Record<string, MeetingOverview>>(
-        "meeting_engine_get_meeting_overviews",
-        { meetingIds: ids },
-      );
+      const local = await invoke<LocalMeetingSummary[]>("meeting_engine_list_meetings");
+      const map: Record<string, MeetingOverview> = {};
+      for (const m of local) map[m.id] = localToOverview(m);
       setOverviews(map);
     } catch {
       /* best-effort */
     }
-  }, [meetings]);
+  }, []);
 
   useEffect(() => {
     void fetchMeetings();
@@ -1115,39 +1070,48 @@ export function MeetingsView({
       onConfigureModels?.();
       return;
     }
-    const conn = getConnection();
-    if (!conn) {
-      setError("Not connected to enterprise server");
-      return;
+    // Never start a second meeting while one is already recording — show a popup
+    // (with a jump-to-it action) instead of silently stopping the first.
+    try {
+      const status = await invoke<{ active: boolean; session_id?: string | null }>(
+        "meeting_engine_get_status",
+      );
+      if (status.active) {
+        setActiveMeetingId(status.session_id ?? null);
+        setMeetingInProgress(true);
+        return;
+      }
+    } catch {
+      /* status check failed — fall through and let the engine handle it */
     }
-    // Meetings are workspace-scoped: ensure one is active (auto-activating a
-    // sole workspace) before creating, else guide the user to pick one rather
-    // than failing with a 403 "active workspace required".
-    if (!(await ensureActiveWorkspace())) {
-      setNeedsWorkspace(true);
-      setError("");
-      return;
-    }
-    setNeedsWorkspace(false);
     setCreating(true);
     setError("");
     try {
-      const activeConn = await repairEnterpriseConnection(conn);
-      const meeting = await createMeeting(activeConn.serverUrl, activeConn.jwt, {
-        title: `Quick meeting ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
-        agenda: null,
-        participant_ids: [activeConn.accountId],
-        duration_minutes: 30,
-      });
-      await startMeeting(activeConn.serverUrl, activeConn.jwt, meeting.id);
-      await fetchMeetings();
-      onJoinMeeting?.(meeting.id);
+      // Local-only: allocate a fresh on-device meeting id and open the recorder.
+      // No cloud record is created, so an abandoned meeting leaves nothing behind.
+      const id = await invoke<string>("meeting_engine_new_local_meeting");
+      onJoinMeeting?.(id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create meeting");
     } finally {
       setCreating(false);
     }
-  }, [fetchMeetings, onJoinMeeting, hasModel, onConfigureModels]);
+  }, [onJoinMeeting, hasModel, onConfigureModels]);
+
+  // Clear empty meetings — silence/noise recordings (few words, never analyzed,
+  // not favorited or renamed) that pile up. Analyzed/favorited/named meetings and
+  // the active recording are always kept.
+  const handleClearEmpty = useCallback(async () => {
+    setClearing(true);
+    try {
+      await invoke<number>("meeting_engine_clear_empty_meetings");
+      await fetchMeetings();
+    } catch (err) {
+      console.warn("[meeting] clear empty failed:", err);
+    } finally {
+      setClearing(false);
+    }
+  }, [fetchMeetings]);
 
   // Debounced full-text search across title/tags/summary/notes/decisions/
   // actions/transcript (heavy fields are read locally by the backend).
@@ -1458,13 +1422,15 @@ export function MeetingsView({
   // When the failure is an auth/scope problem, we offer a "Reconnect Lark"
   // action instead of a dead-end error.
   const [larkNeedsReauth, setLarkNeedsReauth] = useState(false);
+  // Meetings list vs cross-meeting Digest mode.
+  const [viewMode, setViewMode] = useState<"meetings" | "digest">("meetings");
   const handleExportToLark = useCallback(async () => {
     if (!selectedMeeting || !meetingAi?.summary?.trim()) return;
     setLarkExporting(true);
     setLarkError(null);
     setLarkNeedsReauth(false);
     try {
-      const result = await exportMeetingToLark(selectedMeeting.id, {
+      const result = await exportMeetingToLark({
         title: meetingAi.title?.trim() || selectedMeeting.title,
         summary: meetingAi.summary,
         action_items: (meetingAi.action_items ?? []).map((a) => ({
@@ -1830,11 +1796,8 @@ export function MeetingsView({
     const id = pendingDelete.id;
     setPendingDelete(null);
     try {
-      // Permanent delete: local artifacts AND the cloud record, so it's gone
-      // everywhere (not just hidden on this device).
+      // Local-only permanent delete: remove the on-device artifacts.
       await invoke("meeting_engine_delete_meeting_files", { meetingId: id });
-      const conn = getConnection();
-      if (conn) await deleteMeeting(conn.serverUrl, conn.jwt, id);
       setSelectedMeetingId((cur) => (cur === id ? null : cur));
       await fetchMeetings();
     } catch (err) {
@@ -1851,13 +1814,13 @@ export function MeetingsView({
   ];
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden" style={{ background: "hsl(var(--surface-2))" }}>
       {hasModel === false ? (
         <div
           className="flex flex-wrap items-center gap-3 px-5 py-2.5"
-          style={{ background: "hsl(38 70% 13%)", borderBottom: "1px solid hsl(38 60% 30%)" }}
+          style={{ background: "hsl(var(--chip-amber-bg))", borderBottom: "1px solid hsl(var(--chip-amber-fg) / 0.22)" }}
         >
-          <AlertTriangle size={15} className="flex-shrink-0" style={{ color: "hsl(38 92% 66%)" }} />
+          <AlertTriangle size={15} className="flex-shrink-0" style={{ color: "hsl(var(--chip-amber-fg))" }} />
           <span className="min-w-0 flex-1 text-[12px] text-foreground">
             <span className="font-semibold">No transcription model installed.</span> Meetings can't
             be transcribed until you download and select a model.
@@ -1866,14 +1829,45 @@ export function MeetingsView({
             type="button"
             onClick={() => onConfigureModels?.()}
             className="h-7 flex-shrink-0 rounded-lg px-3 text-[12px] font-bold"
-            style={{ background: "hsl(38 92% 60%)", color: "hsl(38 92% 10%)" }}
+            style={{ background: "hsl(var(--chip-amber-fg))", color: "hsl(var(--background))" }}
           >
             Download a model
           </button>
         </div>
       ) : null}
-      <div className="relative flex min-h-0 flex-1 overflow-hidden">
-      <aside className="flex w-[240px] flex-shrink-0 flex-col xl:w-[330px]" style={{ borderRight: "1px solid hsl(var(--surface-4))" }}>
+      <div
+        className="flex flex-shrink-0 items-center gap-1 px-4 py-2"
+        style={{ background: "hsl(var(--surface-3))", borderBottom: "1px solid hsl(var(--border))" }}
+      >
+        {(
+          [
+            { id: "meetings" as const, label: "Meetings", icon: <Video size={13} /> },
+            { id: "digest" as const, label: "Digest", icon: <Layers size={13} /> },
+          ]
+        ).map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setViewMode(t.id)}
+            className="flex h-7 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold"
+            style={{
+              background: viewMode === t.id ? "hsl(var(--primary) / 0.10)" : "transparent",
+              color: viewMode === t.id ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
+            }}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {/* Kept mounted (hidden via CSS) so a generated digest survives tab switches. */}
+      <div className={`min-h-0 flex-1 overflow-hidden ${viewMode === "digest" ? "flex" : "hidden"}`}>
+        <DigestView meetings={meetings} overviews={overviews} />
+      </div>
+      <div
+        className={`relative min-h-0 flex-1 overflow-hidden ${viewMode === "meetings" ? "flex" : "hidden"}`}
+      >
+      <aside className="flex w-[240px] flex-shrink-0 flex-col xl:w-[330px]" style={{ background: "hsl(var(--surface-2))", borderRight: "1px solid hsl(var(--border))" }}>
         <div className="px-4 pb-3 pt-5">
           <div className="flex items-center justify-between">
             <div>
@@ -1881,6 +1875,13 @@ export function MeetingsView({
               <p className="text-[11px] text-muted-foreground">{liveCount} live · {endedCount} ended</p>
             </div>
             <div className="flex items-center gap-1.5">
+              <IconButton
+                label="Clear empty meetings"
+                disabled={clearing || loading}
+                onClick={() => void handleClearEmpty()}
+              >
+                <Eraser size={13} className={clearing ? "animate-pulse" : ""} />
+              </IconButton>
               <IconButton label="Refresh meetings" disabled={loading} onClick={() => void fetchMeetings()}>
                 <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
               </IconButton>
@@ -1895,7 +1896,7 @@ export function MeetingsView({
               </button>
             </div>
           </div>
-          <div className="mt-3 flex h-9 items-center gap-2 rounded-lg px-3" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--surface-4))" }}>
+          <div className="mt-3 flex h-9 items-center gap-2 rounded-lg px-3" style={{ background: "hsl(var(--input))", border: "1px solid hsl(var(--border))" }}>
             {searchBusy ? (
               <Loader2 size={13} className="animate-spin text-muted-foreground" />
             ) : (
@@ -1934,7 +1935,7 @@ export function MeetingsView({
                 onClick={() => setDateFilter(filter.id)}
                 className="h-7 rounded-lg px-2.5 text-[11px] font-semibold"
                 style={{
-                  background: dateFilter === filter.id ? "hsl(var(--surface-4))" : "transparent",
+                  background: dateFilter === filter.id ? "hsl(var(--primary) / 0.10)" : "transparent",
                   color: dateFilter === filter.id ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
                 }}
               >
@@ -1949,23 +1950,6 @@ export function MeetingsView({
             <div className="flex h-full flex-col items-center justify-center gap-3 opacity-60">
               <Loader2 size={20} className="animate-spin text-muted-foreground" />
               <p className="text-[12px] text-muted-foreground">Loading meetings...</p>
-            </div>
-          ) : needsWorkspace ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-              <Building2 size={28} className="text-muted-foreground" />
-              <p className="text-[13px] font-semibold text-foreground">
-                Select a workspace to start meetings
-              </p>
-              <p className="max-w-[240px] text-[12px] text-muted-foreground">
-                Meetings are saved to your workspace. Choose one to create and view meetings.
-              </p>
-              <button
-                onClick={() => onOpenWorkspaces?.()}
-                className="rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors"
-                style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-              >
-                Choose workspace
-              </button>
             </div>
           ) : error ? (
             <div className="flex h-full flex-col items-center justify-center gap-3">
@@ -2016,7 +2000,7 @@ export function MeetingsView({
         {pendingDelete ? (
           <div
             className="mx-auto mb-5 flex w-full max-w-[1280px] flex-wrap items-center gap-x-4 gap-y-2 rounded-xl px-4 py-2.5"
-            style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}
+            style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
           >
             <div className="flex min-w-0 flex-1 items-center gap-2.5">
               <Trash2 size={15} className="flex-shrink-0" style={{ color: "hsl(354 80% 70%)" }} />
@@ -2124,7 +2108,7 @@ export function MeetingsView({
                         setAddingTag(true);
                       }}
                       className="rounded-lg border border-dashed px-3 py-1 text-[12px] font-bold text-muted-foreground transition-colors hover:text-foreground"
-                      style={{ borderColor: "hsl(var(--surface-4))" }}
+                      style={{ borderColor: "hsl(var(--border))" }}
                     >
                       + Add
                     </button>
@@ -2217,7 +2201,7 @@ export function MeetingsView({
               />
             ) : null}
 
-            <div className="mt-6 grid grid-cols-5 border-b" style={{ borderColor: "hsl(var(--surface-4))" }}>
+            <div className="mt-6 grid grid-cols-5 border-b" style={{ borderColor: "hsl(var(--border))" }}>
               {detailTabs.map((tab) => (
                 <button
                   key={tab.id}
@@ -2280,9 +2264,9 @@ export function MeetingsView({
                               onClick={() => void openExternal(larkUrl)}
                               className="h-10 rounded-lg px-3 text-[12px] font-bold transition-colors"
                               style={{
-                                background: "hsl(142 50% 12%)",
-                                border: "1px solid hsl(142 56% 36%)",
-                                color: "hsl(142 72% 62%)",
+                                background: "hsl(var(--chip-lime-bg))",
+                                border: "1px solid hsl(var(--chip-lime-fg) / 0.26)",
+                                color: "hsl(var(--chip-lime-fg))",
                               }}
                             >
                               <span className="flex items-center gap-2">
@@ -2324,7 +2308,7 @@ export function MeetingsView({
                   <p className="text-[14px]" style={{ color: "hsl(354 85% 75%)" }}>{meetingAiError}</p>
                 ) : meetingAi?.summary?.trim() ? (
                   <>
-                    <div className="rounded-xl px-7 py-6" style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}>
+                    <div className="rounded-xl px-7 py-6" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}>
                       <div className="flex gap-4">
                         <Sparkles size={19} style={{ color: "hsl(var(--primary))" }} />
                         <p className="max-w-[110ch] text-[17px] italic leading-8 text-muted-foreground">
@@ -2353,7 +2337,7 @@ export function MeetingsView({
                     </span>
                   </div>
                   {notes.trim() ? (
-                    <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}>
+                    <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}>
                       <button
                         type="button"
                         onClick={() => setNotesPreview(true)}
@@ -2374,11 +2358,11 @@ export function MeetingsView({
                   ) : null}
                 </div>
                 {notesPreview && notes.trim() ? (
-                  <div className="rounded-xl px-7 py-6" style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}>
+                  <div className="rounded-xl px-7 py-6" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}>
                     <MeetingRichText text={notes} />
                   </div>
                 ) : (
-                  <div className="rounded-xl" style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}>
+                  <div className="rounded-xl" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}>
                     <textarea
                       value={notes}
                       onChange={(event) => handleNotesChange(event.currentTarget.value)}
@@ -2431,7 +2415,7 @@ export function MeetingsView({
                 <h3 className="mb-5 text-[15px] font-bold text-foreground">AI Chat</h3>
                 <div
                   className="h-[560px] overflow-hidden rounded-xl"
-                  style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}
+                  style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
                 >
                   <MeetingAiChat
                     resetKey={selectedMeeting.id}
@@ -2461,6 +2445,48 @@ export function MeetingsView({
         )}
       </main>
       </div>
+
+      {meetingInProgress && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-6"
+          style={{ background: "hsl(0 0% 0% / 0.55)" }}
+          onClick={() => setMeetingInProgress(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl p-5"
+            style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-[15px] font-bold text-foreground">A meeting is already in progress</h3>
+            <p className="mt-1.5 text-[13px] text-muted-foreground">
+              Finish the current meeting before starting a new one.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setMeetingInProgress(false)}
+                className="h-9 rounded-lg px-3 text-[12px] font-bold"
+                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+              >
+                Cancel
+              </button>
+              {activeMeetingId ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMeetingInProgress(false);
+                    onJoinMeeting?.(activeMeetingId);
+                  }}
+                  className="h-9 rounded-lg px-3 text-[12px] font-bold"
+                  style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+                >
+                  Open it
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

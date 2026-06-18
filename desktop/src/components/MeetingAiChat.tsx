@@ -34,6 +34,11 @@ interface MeetingAiChatProps {
   onSeek?: (seconds: number) => void;
   /** Reset the conversation when this key changes (e.g. selected meeting id). */
   resetKey?: string;
+  /** Tauri command to invoke (default "meeting_engine_chat"). Lets the digest
+   *  view reuse this component with "meeting_engine_digest_chat". */
+  chatCommand?: string;
+  /** Extra args merged into the invoke payload (e.g. digest `refs`). */
+  chatArgs?: Record<string, unknown>;
 }
 
 /**
@@ -52,6 +57,8 @@ export function MeetingAiChat({
   placeholder,
   onSeek,
   resetKey,
+  chatCommand,
+  chatArgs,
 }: MeetingAiChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -90,8 +97,8 @@ export function MeetingAiChat({
   }, [resetKey]);
 
   // Keep the latest grounding values for the async send without re-creating it.
-  const groundingRef = useRef({ summary, transcriptOverride, notes });
-  groundingRef.current = { summary, transcriptOverride, notes };
+  const groundingRef = useRef({ summary, transcriptOverride, notes, chatCommand, chatArgs });
+  groundingRef.current = { summary, transcriptOverride, notes, chatCommand, chatArgs };
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -136,12 +143,14 @@ export function MeetingAiChat({
     activeUnlistenRef.current = unlisten;
 
     try {
-      const result = await invoke<MeetingChatResult>("meeting_engine_chat", {
+      const grounding = groundingRef.current;
+      const result = await invoke<MeetingChatResult>(grounding.chatCommand ?? "meeting_engine_chat", {
         requestId,
         question,
-        summary: groundingRef.current.summary ?? null,
-        transcriptOverride: groundingRef.current.transcriptOverride ?? null,
-        notes: groundingRef.current.notes ?? null,
+        summary: grounding.summary ?? null,
+        transcriptOverride: grounding.transcriptOverride ?? null,
+        notes: grounding.notes ?? null,
+        ...(grounding.chatArgs ?? {}),
       });
       if (!isCurrent()) return;
       setMessages((prev) => {

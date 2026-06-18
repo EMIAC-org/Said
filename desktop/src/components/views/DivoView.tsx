@@ -31,7 +31,7 @@ function Kbd({ children }: { children: React.ReactNode }) {
   return (
     <span
       className="font-mono text-[10.5px] px-1.5 py-0.5 rounded"
-      style={{ background: "hsl(var(--foreground) / 0.1)", border: "1px solid hsl(var(--foreground) / 0.14)" }}
+      style={{ background: "hsl(var(--surface-4))", border: "1px solid hsl(var(--border))" }}
     >
       {children}
     </span>
@@ -88,11 +88,11 @@ export function DivoView() {
   const activeTitle = detail?.title || threads.find((t) => t.id === activeId)?.title || "New chat";
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col" style={{ background: "hsl(var(--surface-2))" }}>
       {/* ── Header ─────────────────────────────────────────────── */}
       <div
         className="flex items-center gap-3 px-6 py-4 flex-shrink-0"
-        style={{ borderBottom: "1px solid hsl(var(--border) / 0.6)" }}
+        style={{ background: "hsl(var(--surface-3))", borderBottom: "1px solid hsl(var(--border))" }}
       >
         <span
           className="grid place-items-center w-7 h-7 rounded-lg flex-shrink-0"
@@ -133,13 +133,13 @@ export function DivoView() {
         {/* Chat history list */}
         <div
           className="w-[280px] flex-shrink-0 flex flex-col min-h-0"
-          style={{ borderRight: "1px solid hsl(var(--border) / 0.5)" }}
+          style={{ background: "hsl(var(--surface-2))", borderRight: "1px solid hsl(var(--border))" }}
         >
           <div className="flex items-center gap-2 px-4 pt-4 pb-2 flex-shrink-0">
             <span className="text-[13px] font-bold text-foreground">Chats</span>
             <button
               className="ml-auto inline-flex items-center gap-1 text-[11.5px] font-semibold px-2.5 py-1 rounded-md transition-colors"
-              style={{ color: "hsl(240 8% 10%)", background: "hsl(var(--foreground) / 0.92)" }}
+              style={{ color: "hsl(var(--primary-foreground))", background: "hsl(var(--primary))" }}
               onClick={newChat}
             >
               <Plus size={12} strokeWidth={2.6} /> New
@@ -149,7 +149,7 @@ export function DivoView() {
           <div className="px-4 pb-2 flex-shrink-0">
             <div
               className="flex items-center gap-2 h-8 px-2.5 rounded-lg"
-              style={{ background: "hsl(var(--foreground) / 0.05)", border: "1px solid hsl(var(--border) / 0.6)" }}
+              style={{ background: "hsl(var(--input))", border: "1px solid hsl(var(--border))" }}
             >
               <Search size={13} className="text-muted-foreground flex-shrink-0" />
               <input
@@ -181,7 +181,7 @@ export function DivoView() {
                     className="text-left px-3 py-2.5 rounded-lg transition-colors"
                     style={
                       t.id === activeId
-                        ? { background: "hsl(var(--foreground) / 0.08)", border: "1px solid hsl(var(--border) / 0.7)" }
+                        ? { background: "hsl(var(--primary) / 0.10)", border: "1px solid hsl(var(--primary) / 0.24)" }
                         : { border: "1px solid transparent" }
                     }
                   >
@@ -207,7 +207,7 @@ export function DivoView() {
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
           <div
             className="flex items-center gap-2 px-5 py-3 flex-shrink-0"
-            style={{ borderBottom: "1px solid hsl(var(--border) / 0.5)" }}
+            style={{ background: "hsl(var(--surface-3))", borderBottom: "1px solid hsl(var(--border))" }}
           >
             <span className="truncate text-[13.5px] font-bold text-foreground">{activeTitle}</span>
           </div>
@@ -222,7 +222,7 @@ export function DivoView() {
                 <div className="flex flex-col items-center gap-2 py-16 text-center text-muted-foreground">
                   <span
                     className="grid place-items-center w-11 h-11 rounded-xl mb-1"
-                    style={{ background: "hsl(var(--foreground) / 0.06)" }}
+                    style={{ background: "hsl(var(--surface-4))", border: "1px solid hsl(var(--border))" }}
                   >
                     <Mic size={18} />
                   </span>
@@ -241,8 +241,8 @@ export function DivoView() {
                         className="max-w-[80%] px-3.5 py-2 text-[13px] leading-relaxed"
                         style={{
                           color: "hsl(var(--foreground) / 0.97)",
-                          background: "hsl(226 70% 50% / 0.18)",
-                          border: "1px solid hsl(226 70% 60% / 0.3)",
+                          background: "hsl(var(--primary) / 0.14)",
+                          border: "1px solid hsl(var(--primary) / 0.28)",
                           borderRadius: "14px 14px 4px 14px",
                         }}
                       >
@@ -272,7 +272,7 @@ export function DivoView() {
 
           <div
             className="flex items-center gap-2 px-5 py-3 flex-shrink-0 text-[11.5px] text-muted-foreground"
-            style={{ borderTop: "1px solid hsl(var(--border) / 0.5)" }}
+            style={{ background: "hsl(var(--surface-3))", borderTop: "1px solid hsl(var(--border))" }}
           >
             <Mic size={13} className="flex-shrink-0" />
             Hold <Kbd>⌃</Kbd> to continue this chat&nbsp;·&nbsp;<Kbd>⌃N</Kbd> to start a new one

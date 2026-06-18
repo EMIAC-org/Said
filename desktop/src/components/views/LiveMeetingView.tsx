@@ -232,8 +232,16 @@ interface LiveMeetingViewProps {
 
 export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewProps) {
   void onBack; // onBack reserved for a future in-call back button
+  // Meetings are single-device & local-only: no cloud session, no live
+  // WebSocket, no remote participants. All new meetings get a `local-…` id.
+  const isLocal = meetingId.startsWith("local-");
   const [connected, setConnected] = useState(false);
   const [ended, setEnded] = useState(false);
+  // Live recording elapsed timer (counts up every second while recording).
+  const [startedAtMs, setStartedAtMs] = useState<number | null>(null);
+  const [clockMs, setClockMs] = useState(() => Date.now());
+  // Confirm dialog before ending / leaving a meeting.
+  const [confirmEnd, setConfirmEnd] = useState(false);
   const [chunks, setChunks] = useState<TranscriptChunk[]>([]);
   const [participants, setParticipants] = useState<WsParticipant[]>([]);
   // Live notes — saved to this meeting and used as AI-chat context.
@@ -305,6 +313,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   const applyMeetingStatus = useCallback((status: MeetingEngineStatus) => {
     engineSessionIdRef.current = status.session_id || null;
     setEngineRunning(status.active);
+    setStartedAtMs(status.started_at_ms ?? null);
     setMuted(status.muted);
     setCaptureRunning(status.capture_running);
     setMicTrackActive(Boolean(status.mic_track_active));
@@ -338,6 +347,14 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
     setFinalDiarizationError(status.final_diarization_error || null);
     setTranscriptionError(status.transcription_error || null);
   }, []);
+
+  // Tick the recording timer every second while the meeting is live.
+  useEffect(() => {
+    if (ended || !engineRunning || !startedAtMs) return;
+    setClockMs(Date.now());
+    const id = setInterval(() => setClockMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [ended, engineRunning, startedAtMs]);
 
   // Keep endedRef in sync with state (avoids stale closures in WS callbacks)
   useEffect(() => {
@@ -608,7 +625,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
 
   useEffect(() => {
     const conn = getConnection();
-    if (!conn) return;
+    if (!conn || meetingId.startsWith("local-")) return;
 
     let cancelled = false;
     const url = conn.serverUrl.replace(/\/+$/, "");
@@ -634,7 +651,8 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   // WebSocket connection with auto-reconnect and resume protocol
   useEffect(() => {
     const connOrNull = getConnection();
-    if (!connOrNull) return;
+    // Local meetings have no cloud session — skip the live WebSocket entirely.
+    if (!connOrNull || meetingId.startsWith("local-")) return;
 
     // Capture non-null for use in nested closures (TS narrowing doesn't propagate)
     const conn = connOrNull;
@@ -1072,9 +1090,52 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
         title="Open live meeting AI chat"
       >
         <Sparkles size={16} style={{ color: "hsl(var(--primary))" }} />
-        <span>{chunks.length > 0 ? formatTimestamp(chunks[chunks.length - 1].timestamp_ms) : "00:00"}</span>
+        <span>
+          {startedAtMs && !ended ? formatTimestamp(Math.max(0, clockMs - startedAtMs)) : "00:00"}
+        </span>
       </button>
       {aiChatOpen && aiChatPanel}
+
+      {confirmEnd && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-6"
+          style={{ background: "hsl(0 0% 0% / 0.55)" }}
+          onClick={() => setConfirmEnd(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl p-5"
+            style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-[15px] font-bold text-foreground">End this meeting?</h3>
+            <p className="mt-1.5 text-[13px] text-muted-foreground">
+              Recording will stop and the meeting will be processed into a summary.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmEnd(false)}
+                className="h-9 rounded-lg px-3 text-[12px] font-bold"
+                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+              >
+                Keep recording
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmEnd(false);
+                  void handleLeave();
+                }}
+                disabled={controlBusy}
+                className="h-9 rounded-lg px-3 text-[12px] font-bold disabled:opacity-45"
+                style={{ background: "hsl(354 80% 55%)", color: "white" }}
+              >
+                End meeting
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Top bar */}
       <div
@@ -1085,7 +1146,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
       >
         <div className="flex items-center gap-3">
           <button
-            onClick={() => void handleLeave()}
+            onClick={() => setConfirmEnd(true)}
             className="flex items-center justify-center w-7 h-7 rounded-lg transition-colors hover:opacity-80"
             style={{ background: "hsl(var(--surface-4))" }}
             title="Leave meeting"
@@ -1099,14 +1160,16 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
         </div>
 
         <div className="flex items-center gap-4">
-          {/* Participant count */}
-          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <Users size={12} />
-            <span>{activeParticipants}</span>
-          </div>
+          {!isLocal && (
+            <>
+              {/* Participant count */}
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <Users size={12} />
+                <span>{activeParticipants}</span>
+              </div>
 
-          {/* Connection status */}
-          <div className="flex items-center gap-1.5">
+              {/* Connection status */}
+              <div className="flex items-center gap-1.5">
             {reconnecting ? (
               <>
                 <Loader2 size={12} className="animate-spin" style={{ color: "hsl(38 90% 72%)" }} />
@@ -1147,10 +1210,12 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
                 <WifiOff size={12} style={{ color: "hsl(354 85% 75%)" }} />
               </>
             )}
-          </div>
+              </div>
+            </>
+          )}
 
           <button
-            onClick={() => void handleLeave()}
+            onClick={() => setConfirmEnd(true)}
             disabled={controlBusy}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-40"
             style={{
@@ -1352,22 +1417,26 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
             <span>{engineStatusLabel}</span>
           </div>
 
-          <div
-            className="h-8 w-px"
-            style={{ background: "hsl(var(--surface-4))" }}
-          />
+          {!isLocal && (
+            <>
+              <div
+                className="h-8 w-px"
+                style={{ background: "hsl(var(--surface-4))" }}
+              />
 
-          <div className="flex items-center gap-2 px-2 text-[11px] text-muted-foreground">
-            <Users size={13} />
-            <span>{activeParticipants}</span>
-            {reconnecting ? (
-              <Loader2 size={13} className="animate-spin" style={{ color: "hsl(38 90% 72%)" }} />
-            ) : connected ? (
-              <Wifi size={13} style={{ color: "hsl(142 70% 65%)" }} />
-            ) : (
-              <WifiOff size={13} style={{ color: "hsl(354 85% 75%)" }} />
-            )}
-          </div>
+              <div className="flex items-center gap-2 px-2 text-[11px] text-muted-foreground">
+                <Users size={13} />
+                <span>{activeParticipants}</span>
+                {reconnecting ? (
+                  <Loader2 size={13} className="animate-spin" style={{ color: "hsl(38 90% 72%)" }} />
+                ) : connected ? (
+                  <Wifi size={13} style={{ color: "hsl(142 70% 65%)" }} />
+                ) : (
+                  <WifiOff size={13} style={{ color: "hsl(354 85% 75%)" }} />
+                )}
+              </div>
+            </>
+          )}
 
           {isOwner && (
             <button
