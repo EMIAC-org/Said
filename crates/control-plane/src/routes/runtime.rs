@@ -38,6 +38,10 @@ const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL_FAST: &str = "llama-3.1-8b-instant";
 const GROQ_MODEL_SMART: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
 
+fn selected_polish_model(_selected_model: &str) -> &'static str {
+    GROQ_MODEL_SMART
+}
+
 fn learning_judge_model() -> String {
     match std::env::var("AIRNOTE_LEARNING_JUDGE_MODEL")
         .unwrap_or_else(|_| GROQ_MODEL_FAST.to_string())
@@ -1599,11 +1603,7 @@ async fn handle_voice_ws(
                                 "phase": "polishing"
                             }).to_string())).await;
 
-                            let model_used = if selected_model == "smart" {
-                                GROQ_MODEL_SMART
-                            } else {
-                                GROQ_MODEL_FAST
-                            };
+                            let model_used = selected_polish_model(&selected_model);
                             let polish_start = Instant::now();
                             match polish_runtime_transcript(
                                 &state,
@@ -2115,11 +2115,7 @@ async fn polish_runtime_transcript(
     )
     .await?;
 
-    let model = if selected_model == "smart" {
-        GROQ_MODEL_SMART
-    } else {
-        GROQ_MODEL_FAST
-    };
+    let model = selected_polish_model(selected_model);
     let active_org_id = primary_org_id(state, account_id).await?;
     let credential = runtime_provider_secret(state, account_id, active_org_id, "groq").await?;
     let model_start = Instant::now();
@@ -2446,11 +2442,7 @@ pub async fn voice_wav(
     .await?;
     mark_runtime_session(&state, run_id, "completed", None).await?;
 
-    let model = if req.selected_model == "smart" {
-        GROQ_MODEL_SMART
-    } else {
-        GROQ_MODEL_FAST
-    };
+    let model = selected_polish_model(&req.selected_model);
 
     let org_id_for_history = primary_org_id(&state, user.account_id).await.ok().flatten();
     crate::routes::runtime_history::write_history_from_runtime(
@@ -2785,11 +2777,7 @@ pub async fn voice_polish(
     let user_message = build_voice_user_message(&formatted_transcript, &req.output_language);
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
 
-    let model = if req.selected_model == "smart" {
-        GROQ_MODEL_SMART
-    } else {
-        GROQ_MODEL_FAST
-    };
+    let model = selected_polish_model(&req.selected_model);
     let credential =
         match runtime_provider_secret(&state, user.account_id, tenant_ctx.active_org_id, "groq")
             .await

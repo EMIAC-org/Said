@@ -252,11 +252,13 @@ function MeetingCard({
   return (
     <button
       type="button"
-      className="w-full rounded-xl p-4 text-left transition-colors cursor-pointer hover:brightness-110"
+      className="w-full rounded-xl p-4 text-left transition-colors cursor-pointer"
       style={{
-        background: selected ? "hsl(var(--primary) / 0.12)" : "hsl(var(--surface-2))",
-        border: selected ? "1px solid hsl(var(--primary) / 0.34)" : "1px solid hsl(var(--surface-4))",
-        boxShadow: selected ? "0 0 0 1px hsl(var(--primary) / 0.08) inset" : "none",
+        background: selected ? "hsl(var(--primary) / 0.13)" : "hsl(var(--surface-3))",
+        border: selected ? "1px solid hsl(var(--primary) / 0.42)" : "1px solid hsl(var(--border))",
+        boxShadow: selected
+          ? "0 0 0 1px hsl(var(--primary) / 0.10) inset, 0 8px 22px hsl(var(--primary) / 0.08)"
+          : "0 1px 0 hsl(var(--glass-highlight)) inset",
       }}
       onClick={onSelect}
     >
@@ -270,17 +272,17 @@ function MeetingCard({
         <Star
           size={14}
           fill={overview?.favorite ? "hsl(38 90% 72%)" : "none"}
-          style={{ color: overview?.favorite ? "hsl(38 90% 72%)" : "hsl(var(--surface-4))" }}
+          style={{ color: overview?.favorite ? "hsl(38 90% 72%)" : "hsl(var(--muted-foreground) / 0.35)" }}
         />
       </div>
       <div className="mt-4 flex flex-wrap gap-1.5">
-        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(0 0% 0% / 0.55)", color: "hsl(var(--primary))" }}>
+        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(var(--chip-blue-bg))", color: "hsl(var(--chip-blue-fg))" }}>
           Summary
         </span>
-        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(0 0% 0% / 0.55)", color: "hsl(142 70% 65%)" }}>
+        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(var(--chip-lime-bg))", color: "hsl(var(--chip-lime-fg))" }}>
           {actionCount} actions
         </span>
-        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(0 0% 0% / 0.55)", color: "hsl(38 90% 72%)" }}>
+        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(var(--chip-amber-bg))", color: "hsl(var(--chip-amber-fg))" }}>
           {decisionCount} decisions
         </span>
       </div>
@@ -298,7 +300,7 @@ function MeetingCard({
         </div>
       ) : null}
       {searchHit ? (
-        <div className="mt-2.5 border-t pt-2.5" style={{ borderColor: "hsl(var(--surface-4))" }}>
+        <div className="mt-2.5 border-t pt-2.5" style={{ borderColor: "hsl(var(--border))" }}>
           {searchHit.matched_in.length > 0 ? (
             <p className="text-[10px] font-bold uppercase tracking-[0.1em]" style={{ color: "hsl(var(--primary))" }}>
               Match · {searchHit.matched_in.join(", ")}
@@ -331,7 +333,11 @@ function IconButton({
       disabled={disabled}
       onClick={onClick}
       className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors disabled:opacity-40"
-      style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--muted-foreground))" }}
+      style={{
+        background: "hsl(var(--surface-3))",
+        border: "1px solid hsl(var(--border))",
+        color: "hsl(var(--muted-foreground))",
+      }}
     >
       {children}
     </button>
@@ -358,9 +364,9 @@ function ToolbarButton({
       onClick={onClick}
       className="h-10 rounded-lg px-3 text-[12px] font-bold transition-colors disabled:opacity-45"
       style={{
-        background: active ? "hsl(132 38% 12%)" : "hsl(var(--surface-2))",
-        border: active ? "1px solid hsl(132 56% 36%)" : "1px solid hsl(var(--surface-4))",
-        color: active ? "hsl(132 72% 62%)" : "hsl(var(--muted-foreground))",
+        background: active ? "hsl(var(--chip-lime-bg))" : "hsl(var(--surface-3))",
+        border: active ? "1px solid hsl(var(--chip-lime-fg) / 0.26)" : "1px solid hsl(var(--border))",
+        color: active ? "hsl(var(--chip-lime-fg))" : "hsl(var(--muted-foreground))",
       }}
     >
       <span className="flex items-center gap-2">
@@ -407,9 +413,9 @@ function CopyButton({
       onClick={() => void handle()}
       className="h-10 rounded-lg px-3 text-[12px] font-bold transition-colors disabled:opacity-45"
       style={{
-        background: copied ? "hsl(142 50% 12%)" : "hsl(var(--surface-2))",
-        border: copied ? "1px solid hsl(142 56% 36%)" : "1px solid hsl(var(--surface-4))",
-        color: copied ? "hsl(142 72% 62%)" : "hsl(var(--muted-foreground))",
+        background: copied ? "hsl(var(--chip-lime-bg))" : "hsl(var(--surface-3))",
+        border: copied ? "1px solid hsl(var(--chip-lime-fg) / 0.26)" : "1px solid hsl(var(--border))",
+        color: copied ? "hsl(var(--chip-lime-fg))" : "hsl(var(--muted-foreground))",
       }}
     >
       <span className="flex items-center gap-2">
@@ -455,7 +461,7 @@ function MeetingAudioBar({
   return (
     <div
       className="mt-7 flex h-14 items-center gap-4 rounded-xl px-4"
-      style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}
+      style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
     >
       {audioSrc ? (
         <audio
@@ -611,7 +617,7 @@ function TranscriptTab({
       <SpeakerTimeline segments={segments} durationMs={durationMs} />
 
       {segments.length > 0 ? (
-        <div className="mt-7 divide-y" style={{ borderColor: "hsl(var(--surface-4))" }}>
+        <div className="mt-7 divide-y" style={{ borderColor: "hsl(var(--border))" }}>
           {segments.map((segment, index) => (
             <button
               type="button"
@@ -693,7 +699,7 @@ function ActionRows({
           placeholder="Add an action item…"
           maxLength={300}
           className="h-10 min-w-0 flex-1 rounded-lg bg-transparent px-3.5 text-[14px] outline-none"
-          style={{ border: "1px solid hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+          style={{ border: "1px solid hsl(var(--border))", color: "hsl(var(--foreground))" }}
         />
         <button
           type="button"
@@ -716,7 +722,7 @@ function ActionRows({
                 className="mt-0.5 flex h-[18px] w-[18px] flex-shrink-0 items-center justify-center rounded-[4px]"
                 style={{
                   background: action.done ? "hsl(var(--primary))" : "transparent",
-                  border: action.done ? "1px solid hsl(var(--primary))" : "1px solid hsl(var(--surface-4))",
+                  border: action.done ? "1px solid hsl(var(--primary))" : "1px solid hsl(var(--border))",
                   color: "hsl(var(--primary-foreground))",
                 }}
                 title={action.done ? "Mark incomplete" : "Mark complete"}
@@ -765,7 +771,7 @@ function ActionRows({
                   className="mt-1 flex h-[18px] w-[18px] items-center justify-center rounded-[4px]"
                   style={{
                     background: isDone ? "hsl(var(--primary))" : "transparent",
-                    border: isDone ? "1px solid hsl(var(--primary))" : "1px solid hsl(var(--surface-4))",
+                    border: isDone ? "1px solid hsl(var(--primary))" : "1px solid hsl(var(--border))",
                     color: "hsl(var(--primary-foreground))",
                   }}
                   title={isDone ? "Mark incomplete" : "Mark complete"}
@@ -1808,13 +1814,13 @@ export function MeetingsView({
   ];
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden" style={{ background: "hsl(var(--surface-2))" }}>
       {hasModel === false ? (
         <div
           className="flex flex-wrap items-center gap-3 px-5 py-2.5"
-          style={{ background: "hsl(38 70% 13%)", borderBottom: "1px solid hsl(38 60% 30%)" }}
+          style={{ background: "hsl(var(--chip-amber-bg))", borderBottom: "1px solid hsl(var(--chip-amber-fg) / 0.22)" }}
         >
-          <AlertTriangle size={15} className="flex-shrink-0" style={{ color: "hsl(38 92% 66%)" }} />
+          <AlertTriangle size={15} className="flex-shrink-0" style={{ color: "hsl(var(--chip-amber-fg))" }} />
           <span className="min-w-0 flex-1 text-[12px] text-foreground">
             <span className="font-semibold">No transcription model installed.</span> Meetings can't
             be transcribed until you download and select a model.
@@ -1823,7 +1829,7 @@ export function MeetingsView({
             type="button"
             onClick={() => onConfigureModels?.()}
             className="h-7 flex-shrink-0 rounded-lg px-3 text-[12px] font-bold"
-            style={{ background: "hsl(38 92% 60%)", color: "hsl(38 92% 10%)" }}
+            style={{ background: "hsl(var(--chip-amber-fg))", color: "hsl(var(--background))" }}
           >
             Download a model
           </button>
@@ -1831,7 +1837,7 @@ export function MeetingsView({
       ) : null}
       <div
         className="flex flex-shrink-0 items-center gap-1 px-4 py-2"
-        style={{ borderBottom: "1px solid hsl(var(--surface-4))" }}
+        style={{ background: "hsl(var(--surface-3))", borderBottom: "1px solid hsl(var(--border))" }}
       >
         {(
           [
@@ -1845,7 +1851,7 @@ export function MeetingsView({
             onClick={() => setViewMode(t.id)}
             className="flex h-7 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold"
             style={{
-              background: viewMode === t.id ? "hsl(var(--surface-4))" : "transparent",
+              background: viewMode === t.id ? "hsl(var(--primary) / 0.10)" : "transparent",
               color: viewMode === t.id ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
             }}
           >
@@ -1861,7 +1867,7 @@ export function MeetingsView({
       <div
         className={`relative min-h-0 flex-1 overflow-hidden ${viewMode === "meetings" ? "flex" : "hidden"}`}
       >
-      <aside className="flex w-[240px] flex-shrink-0 flex-col xl:w-[330px]" style={{ borderRight: "1px solid hsl(var(--surface-4))" }}>
+      <aside className="flex w-[240px] flex-shrink-0 flex-col xl:w-[330px]" style={{ background: "hsl(var(--surface-2))", borderRight: "1px solid hsl(var(--border))" }}>
         <div className="px-4 pb-3 pt-5">
           <div className="flex items-center justify-between">
             <div>
@@ -1890,7 +1896,7 @@ export function MeetingsView({
               </button>
             </div>
           </div>
-          <div className="mt-3 flex h-9 items-center gap-2 rounded-lg px-3" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--surface-4))" }}>
+          <div className="mt-3 flex h-9 items-center gap-2 rounded-lg px-3" style={{ background: "hsl(var(--input))", border: "1px solid hsl(var(--border))" }}>
             {searchBusy ? (
               <Loader2 size={13} className="animate-spin text-muted-foreground" />
             ) : (
@@ -1929,7 +1935,7 @@ export function MeetingsView({
                 onClick={() => setDateFilter(filter.id)}
                 className="h-7 rounded-lg px-2.5 text-[11px] font-semibold"
                 style={{
-                  background: dateFilter === filter.id ? "hsl(var(--surface-4))" : "transparent",
+                  background: dateFilter === filter.id ? "hsl(var(--primary) / 0.10)" : "transparent",
                   color: dateFilter === filter.id ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
                 }}
               >
@@ -1994,7 +2000,7 @@ export function MeetingsView({
         {pendingDelete ? (
           <div
             className="mx-auto mb-5 flex w-full max-w-[1280px] flex-wrap items-center gap-x-4 gap-y-2 rounded-xl px-4 py-2.5"
-            style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}
+            style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
           >
             <div className="flex min-w-0 flex-1 items-center gap-2.5">
               <Trash2 size={15} className="flex-shrink-0" style={{ color: "hsl(354 80% 70%)" }} />
@@ -2102,7 +2108,7 @@ export function MeetingsView({
                         setAddingTag(true);
                       }}
                       className="rounded-lg border border-dashed px-3 py-1 text-[12px] font-bold text-muted-foreground transition-colors hover:text-foreground"
-                      style={{ borderColor: "hsl(var(--surface-4))" }}
+                      style={{ borderColor: "hsl(var(--border))" }}
                     >
                       + Add
                     </button>
@@ -2195,7 +2201,7 @@ export function MeetingsView({
               />
             ) : null}
 
-            <div className="mt-6 grid grid-cols-5 border-b" style={{ borderColor: "hsl(var(--surface-4))" }}>
+            <div className="mt-6 grid grid-cols-5 border-b" style={{ borderColor: "hsl(var(--border))" }}>
               {detailTabs.map((tab) => (
                 <button
                   key={tab.id}
@@ -2258,9 +2264,9 @@ export function MeetingsView({
                               onClick={() => void openExternal(larkUrl)}
                               className="h-10 rounded-lg px-3 text-[12px] font-bold transition-colors"
                               style={{
-                                background: "hsl(142 50% 12%)",
-                                border: "1px solid hsl(142 56% 36%)",
-                                color: "hsl(142 72% 62%)",
+                                background: "hsl(var(--chip-lime-bg))",
+                                border: "1px solid hsl(var(--chip-lime-fg) / 0.26)",
+                                color: "hsl(var(--chip-lime-fg))",
                               }}
                             >
                               <span className="flex items-center gap-2">
@@ -2302,7 +2308,7 @@ export function MeetingsView({
                   <p className="text-[14px]" style={{ color: "hsl(354 85% 75%)" }}>{meetingAiError}</p>
                 ) : meetingAi?.summary?.trim() ? (
                   <>
-                    <div className="rounded-xl px-7 py-6" style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}>
+                    <div className="rounded-xl px-7 py-6" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}>
                       <div className="flex gap-4">
                         <Sparkles size={19} style={{ color: "hsl(var(--primary))" }} />
                         <p className="max-w-[110ch] text-[17px] italic leading-8 text-muted-foreground">
@@ -2331,7 +2337,7 @@ export function MeetingsView({
                     </span>
                   </div>
                   {notes.trim() ? (
-                    <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}>
+                    <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}>
                       <button
                         type="button"
                         onClick={() => setNotesPreview(true)}
@@ -2352,11 +2358,11 @@ export function MeetingsView({
                   ) : null}
                 </div>
                 {notesPreview && notes.trim() ? (
-                  <div className="rounded-xl px-7 py-6" style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}>
+                  <div className="rounded-xl px-7 py-6" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}>
                     <MeetingRichText text={notes} />
                   </div>
                 ) : (
-                  <div className="rounded-xl" style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}>
+                  <div className="rounded-xl" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}>
                     <textarea
                       value={notes}
                       onChange={(event) => handleNotesChange(event.currentTarget.value)}
@@ -2409,7 +2415,7 @@ export function MeetingsView({
                 <h3 className="mb-5 text-[15px] font-bold text-foreground">AI Chat</h3>
                 <div
                   className="h-[560px] overflow-hidden rounded-xl"
-                  style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}
+                  style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
                 >
                   <MeetingAiChat
                     resetKey={selectedMeeting.id}
@@ -2448,7 +2454,7 @@ export function MeetingsView({
         >
           <div
             className="w-full max-w-sm rounded-2xl p-5"
-            style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}
+            style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-[15px] font-bold text-foreground">A meeting is already in progress</h3>
