@@ -28,55 +28,55 @@ export const metadata: Metadata = {
 };
 
 const latest = {
-  version: "2.3.9",
-  date: "Jun 17, 2026",
-  title: "Crash-hardened desktop runtime",
+  version: "2.4.0",
+  date: "Jun 18, 2026",
+  title: "Learning, review card, and light-mode polish",
   intro:
-    "AirNote now protects the desktop runtime against the crash paths we saw around hotkeys, backend sidecars, recording teardown, poisoned locks, and stale processing state.",
+    "AirNote 2.4.0 fixes the recent learning-review regression, keeps actionable review cards visible, routes server polishing through the safer smart path, and refreshes the desktop colors for light mode.",
   sections: [
     {
-      id: "ffi-hotkey-guard",
-      eyebrow: "#Crash Guard",
-      title: "Hotkey and UI callbacks are protected",
+      id: "learning-pipeline",
+      eyebrow: "#Learning",
+      title: "Single correction learning is restored",
       icon: ShieldCheck,
       body: [
-        "The macOS global hotkey path now catches callback panics before they can cross the system FFI boundary.",
-        "Meeting-pill panel changes now run through the same guarded main-thread path used by the safer status-bar flow.",
+        "Server-side review candidates no longer block the existing safe auto-learn path when the edit is one clear STT correction.",
+        "Corrections such as product names, tools, and short jargon terms can again pass through the local single-change validation and alias-safety gates.",
       ],
       bullets: [
-        "Prevents hotkey callback panics from aborting the app",
-        "Keeps AppKit panel changes on the guarded main-thread path",
-        "Reports recoverable UI failures instead of cascading them",
+        "Restores the safe single-change learning path",
+        "Keeps ambiguous multi-candidate edits in review",
+        "Preserves validation, alias-safety, and lexicon invalidation",
       ],
     },
     {
-      id: "backend-watchdog",
-      eyebrow: "#Sidecar Recovery",
-      title: "Backend sidecar health is watched",
-      icon: Radio,
+      id: "review-card",
+      eyebrow: "#Review Card",
+      title: "Review prompts stay visible",
+      icon: Bell,
       body: [
-        "The desktop app now checks the local backend while idle and respawns it if health checks keep failing.",
-        "Endpoint and process handles are swapped after a successful recovery, with diagnostics emitted for the failure and respawn path.",
+        "The status-bar state machine now preserves interactive review and confirmation prompts through idle resyncs.",
+        "Review cards are treated as actionable prompts, so they are not hidden by passive word-learned notification settings.",
       ],
       bullets: [
-        "Idle health checks for the sidecar",
-        "Automatic backend respawn when safe",
-        "Diagnostics events for recovery paths",
+        "Prevents review cards from flashing and disappearing",
+        "Stops paste auto-hide from overwriting action prompts",
+        "Keeps passive notification preferences separate from review actions",
       ],
     },
     {
-      id: "recording-watchdogs",
-      eyebrow: "#Recording Stability",
-      title: "Stuck recording and poisoned-lock paths recover",
-      icon: Mic2,
+      id: "desktop-polish",
+      eyebrow: "#Desktop Polish",
+      title: "Light mode and runtime routing are cleaner",
+      icon: Sun,
       body: [
-        "A stuck-recording watchdog can auto-finish sessions that never cleanly return to idle, while intentional long dictation remains excluded.",
-        "Recorder, meeting engine, and enterprise OAuth locks now recover from poisoning instead of turning one panic into repeated failures.",
+        "The desktop UI uses clearer light-mode surfaces and token-based colors across the pages that looked washed out or mismatched.",
+        "Server runtime requests route through smart-mode output so users on older fast-mode selections avoid degraded polishing while the server runtime is being unified.",
       ],
       bullets: [
-        "Auto-finish guard for stuck recording state",
-        "Poisoned mutex recovery in crash-prone runtime paths",
-        "Bounded Deepgram finalize send so release cannot park forever",
+        "Better light-mode contrast and hierarchy",
+        "Meetings and Divo colors no longer depend on hardcoded dark fills",
+        "Fast and smart selections use the safer smart server route",
       ],
     },
   ],
@@ -84,52 +84,52 @@ const latest = {
 
 const noteGroups = [
   {
-    title: "Audio",
+    title: "Learning",
     count: 3,
     items: [
-      "Protected the macOS hotkey callback from crossing FFI with an unwind.",
-      "Added backend sidecar idle health checks and respawn recovery.",
-      "Added stuck-recording auto-finish and bounded Deepgram finalize send.",
+      "Restored auto-learning for one clear STT correction after the server raw-judge path returns one candidate.",
+      "Kept multi-candidate and ambiguous learning edits in review instead of auto-persisting them.",
+      "Preserved centralized validation, alias-safety checks, lexicon invalidation, and retrain scheduling.",
     ],
   },
   {
-    title: "Runtime",
+    title: "Review UI",
     count: 3,
     items: [
-      "Recovered poisoned recorder, meeting engine, and enterprise OAuth locks.",
-      "Replaced crash-prone startup unwrap paths with clean reporting fallbacks.",
-      "Cleared stale processing UI when the status bar resync receives an idle snapshot.",
+      "Preserved review, confirmation, error, and paste/manual-paste HUD states through idle status-bar resyncs.",
+      "Separated actionable review cards from the passive Word learned notification toggle.",
+      "Stopped paste auto-hide timers from clearing review and confirmation prompts.",
     ],
   },
   {
     title: "Verification",
     count: 3,
     items: [
-      "Validated Rust format checks and focused backend/desktop checks.",
-      "Validated desktop TypeScript typecheck.",
-      "Validated focused hotkey, recorder, and desktop test suites.",
+      "Validated the full repository gate with just check before merging to main.",
+      "Built, signed, notarized, stapled, and Gatekeeper-verified the Apple Silicon DMG.",
+      "Published the Darwin updater manifest while leaving the Windows updater manifest untouched.",
     ],
   },
 ];
 
 const releaseDownloads = [
   {
-    version: "2.3.9",
-    date: "Jun 17, 2026",
+    version: "2.4.0",
+    date: "Jun 18, 2026",
     title: "Latest stable",
     downloads: [{ platform: "Mac", label: "Mac DMG", href: downloads.mac.latestDmg }],
+  },
+  {
+    version: "2.3.9",
+    date: "Jun 17, 2026",
+    title: "Crash-hardened desktop runtime",
+    downloads: [],
   },
   {
     version: "2.3.8",
     date: "Jun 17, 2026",
     title: "Cleaner stream shutdown",
-    downloads: [
-      {
-        platform: "Mac",
-        label: "Mac DMG",
-        href: "https://airnote.emiactech.com/releases/2.3.8/AirNote_2.3.8_aarch64.dmg",
-      },
-    ],
+    downloads: [],
   },
   {
     version: "2.3.7",
