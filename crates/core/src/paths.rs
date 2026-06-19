@@ -59,6 +59,17 @@ pub fn whisper_model_path() -> PathBuf {
     data_dir().join("models").join("ggml-tiny.bin")
 }
 
+/// Directory for the Oriserve Swift HF model weights (downloaded on demand).
+/// `<data_dir>/models/oriserve-swift/`
+pub fn swift_model_dir() -> PathBuf {
+    data_dir().join("models").join("oriserve-swift")
+}
+
+/// Marker file indicating the Swift model download completed.
+pub fn swift_model_weights_path() -> PathBuf {
+    swift_model_dir().join("model.safetensors")
+}
+
 /// Stable anonymous device ID. Generated once on first call and persisted to
 /// `<data_dir>/device_id`. Used to deduplicate Sentry crash reports without
 /// tying them to any user-controlled identifier. Deleting the file or the

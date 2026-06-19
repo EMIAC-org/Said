@@ -59,6 +59,18 @@ struct Cli {
     #[arg(long, env = "DEEPGRAM_API_KEY", default_value = "")]
     deepgram_api_key: String,
 
+    /// OpenAI API key for message-polish audio transcription
+    #[arg(long, env = "OPENAI_API_KEY", default_value = "")]
+    openai_api_key: String,
+
+    /// OpenAI audio transcription model for message-polish audio
+    #[arg(
+        long,
+        env = "OPENAI_TRANSCRIBE_MODEL",
+        default_value = "whisper-1"
+    )]
+    openai_transcribe_model: String,
+
     /// Groq API key for server-runtime polish latency probes
     #[arg(long, env = "GROQ_API_KEY", default_value = "")]
     groq_api_key: String,
@@ -155,6 +167,8 @@ async fn main() {
         notifications,
         deepgram_api_key: cli.deepgram_api_key,
         stt_provider,
+        openai_api_key: cli.openai_api_key,
+        openai_transcribe_model: cli.openai_transcribe_model,
         groq_api_key,
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
         divo_base_url: cli.divo_base_url,
