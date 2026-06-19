@@ -13,6 +13,7 @@ import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from
 import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
 import { MeetingSettingsSection } from "@/components/views/MeetingSettingsSection";
+import { DictationSttSection } from "@/components/DictationSttSection";
 
 import {
   getConnection as enterpriseGetConnection,
@@ -1878,6 +1879,11 @@ export function SettingsView({
 
         {/* ── Models ───────────────────────────────────── */}
         <Show when={isOn("models")}>
+        <DictationSttSection
+          prefs={prefs}
+          onPrefsUpdated={setPrefs}
+          platform={snapshot?.platform ?? "macos"}
+        />
         <Section title="Dictation Model" extra={<SyncBadge state={serverSyncState} />}>
           <div className="px-5 py-4">
             <div className="flex items-center gap-4">
@@ -1909,7 +1915,9 @@ export function SettingsView({
               <div className="min-w-0 flex-1">
                 <p className="text-[13px] font-medium text-foreground">Server polish runtime</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5">
-                  Keeps Deepgram on this Mac, then sends the finished transcript to airnote.emiactech.com for polish.
+                  {prefs?.stt_provider === "swift_local"
+                    ? "Keeps local Swift on this Mac, then sends the finished transcript to airnote.emiactech.com for polish."
+                    : "Keeps Deepgram on this Mac, then sends the finished transcript to airnote.emiactech.com for polish."}
                 </p>
               </div>
               <button

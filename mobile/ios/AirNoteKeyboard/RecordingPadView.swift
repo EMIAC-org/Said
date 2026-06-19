@@ -12,6 +12,16 @@ final class RecordingPadView: UIView {
     var onKeyTap: ((String) -> Void)?
     var onDelete: (() -> Void)?
     var onNextKeyboard: (() -> Void)?
+    // Select → rewrite
+    var onRewrite: (() -> Void)?
+    var onRewriteConfirm: (() -> Void)?
+    var onRewriteCopy: (() -> Void)?
+    var onRewriteCancel: (() -> Void)?
+    var onRewriteUndo: (() -> Void)?
+    var onRewriteTone: ((String) -> Void)?
+    var onRewriteLanguage: ((String) -> Void)?
+    var activeRewriteTone: String = SharedStore.tonePreset
+    var activeRewriteLanguage: String = SharedStore.outputLanguage
 
     private var state: KeyboardState
     private var canTeachFix: Bool
@@ -173,7 +183,13 @@ final class RecordingPadView: UIView {
             // Result: the polished text is the focus.
             stack.addArrangedSubview(makeStatusRow())
             stack.addArrangedSubview(makePreview(preview))
-            stack.addArrangedSubview(makeResultActions())
+            stack.addArrangedSubview(isRewritePreview ? makeRewriteActions() : makeResultActions())
+        } else if case .rewriting = state {
+            stack.addArrangedSubview(makeStatusRow())
+            stack.addArrangedSubview(makeWaveform())
+        } else if case .rewritten = state {
+            stack.addArrangedSubview(makeStatusRow())
+            stack.addArrangedSubview(makeRewriteUndoRow())
         } else if let message = recoveryMessage {
             if isOpenAppExplainer {
                 // A polished "open the app once" page instead of a plain error.
@@ -191,6 +207,7 @@ final class RecordingPadView: UIView {
             stack.addArrangedSubview(makePill())
             stack.addArrangedSubview(makeWaveButton())
             stack.addArrangedSubview(makeTitleBlock())
+            if showsRewriteEntry { stack.addArrangedSubview(makeRewriteEntry()) }
             if canTeachFix, isPostInsertState { stack.addArrangedSubview(makePostInsertActions()) }
         }
 
@@ -342,15 +359,28 @@ final class RecordingPadView: UIView {
         title.text = titleText
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let styleChip = makeChip(SharedStore.tonePreset.capitalized)
-        let languageChip = makeChip(SharedStore.outputLanguage.capitalized)
-
-        let row = UIStackView(arrangedSubviews: [icon, title, UIView(), styleChip, languageChip])
+        // The rewrite card carries its own tone/language chips below, so don't
+        // duplicate the saved-mode pills up here (that was confusing + mismatched).
+        let row: UIStackView
+        if isRewriteState {
+            row = UIStackView(arrangedSubviews: [icon, title, UIView()])
+        } else {
+            let styleChip = makeChip(SharedStore.tonePreset.capitalized)
+            let languageChip = makeChip(SharedStore.outputLanguage.capitalized)
+            row = UIStackView(arrangedSubviews: [icon, title, UIView(), styleChip, languageChip])
+        }
         row.axis = .horizontal
         row.spacing = 8
         row.alignment = .center
         row.accessibilityLabel = "\(titleText), \(subtitleText)"
         return row
+    }
+
+    private var isRewriteState: Bool {
+        switch state {
+        case .rewriting, .rewriteReady, .rewritten: return true
+        default: return false
+        }
     }
 
     private func makeWaveform() -> UIView {
@@ -650,6 +680,108 @@ final class RecordingPadView: UIView {
         row.distribution = .fillEqually
         return row
     }
+
+    // MARK: - Select → rewrite UI
+
+    private var isRewritePreview: Bool {
+        if case .rewriteReady = state { return true }
+        return false
+    }
+
+    private var showsRewriteEntry: Bool {
+        switch state {
+        case .ready, .inserted, .copied, .savedToHistory, .learned: return true
+        default: return false
+        }
+    }
+
+    /// Slim "Polish text" affordance in the hero — kicks off select→rewrite.
+    private func makeRewriteEntry() -> UIView {
+        let button = actionButton(title: "Polish text", systemImage: "wand.and.stars", color: KeyboardTheme.accent)
+        button.addTarget(self, action: #selector(rewriteTapped), for: .touchUpInside)
+        button.accessibilityHint = "Rewrite your selected text — or what you just dictated — in a chosen tone"
+        return button
+    }
+
+    /// Tone chips + language toggle + Replace / Copy / Cancel, shown under the preview.
+    private func makeRewriteActions() -> UIView {
+        let toneRow = UIStackView()
+        toneRow.axis = .horizontal
+        toneRow.spacing = 6
+        toneRow.distribution = .fillEqually
+        for tone in ["professional", "casual", "concise", "neutral"] {
+            toneRow.addArrangedSubview(makeToggleChip(
+                title: tone.capitalized,
+                selected: activeRewriteTone.lowercased() == tone
+            ) { [weak self] in self?.onRewriteTone?(tone) })
+        }
+
+        let langRow = UIStackView()
+        langRow.axis = .horizontal
+        langRow.spacing = 6
+        langRow.distribution = .fillEqually
+        for (key, label) in [("english", "English"), ("hinglish", "Hinglish")] {
+            langRow.addArrangedSubview(makeToggleChip(
+                title: label,
+                selected: activeRewriteLanguage.lowercased() == key
+            ) { [weak self] in self?.onRewriteLanguage?(key) })
+        }
+
+        // Replace is the hero action — full width so its label never cramps or wraps.
+        let replace = actionButton(title: "Replace", systemImage: "checkmark", color: KeyboardTheme.accent)
+        replace.addTarget(self, action: #selector(rewriteConfirmTapped), for: .touchUpInside)
+        // Copy + Cancel sit below as secondary, side by side.
+        let copy = actionButton(title: "Copy", systemImage: "doc.on.doc", color: .secondaryLabel)
+        copy.addTarget(self, action: #selector(rewriteCopyTapped), for: .touchUpInside)
+        let cancel = actionButton(title: "Cancel", systemImage: "xmark", color: .secondaryLabel)
+        cancel.addTarget(self, action: #selector(rewriteCancelTapped), for: .touchUpInside)
+        let secondary = UIStackView(arrangedSubviews: [copy, cancel])
+        secondary.axis = .horizontal
+        secondary.spacing = 8
+        secondary.distribution = .fillEqually
+
+        let stack = UIStackView(arrangedSubviews: [toneRow, langRow, replace, secondary])
+        stack.axis = .vertical
+        stack.spacing = 8
+        return stack
+    }
+
+    private func makeRewriteUndoRow() -> UIView {
+        let undo = actionButton(title: "Undo", systemImage: "arrow.uturn.backward", color: KeyboardTheme.accent)
+        undo.addTarget(self, action: #selector(rewriteUndoTapped), for: .touchUpInside)
+        let done = actionButton(title: "Done", systemImage: "checkmark", color: .secondaryLabel)
+        done.addTarget(self, action: #selector(rewriteCancelTapped), for: .touchUpInside)
+        let row = UIStackView(arrangedSubviews: [undo, done])
+        row.axis = .horizontal
+        row.spacing = 8
+        row.distribution = .fillEqually
+        return row
+    }
+
+    /// A small selectable chip — filled when active. Uses a closure handler so each
+    /// chip can carry its own tone/language value.
+    private func makeToggleChip(title: String, selected: Bool, _ handler: @escaping () -> Void) -> UIButton {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setTitle(title, for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+        button.titleLabel?.adjustsFontSizeToFitWidth = true
+        button.titleLabel?.minimumScaleFactor = 0.7
+        button.titleLabel?.lineBreakMode = .byClipping
+        button.setTitleColor(selected ? .white : KeyboardTheme.foreground, for: .normal)
+        button.backgroundColor = selected ? KeyboardTheme.accent : KeyboardTheme.accent.withAlphaComponent(0.10)
+        button.layer.cornerRadius = 10
+        button.layer.cornerCurve = .continuous
+        button.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        button.addAction(UIAction { _ in handler() }, for: .touchUpInside)
+        return button
+    }
+
+    @objc private func rewriteTapped() { onRewrite?() }
+    @objc private func rewriteConfirmTapped() { onRewriteConfirm?() }
+    @objc private func rewriteCopyTapped() { onRewriteCopy?() }
+    @objc private func rewriteCancelTapped() { onRewriteCancel?() }
+    @objc private func rewriteUndoTapped() { onRewriteUndo?() }
 
     // MARK: - Full typing keyboard (letters / numbers / symbols, shift, delete-repeat)
 
@@ -975,14 +1107,16 @@ final class RecordingPadView: UIView {
         case .teaching: return "bolt.circle.fill"
         case .learned: return "checkmark.seal.fill"
         case .staleSession, .needsFullAccess, .needsMainAppSession, .error, .unsupportedSecureField: return "exclamationmark.triangle.fill"
+        case .rewriting, .rewriteReady: return "wand.and.stars"
+        case .rewritten: return "checkmark.circle.fill"
         default: return "keyboard"
         }
     }
 
     private var statusColor: UIColor {
         switch state {
-        case .ready, .recording, .dictatingInApp, .processing, .insertReady, .secureCopyReady, .teaching: return KeyboardTheme.accent
-        case .inserted, .copied, .savedToHistory, .learned: return KeyboardTheme.success
+        case .ready, .recording, .dictatingInApp, .processing, .insertReady, .secureCopyReady, .teaching, .rewriting, .rewriteReady: return KeyboardTheme.accent
+        case .inserted, .copied, .savedToHistory, .learned, .rewritten: return KeyboardTheme.success
         case .staleSession, .needsFullAccess, .needsMainAppSession, .error, .unsupportedSecureField: return KeyboardTheme.warning
         default: return KeyboardTheme.teal
         }
@@ -1004,6 +1138,9 @@ final class RecordingPadView: UIView {
         case .needsMainAppSession: return "Open AirNote"
         case .unsupportedSecureField: return "Secure field"
         case .error: return "AirNote needs attention"
+        case .rewriting: return "Polishing"
+        case .rewriteReady: return "Polished"
+        case .rewritten: return "Replaced"
         default: return "AirNote Keyboard"
         }
     }
@@ -1026,6 +1163,9 @@ final class RecordingPadView: UIView {
         case .teaching: return "Learning your correction…"
         case .learned(let message): return message
         case .error(let message): return message
+        case .rewriting: return "Rewriting your text…"
+        case .rewriteReady: return "Review, then Replace or Copy."
+        case .rewritten: return "Replaced. Tap Undo to revert."
         default: return "Manual typing still works when voice is unavailable."
         }
     }
@@ -1075,7 +1215,7 @@ final class RecordingPadView: UIView {
 
     private var isPrimaryActionDisabled: Bool {
         switch state {
-        case .processing, .teaching: return true
+        case .processing, .teaching, .rewriting: return true
         default: return false
         }
     }
@@ -1083,7 +1223,7 @@ final class RecordingPadView: UIView {
     private var waveformHeights: [CGFloat] {
         switch state {
         case .recording: return [10, 18, 28, 36, 24, 32, 20, 34, 22, 30, 16, 26, 12]
-        case .processing, .teaching: return [14, 18, 24, 28, 22, 16, 26, 20, 28, 22, 16, 24, 18]
+        case .processing, .teaching, .rewriting: return [14, 18, 24, 28, 22, 16, 26, 20, 28, 22, 16, 24, 18]
         case .insertReady, .secureCopyReady: return [12, 18, 24, 28, 22, 16, 26, 20, 24, 18, 14, 22, 16]
         default: return [7, 10, 14, 18, 12, 9, 16, 11, 15, 10, 8, 13, 9]
         }
@@ -1091,7 +1231,7 @@ final class RecordingPadView: UIView {
 
     private var isActiveWaveform: Bool {
         switch state {
-        case .recording, .processing, .insertReady, .secureCopyReady, .teaching: return true
+        case .recording, .processing, .insertReady, .secureCopyReady, .teaching, .rewriting: return true
         default: return false
         }
     }
@@ -1102,6 +1242,9 @@ final class RecordingPadView: UIView {
         }
         if case .secureCopyReady(let result) = state {
             return result.polished
+        }
+        if case .rewriteReady(let text) = state {
+            return text
         }
         return nil
     }

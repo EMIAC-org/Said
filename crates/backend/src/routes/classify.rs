@@ -752,8 +752,15 @@ pub async fn classify(
         changes: analyzer_changes,
         overall_class,
     };
+    let local_review_candidates = local_review_candidates_from_analyzer(
+        &analyzer_output.changes,
+        &state.pool,
+        &state.default_user_id,
+        &body.user_kept,
+        &output_language,
+    );
 
-    if let Some(server_candidates) = server_review_candidates_from_raw(
+    if let Some(mut server_candidates) = server_review_candidates_from_raw(
         &state,
         &body.recording_id,
         &transcript,
@@ -762,6 +769,15 @@ pub async fn classify(
     )
     .await
     {
+        server_candidates =
+            sanitize_review_candidates(server_candidates, &body.user_kept, &output_language);
+        let local_added =
+            merge_review_candidates(&mut server_candidates, local_review_candidates.clone());
+        if local_added > 0 {
+            info!(
+                "[classify] preserved {local_added} local deterministic review candidate(s) missing from server raw judge"
+            );
+        }
         let learnable_count = server_candidates.iter().filter(|c| c.learnable).count();
         if learnable_count > 0 {
             let change_count = analyzer_output.changes.len();
@@ -862,6 +878,15 @@ pub async fn classify(
     let mut learned = false;
     let mut server_memory_terms: Vec<serde_json::Value> = Vec::new();
     let mut server_memory_aliases: Vec<serde_json::Value> = Vec::new();
+
+    // Whether cloud/server-owned learning is active (the device has a cloud
+    // token). Used so that, when the server declines a single-change auto-learn,
+    // we surface a manual review card in server mode but keep the prior silent
+    // drop in pure-local mode (no token) — leaving local-only behavior unchanged.
+    let server_learning_on = users::get_user(&state.pool, &state.default_user_id)
+        .and_then(|u| u.cloud_token)
+        .map(|t| !t.trim().is_empty())
+        .unwrap_or(false);
 
     for change in &analyzer_output.changes {
         // Build edit pair directly from the deterministic change (which already
@@ -1007,9 +1032,46 @@ pub async fn classify(
                     .to_string();
                 let term_type = term_type.as_str();
                 if existing_protected.is_none() && matches!(term_type, "phrase" | "other") {
-                    info!(
-                        "[classify] STT_ERROR skipped — not a proper noun (type={term_type}): {corrected:?}"
-                    );
+                    // ── Add-on: "Ask to learn" ──────────────────────────────
+                    // This term is not an obvious proper noun, so we NEVER
+                    // auto-learn it. But it has already cleared every junk gate
+                    // above (common-word, dictionary, numeric, in-kept, script),
+                    // so instead of dropping it silently we offer the user a
+                    // Learn / Skip choice when it looks name-like: a single
+                    // unknown word the user kept (e.g. a lowercase name), or a
+                    // multi-word span with a real name anchor (e.g. "Emiac tech").
+                    // Cheap source-safety only (no LLM): skip the offer if the
+                    // heard form is itself a common / unsafe alias source.
+                    let single = corrected.split_whitespace().count() <= 1;
+                    let looks_offerable = if single {
+                        !clean_surface(corrected).is_empty()
+                    } else {
+                        name_like_span(corrected)
+                    };
+                    let source_safe = original.trim().is_empty()
+                        || (!promotion_gate::is_common_word(original)
+                            && unsafe_stt_source_reason(
+                                &state.pool,
+                                &state.default_user_id,
+                                original,
+                            )
+                            .is_none());
+                    if looks_offerable && source_safe {
+                        review_candidates.push(ReviewCandidate {
+                            original: original.to_string(),
+                            corrected: corrected.to_string(),
+                            term_type: term_type.to_string(),
+                            learnable: true,
+                            tag: "local_ask".to_string(),
+                        });
+                        info!(
+                            "[classify] offering Learn/Skip for name-like {corrected:?} (type={term_type})"
+                        );
+                    } else {
+                        info!(
+                            "[classify] STT_ERROR skipped — not a proper noun (type={term_type}): {corrected:?}"
+                        );
+                    }
                     continue;
                 }
                 if !original.trim().is_empty() {
@@ -1031,14 +1093,27 @@ pub async fn classify(
                             safety.verdict.as_str(),
                             safety.reason
                         );
-                        if safety.verdict != AliasSafetyVerdict::CommonBlock {
-                            review_candidates.push(ReviewCandidate {
+                        let local_fallback = local_review_candidate_from_change(
+                            change,
+                            &state.pool,
+                            &state.default_user_id,
+                            &body.user_kept,
+                            &output_language,
+                        );
+                        if safety.verdict != AliasSafetyVerdict::CommonBlock
+                            || local_fallback.is_some()
+                        {
+                            let mut candidate = local_fallback.unwrap_or_else(|| ReviewCandidate {
                                 original: original.to_string(),
                                 corrected: corrected.to_string(),
                                 term_type: term_type.to_string(),
                                 learnable: true,
                                 tag: "alias_safety".to_string(),
                             });
+                            if safety.verdict == AliasSafetyVerdict::CommonBlock {
+                                candidate.tag = "local_alias_review".to_string();
+                            }
+                            push_unique_review_candidate(&mut review_candidates, candidate);
                         }
                         continue;
                     }
@@ -1087,7 +1162,14 @@ pub async fn classify(
                     learnable: true,
                     tag: "local_direct_candidate".to_string(),
                 };
-                let Some(server_validated_candidate) = server_validate_direct_candidate(
+                let local_review_fallback = local_review_candidate_from_change(
+                    change,
+                    &state.pool,
+                    &state.default_user_id,
+                    &body.user_kept,
+                    &output_language,
+                );
+                let server_validated_candidate = match server_validate_direct_candidate(
                     &state,
                     &body.recording_id,
                     &transcript,
@@ -1096,12 +1178,58 @@ pub async fn classify(
                     proposed_direct_candidate,
                 )
                 .await
-                else {
-                    info!(
-                        "[classify] STT_ERROR direct learn blocked — server LLM did not validate {:?} -> {:?}",
-                        original, canonical_for_policy
-                    );
-                    continue;
+                {
+                    Some(candidate) => candidate,
+                    None => {
+                        // The server's auto-learn judge declined (or was
+                        // unreachable). This change already passed every strict
+                        // local gate to reach here, so in server mode surface it
+                        // as a manual review card instead of dropping it silently.
+                        // Tagged "local_fallback" so the post-loop server refine
+                        // does NOT re-judge and re-drop it.
+                        if server_learning_on {
+                            let mut candidate =
+                                local_review_fallback.unwrap_or_else(|| ReviewCandidate {
+                                    original: original.to_string(),
+                                    corrected: corrected.to_string(),
+                                    term_type: term_type.to_string(),
+                                    learnable: true,
+                                    tag: "local_fallback".to_string(),
+                                });
+                            candidate.tag = "local_fallback".to_string();
+                            info!(
+                                "[classify] STT_ERROR not server-validated {:?} -> {:?} — routing to manual review card",
+                                candidate.original, candidate.corrected
+                            );
+                            push_unique_review_candidate(&mut review_candidates, candidate);
+                        } else if local_review_fallback.is_some() || name_like_span(corrected) {
+                            // ── Add-on: local-mode parity ───────────────────
+                            // Pure-local (no cloud token): mirror the server-mode
+                            // card above. This change already passed every strict
+                            // local gate AND the source-safety checks, so offer a
+                            // Learn / Skip choice instead of dropping it silently.
+                            let mut candidate =
+                                local_review_fallback.unwrap_or_else(|| ReviewCandidate {
+                                    original: original.to_string(),
+                                    corrected: corrected.to_string(),
+                                    term_type: term_type.to_string(),
+                                    learnable: true,
+                                    tag: "local_ask".to_string(),
+                                });
+                            candidate.tag = "local_ask".to_string();
+                            info!(
+                                "[classify] pure-local Learn/Skip offer {:?} -> {:?}",
+                                candidate.original, candidate.corrected
+                            );
+                            push_unique_review_candidate(&mut review_candidates, candidate);
+                        } else {
+                            info!(
+                                "[classify] STT_ERROR direct learn dropped (no server learning) {:?} -> {:?}",
+                                original, canonical_for_policy
+                            );
+                        }
+                        continue;
+                    }
                 };
                 info!(
                     "[classify] STT_ERROR direct learn server-validated: {:?} -> {:?} tag={}",
@@ -1394,18 +1522,57 @@ pub async fn classify(
         }
     }
 
+    // ── Add-on: de-dup + cap the new "Ask to learn" cards ───────────────────
+    // A noisy recording must never fan out into a wall of choices. De-dup all
+    // review candidates by (original, corrected) and cap the new "local_ask"
+    // cards at 8 per recording. Existing tags keep their order and behavior; the
+    // cap only ever removes surplus local_ask offers, never an auto-learn or an
+    // existing review card.
+    {
+        let mut seen: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        let mut ask_count = 0usize;
+        review_candidates.retain(|candidate| {
+            if !seen.insert((candidate.original.clone(), candidate.corrected.clone())) {
+                return false;
+            }
+            if candidate.tag == "local_ask" {
+                ask_count += 1;
+                if ask_count > 8 {
+                    return false;
+                }
+            }
+            true
+        });
+    }
+
     let has_negatives = !negative_terms.is_empty();
     if !review_candidates.is_empty() {
         let local_count = review_candidates.len();
-        review_candidates = refine_review_candidates_with_server(
-            &state,
-            &body.recording_id,
-            &transcript,
-            &body.ai_output,
-            &body.user_kept,
-            review_candidates,
-        )
-        .await;
+        // Candidates the server's auto-learn judge already declined ("local_fallback")
+        // or that we locally chose to offer as a manual choice ("local_ask") must NOT
+        // be re-sent to that judge — it would just re-drop them and the review card
+        // would vanish in logged-in mode. Refine only the rest, then re-append these
+        // verbatim.
+        let (local_only, to_refine): (Vec<ReviewCandidate>, Vec<ReviewCandidate>) =
+            review_candidates.into_iter().partition(|candidate| {
+                candidate.tag == "local_fallback" || candidate.tag == "local_ask"
+            });
+        let mut refined = if to_refine.is_empty() {
+            to_refine
+        } else {
+            refine_review_candidates_with_server(
+                &state,
+                &body.recording_id,
+                &transcript,
+                &body.ai_output,
+                &body.user_kept,
+                to_refine,
+            )
+            .await
+        };
+        refined.extend(local_only);
+        review_candidates = sanitize_review_candidates(refined, &body.user_kept, &output_language);
         info!(
             "[classify] server-refined review candidates: {local_count} -> {}",
             review_candidates.len()
@@ -2254,6 +2421,234 @@ fn is_strong_insert_target(pool: &crate::store::DbPool, user_id: &str, corrected
         vocabulary::classify_term_type(corrected),
         "brand" | "acronym" | "proper_noun" | "code_identifier"
     )
+}
+
+fn local_review_candidates_from_analyzer(
+    changes: &[AnalyzedChange],
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    user_kept: &str,
+    output_language: &str,
+) -> Vec<ReviewCandidate> {
+    let mut candidates = Vec::new();
+    for change in changes {
+        if let Some(candidate) =
+            local_review_candidate_from_change(change, pool, user_id, user_kept, output_language)
+        {
+            push_unique_review_candidate(&mut candidates, candidate);
+        }
+    }
+    candidates
+}
+
+fn local_review_candidate_from_change(
+    change: &AnalyzedChange,
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    user_kept: &str,
+    output_language: &str,
+) -> Option<ReviewCandidate> {
+    if !matches!(change.reason, ChangeReason::SttError) || !change.should_learn {
+        return None;
+    }
+
+    let corrected_hint = clean_surface(&change.corrected);
+    if corrected_hint.is_empty() || token_surfaces(&corrected_hint).len() > 4 {
+        return None;
+    }
+    let corrected = canonicalize_corrected_surface(corrected_hint);
+    if corrected.is_empty()
+        || promotion_gate::is_common_word(&corrected)
+        || crate::tier2::is_in_dictionary(&corrected)
+        || promotion_gate::is_numeric_junk(&corrected)
+        || !promotion_gate::appears_in_user_kept(&corrected, user_kept)
+        || !promotion_gate::script_matches(&corrected, output_language)
+    {
+        return None;
+    }
+
+    let existing_protected = protected_vocab_lookup(pool, user_id, &corrected)
+        .or_else(|| canonical_developer_term(&corrected).map(str::to_string));
+    let existing_term = existing_protected
+        .as_ref()
+        .and_then(|canonical| vocabulary::find_by_term_ci(pool, user_id, canonical));
+    let canonical_for_policy = existing_term
+        .as_ref()
+        .map(|existing| existing.term.as_str())
+        .or(existing_protected.as_deref())
+        .unwrap_or(&corrected);
+    let term_type = existing_term
+        .as_ref()
+        .and_then(|existing| existing.term_type.as_deref())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| vocabulary::classify_term_type(canonical_for_policy))
+        .to_string();
+
+    let strong_target = existing_protected.is_some()
+        || matches!(
+            term_type.as_str(),
+            "brand" | "acronym" | "proper_noun" | "code_identifier"
+        );
+    if !strong_target {
+        return None;
+    }
+
+    let original = clean_surface(&change.original);
+    let source_tokens = token_surfaces(&original);
+    let corrected_tokens = token_surfaces(&corrected);
+    let is_token_collapse = source_tokens.len() > 1 && corrected_tokens.len() == 1;
+    let is_single_common_source = source_tokens.len() == 1
+        && (promotion_gate::is_common_word(&original)
+            || alias_safety::is_common_alias_source(&original)
+            || crate::tier2::is_in_dictionary(&original));
+    if is_single_common_source {
+        return None;
+    }
+
+    Some(ReviewCandidate {
+        original,
+        corrected: canonical_for_policy.to_string(),
+        term_type,
+        learnable: true,
+        tag: if is_token_collapse {
+            "local_token_collapse".to_string()
+        } else {
+            "local_deterministic".to_string()
+        },
+    })
+}
+
+fn merge_review_candidates(
+    candidates: &mut Vec<ReviewCandidate>,
+    additions: Vec<ReviewCandidate>,
+) -> usize {
+    let before = candidates.len();
+    for candidate in additions {
+        push_unique_review_candidate(candidates, candidate);
+    }
+    candidates.len().saturating_sub(before)
+}
+
+fn push_unique_review_candidate(candidates: &mut Vec<ReviewCandidate>, candidate: ReviewCandidate) {
+    let original_norm = tier2_edit_policy::normalize_token(&candidate.original);
+    let corrected_norm = tier2_edit_policy::normalize_token(&candidate.corrected);
+    if corrected_norm.is_empty()
+        || candidates.iter().any(|existing| {
+            tier2_edit_policy::normalize_token(&existing.original) == original_norm
+                && tier2_edit_policy::normalize_token(&existing.corrected) == corrected_norm
+        })
+    {
+        return;
+    }
+    candidates.push(candidate);
+}
+
+enum ReviewCandidateContextTrim {
+    Unchanged,
+    Drop,
+    Trim(ReviewCandidate),
+}
+
+fn trim_unchanged_review_candidate_context(
+    candidate: &ReviewCandidate,
+) -> ReviewCandidateContextTrim {
+    let original_tokens = token_surfaces(&candidate.original);
+    let corrected_tokens = token_surfaces(&candidate.corrected);
+    if original_tokens.len() <= 1 || original_tokens.len() != corrected_tokens.len() {
+        return ReviewCandidateContextTrim::Unchanged;
+    }
+
+    let original_norms = original_tokens
+        .iter()
+        .map(|token| review_candidate_span_norm(token))
+        .collect::<Vec<_>>();
+    let corrected_norms = corrected_tokens
+        .iter()
+        .map(|token| review_candidate_span_norm(token))
+        .collect::<Vec<_>>();
+
+    let mut start = 0usize;
+    while start < original_norms.len() && original_norms[start] == corrected_norms[start] {
+        start += 1;
+    }
+
+    let mut end = original_norms.len();
+    while end > start && original_norms[end - 1] == corrected_norms[end - 1] {
+        end -= 1;
+    }
+
+    if start == 0 && end == original_norms.len() {
+        return ReviewCandidateContextTrim::Unchanged;
+    }
+    if start >= end {
+        return ReviewCandidateContextTrim::Drop;
+    }
+
+    let original = original_tokens[start..end].join(" ");
+    let corrected = corrected_tokens[start..end].join(" ");
+    let corrected_norm = review_candidate_span_norm(&corrected);
+    if corrected_norm.is_empty()
+        || promotion_gate::is_common_word(&corrected)
+        || alias_safety::is_common_alias_source(&corrected)
+    {
+        return ReviewCandidateContextTrim::Drop;
+    }
+    if !matches!(
+        vocabulary::classify_term_type(&corrected),
+        "brand" | "acronym" | "proper_noun" | "code_identifier"
+    ) {
+        return ReviewCandidateContextTrim::Drop;
+    }
+
+    let mut trimmed = candidate.clone();
+    trimmed.original = original;
+    trimmed.corrected = canonicalize_corrected_surface(corrected);
+    trimmed.term_type = vocabulary::classify_term_type(&trimmed.corrected).to_string();
+    if !trimmed.tag.contains("trimmed") {
+        trimmed.tag = format!("{}_trimmed", trimmed.tag);
+    }
+    ReviewCandidateContextTrim::Trim(trimmed)
+}
+
+fn review_candidate_span_norm(text: &str) -> String {
+    text.trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.') {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn sanitize_review_candidates(
+    candidates: Vec<ReviewCandidate>,
+    user_kept: &str,
+    output_language: &str,
+) -> Vec<ReviewCandidate> {
+    let mut sanitized = Vec::new();
+    for candidate in candidates {
+        let candidate = match trim_unchanged_review_candidate_context(&candidate) {
+            ReviewCandidateContextTrim::Unchanged => candidate,
+            ReviewCandidateContextTrim::Drop => continue,
+            ReviewCandidateContextTrim::Trim(trimmed) => trimmed,
+        };
+        let corrected = clean_surface(&candidate.corrected);
+        if corrected.is_empty()
+            || !promotion_gate::appears_in_user_kept(&corrected, user_kept)
+            || !promotion_gate::script_matches(&corrected, output_language)
+        {
+            continue;
+        }
+        push_unique_review_candidate(&mut sanitized, candidate);
+    }
+    sanitized
 }
 
 fn protected_insert_changes_from_hunks(
@@ -3170,6 +3565,42 @@ fn clean_surface(text: &str) -> String {
         .to_string()
 }
 
+/// True when a single token *looks like* a protected name / brand / acronym /
+/// code identifier worth OFFERING to the user as a learnable term. A local
+/// mirror of the control-plane's `looks_like_protected_target`, built only from
+/// existing primitives so the local "Ask to learn" choice agrees with the
+/// server's notion of a name. Rejects empty / common-word / dictionary /
+/// numeric tokens, then requires a proper-noun signal (initial capital, a short
+/// all-caps run, or a digit/dot). Used only to gate the new review-card offers;
+/// it never auto-learns anything.
+fn is_name_like_term(raw: &str) -> bool {
+    let t = clean_surface(raw);
+    if t.is_empty()
+        || promotion_gate::is_common_word(&t)
+        || crate::tier2::is_in_dictionary(&t)
+        || promotion_gate::is_numeric_junk(&t)
+    {
+        return false;
+    }
+    let first_upper = t.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+    let letters: Vec<char> = t.chars().filter(|c| c.is_alphabetic()).collect();
+    let all_caps =
+        !letters.is_empty() && letters.len() <= 8 && letters.iter().all(|c| c.is_uppercase());
+    let has_digit_dot = t.chars().any(|c| c.is_ascii_digit() || c == '.');
+    first_upper || all_caps || has_digit_dot
+}
+
+/// True when a (possibly multi-word) corrected span is worth offering as a
+/// learnable term: 1..=4 words and at least one token is name-like (a real
+/// name/brand anchor like "Emiac" in "Emiac tech"). Because `is_name_like_term`
+/// already excludes common / dictionary / numeric tokens, a span made entirely
+/// of ordinary words ("the market") has no anchor and stays silent, while a
+/// genuine multi-word name is surfaced.
+fn name_like_span(raw: &str) -> bool {
+    let words: Vec<&str> = raw.split_whitespace().collect();
+    !words.is_empty() && words.len() <= 4 && words.iter().any(|&w| is_name_like_term(w))
+}
+
 fn unsafe_stt_source_reason(
     pool: &crate::store::DbPool,
     user_id: &str,
@@ -3360,6 +3791,157 @@ mod tests {
             skip_reason: None,
             format_rule: None,
         }
+    }
+
+    #[test]
+    fn deterministic_classifier_collapses_spaced_source_to_code_token() {
+        let pool = mem_pool();
+        let hunks = edit_diff::diff(
+            "Yah n 10 ko achchhe se sun nahin pa raha hai",
+            "Yah n 10 ko achchhe se sun nahin pa raha hai",
+            "Yah n8n ko achchhe se sun nahin pa raha hai",
+        );
+        let changes = deterministic_classify_hunks(
+            &hunks,
+            "Yah n 10 ko achchhe se sun nahin pa raha hai",
+            "Yah n 10 ko achchhe se sun nahin pa raha hai",
+            "Yah n8n ko achchhe se sun nahin pa raha hai",
+            &pool,
+            "u1",
+        );
+
+        assert!(changes.iter().any(|change| {
+            change.original == "n 10"
+                && change.corrected == "n8n"
+                && change.reason == ChangeReason::SttError
+                && change.should_learn
+        }));
+    }
+
+    #[test]
+    fn local_review_candidate_preserves_spaced_n10_to_n8n() {
+        let pool = mem_pool();
+        let changes = vec![stt_change("n 10", "n8n")];
+        let candidates = local_review_candidates_from_analyzer(
+            &changes,
+            &pool,
+            "u1",
+            "Yah n8n ko achchhe se sun nahin pa raha hai",
+            "hinglish",
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].original, "n 10");
+        assert_eq!(candidates[0].corrected, "n8n");
+        assert_eq!(candidates[0].term_type, "code_identifier");
+        assert_eq!(candidates[0].tag, "local_token_collapse");
+    }
+
+    #[test]
+    fn local_review_candidate_normalizes_uppercase_source_n10() {
+        let pool = mem_pool();
+        let lower = local_review_candidates_from_analyzer(
+            &[stt_change("n 10", "n8n")],
+            &pool,
+            "u1",
+            "n8n ka workflow",
+            "hinglish",
+        );
+        let upper = local_review_candidates_from_analyzer(
+            &[stt_change("N 10", "n8n")],
+            &pool,
+            "u1",
+            "n8n ka workflow",
+            "hinglish",
+        );
+
+        let mut merged = lower.clone();
+        let added = merge_review_candidates(&mut merged, upper);
+
+        assert_eq!(lower.len(), 1);
+        assert_eq!(added, 0, "N 10 and n 10 should dedupe to one alias");
+        assert_eq!(merged.len(), 1);
+    }
+
+    #[test]
+    fn server_candidates_keep_local_spaced_code_identifier() {
+        let pool = mem_pool();
+        let local = local_review_candidates_from_analyzer(
+            &[stt_change("N 10", "n8n")],
+            &pool,
+            "u1",
+            "n8n aur Kafka ka use karenge",
+            "hinglish",
+        );
+        let mut server = vec![ReviewCandidate {
+            original: "kaaf ka".to_string(),
+            corrected: "Kafka".to_string(),
+            term_type: "brand".to_string(),
+            learnable: true,
+            tag: "server".to_string(),
+        }];
+
+        let added = merge_review_candidates(&mut server, local);
+
+        assert_eq!(added, 1);
+        assert!(
+            server
+                .iter()
+                .any(|candidate| { candidate.original == "N 10" && candidate.corrected == "n8n" })
+        );
+        assert!(
+            server
+                .iter()
+                .any(|candidate| candidate.corrected == "Kafka")
+        );
+    }
+
+    #[test]
+    fn server_candidate_drops_context_wrapped_common_word_edit() {
+        let candidates = sanitize_review_candidates(
+            vec![ReviewCandidate {
+                original: "Lark wiki two".to_string(),
+                corrected: "Lark wiki too".to_string(),
+                term_type: "proper_noun".to_string(),
+                learnable: true,
+                tag: "server_llm".to_string(),
+            }],
+            "Lark wiki too",
+            "english",
+        );
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn server_candidate_trims_context_wrapped_brand_edit() {
+        let candidate = ReviewCandidate {
+            original: "please kaafka".to_string(),
+            corrected: "please Kafka".to_string(),
+            term_type: "proper_noun".to_string(),
+            learnable: true,
+            tag: "server_llm".to_string(),
+        };
+        assert!(!promotion_gate::is_common_word("Kafka"));
+        assert!(!alias_safety::is_common_alias_source("Kafka"));
+        assert_eq!(vocabulary::classify_term_type("Kafka"), "proper_noun");
+        match trim_unchanged_review_candidate_context(&candidate) {
+            ReviewCandidateContextTrim::Trim(trimmed) => {
+                assert_eq!(trimmed.original, "kaafka");
+                assert_eq!(trimmed.corrected, "Kafka");
+            }
+            ReviewCandidateContextTrim::Drop => panic!("brand candidate should not be dropped"),
+            ReviewCandidateContextTrim::Unchanged => panic!("brand candidate should be trimmed"),
+        }
+
+        let candidates =
+            sanitize_review_candidates(vec![candidate], "please Kafka status bhejo", "english");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].original, "kaafka");
+        assert_eq!(candidates[0].corrected, "Kafka");
+        assert_eq!(candidates[0].term_type, "proper_noun");
+        assert!(candidates[0].tag.contains("trimmed"));
     }
 
     fn llm_candidate(

@@ -93,6 +93,8 @@ final class KeyboardViewController: UIInputViewController {
         teachTimer = nil
         pad?.stopDeleteTimer()
         streamer.hardStop()
+        clearRewriteTransients()
+        rewriteUndo = nil
     }
 
     deinit {
@@ -151,6 +153,8 @@ final class KeyboardViewController: UIInputViewController {
         // pad ever got detached from the view (system view reload), rebuild it so
         // the keyboard can never end up blank.
         if let pad, pad.superview === view {
+            pad.activeRewriteTone = activeRewriteTone
+            pad.activeRewriteLanguage = activeRewriteLanguage
             pad.update(state: state, canTeachFix: canTeachFix, animated: animated)
             return
         }
@@ -167,6 +171,15 @@ final class KeyboardViewController: UIInputViewController {
         pad.onKeyTap = { [weak self] text in self?.textDocumentProxy.insertText(text) }
         pad.onDelete = { [weak self] in self?.textDocumentProxy.deleteBackward() }
         pad.onNextKeyboard = { [weak self] in self?.advanceToNextInputMode() }
+        pad.onRewrite = { [weak self] in self?.beginRewrite() }
+        pad.onRewriteConfirm = { [weak self] in self?.confirmRewrite() }
+        pad.onRewriteCopy = { [weak self] in self?.copyRewrite() }
+        pad.onRewriteCancel = { [weak self] in self?.cancelRewrite() }
+        pad.onRewriteUndo = { [weak self] in self?.undoRewrite() }
+        pad.onRewriteTone = { [weak self] tone in self?.setRewriteTone(tone) }
+        pad.onRewriteLanguage = { [weak self] language in self?.setRewriteLanguage(language) }
+        pad.activeRewriteTone = activeRewriteTone
+        pad.activeRewriteLanguage = activeRewriteLanguage
         view.addSubview(pad)
         NSLayoutConstraint.activate([
             pad.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -499,6 +512,168 @@ final class KeyboardViewController: UIInputViewController {
                 }
             }
         }
+    }
+
+    // MARK: Select → rewrite (in-keyboard polish of selected / last-dictated text)
+    //
+    // The user selects text (or just dictated) and taps the wand; we rewrite that
+    // run in their chosen tone/language via the cloud polish engine and replace it
+    // IN PLACE. Selection-read is unreliable across host apps, so we resolve a
+    // concrete target in tiers and never take a destructive path without one.
+
+    private enum RewriteScope { case selection, lastDictation, cursorContext }
+    private var rewriteTarget: String?      // the exact text we're rewriting
+    private var rewriteScope: RewriteScope = .selection
+    private var rewriteOutput: String?      // the rewritten text shown in the preview
+    private var rewriteTone: String?        // per-tap tone override (nil = saved account tone)
+    private var rewriteLanguage: String?    // per-tap language override (nil = saved)
+    private var rewriteUndo: (original: String, replaced: String)?
+
+    /// What tone/language the rewrite chips should show as active.
+    var activeRewriteTone: String { rewriteTone ?? SharedStore.tonePreset }
+    var activeRewriteLanguage: String { rewriteLanguage ?? SharedStore.outputLanguage }
+
+    private func resolveRewriteTarget() -> (text: String, scope: RewriteScope)? {
+        let proxy = textDocumentProxy
+        // Tier A — a live selection (best, but nil in many host apps).
+        if let sel = proxy.selectedText?.trimmingCharacters(in: .whitespacesAndNewlines), !sel.isEmpty {
+            return (sel, .selection)
+        }
+        // Tier B — the run we just dictated, if it's still in place and in-window.
+        if canTeachFix, let inserted = lastInsertedText {
+            let trimmed = inserted.trimmingCharacters(in: .whitespacesAndNewlines)
+            let before = proxy.documentContextBeforeInput ?? ""
+            if !trimmed.isEmpty, before.contains(trimmed) {
+                return (trimmed, .lastDictation)
+            }
+        }
+        // Tier C — the sentence immediately before the cursor.
+        let before = proxy.documentContextBeforeInput ?? ""
+        if let sentence = TextScope.lastSentence(in: before) {
+            return (sentence, .cursorContext)
+        }
+        return nil
+    }
+
+    private func beginRewrite() {
+        guard hasFullAccess else { setState(.needsFullAccess); return }
+        guard let token = SharedStore.accessToken, !token.isEmpty else { setState(.needsMainAppSession); return }
+        guard !TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField else {
+            setState(.unsupportedSecureField); return
+        }
+        guard let resolved = resolveRewriteTarget() else {
+            setState(.error("Select some text — or dictate first — then tap Polish."))
+            return
+        }
+        rewriteTarget = resolved.text
+        rewriteScope = resolved.scope
+        runRewrite()
+    }
+
+    /// Call the polish server for the current target in the chosen (or saved) tone/lang.
+    private func runRewrite() {
+        guard let target = rewriteTarget else { return }
+        let tone = activeRewriteTone
+        let language = activeRewriteLanguage
+        let screen = buildScreenContext()
+        setState(.rewriting)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let raw = try await self.gateway.rewriteText(
+                    target, tonePreset: tone, outputLanguage: language,
+                    screenContext: screen, safeVocabTerms: []
+                )
+                let polished = LearnedAliasResolver.apply(
+                    HinglishScript.enforceRomanHinglish(raw),
+                    transcript: target,
+                    aliases: SharedStore.learnedAliases
+                )
+                await MainActor.run {
+                    guard self.rewriteTarget == target else { return }   // a newer rewrite started
+                    let out = polished.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.rewriteOutput = out.isEmpty ? target : out
+                    self.setState(.rewriteReady(self.rewriteOutput!))
+                }
+            } catch {
+                await MainActor.run {
+                    let msg = (error as? GatewayError)?.userMessage ?? "Couldn't polish that. Try again."
+                    self.setState(.error(msg))
+                }
+            }
+        }
+    }
+
+    private func setRewriteTone(_ tone: String) {
+        rewriteTone = tone
+        if rewriteTarget != nil { runRewrite() }
+    }
+
+    private func setRewriteLanguage(_ language: String) {
+        rewriteLanguage = language
+        if rewriteTarget != nil { runRewrite() }
+    }
+
+    private func confirmRewrite() {
+        guard let output = rewriteOutput, let target = rewriteTarget else { return }
+        guard !TextInsertion(documentProxy: textDocumentProxy).isUnsupportedSecureField else {
+            setState(.unsupportedSecureField); return
+        }
+        let proxy = textDocumentProxy
+        switch rewriteScope {
+        case .selection:
+            // A live selection: insertText overwrites it (standard UIKit behavior).
+            proxy.insertText(output)
+        case .lastDictation, .cursorContext:
+            // No live selection — only delete if `target` is provably the trailing run,
+            // by grapheme clusters (String.count = Characters), else append safely.
+            let before = proxy.documentContextBeforeInput ?? ""
+            if let r = before.range(of: target, options: .backwards), r.upperBound == before.endIndex {
+                for _ in 0..<target.count { proxy.deleteBackward() }
+                proxy.insertText(output)
+            } else {
+                proxy.insertText(output)
+            }
+        }
+        rewriteUndo = (original: target, replaced: output)
+        clearRewriteTransients()
+        setState(.rewritten)
+    }
+
+    private func copyRewrite() {
+        guard let output = rewriteOutput else { return }
+        pasteboard.string = output
+        clearRewriteTransients()
+        rewriteUndo = nil
+        setState(.copied)
+    }
+
+    private func cancelRewrite() {
+        clearRewriteTransients()
+        rewriteUndo = nil
+        recomputeIdleState()
+        render(animated: true)
+    }
+
+    private func undoRewrite() {
+        guard let undo = rewriteUndo else { return }
+        let proxy = textDocumentProxy
+        let before = proxy.documentContextBeforeInput ?? ""
+        if before.hasSuffix(undo.replaced) {
+            for _ in 0..<undo.replaced.count { proxy.deleteBackward() }
+            proxy.insertText(undo.original)
+        }
+        rewriteUndo = nil
+        clearRewriteTransients()
+        recomputeIdleState()
+        render(animated: true)
+    }
+
+    private func clearRewriteTransients() {
+        rewriteTarget = nil
+        rewriteOutput = nil
+        rewriteTone = nil
+        rewriteLanguage = nil
     }
 
     // MARK: App-handoff dictation

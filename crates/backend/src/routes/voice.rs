@@ -113,7 +113,6 @@ use crate::{
         cerebras, gateway, gemini_direct, groq, openai_codex,
         prompt::{
             VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE, VocabEntry,
-            build_message_polish_system_prompt, build_message_polish_user_message,
             build_user_message_with_hints, build_voice_repair_system_prompt,
             build_voice_repair_user_message, default_voice_prompt_template,
             render_voice_system_prompt_template, resolved_vocab_terms_to_entries_with_aliases,
@@ -185,6 +184,8 @@ struct ServerRuntimeLatency {
 #[derive(Debug, Serialize)]
 struct ServerRuntimeVoiceWavRequest {
     wav_b64: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
     output_language: String,
     selected_model: String,
     screen_context: Option<String>,
@@ -611,70 +612,6 @@ pub async fn repair_transcript(
         .into_response()
 }
 
-async fn run_message_polish_pass(
-    http_client: reqwest::Client,
-    pool: crate::store::DbPool,
-    user_id: String,
-    groq_key: String,
-    text: &str,
-) -> Result<(crate::llm::PolishResult, String), String> {
-    let system_prompt = build_message_polish_system_prompt();
-    let user_message = build_message_polish_user_message(text);
-
-    let codex_token = {
-        let pool_tok = pool.clone();
-        let uid_tok = user_id.clone();
-        tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
-            .await
-            .unwrap_or(None)
-    };
-
-    if let Some(tok) = codex_token {
-        let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
-        let drain = tokio::spawn(async move { while token_rx.recv().await.is_some() {} });
-        let result = openai_codex::stream_polish(
-            &http_client,
-            &tok.access_token,
-            openai_codex::MODEL_MINI,
-            &system_prompt,
-            &user_message,
-            token_tx,
-        )
-        .await;
-        let _ = drain.await;
-        match result {
-            Ok(r) => return Ok((r, openai_codex::MODEL_MINI.to_string())),
-            Err(e) => {
-                let auth_failed =
-                    invalidate_openai_session_on_auth_error(&pool, &user_id, "openai_codex", &e);
-                if !auth_failed {
-                    warn!(
-                        "[voice] message polish Codex pass failed; falling back to Groq 70B: {e}"
-                    );
-                }
-            }
-        }
-    }
-
-    if groq_key.trim().is_empty() {
-        return Err("Groq key missing for message polish fallback".to_string());
-    }
-
-    let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
-    let drain = tokio::spawn(async move { while token_rx.recv().await.is_some() {} });
-    let result = groq::stream_polish(
-        &http_client,
-        &groq_key,
-        groq::GROQ_MODEL_70B,
-        &system_prompt,
-        &user_message,
-        token_tx,
-    )
-    .await;
-    let _ = drain.await;
-    result.map(|r| (r, groq::GROQ_MODEL_70B.to_string()))
-}
-
 async fn run_server_runtime_voice_probe(
     http_client: &reqwest::Client,
     pool: &crate::store::DbPool,
@@ -877,6 +814,8 @@ async fn run_server_runtime_voice_wav_probe(
     safe_vocab_terms: Vec<String>,
     stt_provider: &str,
     recording_id: Option<&str>,
+    mode: &str,
+    client_run_id: Option<&str>,
 ) -> Result<
     (
         String,
@@ -903,11 +842,19 @@ async fn run_server_runtime_voice_wav_probe(
 
     let req = ServerRuntimeVoiceWavRequest {
         wav_b64: general_purpose::STANDARD.encode(wav_data),
+        mode: if mode.trim().is_empty() || mode == "normal_voice" {
+            None
+        } else {
+            Some(mode.to_string())
+        },
         output_language: output_language.to_string(),
         selected_model: selected_model.to_string(),
         screen_context: screen_context.map(|s| s.chars().take(500).collect()),
         safe_vocab_terms,
-        client_run_id: Some(Uuid::new_v4().to_string()),
+        client_run_id: client_run_id
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+            .or_else(|| Some(Uuid::new_v4().to_string())),
         recording_id: recording_id.map(str::to_string),
         platform: Some(std::env::consts::OS.to_string()),
         app_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
@@ -916,12 +863,17 @@ async fn run_server_runtime_voice_wav_probe(
 
     let url = format!("{}/v1/runtime/voice/wav", base_url.trim_end_matches('/'));
     let start = Instant::now();
+    let request_timeout = if mode == "message_polish" {
+        std::time::Duration::from_secs(90)
+    } else {
+        std::time::Duration::from_secs(45)
+    };
     let resp = crate::cp_client::with_org_context(
         http_client
             .post(&url)
             .bearer_auth(token)
             .json(&req)
-            .timeout(std::time::Duration::from_secs(45)),
+            .timeout(request_timeout),
         Some(&user),
     )
     .send()
@@ -951,7 +903,11 @@ async fn run_server_runtime_voice_wav_probe(
             polished: parsed.output,
             polish_ms,
         },
-        format!("server-audio-runtime:{}", parsed.model_used),
+        if mode == "message_polish" {
+            format!("server-message-polish-audio:{}", parsed.model_used)
+        } else {
+            format!("server-audio-runtime:{}", parsed.model_used)
+        },
         parsed.latency_ms,
     ))
 }
@@ -1356,7 +1312,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let missing = if message_polish_mode {
-        crate::routes::key_guard::missing_message_polish_voice_keys(prefs_for_guard)
+        Vec::new()
     } else {
         crate::routes::key_guard::missing_voice_api_keys(&pool, &user_id, prefs_for_guard)
     };
@@ -1433,6 +1389,100 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     json!({"message": "no audio captured for message polish mode", "audio_id": aid}).to_string()
                 ));
                 return;
+            }
+
+            yield Ok(Event::default().event("status")
+                .data(json!({"phase": "server_transcribing"}).to_string()));
+
+            let server_recording_id = Uuid::new_v4().to_string();
+            let stt_provider_for_server = crate::routes::key_guard::effective_stt_provider(&prefs);
+            let server_audio_result = run_server_runtime_voice_wav_probe(
+                &http_client,
+                &pool,
+                &user_id,
+                &wav_data,
+                "english",
+                &prefs.selected_model,
+                screen_context.as_deref(),
+                Vec::new(),
+                &stt_provider_for_server,
+                Some(&server_recording_id),
+                "message_polish",
+                client_run_id.as_deref(),
+            )
+            .await;
+
+            match server_audio_result {
+                Ok((server_transcript, server_result, server_model, server_latency)) => {
+                    let total_ms = total_start.elapsed().as_millis() as i64;
+                    let word_count = server_result.polished.split_whitespace().count() as i64;
+                    let audio_secs = wav_duration_secs(&wav_data);
+
+                    let pool2 = pool.clone();
+                    let id2 = server_recording_id.clone();
+                    let uid2 = user_id.clone();
+                    let t2 = server_transcript.clone();
+                    let p2 = server_result.polished.clone();
+                    let ta2 = target_app.clone();
+                    let model2 = server_model.clone();
+                    let aid2 = saved_audio_id.clone();
+                    tokio::task::spawn_blocking(move || {
+                        insert_recording(&pool2, InsertRecording {
+                            id: &id2,
+                            user_id: &uid2,
+                            transcript: &t2,
+                            polished: &p2,
+                            word_count,
+                            recording_seconds: if audio_secs > 0.0 { audio_secs } else { estimated_secs(word_count) },
+                            model_used: &model2,
+                            confidence: None,
+                            transcribe_ms: Some(server_latency.stt),
+                            embed_ms: Some(0),
+                            polish_ms: Some(server_latency.polish),
+                            target_app: ta2.as_deref(),
+                            source: "server_message_polish_audio",
+                            audio_id: aid2.as_deref(),
+                            enriched_transcript: Some(&t2),
+                            raw_transcript: Some(&t2),
+                            local_corrected_transcript: None,
+                            polished_output: Some(&p2),
+                        });
+                    });
+
+                    yield Ok(Event::default().event("done").data(
+                        json!({
+                            "recording_id": server_recording_id,
+                            "transcript": server_transcript,
+                            "audio_id": saved_audio_id,
+                            "source": "server_message_polish_audio",
+                            "target_app": target_app,
+                            "output_language": "english",
+                            "polished": server_result.polished,
+                            "model_used": server_model,
+                            "confidence": null,
+                            "latency_ms": {
+                                "transcribe": server_latency.stt,
+                                "embed": 0,
+                                "retrieve": 0,
+                                "polish": server_latency.polish,
+                                "total": total_ms,
+                            },
+                            "examples_used": 0,
+                            "server_message_polish_audio": true,
+                        }).to_string()
+                    ));
+                    return;
+                }
+                Err(e) => {
+                    warn!("[voice] server message-polish audio failed: {e}");
+                    if !crate::routes::key_guard::missing_message_polish_voice_keys(&prefs).is_empty() {
+                        yield Ok(Event::default().event("error").data(
+                            json!({"message": e, "audio_id": aid}).to_string()
+                        ));
+                        return;
+                    }
+                    warn!("[voice] falling back to local STT + server message polish");
+                }
             }
 
             yield Ok(Event::default().event("status")
@@ -1632,6 +1682,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         safe_vocab_terms,
                         &stt_provider,
                         Some(&recording_id),
+                        "normal_voice",
+                        client_run_id.as_deref(),
                     )
                     .await
                 }
@@ -2169,7 +2221,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let groq_key_for_recovery = groq_key.clone();
         let llm_start = Instant::now();
         let mut saw_script_rewrite = false;
-        let (mut llm_result, mut actual_model_used, stream_filter) = if prefs.server_runtime_enabled {
+        let (mut llm_result, actual_model_used, stream_filter) = if prefs.server_runtime_enabled {
             yield Ok(Event::default().event("status")
                 .data(json!({"phase": "server_polishing", "transcript": &resolved_transcript}).to_string()));
             info!("[timing] LLM start — provider=server_runtime selected_model={:?}", prefs.selected_model);
@@ -2503,53 +2555,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 exact_final.matches.len()
             );
             llm_result.polished = exact_final.text;
-        }
-
-        if message_polish_mode {
-            yield Ok(Event::default().event("status")
-                .data(json!({"phase": "message_polishing", "transcript": llm_result.polished}).to_string()));
-            let before_message_polish = llm_result.polished.clone();
-            match run_message_polish_pass(
-                http_client.clone(),
-                pool.clone(),
-                user_id.clone(),
-                groq_key.clone(),
-                &before_message_polish,
-            ).await {
-                Ok((mut message_result, message_model)) => {
-                    let scrubbed = scrub_polished_output(
-                        &message_result.polished,
-                        &before_message_polish,
-                        false,
-                    );
-                    if scrubbed != message_result.polished {
-                        warn!(
-                            "[voice] scrubbed message-polish leakage {} → {} chars",
-                            message_result.polished.len(),
-                            scrubbed.len(),
-                        );
-                        message_result.polished = scrubbed;
-                    }
-                    if message_result.polished.trim().is_empty() {
-                        warn!("[voice] message polish returned empty output — keeping first-pass result");
-                    } else {
-                        info!(
-                            "[voice] message polish mode applied using model={message_model} {} → {} chars",
-                            before_message_polish.len(),
-                            message_result.polished.len(),
-                        );
-                        llm_result.polish_ms =
-                            llm_result.polish_ms.saturating_add(message_result.polish_ms);
-                        llm_result.polished = message_result.polished;
-                        actual_model_used = format!("{actual_model_used} + {message_model}");
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        "[voice] message polish pass failed — keeping first-pass result: {e}"
-                    );
-                }
-            }
         }
 
         // Post-LLM number/email/exact-alias changes are reconciled by the desktop against

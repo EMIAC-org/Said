@@ -71,6 +71,10 @@ pub struct AppState {
     pub deepgram_api_key: String,
     /// Active STT vendor for server runtime (always "deepgram").
     pub stt_provider: String,
+    /// OpenAI API key for message-polish audio transcription.
+    pub openai_api_key: String,
+    /// OpenAI audio transcription model for message-polish audio.
+    pub openai_transcribe_model: String,
     pub groq_api_key: String,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
     /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
@@ -319,7 +323,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/orgs/me", get(routes::orgs::me))
         .route("/v1/orgs/:org_id/activate", post(routes::orgs::activate))
         .route("/v1/orgs/deactivate", post(routes::orgs::deactivate))
-        .route("/v1/orgs/:org_id/members", get(routes::orgs::members))
+        .route(
+            "/v1/orgs/:org_id/members",
+            get(routes::orgs::members).post(routes::orgs::add_member),
+        )
+        .route(
+            "/v1/orgs/:org_id/members/:account_id",
+            patch(routes::orgs::set_member_role),
+        )
         // Enterprise — Meetings
         .route(
             "/v1/meetings",

@@ -16,6 +16,10 @@ public enum KeyboardState: Equatable {
     case savedToHistory
     case teaching          // sending the user's in-place correction to learn
     case learned(String)   // confirmation / info after a teach attempt
+    // ── Select → rewrite (in-keyboard polish of selected / last-dictated text) ──
+    case rewriting               // calling the polish server for the resolved target text
+    case rewriteReady(String)    // preview of the rewritten text; Replace / Copy / Cancel
+    case rewritten               // replaced in place; Undo available
     case error(String)
     case staleSession
     case unsupportedSecureField

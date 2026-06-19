@@ -31,12 +31,19 @@ use uuid::Uuid;
 
 use crate::notification_hub::DesktopNotification;
 use crate::stt::{self, runtime_stt_credential_provider};
-use crate::voice_polish_standalone::{build_voice_system_prompt, build_voice_user_message};
+use crate::voice_polish_standalone::{
+    build_rewrite_system_prompt, build_rewrite_user_message, build_voice_system_prompt,
+    build_voice_user_message,
+};
 use crate::{AppState, auth::AuthUser, memory_hygiene, org_quota, tenant};
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL_FAST: &str = "llama-3.1-8b-instant";
 const GROQ_MODEL_SMART: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
+const OPENAI_AUDIO_TRANSCRIPTIONS_ENDPOINT: &str =
+    "https://api.openai.com/v1/audio/transcriptions";
+const DEFAULT_OPENAI_TRANSCRIBE_MODEL: &str = "whisper-1";
+const DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL: &str = "deepseek-v4-flash";
 
 fn selected_polish_model(_selected_model: &str) -> &'static str {
     GROQ_MODEL_SMART
@@ -90,11 +97,18 @@ pub struct VoicePolishRequest {
     pub safe_vocab_terms: Vec<String>,
     #[serde(default)]
     pub client_run_id: Option<String>,
+    /// Optional per-request tone override (e.g. the iOS keyboard "rewrite selection"
+    /// picks a tone per tap). When present it wins over the account's saved tone_preset;
+    /// when absent — every existing caller — behavior is byte-for-byte unchanged.
+    #[serde(default)]
+    pub tone_preset: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct VoiceWavRequest {
     pub wav_b64: String,
+    #[serde(default = "default_voice_wav_mode")]
+    pub mode: String,
     #[serde(default = "default_output_language")]
     pub output_language: String,
     #[serde(default = "default_selected_model")]
@@ -2044,6 +2058,18 @@ fn runtime_error_payload(
 /// `runtime_user_settings` for the voice prompt. Best-effort: a missing row or a
 /// query error must NEVER fail a dictation, so both fall back to the neutral
 /// default that the voice path used before per-account tone existed.
+/// Normalize a tone value onto the canonical said_core vocabulary — mirrors the mapping
+/// inside `account_polish_persona` so a per-request tone override (e.g. the keyboard
+/// rewrite) shares the same tone keys. Legacy mobile use-case names map across; canonical
+/// and unknown values pass through (said_core maps anything unrecognized to neutral).
+fn normalize_tone_preset(raw: &str) -> String {
+    match raw {
+        "work" | "email" => "professional".to_string(),
+        "notes" => "concise".to_string(),
+        other => other.to_string(),
+    }
+}
+
 async fn account_polish_persona(state: &AppState, account_id: Uuid) -> (String, Option<String>) {
     let (tone_preset, custom_prompt) = sqlx::query_as::<_, (String, Option<String>)>(
         "SELECT tone_preset, custom_prompt FROM runtime_user_settings WHERE account_id = $1",
@@ -2279,6 +2305,17 @@ pub async fn voice_wav(
     if wav_data.is_empty() {
         return Err(json_error(StatusCode::BAD_REQUEST, "wav_b64 is empty"));
     }
+    let message_polish_mode = is_message_polish_wav_mode(&req.mode);
+    let session_mode = if message_polish_mode {
+        "message_polish"
+    } else {
+        "normal_voice"
+    };
+    let session_source = if message_polish_mode {
+        "runtime_message_polish_audio"
+    } else {
+        "runtime_wav_probe"
+    };
 
     let server_memory = load_runtime_memory(&state, user.account_id)
         .await
@@ -2290,13 +2327,14 @@ pub async fn voice_wav(
         user.account_id,
         tenant_ctx.active_org_id,
         req.client_run_id.as_deref(),
-        "normal_voice",
-        "runtime_wav_probe",
+        session_mode,
+        session_source,
         req.device_id.as_deref(),
         req.platform.as_deref(),
         req.app_version.as_deref(),
         json!({
-            "endpoint": "voice_wav_probe",
+            "endpoint": "voice_wav",
+            "mode": session_mode,
             "wav_bytes": wav_data.len(),
             "safe_vocab_terms": merged_vocab.len(),
             "server_vocab_count": server_memory.vocab_terms.len(),
@@ -2304,60 +2342,132 @@ pub async fn voice_wav(
     )
     .await?;
 
-    let stt_provider = req
-        .stt_provider
-        .as_deref()
-        .map(said_core::stt::resolve_provider_from_pref)
-        .unwrap_or_else(|| state.stt_provider.clone());
-    let credential_provider = runtime_stt_credential_provider(&stt_provider);
-    let stt_credential = runtime_provider_secret(
-        &state,
-        user.account_id,
-        tenant_ctx.active_org_id,
-        credential_provider,
-    )
-    .await?;
-    let stt_model = "nova-3";
     let stt_start = Instant::now();
-    let transcript = match stt::call_batch_stt(
-        &stt_provider,
-        &stt_credential.secret,
-        wav_data,
-        "runtime_wav_probe",
-    )
-    .await
-    {
-        Ok(transcript) => transcript,
-        Err(e) => {
-            let stt_ms = stt_start.elapsed().as_millis() as i64;
-            let batch_err = format!("{credential_provider}_batch_failed");
-            let _ = insert_provider_usage(
-                &state,
-                run_id,
-                &stt_credential,
-                credential_provider,
-                Some(stt_model),
-                Some(stt_ms),
-                "error",
-                Some(&batch_err),
-            )
-            .await;
-            let _ = insert_stage_event(
-                &state,
-                run_id,
-                "stt_batch_complete",
-                "error",
-                Some(stt_ms),
-                Some(&batch_err),
-                json!({"error": e.chars().take(240).collect::<String>()}),
-            )
-            .await;
-            let _ = mark_runtime_session(&state, run_id, "failed", Some(&batch_err)).await;
-            return Err(json_error(
-                StatusCode::BAD_GATEWAY,
-                &format!("{credential_provider} batch STT failed: {e}"),
-            ));
-        }
+    let (transcript, stt_provider_for_usage, stt_model, stt_credential) = if message_polish_mode {
+        let credential_provider = "openai";
+        let stt_credential = runtime_provider_secret(
+            &state,
+            user.account_id,
+            tenant_ctx.active_org_id,
+            credential_provider,
+        )
+        .await?;
+        let model = openai_transcribe_model(&state);
+        let transcript = match call_openai_audio_transcribe(
+            &stt_credential.secret,
+            &model,
+            wav_data,
+            session_source,
+        )
+        .await
+        {
+            Ok(transcript) => transcript,
+            Err(e) => {
+                let stt_ms = stt_start.elapsed().as_millis() as i64;
+                let batch_err = "openai_transcribe_failed";
+                let _ = insert_provider_usage(
+                    &state,
+                    run_id,
+                    &stt_credential,
+                    credential_provider,
+                    Some(&model),
+                    Some(stt_ms),
+                    "error",
+                    Some(batch_err),
+                )
+                .await;
+                let _ = insert_stage_event(
+                    &state,
+                    run_id,
+                    "stt_batch_complete",
+                    "error",
+                    Some(stt_ms),
+                    Some(batch_err),
+                    json!({
+                        "provider": credential_provider,
+                        "model": model,
+                        "error": e.chars().take(240).collect::<String>()
+                    }),
+                )
+                .await;
+                let _ = mark_runtime_session(&state, run_id, "failed", Some(batch_err)).await;
+                return Err(json_error(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("OpenAI audio transcription failed: {e}"),
+                ));
+            }
+        };
+        (
+            transcript,
+            credential_provider.to_string(),
+            model,
+            stt_credential,
+        )
+    } else {
+        let stt_provider = req
+            .stt_provider
+            .as_deref()
+            .map(said_core::stt::resolve_provider_from_pref)
+            .unwrap_or_else(|| state.stt_provider.clone());
+        let credential_provider = runtime_stt_credential_provider(&stt_provider);
+        let stt_credential = runtime_provider_secret(
+            &state,
+            user.account_id,
+            tenant_ctx.active_org_id,
+            credential_provider,
+        )
+        .await?;
+        let stt_model = "nova-3".to_string();
+        let transcript = match stt::call_batch_stt(
+            &stt_provider,
+            &stt_credential.secret,
+            wav_data,
+            session_source,
+        )
+        .await
+        {
+            Ok(transcript) => transcript,
+            Err(e) => {
+                let stt_ms = stt_start.elapsed().as_millis() as i64;
+                let batch_err = format!("{credential_provider}_batch_failed");
+                let _ = insert_provider_usage(
+                    &state,
+                    run_id,
+                    &stt_credential,
+                    credential_provider,
+                    Some(&stt_model),
+                    Some(stt_ms),
+                    "error",
+                    Some(&batch_err),
+                )
+                .await;
+                let _ = insert_stage_event(
+                    &state,
+                    run_id,
+                    "stt_batch_complete",
+                    "error",
+                    Some(stt_ms),
+                    Some(&batch_err),
+                    json!({
+                        "provider": credential_provider,
+                        "model": stt_model,
+                        "error": e.chars().take(240).collect::<String>()
+                    }),
+                )
+                .await;
+                let _ = mark_runtime_session(&state, run_id, "failed", Some(&batch_err)).await;
+                return Err(json_error(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("{credential_provider} batch STT failed: {e}"),
+                ));
+            }
+        };
+        (
+            transcript,
+            credential_provider.to_string(),
+            stt_model,
+            stt_credential,
+        )
     };
     let stt_ms = stt_start.elapsed().as_millis() as i64;
     update_credential_used(&state, stt_credential.credential_id).await?;
@@ -2365,8 +2475,8 @@ pub async fn voice_wav(
         &state,
         run_id,
         &stt_credential,
-        credential_provider,
-        Some(stt_model),
+        &stt_provider_for_usage,
+        Some(&stt_model),
         Some(stt_ms),
         "ok",
         None,
@@ -2380,6 +2490,8 @@ pub async fn voice_wav(
         Some(stt_ms),
         None,
         json!({
+            "provider": stt_provider_for_usage,
+            "model": stt_model,
             "transcript_chars": transcript.chars().count(),
             "transcript_hash": content_hash(&transcript)
         }),
@@ -2387,48 +2499,104 @@ pub async fn voice_wav(
     .await?;
 
     let polish_start = Instant::now();
-    let output = match polish_runtime_transcript(
-        &state,
-        user.account_id,
-        run_id,
-        &transcript,
-        &req.output_language,
-        &req.selected_model,
-        req.screen_context.as_deref(),
-        &merged_vocab,
-    )
-    .await
-    {
-        Ok(output) => output,
-        Err(err) => {
-            let _ = mark_runtime_session(&state, run_id, "failed", Some("polish_failed")).await;
-            return Err(err);
+    let (output, model, prompt_version, history_source) = if message_polish_mode {
+        if state.deepseek_api_key.trim().is_empty() {
+            let _ = mark_runtime_session(&state, run_id, "failed", Some("message_polish_unconfigured")).await;
+            return Err(json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "DEEPSEEK_API_KEY is not configured on the server",
+            ));
         }
-    };
-
-    // Stable 2.3.4 parity: final runtime mutation is approved/safe exact STT
-    // aliases only. Edit-policy rules remain memory/status data for now; they
-    // must not broaden the server output until parity against the shipped
-    // local pipeline is proven.
-    let formatted_for_resolver = crate::number_format::apply(&transcript);
-    let (output, resolver_applied, resolver_skipped) =
-        apply_exact_resolver(&output, &formatted_for_resolver, &server_memory);
-    if resolver_applied > 0 {
-        let _ = insert_stage_event(
+        let system_prompt = build_message_polish_system_prompt();
+        let user_message = build_message_polish_user_message(&transcript);
+        let raw_output = match call_deepseek_message_polish(
+            &state,
+            &state.deepseek_api_key,
+            &system_prompt,
+            &user_message,
+        )
+        .await
+        {
+            Ok(output) => output,
+            Err(err) => {
+                let _ = mark_runtime_session(&state, run_id, "failed", Some("message_polish_failed")).await;
+                return Err(err);
+            }
+        };
+        let output = scrub_message_polish_output(&raw_output);
+        let model = deepseek_message_polish_model(&state);
+        insert_stage_event(
             &state,
             run_id,
-            "exact_resolver",
+            "message_polish_model",
             "ok",
             None,
             None,
             json!({
-                "evidence_count": server_memory.replacements.len(),
-                "applied_count": resolver_applied,
-                "skipped_count": resolver_skipped,
+                "model": model,
+                "input_chars": transcript.chars().count(),
+                "output_chars": output.chars().count(),
+                "source": "audio"
             }),
         )
-        .await;
-    }
+        .await?;
+        (
+            output,
+            model,
+            "message-polish-audio-openai-transcribe-deepseek-v4-flash-2026-06-20".to_string(),
+            "server_message_polish_audio",
+        )
+    } else {
+        let output = match polish_runtime_transcript(
+            &state,
+            user.account_id,
+            run_id,
+            &transcript,
+            &req.output_language,
+            &req.selected_model,
+            req.screen_context.as_deref(),
+            &merged_vocab,
+        )
+        .await
+        {
+            Ok(output) => output,
+            Err(err) => {
+                let _ = mark_runtime_session(&state, run_id, "failed", Some("polish_failed")).await;
+                return Err(err);
+            }
+        };
+
+        // Stable 2.3.4 parity: final runtime mutation is approved/safe exact STT
+        // aliases only. Edit-policy rules remain memory/status data for now; they
+        // must not broaden the server output until parity against the shipped
+        // local pipeline is proven.
+        let formatted_for_resolver = crate::number_format::apply(&transcript);
+        let (output, resolver_applied, resolver_skipped) =
+            apply_exact_resolver(&output, &formatted_for_resolver, &server_memory);
+        if resolver_applied > 0 {
+            let _ = insert_stage_event(
+                &state,
+                run_id,
+                "exact_resolver",
+                "ok",
+                None,
+                None,
+                json!({
+                    "evidence_count": server_memory.replacements.len(),
+                    "applied_count": resolver_applied,
+                    "skipped_count": resolver_skipped,
+                }),
+            )
+            .await;
+        }
+
+        (
+            output,
+            selected_polish_model(&req.selected_model).to_string(),
+            "server-runtime-wav-probe-2026-06-07".to_string(),
+            "server_wav",
+        )
+    };
 
     let polish_ms = polish_start.elapsed().as_millis() as i64;
     let total_ms = total_start.elapsed().as_millis() as i64;
@@ -2442,8 +2610,6 @@ pub async fn voice_wav(
     .await?;
     mark_runtime_session(&state, run_id, "completed", None).await?;
 
-    let model = selected_polish_model(&req.selected_model);
-
     let org_id_for_history = primary_org_id(&state, user.account_id).await.ok().flatten();
     crate::routes::runtime_history::write_history_from_runtime(
         &state,
@@ -2454,8 +2620,8 @@ pub async fn voice_wav(
         req.recording_id.as_deref(),
         &transcript,
         &output,
-        model,
-        "server_wav",
+        &model,
+        history_source,
         Some(stt_ms),
         Some(polish_ms),
     )
@@ -2466,8 +2632,8 @@ pub async fn voice_wav(
         transcript_hash: content_hash(&transcript),
         transcript,
         output,
-        model_used: model.to_string(),
-        prompt_version: "server-runtime-wav-probe-2026-06-07".to_string(),
+        model_used: model,
+        prompt_version,
         latency_ms: RuntimeAudioLatency {
             stt: stt_ms,
             polish: polish_ms,
@@ -2517,13 +2683,88 @@ fn scrub_message_polish_output(output: &str) -> String {
     trimmed.to_string()
 }
 
+fn openai_transcribe_model(state: &AppState) -> String {
+    let configured = state.openai_transcribe_model.trim();
+    if configured.is_empty() {
+        DEFAULT_OPENAI_TRANSCRIBE_MODEL.to_string()
+    } else {
+        configured.to_string()
+    }
+}
+
+fn deepseek_message_polish_model(state: &AppState) -> String {
+    let configured = state.deepseek_message_polish_model.trim();
+    if configured.is_empty() {
+        DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL.to_string()
+    } else {
+        configured.to_string()
+    }
+}
+
+async fn call_openai_audio_transcribe(
+    api_key: &str,
+    model: &str,
+    wav_data: Vec<u8>,
+    tag: &str,
+) -> Result<String, String> {
+    let file = reqwest::multipart::Part::bytes(wav_data)
+        .file_name("airnote-message-polish.wav")
+        .mime_str("audio/wav")
+        .map_err(|e| format!("{tag}: failed to build OpenAI audio part: {e}"))?;
+    let form = reqwest::multipart::Form::new()
+        .text("model", model.to_string())
+        .text("response_format", "json")
+        .part("file", file);
+
+    let client = &*crate::HTTP_CLIENT;
+    let resp = client
+        .post(OPENAI_AUDIO_TRANSCRIPTIONS_ENDPOINT)
+        .bearer_auth(api_key)
+        .multipart(form)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(|e| format!("{tag}: OpenAI transcription request failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "{tag}: OpenAI transcription returned {status}: {}",
+            &body[..body.len().min(300)]
+        ));
+    }
+
+    let raw = resp
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("{tag}: failed to parse OpenAI transcription response: {e}"))?;
+    let transcript = raw
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if transcript.is_empty() {
+        Err(format!("{tag}: OpenAI returned empty transcript"))
+    } else {
+        tracing::info!(
+            "[runtime] OpenAI message-polish transcription ok model={} chars={}",
+            model,
+            transcript.chars().count()
+        );
+        Ok(transcript)
+    }
+}
+
 async fn call_deepseek_message_polish(
     state: &AppState,
     api_key: &str,
     system_prompt: &str,
     user_message: &str,
 ) -> Result<String, (StatusCode, Json<Value>)> {
-    let model = state.deepseek_message_polish_model.clone();
+    let model = deepseek_message_polish_model(state);
     let url = format!("{}/v1/chat/completions", state.deepseek_base_url);
     let estimated_input_tokens = user_message.len() / 4;
     let max_tokens = (estimated_input_tokens * 2 + 256).min(4096);
@@ -2640,7 +2881,7 @@ pub async fn message_polish(
     let user_message = build_message_polish_user_message(text);
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
 
-    let model = state.deepseek_message_polish_model.clone();
+    let model = deepseek_message_polish_model(&state);
     let model_start = Instant::now();
     let raw_output = call_deepseek_message_polish(
         &state,
@@ -2766,15 +3007,36 @@ pub async fn voice_polish(
             .await;
         });
     }
-    let (tone_preset, custom_prompt) = account_polish_persona(&state, user.account_id).await;
-    let system_prompt = build_voice_system_prompt(
-        &req.output_language,
-        &tone_preset,
-        custom_prompt.as_deref(),
-        req.screen_context.as_deref(),
-        &merged_vocab,
-    );
-    let user_message = build_voice_user_message(&formatted_transcript, &req.output_language);
+    // An explicit per-request tone (only the iOS keyboard "select → polish" sends one)
+    // marks a REWRITE: rephrase freely + translate strictly into the chosen language.
+    // No tone = the dictation path, which preserves the speaker's language and words.
+    let explicit_tone = req
+        .tone_preset
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    let is_rewrite = explicit_tone.is_some();
+    let (tone_preset, custom_prompt) = match explicit_tone {
+        Some(raw) => (normalize_tone_preset(raw), None),
+        None => account_polish_persona(&state, user.account_id).await,
+    };
+    let (system_prompt, user_message) = if is_rewrite {
+        (
+            build_rewrite_system_prompt(&tone_preset, &req.output_language),
+            build_rewrite_user_message(&formatted_transcript, &req.output_language),
+        )
+    } else {
+        (
+            build_voice_system_prompt(
+                &req.output_language,
+                &tone_preset,
+                custom_prompt.as_deref(),
+                req.screen_context.as_deref(),
+                &merged_vocab,
+            ),
+            build_voice_user_message(&formatted_transcript, &req.output_language),
+        )
+    };
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
 
     let model = selected_polish_model(&req.selected_model);
@@ -3476,6 +3738,7 @@ async fn runtime_provider_secret(
 
     let env_fallback_present = match provider {
         "deepgram" => !state.deepgram_api_key.trim().is_empty(),
+        "openai" => !state.openai_api_key.trim().is_empty(),
         "groq" => !state.groq_api_key.trim().is_empty(),
         _ => false,
     };
@@ -3498,6 +3761,7 @@ async fn runtime_provider_secret(
 
     let fallback = match provider {
         "deepgram" => state.deepgram_api_key.trim(),
+        "openai" => state.openai_api_key.trim(),
         "groq" => state.groq_api_key.trim(),
         _ => "",
     };
@@ -3586,6 +3850,17 @@ fn default_output_language() -> String {
 
 fn default_selected_model() -> String {
     "smart".to_string()
+}
+
+fn default_voice_wav_mode() -> String {
+    "normal_voice".to_string()
+}
+
+fn is_message_polish_wav_mode(mode: &str) -> bool {
+    matches!(
+        mode.trim().to_ascii_lowercase().as_str(),
+        "message_polish" | "message-polish" | "polish_message" | "polish-my-message"
+    )
 }
 
 fn default_runtime_mode() -> String {
@@ -3997,6 +4272,7 @@ fn is_common_learning_term(norm: &str) -> bool {
         "cap",
         "one",
         "two",
+        "too",
         "three",
         "four",
         "five",
@@ -4534,6 +4810,64 @@ fn deterministic_user_edit_span_candidates(spans: &[UserEditSpan]) -> Vec<Learni
         .collect()
 }
 
+enum CandidateContextTrim {
+    Unchanged,
+    Drop,
+    Trim(LearningReviewCandidate),
+}
+
+fn trim_unchanged_candidate_context(candidate: &LearningReviewCandidate) -> CandidateContextTrim {
+    let original_tokens = normalized_tokens(&candidate.original);
+    let corrected_tokens = normalized_tokens(&candidate.corrected);
+    if original_tokens.len() <= 1 || original_tokens.len() != corrected_tokens.len() {
+        return CandidateContextTrim::Unchanged;
+    }
+
+    let mut start = 0usize;
+    while start < original_tokens.len() && original_tokens[start].1 == corrected_tokens[start].1 {
+        start += 1;
+    }
+
+    let mut end = original_tokens.len();
+    while end > start && original_tokens[end - 1].1 == corrected_tokens[end - 1].1 {
+        end -= 1;
+    }
+
+    if start == 0 && end == original_tokens.len() {
+        return CandidateContextTrim::Unchanged;
+    }
+    if start >= end {
+        return CandidateContextTrim::Drop;
+    }
+
+    let original = original_tokens[start..end]
+        .iter()
+        .map(|(surface, _)| surface.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let corrected = corrected_tokens[start..end]
+        .iter()
+        .map(|(surface, _)| surface.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let corrected_norm = normalize_learning_text(&corrected);
+    if corrected_norm.is_empty() || is_common_learning_term(&corrected_norm) {
+        return CandidateContextTrim::Drop;
+    }
+    if !looks_like_protected_target(&corrected) {
+        return CandidateContextTrim::Drop;
+    }
+
+    let mut trimmed = candidate.clone();
+    trimmed.original = original;
+    trimmed.corrected = corrected.clone();
+    trimmed.term_type = infer_term_type_from_target(&corrected).to_string();
+    if !trimmed.tag.contains("trimmed") {
+        trimmed.tag = format!("{}_trimmed", trimmed.tag);
+    }
+    CandidateContextTrim::Trim(trimmed)
+}
+
 fn deterministic_user_edit_span_candidates_for_text(
     pasted_output: &str,
     user_kept: &str,
@@ -5007,6 +5341,11 @@ fn refine_learning_review_candidates(
         .filter_map(|mut candidate| {
             if !candidate.learnable || !is_allowed_term_type(&candidate.term_type) {
                 return Some(candidate);
+            }
+            match trim_unchanged_candidate_context(&candidate) {
+                CandidateContextTrim::Unchanged => {}
+                CandidateContextTrim::Drop => return None,
+                CandidateContextTrim::Trim(trimmed) => candidate = trimmed,
             }
             if looks_like_formatter_only_memory(&candidate.original)
                 || looks_like_formatter_only_memory(&candidate.corrected)
@@ -5635,6 +5974,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normalize_tone_preset_maps_legacy_and_passes_through() {
+        assert_eq!(normalize_tone_preset("work"), "professional");
+        assert_eq!(normalize_tone_preset("email"), "professional");
+        assert_eq!(normalize_tone_preset("notes"), "concise");
+        assert_eq!(normalize_tone_preset("casual"), "casual");
+        assert_eq!(normalize_tone_preset("professional"), "professional");
+        assert_eq!(normalize_tone_preset("neutral"), "neutral");
+    }
+
+    #[test]
+    fn voice_polish_request_tone_preset_is_optional_and_additive() {
+        // Every existing caller omits tone_preset → defaults to None (behavior unchanged).
+        let without: VoicePolishRequest = serde_json::from_str(r#"{"transcript":"hi"}"#).unwrap();
+        assert_eq!(without.tone_preset, None);
+        // New callers (the keyboard rewrite) can send a per-request tone override.
+        let with: VoicePolishRequest =
+            serde_json::from_str(r#"{"transcript":"hi","tone_preset":"casual"}"#).unwrap();
+        assert_eq!(with.tone_preset.as_deref(), Some("casual"));
+    }
+
+    #[test]
     fn restores_product_like_token_replaced_by_model() {
         let output = restore_literal_tokens(
             "Macobs ka pachas percent growth hai",
@@ -5900,6 +6260,50 @@ mod tests {
         assert_eq!(spans[0].pasted_span, "kaisa");
         assert_eq!(spans[0].kept_span, "kaise");
         assert!(deterministic_user_edit_span_candidates(&spans).is_empty());
+    }
+
+    #[test]
+    fn server_review_analyzer_drops_context_wrapped_common_word_edit() {
+        let req = AnalyzeEditLearningRequest {
+            recording_id: Some("rec-1".to_string()),
+            transcript: "Lark wiki two".to_string(),
+            ai_output: "Lark wiki two".to_string(),
+            user_kept: "Lark wiki too".to_string(),
+            candidates: vec![LearningReviewCandidate {
+                original: "Lark wiki two".to_string(),
+                corrected: "Lark wiki too".to_string(),
+                term_type: "proper_noun".to_string(),
+                learnable: true,
+                tag: "server_llm".to_string(),
+            }],
+        };
+
+        assert!(refine_learning_review_candidates(&req).is_empty());
+    }
+
+    #[test]
+    fn server_review_analyzer_trims_context_wrapped_brand_edit() {
+        let req = AnalyzeEditLearningRequest {
+            recording_id: Some("rec-1".to_string()),
+            transcript: "please kaafka status bhejo".to_string(),
+            ai_output: "please kaafka status bhejo".to_string(),
+            user_kept: "please Kafka status bhejo".to_string(),
+            candidates: vec![LearningReviewCandidate {
+                original: "please kaafka".to_string(),
+                corrected: "please Kafka".to_string(),
+                term_type: "proper_noun".to_string(),
+                learnable: true,
+                tag: "server_llm".to_string(),
+            }],
+        };
+
+        let refined = refine_learning_review_candidates(&req);
+
+        assert_eq!(refined.len(), 1);
+        assert_eq!(refined[0].original, "kaafka");
+        assert_eq!(refined[0].corrected, "Kafka");
+        assert!(refined[0].learnable);
+        assert_eq!(refined[0].term_type, "brand");
     }
 
     #[test]

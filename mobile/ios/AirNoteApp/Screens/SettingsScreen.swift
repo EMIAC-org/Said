@@ -6,6 +6,7 @@ struct SettingsScreen: View {
     @AppStorage("airnotePreferredAppearance") private var appearance = AirNoteAppearance.system.rawValue
     @State private var confirmSignOut = false
     @State private var sessionMinutes = SharedStore.sessionDurationMinutes
+    @State private var customPromptDraft = ""
 
     var body: some View {
         NavigationStack {
@@ -160,6 +161,40 @@ struct SettingsScreen: View {
             Picker("Tone", selection: toneBinding) {
                 ForEach(AirNoteTone.all, id: \.key) { tone in
                     Text(tone.label).tag(tone.key)
+                }
+            }
+            if AirNoteTone.coerced(env.tonePreset) == "custom" {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextEditor(text: $customPromptDraft)
+                        .frame(minHeight: 96)
+                        .font(.callout)
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
+                        .overlay(alignment: .topLeading) {
+                            if customPromptDraft.isEmpty {
+                                Text("e.g. Reply like a friendly support agent — short sentences, no emojis.")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 13)
+                                    .padding(.vertical, 16)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    if customPromptDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        != env.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines) {
+                        Button {
+                            Task { await env.setCustomPrompt(customPromptDraft.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                        } label: {
+                            Label("Save persona", systemImage: "checkmark.circle.fill")
+                                .font(.callout.weight(.semibold))
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+                .onAppear { if customPromptDraft.isEmpty { customPromptDraft = env.customPrompt } }
+                .onChange(of: env.customPrompt) { _, newValue in
+                    if customPromptDraft.isEmpty { customPromptDraft = newValue }
                 }
             }
             Toggle("Personalize from my corrections", isOn: learningBinding)
