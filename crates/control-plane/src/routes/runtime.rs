@@ -31,7 +31,10 @@ use uuid::Uuid;
 
 use crate::notification_hub::DesktopNotification;
 use crate::stt::{self, runtime_stt_credential_provider};
-use crate::voice_polish_standalone::{build_voice_system_prompt, build_voice_user_message};
+use crate::voice_polish_standalone::{
+    build_rewrite_system_prompt, build_rewrite_user_message, build_voice_system_prompt,
+    build_voice_user_message,
+};
 use crate::{AppState, auth::AuthUser, memory_hygiene, org_quota, tenant};
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
@@ -2783,26 +2786,36 @@ pub async fn voice_polish(
             .await;
         });
     }
-    let (tone_preset, custom_prompt) = match req
+    // An explicit per-request tone (only the iOS keyboard "select → polish" sends one)
+    // marks a REWRITE: rephrase freely + translate strictly into the chosen language.
+    // No tone = the dictation path, which preserves the speaker's language and words.
+    let explicit_tone = req
         .tone_preset
         .as_deref()
         .map(str::trim)
-        .filter(|t| !t.is_empty())
-    {
-        // Explicit per-request tone override (keyboard rewrite). It wins over the saved
-        // persona and carries no custom prompt. Same normalization account_polish_persona
-        // uses, so the keys stay in sync with build_voice_system_prompt's vocabulary.
+        .filter(|t| !t.is_empty());
+    let is_rewrite = explicit_tone.is_some();
+    let (tone_preset, custom_prompt) = match explicit_tone {
         Some(raw) => (normalize_tone_preset(raw), None),
         None => account_polish_persona(&state, user.account_id).await,
     };
-    let system_prompt = build_voice_system_prompt(
-        &req.output_language,
-        &tone_preset,
-        custom_prompt.as_deref(),
-        req.screen_context.as_deref(),
-        &merged_vocab,
-    );
-    let user_message = build_voice_user_message(&formatted_transcript, &req.output_language);
+    let (system_prompt, user_message) = if is_rewrite {
+        (
+            build_rewrite_system_prompt(&tone_preset, &req.output_language),
+            build_rewrite_user_message(&formatted_transcript, &req.output_language),
+        )
+    } else {
+        (
+            build_voice_system_prompt(
+                &req.output_language,
+                &tone_preset,
+                custom_prompt.as_deref(),
+                req.screen_context.as_deref(),
+                &merged_vocab,
+            ),
+            build_voice_user_message(&formatted_transcript, &req.output_language),
+        )
+    };
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
 
     let model = selected_polish_model(&req.selected_model);
