@@ -192,6 +192,10 @@ fn python_binary(script: &PathBuf) -> Result<PathBuf, String> {
     if let Ok(entries) = std::fs::read_dir("/Library/Frameworks/Python.framework/Versions") {
         let mut versions: Vec<PathBuf> = entries
             .flatten()
+            // Skip the `Current` symlink — it can point at a newer Python that
+            // lacks some of the sidecar's deps (e.g. 3.14 with torch but no
+            // websockets). The explicit version dirs are probed + dep-verified.
+            .filter(|e| e.file_name().to_str() != Some("Current"))
             .map(|e| e.path().join("bin").join("python3"))
             .filter(|p| p.is_file())
             .collect();
@@ -219,7 +223,7 @@ fn python_binary(script: &PathBuf) -> Result<PathBuf, String> {
             return Ok(cand.clone());
         }
     }
-    Err("no Python 3 with the Swift STT sidecar requirements (numpy/torch/transformers) was found — install them (pip install -r requirements.txt) or set AIRNOTE_SWIFT_PYTHON".to_string())
+    Err("no Python 3 with the Swift STT sidecar requirements (numpy/torch/transformers/websockets) was found — install them (pip install -r requirements.txt) or set AIRNOTE_SWIFT_PYTHON".to_string())
 }
 
 /// Verify an interpreter can import the sidecar's hard dependencies. Run at most
@@ -229,7 +233,7 @@ fn python_binary(script: &PathBuf) -> Result<PathBuf, String> {
 fn python_has_sidecar_deps(py: &PathBuf) -> bool {
     Command::new(py)
         .arg("-c")
-        .arg("import numpy, torch, transformers")
+        .arg("import numpy, torch, transformers, websockets")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .output()
