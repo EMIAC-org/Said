@@ -2987,19 +2987,26 @@ pub fn meeting_engine_toggle_mute(
     status
 }
 
+// NOTE: `async` is load-bearing, not cosmetic. In Tauri v2 a *synchronous*
+// command runs on the main thread; an `async` one runs on the async runtime.
+// The frontend polls `get_status` every 1s, and `status()` locks ~10 mutexes —
+// as a sync command that recurring poll occupies the main thread and can starve
+// dispatch of the (sync) `meeting_engine_stop_session`, so "End meeting" hangs
+// (the command never even logs). Making the read-only pollers async keeps the
+// main thread free to dispatch control commands. Read-only → no ordering risk.
 #[tauri::command]
-pub fn meeting_engine_get_status(
+pub async fn meeting_engine_get_status(
     app: AppHandle,
     state: State<'_, MeetingEngineState>,
-) -> MeetingEngineStatus {
-    state.emit_status(&app)
+) -> Result<MeetingEngineStatus, String> {
+    Ok(state.emit_status(&app))
 }
 
 #[tauri::command]
-pub fn meeting_engine_get_live_transcript(
+pub async fn meeting_engine_get_live_transcript(
     state: State<'_, MeetingEngineState>,
-) -> MeetingLiveTranscriptPayload {
-    state.live_transcript_payload()
+) -> Result<MeetingLiveTranscriptPayload, String> {
+    Ok(state.live_transcript_payload())
 }
 
 #[tauri::command]
