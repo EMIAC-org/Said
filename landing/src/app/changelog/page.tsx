@@ -138,10 +138,16 @@ const releaseDownloads = [
     downloads: [],
   },
   {
-    version: "2.3.6",
-    date: "Jun 2026",
-    title: "Stable desktop release",
-    downloads: [],
+    version: "2.2.9",
+    date: "May 2026",
+    title: "Windows stable setup",
+    downloads: [
+      {
+        platform: "Windows",
+        label: "Windows setup",
+        href: "https://airnote.emiactech.com/releases/2.2.9/AirNote_2.2.9_x64-setup.exe",
+      },
+    ],
   },
 ];
 
