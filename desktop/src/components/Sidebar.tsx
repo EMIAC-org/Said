@@ -121,15 +121,11 @@ export function Sidebar({
         borderRight: "1px solid hsl(var(--glass-stroke))",
       }}
     >
-      {/* ── Brand header — drag region + traffic light space ── */}
+      {/* ── Brand header — drag region ── */}
       <div className="flex items-center h-[var(--topbar-height)] px-4 flex-shrink-0">
-        {/* macOS native traffic lights live in the top-left; reserve 70px so
-            the brand mark doesn't sit under them. Windows puts its close/min/max
-            buttons on the right, so we only need a 12px breathing gap there. */}
         <div
           data-tauri-drag-region
-          className="flex-shrink-0 drag-region"
-          style={{ width: snapshot?.platform === "windows" ? 12 : 70 }}
+          className="w-3 flex-shrink-0 drag-region"
         />
 
         {/* Brand mark — single source of truth in BrandMark.tsx */}

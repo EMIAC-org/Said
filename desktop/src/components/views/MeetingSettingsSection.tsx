@@ -9,7 +9,18 @@ const LANG_KEYS = [
   "AIRNOTE_MEETING_SYSTEM_WHISPER_LANGUAGE",
   "AIRNOTE_MEETING_WHISPER_LANGUAGE",
 ] as const;
-const MODEL_KEY = "AIRNOTE_WHISPER_CPP_MODEL";
+const STALE_KEYS = [
+  "AIRNOTE_MEETING_LIVE_WHISPER_CPP_MODEL",
+  "AIRNOTE_MEETING_FINAL_DIARIZATION_MODE",
+  "AIRNOTE_MEETING_FINAL_DIARIZATION_ENABLED",
+  "AIRNOTE_MEETING_FINAL_DIARIZATION_PROVIDER",
+  "AIRNOTE_MEETING_FINAL_DIARIZATION_SCRIPT",
+  "AIRNOTE_MEETING_FINAL_DIARIZATION_COMMAND",
+  "AIRNOTE_MEETING_FINAL_DIARIZATION_PYTHON",
+  "AIRNOTE_MEETING_LIGHT_DIARIZATION_MAX_SPEAKERS",
+  "AIRNOTE_MEETING_LIGHT_DIARIZATION_MAX_AUDIO_SECS",
+] as const;
+const FINAL_MODEL_KEY = "AIRNOTE_WHISPER_CPP_MODEL";
 
 interface InstalledModel {
   name: string;
@@ -30,7 +41,14 @@ interface DownloadProgress {
   status: "downloading" | "done" | "cancelled" | "error";
   error: string | null;
 }
-
+interface RemovedModel {
+  name: string;
+  size_bytes: number;
+}
+interface ModelCleanupResult {
+  removed: RemovedModel[];
+  freed_bytes: number;
+}
 function formatSize(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
   if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
@@ -39,7 +57,14 @@ function formatSize(bytes: number): string {
 }
 
 function prettyModelName(name: string): string {
+  if (name === "ggml-large-v3-turbo-q5_0.bin") return "Turbo Q5";
   return name.replace(/^ggml-/, "").replace(/\.bin$/, "");
+}
+
+function downloadModelHint(name: string): string {
+  const n = name.toLowerCase();
+  if (n === "ggml-large-v3-turbo-q5_0.bin") return "Best balance for normal laptops";
+  return "Downloadable model";
 }
 
 export function MeetingSettingsSection() {
@@ -50,24 +75,26 @@ export function MeetingSettingsSection() {
   // name → progress while downloading; cleared on done/cancel/error.
   const [downloads, setDownloads] = useState<Record<string, DownloadProgress>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupMessage, setCleanupMessage] = useState<string | null>(null);
   const mounted = useRef(true);
 
   const refresh = useCallback(async () => {
     try {
       // Guarantee one model is active when any is installed (auto-selects the
-      // strongest, clears when none remain) before reading the list.
+      // low-memory recommendation, clears when none remain) before reading the list.
       await invoke<string | null>("meeting_ensure_active_model").catch(() => null);
-      const [settings, models, cat] = await Promise.all([
+      const [fetchedSettings, models, cat] = await Promise.all([
         invoke<Record<string, string>>("meeting_settings_get"),
         invoke<InstalledModel[]>("meeting_list_whisper_models"),
         invoke<CatalogModel[]>("meeting_whisper_model_catalog"),
       ]);
       if (!mounted.current) return;
-      // Meeting language is fixed to Hindi in the engine. Clear any stale
+      // Meeting language is fixed in the engine. Clear any stale
       // per-track language overrides a previous build's picker may have stored,
-      // so the Hindi default always wins.
-      LANG_KEYS.forEach((key) => {
-        if (settings[key]) void invoke("meeting_settings_set", { key, value: null }).catch(() => {});
+      // so the engine default wins.
+      [...LANG_KEYS, ...STALE_KEYS].forEach((key) => {
+        if (fetchedSettings[key]) void invoke("meeting_settings_set", { key, value: null }).catch(() => {});
       });
       setInstalled(models);
       setCatalog(cat);
@@ -87,7 +114,7 @@ export function MeetingSettingsSection() {
     };
   }, [refresh]);
 
-  // Live download progress.
+  // Model download progress.
   useEffect(() => {
     const unlistenP = listen<DownloadProgress>("meeting-model-download", (event) => {
       const p = event.payload;
@@ -105,11 +132,11 @@ export function MeetingSettingsSection() {
     };
   }, [refresh]);
 
-  const selectModel = useCallback(
+  const selectFinalModel = useCallback(
     async (path: string) => {
       setBusyKey(path);
       try {
-        await invoke("meeting_settings_set", { key: MODEL_KEY, value: path });
+        await invoke("meeting_settings_set", { key: FINAL_MODEL_KEY, value: path });
         await refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -172,7 +199,26 @@ export function MeetingSettingsSection() {
     void invoke("meeting_cancel_model_download", { name }).catch(() => {});
   }, []);
 
-  const notInstalled = catalog.filter((c) => !c.installed && !installed.some((m) => m.name === c.name));
+  const cleanupLegacyModels = useCallback(async () => {
+    setCleanupBusy(true);
+    setCleanupMessage(null);
+    try {
+      const result = await invoke<ModelCleanupResult>("meeting_cleanup_legacy_whisper_models");
+      await refresh();
+      if (result.removed.length === 0) {
+        setCleanupMessage("No old models found.");
+      } else {
+        setCleanupMessage(`Removed ${result.removed.length} old model${result.removed.length === 1 ? "" : "s"} and freed ${formatSize(result.freed_bytes)}.`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCleanupBusy(false);
+    }
+  }, [refresh]);
+
+  const notInstalled = catalog
+    .filter((c) => !c.installed && !installed.some((m) => m.name === c.name));
 
   return (
     <div className="space-y-7">
@@ -189,12 +235,12 @@ export function MeetingSettingsSection() {
         </div>
       ) : null}
 
-      {/* Model */}
+      {/* Transcript model */}
       <section>
-        <h3 className="text-[14px] font-bold text-foreground">Transcription model</h3>
+        <h3 className="text-[14px] font-bold text-foreground">Transcript model</h3>
         <p className="mt-1 text-[12px] text-muted-foreground">
-          Larger models are more accurate but slower and use more memory. Pick the active model for
-          the after-meeting transcript. Applies to your next meeting.
+          AirNote uses one model for live chunks and the full transcript after the meeting: Turbo
+          Q5. It keeps memory lower on normal laptops.
         </p>
 
         {loading ? (
@@ -204,7 +250,7 @@ export function MeetingSettingsSection() {
         ) : (
           <div className="mt-3 space-y-2">
             {installed.length === 0 ? (
-              <p className="text-[12px] text-muted-foreground">No models installed yet — download one below.</p>
+              <p className="text-[12px] text-muted-foreground">Turbo Q5 is not installed yet — download it below.</p>
             ) : (
               installed.map((m) => (
                 <div
@@ -217,15 +263,15 @@ export function MeetingSettingsSection() {
                 >
                   <button
                     type="button"
-                    onClick={() => !m.active && !m.incomplete && void selectModel(m.path)}
+                    onClick={() => !m.active && !m.incomplete && void selectFinalModel(m.path)}
                     disabled={busyKey === m.path || m.incomplete}
                     className="flex min-w-0 flex-1 items-center gap-2.5 text-left disabled:cursor-default"
                     title={
                       m.incomplete
                         ? "Incomplete download — delete and re-download"
                         : m.active
-                          ? "Active model"
-                          : "Use this model"
+                          ? "Active transcript model"
+                          : "Use this transcript model"
                     }
                   >
                     <span
@@ -243,11 +289,11 @@ export function MeetingSettingsSection() {
                         {prettyModelName(m.name)}
                       </span>
                       <span className="text-[11px]" style={{ color: m.incomplete ? "hsl(38 90% 66%)" : "hsl(var(--muted-foreground))" }}>
-                        {m.incomplete ? "Incomplete — re-download" : formatSize(m.size_bytes)}
+                        {m.incomplete ? "Incomplete — re-download" : `Ready · ${formatSize(m.size_bytes)}`}
                       </span>
                     </span>
                   </button>
-                  {busyKey === m.name ? (
+                  {busyKey === m.path ? (
                     <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center text-muted-foreground">
                       <Loader2 size={13} className="animate-spin" />
                     </span>
@@ -284,12 +330,23 @@ export function MeetingSettingsSection() {
                 </div>
               ))
             )}
+          </div>
+        )}
+      </section>
 
+      {/* Downloads */}
+      <section>
+        <h3 className="text-[14px] font-bold text-foreground">Model downloads</h3>
+        <p className="mt-1 text-[12px] text-muted-foreground">
+          Keep only Turbo Q5 on disk. Use cleanup to remove older model files from previous builds.
+        </p>
+        {loading ? null : (
+          <div className="mt-3 space-y-2">
             {notInstalled.length > 0 ? (
-              <p className="pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Available to download
-              </p>
-            ) : null}
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Available</p>
+            ) : (
+              <p className="text-[12px] text-muted-foreground">Turbo Q5 is installed.</p>
+            )}
             {notInstalled.map((c) => {
               const dl = downloads[c.name];
               const pct = dl && dl.total > 0 ? Math.round((dl.received / dl.total) * 100) : null;
@@ -304,7 +361,9 @@ export function MeetingSettingsSection() {
                       <span className="block truncate text-[13px] font-semibold text-foreground">
                         {prettyModelName(c.name)}
                       </span>
-                      <span className="text-[11px] text-muted-foreground">~{formatSize(c.size_bytes)}</span>
+                      <span className="text-[11px] text-muted-foreground">
+                        {downloadModelHint(c.name)} · ~{formatSize(c.size_bytes)}
+                      </span>
                     </span>
                     {dl ? (
                       <button
@@ -337,6 +396,29 @@ export function MeetingSettingsSection() {
                 </div>
               );
             })}
+            <div
+              className="rounded-lg px-3 py-2"
+              style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--surface-4))" }}
+            >
+              <div className="flex items-center gap-3">
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[13px] font-semibold text-foreground">Clean up old models</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    Removes older Whisper downloads AirNote no longer uses. Turbo Q5 stays.
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void cleanupLegacyModels()}
+                  disabled={cleanupBusy}
+                  className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-semibold text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {cleanupBusy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                  Clean up
+                </button>
+              </div>
+              {cleanupMessage ? <p className="mt-2 text-[11px] text-muted-foreground">{cleanupMessage}</p> : null}
+            </div>
           </div>
         )}
       </section>

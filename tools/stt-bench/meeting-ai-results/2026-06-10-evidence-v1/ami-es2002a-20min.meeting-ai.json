@@ -1,0 +1,83 @@
+{
+  "case": "ami-es2002a-20min",
+  "transcript_path": "tools/stt-bench/public-meetings/ami-es2002a-20min/airnote-final-sortformer.current.first20min.transcript.txt",
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "draft_latency_ms": 8168,
+  "verify_latency_ms": 7171,
+  "filtered_mom": {
+    "summary": "Laura (project manager) kicked off the project to design a trendy, user-friendly remote control with a €25 selling price and a €12.50 production cost cap, targeting €15 million in international sales. The team—David (industrial designer), Andrew (marketing), and Craig (digital interface)—introduced themselves and completed an icebreaker activity. Discussion explored international design implications (regional characters, market positioning), the potential for a premium, multi-functional device (combining TV, DVD, satellite, and possibly home lighting), and user pain points like losing the remote. The meeting concluded with Laura assigning individual work for the next functional design stage, with a follow-up meeting scheduled in 30 minutes. No final decisions were made; the team discussed possibilities such as extra functionality and a unique selling point, but these remained tentative.",
+    "action_items": [
+      {
+        "title": "Work on the actual work and design of the remote control",
+        "assignee": "David",
+        "due": "before next meeting in 30 minutes",
+        "evidence": "as the industrial designer you're going to be working on you know the actual work and design of it"
+      },
+      {
+        "title": "Work on user interface and technical functions",
+        "assignee": "Craig",
+        "due": "before next meeting in 30 minutes",
+        "evidence": "for our user interface technical functions i guess that's you know like what we've been talking about what it'll actually do"
+      },
+      {
+        "title": "Think about requirements the remote control has to fulfill",
+        "assignee": "Andrew",
+        "due": "before next meeting in 30 minutes",
+        "evidence": "and uh more to being executive you'll be just thinking about what it actually what you know what requirements it has to has to fulfill"
+      }
+    ],
+    "decisions": []
+  },
+  "raw_counts": {
+    "draft_actions": 3,
+    "draft_decisions": 0,
+    "verified_actions": 3,
+    "verified_decisions": 0,
+    "filtered_actions": 3,
+    "filtered_decisions": 0
+  },
+  "chat": [
+    {
+      "question": "What was the main topic of this meeting?",
+      "answer": "The main topic of the meeting was the kick-off for a project to design a new, trendy, and user-friendly remote control.",
+      "latency_ms": 2147
+    },
+    {
+      "question": "What concrete decisions were explicitly made? If none, say none.",
+      "answer": "Based on the transcript, no concrete decisions were explicitly made. The team discussed possibilities such as extra functionality and a unique selling point, but these remained tentative.",
+      "latency_ms": 1639
+    },
+    {
+      "question": "List only explicit action items or follow-ups, with owners only if the transcript gives them.",
+      "answer": "Based on the transcript, the explicit action items and follow-ups assigned at the end of the meeting are:\n\n- **David** (industrial designer): Work on the actual work and design of the remote control.\n- **Craig** (digital interface): Work on user interface and technical functions.\n- **Andrew** (marketing): Think about the requirements the remote control has to fulfill.\n\nAll are due before the next meeting in 30 minutes.",
+      "latency_ms": 2983
+    },
+    {
+      "question": "What important unresolved questions or risks remain?",
+      "answer": "Based on the transcript, the following unresolved questions or risks remain:\n\n- **Scope of functionality**: It is unresolved whether the remote control will be limited to television features or include extra functions (e.g., controlling lighting, combining multiple devices). Andrew explicitly asked if they are keeping a “design commitment to television features” or going beyond, and Laura said “that’s up to us” [17:32–18:02].\n- **Production cost vs. feature trade-off**: David noted that the €12.50 production cost cap is a main factor limiting how much can be crammed into the device [18:04–18:16]. The risk of exceeding the cost target while adding premium or multi-device features remains unaddressed.\n- **International design implications**: The team discussed regional differences (characters, keypads, market positioning) but did not resolve how these will be handled in the design [09:11–10:15].\n- **Unique selling point**: Laura mentioned the need for “some kind of unique selling point” but no decision was made on what that would be [17:57–18:02].\n- **User pain points**: Issues like losing the remote were raised, but no solution (e.g., a beeping locator) was committed to [15:03–15:20].",
+      "latency_ms": 7892
+    },
+    {
+      "question": "Give a PM-ready brief with problem, approach, decisions, risks, and next steps. Mark uncertainty.",
+      "answer": "Based on the transcript, here is a PM-ready brief. Note that the meeting was an initial kick-off, so many elements are tentative and no formal decisions were made.\n\n**Problem**\nThe team needs to design a new remote control that is \"trendy and user-friendly.\" The project has specific financial targets: a €25 selling price and a production cost cap of €12.50, with a goal of €15 million in international sales.\n\n**Approach**\nThe design process is structured into three stages, each involving individual work followed by a team meeting. The immediate next stage is the \"functional design stage.\" The team discussed several possibilities for the product's direction, including:\n*   Designing for international markets, considering regional characters and different market positioning based on price.\n*   Creating a premium, multi-functional device that combines controls for TV, DVD, satellite, and potentially other systems like home lighting.\n*   Addressing user pain points, such as the ease of losing the remote (e.g., by including a \"find\" feature) and making the device more streamlined (e.g., a touch screen).\n\n**Decisions**\nNo final decisions were made during this meeting. The discussion of extra functionality and a unique selling point remained tentative. The project manager, Laura, stated that the direction is \"up to us\" but noted the production cost cap is a main limiting factor.\n\n**Risks & Uncertainties**\n*   **Unclear Market Position:** It is uncertain whether the €25 price point positions the remote as a premium product or a standard one. The team lacks competitive pricing data to benchmark this.\n*   **Undefined Scope:** The team has not committed to whether the remote's features will be limited to television or will expand to control other devices. This ambiguity could lead to scope creep or a product that fails to meet the cost target.\n*   **Production Cost Constraint:** The €12.50 production cost cap is a significant constraint that may limit the inclusion of advanced features like a touch screen or multi-device control.\n\n**Next Steps**\nIndividual work is assigned to be completed before the next meeting in 30 minutes:\n*   **David (Industrial Designer):** Work on the actual physical design of the remote control.\n*   **Craig (Digital Interface):** Work on the user interface and technical functions.\n*   **Andrew (Marketing):** Think about the requirements the remote control has to fulfill.",
+      "latency_ms": 12527
+    }
+  ],
+  "judge": {
+    "latency_ms": 6346,
+    "result": {
+      "summary_accuracy": 8,
+      "summary_coverage": 8,
+      "action_precision": 7,
+      "decision_precision": 10,
+      "chat_grounding": 9,
+      "overall": 8,
+      "issues": [
+        "Action item for Andrew is misassigned: transcript says 'more to being executive' (likely marketing), but MoM assigns 'Think about requirements' to Andrew, which is correct, but the evidence quote is garbled and does not clearly support the assignment.",
+        "Action item for Craig is slightly vague: transcript says 'for our user interface technical functions i guess that's you know like what we've been talking about what it'll actually do', which is not a crisp assignment, but MoM treats it as a firm action item.",
+        "Chat answer for unresolved questions correctly notes no decision on scope, but the transcript shows Laura explicitly said 'that's up to us', which is a decision to defer, not a pure unresolved question—minor nuance."
+      ]
+    }
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "case": "ami-es2002a-20min",
+  "transcript_path": "tools/stt-bench/public-meetings/ami-es2002a-20min/airnote-final-sortformer.current.first20min.transcript.txt",
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "draft_latency_ms": 8523,
+  "verify_latency_ms": 7583,
+  "filtered_mom": {
+    "summary": "Laura (project manager) kicked off the project to design a new trendy, user-friendly remote control with a target selling price of 25 euros and a production cost cap of 12.50 euros, aiming for international sales. The team, including David (industrial designer), Andrew (marketing expert), and Craig (digital interface), introduced themselves and participated in an icebreaker activity. The group discussed financial constraints, international market considerations like regional character sets and varying price appeal, and potential features such as combining multiple device controls, adding a 'find my remote' beep function, and exploring a more streamlined or touch-screen design. The meeting concluded with Laura assigning initial individual work for the next functional design stage, scheduled to reconvene in 30 minutes.",
+    "action_items": [
+      {
+        "title": "Work on the actual industrial design of the remote control",
+        "assignee": null,
+        "due": "in 30 minutes",
+        "evidence": "as the industrial designer you're going to be working on you know the actual work and design of it"
+      },
+      {
+        "title": "Work on user interface and technical functions",
+        "assignee": null,
+        "due": "in 30 minutes",
+        "evidence": "for our user interface technical functions i guess that's you know like what we've been talking about what it'll actually do"
+      },
+      {
+        "title": "Think about marketing requirements the product has to fulfill",
+        "assignee": null,
+        "due": "in 30 minutes",
+        "evidence": "and uh more to being executive you'll be just thinking about what it actually what you know what requirements it has to has to fulfill"
+      }
+    ],
+    "decisions": []
+  },
+  "raw_counts": {
+    "draft_actions": 3,
+    "draft_decisions": 0,
+    "verified_actions": 3,
+    "verified_decisions": 0,
+    "filtered_actions": 3,
+    "filtered_decisions": 0
+  },
+  "chat": [
+    {
+      "question": "What was the main topic of this meeting?",
+      "answer": "The main topic of the meeting was the kick-off for a project to design a new, trendy, user-friendly remote control. The team discussed financial constraints (a 25-euro selling price and a 12.50-euro production cost cap), international market considerations, and potential features. The meeting concluded with the project manager assigning initial individual work for the next functional design stage.",
+      "latency_ms": 3183
+    },
+    {
+      "question": "What concrete decisions were explicitly made? If none, say none.",
+      "answer": "Based on the provided transcript and meeting intelligence, no concrete decisions were explicitly made. The meeting intelligence also confirms that the decisions list is empty.",
+      "latency_ms": 1982
+    },
+    {
+      "question": "List only explicit action items or follow-ups, with owners only if the transcript gives them.",
+      "answer": "Based on the transcript, the explicit action items and follow-ups assigned for the next 30 minutes are:\n\n- **Industrial design work:** The industrial designer (David) will work on the actual design of the remote control. (Owner: David, ~16:28–16:33)\n- **User interface and technical functions:** The digital interface role (Craig) will work on what the remote control will actually do. (Owner: Craig, ~16:37–16:46)\n- **Marketing requirements:** The marketing expert (Andrew) will think about the requirements the product has to fulfill. (Owner: Andrew, ~16:46–16:56)",
+      "latency_ms": 3423
+    },
+    {
+      "question": "What important unresolved questions or risks remain?",
+      "answer": "Based on the transcript, the following unresolved questions and risks are explicitly mentioned:\n\n**Unresolved Questions:**\n- Whether the remote control should include features that go beyond television (e.g., controlling lighting, notes about what to watch) or stay focused on TV features. This was raised by Andrew at [17:27–17:47] and not resolved.\n- How the international market will affect the design, including regional character sets and varying price appeal across countries [09:11–10:15].\n- What the 25-euro selling price represents in terms of product positioning (e.g., premium vs. standard) and how it compares to other remote controls on the market [10:55–12:11].\n\n**Risks:**\n- The production cost cap of 12.50 euros may limit how many features can be included, as noted by David at [18:04–18:16].\n- The need to balance a \"trendy\" and \"user-friendly\" design with the financial constraints and potential complexity of international requirements [08:51–09:44].",
+      "latency_ms": 6671
+    },
+    {
+      "question": "Give a PM-ready brief with problem, approach, decisions, risks, and next steps. Mark uncertainty.",
+      "answer": "**Project Brief – Remote Control Design (Kick‑off)**  \n*Prepared for the Project Manager (Laura)*\n\n---\n\n### Problem\nThe team must design a **trendy, user‑friendly remote control** that can be sold internationally at a **retail/wholesale price of €25**, with a **production cost cap of €12.50** (50% of selling price). The product must appeal across different markets, support varied character sets, and differentiate itself from standard remotes that users rarely evaluate consciously.\n\n### Approach\n- **Three‑stage iterative design** with individual work followed by team meetings (first functional design stage in 30 minutes).\n- **Roles assigned**:  \n  - David – industrial design (form, materials, physical design)  \n  - Craig – user interface & technical functions (what the remote actually does)  \n  - Andrew – marketing requirements (market positioning, feature demands)  \n- **Early feature exploration** included:  \n  - Combining controls for multiple devices (TV, DVD, satellite, etc.)  \n  - “Find my remote” beep function  \n  - Streamlined or touch‑screen form factor  \n  - Extra functionality (e.g., home lighting, viewing notes)  \n- **Constraints acknowledged**: production cost cap limits how many features can be included.\n\n### Decisions\nNo explicit decisions are captured in the transcript.\n\n### Risks & Uncertainties\n- **Uncertainty – Selling price definition**: It is unclear whether the €25 target is a wholesale or retail price, which affects margin calculations and feature scope.  \n- **Uncertainty – Market price sensitivity**: The €25 price point may appeal in some regions (e.g., London) but not others (e.g., Greece); no market data is available to validate this.  \n- **Constraint – Production cost cap**: The €12.50 ceiling may limit the ability to add advanced features (e.g., touch screen, multi‑device control, beeper).  \n- **Uncertainty – Feature scope**: The team has not yet committed to whether the remote will remain TV‑focused or expand to control other devices/systems.\n\n### Next Steps (Functional Design Stage – due in 30 minutes)\n| Action | Owner | Status |\n|--------|-------|--------|\n| Work on the actual industrial design of the remote | David | Assigned |\n| Work on user interface and technical functions | Craig | Assigned |\n| Think about marketing requirements the product must fulfill | Andrew | Assigned |\n| Reconvene for functional design review | All | Scheduled (~10 to 12) |\n\n*Note: The transcript does not specify who will send detailed instructions; Laura mentioned instructions would be emailed.*",
+      "latency_ms": 15079
+    }
+  ],
+  "judge": {
+    "latency_ms": 7485,
+    "result": {
+      "summary_accuracy": 8,
+      "summary_coverage": 8,
+      "action_precision": 3,
+      "decision_precision": 10,
+      "chat_grounding": 7,
+      "overall": 6,
+      "issues": [
+        "MoM action items assign owners (David, Craig, Andrew) that are not explicitly stated in the transcript. The transcript only mentions roles, not names, for these tasks.",
+        "MoM action item 'Think about marketing requirements...' invents the assignee 'Andrew' and the task framing 'marketing requirements' is a slight extrapolation from 'what requirements it has to fulfill'.",
+        "Chat answer for action items correctly assigns owners based on roles, but the MoM fails to do so, creating inconsistency.",
+        "Chat answer for 'unresolved questions' includes 'How the international market will affect the design' as unresolved, but the transcript shows some discussion and partial resolution (e.g., character sets, price appeal).",
+        "Chat answer for 'PM-ready brief' states 'No explicit decisions are captured' which is accurate, but the MoM also correctly lists no decisions.",
+        "MoM summary mentions 'adding a find my remote beep function' as a discussed feature, which is accurate, but the chat answer for 'main topic' omits this specific feature."
+      ]
+    }
+  }
+}

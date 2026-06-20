@@ -75,6 +75,17 @@ mod imp {
             /// kCFBooleanTrue — the canonical CF true value.
             /// Declared as a static pointer so we can pass it to AX set functions.
             pub static kCFBooleanTrue: *const c_void;
+            pub static kCFTypeDictionaryKeyCallBacks: c_void;
+            pub static kCFTypeDictionaryValueCallBacks: c_void;
+
+            pub fn CFDictionaryCreate(
+                allocator: *const c_void,
+                keys: *const *const c_void,
+                values: *const *const c_void,
+                num_values: isize,
+                key_callbacks: *const c_void,
+                value_callbacks: *const c_void,
+            ) -> *mut c_void;
 
             // ── CFNumber / CFArray (for diagnostics) ──────────────────────────
             pub fn CFNumberGetValue(
@@ -113,6 +124,9 @@ mod imp {
                 out: *mut *mut c_void,
             ) -> i32;
             pub fn AXValueCreate(the_type: u32, value_ptr: *const c_void) -> *mut c_void;
+
+            pub fn CGPreflightListenEventAccess() -> bool;
+            pub fn CGRequestListenEventAccess() -> bool;
         }
     }
 
@@ -1232,24 +1246,48 @@ mod imp {
         r
     }
 
-    /// Ensure AirNote appears in the Accessibility list and open the correct pane.
-    ///
-    /// Calling `AXIsProcessTrustedWithOptions(null)` triggers macOS to add AirNote
-    /// to the Privacy & Security → Accessibility list even before the user has
-    /// granted access.  We then immediately open that pane so the user can
-    /// toggle it on in one step.
+    /// Ensure AirNote appears in the Accessibility list and ask macOS to prompt.
     pub fn request_permission() {
         unsafe {
-            ffi::AXIsProcessTrustedWithOptions(std::ptr::null());
+            let key = ffi::CFStringCreateWithCString(
+                std::ptr::null(),
+                c"AXTrustedCheckOptionPrompt".as_ptr(),
+                CF_UTF8,
+            );
+            if key.is_null() {
+                ffi::AXIsProcessTrustedWithOptions(std::ptr::null());
+            } else {
+                let keys = [key as *const c_void];
+                let values = [ffi::kCFBooleanTrue];
+                let options = ffi::CFDictionaryCreate(
+                    std::ptr::null(),
+                    keys.as_ptr(),
+                    values.as_ptr(),
+                    1,
+                    &ffi::kCFTypeDictionaryKeyCallBacks as *const _ as *const c_void,
+                    &ffi::kCFTypeDictionaryValueCallBacks as *const _ as *const c_void,
+                );
+                if options.is_null() {
+                    ffi::AXIsProcessTrustedWithOptions(std::ptr::null());
+                } else {
+                    ffi::AXIsProcessTrustedWithOptions(options);
+                    ffi::CFRelease(options);
+                }
+                ffi::CFRelease(key);
+            }
         }
         let _ = std::process::Command::new("open")
             .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
             .spawn();
     }
 
-    /// Open System Settings → Privacy & Security → Input Monitoring.
-    /// This is where Caps Lock hotkey permission (CGEventTap) is granted.
+    /// Ask macOS for Input Monitoring, then open the matching System Settings pane.
     pub fn request_input_monitoring() {
+        unsafe {
+            if !ffi::CGPreflightListenEventAccess() {
+                ffi::CGRequestListenEventAccess();
+            }
+        }
         let _ = std::process::Command::new("open")
             .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
             .spawn();

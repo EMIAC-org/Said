@@ -947,9 +947,10 @@ pub fn register_hud_shortcut_callback(
 ) {
 }
 
-// Divo Ctrl hold-to-talk is macOS-only (CGEventTap). Stub it everywhere else so
-// the desktop crate compiles on Windows / Linux dev hosts.
-#[cfg(not(target_os = "macos"))]
+// Divo Ctrl hold-to-talk is implemented by the macOS CGEventTap and Windows
+// WH_KEYBOARD_LL backends. Stub it only on unsupported platforms so the desktop
+// crate still compiles on Linux dev hosts.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn register_divo_hotkey_callbacks(
     _on_press: std::sync::Arc<dyn Fn() + Send + Sync>,
     _on_release: std::sync::Arc<dyn Fn() + Send + Sync>,
@@ -957,10 +958,10 @@ pub fn register_divo_hotkey_callbacks(
 ) {
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn set_divo_hotkey_enabled(_enabled: bool) {}
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn divo_take_new_chat() -> bool {
     false
 }

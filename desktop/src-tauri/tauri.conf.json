@@ -22,14 +22,9 @@
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
-        "titleBarStyle": "Overlay",
+        "titleBarStyle": "Transparent",
         "hiddenTitle": true,
-        "transparent": true,
-        "windowEffects": {
-          "effects": ["underPageBackground"],
-          "state": "followsWindowActiveState",
-          "radius": 12.0
-        }
+        "transparent": false
       }
     ],
     "security": {

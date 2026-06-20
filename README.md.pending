@@ -1,0 +1,275 @@
+<div align="center">
+
+<!-- LOGO PLACEHOLDER -->
+<!-- Add: docs/images/logo.png (square, ~200×200, transparent background) -->
+<sub><em>[ Add logo here — <code>docs/images/logo.png</code> ]</em></sub>
+
+# Said
+
+### The voice-to-text layer that finally speaks the way you do.
+
+Hold a key. Talk. Get text — in English, in हिन्दी, or **the way you actually talk** — Hinglish.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platform: macOS](https://img.shields.io/badge/platform-macOS-black.svg)](#install)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](Cargo.toml)
+
+[**Install**](#install) · [**Why Said**](#why-said-exists) · [**See it**](#see-it-in-action) · [**How it works**](#how-it-works) · [**Alternatives**](#alternatives) · [**Roadmap**](#roadmap)
+
+</div>
+
+<br/>
+
+<!-- HERO SCREENSHOT PLACEHOLDER -->
+<div align="center">
+
+<sub><em>[ Add hero screenshot — <code>docs/images/hero.png</code> ]</em></sub>
+<br/>
+<sub><em>(Said dashboard with a recent transcript and the menu-bar status indicator visible)</em></sub>
+
+</div>
+
+---
+
+## Why Said exists
+
+A billion and a half people don't speak one language at home — they speak two, woven into the same sentence. They write code in English and yell at the build in Hindi. They send Slack messages that start in English, switch to *"yaar"*, end in *"karna hai"*. It's how India actually talks.
+
+Every voice-dictation tool ever built ignores this. They make you pick a language and live with the consequences.
+
+**Said is built for the way you already speak.**
+
+Hold Caps Lock anywhere on your Mac. Talk however the words come — English, Hindi, or both in the same breath. Let go. Clean, polished text appears under your cursor in any app, in any editor, on any website. It learns from your edits. It runs on your own keys. It costs nothing. The whole thing is in this repo.
+
+<br/>
+
+<!-- STATUS BAR DEMO PLACEHOLDER -->
+<div align="center">
+
+<sub><em>[ Add a short demo GIF — <code>docs/images/status-bar.gif</code> ]</em></sub>
+<br/>
+<sub><em>(menu-bar indicator pulsing while recording, then the polished text appearing in a code editor / Slack / browser)</em></sub>
+
+</div>
+
+---
+
+## Highlights
+
+- **Hinglish-native** — code-switches mid-sentence without breaking
+- **Sub-second latency** — Caps Lock up, text in. Streaming Rust pipeline, no JS in the hot path
+- **Learns from your edits** — fix *"Anish"* to *"Aneesh"* once and Said remembers forever
+- **Auto-polish** — drops the *"umm"*s, fixes grammar, formats lists. Sounds like you on a good day
+- **Private by default** — no Said server, no telemetry, no analytics. Your audio goes only where your keys say
+- **Works everywhere** — Slack, Cursor, browser, terminal, Notion, anywhere a cursor blinks
+- **Free forever** — bring your own Deepgram and ChatGPT keys (both have generous free tiers)
+- **Open source, every line** — fork it, audit it, ship it under MIT
+
+---
+
+## Install
+
+One line on macOS (Apple Silicon or Intel):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EMIAC-org/Said/main/install.sh | bash
+```
+
+The installer drops a `vp` CLI, a menu-bar status indicator, and a LaunchAgent so Said is ready every time you log in. Three one-time steps:
+
+```bash
+vp deepgram-key      # save your Deepgram API key
+vp auth              # connect ChatGPT for the polish step
+vp permissions       # grant macOS Input Monitoring + Accessibility
+vp                   # start
+```
+
+Then **hold Caps Lock anywhere on your Mac, speak, release.** That's the whole product.
+
+<br/>
+
+<!-- DOCTOR / CLI SCREENSHOT PLACEHOLDER -->
+<div align="center">
+
+<sub><em>[ Add screenshot of <code>vp doctor</code> output — <code>docs/images/cli-doctor.png</code> ]</em></sub>
+
+</div>
+
+### Day-to-day
+
+```
+vp              start
+vp stop         stop
+vp restart      restart (use after granting permissions)
+vp status       is it running?
+vp logs         recent output
+vp errors       recent errors
+vp doctor       full diagnostics
+vp update       pull latest version
+vp delete       remove everything
+```
+
+---
+
+## See it in action
+
+<table>
+<tr>
+<td width="50%" align="center">
+
+<sub><em>[ Dashboard — <code>docs/images/dashboard.png</code> ]</em></sub>
+<br/>
+<sub><em>(history of transcripts, learned-rules panel, polish toggle)</em></sub>
+
+</td>
+<td width="50%" align="center">
+
+<sub><em>[ Menu-bar — <code>docs/images/menu-bar.png</code> ]</em></sub>
+<br/>
+<sub><em>(the small status indicator that lives in the macOS top bar — idle / recording / pasting states)</em></sub>
+
+</td>
+</tr>
+<tr>
+<td width="50%" align="center">
+
+<sub><em>[ Settings — <code>docs/images/settings.png</code> ]</em></sub>
+<br/>
+<sub><em>(permissions, hotkey picker, polish model)</em></sub>
+
+</td>
+<td width="50%" align="center">
+
+<sub><em>[ Learned rules — <code>docs/images/learning.png</code> ]</em></sub>
+<br/>
+<sub><em>(weak signals → confirmed rules, with the corrections that built each rule)</em></sub>
+
+</td>
+</tr>
+</table>
+
+---
+
+## How it works
+
+```
+┌────────┐   audio   ┌──────────┐   text   ┌──────────┐   polish   ┌────────┐
+│  Caps  │ ────────▶ │ Recorder │ ───────▶ │ Streaming│ ─────────▶ │ Polish │
+│  Lock  │           │  (Rust)  │          │   STT    │            │  LLM   │
+└────────┘           └──────────┘          └──────────┘            └────┬───┘
+                                                                        │
+                          ┌─────────────────────────────────────────────┘
+                          ▼
+                     ┌──────────┐   paste   ┌─────────┐
+                     │  Paster  │ ────────▶ │ Cursor  │
+                     │  (Rust)  │           │ in app  │
+                     └──────────┘           └─────────┘
+                          ▲
+                          │
+                     ┌──────────┐
+                     │ Learning │  watches edits, infers rules,
+                     │ engine   │  applies them on the next take
+                     └──────────┘
+```
+
+The hot path — hotkey → record → STT → polish → paste — is pure Rust. No JS runtime in the way of latency.
+
+| Crate / dir | Role |
+|---|---|
+| [crates/core](crates/core) | STT client and shared types |
+| [crates/recorder](crates/recorder) | CoreAudio capture, ring buffer, VAD |
+| [crates/hotkey](crates/hotkey) | Caps Lock / global hotkey via CGEventTap |
+| [crates/paster](crates/paster) | Accessibility-driven cursor paste |
+| [crates/voice-polish](crates/voice-polish) | LLM polish + the learning loop |
+| [crates/backend](crates/backend) | Local IPC backend the desktop app talks to |
+| [crates/control-plane](crates/control-plane) | Optional: shared infra on Fly.io |
+| [desktop](desktop) | Tauri 2 + React 19 dashboard |
+| [landing](landing) | Next.js marketing site |
+
+---
+
+## The learning loop
+
+Most dictation tools ship a *dictionary* — a static list you maintain by hand. Said ships a *learning loop*.
+
+It watches what you correct in your editor (Anish → Aneesh, react → React, *kar do* → कर दो), infers the rule, weights it by how often the same correction repeats, and **promotes it from a weak signal to a hard rule** once it's confirmed enough times. The rule then applies on every future dictation, automatically.
+
+You never manage a list. You talk and edit, and Said quietly gets better at sounding like you.
+
+The full design is in [docs/permission-learning.md](docs/permission-learning.md). The code lives in [crates/voice-polish/src/learning.rs](crates/voice-polish/src/learning.rs).
+
+---
+
+## Privacy
+
+- Audio is captured locally and streamed only to the STT/LLM endpoints whose keys you provided.
+- Your keys, OAuth tokens, and learned rules sit in your macOS Keychain and a local SQLite DB at `~/VoicePolish/`.
+- There is no Said cloud. No telemetry. No crash reporter. No shared database.
+- Screen-context awareness is opt-in and never persisted — window text is read at dictation time, sent with the polish request, and dropped.
+
+---
+
+## Alternatives
+
+If Said doesn't fit, here's an honest map of the space:
+
+| | **Said** | Wispr Flow | SuperWhisper | MacWhisper | Apple Dictation |
+|---|---|---|---|---|---|
+| Hinglish / code-switching | ✅ | ⚠️ | ⚠️ | ⚠️ | ❌ |
+| Hindi (Devanagari) | ✅ | ⚠️ | ✅ | ✅ | ✅ |
+| Auto-polish / LLM rewrite | ✅ | ✅ | ✅ | ⚠️ | ❌ |
+| Learns from your edits | ✅ | Manual | ❌ | ❌ | ❌ |
+| Auto-paste at cursor | ✅ | ✅ | ✅ | ⚠️ | ✅ |
+| Open source | ✅ | ❌ | ❌ | ❌ | — |
+| Self-host / BYO keys | ✅ | ❌ | Partial | ✅ | — |
+| Pricing | Free | Subscription | One-time | One-time | Free |
+
+Said is the right pick if you want to dictate in Hinglish, you want full control of where your audio goes, or you'd rather run open code than rent a feature. If you're English-only and don't mind a subscription, the alternatives are excellent — pick what fits your workflow.
+
+---
+
+## Roadmap
+
+- [ ] **Fully offline mode** — Whisper.cpp + local LLM, zero API keys
+- [ ] **Linux** support (X11 + Wayland)
+- [ ] **Windows** support
+- [ ] **iOS** dictation companion (BLE-bridged)
+- [ ] More Indic languages — Tamil, Telugu, Bengali, Marathi, Punjabi
+- [ ] Voice commands — *"delete that"*, *"next paragraph"*, *"fix the last line"*
+- [ ] Per-app polish profiles (Slack ≠ code editor ≠ email)
+- [ ] Team-shared learning rules
+
+---
+
+## Contributing
+
+Said is open source because dictation should be infrastructure, not a SaaS. PRs welcome — especially:
+
+- New STT provider adapters (Whisper, AssemblyAI, ElevenLabs, …)
+- Indic-language polish prompts
+- Linux & Windows ports
+- Domain-specific learning packs (legal, medical, code)
+
+```bash
+./dev.sh   # builds the Rust backend, then launches the Tauri dashboard
+```
+
+The learning loop is in [crates/voice-polish/src/learning.rs](crates/voice-polish/src/learning.rs). The hotkey path is in [crates/hotkey/src/lib.rs](crates/hotkey/src/lib.rs). Open an issue before a large PR so we can align.
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 EMIAC org. Use it, fork it, ship it.
+
+---
+
+<div align="center">
+
+**Built by [EMIAC](https://github.com/EMIAC-org).**
+
+Stop typing. Start saying.
+
+Star the repo if you'd like Said to get better, faster.
+
+</div>

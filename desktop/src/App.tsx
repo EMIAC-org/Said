@@ -690,19 +690,108 @@ export default function App() {
     return <SetupLoader status={setupStatus} />;
   }
 
+  const liveMeetingActive = activeView === "live-meeting" && !!liveMeetingId;
+
   /* ── Render ─────────────────────────────────────────────────────────────── */
   return (
     <div className="flex h-screen w-screen overflow-hidden">
 
-      {/* ── Sidebar — full height left column ────────── */}
-      <Sidebar
-        snapshot={snapshotWithHistory}
-        activeView={activeView}
-        onViewChange={handleViewChange}
-        busy={busy}
-        performanceMonitorEnabled={performanceMonitorEnabled}
-        onOpenInvite={() => setInviteOpen(true)}
-      />
+      {liveMeetingActive ? (
+        <div className="min-w-0 flex-1">
+          <LiveMeetingView
+            meetingId={liveMeetingId}
+            onBack={() => setActiveView("meetings")}
+            onEnded={(id) => {
+              // Hand the just-ended meeting to the Meetings page and switch
+              // to it. Processing continues in the background; the Meetings
+              // detail polls and renders the live stage progress.
+              setFocusMeetingId(id);
+              setActiveView("meetings");
+            }}
+          />
+        </div>
+      ) : (
+        <>
+          {/* ── Sidebar — full height left column ────────── */}
+          <Sidebar
+            snapshot={snapshotWithHistory}
+            activeView={activeView}
+            onViewChange={handleViewChange}
+            busy={busy}
+            performanceMonitorEnabled={performanceMonitorEnabled}
+            onOpenInvite={() => setInviteOpen(true)}
+          />
+
+          {/* ── Right column: topbar + content ───────────── */}
+          <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+
+            <Topbar
+              snapshot={snapshotWithHistory}
+              theme={theme}
+              toggleTheme={toggleTheme}
+              onEnterpriseDisconnect={handleEnterpriseDisconnect}
+            />
+
+            {/* ── The "mat" — elevated content surface ───────
+                Dense near-black, mostly opaque so the content area reads as
+                solid. Values tuned via the live glass control panel at
+                .context/said-glass-control.html. */}
+            <main className="flex-1 overflow-hidden p-3 pt-2">
+              <div
+                className="h-full rounded-2xl overflow-hidden"
+                style={{
+                  background: "hsl(var(--glass-bg-strong))",
+                  backdropFilter: "blur(40px) saturate(190%)",
+                  WebkitBackdropFilter: "blur(40px) saturate(190%)",
+                  boxShadow: "var(--shadow-glass)",
+                }}
+              >
+                {activeView === "dashboard" && (
+                  <DashboardView
+                    snapshot={snapshotWithHistory}
+                    busy={busy}
+                    onToggle={handleToggle}
+                    onAccessibility={handleAccessibility}
+                    onNavigate={handleViewChange}
+                    statusPhase={statusPhase}
+                    liveText={liveText}
+                    pendingEdits={pendingEdits}
+                    onDownloadSuccess={handleDownloadSuccess}
+                    refreshKey={historyRefreshKey}
+                    onResolvePending={async (id, action) => {
+                      await resolvePendingEdit(id, action);
+                      setPendingEdits((prev) => prev.filter((e) => e.id !== id));
+                    }}
+                  />
+                )}
+                {activeView === "history"    && <HistoryView onDownloadSuccess={handleDownloadSuccess} refreshKey={historyRefreshKey} />}
+                {activeView === "vocabulary" && <VocabularyView />}
+                {activeView === "insights"   && <InsightsView snapshot={snapshotWithHistory} />}
+                {activeView === "meetings"   && (
+                  <MeetingsView
+                    focusMeetingId={focusMeetingId}
+                    onFocusConsumed={() => setFocusMeetingId(null)}
+                    onConfigureModels={() => {
+                      setSettingsSection("meeting");
+                      setSettingsOpen(true);
+                    }}
+                    onOpenWorkspaces={() => {
+                      setSettingsSection("enterprise");
+                      setSettingsOpen(true);
+                    }}
+                    onJoinMeeting={(id) => {
+                      setLiveMeetingId(id);
+                      setActiveView("live-meeting");
+                    }}
+                  />
+                )}
+                {activeView === "divo" && <DivoView />}
+                {/* Settings is now a modal — opened via setSettingsOpen */}
+              </div>
+            </main>
+          </div>
+        </>
+      )}
 
       {/* ── Invite team modal (overlays everything) ────── */}
       <InviteTeamModal open={inviteOpen} onClose={() => setInviteOpen(false)} />
@@ -720,88 +809,6 @@ export default function App() {
         onEnterpriseDisconnect={handleEnterpriseDisconnect}
         initialSection={settingsSection}
       />
-
-      {/* ── Right column: topbar + content ───────────── */}
-      <div className="flex flex-col flex-1 overflow-hidden min-w-0">
-
-        <Topbar
-          snapshot={snapshotWithHistory}
-          theme={theme}
-          toggleTheme={toggleTheme}
-          onEnterpriseDisconnect={handleEnterpriseDisconnect}
-        />
-
-        {/* ── The "mat" — elevated content surface ───────
-            Dense near-black, mostly opaque so the content area reads as
-            solid. Values tuned via the live glass control panel at
-            .context/said-glass-control.html. */}
-        <main className="flex-1 overflow-hidden p-3 pt-2">
-          <div
-            className="h-full rounded-2xl overflow-hidden"
-            style={{
-              background: "hsl(var(--glass-bg-strong))",
-              backdropFilter: "blur(40px) saturate(190%)",
-              WebkitBackdropFilter: "blur(40px) saturate(190%)",
-              boxShadow: "var(--shadow-glass)",
-            }}
-          >
-            {activeView === "dashboard" && (
-              <DashboardView
-                snapshot={snapshotWithHistory}
-                busy={busy}
-                onToggle={handleToggle}
-                onAccessibility={handleAccessibility}
-                onNavigate={handleViewChange}
-                statusPhase={statusPhase}
-                liveText={liveText}
-                pendingEdits={pendingEdits}
-                onDownloadSuccess={handleDownloadSuccess}
-                refreshKey={historyRefreshKey}
-                onResolvePending={async (id, action) => {
-                  await resolvePendingEdit(id, action);
-                  setPendingEdits((prev) => prev.filter((e) => e.id !== id));
-                }}
-              />
-            )}
-            {activeView === "history"    && <HistoryView onDownloadSuccess={handleDownloadSuccess} refreshKey={historyRefreshKey} />}
-            {activeView === "vocabulary" && <VocabularyView />}
-            {activeView === "insights"   && <InsightsView snapshot={snapshotWithHistory} />}
-            {activeView === "meetings"   && (
-              <MeetingsView
-                focusMeetingId={focusMeetingId}
-                onFocusConsumed={() => setFocusMeetingId(null)}
-                onConfigureModels={() => {
-                  setSettingsSection("meeting");
-                  setSettingsOpen(true);
-                }}
-                onOpenWorkspaces={() => {
-                  setSettingsSection("enterprise");
-                  setSettingsOpen(true);
-                }}
-                onJoinMeeting={(id) => {
-                  setLiveMeetingId(id);
-                  setActiveView("live-meeting");
-                }}
-              />
-            )}
-            {activeView === "live-meeting" && liveMeetingId && (
-              <LiveMeetingView
-                meetingId={liveMeetingId}
-                onBack={() => setActiveView("meetings")}
-                onEnded={(id) => {
-                  // Hand the just-ended meeting to the Meetings page and switch
-                  // to it. Processing continues in the background; the Meetings
-                  // detail polls and renders the live stage progress.
-                  setFocusMeetingId(id);
-                  setActiveView("meetings");
-                }}
-              />
-            )}
-            {activeView === "divo" && <DivoView />}
-            {/* Settings is now a modal — opened via setSettingsOpen */}
-          </div>
-        </main>
-      </div>
 
       {/* ── Retry toast (bottom-center) ──────────────── */}
       {retryToast && (

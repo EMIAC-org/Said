@@ -2,15 +2,15 @@
 //! clipboard backup/set/restore for the paste path.
 //!
 //! Public API mirrors the macOS `imp` module so the desktop and CLI consumers
-//! compile unchanged. AX-tree reads (`read_focused_value_*`, `diagnose_*`)
-//! return `None` for v1 — the UIAutomation client is a follow-up tracked in
-//! the M3 plan.
+//! compile unchanged. UIAutomation provides focused-field reads and exact-range
+//! selection for edit watching and repair/refine replacement.
 
 use std::mem::size_of;
 
 use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, OpenClipboard,
+    SetClipboardData,
 };
 use windows::Win32::System::Memory::{
     GLOBAL_ALLOC_FLAGS, GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
@@ -22,7 +22,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 use crate::win_paster::{
-    is_high_surrogate, is_low_surrogate, text_to_clipboard_utf16, text_to_utf16_units,
+    exact_match_needles, is_high_surrogate, is_low_surrogate, text_to_clipboard_utf16,
+    text_to_utf16_units,
 };
 
 // ── Permissions ───────────────────────────────────────────────────────────────
@@ -86,7 +87,7 @@ pub fn read_focused_value_first_for_pid(pid: i32) -> Option<String> {
 /// return None there, and the OS blocks copying password text).
 pub fn capture_focused_text_via_selection() -> Option<String> {
     open_clipboard_with_retry().ok()?;
-    let saved = read_clipboard_unicode();
+    let saved = read_clipboard_snapshot();
     let _ = unsafe { CloseClipboard() };
 
     send_chord(VK_CONTROL, VK_A);
@@ -94,9 +95,13 @@ pub fn capture_focused_text_via_selection() -> Option<String> {
     send_chord(VK_CONTROL, VK_C);
     std::thread::sleep(std::time::Duration::from_millis(150));
 
-    open_clipboard_with_retry().ok()?;
-    let captured = read_clipboard_unicode();
-    let _ = unsafe { CloseClipboard() };
+    let captured = if open_clipboard_with_retry().is_ok() {
+        let captured = read_clipboard_unicode();
+        let _ = unsafe { CloseClipboard() };
+        captured
+    } else {
+        None
+    };
 
     restore_clipboard(saved);
     captured.filter(|s| !s.trim().is_empty())
@@ -127,17 +132,22 @@ pub fn lock_frontmost_app_now() -> Option<i32> {
 /// mistake leftover clipboard contents for selected text.
 fn copy_selection_read() -> Option<String> {
     open_clipboard_with_retry().ok()?;
-    let saved = read_clipboard_unicode();
+    let saved = read_clipboard_snapshot();
+    let saved_text = saved.unicode_text();
     let _ = unsafe { CloseClipboard() };
 
     send_chord(VK_CONTROL, VK_C);
     std::thread::sleep(std::time::Duration::from_millis(120));
 
-    open_clipboard_with_retry().ok()?;
-    let captured = read_clipboard_unicode();
-    let _ = unsafe { CloseClipboard() };
+    let captured = if open_clipboard_with_retry().is_ok() {
+        let captured = read_clipboard_unicode();
+        let _ = unsafe { CloseClipboard() };
+        captured
+    } else {
+        None
+    };
 
-    let result = match (&captured, &saved) {
+    let result = match (&captured, &saved_text) {
         (Some(c), Some(s)) if c == s => None, // copy changed nothing → no selection
         (Some(c), _) if !c.trim().is_empty() => Some(c.clone()),
         _ => None,
@@ -147,14 +157,13 @@ fn copy_selection_read() -> Option<String> {
 }
 
 /// Restore previously-saved clipboard contents (best-effort).
-fn restore_clipboard(saved: Option<String>) {
-    if let Some(prev) = saved {
-        if !prev.is_empty() {
-            if open_clipboard_with_retry().is_ok() {
-                let _ = write_clipboard_unicode(&prev);
-                let _ = unsafe { CloseClipboard() };
-            }
-        }
+fn restore_clipboard(saved: ClipboardSnapshot) {
+    if saved.is_empty() {
+        return;
+    }
+    if open_clipboard_with_retry().is_ok() {
+        let _ = restore_open_clipboard_snapshot(&saved);
+        let _ = unsafe { CloseClipboard() };
     }
 }
 
@@ -312,6 +321,30 @@ pub fn type_text(text: &str) -> Result<bool, String> {
 
 // ── Clipboard helpers ─────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Default)]
+struct ClipboardSnapshot {
+    formats: Vec<ClipboardFormatSnapshot>,
+}
+
+impl ClipboardSnapshot {
+    fn is_empty(&self) -> bool {
+        self.formats.is_empty()
+    }
+
+    fn unicode_text(&self) -> Option<String> {
+        self.formats
+            .iter()
+            .find(|entry| entry.format == CF_UNICODETEXT.0 as u32)
+            .and_then(|entry| decode_clipboard_unicode_bytes(&entry.bytes))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ClipboardFormatSnapshot {
+    format: u32,
+    bytes: Vec<u8>,
+}
+
 /// Open the clipboard with a short retry loop — another app holding the
 /// clipboard briefly (Chrome, Office) is the common failure mode and a few
 /// short retries clears most of it.
@@ -327,74 +360,160 @@ fn open_clipboard_with_retry() -> Result<(), String> {
     Err("OpenClipboard failed after retries".into())
 }
 
-/// Read the current CF_UNICODETEXT contents (if any). Caller must already
-/// hold the clipboard open via [`open_clipboard_with_retry`].
-fn read_clipboard_unicode() -> Option<String> {
+/// Snapshot all clipboard formats whose payloads are backed by movable global
+/// memory. This preserves rich text, HTML, file drops and DIB images in common
+/// apps. Handle-backed formats such as CF_BITMAP cannot be cloned safely here
+/// and are skipped instead of poisoning the restore.
+fn read_clipboard_snapshot() -> ClipboardSnapshot {
+    let mut formats = Vec::new();
+    let mut current = 0u32;
+
+    loop {
+        let next = unsafe { EnumClipboardFormats(current) };
+        if next == 0 {
+            break;
+        }
+        current = next;
+
+        if let Some(bytes) = read_clipboard_format_bytes(current) {
+            formats.push(ClipboardFormatSnapshot {
+                format: current,
+                bytes,
+            });
+        }
+    }
+
+    ClipboardSnapshot { formats }
+}
+
+fn read_clipboard_format_bytes(format: u32) -> Option<Vec<u8>> {
     unsafe {
-        let handle = GetClipboardData(CF_UNICODETEXT.0 as u32).ok()?;
+        let handle = GetClipboardData(format).ok()?;
+        if handle.0.is_null() {
+            return None;
+        }
         let hglobal = HGLOBAL(handle.0);
         let size_bytes = GlobalSize(hglobal);
         if size_bytes == 0 {
-            return Some(String::new());
+            return Some(Vec::new());
         }
-        let ptr = GlobalLock(hglobal) as *const u16;
+        let ptr = GlobalLock(hglobal) as *const u8;
         if ptr.is_null() {
             return None;
         }
-        // size_bytes counts bytes; UTF-16 code units are u16.
-        let unit_count = size_bytes / 2;
-        let slice = std::slice::from_raw_parts(ptr, unit_count);
-        // Strip the trailing NUL if present.
-        let trimmed: &[u16] = if slice.last() == Some(&0) {
-            &slice[..slice.len() - 1]
-        } else {
-            slice
-        };
-        let result = String::from_utf16(trimmed).ok();
+        let bytes = std::slice::from_raw_parts(ptr, size_bytes).to_vec();
         let _ = GlobalUnlock(hglobal);
-        result
+        Some(bytes)
     }
+}
+
+fn restore_open_clipboard_snapshot(snapshot: &ClipboardSnapshot) -> Result<(), String> {
+    unsafe {
+        EmptyClipboard().map_err(|e| format!("EmptyClipboard failed: {e}"))?;
+    }
+
+    for entry in &snapshot.formats {
+        if entry.bytes.is_empty() {
+            continue;
+        }
+        if let Err(err) = write_clipboard_format_bytes(entry.format, &entry.bytes) {
+            tracing::debug!(
+                format = entry.format,
+                error = %err,
+                "skipping clipboard format restore"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn clipboard_unicode_bytes(text: &str) -> Vec<u8> {
+    let units = text_to_clipboard_utf16(text);
+    let mut bytes = Vec::with_capacity(units.len() * 2);
+    for unit in units {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    bytes
+}
+
+fn decode_clipboard_unicode_bytes(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return Some(String::new());
+    }
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+
+    let mut units = Vec::with_capacity(bytes.len() / 2);
+    for chunk in bytes.chunks_exact(2) {
+        units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+    }
+
+    if units.last() == Some(&0) {
+        units.pop();
+    }
+    String::from_utf16(&units).ok()
+}
+
+fn write_clipboard_format_bytes(format: u32, bytes: &[u8]) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+
+    unsafe {
+        let hmem = GlobalAlloc(GLOBAL_ALLOC_FLAGS(GMEM_MOVEABLE.0), bytes.len())
+            .map_err(|e| format!("GlobalAlloc failed: {e}"))?;
+
+        let dst = GlobalLock(hmem) as *mut u8;
+        if dst.is_null() {
+            return Err("GlobalLock returned null".into());
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+        let _ = GlobalUnlock(hmem);
+
+        if let Err(err) = SetClipboardData(format, HANDLE(hmem.0)) {
+            return Err(format!("SetClipboardData failed: {err}"));
+        }
+    }
+
+    Ok(())
+}
+
+/// Read the current CF_UNICODETEXT contents (if any). Caller must already
+/// hold the clipboard open via [`open_clipboard_with_retry`].
+fn read_clipboard_unicode() -> Option<String> {
+    let bytes = read_clipboard_format_bytes(CF_UNICODETEXT.0 as u32)?;
+    decode_clipboard_unicode_bytes(&bytes)
 }
 
 /// Write a UTF-16 string into the clipboard. Caller must already hold the
 /// clipboard open. Replaces existing contents.
 fn write_clipboard_unicode(text: &str) -> Result<(), String> {
-    let units = text_to_clipboard_utf16(text);
-    let byte_count = units.len() * 2;
-
     unsafe {
         EmptyClipboard().map_err(|e| format!("EmptyClipboard failed: {e}"))?;
-
-        let hmem = GlobalAlloc(GLOBAL_ALLOC_FLAGS(GMEM_MOVEABLE.0), byte_count)
-            .map_err(|e| format!("GlobalAlloc failed: {e}"))?;
-
-        let dst = GlobalLock(hmem) as *mut u16;
-        if dst.is_null() {
-            return Err("GlobalLock returned null".into());
-        }
-        std::ptr::copy_nonoverlapping(units.as_ptr(), dst, units.len());
-        let _ = GlobalUnlock(hmem);
-
-        SetClipboardData(CF_UNICODETEXT.0 as u32, HANDLE(hmem.0))
-            .map_err(|e| format!("SetClipboardData failed: {e}"))?;
     }
-    Ok(())
+    let bytes = clipboard_unicode_bytes(text);
+    write_clipboard_format_bytes(CF_UNICODETEXT.0 as u32, &bytes)
 }
 
 /// Replace the current clipboard contents with `text`, send Ctrl+V to the
 /// focused app, then restore the original clipboard.
 fn paste_via_clipboard(text: &str, select_all_first: bool) -> Result<(), String> {
-    // 1. Snapshot existing clipboard (best-effort — non-CF_UNICODETEXT
-    //    contents are lost in v1; that's a known limitation).
+    // 1. Snapshot existing clipboard. Restoring all lockable formats protects
+    //    rich text/images/file drops while still allowing AirNote to paste text.
     open_clipboard_with_retry()?;
-    let saved = read_clipboard_unicode();
+    let saved = read_clipboard_snapshot();
     let _ = unsafe { CloseClipboard() };
 
     // 2. Install our new contents.
     open_clipboard_with_retry()?;
     let write_res = write_clipboard_unicode(text);
     let _ = unsafe { CloseClipboard() };
-    write_res?;
+    if let Err(err) = write_res {
+        restore_clipboard(saved);
+        return Err(err);
+    }
 
     // 3. Optional select-all so the new paste replaces existing text.
     if select_all_first {
@@ -410,14 +529,7 @@ fn paste_via_clipboard(text: &str, select_all_first: bool) -> Result<(), String>
     //    paste and the wrong text lands).
     std::thread::sleep(std::time::Duration::from_millis(80));
 
-    if let Some(prev) = saved {
-        if !prev.is_empty() {
-            if let Ok(()) = open_clipboard_with_retry() {
-                let _ = write_clipboard_unicode(&prev);
-                let _ = unsafe { CloseClipboard() };
-            }
-        }
-    }
+    restore_clipboard(saved);
     Ok(())
 }
 
@@ -458,10 +570,56 @@ pub fn reconcile_current_recording(
     reconcile_typed_text(typed_text, replacement)
 }
 
-pub fn replace_focused_text_exact(
-    _existing_text: &str,
-    _replacement: &str,
-) -> Result<bool, String> {
+fn delete_selection() {
+    send_vk(VK_BACK, true);
+    send_vk(VK_BACK, false);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+}
+
+fn replace_selected_text(replacement: &str) -> Result<(), String> {
+    if replacement.is_empty() {
+        delete_selection();
+        Ok(())
+    } else {
+        paste(replacement)
+    }
+}
+
+pub fn replace_focused_text_exact(existing_text: &str, replacement: &str) -> Result<bool, String> {
+    if existing_text == replacement {
+        return Ok(false);
+    }
+    if existing_text.is_empty() {
+        return Ok(false);
+    }
+
+    for needle in exact_match_needles(existing_text) {
+        if crate::uia::select_exact_text(&needle, 700) {
+            replace_selected_text(replacement)?;
+            return Ok(true);
+        }
+    }
+
+    // ValuePattern-only controls may not support TextPattern ranges. In that
+    // case, select-all is safe only when the whole focused field is exactly the
+    // previous output we intend to replace.
+    let current = read_focused_value();
+    if let Some(current_text) = current.as_deref() {
+        if exact_match_needles(existing_text)
+            .iter()
+            .any(|needle| needle == current_text)
+        {
+            if replacement.is_empty() {
+                send_chord(VK_CONTROL, VK_A);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                delete_selection();
+            } else {
+                paste_via_clipboard(replacement, true)?;
+            }
+            return Ok(true);
+        }
+    }
+
     Ok(false)
 }
 
@@ -481,6 +639,8 @@ pub fn replace_focused_text_exact(
 #[cfg(test)]
 mod windows_tests {
     use super::*;
+    use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
+    use windows::core::PCWSTR;
 
     /// Write Unicode text to the clipboard via the same code path that `paste`
     /// uses, then read it back and verify byte-for-byte equality. Covers:
@@ -512,6 +672,60 @@ mod windows_tests {
             read_back, payload,
             "clipboard round-trip must preserve every codepoint exactly"
         );
+    }
+
+    #[test]
+    fn clipboard_snapshot_restores_registered_non_text_format() {
+        let format_name: Vec<u16> = "AirNoteSnapshotTestFormat\0".encode_utf16().collect();
+        let custom_format = unsafe { RegisterClipboardFormatW(PCWSTR(format_name.as_ptr())) };
+        assert_ne!(custom_format, 0, "custom clipboard format must register");
+
+        let custom_payload = b"airnote-rich-payload\x00\x01\x02".to_vec();
+
+        open_clipboard_with_retry().expect("open clipboard for rich setup");
+        unsafe {
+            EmptyClipboard().expect("empty clipboard");
+        }
+        let unicode_bytes = clipboard_unicode_bytes("original text");
+        write_clipboard_format_bytes(CF_UNICODETEXT.0 as u32, &unicode_bytes)
+            .expect("write unicode format");
+        write_clipboard_format_bytes(custom_format, &custom_payload).expect("write custom format");
+        unsafe {
+            let _ = CloseClipboard();
+        }
+
+        open_clipboard_with_retry().expect("open clipboard for snapshot");
+        let snapshot = read_clipboard_snapshot();
+        unsafe {
+            let _ = CloseClipboard();
+        }
+        assert_eq!(snapshot.unicode_text().as_deref(), Some("original text"));
+        assert!(
+            snapshot
+                .formats
+                .iter()
+                .any(|entry| entry.format == custom_format),
+            "snapshot must include registered rich format"
+        );
+
+        open_clipboard_with_retry().expect("open clipboard for overwrite");
+        write_clipboard_unicode("temporary text").expect("overwrite unicode");
+        unsafe {
+            let _ = CloseClipboard();
+        }
+
+        restore_clipboard(snapshot);
+
+        open_clipboard_with_retry().expect("open clipboard for restored read");
+        let restored_text = read_clipboard_unicode().expect("unicode restored");
+        let restored_custom =
+            read_clipboard_format_bytes(custom_format).expect("custom rich format restored");
+        unsafe {
+            let _ = CloseClipboard();
+        }
+
+        assert_eq!(restored_text, "original text");
+        assert_eq!(restored_custom, custom_payload);
     }
 
     // (intentionally no empty-string round-trip test)

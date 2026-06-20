@@ -122,6 +122,7 @@ interface ManualAction {
 }
 
 type DetailTab = "summary" | "notes" | "transcript" | "actions" | "chat";
+type MeetingListFilter = "all" | "favorites" | "today" | "week" | "archived";
 
 interface MeetingAiActionItem {
   title: string;
@@ -235,12 +236,14 @@ function MeetingCard({
   searchHit,
   selected,
   onSelect,
+  onToggleFavorite,
 }: {
   meeting: Meeting;
   overview?: MeetingOverview;
   searchHit?: MeetingSearchHit;
   selected: boolean;
   onSelect: () => void;
+  onToggleFavorite: () => void;
 }) {
   // Prefer the AI-generated title/word count from the cached overview, falling
   // back to the server title and agenda when a meeting hasn't been analysed.
@@ -248,10 +251,14 @@ function MeetingCard({
   const words = overview?.word_count ?? wordCount(meeting.agenda);
   const actionCount = overview?.action_count ?? 0;
   const decisionCount = overview?.decision_count ?? 0;
-  const cardTags = (overview?.tags ?? []).slice(0, 3);
+  const allCardTags = overview?.tags ?? [];
+  const cardTags = allCardTags.slice(0, 2);
+  const hiddenTagCount = Math.max(0, allCardTags.length - cardTags.length);
+  const favorite = overview?.favorite ?? false;
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       className="w-full rounded-xl p-4 text-left transition-colors cursor-pointer"
       style={{
         background: selected ? "hsl(var(--primary) / 0.13)" : "hsl(var(--surface-3))",
@@ -261,6 +268,12 @@ function MeetingCard({
           : "0 1px 0 hsl(var(--glass-highlight)) inset",
       }}
       onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
@@ -269,11 +282,20 @@ function MeetingCard({
             {formatMeetingDate(meeting)} · {words} words
           </p>
         </div>
-        <Star
-          size={14}
-          fill={overview?.favorite ? "hsl(38 90% 72%)" : "none"}
-          style={{ color: overview?.favorite ? "hsl(38 90% 72%)" : "hsl(var(--muted-foreground) / 0.35)" }}
-        />
+        <button
+          type="button"
+          title={favorite ? "Remove from favorites" : "Add to favorites"}
+          aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleFavorite();
+          }}
+          onKeyDown={(event) => event.stopPropagation()}
+          className="rounded-md p-0.5 transition-colors hover:text-foreground"
+          style={{ color: favorite ? "hsl(38 90% 72%)" : "hsl(var(--muted-foreground) / 0.35)" }}
+        >
+          <Star size={14} fill={favorite ? "hsl(38 90% 72%)" : "none"} />
+        </button>
       </div>
       <div className="mt-4 flex flex-wrap gap-1.5">
         <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(var(--chip-blue-bg))", color: "hsl(var(--chip-blue-fg))" }}>
@@ -287,16 +309,26 @@ function MeetingCard({
         </span>
       </div>
       {cardTags.length > 0 ? (
-        <div className="mt-2 flex flex-wrap gap-1.5">
+        <div className="mt-2 flex min-w-0 flex-nowrap items-center gap-1 overflow-hidden">
           {cardTags.map((tag) => (
             <span
               key={tag}
-              className="rounded-md px-2 py-0.5 text-[10px] font-bold"
+              className="max-w-[8.5rem] shrink truncate rounded-md px-1.5 py-0.5 text-[9px] font-bold"
               style={{ background: `${tagColor(tag)}22`, color: tagColor(tag) }}
+              title={`#${tag}`}
             >
               #{tag}
             </span>
           ))}
+          {hiddenTagCount > 0 ? (
+            <span
+              className="shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-bold text-muted-foreground"
+              style={{ background: "hsl(var(--surface-4))" }}
+              title={allCardTags.slice(cardTags.length).map((tag) => `#${tag}`).join(", ")}
+            >
+              +{hiddenTagCount}
+            </span>
+          ) : null}
         </div>
       ) : null}
       {searchHit ? (
@@ -311,7 +343,7 @@ function MeetingCard({
           ) : null}
         </div>
       ) : null}
-    </button>
+    </div>
   );
 }
 
@@ -678,11 +710,13 @@ function ActionRows({
   onRemoveManualAction: (index: number) => void;
 }) {
   const actions = meetingAi?.action_items ?? [];
-  const totalCount = actions.length + manualActions.length;
+  const decisions = meetingAi?.decisions ?? [];
+  const actionCount = actions.length + manualActions.length;
+  const totalCount = actionCount + decisions.length;
   return (
     <div className="pt-8">
       <div className="mb-7">
-        <h3 className="text-[15px] font-bold text-foreground">Actions {totalCount}</h3>
+        <h3 className="text-[15px] font-bold text-foreground">Actions & Decisions {totalCount}</h3>
       </div>
 
       {/* Add a manual action */}
@@ -711,6 +745,12 @@ function ActionRows({
           <Plus size={14} /> Add
         </button>
       </div>
+
+      {actionCount > 0 && decisions.length > 0 ? (
+        <h4 className="mb-4 text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+          Actions {actionCount}
+        </h4>
+      ) : null}
 
       {manualActions.length > 0 ? (
         <div className="mb-7 space-y-3">
@@ -755,16 +795,18 @@ function ActionRows({
       ) : null}
 
       {actions.length === 0 ? (
-        manualActions.length === 0 ? (
-          <p className="text-[14px] text-muted-foreground">No explicit action items found. Add your own above.</p>
+        actionCount === 0 && decisions.length === 0 ? (
+          <p className="text-[14px] text-muted-foreground">
+            No action items or decisions found yet. Add your own action above.
+          </p>
         ) : null
       ) : (
-        <div className="space-y-7">
+        <div className={decisions.length > 0 ? "mb-8 space-y-7" : "space-y-7"}>
           {actions.map((action, index) => {
             const key = `${index}-${action.title}`;
             const isDone = completed.has(key);
             return (
-              <div key={key} className="grid grid-cols-[26px_minmax(0,1fr)_64px] gap-4">
+              <div key={key} className="grid grid-cols-[26px_minmax(0,1fr)] gap-4">
                 <button
                   type="button"
                   onClick={() => onToggle(key)}
@@ -784,19 +826,40 @@ function ActionRows({
                     {action.evidence || [action.assignee, action.due].filter(Boolean).join(" · ") || "No extra detail captured."}
                   </p>
                 </div>
-                <div className="flex items-start justify-end gap-2">
-                  <IconButton label="Open synced Lark task" disabled>
-                    <ExternalLink size={14} />
-                  </IconButton>
-                  <IconButton label="More">
-                    <ChevronDown size={14} />
-                  </IconButton>
-                </div>
               </div>
             );
           })}
         </div>
       )}
+
+      {decisions.length > 0 ? (
+        <section className="space-y-4">
+          <h4 className="text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+            Decisions {decisions.length}
+          </h4>
+          <div className="space-y-4">
+            {decisions.map((decision, index) => (
+              <div key={`${decision.text}-${index}`} className="grid grid-cols-[26px_minmax(0,1fr)] gap-4">
+                <span
+                  className="mt-0.5 flex h-[18px] w-[18px] items-center justify-center rounded-full text-[11px] font-bold"
+                  style={{
+                    background: "hsl(var(--primary) / 0.14)",
+                    color: "hsl(var(--primary))",
+                  }}
+                >
+                  {index + 1}
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[15px] font-bold text-foreground">{decision.text}</p>
+                  {decision.evidence ? (
+                    <p className="mt-1 max-w-[108ch] text-[13px] leading-6 text-muted-foreground">{decision.evidence}</p>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -827,12 +890,30 @@ interface MeetingProcessingStatus {
   stage: string;
   running: boolean;
   queued: boolean;
+  cancelling: boolean;
+  can_cancel: boolean;
   can_retry: boolean;
   error: string | null;
+  progress: MeetingProcessingProgress | null;
   has_transcript: boolean;
   has_intelligence: boolean;
   summary_failed: boolean;
   updated_at_ms: number;
+}
+
+interface MeetingProcessingProgress {
+  stage: string;
+  current: number;
+  total: number;
+  label: string;
+  track: string | null;
+}
+
+interface ProcessingStartWarning {
+  meetingId: string;
+  title: string;
+  stage: string;
+  queued: boolean;
 }
 
 // Ordered processing stages shown in the post-meeting progress stepper.
@@ -840,16 +921,85 @@ const PROCESSING_STEPS: { key: string; label: string }[] = [
   { key: "queued", label: "Queued" },
   { key: "transcribing", label: "Transcribing" },
   { key: "cleaning", label: "Cleaning" },
-  { key: "diarizing", label: "Diarizing" },
   { key: "summarizing", label: "Summarizing" },
   { key: "summarized", label: "Done" },
 ];
 
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function waitForPaint(): Promise<void> {
+  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
 function processingStepIndex(stage: string): number {
-  const i = PROCESSING_STEPS.findIndex((s) => s.key === stage);
+  const normalized = normalizeProcessingStage(stage);
+  const i = PROCESSING_STEPS.findIndex((s) => s.key === normalized);
   if (i >= 0) return i;
-  if (stage === "transcribed") return PROCESSING_STEPS.length - 1;
-  return 0;
+  return PROCESSING_STEPS.findIndex((s) => s.key === "transcribing");
+}
+
+function effectiveProcessingStage(status: MeetingProcessingStatus): string {
+  if (status.running) {
+    if (status.cancelling) return "cancelling";
+    return normalizeProcessingStage(status.stage || status.phase);
+  }
+  if (status.phase === "summarized" || status.has_intelligence) return "summarized";
+  if (status.summary_failed) return "summarizing";
+  if (status.stage === "queued" && status.has_transcript) return "summarizing";
+  return normalizeProcessingStage(status.stage || status.phase);
+}
+
+function normalizeProcessingStage(stage: string): string {
+  switch (stage) {
+    case "queued":
+    case "transcribing":
+    case "cleaning":
+    case "summarizing":
+    case "summarized":
+      return stage;
+    case "diarizing":
+    case "final_diarizing":
+    case "completed":
+      return "summarizing";
+    case "running":
+    case "resuming":
+      return "transcribing";
+    case "cancelling":
+    case "cancelled":
+      return "transcribing";
+    case "transcribed":
+    case "summary_failed":
+      return "summarizing";
+    case "done":
+      return "summarized";
+    default:
+      return "transcribing";
+  }
+}
+
+function processingStageLabel(stage: string): string {
+  const normalized = normalizeProcessingStage(stage);
+  return PROCESSING_STEPS.find((step) => step.key === normalized)?.label ?? "Processing";
+}
+
+function processingStepLabel(step: { key: string; label: string }, status: MeetingProcessingStatus, effectiveStage: string): string {
+  const progress = status.progress;
+  if (
+    step.key === "transcribing"
+    && normalizeProcessingStage(effectiveStage) === "transcribing"
+    && progress?.stage === "transcribing"
+    && progress.total > 1
+    && progress.current >= 1
+  ) {
+    return progress.label || `Transcribing ${progress.current}/${progress.total}`;
+  }
+  return step.label;
+}
+
+function isDismissibleProcessingStatus(status: MeetingProcessingStatus): boolean {
+  return !status.running && (status.can_retry || status.summary_failed || Boolean(status.error) || status.phase === "cancelled");
 }
 
 /** Post-meeting progress banner: a live stage stepper while a background job
@@ -858,17 +1008,25 @@ function ProcessingBanner({
   status,
   onRetryTranscribe,
   onRetrySummary,
+  onCancel,
+  onDismiss,
   retrying,
 }: {
   status: MeetingProcessingStatus;
   onRetryTranscribe: () => void;
   onRetrySummary: () => void;
+  onCancel: () => void;
+  onDismiss: () => void;
   retrying: boolean;
 }) {
   const summaryFailed = !status.running && status.summary_failed;
-  const failed = !status.running && (status.can_retry || summaryFailed);
+  const cancelled = !status.running && status.phase === "cancelled";
+  const failed = !status.running && (status.can_retry || summaryFailed || Boolean(status.error));
   const onRetry = summaryFailed ? onRetrySummary : onRetryTranscribe;
-  const activeIdx = processingStepIndex(status.stage);
+  const effectiveStage = effectiveProcessingStage(status);
+  const activeIdx = processingStepIndex(effectiveStage);
+  const trulyQueued = status.queued && effectiveStage === "queued";
+  const cancelling = status.running && status.cancelling;
   return (
     <div
       className="mt-5 rounded-xl px-5 py-4"
@@ -887,23 +1045,49 @@ function ProcessingBanner({
           <span className="text-[13px] font-bold text-foreground">
             {summaryFailed
               ? "Summary failed — transcript is saved"
+              : cancelled
+                ? "Processing cancelled"
               : failed
                 ? "Processing failed"
-                : status.queued
-                  ? "Queued for processing…"
-                  : "Processing your meeting…"}
+                : cancelling
+                  ? "Cancelling processing…"
+                  : trulyQueued
+                    ? "Queued for processing…"
+                    : "Processing your meeting…"}
           </span>
         </div>
         {failed ? (
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={retrying}
+              className="flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold disabled:opacity-50"
+              style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--foreground))" }}
+            >
+              <RefreshCw size={13} className={retrying ? "animate-spin" : ""} />
+              {retrying ? "Retrying…" : summaryFailed ? "Regenerate summary" : "Retry"}
+            </button>
+            <button
+              type="button"
+              title="Dismiss"
+              aria-label="Dismiss processing message"
+              onClick={onDismiss}
+              className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:text-foreground"
+              style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--muted-foreground))" }}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        ) : status.can_cancel ? (
           <button
             type="button"
-            onClick={onRetry}
-            disabled={retrying}
-            className="flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold disabled:opacity-50"
+            onClick={onCancel}
+            className="flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold"
             style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--foreground))" }}
           >
-            <RefreshCw size={13} className={retrying ? "animate-spin" : ""} />
-            {retrying ? "Retrying…" : summaryFailed ? "Regenerate summary" : "Retry"}
+            <X size={13} />
+            Cancel
           </button>
         ) : null}
       </div>
@@ -931,7 +1115,7 @@ function ProcessingBanner({
                         : "hsl(var(--muted-foreground))",
                   }}
                 >
-                  {step.label}
+                  {processingStepLabel(step, status, effectiveStage)}
                 </span>
                 {i < PROCESSING_STEPS.length - 1 ? (
                   <span style={{ color: "hsl(var(--muted-foreground))" }}>›</span>
@@ -971,13 +1155,14 @@ export function MeetingsView({
   const [clearing, setClearing] = useState(false);
   const [meetingInProgress, setMeetingInProgress] = useState(false);
   const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
-  const [dateFilter, setDateFilter] = useState<"all" | "today" | "week" | "archived">("all");
+  const [dateFilter, setDateFilter] = useState<MeetingListFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<Record<string, MeetingSearchHit> | null>(null);
   const [searchBusy, setSearchBusy] = useState(false);
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<DetailTab>("summary");
   const [procStatus, setProcStatus] = useState<MeetingProcessingStatus | null>(null);
+  const dismissedProcessingIdsRef = useRef<Set<string>>(new Set());
   const [meetingAi, setMeetingAi] = useState<MeetingIntelligenceResult | null>(null);
   const [meetingAiLoading, setMeetingAiLoading] = useState(false);
   const [meetingAiError, setMeetingAiError] = useState<string | null>(null);
@@ -997,6 +1182,8 @@ export function MeetingsView({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string } | null>(null);
+  const [processingStartWarning, setProcessingStartWarning] =
+    useState<ProcessingStartWarning | null>(null);
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [audioPlaying, setAudioPlaying] = useState(false);
@@ -1064,6 +1251,43 @@ export function MeetingsView({
     };
   }, []);
 
+  const startNewLocalMeeting = useCallback(async () => {
+    setCreating(true);
+    setError("");
+    try {
+      // Local-only: allocate a fresh on-device meeting id and open the recorder.
+      // No cloud record is created, so an abandoned meeting leaves nothing behind.
+      const id = await invoke<string>("meeting_engine_new_local_meeting");
+      onJoinMeeting?.(id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create meeting");
+    } finally {
+      setCreating(false);
+    }
+  }, [onJoinMeeting]);
+
+  const findRunningProcessingMeeting = useCallback(async (): Promise<ProcessingStartWarning | null> => {
+    for (const meeting of meetings) {
+      try {
+        const status = await invoke<MeetingProcessingStatus>("meeting_engine_get_processing_status", {
+          meetingId: meeting.id,
+        });
+        if (!status.running) continue;
+        const title = overviews[meeting.id]?.title?.trim() || meeting.title || "another meeting";
+        return {
+          meetingId: meeting.id,
+          title,
+          stage: effectiveProcessingStage(status),
+          queued: status.queued,
+        };
+      } catch {
+        // Best-effort warning. If a single old folder has bad status, keep checking
+        // others and let the engine handle the final start decision.
+      }
+    }
+    return null;
+  }, [meetings, overviews]);
+
   const handleNewMeeting = useCallback(async () => {
     if (hasModel === false) {
       setError("Install a transcription model first (Settings → Meeting).");
@@ -1084,19 +1308,33 @@ export function MeetingsView({
     } catch {
       /* status check failed — fall through and let the engine handle it */
     }
+
+    const runningProcessing = await findRunningProcessingMeeting();
+    if (runningProcessing) {
+      setProcessingStartWarning(runningProcessing);
+      return;
+    }
+
+    await startNewLocalMeeting();
+  }, [findRunningProcessingMeeting, hasModel, onConfigureModels, startNewLocalMeeting]);
+
+  const handlePauseProcessingAndStart = useCallback(async () => {
+    const warning = processingStartWarning;
+    if (!warning || creating) return;
+
     setCreating(true);
     setError("");
     try {
-      // Local-only: allocate a fresh on-device meeting id and open the recorder.
-      // No cloud record is created, so an abandoned meeting leaves nothing behind.
-      const id = await invoke<string>("meeting_engine_new_local_meeting");
-      onJoinMeeting?.(id);
+      await invoke("meeting_engine_cancel_processing", { meetingId: warning.meetingId });
+      setProcessingStartWarning(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create meeting");
-    } finally {
+      setError(err instanceof Error ? err.message : "Failed to pause current processing");
       setCreating(false);
+      return;
     }
-  }, [onJoinMeeting, hasModel, onConfigureModels]);
+
+    await startNewLocalMeeting();
+  }, [creating, processingStartWarning, startNewLocalMeeting]);
 
   // Clear empty meetings — silence/noise recordings (few words, never analyzed,
   // not favorited or renamed) that pile up. Analyzed/favorited/named meetings and
@@ -1158,9 +1396,11 @@ export function MeetingsView({
       return Boolean(ov?.hidden && ov?.has_local_files);
     }
     if (ov?.hidden) return false;
-    // When searching, restrict to backend hits and ignore the date filter so
-    // matches are never hidden by the All/Today/Week tabs.
+    if (dateFilter === "favorites" && !ov?.favorite) return false;
+    // When searching, restrict to backend hits. Date tabs are ignored so older
+    // matches are still findable; Favorites stays scoped to favorite meetings.
     if (searching) return Boolean(searchHits?.[meeting.id]);
+    if (dateFilter === "favorites") return true;
     const time = meetingTime(meeting);
     if (Number.isNaN(time.getTime())) return dateFilter === "all";
     if (dateFilter === "today") return isSameLocalDay(time, new Date());
@@ -1213,11 +1453,24 @@ export function MeetingsView({
   const liveCount = meetings.filter((meeting) => meeting.status === "live").length;
   const endedCount = meetings.filter((meeting) => meeting.status === "ended").length;
   const selectedActionCount = meetingAi?.action_items?.length ?? 0;
+  const selectedDecisionCount = meetingAi?.decisions?.length ?? 0;
+  const selectedActionDecisionCount = selectedActionCount + selectedDecisionCount + manualActions.length;
   const transcriptWordCount = wordCount(artifacts?.transcript);
   const selectedWordCount = transcriptWordCount || wordCount(meetingAi?.summary) || wordCount(selectedMeeting?.agenda);
-  const sectionLabel = sortedMeetings[0]
-    ? meetingTime(sortedMeetings[0]).toLocaleDateString(undefined, { month: "short", year: "numeric" }).toUpperCase()
-    : "RECENT";
+  const sectionLabel =
+    dateFilter === "favorites"
+      ? "FAVORITES"
+      : dateFilter === "archived"
+        ? "ARCHIVED"
+        : sortedMeetings[0]
+          ? meetingTime(sortedMeetings[0]).toLocaleDateString(undefined, { month: "short", year: "numeric" }).toUpperCase()
+          : "RECENT";
+  const emptyMeetingMessage =
+    dateFilter === "favorites"
+      ? "No favorite meetings yet"
+      : dateFilter === "archived"
+        ? "No archived meetings"
+        : "No meetings for this filter";
 
   // NOTE: the sidebar is driven solely by the strict, per-meeting backend
   // overviews (`get_meeting_overviews`). We deliberately do NOT mirror the
@@ -1490,26 +1743,47 @@ export function MeetingsView({
   selectedIdRef.current = selectedMeeting?.id ?? null;
 
   const handleRetranscribe = useCallback(async () => {
-    if (!selectedMeeting || retranscribing) return;
+    if (!selectedMeeting || retranscribing || procStatus?.running) return;
     const id = selectedMeeting.id;
+    const optimisticStatus: MeetingProcessingStatus = {
+      meeting_id: id,
+      phase: "transcribing",
+      stage: "queued",
+      running: true,
+      queued: true,
+      cancelling: false,
+      can_cancel: true,
+      can_retry: false,
+      error: null,
+      progress: null,
+      has_transcript: Boolean(artifacts?.transcript?.trim()),
+      has_intelligence: Boolean(meetingAi?.summary?.trim()),
+      summary_failed: false,
+      updated_at_ms: Date.now(),
+    };
     setRetranscribing(true);
+    dismissedProcessingIdsRef.current.delete(id);
+    setProcStatus(optimisticStatus);
+    procWasRunningRef.current = true;
     try {
+      // Let React paint the queued/spinner state before the native side scans WAV
+      // metadata and enqueues the background job.
+      await waitForPaint();
       await invoke("meeting_engine_retranscribe", { meetingId: id });
-      // Poll the engine until the background transcription job finishes.
       const startedAt = Date.now();
       for (;;) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        if (Date.now() - startedAt > 6 * 60 * 1000) break;
-        let running = false;
+        let status: MeetingProcessingStatus;
         try {
-          const status = await invoke<{ transcription?: { running?: boolean } }>(
-            "meeting_engine_get_status",
-          );
-          running = Boolean(status?.transcription?.running);
-        } catch {
+          status = await invoke<MeetingProcessingStatus>("meeting_engine_get_processing_status", {
+            meetingId: id,
+          });
+        } catch (statusErr) {
+          console.warn("[meeting] processing status poll failed:", statusErr);
           break;
         }
-        if (!running) break;
+        if (selectedIdRef.current === id) setProcStatus(status);
+        if (!status.running || Date.now() - startedAt > 6 * 60 * 1000) break;
+        await wait(1500);
       }
       // Reload artifacts, but only if this meeting is still selected.
       const fresh = await invoke<MeetingCachedArtifacts | null>("meeting_engine_get_cached_artifacts", {
@@ -1518,14 +1792,78 @@ export function MeetingsView({
       if (selectedIdRef.current === id) setArtifacts(fresh);
       await refreshOverviews();
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       console.warn("[meeting] re-transcribe failed:", err);
+      if (selectedIdRef.current === id) {
+        setProcStatus({
+          meeting_id: id,
+          phase: "failed",
+          stage: "failed",
+          running: false,
+          queued: false,
+          cancelling: false,
+          can_cancel: false,
+          can_retry: true,
+          error: message,
+          progress: null,
+          has_transcript: Boolean(artifacts?.transcript?.trim()),
+          has_intelligence: Boolean(meetingAi?.summary?.trim()),
+          summary_failed: false,
+          updated_at_ms: Date.now(),
+        });
+      }
     } finally {
       setRetranscribing(false);
     }
-  }, [selectedMeeting, retranscribing, refreshOverviews]);
+  }, [
+    selectedMeeting,
+    retranscribing,
+    procStatus?.running,
+    artifacts?.transcript,
+    meetingAi?.summary,
+    refreshOverviews,
+  ]);
+
+  const handleDismissProcessingBanner = useCallback(() => {
+    const id = procStatus?.meeting_id;
+    if (!id) return;
+    dismissedProcessingIdsRef.current.add(id);
+    setProcStatus((current) => (current?.meeting_id === id ? null : current));
+  }, [procStatus?.meeting_id]);
+
+  const handleCancelProcessing = useCallback(async () => {
+    const id = selectedMeeting?.id;
+    if (!id || !procStatus?.running || procStatus.cancelling) return;
+    setProcStatus((current) =>
+      current && current.meeting_id === id
+        ? { ...current, cancelling: true, can_cancel: false, stage: "cancelling" }
+        : current,
+    );
+    try {
+      await invoke("meeting_engine_cancel_processing", { meetingId: id });
+      const status = await invoke<MeetingProcessingStatus>("meeting_engine_get_processing_status", {
+        meetingId: id,
+      });
+      if (selectedIdRef.current === id) setProcStatus(status);
+    } catch (err) {
+      console.warn("[meeting] cancel processing failed:", err);
+      if (selectedIdRef.current === id) {
+        setProcStatus((current) =>
+          current && current.meeting_id === id
+            ? {
+                ...current,
+                cancelling: false,
+                can_cancel: current.running,
+                error: err instanceof Error ? err.message : String(err),
+              }
+            : current,
+        );
+      }
+    }
+  }, [procStatus?.cancelling, procStatus?.running, selectedMeeting?.id]);
 
   // Poll per-meeting processing status so the post-meeting stages (transcribing
-  // → cleaning → diarizing → ready) render live, and reload artifacts the moment
+  // → cleaning → summarizing → ready) render live, and reload artifacts the moment
   // a background job finishes. Polls every 2s only while a job is active, so an
   // idle/finished meeting costs a single call.
   const procWasRunningRef = useRef(false);
@@ -1548,8 +1886,20 @@ export function MeetingsView({
         status = null;
       }
       if (cancelled || selectedIdRef.current !== id) return;
-      setProcStatus(status);
       const running = Boolean(status?.running);
+      if (running) {
+        dismissedProcessingIdsRef.current.delete(id);
+      }
+      if (
+        status &&
+        !running &&
+        dismissedProcessingIdsRef.current.has(id) &&
+        isDismissibleProcessingStatus(status)
+      ) {
+        setProcStatus(null);
+      } else {
+        setProcStatus(status);
+      }
       // running → finished: reload the freshly-written transcript AND summary
       // (the worker now auto-generates the summary as the final stage).
       if (procWasRunningRef.current && !running) {
@@ -1740,18 +2090,28 @@ export function MeetingsView({
     }
   }, [selectedMeeting, titleDraft, refreshOverviews]);
 
-  const toggleFavorite = useCallback(async () => {
-    if (!selectedMeeting) return;
+  const setMeetingFavorite = useCallback(async (meetingId: string, favorite: boolean) => {
+    setOverviews((current) => {
+      const overview = current[meetingId];
+      if (!overview) return current;
+      return { ...current, [meetingId]: { ...overview, favorite } };
+    });
     try {
       await invoke("meeting_engine_set_meeting_favorite", {
-        meetingId: selectedMeeting.id,
-        favorite: !isFavorite,
+        meetingId,
+        favorite,
       });
       await refreshOverviews();
     } catch (err) {
       console.warn("[meeting] set favorite failed:", err);
+      await refreshOverviews();
     }
-  }, [selectedMeeting, isFavorite, refreshOverviews]);
+  }, [refreshOverviews]);
+
+  const toggleFavorite = useCallback(async () => {
+    if (!selectedMeeting) return;
+    await setMeetingFavorite(selectedMeeting.id, !isFavorite);
+  }, [selectedMeeting, isFavorite, setMeetingFavorite]);
 
   const handleHideMeeting = useCallback(async () => {
     if (!selectedMeeting) return;
@@ -1798,6 +2158,9 @@ export function MeetingsView({
     try {
       // Local-only permanent delete: remove the on-device artifacts.
       await invoke("meeting_engine_delete_meeting_files", { meetingId: id });
+      dismissedProcessingIdsRef.current.delete(id);
+      setProcStatus((current) => (current?.meeting_id === id ? null : current));
+      setArtifacts((current) => (selectedIdRef.current === id ? null : current));
       setSelectedMeetingId((cur) => (cur === id ? null : cur));
       await fetchMeetings();
     } catch (err) {
@@ -1809,12 +2172,18 @@ export function MeetingsView({
     { id: "summary", label: "Summary", icon: <Sparkles size={15} /> },
     { id: "notes", label: "My Notes", icon: <FileText size={15} /> },
     { id: "transcript", label: "Transcript", icon: <ScrollText size={15} /> },
-    { id: "actions", label: `Actions ${selectedActionCount}`, icon: <ListChecks size={15} /> },
+    { id: "actions", label: `Actions & Decisions ${selectedActionDecisionCount}`, icon: <ListChecks size={15} /> },
     { id: "chat", label: "AI Chat", icon: <MessageSquare size={15} /> },
   ];
 
   return (
-    <div className="flex h-full flex-col overflow-hidden" style={{ background: "hsl(var(--surface-2))" }}>
+    <div
+      className="flex h-full flex-col overflow-hidden"
+      style={{
+        background:
+          "linear-gradient(180deg, hsl(var(--surface-3) / 0.72), hsl(var(--surface-2) / 0.94))",
+      }}
+    >
       {hasModel === false ? (
         <div
           className="flex flex-wrap items-center gap-3 px-5 py-2.5"
@@ -1837,7 +2206,10 @@ export function MeetingsView({
       ) : null}
       <div
         className="flex flex-shrink-0 items-center gap-1 px-4 py-2"
-        style={{ background: "hsl(var(--surface-3))", borderBottom: "1px solid hsl(var(--border))" }}
+        style={{
+          background: "hsl(var(--surface-3) / 0.66)",
+          borderBottom: "1px solid hsl(var(--glass-stroke-strong))",
+        }}
       >
         {(
           [
@@ -1866,8 +2238,19 @@ export function MeetingsView({
       </div>
       <div
         className={`relative min-h-0 flex-1 overflow-hidden ${viewMode === "meetings" ? "flex" : "hidden"}`}
+        style={{
+          background:
+            "linear-gradient(90deg, hsl(var(--surface-3) / 0.24), hsl(var(--surface-2) / 0.72) 42%, hsl(var(--surface-2) / 0.86))",
+        }}
       >
-      <aside className="flex w-[240px] flex-shrink-0 flex-col xl:w-[330px]" style={{ background: "hsl(var(--surface-2))", borderRight: "1px solid hsl(var(--border))" }}>
+      <aside
+        className="flex w-[240px] flex-shrink-0 flex-col xl:w-[330px]"
+        style={{
+          background: "hsl(var(--surface-3) / 0.42)",
+          borderRight: "1px solid hsl(var(--glass-stroke-strong))",
+          boxShadow: "1px 0 0 hsl(var(--glass-highlight)) inset",
+        }}
+      >
         <div className="px-4 pb-3 pt-5">
           <div className="flex items-center justify-between">
             <div>
@@ -1922,18 +2305,19 @@ export function MeetingsView({
               </button>
             ) : null}
           </div>
-          <div className="mt-3 flex items-center gap-1.5">
+          <div className="mt-3 flex flex-nowrap items-center gap-1 overflow-hidden">
             {[
               { id: "all" as const, label: "All" },
+              { id: "favorites" as const, label: "Favorites" },
               { id: "today" as const, label: "Today" },
-              { id: "week" as const, label: "This Week" },
+              { id: "week" as const, label: "Week" },
               { id: "archived" as const, label: "Archived" },
             ].map((filter) => (
               <button
                 key={filter.id}
                 type="button"
                 onClick={() => setDateFilter(filter.id)}
-                className="h-7 rounded-lg px-2.5 text-[11px] font-semibold"
+                className="h-7 shrink-0 rounded-lg px-2 text-[10px] font-semibold"
                 style={{
                   background: dateFilter === filter.id ? "hsl(var(--primary) / 0.10)" : "transparent",
                   color: dateFilter === filter.id ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
@@ -1970,7 +2354,7 @@ export function MeetingsView({
                   ? searchBusy
                     ? "Searching…"
                     : `No meetings match “${searchQuery.trim()}”`
-                  : "No meetings for this filter"}
+                  : emptyMeetingMessage}
               </p>
             </div>
           ) : (
@@ -1989,6 +2373,9 @@ export function MeetingsView({
                     setSelectedMeetingId(meeting.id);
                     setDetailTab("summary");
                   }}
+                  onToggleFavorite={() =>
+                    void setMeetingFavorite(meeting.id, !(overviews[meeting.id]?.favorite ?? false))
+                  }
                 />
               ))}
             </div>
@@ -1996,7 +2383,12 @@ export function MeetingsView({
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1 overflow-y-auto px-4 pb-12 pt-6 lg:px-10">
+      <main
+        className="min-w-0 flex-1 overflow-y-auto px-4 pb-12 pt-6 lg:px-10"
+        style={{
+          background: "linear-gradient(180deg, hsl(var(--surface-3) / 0.36), hsl(var(--surface-2) / 0.68))",
+        }}
+      >
         {pendingDelete ? (
           <div
             className="mx-auto mb-5 flex w-full max-w-[1280px] flex-wrap items-center gap-x-4 gap-y-2 rounded-xl px-4 py-2.5"
@@ -2192,11 +2584,13 @@ export function MeetingsView({
               downloading={downloadingAudio}
             />
 
-            {procStatus && (procStatus.running || procStatus.can_retry || procStatus.summary_failed) ? (
+            {procStatus && (procStatus.running || procStatus.can_retry || procStatus.summary_failed || procStatus.error) ? (
               <ProcessingBanner
                 status={procStatus}
                 onRetryTranscribe={handleRetranscribe}
                 onRetrySummary={handleReanalyze}
+                onCancel={handleCancelProcessing}
+                onDismiss={handleDismissProcessingBanner}
                 retrying={retranscribing || meetingAiLoading}
               />
             ) : null}
@@ -2385,7 +2779,7 @@ export function MeetingsView({
                 onSeekToSegment={seekToSegment}
                 onCopyTranscript={copyTranscript}
                 onRetranscribe={handleRetranscribe}
-                retranscribing={retranscribing}
+                retranscribing={retranscribing || Boolean(procStatus?.running)}
               />
             ) : null}
 
@@ -2438,7 +2832,7 @@ export function MeetingsView({
             <div>
               <p className="text-[14px] font-semibold text-foreground">Open a meeting note</p>
               <p className="mt-1 text-[12px] text-muted-foreground">
-                Click any meeting card to open Summary, My Notes, Transcript, Actions, and AI Chat here.
+                Click any meeting card to open Summary, My Notes, Transcript, Actions & Decisions, and AI Chat here.
               </p>
             </div>
           </div>
@@ -2483,6 +2877,74 @@ export function MeetingsView({
                   Open it
                 </button>
               ) : null}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {processingStartWarning && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-6"
+          style={{ background: "hsl(0 0% 0% / 0.55)" }}
+          onClick={() => {
+            if (!creating) setProcessingStartWarning(null);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl p-5"
+            style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle
+                size={18}
+                className="mt-0.5 flex-shrink-0"
+                style={{ color: "hsl(38 90% 72%)" }}
+              />
+              <div className="min-w-0">
+                <h3 className="text-[15px] font-bold text-foreground">Another meeting is processing</h3>
+                <p className="mt-1.5 text-[13px] leading-6 text-muted-foreground">
+                  You can record now. AirNote keeps one Whisper model loaded at a time, so RAM should not double-spike,
+                  but live transcript may arrive late while{" "}
+                  <span className="font-semibold text-foreground">{processingStartWarning.title}</span>{" "}
+                  is {processingStartWarning.queued ? "queued" : processingStageLabel(processingStartWarning.stage).toLowerCase()}.
+                </p>
+                <p className="mt-2 text-[13px] leading-6 text-muted-foreground">
+                  For smoother live transcript, pause current processing first. You can resume it later with Re-transcribe.
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setProcessingStartWarning(null)}
+                disabled={creating}
+                className="h-9 rounded-lg px-3 text-[12px] font-bold disabled:opacity-50"
+                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+              >
+                Wait
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setProcessingStartWarning(null);
+                  void startNewLocalMeeting();
+                }}
+                disabled={creating}
+                className="h-9 rounded-lg px-3 text-[12px] font-bold disabled:opacity-50"
+                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+              >
+                Start anyway
+              </button>
+              <button
+                type="button"
+                onClick={() => void handlePauseProcessingAndStart()}
+                disabled={creating}
+                className="h-9 rounded-lg px-3 text-[12px] font-bold disabled:opacity-60"
+                style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+              >
+                {creating ? "Pausing…" : "Pause processing & start"}
+              </button>
             </div>
           </div>
         </div>

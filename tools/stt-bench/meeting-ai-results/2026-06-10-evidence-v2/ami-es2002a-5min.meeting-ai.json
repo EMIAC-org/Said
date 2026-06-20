@@ -1,0 +1,63 @@
+{
+  "case": "ami-es2002a-5min",
+  "transcript_path": "tools/stt-bench/public-meetings/ami-es2002a-5min/airnote-final-sortformer.current.first5min.transcript.txt",
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "draft_latency_ms": 5461,
+  "verify_latency_ms": 3243,
+  "filtered_mom": {
+    "summary": "The meeting began with informal technical setup and introductions. Laura, the project manager, outlined the project to design a new remote control that is original, trendy, and user-friendly. The design process involves three stages of individual work followed by meetings. The team then participated in an icebreaker activity where they drew their favorite animals on a whiteboard and described their characteristics. Andrew drew a beagle and valued physical affection, personality, and good health, while Greg drew a monkey that was small, cute, and furry.",
+    "action_items": [],
+    "decisions": []
+  },
+  "raw_counts": {
+    "draft_actions": 0,
+    "draft_decisions": 0,
+    "verified_actions": 0,
+    "verified_decisions": 0,
+    "filtered_actions": 0,
+    "filtered_decisions": 0
+  },
+  "chat": [
+    {
+      "question": "What was the main topic of this meeting?",
+      "answer": "The main topic was the kickoff for a project to design a new remote control that is original, trendy, and user-friendly (Speaker 2, Laura, [01:32]–[01:58]).",
+      "latency_ms": 2127
+    },
+    {
+      "question": "What concrete decisions were explicitly made? If none, say none.",
+      "answer": "Based on the provided transcript and the meeting intelligence, no concrete decisions were explicitly made.\n\nThe meeting intelligence confirms this, listing the decisions as empty. The transcript itself covers introductions, the project brief, the design process stages, and an icebreaker activity, but no formal decisions are recorded.",
+      "latency_ms": 3212
+    },
+    {
+      "question": "List only explicit action items or follow-ups, with owners only if the transcript gives them.",
+      "answer": "The transcript does not contain any explicit action items or follow-ups.",
+      "latency_ms": 1735
+    },
+    {
+      "question": "What important unresolved questions or risks remain?",
+      "answer": "Based on the transcript, there are no unresolved questions or risks mentioned. The meeting focused on introductions, the project brief, and an icebreaker activity, without discussing any uncertainties or potential issues.",
+      "latency_ms": 2382
+    },
+    {
+      "question": "Give a PM-ready brief with problem, approach, decisions, risks, and next steps. Mark uncertainty.",
+      "answer": "**Project Brief: New Remote Control Design – Kickoff Meeting**\n\n**Problem / Objective**\nThe team is tasked with designing a new remote control that is **original, trendy, and user-friendly** (per the project brief stated by Laura at [01:49]).\n\n**Approach**\nThe design process will follow **three iterative stages**, each consisting of individual work followed by a team meeting ([02:25]). The team includes Laura (Project Manager), David (Industrial Designer), Andrew (Marketing Expert), and Greg (Digital Interface) ([01:12]–[01:27]).\n\n**Decisions**\nNo explicit decisions are captured in the meeting intelligence or transcript.\n\n**Risks & Unresolved Questions**\n- **Uncertainty:** The transcript does not clarify what specific materials or instructions the team received via email beyond the basic project announcement ([02:10]–[02:19]). Laura was unsure what the team had received ([02:06]).\n- **Uncertainty:** The detailed scope, constraints, or success criteria for “original, trendy, and user-friendly” were not discussed.\n\n**Next Steps**\n- Begin the first stage of individual design work (implied by the three-stage process outlined at [02:25]).\n- The immediate next activity in the meeting was an icebreaker (drawing favorite animals), which was completed. No further meeting actions were assigned.",
+      "latency_ms": 8456
+    }
+  ],
+  "judge": {
+    "latency_ms": 6460,
+    "result": {
+      "summary_accuracy": 9,
+      "summary_coverage": 9,
+      "action_precision": 10,
+      "decision_precision": 10,
+      "chat_grounding": 10,
+      "overall": 9,
+      "issues": [
+        "Summary mentions 'Greg drew a monkey' but transcript shows Speaker 3 (Greg) drew a monkey; the name is correct based on introductions, but the transcript does not explicitly confirm Speaker 3 is Greg during the drawing. However, the introduction sequence strongly implies it, so this is a minor note.",
+        "Chat answer for 'What important unresolved questions or risks remain?' states 'no unresolved questions or risks mentioned' which is accurate per transcript, but the PM-ready brief correctly identifies uncertainties (e.g., unclear email contents, vague scope). This is a minor inconsistency in the chat's direct answer vs. the brief, but both are grounded."
+      ]
+    }
+  }
+}

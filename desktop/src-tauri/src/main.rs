@@ -887,8 +887,23 @@ struct DeepgramSessionState(dg_stream::SessionSender);
 struct SwiftSessionState(swift_stream::SessionSender);
 
 /// Stores the most-recently polished text. Populated after every voice/text polish;
-/// cleared after it's pasted via Ctrl+Cmd+V or the `paste_latest` Tauri command.
+/// cleared after it's pasted via the global paste-latest hotkey or command.
 struct LatestResult(std::sync::Arc<Mutex<Option<String>>>);
+
+fn paste_latest_hotkey_label() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Ctrl+Cmd+V"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Ctrl+Alt+V"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        "Paste latest"
+    }
+}
 
 #[derive(Clone, Debug)]
 enum LastRepairStage {
@@ -3364,12 +3379,12 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
         }
     }
 
-    // Lock and pre-unlock the frontmost app's AX tree BEFORE recording begins.
-    // Chrome / Electron need ~150-200 ms to build their accessibility cache after
-    // AXEnhancedUserInterface / AXManualAccessibility is set.  By unlocking here
+    // Lock and pre-unlock the frontmost app's accessibility tree BEFORE
+    // recording begins. Chrome / Electron need time to build their
+    // Accessibility/UIAutomation cache after the first nudge. By unlocking here
     // we give the browser the full dictation window (typically 2-10 s) to get
-    // ready, so that post-paste edit detection can read AXValue reliably.
-    #[cfg(target_os = "macos")]
+    // ready, so that post-paste edit detection can read focused-field text.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         if !meeting_capture {
             let pid = paster::lock_frontmost_app_now();
@@ -4409,7 +4424,7 @@ async fn recover_transcribe(ep: &BackendEndpoint, wav: Vec<u8>) -> Result<api::P
 }
 
 /// Async SSE consumer: streams tokens from backend, types them word-by-word,
-/// and stores the result for Ctrl+Cmd+V re-paste.
+/// and stores the result for paste-latest re-paste.
 /// In meeting mode (`is_meeting`), skips word-by-word typing entirely.
 async fn run_voice_polish_sse(
     back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
@@ -4715,7 +4730,7 @@ async fn run_voice_polish_sse(
         }
     }
 
-    // Always store latest result so Ctrl+Cmd+V can re-paste it any time.
+    // Always store latest result so the paste-latest hotkey can re-paste it any time.
     // Divo instructions are commands, not dictation output — never store them.
     if !is_divo && !done.polished.is_empty() {
         if let Ok(mut g) = app.state::<LatestResult>().0.lock() {
@@ -4723,8 +4738,9 @@ async fn run_voice_polish_sse(
         }
         cache_last_voice_action(app, &done, LastRepairStage::None);
         tracing::debug!(
-            "[main] result stored ({} chars) — Ctrl+Cmd+V to paste again",
-            done.polished.len()
+            "[main] result stored ({} chars) — {} to paste again",
+            done.polished.len(),
+            paste_latest_hotkey_label()
         );
         // Diagnostic: log the actual polished text (capped at 240 chars for
         // privacy / log-volume reasons). This makes LLM-side regressions
@@ -4748,20 +4764,11 @@ async fn run_voice_polish_sse(
         "manual_paste"
     };
     let output_message = if is_meeting {
-        "Sent to meeting"
+        "Sent to meeting".to_string()
     } else if output_pasted {
-        "Pasted"
+        "Pasted".to_string()
     } else {
-        // The Ctrl+Cmd+V "re-paste" hotkey is only wired on macOS today;
-        // Windows users use the tray menu's "Paste latest" item instead.
-        #[cfg(target_os = "macos")]
-        {
-            "Press Ctrl+Cmd+V to paste anywhere"
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            "Use the tray menu → Paste latest"
-        }
+        format!("Press {} to paste anywhere", paste_latest_hotkey_label())
     };
     // Divo turns never produce a paste — the Divo bridge owns the HUD from here.
     if !is_divo {
@@ -4999,18 +5006,12 @@ fn finalize_repair_or_refine_output(
         "manual_paste"
     };
     let output_message = if output_pasted {
-        "Repaired"
+        "Repaired".to_string()
     } else {
-        // The Ctrl+Cmd+V "re-paste" hotkey is only wired on macOS today;
-        // Windows users use the tray menu's "Paste latest" item instead.
-        #[cfg(target_os = "macos")]
-        {
-            "Repair ready — press Ctrl+Cmd+V to paste"
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            "Repair ready — use Paste latest"
-        }
+        format!(
+            "Repair ready — press {} to paste",
+            paste_latest_hotkey_label()
+        )
     };
     let _ = app.emit(
         "voice-output",
@@ -5023,7 +5024,7 @@ fn finalize_repair_or_refine_output(
 }
 
 /// Paste the most-recently stored polished result into the focused app.
-/// Invoked by the Ctrl+Cmd+V hotkey and by the UI's "Paste latest" button.
+/// Invoked by the global paste-latest hotkey and by the UI's "Paste latest" button.
 #[tauri::command]
 fn paste_latest(latest: State<'_, LatestResult>) -> Result<bool, String> {
     let text = {
@@ -8015,6 +8016,17 @@ fn main() {
                         guard_panics("window.main_event", || {
                             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                                 api.prevent_close();
+                                // macOS can leave an empty black fullscreen Space if a
+                                // transparent/hidden webview is hidden directly from
+                                // fullscreen. First escape fullscreen; a later close can
+                                // hide the normal window.
+                                if win.is_fullscreen().unwrap_or(false) {
+                                    let _ = win.set_fullscreen(false);
+                                    let _ = win.show();
+                                    let _ = win.unminimize();
+                                    let _ = win.set_focus();
+                                    return;
+                                }
                                 let _ = win.hide();
                             }
                         });
@@ -8239,7 +8251,7 @@ fn main() {
                                         && current == Some(desktop::AppState::Recording)
                                     {
                                         tracing::info!(
-                                            "[hotkey] Fn pressed while long dictation locked → process"
+                                            "[hotkey] record key pressed while long dictation locked → process"
                                         );
                                         long_locked.store(false, Ordering::SeqCst);
                                         long_stop_consumed.store(true, Ordering::SeqCst);
@@ -8264,10 +8276,10 @@ fn main() {
                             if hotkey_meeting_mute_release.swap(false, Ordering::SeqCst) {
                                 emit_meeting_stt_status(&app_h);
                             } else if long_stop_consumed_release.swap(false, Ordering::SeqCst) {
-                                tracing::debug!("[hotkey] Fn release consumed after long dictation stop");
+                                tracing::debug!("[hotkey] record key release consumed after long dictation stop");
                             } else if long_locked_release.load(Ordering::SeqCst) {
                                 tracing::info!(
-                                    "[hotkey] Fn released while long dictation locked — keep listening"
+                                    "[hotkey] record key released while long dictation locked — keep listening"
                                 );
                             } else {
                                 // Normal AirNote route. This also applies while the
@@ -8424,7 +8436,7 @@ fn main() {
                             && !meeting_muted_long.load(Ordering::SeqCst);
                         if meeting_capture {
                             tracing::info!(
-                                "[hotkey] Fn+Space ignored — meeting capture owns Fn"
+                                "[hotkey] long dictation hotkey ignored — meeting capture owns the record key"
                             );
                             return;
                         }
@@ -8435,7 +8447,7 @@ fn main() {
                             } else if current == Some(desktop::AppState::Idle) {
                                 pending.store(true, Ordering::SeqCst);
                                 tracing::info!(
-                                    "[hotkey] Fn+Space lock pending until recording starts"
+                                    "[hotkey] long dictation lock pending until recording starts"
                                 );
                             }
                         });
@@ -8460,8 +8472,9 @@ fn main() {
                         });
                     }));
 
-                    // ── Option+1..5 tone shortcuts ─────────────────────────────
-                    // Select text in any app, press Option+N to polish with a preset tone.
+                    // ── Tone shortcuts ─────────────────────────────────────────
+                    // Select text in any app, press Option+N on macOS or Alt+N on
+                    // Windows to polish with a preset tone.
                     //
                     // IMPORTANT: the callback runs on the CGEventTap's CFRunLoop thread.
                     // We MUST NOT call read_selected_text() on that thread — its Cmd+C
@@ -8486,24 +8499,32 @@ fn main() {
                         });
                     }));
 
-                    // ── Ctrl+Cmd+V — paste latest stored result ─────────────────
+                    // ── Paste latest stored result ──────────────────────────────
                     let latest_arc = std::sync::Arc::clone(
                         &app.state::<LatestResult>().inner().0
                     );
+                    let paste_hotkey = paste_latest_hotkey_label();
                     hotkey::register_paste_callback(Arc::new(move || {
                         let text = {
                             let Ok(g) = latest_arc.lock() else { return };
                             g.clone()
                         };
                         if let Some(t) = text {
-                            tracing::info!("[paste_hotkey] Ctrl+Cmd+V → pasting {} chars", t.len());
+                            tracing::info!(
+                                "[paste_hotkey] {} → pasting {} chars",
+                                paste_hotkey,
+                                t.len()
+                            );
                             std::thread::spawn(move || {
                                 if let Err(e) = paster::paste(&t) {
                                     tracing::warn!("[paste_hotkey] paste failed: {e}");
                                 }
                             });
                         } else {
-                            tracing::info!("[paste_hotkey] Ctrl+Cmd+V pressed but nothing stored yet");
+                            tracing::info!(
+                                "[paste_hotkey] {} pressed but nothing stored yet",
+                                paste_hotkey
+                            );
                         }
                     }));
                 }
@@ -8659,6 +8680,7 @@ fn main() {
             meeting_engine::meeting_cancel_model_download,
             meeting_engine::meeting_download_whisper_model,
             meeting_engine::meeting_delete_whisper_model,
+            meeting_engine::meeting_cleanup_legacy_whisper_models,
             meeting_engine::meeting_ensure_active_model,
             meeting_engine_get_cached_artifacts,
             meeting_engine_get_cached_intelligence,
@@ -8681,6 +8703,7 @@ fn main() {
             meeting_engine_set_meeting_hidden,
             meeting_engine_set_meeting_lark_doc,
             meeting_engine_dismiss_ai_tag,
+            meeting_engine::meeting_engine_cancel_processing,
             meeting_engine_delete_meeting_files,
             meeting_engine_take_discarded_meeting_ids,
             meeting_engine_get_notes,

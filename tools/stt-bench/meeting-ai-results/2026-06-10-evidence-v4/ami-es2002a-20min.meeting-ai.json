@@ -1,0 +1,85 @@
+{
+  "case": "ami-es2002a-20min",
+  "transcript_path": "tools/stt-bench/public-meetings/ami-es2002a-20min/airnote-final-sortformer.current.first20min.transcript.txt",
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "draft_latency_ms": 8576,
+  "verify_latency_ms": 6105,
+  "filtered_mom": {
+    "summary": "Laura kicked off the project to design a new remote control, introducing herself as project manager and having David (industrial designer), Andrew (marketing), and Greg (digital interface) introduce themselves. The team did an icebreaker drawing favorite animals and discussing their characteristics. They then discussed project finances, noting the remote will sell for 25 euros with a production cost cap of 12.50 euros, and considered international market implications. The group brainstormed features like combining multiple device controls, adding new functionality (e.g., lighting, notes), a 'find me' beep, and a more streamlined chic design, while acknowledging production cost constraints. Laura wrapped up by outlining the next functional design stage and individual work assignments before the next meeting in 30 minutes.",
+    "action_items": [
+      {
+        "title": "Work on the actual design of the remote control",
+        "assignee": "David",
+        "due": null,
+        "evidence": "as the industrial designer you're going to be working on you know the actual work and design of it"
+      },
+      {
+        "title": "Work on user interface and technical functions",
+        "assignee": "Greg",
+        "due": null,
+        "evidence": "for our user interface technical functions i guess that's you know like what we've been talking about what it'll actually do"
+      },
+      {
+        "title": "Think about requirements the remote control has to fulfill",
+        "assignee": "Andrew",
+        "due": null,
+        "evidence": "and and uh more to being executive you'll be just thinking about what it actually what you know what requirements it has to has to fulfill"
+      }
+    ],
+    "decisions": []
+  },
+  "raw_counts": {
+    "draft_actions": 3,
+    "draft_decisions": 0,
+    "verified_actions": 3,
+    "verified_decisions": 0,
+    "filtered_actions": 3,
+    "filtered_decisions": 0
+  },
+  "chat": [
+    {
+      "question": "What was the main topic of this meeting?",
+      "answer": "The main topic was the kick‑off meeting for designing a new remote control, including introductions, an icebreaker, discussion of project finances and international considerations, and brainstorming features and design ideas.",
+      "latency_ms": 2820
+    },
+    {
+      "question": "What concrete decisions were explicitly made? If none, say none.",
+      "answer": "Based on the provided transcript and meeting intelligence, no concrete decisions were explicitly made. The meeting intelligence also confirms that the decisions list is empty.",
+      "latency_ms": 1945
+    },
+    {
+      "question": "List only explicit action items or follow-ups, with owners only if the transcript gives them.",
+      "answer": "Based on the transcript, the explicit action items and follow-ups with owners are:\n\n- **David** will work on the actual design of the remote control. (Laura: “as the industrial designer you're going to be working on you know the actual work and design of it”)\n- **Greg** will work on user interface and technical functions. (Laura: “for our user interface technical functions i guess that's you know like what we've been talking about what it'll actually do”)\n- **Andrew** will think about requirements the remote control has to fulfill. (Laura: “and and uh more to being executive you'll be just thinking about what it actually what you know what requirements it has to has to fulfill”)",
+      "latency_ms": 3290
+    },
+    {
+      "question": "What important unresolved questions or risks remain?",
+      "answer": "Based on the transcript, the following unresolved questions and risks are present:\n\n- **Unresolved Question – Selling Price Context:** Andrew raised whether the 25-euro selling price is wholesale or retail, and Laura was unsure (00:08:28 – 00:08:51). This remains unresolved.\n- **Unresolved Question – International Design Impact:** The team discussed whether international markets will affect the design (e.g., different characters, keypad styles, regional pricing appeal) but did not reach a conclusion (00:09:11 – 00:10:15).\n- **Unresolved Question – Feature Scope:** Andrew asked whether the remote control should include features beyond television (e.g., lighting, notes) or stay committed to TV features. Laura said it’s up to the team but did not finalize the scope (00:17:27 – 00:18:02).\n- **Risk – Production Cost Cap:** David noted that the production cost cap of 12.50 euros is a main factor limiting how many features can be included, implying a risk of feature creep versus cost constraints (00:18:04 – 00:18:16).",
+      "latency_ms": 6904
+    },
+    {
+      "question": "Give a PM-ready brief with problem, approach, decisions, risks, and next steps. Mark uncertainty.",
+      "answer": "**Project Brief – New Remote Control Design (Kick‑off)**  \n\n**Problem**  \nThe team has been tasked with designing a new remote control that is “trendy and user‑friendly,” to be sold internationally at a retail price of €25, with a production cost cap of €12.50 (50% of selling price). The product must appeal across markets and potentially address common user frustrations (e.g., losing the remote, juggling multiple remotes, clunky design).\n\n**Approach**  \n- Three‑stage design process with individual work followed by team meetings.  \n- First stage: functional design – each member works on their area (industrial design, user interface/technical functions, marketing requirements).  \n- Brainstormed features include: combining controls for multiple devices, adding new functionality (lighting, notes), a “find me” beep, and a more streamlined/chic design (e.g., touch screen).  \n- Production cost cap will constrain feature scope.\n\n**Decisions**  \nNo explicit decisions are captured in the transcript.\n\n**Risks & Uncertainties**  \n- **Uncertainty:** Whether the remote should be limited to TV features or expand beyond television (e.g., home lighting, notes) – explicitly raised but not resolved.  \n- **Uncertainty:** How the €25 price point positions the product in different international markets (e.g., premium vs. standard).  \n- **Risk:** Production cost cap (€12.50) may limit the number of features that can be included.  \n- **Uncertainty:** Lack of benchmark data on what €25 buys in the remote‑control market.\n\n**Next Steps**  \n- **David (Industrial Designer):** Work on the actual design of the remote control.  \n- **Greg (Digital Interface):** Work on user interface and technical functions.  \n- **Andrew (Marketing):** Think about requirements the remote control must fulfill.  \n- **All:** Reconvene in 30 minutes for the functional design stage meeting.",
+      "latency_ms": 10798
+    }
+  ],
+  "judge": {
+    "latency_ms": 5736,
+    "result": {
+      "summary_accuracy": 8,
+      "summary_coverage": 8,
+      "action_precision": 7,
+      "decision_precision": 10,
+      "chat_grounding": 9,
+      "overall": 8,
+      "issues": [
+        "MoM summary mentions 'Greg (digital interface)' but transcript says 'I'm Greg and I'm a digital interface' which is ambiguous; could be a role title rather than a name, but not a major error.",
+        "Action item for Andrew says 'more to being executive' which is a transcription error; the actual phrase is unclear, but the assignment is loosely supported.",
+        "Chat answer for unresolved questions correctly identifies uncertainties, but the 'risk' about production cost cap is presented as a risk rather than an explicit decision, which is accurate.",
+        "No invented decisions or owners detected; decisions list is correctly empty.",
+        "Chat answers are well-grounded in the transcript with specific timestamps and quotes."
+      ]
+    }
+  }
+}

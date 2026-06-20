@@ -52,6 +52,45 @@ pub fn is_low_surrogate(unit: u16) -> bool {
     (0xDC00..=0xDFFF).contains(&unit)
 }
 
+/// Return the single character offset where `needle` appears in `haystack`.
+/// If it is absent or appears more than once, return `None` so callers do not
+/// edit a guessed range in the user's focused field.
+pub fn find_unique_text_span_chars(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    let haystack_chars: Vec<char> = haystack.chars().collect();
+    let needle_chars: Vec<char> = needle.chars().collect();
+    if needle_chars.len() > haystack_chars.len() {
+        return None;
+    }
+
+    let mut found = None;
+    for start in 0..=haystack_chars.len() - needle_chars.len() {
+        if haystack_chars[start..start + needle_chars.len()] == needle_chars {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(start);
+        }
+    }
+    found
+}
+
+/// Windows controls can expose CRLF even when AirNote cached the logical text
+/// with LF. Try the cached text first, then the CRLF variant, deduped.
+pub fn exact_match_needles(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut needles = vec![text.to_string()];
+    let crlf = text.replace('\n', "\r\n");
+    if crlf != text {
+        needles.push(crlf);
+    }
+    needles
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +204,33 @@ mod tests {
         // direct round-trip).
         let decoded = String::from_utf16(&units).expect("valid utf-16");
         assert_eq!(decoded, s);
+    }
+
+    #[test]
+    fn unique_text_span_returns_char_offset() {
+        assert_eq!(
+            find_unique_text_span_chars("Hello नमस्ते world", "नमस्ते"),
+            Some("Hello ".chars().count())
+        );
+    }
+
+    #[test]
+    fn unique_text_span_rejects_absent_duplicate_and_overlapping_matches() {
+        assert_eq!(find_unique_text_span_chars("hello", ""), None);
+        assert_eq!(find_unique_text_span_chars("hello", "bye"), None);
+        assert_eq!(
+            find_unique_text_span_chars("same before same", "same"),
+            None
+        );
+        assert_eq!(find_unique_text_span_chars("aaaa", "aa"), None);
+    }
+
+    #[test]
+    fn exact_match_needles_adds_crlf_variant_once() {
+        assert_eq!(exact_match_needles("hello"), vec!["hello".to_string()]);
+        assert_eq!(
+            exact_match_needles("a\nb"),
+            vec!["a\nb".to_string(), "a\r\nb".to_string()]
+        );
     }
 }

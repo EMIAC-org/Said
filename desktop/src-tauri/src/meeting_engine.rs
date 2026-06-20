@@ -1,5 +1,8 @@
+use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufWriter, Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -30,10 +33,13 @@ const LIVE_TRANSCRIPT_EVENT: &str = "meeting-engine-live-transcript";
 const PHASE: &str = "system_audio_capture";
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const START_TIMEOUT: Duration = Duration::from_secs(5);
+const CAPTURE_WRITER_STOP_POLL: Duration = Duration::from_millis(100);
 const AUDIO_QUEUE_DEPTH: usize = 512;
 const LIVE_AUDIO_QUEUE_DEPTH: usize = 4096;
 const LIVE_TRANSCRIPT_STOP_TIMEOUT: Duration = Duration::from_secs(1);
-const DEFAULT_LIVE_TRANSCRIPT_CHUNK_SECS: u64 = 8;
+const DEFAULT_LIVE_WHISPER_MAX_CONTEXT_TOKENS: i32 = 224;
+const DEFAULT_LIVE_TRANSCRIPT_CONTEXT_SECS: u64 = 30;
+const DEFAULT_LIVE_TRANSCRIPT_STEP_SECS: u64 = 30;
 const DEFAULT_LIVE_TRANSCRIPT_MIN_SECS: u64 = 2;
 const DEFAULT_LIVE_TRANSCRIPT_POLL_MS: u64 = 1_000;
 const DEFAULT_LIVE_TRANSCRIPT_TIMEOUT_SECS: u64 = 90;
@@ -68,20 +74,26 @@ const MERGE_MIC_MAX_GAIN: f32 = 12.0;
 const SOURCE_ACTIVITY_FRAME_SAMPLES: u64 = SAMPLE_RATE as u64 / 10;
 const SOURCE_ACTIVITY_ABSOLUTE_FLOOR: f32 = 0.01;
 const SOURCE_ACTIVITY_RELATIVE_FLOOR: f32 = 0.08;
+const ECHO_DEDUPE_MAX_START_GAP_MS: u64 = 5_500;
+const ECHO_DEDUPE_MAX_INTERVAL_GAP_MS: u64 = 2_500;
+const ECHO_DEDUPE_MIN_TEXT_SIMILARITY: f32 = 0.62;
+const ECHO_DEDUPE_STRONG_TEXT_SIMILARITY: f32 = 0.82;
+const ECHO_DEDUPE_MIN_SYSTEM_COVERAGE: f32 = 0.45;
+const ECHO_DEDUPE_MAX_LOCAL_COVERAGE: f32 = 0.35;
+const ECHO_DEDUPE_VIDEO_MAX_LOCAL_RATIO: f32 = 0.04;
+const ECHO_DEDUPE_VIDEO_MIN_DUPLICATE_RATIO: f32 = 0.25;
+const ECHO_DEDUPE_VIDEO_MIN_SYSTEM_MS: u64 = 60_000;
+const ECHO_DEDUPE_VIDEO_MIN_SILENCE_COVERAGE: f32 = 0.60;
 const WHISPER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const DEFAULT_FINAL_ASR_CHUNK_SECS: u64 = 5 * 60;
 // Near-silent tracks (e.g. a system track with no remote participant) make
 // whisper hallucinate text like "Thank you" / "aaaa" on silence, so require a
 // small but real signal before transcribing. -44 dB is still well below even
 // whispered speech, so genuine quiet audio is kept.
 const ASR_MIN_PEAK_FOR_TRANSCRIPTION: f32 = 0.006;
-// Default to English: it's reliable for English/Hinglish meetings (the common
-// case) and stable on short live windows. "auto" mis-detects and hallucinates
-// random scripts (ja/ko/es) on near-silent mic / speaker bleed. Pure-Hindi
-// meetings should pick a language explicitly (per-meeting selector / env
-// AIRNOTE_MEETING_MIC_WHISPER_LANGUAGE=hi).
-// Meetings are Hindi/Hinglish-first, so the transcription language is fixed to
-// Hindi (the romanizer then renders Devanagari → Roman Hinglish). Power users
-// can still override per track via AIRNOTE_MEETING_(MIC|SYSTEM)_WHISPER_LANGUAGE.
+// Hindi/Hinglish-first meetings: force Hindi for both live chunks and
+// after-meeting transcription. The romanizer renders any Devanagari output into
+// Roman Hinglish after decoding.
 const DEFAULT_WHISPER_LANGUAGE: &str = "hi";
 const DEFAULT_WHISPER_MAX_CONTEXT_TOKENS: i32 = 0;
 const DEFAULT_WHISPER_SUPPRESS_NON_SPEECH: bool = true;
@@ -119,7 +131,24 @@ const DEFAULT_MEETING_CLEANUP_TIMEOUT_SECS: u64 = 90;
 const DEFAULT_MEETING_CLEANUP_MAX_TOKENS: u64 = 8192;
 const DEFAULT_MEETING_AI_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_MEETING_AI_MAX_TOKENS: u64 = 8192;
+const DEFAULT_MEETING_SPEAKER_NAMING_TIMEOUT_SECS: u64 = 45;
+const DEFAULT_MEETING_SPEAKER_NAMING_MAX_TOKENS: u64 = 768;
 const DEFAULT_FINAL_DIARIZATION_TIMEOUT_SECS: u64 = 30 * 60;
+const MEETING_FINAL_DIARIZATION_MODE_KEY: &str = "AIRNOTE_MEETING_FINAL_DIARIZATION_MODE";
+const FINAL_DIARIZATION_MODE_OFF: &str = "off";
+const FINAL_DIARIZATION_MODE_LIGHT: &str = "light";
+const FINAL_DIARIZATION_MODE_HIGH: &str = "high";
+const LIGHT_DIARIZATION_SEGMENTATION_NAME: &str = "segmentation-3.0.onnx";
+const LIGHT_DIARIZATION_EMBEDDING_NAME: &str = "wespeaker_en_voxceleb_resnet34_LM.onnx";
+const LIGHT_DIARIZATION_SEGMENTATION_URL: &str = "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx";
+const LIGHT_DIARIZATION_EMBEDDING_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx";
+const LIGHT_DIARIZATION_SEGMENTATION_BYTES: u64 = 5_992_913;
+const LIGHT_DIARIZATION_EMBEDDING_BYTES: u64 = 26_535_549;
+const LIGHT_DIARIZATION_EVENT: &str = "meeting-diarization-model-download";
+const LIGHT_DIARIZATION_PROVIDER: &str = "light_sherpa_onnx";
+const DEFAULT_LIGHT_DIARIZATION_MAX_SPEAKERS: i32 = 4;
+const DEFAULT_LIGHT_DIARIZATION_MAX_AUDIO_SECS: u64 = 15 * 60;
+const HIGH_DIARIZATION_PROVIDER: &str = "nemo_sortformer";
 const MEETING_CLEANUP_SYSTEM_PROMPT: &str = r#"You are a meeting transcript cleanup engine.
 
 Clean automatic speech recognition output into a readable meeting transcript.
@@ -133,6 +162,18 @@ Rules:
 - Remove non-speech artifacts such as bracketed silence markers.
 - Do not invent missing decisions, action items, attendees, dates, or numbers.
 - Return only the cleaned transcript text. No markdown, no commentary."#;
+const MEETING_SPEAKER_NAMING_SYSTEM_PROMPT: &str = r#"You label meeting transcript speakers.
+
+Your job:
+- Infer a human name for an existing speaker_id only when the transcript gives direct evidence.
+- Good evidence: the speaker says "this is Anish", another speaker clearly identifies them, or turn-taking makes an addressed name unambiguous.
+- Be careful: if speaker_1 says "Rahul, can you...", Rahul is usually the person being addressed, not speaker_1.
+- If evidence is weak, ambiguous, or only role-like, omit that speaker_id.
+- Do not invent names. Do not output roles like Host, User, Agent, Customer, Speaker, Participant.
+- Keep the local user's speaker_id ("you") unnamed unless the transcript clearly identifies that person.
+
+Return JSON only:
+{"speakers":[{"speaker_id":"speaker_1","name":"Rahul","evidence":"short reason"}]}"#;
 const MEETING_INTELLIGENCE_SYSTEM_PROMPT: &str = r#"You are AirNote's meeting intelligence engine.
 
 Use only the supplied transcript. Do not invent facts, attendees, dates, action items, or decisions.
@@ -282,6 +323,34 @@ pub struct MeetingEngineStatus {
     pub last_error: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct MeetingProcessingProgress {
+    pub stage: String,
+    pub current: u64,
+    pub total: u64,
+    pub label: String,
+    pub track: Option<String>,
+}
+
+impl MeetingProcessingProgress {
+    fn transcribing(current: u64, total: u64, track: MeetingAudioTrack) -> Self {
+        let total = total.max(1);
+        let current = current.clamp(1, total);
+        let label = if total > 1 {
+            format!("Transcribing {current}/{total}")
+        } else {
+            "Transcribing".to_string()
+        };
+        Self {
+            stage: "transcribing".to_string(),
+            current,
+            total,
+            label,
+            track: Some(track.source_label().to_string()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct MeetingSession {
     session_id: String,
@@ -330,6 +399,7 @@ struct MeetingTranscriptionPlan {
     summary: MicCaptureSummary,
     output_paths: TranscriptPaths,
     source_wavs: Vec<PathBuf>,
+    source_activity_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -359,6 +429,7 @@ impl Default for MeetingAudioSnapshot {
 struct TranscriptionSnapshot {
     running: bool,
     status: String,
+    progress: Option<MeetingProcessingProgress>,
     provider: Option<String>,
     model: Option<String>,
     language: Option<String>,
@@ -378,6 +449,7 @@ impl Default for TranscriptionSnapshot {
         Self {
             running: false,
             status: "idle".to_string(),
+            progress: None,
             provider: None,
             model: None,
             language: None,
@@ -512,7 +584,8 @@ struct LiveAudioChunk {
 #[derive(Clone, Debug)]
 struct LiveTranscriptConfig {
     whisper: WhisperCppConfig,
-    chunk_samples: usize,
+    context_samples: usize,
+    step_samples: usize,
     min_samples: usize,
     poll_interval: Duration,
     timeout: Duration,
@@ -521,6 +594,8 @@ struct LiveTranscriptConfig {
 struct LiveTrackBuffer {
     source: LiveAudioSource,
     base_sample: u64,
+    next_window_end_sample: u64,
+    last_emitted_sample: u64,
     samples: Vec<i16>,
 }
 
@@ -529,6 +604,8 @@ impl LiveTrackBuffer {
         Self {
             source,
             base_sample: 0,
+            next_window_end_sample: 0,
+            last_emitted_sample: 0,
             samples: Vec::new(),
         }
     }
@@ -539,28 +616,52 @@ impl LiveTrackBuffer {
 
     fn take_ready_window(
         &mut self,
-        chunk_samples: usize,
+        context_samples: usize,
+        step_samples: usize,
         min_samples: usize,
         force: bool,
     ) -> Option<LiveTranscriptWindow> {
         if self.samples.len() < min_samples {
             return None;
         }
-        if !force && self.samples.len() < chunk_samples {
+        let available = self.samples.len() as u64;
+        let current_end_sample = self.base_sample.saturating_add(available);
+        if self.next_window_end_sample == 0 {
+            self.next_window_end_sample =
+                self.base_sample.saturating_add(step_samples.max(1) as u64);
+        }
+        if !force && current_end_sample < self.next_window_end_sample {
             return None;
         }
 
-        let take = if force {
-            self.samples.len()
-        } else {
-            self.samples.len().min(chunk_samples)
-        };
-        let samples: Vec<i16> = self.samples.drain(..take).collect();
-        let start_sample = self.base_sample;
-        self.base_sample = self.base_sample.saturating_add(take as u64);
+        if force && current_end_sample <= self.last_emitted_sample {
+            return None;
+        }
+
+        let context_samples = context_samples.max(min_samples).max(1) as u64;
+        let start_sample = current_end_sample
+            .saturating_sub(context_samples)
+            .max(self.base_sample);
+        let start_index = start_sample.saturating_sub(self.base_sample) as usize;
+        let end_index = current_end_sample.saturating_sub(self.base_sample) as usize;
+        let samples = self.samples[start_index..end_index].to_vec();
+        let emit_from_sample = self.last_emitted_sample;
+        self.last_emitted_sample = current_end_sample;
+        self.next_window_end_sample = current_end_sample.saturating_add(step_samples.max(1) as u64);
+
+        let prune_before = current_end_sample
+            .saturating_sub(context_samples)
+            .max(self.base_sample);
+        let prune_count = prune_before.saturating_sub(self.base_sample) as usize;
+        if prune_count > 0 {
+            self.samples.drain(..prune_count);
+            self.base_sample = self.base_sample.saturating_add(prune_count as u64);
+        }
+
         Some(LiveTranscriptWindow {
             source: self.source,
             start_sample,
+            emit_from_sample,
             samples,
         })
     }
@@ -569,6 +670,7 @@ impl LiveTrackBuffer {
 struct LiveTranscriptWindow {
     source: LiveAudioSource,
     start_sample: u64,
+    emit_from_sample: u64,
     samples: Vec<i16>,
 }
 
@@ -754,10 +856,32 @@ struct WhisperTranscriptionDone {
     segments: Vec<RawTranscriptSegment>,
 }
 
+#[derive(Clone, Debug)]
+struct WhisperAudioChunk {
+    summary: MicCaptureSummary,
+    start_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WhisperChunkProgress {
+    track: MeetingAudioTrack,
+    current: u64,
+    total: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MeetingAudioTrack {
     Mic,
     System,
+}
+
+impl MeetingAudioTrack {
+    fn source_label(self) -> &'static str {
+        match self {
+            Self::Mic => "mic",
+            Self::System => "system",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -806,6 +930,22 @@ struct MeetingLlmCompletion {
     provider: String,
     model: String,
     latency_ms: u64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MeetingSpeakerNamingPayload {
+    #[serde(default)]
+    speakers: Vec<MeetingSpeakerNamingItem>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MeetingSpeakerNamingItem {
+    #[serde(default)]
+    speaker_id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    evidence: String,
 }
 
 #[derive(Clone, Debug)]
@@ -886,7 +1026,22 @@ struct MeetingFinalDiarizationConfig {
     timeout: Duration,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
+enum MeetingFinalDiarizationRunner {
+    LightOnnx,
+    Command(MeetingFinalDiarizationConfig),
+}
+
+impl MeetingFinalDiarizationRunner {
+    fn provider(&self) -> String {
+        match self {
+            Self::LightOnnx => LIGHT_DIARIZATION_PROVIDER.to_string(),
+            Self::Command(config) => config.provider.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct MeetingTranscriptSegment {
     source: String,
     speaker_id: String,
@@ -896,7 +1051,7 @@ struct MeetingTranscriptSegment {
     text: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct MeetingTranscriptArtifact {
     schema_version: u8,
     provider: String,
@@ -954,6 +1109,14 @@ struct MeetingDiarizationSegment {
 }
 
 #[derive(Clone, Debug)]
+struct LightDiarizationTurn {
+    speaker_key: String,
+    start_ms: u64,
+    end_ms: u64,
+    confidence: f32,
+}
+
+#[derive(Clone, Debug)]
 struct SourceActivityFrame {
     start_sample: u64,
     end_sample: u64,
@@ -961,7 +1124,7 @@ struct SourceActivityFrame {
     system_rms: f32,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct SourceActivitySegment {
     source: String,
     start_ms: u64,
@@ -970,7 +1133,7 @@ struct SourceActivitySegment {
     system_rms: f32,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct MeetingAudioArtifact {
     schema_version: u8,
     status: String,
@@ -985,6 +1148,58 @@ struct MeetingAudioArtifact {
     source_activity_segments: Vec<SourceActivitySegment>,
     generated_at_ms: u64,
     error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SegmentActivityCoverage {
+    covered_ms: u64,
+    local_mic_ms: u64,
+    system_audio_ms: u64,
+    overlap_ms: u64,
+    silence_ms: u64,
+}
+
+impl SegmentActivityCoverage {
+    fn system_active_ms(self) -> u64 {
+        self.system_audio_ms + self.overlap_ms
+    }
+
+    fn system_active_ratio(self, duration_ms: u64) -> f32 {
+        ratio_ms(self.system_active_ms(), duration_ms)
+    }
+
+    fn local_mic_ratio(self, duration_ms: u64) -> f32 {
+        ratio_ms(self.local_mic_ms, duration_ms)
+    }
+
+    fn silence_ratio(self, duration_ms: u64) -> f32 {
+        ratio_ms(self.silence_ms, duration_ms)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SourceActivitySummary {
+    local_mic_ms: u64,
+    system_audio_ms: u64,
+    overlap_ms: u64,
+}
+
+impl SourceActivitySummary {
+    fn system_active_ms(self) -> u64 {
+        self.system_audio_ms + self.overlap_ms
+    }
+
+    fn local_ratio(self) -> f32 {
+        let active_ms = self.local_mic_ms + self.system_active_ms();
+        ratio_ms(self.local_mic_ms, active_ms)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EchoMatch {
+    similarity: f32,
+    start_gap_ms: u64,
+    interval_gap_ms: u64,
 }
 
 pub struct MeetingEngineState {
@@ -1136,6 +1351,11 @@ impl MeetingEngineState {
         let system_summary = self.stop_system_capture();
         let mic_summary = self.stop_mic_capture();
         self.stop_live_transcript();
+        if self.mic.lock_recover().is_some() || self.system.lock_recover().is_some() {
+            self.active.store(true, Ordering::SeqCst);
+            self.muted.store(false, Ordering::SeqCst);
+            return self.status();
+        }
         let transcription_plan = self.prepare_transcription_source(
             session.as_ref(),
             mic_summary.clone(),
@@ -1484,7 +1704,8 @@ impl MeetingEngineState {
             Err(e) => {
                 let message = format!("timed out while stopping mic capture: {e}");
                 tracing::warn!(error = %message, "[meeting_engine] mic capture stop timed out");
-                self.set_last_error(Some(message));
+                self.set_last_error(Some(format!("{message}; stop is still pending")));
+                *self.mic.lock_recover() = Some(handle);
                 None
             }
         }
@@ -1525,6 +1746,7 @@ impl MeetingEngineState {
                 let message = format!("timed out while stopping system audio capture: {e}");
                 tracing::warn!(error = %message, "[meeting_engine] system audio capture stop timed out");
                 *self.system_error.lock_recover() = Some(message);
+                *self.system.lock_recover() = Some(handle);
                 None
             }
         }
@@ -1550,6 +1772,7 @@ impl MeetingEngineState {
             source_wavs: vec![mic_summary.path.clone()],
             mic: mic_summary,
             system: None,
+            source_activity_path: None,
         };
 
         let Some(session) = session else {
@@ -1567,6 +1790,7 @@ impl MeetingEngineState {
             source_wavs: vec![mic_summary.path.clone()],
             mic: mic_summary,
             system: None,
+            source_activity_path: None,
         };
 
         let Some(system_summary) = system_summary else {
@@ -1614,6 +1838,7 @@ impl MeetingEngineState {
                     summary: merged.summary,
                     output_paths,
                     source_wavs,
+                    source_activity_path: Some(merged.source_activity_path),
                 })
             }
             Err(e) => {
@@ -1676,19 +1901,35 @@ impl MeetingEngineState {
     /// is picked up next launch by `requeue_interrupted_meetings`. Bounded by the
     /// capture stop timeout so it can't hang exit.
     pub fn shutdown(&self) {
-        self.jobs.shutdown.store(true, Ordering::SeqCst);
-        self.jobs.cvar.notify_all();
+        self.jobs.request_shutdown();
         if self.active.load(Ordering::SeqCst) {
             tracing::info!("[meeting_engine] finalizing active recording on shutdown");
             let _ = self.stop();
         }
+        let interrupted = self.jobs.drain_for_shutdown();
+        for meeting_id in &interrupted {
+            mark_meeting_interrupted_for_recovery(
+                meeting_id,
+                "processing interrupted because AirNote closed; it will resume on next launch",
+            );
+        }
+        if !interrupted.is_empty() {
+            tracing::warn!(
+                count = interrupted.len(),
+                "[meeting_engine] marked interrupted processing jobs for startup recovery"
+            );
+        }
+        if !self.jobs.wait_until_idle(Duration::from_secs(3)) {
+            tracing::warn!(
+                "[meeting_engine] shutdown timed out waiting for active processing to stop; startup recovery will resume it"
+            );
+        }
     }
 
     /// Startup recovery: re-enqueue meetings that were interrupted mid-pipeline
-    /// (non-terminal phase, audio on disk, no usable transcript yet) so a crash
-    /// or force-quit during transcription self-heals on next launch. `failed`
-    /// meetings are left for the user's explicit Retry. Summary generation stays
-    /// lazy (on open), so meetings that already have a transcript are skipped.
+    /// (non-terminal phase with audio or a saved transcript) so a crash or
+    /// force-quit during transcription/finalization self-heals on next launch.
+    /// `failed` meetings are left for the user's explicit Retry.
     pub fn requeue_interrupted_meetings(&self) {
         let root = said_core::paths::data_dir().join("meetings");
         let Ok(entries) = fs::read_dir(&root) else {
@@ -1703,20 +1944,23 @@ impl MeetingEngineState {
             let phase = read_meeting_state(&dir).map(|state| state.phase);
             if matches!(
                 phase.as_deref(),
-                Some(MEETING_PHASE_TRANSCRIBED | MEETING_PHASE_SUMMARIZED | MEETING_PHASE_FAILED)
+                Some(
+                    MEETING_PHASE_TRANSCRIBED
+                        | MEETING_PHASE_SUMMARIZED
+                        | MEETING_PHASE_FAILED
+                        | MEETING_PHASE_CANCELLED,
+                )
             ) {
                 continue;
             }
-            if meeting_has_usable_transcript(&dir) {
-                continue;
-            }
+            let has_transcript = meeting_has_usable_transcript(&dir);
             // Only the tracks build_retranscribe_plan can actually use — mic or
             // the merged mixdown. A system-only or audio-less orphan dir can't be
             // re-transcribed, so skip it silently instead of log-spamming a "no
             // audio" error every launch (the storage GC reclaims those dirs).
             let has_retranscribable_audio =
                 dir.join("mic.wav").is_file() || dir.join("meeting.merged.wav").is_file();
-            if !has_retranscribable_audio {
+            if !has_transcript && !has_retranscribable_audio {
                 continue;
             }
             match build_retranscribe_plan(&dir) {
@@ -1803,6 +2047,7 @@ struct MeetingJob {
 struct MeetingJobQueueInner {
     pending: std::collections::VecDeque<MeetingJob>,
     in_flight: Option<String>,
+    cancelled: std::collections::HashSet<String>,
     worker_started: bool,
 }
 
@@ -1840,10 +2085,63 @@ impl MeetingJobQueue {
         if inner.pending.iter().any(|j| j.meeting_id == job.meeting_id) {
             return EnqueueOutcome::AlreadyQueued;
         }
+        inner.cancelled.remove(&job.meeting_id);
         inner.pending.push_back(job);
         drop(inner);
         self.cvar.notify_one();
         EnqueueOutcome::Enqueued
+    }
+
+    fn request_shutdown(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        self.cvar.notify_all();
+    }
+
+    fn is_shutting_down(&self) -> bool {
+        self.shutdown.load(Ordering::SeqCst)
+    }
+
+    /// Convert volatile in-memory queue state into durable on-disk recovery
+    /// intent. Pending jobs live only in RAM, so drain them and let startup scan
+    /// the meeting folders again. The in-flight job stays visible long enough
+    /// for its cancel check to kill the active child process.
+    fn drain_for_shutdown(&self) -> Vec<String> {
+        self.request_shutdown();
+        let mut inner = self.lock();
+        let mut interrupted = Vec::new();
+        if let Some(id) = inner.in_flight.clone() {
+            interrupted.push(id);
+        }
+        while let Some(job) = inner.pending.pop_front() {
+            interrupted.push(job.meeting_id);
+        }
+        interrupted.sort();
+        interrupted.dedup();
+        drop(inner);
+        self.cvar.notify_all();
+        interrupted
+    }
+
+    fn wait_until_idle(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut inner = self.lock();
+        loop {
+            if inner.in_flight.is_none() {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let remaining = deadline
+                .saturating_duration_since(now)
+                .min(Duration::from_millis(100));
+            let (guard, _) = self
+                .cvar
+                .wait_timeout(inner, remaining)
+                .unwrap_or_else(|poison| poison.into_inner());
+            inner = guard;
+        }
     }
 
     /// True if a meeting is currently queued or being processed.
@@ -1851,6 +2149,28 @@ impl MeetingJobQueue {
         let inner = self.lock();
         inner.in_flight.as_deref() == Some(meeting_id)
             || inner.pending.iter().any(|j| j.meeting_id == meeting_id)
+    }
+
+    fn cancel(&self, meeting_id: &str) -> bool {
+        let mut inner = self.lock();
+        let before = inner.pending.len();
+        inner.pending.retain(|job| job.meeting_id != meeting_id);
+        let removed_pending = before != inner.pending.len();
+        let in_flight = inner.in_flight.as_deref() == Some(meeting_id);
+        if in_flight {
+            inner.cancelled.insert(meeting_id.to_string());
+        }
+        drop(inner);
+        self.cvar.notify_all();
+        removed_pending || in_flight
+    }
+
+    fn is_cancelled(&self, meeting_id: &str) -> bool {
+        self.lock().cancelled.contains(meeting_id)
+    }
+
+    fn clear_cancelled(&self, meeting_id: &str) {
+        self.lock().cancelled.remove(meeting_id);
     }
 }
 
@@ -1867,6 +2187,7 @@ fn meeting_id_from_transcript_paths(paths: &TranscriptPaths) -> String {
 #[derive(Debug)]
 enum JobOutcome {
     Done,
+    Cancelled(String),
     Retry(String),
     Terminal(String),
 }
@@ -1879,6 +2200,9 @@ fn classify_meeting_job_error(message: &str) -> JobOutcome {
     // Transient classes are checked first so a message that happens to contain
     // a terminal-ish word but is really a rate-limit / network / disk blip still
     // retries instead of permanently failing the meeting.
+    if m.contains("whisper.cpp timed out") {
+        return JobOutcome::Terminal(message.to_string());
+    }
     let transient = m.contains("rate-limit")
         || m.contains("rate limit")
         || m.contains("429")
@@ -1971,7 +2295,13 @@ fn meeting_job_worker_loop(
         // worker (which would silently stop ALL future transcription). Caught
         // panics are terminal — retrying a panicking job would just loop.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_transcription_job(&job.plan, &transcription, is_last_attempt)
+            run_transcription_job(
+                &job.meeting_id,
+                &job.plan,
+                &transcription,
+                is_last_attempt,
+                &jobs,
+            )
         }))
         .unwrap_or_else(|_| {
             tracing::error!(
@@ -1983,22 +2313,47 @@ fn meeting_job_worker_loop(
 
         let mut inner = jobs.lock();
         inner.in_flight = None;
-        if let JobOutcome::Retry(msg) = outcome {
-            let backoff =
-                (MEETING_JOB_BACKOFF_BASE_MS << job.attempt).min(MEETING_JOB_BACKOFF_MAX_MS);
-            tracing::warn!(
-                meeting_id = %job.meeting_id,
-                attempt = job.attempt + 1,
-                backoff_ms = backoff,
-                error = %msg,
-                "[meeting_engine] transcription job failed; scheduling retry"
-            );
-            inner.pending.push_back(MeetingJob {
-                meeting_id: job.meeting_id,
-                plan: job.plan,
-                attempt: job.attempt + 1,
-                not_before_ms: now_ms() + backoff,
-            });
+        match outcome {
+            JobOutcome::Retry(msg) => {
+                if jobs.shutdown.load(Ordering::SeqCst) {
+                    tracing::info!(
+                        meeting_id = %job.meeting_id,
+                        "[meeting_engine] transcription retry suppressed because app is shutting down"
+                    );
+                } else if inner.cancelled.remove(&job.meeting_id) {
+                    tracing::info!(
+                        meeting_id = %job.meeting_id,
+                        "[meeting_engine] transcription retry suppressed because job was cancelled"
+                    );
+                } else {
+                    let backoff = (MEETING_JOB_BACKOFF_BASE_MS << job.attempt)
+                        .min(MEETING_JOB_BACKOFF_MAX_MS);
+                    tracing::warn!(
+                        meeting_id = %job.meeting_id,
+                        attempt = job.attempt + 1,
+                        backoff_ms = backoff,
+                        error = %msg,
+                        "[meeting_engine] transcription job failed; scheduling retry"
+                    );
+                    inner.pending.push_back(MeetingJob {
+                        meeting_id: job.meeting_id,
+                        plan: job.plan,
+                        attempt: job.attempt + 1,
+                        not_before_ms: now_ms() + backoff,
+                    });
+                }
+            }
+            JobOutcome::Cancelled(reason) => {
+                inner.cancelled.remove(&job.meeting_id);
+                tracing::info!(
+                    meeting_id = %job.meeting_id,
+                    reason = %reason,
+                    "[meeting_engine] transcription job cancelled"
+                );
+            }
+            JobOutcome::Done | JobOutcome::Terminal(_) => {
+                inner.cancelled.remove(&job.meeting_id);
+            }
         }
         drop(inner);
         jobs.cvar.notify_one();
@@ -2011,12 +2366,22 @@ fn meeting_job_worker_loop(
 /// with attempts remaining it leaves the on-disk phase as "transcribing" and
 /// signals Retry.
 fn run_transcription_job(
+    meeting_id: &str,
     plan: &MeetingTranscriptionPlan,
     transcription_state: &Arc<Mutex<TranscriptionSnapshot>>,
     is_last_attempt: bool,
+    jobs: &Arc<MeetingJobQueue>,
 ) -> JobOutcome {
     let transcript_paths = plan.output_paths.clone();
     let job_artifact_dir = transcript_paths.text.parent().map(Path::to_path_buf);
+    if let Some(outcome) =
+        cancelled_or_deleted_job_outcome(meeting_id, jobs, job_artifact_dir.as_deref())
+    {
+        return outcome;
+    }
+    let resume_existing_transcript = job_artifact_dir
+        .as_deref()
+        .is_some_and(should_resume_incomplete_transcript);
     if let Some(dir) = job_artifact_dir.as_deref() {
         write_meeting_state(dir, MEETING_PHASE_TRANSCRIBING, None);
     }
@@ -2036,6 +2401,22 @@ fn run_transcription_job(
         transcription.error = None;
         transcription.running = true;
         transcription.status = "running".to_string();
+        transcription.progress = None;
+    }
+
+    if resume_existing_transcript {
+        if let Some(dir) = job_artifact_dir.as_deref() {
+            if let Some(outcome) = cancelled_or_deleted_job_outcome(meeting_id, jobs, Some(dir)) {
+                return outcome;
+            }
+            match resume_completed_transcript_job(plan, transcription_state, &transcript_paths, dir)
+            {
+                Ok(outcome) => return outcome,
+                Err(e) => {
+                    tracing::warn!(error = %e, dir = %dir.display(), "[meeting_engine] saved transcript resume failed; re-running transcription");
+                }
+            }
+        }
     }
 
     // Empty audio → terminal skip (re-running won't help).
@@ -2052,6 +2433,7 @@ fn run_transcription_job(
             let mut transcription = transcription_state.lock_recover();
             transcription.running = false;
             transcription.status = "skipped_empty_audio".to_string();
+            transcription.progress = None;
             transcription.cleanup = cleanup.clone();
             transcription.final_diarization = MeetingFinalDiarizationSnapshot::skipped(
                 "skipped_no_transcript",
@@ -2088,6 +2470,7 @@ fn run_transcription_job(
                 let mut transcription = transcription_state.lock_recover();
                 transcription.running = false;
                 transcription.status = "skipped_missing_whisper".to_string();
+                transcription.progress = None;
                 transcription.cleanup = cleanup.clone();
                 transcription.final_diarization = MeetingFinalDiarizationSnapshot::skipped(
                     "skipped_no_transcript",
@@ -2120,8 +2503,36 @@ fn run_transcription_job(
         transcription.model = Some(config.model.to_string_lossy().to_string());
     }
 
-    match transcribe_meeting_plan(plan, &config) {
+    if let Some(outcome) =
+        cancelled_or_deleted_job_outcome(meeting_id, jobs, job_artifact_dir.as_deref())
+    {
+        return outcome;
+    }
+
+    let cancel_requested = || {
+        jobs.is_shutting_down()
+            || jobs.is_cancelled(meeting_id)
+            || job_artifact_dir.as_deref().is_some_and(|dir| !dir.exists())
+    };
+    let report_progress = |progress: MeetingProcessingProgress| {
+        let mut transcription = transcription_state.lock_recover();
+        if transcription.running && transcription.status == "running" {
+            transcription.progress = Some(progress);
+        }
+    };
+
+    match transcribe_meeting_plan(
+        plan,
+        &config,
+        Some(&cancel_requested),
+        Some(&report_progress),
+    ) {
         Ok(mut done) => {
+            if let Some(outcome) =
+                cancelled_or_deleted_job_outcome(meeting_id, jobs, job_artifact_dir.as_deref())
+            {
+                return outcome;
+            }
             let cleanup_config = meeting_cleanup_config();
             let cleanup_provider = cleanup_config
                 .as_ref()
@@ -2134,6 +2545,7 @@ fn run_transcription_job(
             {
                 let mut transcription = transcription_state.lock_recover();
                 transcription.status = "cleaning".to_string();
+                transcription.progress = None;
                 transcription.latency_ms = Some(done.latency_ms);
                 transcription.text = Some(done.transcript.clone());
                 transcription.cleaned_text = None;
@@ -2148,7 +2560,7 @@ fn run_transcription_job(
             let cleanup_started = Instant::now();
             let cleanup_result = cleanup_config
                 .and_then(|config| cleanup_meeting_transcript_with_llm(&done.transcript, config));
-            let (cleaned_transcript, cleanup) = match cleanup_result {
+            let (mut cleaned_transcript, cleanup) = match cleanup_result {
                 Ok(result) => (
                     Some(result.transcript.clone()),
                     MeetingCleanupSnapshot::completed(&result),
@@ -2185,13 +2597,34 @@ fn run_transcription_job(
                         "[meeting_engine] transliterated transcript to Hinglish via Groq"
                     );
                 }
-                done.transcript = done
-                    .segments
-                    .iter()
-                    .map(|s| s.text.trim())
-                    .filter(|t| !t.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                done.transcript = format_meeting_timeline_transcript(&done.segments);
+            }
+
+            match name_meeting_speakers_with_ai(&mut done.segments, cleaned_transcript.as_deref()) {
+                Ok(replacements) => {
+                    if !replacements.is_empty() {
+                        if let Some(text) = cleaned_transcript.as_mut() {
+                            *text = rewrite_speaker_labels_in_text(text, &replacements);
+                        }
+                        done.transcript = format_meeting_timeline_transcript(&done.segments);
+                        tracing::info!(
+                            count = replacements.len(),
+                            "[meeting_engine] inferred meeting speaker names from transcript context"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "[meeting_engine] speaker naming skipped; keeping generic labels"
+                    );
+                }
+            }
+
+            if let Some(outcome) =
+                cancelled_or_deleted_job_outcome(meeting_id, jobs, job_artifact_dir.as_deref())
+            {
+                return outcome;
             }
 
             write_transcript_artifact(
@@ -2209,81 +2642,26 @@ fn run_transcription_job(
                 None,
             );
 
-            let final_diarization = run_final_diarization_stage(
+            finish_transcribed_meeting(
                 transcription_state,
                 &transcript_paths,
                 &done.summary.path,
-            );
-            let final_transcript_text = load_final_transcript_text(&final_diarization)
-                .ok()
-                .flatten();
-
-            // Capture the best transcript text for the summary stage before the
-            // originals are moved into the snapshot below.
-            let (summary_source, summary_text) = if let Some(text) = &final_transcript_text {
-                ("final".to_string(), text.clone())
-            } else if let Some(text) = &cleaned_transcript {
-                ("cleaned".to_string(), text.clone())
-            } else {
-                ("raw".to_string(), done.transcript.clone())
-            };
-
-            {
-                let mut transcription = transcription_state.lock_recover();
-                transcription.running = false;
-                transcription.status = "completed".to_string();
-                transcription.latency_ms = Some(done.latency_ms);
-                transcription.text = Some(done.transcript);
-                transcription.cleaned_text = cleaned_transcript;
-                transcription.final_text = final_transcript_text;
-                transcription.cleanup = cleanup;
-                transcription.final_diarization = final_diarization;
-                transcription.error = None;
-            }
-            // Checkpoint: transcript + diarization are on disk.
-            if let Some(dir) = job_artifact_dir.as_deref() {
-                write_meeting_state(dir, MEETING_PHASE_TRANSCRIBED, None);
-                // The transcript is durable now — reclaim the disposable
-                // intermediates (live/ windows + *.asr.wav copies), the bulk of
-                // a meeting's footprint.
-                prune_meeting_intermediates(dir);
-
-                // Final stage: generate the meeting summary so the after-meeting
-                // flow is complete and robust — NOT a separate manual click.
-                // run_meeting_intelligence's LLM call already retries transient
-                // failures; on a terminal failure we record it in meeting state
-                // (phase stays "transcribed" + a "summary failed" error) so the UI
-                // surfaces it and offers Retry, instead of silently stopping. On
-                // success write_meeting_intelligence_cache marks the meeting
-                // "summarized".
-                if env_bool("AIRNOTE_MEETING_AUTO_SUMMARY", true) && !summary_text.trim().is_empty()
-                {
-                    if let Ok(mut t) = transcription_state.lock() {
-                        t.status = "summarizing".to_string();
-                    }
-                    let selected = MeetingAiTranscript {
-                        source: summary_source,
-                        text: summary_text,
-                    };
-                    match run_meeting_intelligence(selected, Some(dir.to_path_buf())) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!(error = %e, dir = %dir.display(), "[meeting_engine] meeting summary generation failed");
-                            write_meeting_state(
-                                dir,
-                                MEETING_PHASE_TRANSCRIBED,
-                                Some(format!("summary failed: {e}")),
-                            );
-                        }
-                    }
-                    if let Ok(mut t) = transcription_state.lock() {
-                        t.status = "completed".to_string();
-                    }
-                }
-            }
-            JobOutcome::Done
+                job_artifact_dir.as_deref(),
+                done.transcript,
+                cleaned_transcript,
+                cleanup,
+                Some(done.latency_ms),
+            )
         }
         Err(e) => {
+            if is_cancelled_subprocess_error(&e) {
+                if let Some(outcome) =
+                    cancelled_or_deleted_job_outcome(meeting_id, jobs, job_artifact_dir.as_deref())
+                {
+                    return outcome;
+                }
+                return JobOutcome::Cancelled(e);
+            }
             tracing::warn!(error = %e, "[meeting_engine] whisper.cpp transcription failed");
             let terminal = matches!(classify_meeting_job_error(&e), JobOutcome::Terminal(_))
                 || is_last_attempt;
@@ -2312,6 +2690,7 @@ fn run_transcription_job(
                 let mut transcription = transcription_state.lock_recover();
                 transcription.running = false;
                 transcription.status = "failed".to_string();
+                transcription.progress = None;
                 transcription.cleanup =
                     MeetingCleanupSnapshot::skipped("skipped_no_transcript", e.clone());
                 transcription.final_diarization = MeetingFinalDiarizationSnapshot::skipped(
@@ -2324,6 +2703,211 @@ fn run_transcription_job(
             JobOutcome::Terminal(e)
         }
     }
+}
+
+fn cancelled_or_deleted_job_outcome(
+    meeting_id: &str,
+    jobs: &MeetingJobQueue,
+    artifact_dir: Option<&Path>,
+) -> Option<JobOutcome> {
+    if jobs.is_cancelled(meeting_id) {
+        if let Some(dir) = artifact_dir.filter(|dir| dir.is_dir()) {
+            write_meeting_state(
+                dir,
+                MEETING_PHASE_CANCELLED,
+                Some("processing cancelled by user".to_string()),
+            );
+        }
+        return Some(JobOutcome::Cancelled(
+            "processing cancelled by user".to_string(),
+        ));
+    }
+    if artifact_dir.is_some_and(|dir| !dir.exists()) {
+        return Some(JobOutcome::Cancelled(
+            "meeting files were deleted during processing".to_string(),
+        ));
+    }
+    None
+}
+
+fn mark_meeting_interrupted_for_recovery(meeting_id: &str, reason: &str) {
+    let Ok(dir) = meeting_dir_for_id(meeting_id) else {
+        return;
+    };
+    if !dir.is_dir() {
+        return;
+    }
+    if read_meeting_state(&dir).is_some_and(|state| {
+        matches!(
+            state.phase.as_str(),
+            MEETING_PHASE_TRANSCRIBED
+                | MEETING_PHASE_SUMMARIZED
+                | MEETING_PHASE_FAILED
+                | MEETING_PHASE_CANCELLED
+        )
+    }) {
+        return;
+    }
+    write_meeting_state(&dir, MEETING_PHASE_TRANSCRIBING, Some(reason.to_string()));
+}
+
+fn should_resume_incomplete_transcript(dir: &Path) -> bool {
+    let Some(state) = read_meeting_state(dir) else {
+        return false;
+    };
+    if matches!(
+        state.phase.as_str(),
+        MEETING_PHASE_TRANSCRIBED
+            | MEETING_PHASE_SUMMARIZED
+            | MEETING_PHASE_FAILED
+            | MEETING_PHASE_CANCELLED
+    ) {
+        return false;
+    }
+    meeting_has_usable_transcript(dir)
+}
+
+fn resume_completed_transcript_job(
+    plan: &MeetingTranscriptionPlan,
+    transcription_state: &Arc<Mutex<TranscriptionSnapshot>>,
+    transcript_paths: &TranscriptPaths,
+    artifact_dir: &Path,
+) -> Result<JobOutcome, String> {
+    let artifact = read_meeting_transcript_artifact(&transcript_paths.json)?;
+    if artifact.status != "completed" || artifact.transcript.trim().is_empty() {
+        return Err("saved transcript artifact is not completed".to_string());
+    }
+
+    let cleanup = MeetingCleanupSnapshot {
+        status: artifact.cleanup_status.clone(),
+        provider: artifact.cleanup_provider.clone(),
+        model: artifact.cleanup_model.clone(),
+        latency_ms: artifact.cleanup_latency_ms,
+        error: artifact.cleanup_error.clone(),
+    };
+
+    {
+        let mut transcription = transcription_state
+            .lock()
+            .expect("meeting engine lock poisoned");
+        transcription.language = artifact.language.clone();
+        transcription.provider = Some(artifact.provider.clone());
+        transcription.model = artifact.model.clone();
+        transcription.latency_ms = artifact.latency_ms;
+        transcription.text = Some(artifact.transcript.clone());
+        transcription.cleaned_text = artifact.cleaned_transcript.clone();
+        transcription.final_text = None;
+        transcription.cleanup = cleanup.clone();
+        transcription.final_diarization = MeetingFinalDiarizationSnapshot::idle();
+        transcription.error = None;
+        transcription.running = true;
+        transcription.status = "resuming".to_string();
+        transcription.progress = None;
+    }
+
+    tracing::info!(
+        dir = %artifact_dir.display(),
+        "[meeting_engine] resuming meeting pipeline from saved transcript artifact"
+    );
+
+    Ok(finish_transcribed_meeting(
+        transcription_state,
+        transcript_paths,
+        &plan.summary.path,
+        Some(artifact_dir),
+        artifact.transcript,
+        artifact.cleaned_transcript,
+        cleanup,
+        artifact.latency_ms,
+    ))
+}
+
+fn finish_transcribed_meeting(
+    transcription_state: &Arc<Mutex<TranscriptionSnapshot>>,
+    _transcript_paths: &TranscriptPaths,
+    _audio_path: &Path,
+    artifact_dir: Option<&Path>,
+    raw_transcript: String,
+    cleaned_transcript: Option<String>,
+    cleanup: MeetingCleanupSnapshot,
+    latency_ms: Option<u64>,
+) -> JobOutcome {
+    let final_diarization = MeetingFinalDiarizationSnapshot::idle();
+    let final_transcript_text = None;
+
+    // Capture the best transcript text for the summary stage before the
+    // originals are moved into the snapshot below.
+    let (summary_source, summary_text) = if let Some(text) = &cleaned_transcript {
+        ("cleaned".to_string(), text.clone())
+    } else {
+        ("raw".to_string(), raw_transcript.clone())
+    };
+
+    {
+        let mut transcription = transcription_state
+            .lock()
+            .expect("meeting engine lock poisoned");
+        transcription.running = false;
+        transcription.status = "completed".to_string();
+        transcription.progress = None;
+        transcription.latency_ms = latency_ms;
+        transcription.text = Some(raw_transcript);
+        transcription.cleaned_text = cleaned_transcript;
+        transcription.final_text = final_transcript_text;
+        transcription.cleanup = cleanup;
+        transcription.final_diarization = final_diarization;
+        transcription.error = None;
+    }
+
+    // Checkpoint: transcript + finalization are on disk.
+    if let Some(dir) = artifact_dir {
+        if dir.join("meeting.ai.json").is_file() {
+            write_meeting_state(dir, MEETING_PHASE_SUMMARIZED, None);
+            prune_meeting_intermediates(dir);
+            return JobOutcome::Done;
+        }
+
+        write_meeting_state(dir, MEETING_PHASE_TRANSCRIBED, None);
+        // The transcript is durable now — reclaim the disposable intermediates
+        // (live/ windows + *.asr.wav copies/chunks), the bulk of a meeting's
+        // footprint.
+        prune_meeting_intermediates(dir);
+
+        // Final stage: generate the meeting summary so the after-meeting flow is
+        // complete and robust — NOT a separate manual click.
+        // run_meeting_intelligence's LLM call already retries transient
+        // failures; on a terminal failure we record it in meeting state (phase
+        // stays "transcribed" + a "summary failed" error) so the UI surfaces it
+        // and offers Retry, instead of silently stopping. On success
+        // write_meeting_intelligence_cache marks the meeting "summarized".
+        if env_bool("AIRNOTE_MEETING_AUTO_SUMMARY", true) && !summary_text.trim().is_empty() {
+            if let Ok(mut t) = transcription_state.lock() {
+                t.status = "summarizing".to_string();
+                t.progress = None;
+            }
+            let selected = MeetingAiTranscript {
+                source: summary_source,
+                text: summary_text,
+            };
+            match run_meeting_intelligence(selected, Some(dir.to_path_buf())) {
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, dir = %dir.display(), "[meeting_engine] meeting summary generation failed");
+                    write_meeting_state(
+                        dir,
+                        MEETING_PHASE_TRANSCRIBED,
+                        Some(format!("summary failed: {e}")),
+                    );
+                }
+            }
+            if let Ok(mut t) = transcription_state.lock() {
+                t.status = "completed".to_string();
+                t.progress = None;
+            }
+        }
+    }
+
+    JobOutcome::Done
 }
 
 #[tauri::command]
@@ -2901,12 +3485,37 @@ pub fn meeting_engine_dismiss_ai_tag(meeting_id: String, tag: String) -> Result<
 /// summary, tags). Keeps it hidden in the registry so it stays out of the list.
 /// The server record is untouched (no server delete endpoint).
 #[tauri::command]
-pub fn meeting_engine_delete_meeting_files(meeting_id: String) -> Result<(), String> {
+pub fn meeting_engine_delete_meeting_files(
+    state: State<'_, MeetingEngineState>,
+    meeting_id: String,
+) -> Result<(), String> {
     let dir = meeting_dir_for_id(&meeting_id)?;
+    state.jobs.cancel(&meeting_id);
     if dir.is_dir() {
         fs::remove_dir_all(&dir).map_err(|e| format!("failed to delete meeting files: {e}"))?;
     }
     update_meeting_override(&meeting_id, |o| o.hidden = true)
+}
+
+#[tauri::command]
+pub fn meeting_engine_cancel_processing(
+    state: State<'_, MeetingEngineState>,
+    meeting_id: String,
+) -> Result<(), String> {
+    let dir = meeting_dir_for_id(&meeting_id)?;
+    let cancelled = state.jobs.cancel(&meeting_id);
+    if dir.is_dir() {
+        write_meeting_state(
+            &dir,
+            MEETING_PHASE_CANCELLED,
+            Some("processing cancelled by user".to_string()),
+        );
+    }
+    if cancelled || dir.is_dir() {
+        Ok(())
+    } else {
+        Err("This meeting is not being processed.".to_string())
+    }
 }
 
 /// User-added tags for a meeting, stored locally beside its artifacts and kept
@@ -3079,7 +3688,7 @@ pub fn meeting_engine_set_manual_actions(
     write_atomic(path, bytes).map_err(|e| format!("failed to write manual actions: {e}"))
 }
 
-/// Re-run transcription (whisper → cleanup → diarization) on a meeting's saved
+/// Re-run transcription (whisper → cleanup → summary) on a meeting's saved
 /// audio using the current language/model settings. Salvages recordings whose
 /// transcript was produced with the wrong language. Runs as the standard
 /// background transcription job; the frontend polls `meeting_engine_get_status`
@@ -3374,7 +3983,7 @@ fn start_mic_capture(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn start_system_capture(
     path: PathBuf,
     muted: Arc<AtomicBool>,
@@ -3411,13 +4020,13 @@ fn start_system_capture(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn start_system_capture(
     _path: PathBuf,
     _muted: Arc<AtomicBool>,
     _live_audio_tx: Option<mpsc::SyncSender<LiveAudioChunk>>,
 ) -> Result<SystemCaptureHandle, String> {
-    Err("system audio capture is only available on macOS in this phase".to_string())
+    Err("system audio capture is only available on macOS and Windows in this phase".to_string())
 }
 
 fn run_mic_capture(
@@ -3457,6 +4066,7 @@ fn run_mic_capture(
     );
     let (audio_tx, audio_rx) = mpsc::sync_channel::<Vec<i16>>(AUDIO_QUEUE_DEPTH);
     let dropped_chunks = Arc::new(AtomicU64::new(0));
+    let writer_stop = Arc::new(AtomicBool::new(false));
     let writer =
         create_audio_wav_writer(&path, "mic").map_err(|e| report_ready_error(&ready_tx, e))?;
 
@@ -3545,6 +4155,7 @@ fn run_mic_capture(
 
     let writer_path = path.clone();
     let writer_dropped_chunks = Arc::clone(&dropped_chunks);
+    let writer_stop_flag = Arc::clone(&writer_stop);
     let writer_join = thread::Builder::new()
         .name("meeting-mic-writer".to_string())
         .spawn(move || {
@@ -3555,6 +4166,7 @@ fn run_mic_capture(
                 native_rate,
                 writer_dropped_chunks,
                 "mic",
+                writer_stop_flag,
             )
         })
         .map_err(|e| {
@@ -3571,6 +4183,7 @@ fn run_mic_capture(
 
     let _ = ready_tx.send(Ok(()));
     let _ = stop_rx.recv();
+    writer_stop.store(true, Ordering::SeqCst);
     drop(stream);
     drop(audio_tx);
 
@@ -3624,10 +4237,12 @@ fn run_system_audio_capture(
 
     let (audio_tx, audio_rx) = mpsc::sync_channel::<Vec<i16>>(AUDIO_QUEUE_DEPTH);
     let dropped_chunks = Arc::new(AtomicU64::new(0));
+    let writer_stop = Arc::new(AtomicBool::new(false));
     let writer =
         create_audio_wav_writer(&path, "system").map_err(|e| report_ready_error(&ready_tx, e))?;
     let writer_path = path.clone();
     let writer_dropped_chunks = Arc::clone(&dropped_chunks);
+    let writer_stop_flag = Arc::clone(&writer_stop);
     let writer_join = thread::Builder::new()
         .name("meeting-system-audio-writer".to_string())
         .spawn(move || {
@@ -3638,6 +4253,7 @@ fn run_system_audio_capture(
                 SAMPLE_RATE,
                 writer_dropped_chunks,
                 "system",
+                writer_stop_flag,
             )
         })
         .map_err(|e| {
@@ -3693,6 +4309,7 @@ fn run_system_audio_capture(
 
     let _ = ready_tx.send(Ok(()));
     let _ = stop_rx.recv();
+    writer_stop.store(true, Ordering::SeqCst);
     let _ = stream.stop_capture();
     drop(stream);
     drop(audio_tx);
@@ -3700,6 +4317,327 @@ fn run_system_audio_capture(
     writer_join
         .join()
         .map_err(|_| "system audio writer thread panicked".to_string())?
+}
+
+#[cfg(target_os = "windows")]
+fn run_system_audio_capture(
+    path: PathBuf,
+    muted: Arc<AtomicBool>,
+    live_audio_tx: Option<mpsc::SyncSender<LiveAudioChunk>>,
+    stop_rx: mpsc::Receiver<()>,
+    ready_tx: mpsc::Sender<Result<(), String>>,
+) -> Result<SystemCaptureSummary, String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            report_ready_error(
+                &ready_tx,
+                format!("failed to create system audio artifact directory: {e}"),
+            )
+        })?;
+    }
+
+    let _com = initialize_wasapi_com()
+        .map_err(|e| report_ready_error(&ready_tx, format!("WASAPI COM init failed: {e}")))?;
+    let (audio_client, capture_client, mix_format) = open_wasapi_loopback_capture()
+        .map_err(|e| report_ready_error(&ready_tx, format!("WASAPI loopback open failed: {e}")))?;
+
+    tracing::info!(
+        native_rate = mix_format.sample_rate,
+        native_channels = mix_format.channels,
+        block_align = mix_format.block_align,
+        sample_format = ?mix_format.sample_format,
+        "[meeting_engine] opened WASAPI system loopback"
+    );
+
+    let (audio_tx, audio_rx) = mpsc::sync_channel::<Vec<i16>>(AUDIO_QUEUE_DEPTH);
+    let dropped_chunks = Arc::new(AtomicU64::new(0));
+    let writer_stop = Arc::new(AtomicBool::new(false));
+    let writer =
+        create_audio_wav_writer(&path, "system").map_err(|e| report_ready_error(&ready_tx, e))?;
+    let writer_path = path.clone();
+    let writer_dropped_chunks = Arc::clone(&dropped_chunks);
+    let writer_stop_flag = Arc::clone(&writer_stop);
+    let writer_join = thread::Builder::new()
+        .name("meeting-system-audio-writer".to_string())
+        .spawn(move || {
+            write_audio_wav(
+                &writer_path,
+                writer,
+                audio_rx,
+                SAMPLE_RATE,
+                writer_dropped_chunks,
+                "system",
+                writer_stop_flag,
+            )
+        })
+        .map_err(|e| {
+            report_ready_error(
+                &ready_tx,
+                format!("failed to spawn system audio writer thread: {e}"),
+            )
+        })?;
+
+    if let Err(e) = unsafe { audio_client.Start() } {
+        writer_stop.store(true, Ordering::SeqCst);
+        drop(audio_tx);
+        let _ = writer_join.join();
+        let message = format!("failed to start WASAPI loopback stream: {e}");
+        let _ = ready_tx.send(Err(message.clone()));
+        return Err(message);
+    }
+
+    let _ = ready_tx.send(Ok(()));
+    let poll_interval = Duration::from_millis(10);
+    let mut capture_error: Option<String> = None;
+    loop {
+        match stop_rx.try_recv() {
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+
+        if let Err(e) = unsafe {
+            drain_wasapi_loopback_packets(
+                &capture_client,
+                &mix_format,
+                &muted,
+                &audio_tx,
+                &dropped_chunks,
+                live_audio_tx.as_ref(),
+            )
+        } {
+            capture_error = Some(e);
+            break;
+        }
+        thread::sleep(poll_interval);
+    }
+
+    let _ = unsafe { audio_client.Stop() };
+    writer_stop.store(true, Ordering::SeqCst);
+    drop(audio_tx);
+
+    let summary = writer_join
+        .join()
+        .map_err(|_| "system audio writer thread panicked".to_string())?;
+
+    if let Some(error) = capture_error {
+        Err(error)
+    } else {
+        summary
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct WasapiComGuard {
+    uninitialize: bool,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WasapiComGuard {
+    fn drop(&mut self) {
+        if self.uninitialize {
+            unsafe {
+                windows::Win32::System::Com::CoUninitialize();
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn initialize_wasapi_com() -> Result<WasapiComGuard, String> {
+    use windows::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE, S_OK};
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+    let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    if hr.is_err() && hr != RPC_E_CHANGED_MODE {
+        return Err(format!("{hr:?}"));
+    }
+    Ok(WasapiComGuard {
+        uninitialize: hr == S_OK || hr == S_FALSE,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn open_wasapi_loopback_capture() -> Result<
+    (
+        windows::Win32::Media::Audio::IAudioClient,
+        windows::Win32::Media::Audio::IAudioCaptureClient,
+        WasapiMixFormat,
+    ),
+    String,
+> {
+    use windows::Win32::Media::Audio::{
+        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, IAudioCaptureClient, IAudioClient,
+        IMMDeviceEnumerator, MMDeviceEnumerator, eConsole, eRender,
+    };
+    use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree};
+
+    unsafe {
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .map_err(|e| format!("CoCreateInstance(MMDeviceEnumerator) failed: {e}"))?;
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(|e| format!("GetDefaultAudioEndpoint(render/console) failed: {e}"))?;
+        let audio_client: IAudioClient = device
+            .Activate(CLSCTX_ALL, None)
+            .map_err(|e| format!("Activate(IAudioClient) failed: {e}"))?;
+        let mix_format_ptr = audio_client
+            .GetMixFormat()
+            .map_err(|e| format!("GetMixFormat failed: {e}"))?;
+        if mix_format_ptr.is_null() {
+            return Err("GetMixFormat returned null".to_string());
+        }
+
+        let mix_format = match wasapi_mix_format_from_ptr(mix_format_ptr) {
+            Ok(format) => format,
+            Err(e) => {
+                CoTaskMemFree(Some(mix_format_ptr as *const std::ffi::c_void));
+                return Err(e);
+            }
+        };
+
+        let init_result = audio_client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_LOOPBACK,
+            10_000_000,
+            0,
+            mix_format_ptr,
+            None,
+        );
+        CoTaskMemFree(Some(mix_format_ptr as *const std::ffi::c_void));
+        init_result.map_err(|e| format!("IAudioClient::Initialize(loopback) failed: {e}"))?;
+
+        let capture_client: IAudioCaptureClient = audio_client
+            .GetService()
+            .map_err(|e| format!("GetService(IAudioCaptureClient) failed: {e}"))?;
+        Ok((audio_client, capture_client, mix_format))
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn wasapi_mix_format_from_ptr(
+    format_ptr: *const windows::Win32::Media::Audio::WAVEFORMATEX,
+) -> Result<WasapiMixFormat, String> {
+    use windows::Win32::Media::Audio::{WAVE_FORMAT_PCM, WAVEFORMATEXTENSIBLE};
+    use windows::Win32::Media::KernelStreaming::{
+        KSDATAFORMAT_SUBTYPE_PCM, WAVE_FORMAT_EXTENSIBLE,
+    };
+    use windows::Win32::Media::Multimedia::{
+        KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT,
+    };
+
+    let format = unsafe { *format_ptr };
+    let channels = format.nChannels;
+    let sample_rate = format.nSamplesPerSec;
+    let block_align = format.nBlockAlign;
+    let bits_per_sample = format.wBitsPerSample;
+    let format_tag = format.wFormatTag;
+    if channels == 0 || sample_rate == 0 || block_align == 0 {
+        return Err(format!(
+            "invalid WASAPI mix format: channels={channels}, sample_rate={sample_rate}, block_align={block_align}"
+        ));
+    }
+
+    let sample_format = if format_tag == WAVE_FORMAT_IEEE_FLOAT as u16 {
+        WindowsLoopbackSampleFormat::F32
+    } else if format_tag == WAVE_FORMAT_PCM as u16 {
+        pcm_sample_format_for_bits(bits_per_sample)?
+    } else if format_tag == WAVE_FORMAT_EXTENSIBLE as u16
+        && format.cbSize as usize
+            >= std::mem::size_of::<WAVEFORMATEXTENSIBLE>().saturating_sub(std::mem::size_of::<
+                windows::Win32::Media::Audio::WAVEFORMATEX,
+            >())
+    {
+        let extensible = unsafe { *(format_ptr as *const WAVEFORMATEXTENSIBLE) };
+        if extensible.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
+            WindowsLoopbackSampleFormat::F32
+        } else if extensible.SubFormat == KSDATAFORMAT_SUBTYPE_PCM {
+            let valid_bits = unsafe { extensible.Samples.wValidBitsPerSample };
+            pcm_sample_format_for_bits(if valid_bits == 0 {
+                bits_per_sample
+            } else {
+                valid_bits
+            })?
+        } else {
+            return Err(format!(
+                "unsupported WASAPI extensible subformat: {:?}",
+                extensible.SubFormat
+            ));
+        }
+    } else {
+        return Err(format!(
+            "unsupported WASAPI mix format tag={format_tag}, bits_per_sample={bits_per_sample}"
+        ));
+    };
+
+    let bytes_per_sample = bytes_per_windows_loopback_sample(channels, block_align, sample_format)
+        .ok_or_else(|| {
+            format!(
+                "invalid WASAPI sample container: channels={channels}, block_align={block_align}, sample_format={sample_format:?}"
+            )
+        })? as u16;
+
+    Ok(WasapiMixFormat {
+        channels,
+        sample_rate,
+        block_align,
+        bytes_per_sample,
+        sample_format,
+    })
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn drain_wasapi_loopback_packets(
+    capture_client: &windows::Win32::Media::Audio::IAudioCaptureClient,
+    mix_format: &WasapiMixFormat,
+    muted: &AtomicBool,
+    audio_tx: &mpsc::SyncSender<Vec<i16>>,
+    dropped_chunks: &AtomicU64,
+    live_audio_tx: Option<&mpsc::SyncSender<LiveAudioChunk>>,
+) -> Result<(), String> {
+    use windows::Win32::Media::Audio::AUDCLNT_BUFFERFLAGS_SILENT;
+
+    let mut packet_frames = unsafe { capture_client.GetNextPacketSize() }
+        .map_err(|e| format!("WASAPI GetNextPacketSize failed: {e}"))?;
+    while packet_frames > 0 {
+        let mut data: *mut u8 = std::ptr::null_mut();
+        let mut frames: u32 = 0;
+        let mut flags: u32 = 0;
+        unsafe { capture_client.GetBuffer(&mut data, &mut frames, &mut flags, None, None) }
+            .map_err(|e| format!("WASAPI GetBuffer failed: {e}"))?;
+
+        if frames > 0 {
+            let mono = if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null() {
+                vec![0.0; frames as usize]
+            } else {
+                let byte_len = frames as usize * mix_format.block_align as usize;
+                let bytes = unsafe { std::slice::from_raw_parts(data.cast_const(), byte_len) };
+                decode_windows_loopback_frames_to_mono(
+                    bytes,
+                    frames,
+                    mix_format.channels,
+                    mix_format.block_align,
+                    mix_format.bytes_per_sample,
+                    mix_format.sample_format,
+                )
+            };
+            enqueue_resampled_pcm(
+                mono,
+                mix_format.sample_rate,
+                muted,
+                audio_tx,
+                dropped_chunks,
+                live_audio_tx,
+                LiveAudioSource::System,
+            );
+        }
+
+        unsafe { capture_client.ReleaseBuffer(frames) }
+            .map_err(|e| format!("WASAPI ReleaseBuffer failed: {e}"))?;
+        packet_frames = unsafe { capture_client.GetNextPacketSize() }
+            .map_err(|e| format!("WASAPI GetNextPacketSize failed: {e}"))?;
+    }
+    Ok(())
 }
 
 fn report_ready_error(ready_tx: &mpsc::Sender<Result<(), String>>, message: String) -> String {
@@ -3730,18 +4668,48 @@ fn write_audio_wav(
     native_rate: u32,
     dropped_chunks: Arc<AtomicU64>,
     source_label: &str,
+    stop_writing: Arc<AtomicBool>,
 ) -> Result<MicCaptureSummary, String> {
     let mut samples_written = 0_u64;
     let mut peak_i16 = 0_i16;
 
-    while let Ok(chunk) = audio_rx.recv() {
-        for sample in chunk {
-            writer
-                .write_sample(sample)
-                .map_err(|e| format!("failed to write {source_label} sample: {e}"))?;
-            samples_written += 1;
-            peak_i16 = peak_i16.max(sample.saturating_abs());
+    loop {
+        if stop_writing.load(Ordering::SeqCst) {
+            drain_audio_wav_queue(
+                &mut writer,
+                &audio_rx,
+                source_label,
+                &mut samples_written,
+                &mut peak_i16,
+            )?;
+            break;
         }
+
+        let chunk = match audio_rx.recv_timeout(CAPTURE_WRITER_STOP_POLL) {
+            Ok(chunk) => Some(chunk),
+            Err(mpsc::RecvTimeoutError::Timeout) if stop_writing.load(Ordering::SeqCst) => {
+                drain_audio_wav_queue(
+                    &mut writer,
+                    &audio_rx,
+                    source_label,
+                    &mut samples_written,
+                    &mut peak_i16,
+                )?;
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        let Some(chunk) = chunk else {
+            continue;
+        };
+        write_audio_chunk_to_wav(
+            &mut writer,
+            chunk,
+            source_label,
+            &mut samples_written,
+            &mut peak_i16,
+        )?;
     }
 
     writer
@@ -3762,6 +4730,36 @@ fn write_audio_wav(
         duration_ms,
         peak,
     })
+}
+
+fn drain_audio_wav_queue(
+    writer: &mut hound::WavWriter<BufWriter<File>>,
+    audio_rx: &mpsc::Receiver<Vec<i16>>,
+    source_label: &str,
+    samples_written: &mut u64,
+    peak_i16: &mut i16,
+) -> Result<(), String> {
+    while let Ok(chunk) = audio_rx.try_recv() {
+        write_audio_chunk_to_wav(writer, chunk, source_label, samples_written, peak_i16)?;
+    }
+    Ok(())
+}
+
+fn write_audio_chunk_to_wav(
+    writer: &mut hound::WavWriter<BufWriter<File>>,
+    chunk: Vec<i16>,
+    source_label: &str,
+    samples_written: &mut u64,
+    peak_i16: &mut i16,
+) -> Result<(), String> {
+    for sample in chunk {
+        writer
+            .write_sample(sample)
+            .map_err(|e| format!("failed to write {source_label} sample: {e}"))?;
+        *samples_written += 1;
+        *peak_i16 = (*peak_i16).max(sample.saturating_abs());
+    }
+    Ok(())
 }
 
 fn start_live_transcript_worker(
@@ -3886,9 +4884,12 @@ fn drain_live_ready_windows(
 ) {
     for track in [mic, system] {
         loop {
-            let Some(window) =
-                track.take_ready_window(config.chunk_samples, config.min_samples, force)
-            else {
+            let Some(window) = track.take_ready_window(
+                config.context_samples,
+                config.step_samples,
+                config.min_samples,
+                force,
+            ) else {
                 break;
             };
             match transcribe_live_window(session, config, live_dir, window, *chunk_index) {
@@ -3954,6 +4955,11 @@ fn transcribe_live_window(
 ) -> Result<Vec<MeetingLiveTranscriptChunk>, String> {
     let source = window.source;
     let start_ms = window.start_sample.saturating_mul(1_000) / SAMPLE_RATE as u64;
+    let emit_from_ms = window
+        .emit_from_sample
+        .saturating_sub(window.start_sample)
+        .saturating_mul(1_000)
+        / SAMPLE_RATE as u64;
     let stem = format!("live-{}-{start_ms:010}", source.source_label());
     let wav_path = live_dir.join(format!("{stem}.wav"));
     let summary = write_pcm_window_wav(&wav_path, window.samples)?;
@@ -3968,6 +4974,7 @@ fn transcribe_live_window(
         &config.whisper,
         source.track(),
         config.timeout,
+        None,
     )?;
     let segments = label_transcript_segments(
         &done,
@@ -3978,17 +4985,21 @@ fn transcribe_live_window(
     );
 
     let mut chunks = Vec::new();
-    for (offset, segment) in segments.into_iter().enumerate() {
+    for segment in segments {
         let text = segment.text.trim();
         if text.is_empty() {
             continue;
         }
+        if segment.start_ms.saturating_add(500) < emit_from_ms {
+            continue;
+        }
+        let offset = chunks.len() as u64;
         chunks.push(MeetingLiveTranscriptChunk {
-            chunk_index: next_chunk_index.saturating_add(offset as u64),
+            chunk_index: next_chunk_index.saturating_add(offset),
             source: segment.source,
             speaker_id: segment.speaker_id,
             speaker_name: segment.speaker_name,
-            timestamp_ms: start_ms.saturating_add(segment.start_ms),
+            timestamp_ms: start_ms.saturating_add(segment.start_ms.max(emit_from_ms)),
             text: text.to_string(),
             is_final: true,
         });
@@ -4514,6 +5525,7 @@ const MEETING_PHASE_TRANSCRIBING: &str = "transcribing";
 const MEETING_PHASE_TRANSCRIBED: &str = "transcribed";
 const MEETING_PHASE_SUMMARIZED: &str = "summarized";
 const MEETING_PHASE_FAILED: &str = "failed";
+const MEETING_PHASE_CANCELLED: &str = "cancelled";
 
 fn write_meeting_state(artifact_dir: &Path, phase: &str, error: Option<String>) {
     if !artifact_dir.is_dir() {
@@ -4562,7 +5574,7 @@ fn meeting_has_usable_transcript(dir: &Path) -> bool {
 }
 
 /// Per-meeting processing status the frontend polls to render live stage progress
-/// (transcribing → cleaning → diarizing → done) and a Retry affordance. Read
+/// (transcribing → cleaning → summarizing → done) and a Retry affordance. Read
 /// from disk (so it survives restarts and works for background jobs) and overlaid
 /// with the live queue/worker state.
 #[derive(Debug, Serialize)]
@@ -4572,8 +5584,11 @@ pub struct MeetingProcessingStatusPayload {
     pub stage: String,
     pub running: bool,
     pub queued: bool,
+    pub cancelling: bool,
+    pub can_cancel: bool,
     pub can_retry: bool,
     pub error: Option<String>,
+    pub progress: Option<MeetingProcessingProgress>,
     pub has_transcript: bool,
     pub has_intelligence: bool,
     /// Transcript is done but the summary stage failed (recoverable via
@@ -4585,6 +5600,13 @@ pub struct MeetingProcessingStatusPayload {
 #[tauri::command]
 pub fn meeting_engine_get_processing_status(
     state: State<'_, MeetingEngineState>,
+    meeting_id: String,
+) -> Result<MeetingProcessingStatusPayload, String> {
+    meeting_processing_status(&state, meeting_id)
+}
+
+fn meeting_processing_status(
+    state: &MeetingEngineState,
     meeting_id: String,
 ) -> Result<MeetingProcessingStatusPayload, String> {
     let dir = meeting_dir_for_id(&meeting_id)?;
@@ -4600,21 +5622,28 @@ pub fn meeting_engine_get_processing_status(
     let has_intelligence = dir.join("meeting.ai.json").is_file();
 
     // Live overlay: is this meeting in-flight on the worker, or merely queued?
-    let in_flight = {
+    let (in_flight, queued, cancelling) = {
         let inner = state.jobs.lock();
-        inner.in_flight.as_deref() == Some(meeting_id.as_str())
+        let in_flight = inner.in_flight.as_deref() == Some(meeting_id.as_str());
+        let queued = !in_flight && inner.pending.iter().any(|j| j.meeting_id == meeting_id);
+        let cancelling = inner.cancelled.contains(&meeting_id);
+        (in_flight, queued, cancelling)
     };
-    let queued = !in_flight && state.jobs.is_active(&meeting_id);
     let running = in_flight || queued;
 
     // Fine-grained stage. The global transcription snapshot only describes the
     // in-flight meeting, so we only trust it when THIS meeting is in flight.
-    let stage = if in_flight {
+    let mut progress = None;
+    let stage = if running && cancelling {
+        "cancelling".to_string()
+    } else if in_flight {
         let snapshot = state.transcription.lock_recover();
+        progress = snapshot.progress.clone();
         match snapshot.status.as_str() {
             "running" | "" => "transcribing",
             "cleaning" => "cleaning",
-            "completed" => "diarizing",
+            "completed" | "diarizing" | "final_diarizing" => "summarizing",
+            "summarizing" => "summarizing",
             other => other,
         }
         .to_string()
@@ -4638,6 +5667,9 @@ pub fn meeting_engine_get_processing_status(
     } else {
         stage
     };
+    if stage != "transcribing" {
+        progress = None;
+    }
 
     if running {
         error = None;
@@ -4645,7 +5677,10 @@ pub fn meeting_engine_get_processing_status(
 
     let terminal_phase = matches!(
         phase.as_str(),
-        MEETING_PHASE_TRANSCRIBED | MEETING_PHASE_SUMMARIZED | MEETING_PHASE_FAILED
+        MEETING_PHASE_TRANSCRIBED
+            | MEETING_PHASE_SUMMARIZED
+            | MEETING_PHASE_FAILED
+            | MEETING_PHASE_CANCELLED
     );
     let has_audio = RECOVERABLE_MEETING_WAVS
         .iter()
@@ -4656,7 +5691,9 @@ pub fn meeting_engine_get_processing_status(
     // separate regenerate path, not here.
     let can_retry = !running
         && has_audio
-        && (phase == MEETING_PHASE_FAILED || (!terminal_phase && !has_transcript));
+        && (phase == MEETING_PHASE_FAILED
+            || phase == MEETING_PHASE_CANCELLED
+            || (!terminal_phase && !has_transcript));
 
     Ok(MeetingProcessingStatusPayload {
         meeting_id,
@@ -4664,8 +5701,11 @@ pub fn meeting_engine_get_processing_status(
         stage,
         running,
         queued,
+        cancelling,
+        can_cancel: running && !cancelling,
         can_retry,
         error,
+        progress,
         has_transcript,
         has_intelligence,
         summary_failed,
@@ -4781,11 +5821,11 @@ fn cleanup_empty_session_dir(dir: &Path) {
 }
 
 /// Delete the disposable intermediates once a meeting has a final transcript:
-/// the per-window `live/` WAVs (+ their whisper sidecars) and the `*.asr.wav`
-/// gain-normalized copies. These are only needed during transcription and are
-/// the bulk of a meeting's disk footprint (hundreds of files / hundreds of MB on
-/// a long meeting). The source `mic.wav`/`system.wav` and the transcript/summary
-/// artifacts are kept.
+/// the per-window `live/` WAVs (+ their whisper sidecars), final-ASR chunk dirs,
+/// and the `*.asr.wav` gain-normalized copies. These are only needed during
+/// transcription and are the bulk of a meeting's disk footprint (hundreds of
+/// files / hundreds of MB on a long meeting). The source `mic.wav`/`system.wav`
+/// and the transcript/summary artifacts are kept.
 fn prune_meeting_intermediates(dir: &Path) {
     let live_dir = dir.join("live");
     if live_dir.is_dir() {
@@ -4796,12 +5836,11 @@ fn prune_meeting_intermediates(dir: &Path) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with(".asr.wav"))
-            {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.ends_with(".asr.wav") {
                 let _ = fs::remove_file(&path);
+            } else if name.ends_with(".asr-chunks") && path.is_dir() {
+                let _ = fs::remove_dir_all(&path);
             }
         }
     }
@@ -4813,8 +5852,9 @@ fn prune_meeting_intermediates(dir: &Path) {
 ///     mic), invisible in the server-driven UI so nothing else reclaims them.
 ///     Server-UUID dirs are never removed.
 ///  2. For any meeting that already has a usable transcript, prune its disposable
-///     intermediates (live/ windows + *.asr.wav). This also reclaims the
-///     intermediates left by meetings that completed before pruning existed.
+///     intermediates (live/ windows + final ASR copies/chunks). This also
+///     reclaims the intermediates left by meetings that completed before pruning
+///     existed.
 /// Runs at startup only, when no session is active, so it can't race a live one.
 pub fn gc_orphan_meeting_dirs() {
     let root = said_core::paths::data_dir().join("meetings");
@@ -4863,9 +5903,11 @@ pub fn gc_orphan_meeting_dirs() {
 fn dir_has_asr_copy(dir: &Path) -> bool {
     fs::read_dir(dir).ok().is_some_and(|entries| {
         entries.flatten().any(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|n| n.ends_with(".asr.wav"))
+            let path = e.path();
+            let name = e.file_name();
+            name.to_str().is_some_and(|n| {
+                n.ends_with(".asr.wav") || (n.ends_with(".asr-chunks") && path.is_dir())
+            })
         })
     })
 }
@@ -4896,9 +5938,12 @@ pub fn recover_incomplete_meetings() {
         let phase = read_meeting_state(&dir).map(|state| state.phase);
         match phase.as_deref() {
             // Terminal phases are fully processed — nothing to do.
-            Some(MEETING_PHASE_TRANSCRIBED | MEETING_PHASE_SUMMARIZED | MEETING_PHASE_FAILED) => {
-                continue;
-            }
+            Some(
+                MEETING_PHASE_TRANSCRIBED
+                | MEETING_PHASE_SUMMARIZED
+                | MEETING_PHASE_FAILED
+                | MEETING_PHASE_CANCELLED,
+            ) => continue,
             // Legacy meeting (no checkpoint file): skip if it already has a final
             // transcript, otherwise fall through and at least repair its audio.
             None if dir.join("meeting.transcript.final.json").is_file()
@@ -5023,6 +6068,8 @@ fn build_retranscribe_plan(dir: &Path) -> Result<MeetingTranscriptionPlan, Strin
         summary,
         output_paths: transcript_paths_for_stem(dir, "meeting"),
         source_wavs,
+        source_activity_path: Some(dir.join("meeting.source-activity.json"))
+            .filter(|path| path.is_file()),
     })
 }
 
@@ -5160,21 +6207,8 @@ fn normalize_wav_for_asr(input: &Path, output: &Path, gain: f32) -> Result<(), S
     Ok(())
 }
 
-fn whisper_language_for_track(track: MeetingAudioTrack, default_language: &str) -> String {
-    match track {
-        MeetingAudioTrack::Mic => meeting_env("AIRNOTE_MEETING_MIC_WHISPER_LANGUAGE")
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| default_language.to_string()),
-        // The system track carries the remote participant — usually the most
-        // important voice. Default it to the SAME resolved meeting language as
-        // the mic, not "auto": auto-detect hallucinates random scripts on quiet
-        // segments / speaker bleed (same reason the mic defaults to a fixed
-        // language). Set AIRNOTE_MEETING_SYSTEM_WHISPER_LANGUAGE=auto to opt back
-        // into detection.
-        MeetingAudioTrack::System => meeting_env("AIRNOTE_MEETING_SYSTEM_WHISPER_LANGUAGE")
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| default_language.to_string()),
-    }
+fn whisper_language_for_track(_track: MeetingAudioTrack, default_language: &str) -> String {
+    default_language.to_string()
 }
 
 fn whisper_translate_for_track(track: MeetingAudioTrack) -> bool {
@@ -5187,9 +6221,43 @@ fn whisper_translate_for_track(track: MeetingAudioTrack) -> bool {
 fn transcribe_meeting_plan(
     plan: &MeetingTranscriptionPlan,
     config: &WhisperCppConfig,
+    cancel_check: Option<&dyn Fn() -> bool>,
+    progress: Option<&dyn Fn(MeetingProcessingProgress)>,
 ) -> Result<MeetingPlanTranscriptionDone, String> {
     let started = Instant::now();
     let mic_paths = transcript_paths_for_wav(&plan.mic.path);
+    let chunk_ms = final_asr_chunk_ms();
+    let mic_chunk_count = if may_have_final_asr_work(&plan.mic) {
+        final_asr_chunk_count(&plan.mic, chunk_ms)
+    } else {
+        0
+    };
+    let system_chunk_count = plan
+        .system
+        .as_ref()
+        .filter(|summary| may_have_final_asr_work(summary))
+        .map(|summary| final_asr_chunk_count(summary, chunk_ms))
+        .unwrap_or(0);
+    let total_chunks = if plan.system.is_some() {
+        mic_chunk_count.saturating_add(system_chunk_count).max(1)
+    } else {
+        mic_chunk_count.max(1)
+    };
+    let completed_chunks = Cell::new(0_u64);
+    let report_chunk_progress = |chunk: WhisperChunkProgress| {
+        if let Some(progress) = progress {
+            let current = completed_chunks
+                .get()
+                .saturating_add(chunk.current)
+                .min(total_chunks)
+                .max(1);
+            progress(MeetingProcessingProgress::transcribing(
+                current,
+                total_chunks.max(chunk.total),
+                chunk.track,
+            ));
+        }
+    };
 
     let Some(system_summary) = &plan.system else {
         if !has_transcribable_audio(&plan.mic) {
@@ -5198,8 +6266,14 @@ fn transcribe_meeting_plan(
                 plan.mic.peak
             ));
         }
-        let mic_done =
-            transcribe_with_whisper_cpp(&plan.mic, &mic_paths, config, MeetingAudioTrack::Mic)?;
+        let mic_done = transcribe_with_whisper_cpp(
+            &plan.mic,
+            &mic_paths,
+            config,
+            MeetingAudioTrack::Mic,
+            cancel_check,
+            Some(&report_chunk_progress),
+        )?;
         let segments = label_transcript_segments(
             &mic_done,
             transcript_source(&plan.mic.path),
@@ -5222,6 +6296,8 @@ fn transcribe_meeting_plan(
             &mic_paths,
             config,
             MeetingAudioTrack::Mic,
+            cancel_check,
+            Some(&report_chunk_progress),
         ))
     } else {
         tracing::warn!(
@@ -5231,6 +6307,9 @@ fn transcribe_meeting_plan(
         );
         None
     };
+    if matches!(mic_result, Some(Ok(_))) {
+        completed_chunks.set(completed_chunks.get().saturating_add(mic_chunk_count));
+    }
     let system_paths = transcript_paths_for_wav(&system_summary.path);
     let system_result = if has_transcribable_audio(system_summary) {
         Some(transcribe_with_whisper_cpp(
@@ -5238,6 +6317,8 @@ fn transcribe_meeting_plan(
             &system_paths,
             config,
             MeetingAudioTrack::System,
+            cancel_check,
+            Some(&report_chunk_progress),
         ))
     } else {
         tracing::warn!(
@@ -5299,6 +6380,7 @@ fn transcribe_meeting_plan(
             })
             .then_with(|| left.end_ms.cmp(&right.end_ms))
     });
+    segments = suppress_mic_echo_segments(segments, plan.source_activity_path.as_deref());
 
     let transcript = format_meeting_timeline_transcript(&segments);
     write_atomic(&plan.output_paths.text, transcript.as_bytes())
@@ -5347,6 +6429,286 @@ fn label_transcript_segments(
             })
         })
         .collect()
+}
+
+fn suppress_mic_echo_segments(
+    segments: Vec<MeetingTranscriptSegment>,
+    source_activity_path: Option<&Path>,
+) -> Vec<MeetingTranscriptSegment> {
+    let system_segments: Vec<&MeetingTranscriptSegment> = segments
+        .iter()
+        .filter(|segment| is_system_transcript_segment(segment))
+        .collect();
+    let mic_count = segments
+        .iter()
+        .filter(|segment| is_mic_transcript_segment(segment))
+        .count();
+    if mic_count == 0 || system_segments.is_empty() {
+        return segments;
+    }
+
+    let activity_segments = load_source_activity_segments(source_activity_path);
+    let has_activity = !activity_segments.is_empty();
+    let mut best_matches = Vec::with_capacity(segments.len());
+    let mut duplicate_count = 0usize;
+    for segment in &segments {
+        let echo_match = if is_mic_transcript_segment(segment) {
+            best_system_echo_match(segment, &system_segments)
+        } else {
+            None
+        };
+        if echo_match.is_some_and(|matched| matched.similarity >= ECHO_DEDUPE_MIN_TEXT_SIMILARITY) {
+            duplicate_count += 1;
+        }
+        best_matches.push(echo_match);
+    }
+
+    let duplicate_ratio = duplicate_count as f32 / mic_count as f32;
+    let activity_summary = source_activity_summary(&activity_segments);
+    let system_dominant_video_mode = has_activity
+        && activity_summary.system_active_ms() >= ECHO_DEDUPE_VIDEO_MIN_SYSTEM_MS
+        && activity_summary.local_ratio() <= ECHO_DEDUPE_VIDEO_MAX_LOCAL_RATIO
+        && duplicate_ratio >= ECHO_DEDUPE_VIDEO_MIN_DUPLICATE_RATIO;
+
+    let mut dropped = 0usize;
+    let mut kept = Vec::with_capacity(segments.len());
+    for (index, segment) in segments.into_iter().enumerate() {
+        if !is_mic_transcript_segment(&segment) {
+            kept.push(segment);
+            continue;
+        }
+
+        let duration_ms = segment.end_ms.saturating_sub(segment.start_ms).max(1);
+        let coverage = if has_activity {
+            segment_activity_coverage(&segment, &activity_segments)
+        } else {
+            SegmentActivityCoverage::default()
+        };
+        let system_coverage = coverage.system_active_ratio(duration_ms);
+        let local_coverage = coverage.local_mic_ratio(duration_ms);
+        let silence_coverage = coverage.silence_ratio(duration_ms);
+        let echo_match = best_matches[index];
+
+        let strong_text_echo = echo_match.is_some_and(|matched| {
+            matched.similarity >= ECHO_DEDUPE_STRONG_TEXT_SIMILARITY
+                && (!has_activity
+                    || coverage.covered_ms == 0
+                    || (system_coverage >= 0.20 && local_coverage <= 0.60))
+        });
+        let source_confirmed_text_echo = echo_match.is_some_and(|matched| {
+            matched.similarity >= ECHO_DEDUPE_MIN_TEXT_SIMILARITY
+                && system_coverage >= ECHO_DEDUPE_MIN_SYSTEM_COVERAGE
+                && local_coverage <= ECHO_DEDUPE_MAX_LOCAL_COVERAGE
+        });
+        let source_confirmed_video_bleed = system_dominant_video_mode
+            && (system_coverage >= ECHO_DEDUPE_MIN_SYSTEM_COVERAGE
+                || silence_coverage >= ECHO_DEDUPE_VIDEO_MIN_SILENCE_COVERAGE)
+            && local_coverage <= ECHO_DEDUPE_MAX_LOCAL_COVERAGE;
+
+        if strong_text_echo || source_confirmed_text_echo || source_confirmed_video_bleed {
+            dropped += 1;
+            continue;
+        }
+        kept.push(segment);
+    }
+
+    if dropped > 0 {
+        tracing::info!(
+            dropped,
+            mic_count,
+            duplicate_count,
+            duplicate_ratio,
+            system_dominant_video_mode,
+            source_activity_path = source_activity_path
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            "[meeting_engine] suppressed likely mic echo segments from dual-track meeting transcript"
+        );
+    }
+
+    kept
+}
+
+fn load_source_activity_segments(path: Option<&Path>) -> Vec<SourceActivitySegment> {
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %path.display(),
+                "[meeting_engine] failed to read source activity json for echo suppression"
+            );
+            return Vec::new();
+        }
+    };
+
+    match serde_json::from_slice::<MeetingAudioArtifact>(&bytes) {
+        Ok(artifact) => artifact.source_activity_segments,
+        Err(artifact_error) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(value) => value
+                .get("source_activity_segments")
+                .cloned()
+                .and_then(|segments| {
+                    serde_json::from_value::<Vec<SourceActivitySegment>>(segments).ok()
+                })
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        error = %artifact_error,
+                        path = %path.display(),
+                        "[meeting_engine] source activity json did not include readable segments"
+                    );
+                    Vec::new()
+                }),
+            Err(value_error) => {
+                tracing::warn!(
+                    error = %value_error,
+                    artifact_error = %artifact_error,
+                    path = %path.display(),
+                    "[meeting_engine] failed to parse source activity json for echo suppression"
+                );
+                Vec::new()
+            }
+        },
+    }
+}
+
+fn is_mic_transcript_segment(segment: &MeetingTranscriptSegment) -> bool {
+    segment.source == "mic" || segment.speaker_id == "you"
+}
+
+fn is_system_transcript_segment(segment: &MeetingTranscriptSegment) -> bool {
+    segment.source == "system" || segment.speaker_id == "speaker_1"
+}
+
+fn best_system_echo_match(
+    mic: &MeetingTranscriptSegment,
+    system_segments: &[&MeetingTranscriptSegment],
+) -> Option<EchoMatch> {
+    let mut best: Option<EchoMatch> = None;
+    for system in system_segments {
+        let start_gap_ms = mic.start_ms.abs_diff(system.start_ms);
+        let interval_gap_ms =
+            interval_gap_ms(mic.start_ms, mic.end_ms, system.start_ms, system.end_ms);
+        if start_gap_ms > ECHO_DEDUPE_MAX_START_GAP_MS
+            && interval_gap_ms > ECHO_DEDUPE_MAX_INTERVAL_GAP_MS
+        {
+            continue;
+        }
+
+        let similarity = transcript_token_similarity(&mic.text, &system.text);
+        if similarity <= 0.0 {
+            continue;
+        }
+        let candidate = EchoMatch {
+            similarity,
+            start_gap_ms,
+            interval_gap_ms,
+        };
+        let replace = match best {
+            None => true,
+            Some(current) => {
+                candidate.similarity > current.similarity
+                    || (candidate.similarity == current.similarity
+                        && candidate.start_gap_ms + candidate.interval_gap_ms
+                            < current.start_gap_ms + current.interval_gap_ms)
+            }
+        };
+        if replace {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
+fn transcript_token_similarity(left: &str, right: &str) -> f32 {
+    let left_words = normalized_transcript_words(left);
+    let right_words = normalized_transcript_words(right);
+    if left_words.is_empty() || right_words.is_empty() {
+        return 0.0;
+    }
+    if left_words == right_words {
+        return 1.0;
+    }
+
+    let left_joined = left_words.join(" ");
+    let right_joined = right_words.join(" ");
+    if left_words.len().min(right_words.len()) >= 3
+        && (left_joined.contains(&right_joined) || right_joined.contains(&left_joined))
+    {
+        return 0.92;
+    }
+
+    let left_set: std::collections::HashSet<&str> = left_words.iter().map(String::as_str).collect();
+    let right_set: std::collections::HashSet<&str> =
+        right_words.iter().map(String::as_str).collect();
+    let intersection = left_set.intersection(&right_set).count();
+    if intersection == 0 {
+        return 0.0;
+    }
+
+    (2 * intersection) as f32 / (left_set.len() + right_set.len()) as f32
+}
+
+fn source_activity_summary(segments: &[SourceActivitySegment]) -> SourceActivitySummary {
+    let mut summary = SourceActivitySummary::default();
+    for segment in segments {
+        let duration_ms = segment.end_ms.saturating_sub(segment.start_ms);
+        match segment.source.as_str() {
+            "local_mic" => summary.local_mic_ms += duration_ms,
+            "system_audio" => summary.system_audio_ms += duration_ms,
+            "overlap" => summary.overlap_ms += duration_ms,
+            _ => {}
+        }
+    }
+    summary
+}
+
+fn segment_activity_coverage(
+    segment: &MeetingTranscriptSegment,
+    activity_segments: &[SourceActivitySegment],
+) -> SegmentActivityCoverage {
+    let mut coverage = SegmentActivityCoverage::default();
+    for activity in activity_segments {
+        let overlap_start = segment.start_ms.max(activity.start_ms);
+        let overlap_end = segment.end_ms.min(activity.end_ms);
+        if overlap_end <= overlap_start {
+            continue;
+        }
+        let duration_ms = overlap_end - overlap_start;
+        coverage.covered_ms += duration_ms;
+        match activity.source.as_str() {
+            "local_mic" => coverage.local_mic_ms += duration_ms,
+            "system_audio" => coverage.system_audio_ms += duration_ms,
+            "overlap" => coverage.overlap_ms += duration_ms,
+            "silence" => coverage.silence_ms += duration_ms,
+            _ => {}
+        }
+    }
+    coverage
+}
+
+fn interval_gap_ms(
+    left_start_ms: u64,
+    left_end_ms: u64,
+    right_start_ms: u64,
+    right_end_ms: u64,
+) -> u64 {
+    if left_end_ms < right_start_ms {
+        right_start_ms - left_end_ms
+    } else {
+        left_start_ms.saturating_sub(right_end_ms)
+    }
+}
+
+fn ratio_ms(numerator_ms: u64, denominator_ms: u64) -> f32 {
+    if denominator_ms == 0 {
+        0.0
+    } else {
+        numerator_ms as f32 / denominator_ms as f32
+    }
 }
 
 fn filter_non_speech_transcript_lines(text: &str) -> String {
@@ -5509,8 +6871,419 @@ fn transcribe_with_whisper_cpp(
     paths: &TranscriptPaths,
     config: &WhisperCppConfig,
     track: MeetingAudioTrack,
+    cancel_check: Option<&dyn Fn() -> bool>,
+    progress: Option<&dyn Fn(WhisperChunkProgress)>,
 ) -> Result<WhisperTranscriptionDone, String> {
-    transcribe_with_whisper_cpp_for(summary, paths, config, track, WHISPER_TIMEOUT)
+    let chunk_ms = final_asr_chunk_ms();
+    if summary.duration_ms > chunk_ms {
+        return transcribe_with_whisper_cpp_chunked(
+            summary,
+            paths,
+            config,
+            track,
+            chunk_ms,
+            cancel_check,
+            progress,
+        );
+    }
+    if let Some(progress) = progress {
+        progress(WhisperChunkProgress {
+            track,
+            current: 1,
+            total: 1,
+        });
+    }
+    transcribe_with_whisper_cpp_for(summary, paths, config, track, WHISPER_TIMEOUT, cancel_check)
+}
+
+fn whisper_process_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn fail_if_cancelled(cancel_check: Option<&dyn Fn() -> bool>, label: &str) -> Result<(), String> {
+    if cancel_check.is_some_and(|check| check()) {
+        return Err(format!("{label} cancelled"));
+    }
+    Ok(())
+}
+
+fn is_cancelled_subprocess_error(message: &str) -> bool {
+    message.to_ascii_lowercase().contains("cancelled")
+}
+
+fn acquire_whisper_process_lock(
+    cancel_check: Option<&dyn Fn() -> bool>,
+) -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    loop {
+        fail_if_cancelled(cancel_check, "whisper.cpp")?;
+        match whisper_process_lock().try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("whisper.cpp process lock poisoned".to_string());
+            }
+        }
+    }
+}
+
+fn final_asr_chunk_ms() -> u64 {
+    env_u64(
+        "AIRNOTE_MEETING_FINAL_ASR_CHUNK_SECS",
+        DEFAULT_FINAL_ASR_CHUNK_SECS,
+    )
+    .clamp(60, 900)
+    .saturating_mul(1_000)
+}
+
+fn final_asr_chunk_count(summary: &MicCaptureSummary, chunk_ms: u64) -> u64 {
+    if summary.samples_written == 0 {
+        return 0;
+    }
+    let chunk_samples = chunk_ms
+        .max(1)
+        .saturating_mul(SAMPLE_RATE as u64)
+        .saturating_div(1_000)
+        .max(1);
+    summary
+        .samples_written
+        .saturating_add(chunk_samples - 1)
+        .saturating_div(chunk_samples)
+        .max(1)
+}
+
+fn may_have_final_asr_work(summary: &MicCaptureSummary) -> bool {
+    summary.samples_written > 0 && summary.peak >= ASR_MIN_PEAK_FOR_TRANSCRIPTION
+}
+
+fn transcribe_with_whisper_cpp_chunked(
+    summary: &MicCaptureSummary,
+    paths: &TranscriptPaths,
+    config: &WhisperCppConfig,
+    track: MeetingAudioTrack,
+    chunk_ms: u64,
+    cancel_check: Option<&dyn Fn() -> bool>,
+    progress: Option<&dyn Fn(WhisperChunkProgress)>,
+) -> Result<WhisperTranscriptionDone, String> {
+    let started = Instant::now();
+    let chunks = write_wav_asr_chunks(summary, chunk_ms)?;
+    if chunks.is_empty() {
+        return Err("no audio samples found for whisper.cpp transcription".to_string());
+    }
+    if chunks.len() <= 1 {
+        if let Some(progress) = progress {
+            progress(WhisperChunkProgress {
+                track,
+                current: 1,
+                total: 1,
+            });
+        }
+        return transcribe_with_whisper_cpp_for(
+            summary,
+            paths,
+            config,
+            track,
+            WHISPER_TIMEOUT,
+            cancel_check,
+        );
+    }
+
+    tracing::info!(
+        path = %summary.path.display(),
+        chunks = chunks.len(),
+        chunk_ms,
+        model = %config.model.display(),
+        "[meeting_engine] transcribing long meeting audio in final ASR chunks"
+    );
+
+    let mut segments = Vec::new();
+    for (index, chunk) in chunks.iter().enumerate() {
+        fail_if_cancelled(cancel_check, "whisper.cpp")?;
+        if let Some(progress) = progress {
+            progress(WhisperChunkProgress {
+                track,
+                current: (index + 1) as u64,
+                total: chunks.len() as u64,
+            });
+        }
+        if !has_transcribable_audio(&chunk.summary) {
+            tracing::info!(
+                chunk = index + 1,
+                total = chunks.len(),
+                start_ms = chunk.start_ms,
+                peak = chunk.summary.peak,
+                "[meeting_engine] skipping silent final ASR chunk"
+            );
+            continue;
+        }
+
+        let chunk_dir = chunk
+            .summary
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        let stem = chunk
+            .summary
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.trim().is_empty())
+            .unwrap_or("chunk");
+        let chunk_paths = transcript_paths_for_stem(chunk_dir, stem);
+        if let Some(done) = read_cached_whisper_transcription(&chunk.summary, &chunk_paths, config)
+        {
+            segments.extend(done.segments.into_iter().filter_map(|mut segment| {
+                segment.start_ms = chunk.start_ms.saturating_add(segment.start_ms);
+                segment.end_ms = chunk.start_ms.saturating_add(segment.end_ms);
+                segment.start_ms = segment.start_ms.min(summary.duration_ms);
+                segment.end_ms = segment
+                    .end_ms
+                    .max(segment.start_ms)
+                    .min(summary.duration_ms);
+                (!segment.text.trim().is_empty()).then_some(segment)
+            }));
+            tracing::info!(
+                chunk = index + 1,
+                total = chunks.len(),
+                start_ms = chunk.start_ms,
+                "[meeting_engine] reused cached final ASR chunk transcript"
+            );
+            continue;
+        }
+        match transcribe_with_whisper_cpp_for(
+            &chunk.summary,
+            &chunk_paths,
+            config,
+            track,
+            WHISPER_TIMEOUT,
+            cancel_check,
+        ) {
+            Ok(done) => {
+                segments.extend(done.segments.into_iter().filter_map(|mut segment| {
+                    segment.start_ms = chunk.start_ms.saturating_add(segment.start_ms);
+                    segment.end_ms = chunk.start_ms.saturating_add(segment.end_ms);
+                    segment.start_ms = segment.start_ms.min(summary.duration_ms);
+                    segment.end_ms = segment
+                        .end_ms
+                        .max(segment.start_ms)
+                        .min(summary.duration_ms);
+                    (!segment.text.trim().is_empty()).then_some(segment)
+                }));
+                tracing::info!(
+                    chunk = index + 1,
+                    total = chunks.len(),
+                    start_ms = chunk.start_ms,
+                    "[meeting_engine] final ASR chunk completed"
+                );
+            }
+            Err(e) if is_empty_whisper_chunk_error(&e) => {
+                tracing::info!(
+                    chunk = index + 1,
+                    total = chunks.len(),
+                    start_ms = chunk.start_ms,
+                    error = %e,
+                    "[meeting_engine] final ASR chunk had no confident speech"
+                );
+            }
+            Err(e) => {
+                return Err(format!(
+                    "whisper.cpp chunk {}/{} at {} failed: {}",
+                    index + 1,
+                    chunks.len(),
+                    format_timestamp_ms(chunk.start_ms),
+                    e
+                ));
+            }
+        }
+    }
+
+    segments.sort_by(|left, right| {
+        left.start_ms
+            .cmp(&right.start_ms)
+            .then_with(|| left.end_ms.cmp(&right.end_ms))
+    });
+    let segments = suppress_repeated_whisper_segment_runs(segments);
+    let transcript = segments
+        .iter()
+        .map(|segment| segment.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if transcript.is_empty() {
+        return Err("whisper.cpp returned no confident speech transcript".to_string());
+    }
+
+    write_atomic(&paths.text, transcript.as_bytes())
+        .map_err(|e| format!("failed to write transcript text: {e}"))?;
+    if let Some(chunk_dir) = chunks
+        .first()
+        .and_then(|chunk| chunk.summary.path.parent())
+        .map(Path::to_path_buf)
+    {
+        let _ = fs::remove_dir_all(chunk_dir);
+    }
+
+    Ok(WhisperTranscriptionDone {
+        transcript,
+        latency_ms: started.elapsed().as_millis() as u64,
+        segments,
+    })
+}
+
+fn is_empty_whisper_chunk_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("no confident speech transcript") || message.contains("below speech threshold")
+}
+
+fn write_wav_asr_chunks(
+    summary: &MicCaptureSummary,
+    chunk_ms: u64,
+) -> Result<Vec<WhisperAudioChunk>, String> {
+    repair_wav_header_sizes(&summary.path)?;
+    let mut reader = hound::WavReader::open(&summary.path)
+        .map_err(|e| format!("failed to open WAV for final ASR chunking: {e}"))?;
+    validate_merge_wav_spec("final ASR input", reader.spec())?;
+
+    let parent = summary.path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = summary
+        .path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.trim().is_empty())
+        .unwrap_or("audio");
+    let chunk_dir = parent.join(format!("{stem}.asr-chunks"));
+    // Keep prior chunk transcripts in place. If the user cancels a long
+    // transcription, retry can resume from the completed chunks instead of
+    // throwing away several minutes of local ASR work.
+    fs::create_dir_all(&chunk_dir)
+        .map_err(|e| format!("failed to create final ASR chunk directory: {e}"))?;
+
+    let chunk_samples = chunk_ms
+        .max(1)
+        .saturating_mul(SAMPLE_RATE as u64)
+        .saturating_div(1_000)
+        .max(1);
+    let mut chunks = Vec::new();
+    let mut writer: Option<hound::WavWriter<BufWriter<File>>> = None;
+    let mut chunk_path: Option<PathBuf> = None;
+    let mut chunk_index = 0usize;
+    let mut chunk_start_sample = 0_u64;
+    let mut samples_in_chunk = 0_u64;
+    let mut total_samples = 0_u64;
+    let mut peak_i16 = 0_i16;
+
+    for sample in reader.samples::<i16>() {
+        if writer.is_none() {
+            let path = chunk_dir.join(format!("chunk-{chunk_index:05}.wav"));
+            writer = Some(create_audio_wav_writer(&path, "final ASR chunk")?);
+            chunk_path = Some(path);
+            chunk_start_sample = total_samples;
+            samples_in_chunk = 0;
+            peak_i16 = 0;
+        }
+
+        let sample = sample.map_err(|e| format!("failed to read final ASR input sample: {e}"))?;
+        writer
+            .as_mut()
+            .ok_or_else(|| "final ASR chunk writer was not initialized".to_string())?
+            .write_sample(sample)
+            .map_err(|e| format!("failed to write final ASR chunk sample: {e}"))?;
+        samples_in_chunk = samples_in_chunk.saturating_add(1);
+        total_samples = total_samples.saturating_add(1);
+        peak_i16 = peak_i16.max(sample.saturating_abs());
+
+        if samples_in_chunk >= chunk_samples {
+            let finished_writer = writer
+                .take()
+                .ok_or_else(|| "final ASR chunk writer was not initialized".to_string())?;
+            let finished_path = chunk_path
+                .take()
+                .ok_or_else(|| "final ASR chunk path was not initialized".to_string())?;
+            chunks.push(finish_wav_asr_chunk(
+                finished_writer,
+                finished_path,
+                summary,
+                chunk_start_sample,
+                samples_in_chunk,
+                peak_i16,
+            )?);
+            chunk_index = chunk_index.saturating_add(1);
+        }
+    }
+
+    if let Some(finished_writer) = writer {
+        let finished_path =
+            chunk_path.ok_or_else(|| "final ASR chunk path was not initialized".to_string())?;
+        chunks.push(finish_wav_asr_chunk(
+            finished_writer,
+            finished_path,
+            summary,
+            chunk_start_sample,
+            samples_in_chunk,
+            peak_i16,
+        )?);
+    }
+
+    Ok(chunks)
+}
+
+fn finish_wav_asr_chunk(
+    writer: hound::WavWriter<BufWriter<File>>,
+    path: PathBuf,
+    source_summary: &MicCaptureSummary,
+    start_sample: u64,
+    samples_written: u64,
+    peak_i16: i16,
+) -> Result<WhisperAudioChunk, String> {
+    writer
+        .finalize()
+        .map_err(|e| format!("failed to finalize final ASR chunk WAV: {e}"))?;
+    repair_wav_header_sizes(&path)?;
+
+    Ok(WhisperAudioChunk {
+        summary: MicCaptureSummary {
+            path,
+            samples_written,
+            dropped_chunks: source_summary.dropped_chunks,
+            native_rate: source_summary.native_rate,
+            duration_ms: samples_written.saturating_mul(1_000) / SAMPLE_RATE as u64,
+            peak: peak_i16 as f32 / i16::MAX as f32,
+        },
+        start_ms: start_sample.saturating_mul(1_000) / SAMPLE_RATE as u64,
+    })
+}
+
+fn read_cached_whisper_transcription(
+    summary: &MicCaptureSummary,
+    paths: &TranscriptPaths,
+    config: &WhisperCppConfig,
+) -> Option<WhisperTranscriptionDone> {
+    if !paths.text.is_file() {
+        return None;
+    }
+    let bytes = fs::read(&paths.text).ok()?;
+    let file_transcript = String::from_utf8_lossy(&bytes).trim().to_string();
+    if file_transcript.is_empty() || is_low_quality_transcript_artifact(&file_transcript) {
+        return None;
+    }
+    let segments = whisper_segments_from_json(paths, summary.duration_ms, config)
+        .unwrap_or_else(|| fallback_whisper_segments(summary.duration_ms, &file_transcript));
+    let transcript = segments
+        .iter()
+        .map(|segment| segment.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if transcript.trim().is_empty() || is_low_quality_transcript_artifact(&transcript) {
+        return None;
+    }
+    Some(WhisperTranscriptionDone {
+        transcript,
+        latency_ms: 0,
+        segments,
+    })
 }
 
 fn transcribe_with_whisper_cpp_for(
@@ -5519,7 +7292,9 @@ fn transcribe_with_whisper_cpp_for(
     config: &WhisperCppConfig,
     track: MeetingAudioTrack,
     timeout: Duration,
+    cancel_check: Option<&dyn Fn() -> bool>,
 ) -> Result<WhisperTranscriptionDone, String> {
+    fail_if_cancelled(cancel_check, "whisper.cpp")?;
     repair_wav_header_sizes(&summary.path)?;
     let whisper_audio_path = prepare_whisper_audio_input(summary)?;
     let language = whisper_language_for_track(track, &config.language);
@@ -5594,11 +7369,22 @@ fn transcribe_with_whisper_cpp_for(
         ));
     }
 
+    // Large whisper.cpp models can use ~2 GB RSS each. Serializing every local
+    // whisper-cli launch prevents live chunks and final/re-transcribe jobs from
+    // briefly loading multiple copies of the model on light laptops.
+    let _whisper_process_guard = acquire_whisper_process_lock(cancel_check)?;
+    fail_if_cancelled(cancel_check, "whisper.cpp")?;
     let started = Instant::now();
+    #[cfg(unix)]
+    {
+        // whisper-cli can be long-running and may spawn helper work internally;
+        // isolate it so timeout cleanup can kill the whole process group.
+        cmd.process_group(0);
+    }
     let child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn whisper.cpp: {e}"))?;
-    let output = wait_with_timeout(child, timeout)?;
+    let output = wait_with_timeout(child, timeout, cancel_check)?;
     let latency_ms = started.elapsed().as_millis() as u64;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -5910,33 +7696,159 @@ fn transcript_segments_are_near_duplicates(left: &str, right: &str) -> bool {
     jaccard >= 0.78 || containment >= 0.85
 }
 
-fn wait_with_timeout(child: std::process::Child, timeout: Duration) -> Result<Output, String> {
-    wait_with_timeout_for(child, timeout, "whisper.cpp")
+fn wait_with_timeout(
+    child: std::process::Child,
+    timeout: Duration,
+    cancel_check: Option<&dyn Fn() -> bool>,
+) -> Result<Output, String> {
+    wait_with_timeout_for_cancel(child, timeout, "whisper.cpp", cancel_check)
 }
 
 fn wait_with_timeout_for(
-    mut child: std::process::Child,
+    child: std::process::Child,
     timeout: Duration,
     label: &str,
 ) -> Result<Output, String> {
+    wait_with_timeout_for_cancel(child, timeout, label, None)
+}
+
+fn wait_with_timeout_for_cancel(
+    mut child: std::process::Child,
+    timeout: Duration,
+    label: &str,
+    cancel_check: Option<&dyn Fn() -> bool>,
+) -> Result<Output, String> {
     let started = Instant::now();
+    let watchdog_done = spawn_timeout_watchdog(child.id(), timeout, label.to_string());
     loop {
+        if cancel_check.is_some_and(|check| check()) {
+            terminate_cancelled_child(&mut child, label);
+            watchdog_done.store(true, Ordering::SeqCst);
+            return Err(format!("{label} cancelled"));
+        }
         match child.try_wait() {
             Ok(Some(_status)) => {
-                return child
+                let output = child
                     .wait_with_output()
                     .map_err(|e| format!("failed to collect {label} output: {e}"));
+                watchdog_done.store(true, Ordering::SeqCst);
+                return output;
             }
             Ok(None) => {
                 if started.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    terminate_timed_out_child(&mut child, label);
+                    watchdog_done.store(true, Ordering::SeqCst);
                     return Err(format!("{label} timed out after {}s", timeout.as_secs()));
                 }
                 thread::sleep(Duration::from_millis(100));
             }
-            Err(e) => return Err(format!("failed to poll {label}: {e}")),
+            Err(e) => {
+                watchdog_done.store(true, Ordering::SeqCst);
+                return Err(format!("failed to poll {label}: {e}"));
+            }
         }
+    }
+}
+
+fn spawn_timeout_watchdog(pid: u32, timeout: Duration, label: String) -> Arc<AtomicBool> {
+    let done = Arc::new(AtomicBool::new(false));
+
+    #[cfg(unix)]
+    {
+        let done_for_thread = Arc::clone(&done);
+        thread::spawn(move || {
+            let watchdog_delay = timeout.saturating_add(Duration::from_secs(1));
+            thread::sleep(watchdog_delay);
+            if done_for_thread.load(Ordering::SeqCst) {
+                return;
+            }
+            tracing::warn!(
+                pid,
+                label = %label,
+                timeout_secs = timeout.as_secs(),
+                "[meeting_engine] watchdog killing timed-out subprocess group"
+            );
+            terminate_process_group(pid);
+        });
+    }
+
+    done
+}
+
+fn terminate_timed_out_child(child: &mut std::process::Child, label: &str) {
+    terminate_child_process(child, label, "timed out");
+}
+
+fn terminate_cancelled_child(child: &mut std::process::Child, label: &str) {
+    terminate_child_process(child, label, "cancelled");
+}
+
+fn terminate_child_process(child: &mut std::process::Child, label: &str, reason: &str) {
+    let pid = child.id();
+    tracing::warn!(
+        pid,
+        label,
+        reason,
+        "[meeting_engine] terminating subprocess"
+    );
+
+    #[cfg(unix)]
+    {
+        terminate_process_group(pid);
+        thread::sleep(Duration::from_millis(250));
+        if matches!(child.try_wait(), Ok(None)) {
+            kill_process_group(pid, libc::SIGKILL);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        terminate_windows_process_tree(pid, false);
+        thread::sleep(Duration::from_millis(250));
+        if matches!(child.try_wait(), Ok(None)) {
+            terminate_windows_process_tree(pid, true);
+        }
+    }
+
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        let _ = child.kill();
+    }
+
+    let _ = child.wait();
+}
+
+#[cfg(windows)]
+fn terminate_windows_process_tree(pid: u32, force: bool) {
+    let _ = Command::new("taskkill")
+        .args(windows_taskkill_args(pid, force))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(any(windows, test))]
+fn windows_taskkill_args(pid: u32, force: bool) -> Vec<String> {
+    let mut args = vec!["/PID".to_string(), pid.to_string(), "/T".to_string()];
+    if force {
+        args.push("/F".to_string());
+    }
+    args
+}
+
+#[cfg(unix)]
+fn terminate_process_group(pid: u32) {
+    kill_process_group(pid, libc::SIGTERM);
+    thread::sleep(Duration::from_millis(250));
+    kill_process_group(pid, libc::SIGKILL);
+}
+
+#[cfg(unix)]
+fn kill_process_group(pid: u32, signal: libc::c_int) {
+    let pid = pid as libc::pid_t;
+    unsafe {
+        let _ = libc::kill(-pid, signal);
+        let _ = libc::kill(pid, signal);
     }
 }
 
@@ -5961,12 +7873,12 @@ fn run_final_diarization_stage(
         );
     }
 
-    let config = match meeting_final_diarization_config() {
-        Ok(Some(config)) => config,
+    let runner = match meeting_final_diarization_runner() {
+        Ok(Some(runner)) => runner,
         Ok(None) => {
             return MeetingFinalDiarizationSnapshot::skipped(
                 "skipped_missing_command",
-                "AIRNOTE_MEETING_FINAL_DIARIZATION_COMMAND or AIRNOTE_MEETING_FINAL_DIARIZATION_SCRIPT is not set",
+                "speaker detection helper is not configured",
                 Some(paths),
             );
         }
@@ -5979,23 +7891,71 @@ fn run_final_diarization_stage(
         }
     };
 
+    if matches!(runner, MeetingFinalDiarizationRunner::LightOnnx) {
+        if let Some(message) = light_diarization_skip_reason(audio_path) {
+            tracing::warn!(
+                audio = %audio_path.display(),
+                reason = %message,
+                "[meeting_engine] skipping light final diarization"
+            );
+            return MeetingFinalDiarizationSnapshot::skipped(
+                "skipped_long_audio",
+                message,
+                Some(paths),
+            );
+        }
+    }
+
     {
         let mut transcription = transcription_state.lock_recover();
         transcription.status = "final_diarizing".to_string();
+        transcription.progress = None;
         transcription.final_diarization =
-            MeetingFinalDiarizationSnapshot::running(config.provider.clone(), &paths);
+            MeetingFinalDiarizationSnapshot::running(runner.provider(), &paths);
     }
 
     let started = Instant::now();
-    let result = run_final_diarization_command(&config, audio_path, transcript_paths, &paths);
+    let provider = runner.provider();
+    let result = match &runner {
+        MeetingFinalDiarizationRunner::LightOnnx => {
+            run_light_final_diarization(audio_path, transcript_paths, &paths)
+        }
+        MeetingFinalDiarizationRunner::Command(config) => {
+            run_final_diarization_command(config, audio_path, transcript_paths, &paths)
+        }
+    };
     let latency_ms = started.elapsed().as_millis() as u64;
     match result {
-        Ok(()) => MeetingFinalDiarizationSnapshot::completed(config.provider, latency_ms, &paths),
+        Ok(()) => MeetingFinalDiarizationSnapshot::completed(provider, latency_ms, &paths),
         Err(e) => {
-            write_final_diarization_failure(&paths.diarization_json, &config.provider, &e);
-            MeetingFinalDiarizationSnapshot::failed(config.provider, latency_ms, &paths, e)
+            write_final_diarization_failure(&paths.diarization_json, &provider, &e);
+            MeetingFinalDiarizationSnapshot::failed(provider, latency_ms, &paths, e)
         }
     }
+}
+
+fn light_diarization_skip_reason(audio_path: &Path) -> Option<String> {
+    let duration_ms = wav_duration_ms(audio_path)?;
+    light_diarization_skip_reason_for_duration(duration_ms, light_diarization_max_audio_ms())
+}
+
+fn light_diarization_skip_reason_for_duration(duration_ms: u64, max_ms: u64) -> Option<String> {
+    if duration_ms <= max_ms {
+        return None;
+    }
+    Some(format!(
+        "light speaker detection skipped for {:.1}s audio; limit is {:.1}s on this device",
+        duration_ms as f64 / 1000.0,
+        max_ms as f64 / 1000.0
+    ))
+}
+
+fn light_diarization_max_audio_ms() -> u64 {
+    env_u64(
+        "AIRNOTE_MEETING_LIGHT_DIARIZATION_MAX_AUDIO_SECS",
+        DEFAULT_LIGHT_DIARIZATION_MAX_AUDIO_SECS,
+    )
+    .saturating_mul(1000)
 }
 
 fn load_final_transcript_text(
@@ -6087,6 +8047,160 @@ fn run_final_diarization_command(
     Ok(())
 }
 
+fn run_light_final_diarization(
+    _audio_path: &Path,
+    _transcript_paths: &TranscriptPaths,
+    _final_paths: &FinalDiarizationPaths,
+) -> Result<(), String> {
+    Err("final diarization has been removed from the meeting pipeline".to_string())
+}
+
+fn read_meeting_transcript_artifact(path: &Path) -> Result<MeetingTranscriptArtifact, String> {
+    let json = fs::read_to_string(path)
+        .map_err(|e| format!("failed to read transcript artifact {}: {e}", path.display()))?;
+    serde_json::from_str(&json).map_err(|e| {
+        format!(
+            "failed to parse transcript artifact {}: {e}",
+            path.display()
+        )
+    })
+}
+
+fn seconds_to_ms(seconds: f32) -> u64 {
+    (seconds.max(0.0) * 1_000.0).round() as u64
+}
+
+fn assign_light_diarization_to_transcript(
+    transcript_segments: &[MeetingTranscriptSegment],
+    turns: &[LightDiarizationTurn],
+) -> Vec<MeetingTranscriptSegment> {
+    let mut speaker_order = std::collections::HashMap::<String, usize>::new();
+    transcript_segments
+        .iter()
+        .map(|segment| {
+            if segment.source == "mic" || segment.speaker_id == "you" {
+                return segment.clone();
+            }
+            let mut next = segment.clone();
+            if let Some(turn) = best_light_diarization_turn(segment, turns) {
+                let idx = light_speaker_index(&turn.speaker_key, &mut speaker_order);
+                next.speaker_id = format!("speaker_{idx}");
+                next.speaker_name = format!("Speaker {idx}");
+            }
+            next
+        })
+        .collect()
+}
+
+fn best_light_diarization_turn<'a>(
+    segment: &MeetingTranscriptSegment,
+    turns: &'a [LightDiarizationTurn],
+) -> Option<&'a LightDiarizationTurn> {
+    let segment_start = segment.start_ms;
+    let segment_end = segment.end_ms.max(segment.start_ms + 1);
+    let segment_duration = segment_end.saturating_sub(segment_start).max(1);
+    let min_overlap = (segment_duration / 10).clamp(120, 900);
+    turns
+        .iter()
+        .filter_map(|turn| {
+            let overlap =
+                interval_overlap_ms(segment_start, segment_end, turn.start_ms, turn.end_ms);
+            (overlap >= min_overlap).then_some((turn, overlap))
+        })
+        .max_by(|(left_turn, left_overlap), (right_turn, right_overlap)| {
+            left_overlap
+                .cmp(right_overlap)
+                .then_with(|| left_turn.confidence.total_cmp(&right_turn.confidence))
+        })
+        .map(|(turn, _)| turn)
+}
+
+fn interval_overlap_ms(left_start: u64, left_end: u64, right_start: u64, right_end: u64) -> u64 {
+    left_end
+        .min(right_end)
+        .saturating_sub(left_start.max(right_start))
+}
+
+fn light_speaker_index(
+    speaker_key: &str,
+    speaker_order: &mut std::collections::HashMap<String, usize>,
+) -> usize {
+    if let Some(idx) = speaker_order.get(speaker_key) {
+        return *idx;
+    }
+    let idx = speaker_order.len() + 1;
+    speaker_order.insert(speaker_key.to_string(), idx);
+    idx
+}
+
+fn write_light_final_diarization_outputs(
+    final_paths: &FinalDiarizationPaths,
+    mut transcript_artifact: MeetingTranscriptArtifact,
+    segments: Vec<MeetingTranscriptSegment>,
+) -> Result<(), String> {
+    let transcript = format_meeting_timeline_transcript(&segments);
+    transcript_artifact.status = "completed".to_string();
+    transcript_artifact.diarization_json_path =
+        Some(final_paths.diarization_json.to_string_lossy().to_string());
+    transcript_artifact.final_diarization_json_path =
+        Some(final_paths.diarization_json.to_string_lossy().to_string());
+    transcript_artifact.final_transcript_json_path =
+        Some(final_paths.transcript_json.to_string_lossy().to_string());
+    transcript_artifact.transcript = transcript.clone();
+    transcript_artifact.segments = segments.clone();
+    transcript_artifact.generated_at_ms = now_ms();
+    transcript_artifact.error = None;
+
+    let transcript_json = serde_json::to_vec_pretty(&transcript_artifact)
+        .map_err(|e| format!("failed to serialize light diarized transcript: {e}"))?;
+    write_atomic(&final_paths.transcript_json, transcript_json).map_err(|e| {
+        format!(
+            "failed to write light diarized transcript {}: {e}",
+            final_paths.transcript_json.display()
+        )
+    })?;
+    write_atomic(
+        &final_paths.transcript_json.with_extension("txt"),
+        transcript.into_bytes(),
+    )
+    .map_err(|e| format!("failed to write light diarized transcript text: {e}"))?;
+
+    let speakers = diarization_speakers_from_segments(&segments);
+    let diarization_segments = segments
+        .iter()
+        .map(|segment| MeetingDiarizationSegment {
+            speaker_id: segment.speaker_id.clone(),
+            speaker_name: segment.speaker_name.clone(),
+            source: segment.source.clone(),
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            confidence: if segment.speaker_id == "you" {
+                0.95
+            } else {
+                0.82
+            },
+            method: LIGHT_DIARIZATION_PROVIDER.to_string(),
+        })
+        .collect();
+    let artifact = MeetingDiarizationArtifact {
+        schema_version: 1,
+        status: "completed".to_string(),
+        method: LIGHT_DIARIZATION_PROVIDER.to_string(),
+        speakers,
+        segments: diarization_segments,
+        generated_at_ms: now_ms(),
+        error: None,
+    };
+    let diarization_json = serde_json::to_vec_pretty(&artifact)
+        .map_err(|e| format!("failed to serialize light diarization: {e}"))?;
+    write_atomic(&final_paths.diarization_json, diarization_json).map_err(|e| {
+        format!(
+            "failed to write light diarization {}: {e}",
+            final_paths.diarization_json.display()
+        )
+    })
+}
+
 fn write_final_diarization_failure(path: &Path, provider: &str, error: &str) {
     let artifact = MeetingDiarizationArtifact {
         schema_version: 1,
@@ -6146,15 +8260,7 @@ fn write_transcript_artifact(
             .map(|path| path.to_string_lossy().to_string())
             .collect()
     };
-    let diarization_json_path =
-        diarization_path_for_transcript(paths).map(|path| path.to_string_lossy().to_string());
-    let final_paths = final_diarization_paths_for_transcript(paths);
-    let final_diarization_json_path = final_paths
-        .as_ref()
-        .map(|paths| paths.diarization_json.to_string_lossy().to_string());
-    let final_transcript_json_path = final_paths
-        .as_ref()
-        .map(|paths| paths.transcript_json.to_string_lossy().to_string());
+    let diarization_json_path = diarization_path_for_transcript(paths);
     let artifact = MeetingTranscriptArtifact {
         schema_version: 1,
         provider: "whisper.cpp".to_string(),
@@ -6163,9 +8269,11 @@ fn write_transcript_artifact(
         model: config.map(|config| config.model.to_string_lossy().to_string()),
         source_wav: summary.path.to_string_lossy().to_string(),
         source_wavs,
-        diarization_json_path: diarization_json_path.clone(),
-        final_diarization_json_path,
-        final_transcript_json_path,
+        diarization_json_path: diarization_json_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        final_diarization_json_path: None,
+        final_transcript_json_path: None,
         transcript: transcript.to_string(),
         cleaned_transcript: cleaned_transcript.map(|text| text.to_string()),
         cleanup_status: cleanup.status,
@@ -6192,7 +8300,7 @@ fn write_transcript_artifact(
         }
     }
 
-    if let Some(path) = diarization_path_for_transcript(paths) {
+    if let Some(path) = diarization_json_path {
         write_diarization_artifact(&path, &segments, error);
     }
 }
@@ -6251,11 +8359,11 @@ fn write_diarization_artifact(
     match serde_json::to_vec_pretty(&artifact) {
         Ok(json) => {
             if let Err(e) = write_atomic(path, json) {
-                tracing::warn!(error = %e, path = %path.display(), "[meeting_engine] failed to write diarization json");
+                tracing::warn!(error = %e, path = %path.display(), "[meeting_engine] failed to write legacy source diarization json");
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "[meeting_engine] failed to serialize diarization json");
+            tracing::warn!(error = %e, "[meeting_engine] failed to serialize legacy source diarization json");
         }
     }
 }
@@ -6433,7 +8541,6 @@ fn run_meeting_intelligence(
         decisions,
     };
     if let Some(dir) = target_dir {
-        let _ = fs::create_dir_all(&dir);
         write_meeting_intelligence_cache(&dir, &result);
     }
     Ok(result)
@@ -8876,6 +10983,212 @@ fn cleanup_within_volume_band(raw: &str, cleaned: &str) -> bool {
     (0.5..=2.0).contains(&ratio)
 }
 
+fn name_meeting_speakers_with_ai(
+    segments: &mut [MeetingTranscriptSegment],
+    cleaned_transcript: Option<&str>,
+) -> Result<Vec<(String, String)>, String> {
+    let Some(user_prompt) = build_speaker_naming_prompt(segments, cleaned_transcript) else {
+        return Ok(Vec::new());
+    };
+    let config = match meeting_ai_config() {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                "[meeting_engine] speaker naming skipped because meeting AI is unavailable"
+            );
+            return Ok(Vec::new());
+        }
+    };
+    let completion = complete_meeting_llm(
+        MEETING_SPEAKER_NAMING_SYSTEM_PROMPT,
+        &user_prompt,
+        config,
+        meeting_speaker_naming_timeout(),
+        meeting_speaker_naming_max_tokens(),
+    )?;
+    let names = parse_speaker_naming_response(&completion.content, segments)?;
+    Ok(apply_speaker_name_map(segments, &names))
+}
+
+fn build_speaker_naming_prompt(
+    segments: &[MeetingTranscriptSegment],
+    cleaned_transcript: Option<&str>,
+) -> Option<String> {
+    let mut seen_speakers = std::collections::HashSet::new();
+    let speakers = segments
+        .iter()
+        .filter(|segment| seen_speakers.insert(segment.speaker_id.as_str()))
+        .map(|segment| {
+            format!(
+                "- speaker_id={} current_label=\"{}\" source={}",
+                segment.speaker_id, segment.speaker_name, segment.source
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if speakers.trim().is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    let mut total_chars = 0usize;
+    for segment in segments
+        .iter()
+        .filter(|segment| !segment.text.trim().is_empty())
+    {
+        let line = format!(
+            "[{} {} id={} source={}] {}",
+            format_timestamp_ms(segment.start_ms),
+            segment.speaker_name,
+            segment.speaker_id,
+            segment.source,
+            truncate_chars(&compact_transcript_text(&segment.text), 260)
+        );
+        total_chars += line.len();
+        if total_chars > 14_000 {
+            break;
+        }
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        return None;
+    }
+
+    let cleaned = cleaned_transcript
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| {
+            format!(
+                "\n\nCleaned transcript excerpt, if useful:\n<<<CLEANED\n{}\nCLEANED>>>",
+                truncate_chars(text, 6_000)
+            )
+        })
+        .unwrap_or_default();
+
+    Some(format!(
+        "Existing speaker IDs:\n{speakers}\n\nTranscript excerpt:\n<<<TRANSCRIPT\n{}\nTRANSCRIPT>>>{cleaned}\n\nReturn only speaker_id/name pairs when the transcript gives direct evidence. Omit uncertain speakers.",
+        lines.join("\n")
+    ))
+}
+
+fn parse_speaker_naming_response(
+    content: &str,
+    segments: &[MeetingTranscriptSegment],
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let json_text = extract_json_object(content)
+        .ok_or_else(|| "speaker naming returned no JSON object".to_string())?;
+    let payload: MeetingSpeakerNamingPayload = serde_json::from_str(&json_text)
+        .map_err(|e| format!("speaker naming returned invalid JSON: {e}"))?;
+    let known_ids = segments
+        .iter()
+        .map(|segment| segment.speaker_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut names = std::collections::HashMap::new();
+    for item in payload.speakers {
+        let speaker_id = item.speaker_id.trim();
+        if !known_ids.contains(speaker_id) || item.evidence.trim().is_empty() {
+            continue;
+        }
+        let Some(name) = sanitize_inferred_speaker_name(&item.name) else {
+            continue;
+        };
+        names.insert(speaker_id.to_string(), name);
+    }
+    Ok(names)
+}
+
+fn apply_speaker_name_map(
+    segments: &mut [MeetingTranscriptSegment],
+    names: &std::collections::HashMap<String, String>,
+) -> Vec<(String, String)> {
+    let mut replacements: Vec<(String, String)> = Vec::new();
+    for segment in segments {
+        let Some(name) = names.get(&segment.speaker_id) else {
+            continue;
+        };
+        if segment.speaker_name == *name {
+            continue;
+        }
+        let old = segment.speaker_name.clone();
+        if !replacements
+            .iter()
+            .any(|(existing_old, existing_new)| existing_old == &old && existing_new == name)
+        {
+            replacements.push((old, name.clone()));
+        }
+        segment.speaker_name = name.clone();
+    }
+    replacements
+}
+
+fn rewrite_speaker_labels_in_text(text: &str, replacements: &[(String, String)]) -> String {
+    let mut rewritten = text.to_string();
+    for (old, new) in replacements {
+        let old = old.trim();
+        let new = new.trim();
+        if old.is_empty() || new.is_empty() || old == new {
+            continue;
+        }
+        rewritten = rewritten.replace(&format!(" {old}]"), &format!(" {new}]"));
+        rewritten = rewritten.replace(&format!("[{old}]"), &format!("[{new}]"));
+        rewritten = rewritten.replace(&format!("{old}:"), &format!("{new}:"));
+        rewritten = rewritten.replace(&format!("{old} -"), &format!("{new} -"));
+    }
+    rewritten
+}
+
+fn sanitize_inferred_speaker_name(name: &str) -> Option<String> {
+    let cleaned = name
+        .trim()
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '[' | ']' | '(' | ')'))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cleaned.is_empty() || cleaned.len() > 48 || cleaned.split_whitespace().count() > 4 {
+        return None;
+    }
+    if cleaned.chars().any(|c| {
+        !(c.is_alphabetic() || c.is_whitespace() || matches!(c, '.' | '\'' | '-' | '’' | '‘' | 'ʼ'))
+    }) {
+        return None;
+    }
+    if cleaned.chars().filter(|c| c.is_alphabetic()).count() < 2 {
+        return None;
+    }
+    let lower = cleaned.to_ascii_lowercase();
+    let generic = [
+        "you",
+        "me",
+        "i",
+        "speaker",
+        "unknown",
+        "participant",
+        "user",
+        "host",
+        "customer",
+        "client",
+        "agent",
+        "assistant",
+        "moderator",
+        "presenter",
+        "attendee",
+        "person",
+        "sir",
+        "madam",
+        "maam",
+        "ma'am",
+    ];
+    if generic.contains(&lower.as_str()) || lower.starts_with("speaker ") {
+        return None;
+    }
+    Some(cleaned)
+}
+
+fn compact_transcript_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn cleanup_meeting_transcript_with_llm(
     raw: &str,
     config: MeetingCleanupConfig,
@@ -9378,6 +11691,13 @@ fn meeting_ai_timeout() -> Duration {
     ))
 }
 
+fn meeting_speaker_naming_timeout() -> Duration {
+    Duration::from_secs(env_u64(
+        "AIRNOTE_MEETING_SPEAKER_NAMING_TIMEOUT_SECS",
+        DEFAULT_MEETING_SPEAKER_NAMING_TIMEOUT_SECS,
+    ))
+}
+
 /// Interactive chat gets a tighter timeout than batch cleanup/intelligence so a
 /// stalled provider surfaces a clear error in ~a minute instead of leaving the
 /// chat stuck on "thinking" for the full 2-minute batch timeout.
@@ -9389,6 +11709,13 @@ fn meeting_ai_max_tokens() -> u64 {
     env_u64(
         "AIRNOTE_MEETING_AI_MAX_TOKENS",
         DEFAULT_MEETING_AI_MAX_TOKENS,
+    )
+}
+
+fn meeting_speaker_naming_max_tokens() -> u64 {
+    env_u64(
+        "AIRNOTE_MEETING_SPEAKER_NAMING_MAX_TOKENS",
+        DEFAULT_MEETING_SPEAKER_NAMING_MAX_TOKENS,
     )
 }
 
@@ -9416,10 +11743,38 @@ fn default_meeting_model(provider: &str) -> String {
 }
 
 fn meeting_final_diarization_enabled() -> bool {
-    env_bool("AIRNOTE_MEETING_FINAL_DIARIZATION_ENABLED", false)
+    false
 }
 
-fn meeting_final_diarization_config() -> Result<Option<MeetingFinalDiarizationConfig>, String> {
+fn meeting_final_diarization_mode() -> String {
+    FINAL_DIARIZATION_MODE_OFF.to_string()
+}
+
+fn normalize_meeting_final_diarization_mode(mode: &str) -> String {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "light" | "light_onnx" | "onnx" => FINAL_DIARIZATION_MODE_LIGHT.to_string(),
+        "high" | "sortformer" | "nemo" | "nemo_sortformer" | "external" => {
+            FINAL_DIARIZATION_MODE_HIGH.to_string()
+        }
+        _ => FINAL_DIARIZATION_MODE_OFF.to_string(),
+    }
+}
+
+fn meeting_final_diarization_runner() -> Result<Option<MeetingFinalDiarizationRunner>, String> {
+    match meeting_final_diarization_mode().as_str() {
+        FINAL_DIARIZATION_MODE_OFF => Ok(None),
+        FINAL_DIARIZATION_MODE_LIGHT => {
+            validate_light_diarization_models()?;
+            Ok(Some(MeetingFinalDiarizationRunner::LightOnnx))
+        }
+        FINAL_DIARIZATION_MODE_HIGH => meeting_final_diarization_command_config()
+            .map(|config| config.map(MeetingFinalDiarizationRunner::Command)),
+        _ => Ok(None),
+    }
+}
+
+fn meeting_final_diarization_command_config()
+-> Result<Option<MeetingFinalDiarizationConfig>, String> {
     said_core::load_env();
 
     let timeout = Duration::from_secs(env_u64(
@@ -9427,7 +11782,7 @@ fn meeting_final_diarization_config() -> Result<Option<MeetingFinalDiarizationCo
         DEFAULT_FINAL_DIARIZATION_TIMEOUT_SECS,
     ));
     let provider = env_nonempty("AIRNOTE_MEETING_FINAL_DIARIZATION_PROVIDER")
-        .unwrap_or_else(|| "nemo_sortformer".to_string());
+        .unwrap_or_else(|| HIGH_DIARIZATION_PROVIDER.to_string());
 
     if let Some(script) = env_file_path("AIRNOTE_MEETING_FINAL_DIARIZATION_SCRIPT") {
         let command = env_executable_path("AIRNOTE_MEETING_FINAL_DIARIZATION_PYTHON")
@@ -9589,35 +11944,41 @@ pub struct WhisperModelInfo {
     pub incomplete: bool,
 }
 
-/// List installed whisper.cpp models (`ggml-*.bin`, excluding the Silero VAD
-/// model) in the app's model directory, marking which one is currently active.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct RemovedWhisperModelInfo {
+    pub name: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct WhisperModelCleanupResult {
+    pub removed: Vec<RemovedWhisperModelInfo>,
+    pub freed_bytes: u64,
+}
+
+/// List installed supported whisper.cpp meeting models in the app's model
+/// directory, marking which one is currently active.
 #[tauri::command]
 pub fn meeting_list_whisper_models() -> Vec<WhisperModelInfo> {
-    let dir = said_core::paths::data_dir().join("models");
+    let dir = meeting_whisper_models_dir();
     let active = resolve_whisper_cpp_config().ok().map(|config| config.model);
     let mut models = Vec::new();
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if !name.starts_with("ggml-") || !name.ends_with(".bin") || name.contains("silero") {
-                continue;
-            }
-            // fs::metadata follows symlinks (some models are symlinked to another
-            // dir), so the size is the real target size, not the link's ~90 bytes.
-            let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            models.push(WhisperModelInfo {
-                name: name.to_string(),
-                path: path.display().to_string(),
-                size_bytes,
-                active: active.as_deref() == Some(path.as_path()),
-                incomplete: size_bytes < MIN_WHISPER_MODEL_BYTES,
-            });
+    for (name, _, _) in WHISPER_MODEL_CATALOG {
+        let path = dir.join(name);
+        if !path.exists() {
+            continue;
         }
+        // fs::metadata follows symlinks (some models are symlinked to another
+        // dir), so the size is the real target size, not the link's ~90 bytes.
+        let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        models.push(WhisperModelInfo {
+            name: (*name).to_string(),
+            path: path.display().to_string(),
+            size_bytes,
+            active: active.as_deref() == Some(path.as_path()),
+            incomplete: size_bytes < MIN_WHISPER_MODEL_BYTES,
+        });
     }
-    models.sort_by(|a, b| a.name.cmp(&b.name));
     models
 }
 
@@ -9633,36 +11994,18 @@ pub fn meeting_cleanup_storage() -> Result<(), String> {
 
 const MODEL_DOWNLOAD_EVENT: &str = "meeting-model-download";
 
-/// Downloadable whisper.cpp models (name, source URL, approx size for a progress
-/// estimate before Content-Length is known). Mirror of the official
-/// ggerganov/whisper.cpp ggml weights.
-const WHISPER_MODEL_CATALOG: &[(&str, &str, u64)] = &[
-    (
-        "ggml-base.en.bin",
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
-        147_951_465,
-    ),
-    (
-        "ggml-small.bin",
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
-        487_601_967,
-    ),
-    (
-        "ggml-medium.bin",
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
-        1_533_763_059,
-    ),
-    (
-        "ggml-large-v3-turbo.bin",
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
-        1_624_555_275,
-    ),
-    (
-        "ggml-large-v3.bin",
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
-        3_095_033_483,
-    ),
-];
+/// Downloadable meeting whisper.cpp models (name, source URL, approx size for a
+/// progress estimate before Content-Length is known). Keep Settings intentionally
+/// simple: one Q5 Turbo model for both live and after-meeting transcription.
+const WHISPER_MODEL_CATALOG: &[(&str, &str, u64)] = &[(
+    "ggml-large-v3-turbo-q5_0.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+    573_000_000,
+)];
+
+fn meeting_whisper_models_dir() -> PathBuf {
+    said_core::paths::data_dir().join("models")
+}
 
 fn model_download_cancels() -> &'static Mutex<std::collections::HashSet<String>> {
     static CANCELS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
@@ -9690,9 +12033,26 @@ pub struct CatalogModel {
     pub installed: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct MeetingDiarizationSettingsStatus {
+    pub mode: String,
+    pub light_installed: bool,
+    pub light_size_bytes: u64,
+    pub light_required_bytes: u64,
+    pub high_configured: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LightDiarizationDownloadProgress {
+    received: u64,
+    total: u64,
+    status: String,
+    error: Option<String>,
+}
+
 #[tauri::command]
 pub fn meeting_whisper_model_catalog() -> Vec<CatalogModel> {
-    let dir = said_core::paths::data_dir().join("models");
+    let dir = meeting_whisper_models_dir();
     WHISPER_MODEL_CATALOG
         .iter()
         .map(|(name, _, size)| CatalogModel {
@@ -9701,6 +12061,239 @@ pub fn meeting_whisper_model_catalog() -> Vec<CatalogModel> {
             installed: dir.join(name).is_file(),
         })
         .collect()
+}
+
+#[tauri::command]
+pub fn meeting_diarization_settings_status() -> MeetingDiarizationSettingsStatus {
+    let (segmentation, embedding) = light_diarization_model_paths();
+    let segmentation_size = fs::metadata(&segmentation).map(|m| m.len()).unwrap_or(0);
+    let embedding_size = fs::metadata(&embedding).map(|m| m.len()).unwrap_or(0);
+    MeetingDiarizationSettingsStatus {
+        mode: meeting_final_diarization_mode(),
+        light_installed: light_diarization_models_installed(),
+        light_size_bytes: segmentation_size + embedding_size,
+        light_required_bytes: LIGHT_DIARIZATION_SEGMENTATION_BYTES
+            + LIGHT_DIARIZATION_EMBEDDING_BYTES,
+        high_configured: meeting_final_diarization_command_config()
+            .ok()
+            .flatten()
+            .is_some(),
+    }
+}
+
+#[tauri::command]
+pub async fn meeting_download_light_diarization_model(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || download_light_diarization_model_blocking(&app))
+        .await
+        .map_err(|e| format!("light speaker download task failed: {e}"))?
+}
+
+fn light_diarization_model_dir() -> PathBuf {
+    said_core::paths::data_dir()
+        .join("models")
+        .join("diarization")
+}
+
+fn light_diarization_model_paths() -> (PathBuf, PathBuf) {
+    let dir = light_diarization_model_dir();
+    (
+        dir.join(LIGHT_DIARIZATION_SEGMENTATION_NAME),
+        dir.join(LIGHT_DIARIZATION_EMBEDDING_NAME),
+    )
+}
+
+fn light_diarization_models_installed() -> bool {
+    let (segmentation, embedding) = light_diarization_model_paths();
+    fs::metadata(segmentation)
+        .map(|m| m.len() > 1_000_000)
+        .unwrap_or(false)
+        && fs::metadata(embedding)
+            .map(|m| m.len() > 10_000_000)
+            .unwrap_or(false)
+}
+
+fn validate_light_diarization_models() -> Result<(), String> {
+    if light_diarization_models_installed() {
+        Ok(())
+    } else {
+        Err("Light speaker detection is not downloaded yet. Open Settings -> Meeting and download the light speaker model.".to_string())
+    }
+}
+
+fn download_light_diarization_model_blocking(app: &AppHandle) -> Result<(), String> {
+    let dir = light_diarization_model_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("couldn't create speaker model folder: {e}"))?;
+    let files = [
+        (
+            LIGHT_DIARIZATION_SEGMENTATION_NAME,
+            LIGHT_DIARIZATION_SEGMENTATION_URL,
+            LIGHT_DIARIZATION_SEGMENTATION_BYTES,
+        ),
+        (
+            LIGHT_DIARIZATION_EMBEDDING_NAME,
+            LIGHT_DIARIZATION_EMBEDDING_URL,
+            LIGHT_DIARIZATION_EMBEDDING_BYTES,
+        ),
+    ];
+    let total = files.iter().map(|(_, _, size)| *size).sum::<u64>();
+    let mut received_total = 0_u64;
+    emit_light_diarization_download(app, received_total, total, "downloading", None);
+    for (name, url, size_hint) in files {
+        let dest = dir.join(name);
+        if dest.is_file() {
+            received_total += fs::metadata(&dest).map(|m| m.len()).unwrap_or(size_hint);
+            emit_light_diarization_download(
+                app,
+                received_total.min(total),
+                total,
+                "downloading",
+                None,
+            );
+            continue;
+        }
+        download_light_diarization_file(
+            app,
+            url,
+            size_hint,
+            &dir,
+            &dest,
+            &mut received_total,
+            total,
+        )?;
+    }
+    emit_light_diarization_download(app, total, total, "done", None);
+    Ok(())
+}
+
+fn download_light_diarization_file(
+    app: &AppHandle,
+    url: &str,
+    total_hint: u64,
+    dir: &Path,
+    dest: &Path,
+    received_total: &mut u64,
+    combined_total: u64,
+) -> Result<(), String> {
+    use std::io::{Read, Write};
+
+    let name = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("speaker-model");
+    let part = dir.join(format!("{name}.part"));
+    let fail = |part: &Path, received: u64, total: u64, msg: String| -> String {
+        let _ = fs::remove_file(part);
+        emit_light_diarization_download(app, received, total, "error", Some(msg.clone()));
+        msg
+    };
+    let client = reqwest::blocking::Client::builder().build().map_err(|e| {
+        fail(
+            &part,
+            *received_total,
+            combined_total,
+            format!("http client: {e}"),
+        )
+    })?;
+    let mut response = client.get(url).send().map_err(|e| {
+        fail(
+            &part,
+            *received_total,
+            combined_total,
+            format!("request failed: {e}"),
+        )
+    })?;
+    if !response.status().is_success() {
+        return Err(fail(
+            &part,
+            *received_total,
+            combined_total,
+            format!("download failed: HTTP {}", response.status()),
+        ));
+    }
+    let file_total = response.content_length().unwrap_or(total_hint);
+    let mut file = fs::File::create(&part).map_err(|e| {
+        fail(
+            &part,
+            *received_total,
+            combined_total,
+            format!("create temp: {e}"),
+        )
+    })?;
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut file_received: u64 = 0;
+    let mut last_emit = *received_total;
+    loop {
+        let n = response.read(&mut buf).map_err(|e| {
+            fail(
+                &part,
+                *received_total,
+                combined_total,
+                format!("read failed: {e}"),
+            )
+        })?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n]).map_err(|e| {
+            fail(
+                &part,
+                *received_total,
+                combined_total,
+                format!("write failed: {e}"),
+            )
+        })?;
+        file_received += n as u64;
+        let combined_received = *received_total + file_received;
+        if combined_received.saturating_sub(last_emit) >= 1_000_000 {
+            last_emit = combined_received;
+            emit_light_diarization_download(
+                app,
+                combined_received.min(combined_total),
+                combined_total,
+                "downloading",
+                None,
+            );
+        }
+    }
+    file.flush().ok();
+    let _ = file.sync_all();
+    drop(file);
+    if file_total > 0 && file_received < file_total / 2 {
+        return Err(fail(
+            &part,
+            *received_total + file_received,
+            combined_total,
+            "download ended early (incomplete speaker model)".to_string(),
+        ));
+    }
+    fs::rename(&part, dest).map_err(|e| {
+        fail(
+            &part,
+            *received_total + file_received,
+            combined_total,
+            format!("finalize: {e}"),
+        )
+    })?;
+    *received_total += file_received;
+    Ok(())
+}
+
+fn emit_light_diarization_download(
+    app: &AppHandle,
+    received: u64,
+    total: u64,
+    status: &str,
+    error: Option<String>,
+) {
+    let _ = app.emit(
+        LIGHT_DIARIZATION_EVENT,
+        LightDiarizationDownloadProgress {
+            received,
+            total,
+            status: status.to_string(),
+            error,
+        },
+    );
 }
 
 #[tauri::command]
@@ -9720,7 +12313,7 @@ pub async fn meeting_download_whisper_model(app: AppHandle, name: String) -> Res
     };
     let url = url.to_string();
     let total_hint = *total_hint;
-    let dir = said_core::paths::data_dir().join("models");
+    let dir = meeting_whisper_models_dir();
     let dest = dir.join(&name);
     if dest.is_file() {
         return Ok(()); // already installed — idempotent
@@ -9863,22 +12456,88 @@ pub fn meeting_delete_whisper_model(name: String) -> Result<(), String> {
     {
         return Err("invalid model name".to_string());
     }
-    let path = said_core::paths::data_dir().join("models").join(&name);
+    let path = meeting_whisper_models_dir().join(&name);
     if !path.is_file() {
         return Err("model is not installed".to_string());
     }
     fs::remove_file(&path).map_err(|e| format!("couldn't delete model: {e}"))?;
-    if meeting_env("AIRNOTE_WHISPER_CPP_MODEL").as_deref() == Some(&path.display().to_string()) {
-        let _ = meeting_settings_set("AIRNOTE_WHISPER_CPP_MODEL".to_string(), None);
+    let deleted_path = path.display().to_string();
+    for key in ["AIRNOTE_WHISPER_CPP_MODEL"] {
+        if meeting_env(key).as_deref() == Some(deleted_path.as_str()) {
+            let _ = meeting_settings_set(key.to_string(), None);
+        }
     }
     // Re-point the active selection to a remaining model (or clear it).
     meeting_ensure_active_model();
     Ok(())
 }
 
+/// Remove legacy / unsupported meeting whisper models from AirNote's model
+/// folder. The current Q5 model and any in-progress Q5 download are preserved.
+#[tauri::command]
+pub fn meeting_cleanup_legacy_whisper_models() -> Result<WhisperModelCleanupResult, String> {
+    let result = cleanup_legacy_whisper_models_in_dir(&meeting_whisper_models_dir())?;
+    // If a stale unsupported model had been selected, this re-points to Q5 or
+    // clears the setting. It never selects a removed file.
+    meeting_ensure_active_model();
+    Ok(result)
+}
+
+fn cleanup_legacy_whisper_models_in_dir(dir: &Path) -> Result<WhisperModelCleanupResult, String> {
+    let mut removed = Vec::new();
+    let mut freed_bytes = 0_u64;
+    if !dir.exists() {
+        return Ok(WhisperModelCleanupResult {
+            removed,
+            freed_bytes,
+        });
+    }
+
+    for entry in fs::read_dir(dir).map_err(|e| format!("couldn't read models folder: {e}"))? {
+        let entry = entry.map_err(|e| format!("couldn't read model entry: {e}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("couldn't inspect model entry: {e}"))?;
+        if !(file_type.is_file() || file_type.is_symlink()) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !is_legacy_meeting_whisper_model_file(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        fs::remove_file(&path).map_err(|e| format!("couldn't delete {name}: {e}"))?;
+        freed_bytes = freed_bytes.saturating_add(size_bytes);
+        removed.push(RemovedWhisperModelInfo { name, size_bytes });
+    }
+
+    removed.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(WhisperModelCleanupResult {
+        removed,
+        freed_bytes,
+    })
+}
+
+fn is_legacy_meeting_whisper_model_file(name: &str) -> bool {
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return false;
+    }
+    let model_name = name
+        .strip_suffix(".part")
+        .or_else(|| name.strip_suffix(".tmp"))
+        .unwrap_or(name);
+    if is_supported_meeting_whisper_model_name(model_name) {
+        return false;
+    }
+    model_name.starts_with("ggml-")
+        && model_name.ends_with(".bin")
+        && !model_name.contains("silero")
+}
+
 /// Guarantee an active model whenever any usable one exists. Keeps the current
-/// selection if it's still a real file; otherwise auto-selects the strongest
-/// installed model and persists it (so a single installed model is always
+/// selection if it's still a real file; otherwise auto-selects the low-memory
+/// recommended model and persists it (so a single installed model is always
 /// active). Clears the setting if no usable model remains. Returns the active
 /// model's file name, or None when none is installed.
 #[tauri::command]
@@ -9890,12 +12549,16 @@ pub fn meeting_ensure_active_model() -> Option<String> {
     };
     // Keep the current selection if it still points at a real, usable model.
     if let Some(current) = env_path("AIRNOTE_WHISPER_CPP_MODEL") {
-        if is_usable_whisper_model(&current) {
+        let supported = current
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(is_supported_meeting_whisper_model_name);
+        if supported && is_usable_whisper_model(&current) {
             return name_of(&current);
         }
     }
-    // Otherwise auto-select the strongest installed model and persist it.
-    let dir = said_core::paths::data_dir().join("models");
+    // Otherwise auto-select the low-memory recommended model and persist it.
+    let dir = meeting_whisper_models_dir();
     if let Some(best) = first_whisper_model_in_dir(&dir) {
         let _ = meeting_settings_set(
             "AIRNOTE_WHISPER_CPP_MODEL".to_string(),
@@ -9970,15 +12633,18 @@ fn resolve_whisper_cpp_config() -> Result<WhisperCppConfig, String> {
 
     let model = env_path("AIRNOTE_WHISPER_CPP_MODEL")
         .or_else(|| env_path("WHISPER_CPP_MODEL"))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_supported_meeting_whisper_model_name)
+        })
         .or_else(default_whisper_model_path)
         .ok_or_else(|| {
             "whisper.cpp model not found; set AIRNOTE_WHISPER_CPP_MODEL or WHISPER_CPP_MODEL"
                 .to_string()
         })?;
 
-    let language = meeting_env("AIRNOTE_MEETING_WHISPER_LANGUAGE")
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_WHISPER_LANGUAGE.to_string());
+    let language = DEFAULT_WHISPER_LANGUAGE.to_string();
     let prompt = meeting_env("AIRNOTE_MEETING_WHISPER_PROMPT")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
@@ -10095,17 +12761,29 @@ fn resolve_whisper_cpp_config() -> Result<WhisperCppConfig, String> {
 /// (callers then fall back to PATH).
 fn find_bundled_whisper_cli() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
+    bundled_whisper_cli_candidates_from_exe(&exe)
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
+fn bundled_whisper_cli_candidates_from_exe(exe: &Path) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     let mut dir = exe.parent().map(|p| p.to_path_buf());
     for _ in 0..8 {
         if let Some(d) = dir {
-            candidates.push(d.join("whisper-cli"));
-            candidates.push(d.join("debug").join("whisper-cli"));
-            candidates.push(d.join("release").join("whisper-cli"));
+            for name in whisper_cli_binary_names() {
+                candidates.push(d.join(name));
+                candidates.push(d.join("debug").join(name));
+                candidates.push(d.join("release").join(name));
+            }
             dir = d.parent().map(|p| p.to_path_buf());
         }
     }
-    candidates.into_iter().find(|p| p.is_file())
+    candidates
+}
+
+fn whisper_cli_binary_names() -> [&'static str; 2] {
+    ["whisper-cli", "whisper-cli.exe"]
 }
 
 /// Directories inside a shipped `.app` where bundled models may live, relative
@@ -10143,22 +12821,30 @@ fn find_silero_vad_model(dir: &Path) -> Option<PathBuf> {
 fn resolve_live_transcript_config() -> Result<LiveTranscriptConfig, String> {
     let mut whisper = resolve_whisper_cpp_config()
         .map_err(|e| format!("live transcript requires whisper.cpp; {e}"))?;
-    if let Some(model) = live_whisper_model_path() {
-        whisper.model = model;
-    }
-    if let Some(language) = env_nonempty("AIRNOTE_MEETING_LIVE_WHISPER_LANGUAGE") {
-        whisper.language = language;
-    }
-    let chunk_secs = env_u64(
-        "AIRNOTE_MEETING_LIVE_TRANSCRIPT_CHUNK_SECS",
-        DEFAULT_LIVE_TRANSCRIPT_CHUNK_SECS,
+    whisper.max_context_tokens = env_i32_at_least(
+        "AIRNOTE_MEETING_LIVE_WHISPER_MAX_CONTEXT_TOKENS",
+        DEFAULT_LIVE_WHISPER_MAX_CONTEXT_TOKENS,
+        -1,
+    );
+
+    let context_secs = env_u64(
+        "AIRNOTE_MEETING_LIVE_TRANSCRIPT_CONTEXT_SECS",
+        env_u64(
+            "AIRNOTE_MEETING_LIVE_TRANSCRIPT_CHUNK_SECS",
+            DEFAULT_LIVE_TRANSCRIPT_CONTEXT_SECS,
+        ),
     )
-    .clamp(3, 60);
+    .clamp(10, 120);
+    let step_secs = env_u64(
+        "AIRNOTE_MEETING_LIVE_TRANSCRIPT_STEP_SECS",
+        DEFAULT_LIVE_TRANSCRIPT_STEP_SECS,
+    )
+    .clamp(3, context_secs);
     let min_secs = env_u64(
         "AIRNOTE_MEETING_LIVE_TRANSCRIPT_MIN_SECS",
         DEFAULT_LIVE_TRANSCRIPT_MIN_SECS,
     )
-    .clamp(1, chunk_secs);
+    .clamp(1, step_secs);
     let poll_ms = env_u64(
         "AIRNOTE_MEETING_LIVE_TRANSCRIPT_POLL_MS",
         DEFAULT_LIVE_TRANSCRIPT_POLL_MS,
@@ -10172,28 +12858,12 @@ fn resolve_live_transcript_config() -> Result<LiveTranscriptConfig, String> {
 
     Ok(LiveTranscriptConfig {
         whisper,
-        chunk_samples: chunk_secs.saturating_mul(SAMPLE_RATE as u64) as usize,
+        context_samples: context_secs.saturating_mul(SAMPLE_RATE as u64) as usize,
+        step_samples: step_secs.saturating_mul(SAMPLE_RATE as u64) as usize,
         min_samples: min_secs.saturating_mul(SAMPLE_RATE as u64) as usize,
         poll_interval: Duration::from_millis(poll_ms),
         timeout: Duration::from_secs(timeout_secs),
     })
-}
-
-fn live_whisper_model_path() -> Option<PathBuf> {
-    env_path("AIRNOTE_MEETING_LIVE_WHISPER_CPP_MODEL")
-        .or_else(|| env_path("WHISPER_CPP_LIVE_MODEL"))
-        .or_else(|| {
-            env_dir("AIRNOTE_MEETING_LIVE_WHISPER_CPP_MODEL_DIR")
-                .or_else(|| env_dir("WHISPER_CPP_LIVE_MODEL_DIR"))
-                .and_then(|dir| first_live_whisper_model_in_dir(&dir))
-        })
-        .or_else(default_dev_repo_live_whisper_model_path)
-}
-
-fn default_dev_repo_live_whisper_model_path() -> Option<PathBuf> {
-    let manifest_dir = PathBuf::from(option_env!("CARGO_MANIFEST_DIR")?);
-    let repo_dir = manifest_dir.parent()?.parent()?;
-    first_live_whisper_model_in_dir(&repo_dir.join("tools").join("stt-bench").join("models"))
 }
 
 /// A whisper ggml model below this is empty/partial/broken (the smallest real
@@ -10208,20 +12878,6 @@ fn is_usable_whisper_model(path: &Path) -> bool {
     fs::metadata(path)
         .map(|m| m.is_file() && m.len() >= MIN_WHISPER_MODEL_BYTES)
         .unwrap_or(false)
-}
-
-fn first_live_whisper_model_in_dir(model_dir: &Path) -> Option<PathBuf> {
-    [
-        "ggml-large-v3-turbo.bin",
-        "ggml-small.bin",
-        "ggml-small.en.bin",
-        "ggml-medium.bin",
-        "ggml-medium.en.bin",
-        "ggml-large-v3.bin",
-    ]
-    .into_iter()
-    .map(|name| model_dir.join(name))
-    .find(|path| is_usable_whisper_model(path))
 }
 
 fn env_path(key: &str) -> Option<PathBuf> {
@@ -10322,19 +12978,13 @@ fn default_whisper_model_candidates(data_dir: &Path) -> Vec<PathBuf> {
 }
 
 fn whisper_model_candidate_names() -> Vec<&'static str> {
-    vec![
-        "ggml-large-v3-turbo.bin",
-        "ggml-large-v3.bin",
-        "ggml-large-v2.bin",
-        "ggml-medium.bin",
-        "ggml-medium.en.bin",
-        "ggml-small.bin",
-        "ggml-small.en.bin",
-        "ggml-base.bin",
-        "ggml-base.en.bin",
-        "ggml-tiny.bin",
-        "ggml-tiny.en.bin",
-    ]
+    vec!["ggml-large-v3-turbo-q5_0.bin"]
+}
+
+fn is_supported_meeting_whisper_model_name(name: &str) -> bool {
+    WHISPER_MODEL_CATALOG
+        .iter()
+        .any(|(catalog_name, _, _)| *catalog_name == name)
 }
 
 fn find_on_path(binary: &str) -> Option<PathBuf> {
@@ -10513,6 +13163,144 @@ fn mono_from_u16(data: &[u16], channels: u16) -> Vec<f32> {
         .collect()
 }
 
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsLoopbackSampleFormat {
+    F32,
+    I16,
+    I24,
+    I32,
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WasapiMixFormat {
+    channels: u16,
+    sample_rate: u32,
+    block_align: u16,
+    bytes_per_sample: u16,
+    sample_format: WindowsLoopbackSampleFormat,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn pcm_sample_format_for_bits(bits_per_sample: u16) -> Result<WindowsLoopbackSampleFormat, String> {
+    match bits_per_sample {
+        16 => Ok(WindowsLoopbackSampleFormat::I16),
+        24 => Ok(WindowsLoopbackSampleFormat::I24),
+        32 => Ok(WindowsLoopbackSampleFormat::I32),
+        _ => Err(format!(
+            "unsupported WASAPI PCM bits_per_sample={bits_per_sample}"
+        )),
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn min_bytes_per_windows_loopback_sample(sample_format: WindowsLoopbackSampleFormat) -> usize {
+    match sample_format {
+        WindowsLoopbackSampleFormat::F32 | WindowsLoopbackSampleFormat::I32 => 4,
+        WindowsLoopbackSampleFormat::I24 => 3,
+        WindowsLoopbackSampleFormat::I16 => 2,
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn bytes_per_windows_loopback_sample(
+    channels: u16,
+    block_align: u16,
+    sample_format: WindowsLoopbackSampleFormat,
+) -> Option<usize> {
+    let channels = channels.max(1) as usize;
+    let block_align = block_align as usize;
+    if block_align == 0 || block_align % channels != 0 {
+        return None;
+    }
+    let bytes_per_sample = block_align / channels;
+    if bytes_per_sample < min_bytes_per_windows_loopback_sample(sample_format)
+        || bytes_per_sample > 4
+    {
+        return None;
+    }
+    Some(bytes_per_sample)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn decode_windows_loopback_frames_to_mono(
+    bytes: &[u8],
+    frame_count: u32,
+    channels: u16,
+    block_align: u16,
+    bytes_per_sample: u16,
+    sample_format: WindowsLoopbackSampleFormat,
+) -> Vec<f32> {
+    let channels = channels.max(1) as usize;
+    let block_align = block_align as usize;
+    let sample_bytes = bytes_per_sample as usize;
+    if block_align == 0
+        || sample_bytes == 0
+        || sample_bytes < min_bytes_per_windows_loopback_sample(sample_format)
+        || sample_bytes > 4
+    {
+        return Vec::new();
+    }
+    let frames = (frame_count as usize).min(bytes.len() / block_align);
+    let mut mono = Vec::with_capacity(frames);
+    for frame_index in 0..frames {
+        let frame_start = frame_index * block_align;
+        let frame_end = frame_start + block_align;
+        let mut sum = 0.0_f32;
+        let mut seen = 0_usize;
+        for channel_index in 0..channels {
+            let offset = frame_start + channel_index * sample_bytes;
+            if offset + sample_bytes > frame_end || offset + sample_bytes > bytes.len() {
+                break;
+            }
+            sum += decode_windows_loopback_sample(
+                &bytes[offset..offset + sample_bytes],
+                sample_format,
+            );
+            seen += 1;
+        }
+        if seen > 0 {
+            mono.push(sum / seen as f32);
+        }
+    }
+    mono
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn decode_windows_loopback_sample(bytes: &[u8], sample_format: WindowsLoopbackSampleFormat) -> f32 {
+    match sample_format {
+        WindowsLoopbackSampleFormat::F32 => {
+            if bytes.len() < 4 {
+                return 0.0;
+            }
+            let sample = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            if sample.is_finite() {
+                sample.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            }
+        }
+        WindowsLoopbackSampleFormat::I16
+        | WindowsLoopbackSampleFormat::I24
+        | WindowsLoopbackSampleFormat::I32 => decode_signed_pcm_container(bytes),
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn decode_signed_pcm_container(bytes: &[u8]) -> f32 {
+    match bytes.len() {
+        2 => i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 32_768.0,
+        3 => {
+            let raw = (bytes[0] as i32) | ((bytes[1] as i32) << 8) | ((bytes[2] as i32) << 16);
+            let signed = (raw << 8) >> 8;
+            signed as f32 / 8_388_608.0
+        }
+        4 => i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f32 / 2_147_483_648.0,
+        _ => 0.0,
+    }
+}
+
 fn float_to_i16(sample: f32) -> i16 {
     let clipped = sample.clamp(-1.0, 1.0);
     if clipped >= 0.0 {
@@ -10579,6 +13367,126 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bundled_whisper_candidates_include_windows_exe_names() {
+        let candidates = bundled_whisper_cli_candidates_from_exe(Path::new(
+            "/tmp/AirNote.app/Contents/MacOS/AirNote",
+        ));
+
+        assert!(candidates.contains(&PathBuf::from(
+            "/tmp/AirNote.app/Contents/MacOS/whisper-cli"
+        )));
+        assert!(candidates.contains(&PathBuf::from(
+            "/tmp/AirNote.app/Contents/MacOS/whisper-cli.exe"
+        )));
+        assert!(candidates.contains(&PathBuf::from(
+            "/tmp/AirNote.app/Contents/MacOS/release/whisper-cli.exe"
+        )));
+    }
+
+    #[test]
+    fn windows_taskkill_args_adds_tree_and_force_flags() {
+        assert_eq!(
+            windows_taskkill_args(9182, false),
+            vec!["/PID", "9182", "/T"]
+        );
+        assert_eq!(
+            windows_taskkill_args(9182, true),
+            vec!["/PID", "9182", "/T", "/F"]
+        );
+    }
+
+    #[test]
+    fn windows_loopback_decoder_downmixes_f32_stereo() {
+        let mut bytes = Vec::new();
+        for sample in [0.25_f32, 0.75, -0.5, 0.0] {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+
+        let mono = decode_windows_loopback_frames_to_mono(
+            &bytes,
+            2,
+            2,
+            8,
+            4,
+            WindowsLoopbackSampleFormat::F32,
+        );
+        assert_eq!(mono.len(), 2);
+        assert!((mono[0] - 0.5).abs() < 0.0001);
+        assert!((mono[1] - -0.25).abs() < 0.0001);
+    }
+
+    #[test]
+    fn windows_loopback_decoder_downmixes_i16_stereo() {
+        let mut bytes = Vec::new();
+        for sample in [16_384_i16, 16_384, -32_768, 0] {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+
+        let mono = decode_windows_loopback_frames_to_mono(
+            &bytes,
+            2,
+            2,
+            4,
+            2,
+            WindowsLoopbackSampleFormat::I16,
+        );
+        assert_eq!(mono.len(), 2);
+        assert!((mono[0] - 0.5).abs() < 0.0001);
+        assert!((mono[1] - -0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn windows_loopback_decoder_handles_signed_i24() {
+        let bytes = [0x00, 0x00, 0x40, 0x00, 0x00, 0xC0];
+        let mono = decode_windows_loopback_frames_to_mono(
+            &bytes,
+            2,
+            1,
+            3,
+            3,
+            WindowsLoopbackSampleFormat::I24,
+        );
+        assert_eq!(mono.len(), 2);
+        assert!((mono[0] - 0.5).abs() < 0.0001);
+        assert!((mono[1] - -0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn windows_loopback_decoder_handles_left_aligned_i24_in_i32_container() {
+        let bytes = [
+            0x00, 0x00, 0x00, 0x40, // +0.5 as 24 valid bits left-aligned in i32
+            0x00, 0x00, 0x00, 0xC0, // -0.5 as 24 valid bits left-aligned in i32
+        ];
+        let mono = decode_windows_loopback_frames_to_mono(
+            &bytes,
+            2,
+            1,
+            4,
+            4,
+            WindowsLoopbackSampleFormat::I24,
+        );
+        assert_eq!(mono.len(), 2);
+        assert!((mono[0] - 0.5).abs() < 0.0001);
+        assert!((mono[1] - -0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn windows_loopback_container_width_comes_from_block_align() {
+        assert_eq!(
+            bytes_per_windows_loopback_sample(2, 8, WindowsLoopbackSampleFormat::I24),
+            Some(4)
+        );
+        assert_eq!(
+            bytes_per_windows_loopback_sample(2, 6, WindowsLoopbackSampleFormat::I24),
+            Some(3)
+        );
+        assert_eq!(
+            bytes_per_windows_loopback_sample(2, 4, WindowsLoopbackSampleFormat::I24),
+            None
+        );
+    }
+
+    #[test]
     fn classify_meeting_job_error_routes_transient_vs_terminal() {
         let retry = |m: &str| matches!(classify_meeting_job_error(m), JobOutcome::Retry(_));
         let terminal = |m: &str| matches!(classify_meeting_job_error(m), JobOutcome::Terminal(_));
@@ -10592,6 +13500,7 @@ mod tests {
         assert!(retry("disk write failed: no space left on device"));
 
         // Terminal — looping won't help; fail fast with the clear message.
+        assert!(terminal("whisper.cpp timed out after 900s"));
         assert!(terminal(
             "meeting AI authentication failed (401) for 'deepseek'"
         ));
@@ -10608,6 +13517,96 @@ mod tests {
 
         // A rate-limit that mentions a terminal-ish word still retries.
         assert!(retry("rate limit reached; response was empty this minute"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wait_with_timeout_kills_child_process_group() {
+        let marker = std::env::temp_dir().join(format!(
+            "airnote-timeout-child-{}-{}.pid",
+            std::process::id(),
+            now_ms()
+        ));
+        let script = format!("sleep 30 & echo $! > '{}'; wait", marker.display());
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(script)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd.process_group(0);
+        let child = cmd.spawn().expect("spawn shell child");
+
+        let sleep_pid = wait_for_pid_file(&marker).expect("sleep pid marker");
+        let err = wait_with_timeout_for(child, Duration::from_millis(50), "test child")
+            .expect_err("child should time out");
+        assert!(err.contains("test child timed out"));
+        assert_eventually_not_alive(sleep_pid);
+
+        let _ = fs::remove_file(marker);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wait_with_timeout_cancel_kills_child_process_group() {
+        let marker = std::env::temp_dir().join(format!(
+            "airnote-cancel-child-{}-{}.pid",
+            std::process::id(),
+            now_ms()
+        ));
+        let script = format!("sleep 30 & echo $! > '{}'; wait", marker.display());
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(script)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd.process_group(0);
+        let child = cmd.spawn().expect("spawn shell child");
+
+        let sleep_pid = wait_for_pid_file(&marker).expect("sleep pid marker");
+        let cancel = AtomicBool::new(true);
+        let started = Instant::now();
+        let err = wait_with_timeout_for_cancel(
+            child,
+            Duration::from_secs(30),
+            "test child",
+            Some(&|| cancel.load(Ordering::SeqCst)),
+        )
+        .expect_err("child should be cancelled");
+        assert!(err.contains("test child cancelled"));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "cancellation should not wait for child timeout"
+        );
+        assert_eventually_not_alive(sleep_pid);
+
+        let _ = fs::remove_file(marker);
+    }
+
+    #[cfg(unix)]
+    fn wait_for_pid_file(path: &Path) -> Option<libc::pid_t> {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            if let Ok(contents) = fs::read_to_string(path) {
+                if let Ok(pid) = contents.trim().parse::<libc::pid_t>() {
+                    return Some(pid);
+                }
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        None
+    }
+
+    #[cfg(unix)]
+    fn assert_eventually_not_alive(pid: libc::pid_t) {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            let alive = unsafe { libc::kill(pid, 0) == 0 };
+            if !alive {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("process {pid} was still alive after timeout cleanup");
     }
 
     #[test]
@@ -10725,13 +13724,20 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("airnote-prune-{}-{}", std::process::id(), now_ms()));
         fs::create_dir_all(dir.join("live")).unwrap();
+        fs::create_dir_all(dir.join("mic.asr-chunks")).unwrap();
         fs::write(dir.join("live").join("live-mic-0.wav"), b"x").unwrap();
+        fs::write(dir.join("mic.asr-chunks").join("chunk-00000.wav"), b"x").unwrap();
         fs::write(dir.join("mic.asr.wav"), b"x").unwrap();
         fs::write(dir.join("system.asr.wav"), b"x").unwrap();
         fs::write(dir.join("mic.wav"), b"x").unwrap();
         fs::write(dir.join("meeting.transcript.json"), b"{}").unwrap();
+        assert!(dir_has_asr_copy(&dir));
         prune_meeting_intermediates(&dir);
         assert!(!dir.join("live").exists(), "live/ windows pruned");
+        assert!(
+            !dir.join("mic.asr-chunks").exists(),
+            "final ASR chunks pruned"
+        );
         assert!(!dir.join("mic.asr.wav").exists(), ".asr.wav pruned");
         assert!(!dir.join("system.asr.wav").exists());
         assert!(dir.join("mic.wav").exists(), "source WAV kept");
@@ -10739,6 +13745,60 @@ mod tests {
             dir.join("meeting.transcript.json").exists(),
             "transcript kept"
         );
+        assert!(!dir_has_asr_copy(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn final_asr_chunk_writer_splits_wav_with_offsets() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-final-asr-chunks-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let wav_path = dir.join("mic.wav");
+        let samples = (0..(SAMPLE_RATE as usize * 2))
+            .map(|index| {
+                if index < SAMPLE_RATE as usize {
+                    1_000_i16
+                } else {
+                    2_000_i16
+                }
+            })
+            .collect::<Vec<_>>();
+        write_test_wav(&wav_path, &samples).unwrap();
+        let cache_dir = dir.join("mic.asr-chunks");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let cached_paths = transcript_paths_for_stem(&cache_dir, "chunk-00000");
+        fs::write(&cached_paths.text, "cached chunk transcript").unwrap();
+        let summary = MicCaptureSummary {
+            path: wav_path,
+            samples_written: samples.len() as u64,
+            dropped_chunks: 0,
+            native_rate: SAMPLE_RATE,
+            duration_ms: 2_000,
+            peak: 2_000.0 / i16::MAX as f32,
+        };
+
+        let chunks = write_wav_asr_chunks(&summary, 1_000).unwrap();
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(final_asr_chunk_count(&summary, 1_000), chunks.len() as u64);
+        assert!(
+            cached_paths.text.is_file(),
+            "completed chunk transcript cache is preserved for resume"
+        );
+        assert_eq!(chunks[0].start_ms, 0);
+        assert_eq!(chunks[0].summary.duration_ms, 1_000);
+        assert_eq!(chunks[0].summary.samples_written, SAMPLE_RATE as u64);
+        assert_eq!(chunks[1].start_ms, 1_000);
+        assert_eq!(chunks[1].summary.duration_ms, 1_000);
+        assert!(chunks[0].summary.path.is_file());
+        assert!(chunks[1].summary.path.is_file());
+        assert!(chunks[0].summary.path.ends_with("chunk-00000.wav"));
+        assert!(chunks[1].summary.path.ends_with("chunk-00001.wav"));
+
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -10834,6 +13894,147 @@ mod tests {
         assert!(stopped.started_at_ms.is_none());
     }
 
+    fn dummy_meeting_plan(dir: &Path) -> MeetingTranscriptionPlan {
+        let wav = dir.join("mic.wav");
+        let summary = MicCaptureSummary {
+            path: wav.clone(),
+            samples_written: 1,
+            dropped_chunks: 0,
+            native_rate: SAMPLE_RATE,
+            duration_ms: 1,
+            peak: 0.1,
+        };
+        MeetingTranscriptionPlan {
+            mic: summary.clone(),
+            system: None,
+            summary: summary.clone(),
+            output_paths: transcript_paths_for_stem(dir, "meeting"),
+            source_wavs: vec![wav],
+            source_activity_path: None,
+        }
+    }
+
+    #[test]
+    fn meeting_job_queue_cancel_removes_pending_and_marks_in_flight() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-job-cancel-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let jobs = MeetingJobQueue::new();
+        assert_eq!(
+            jobs.enqueue(MeetingJob {
+                meeting_id: "queued-meeting".to_string(),
+                plan: Box::new(dummy_meeting_plan(&dir)),
+                attempt: 0,
+                not_before_ms: 0,
+            }),
+            EnqueueOutcome::Enqueued
+        );
+
+        assert!(jobs.cancel("queued-meeting"));
+        assert!(!jobs.is_active("queued-meeting"));
+
+        jobs.lock().in_flight = Some("running-meeting".to_string());
+        assert!(jobs.cancel("running-meeting"));
+        assert!(jobs.is_cancelled("running-meeting"));
+        assert!(jobs.is_active("running-meeting"));
+        jobs.clear_cancelled("running-meeting");
+        assert!(!jobs.is_cancelled("running-meeting"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn meeting_job_queue_shutdown_drains_pending_without_user_cancelling_in_flight() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-job-shutdown-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let jobs = MeetingJobQueue::new();
+        assert_eq!(
+            jobs.enqueue(MeetingJob {
+                meeting_id: "queued-meeting".to_string(),
+                plan: Box::new(dummy_meeting_plan(&dir)),
+                attempt: 0,
+                not_before_ms: 0,
+            }),
+            EnqueueOutcome::Enqueued
+        );
+        jobs.lock().in_flight = Some("running-meeting".to_string());
+
+        let interrupted = jobs.drain_for_shutdown();
+
+        assert!(jobs.is_shutting_down());
+        assert_eq!(interrupted, vec!["queued-meeting", "running-meeting"]);
+        assert!(!jobs.is_active("queued-meeting"));
+        assert!(jobs.is_active("running-meeting"));
+        assert!(
+            !jobs.is_cancelled("running-meeting"),
+            "shutdown is resumable interruption, not a user cancel"
+        );
+
+        jobs.lock().in_flight = None;
+        jobs.cvar.notify_all();
+        assert!(jobs.wait_until_idle(Duration::from_millis(50)));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shutdown_interruption_marker_stays_resumable_and_preserves_terminal_state() {
+        let meeting_id = format!("local-{}-shutdown-marker", now_ms());
+        let dir = meeting_dir_for_id(&meeting_id).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        write_meeting_state(&dir, MEETING_PHASE_TRANSCRIBING, None);
+
+        mark_meeting_interrupted_for_recovery(&meeting_id, "test interruption");
+
+        let state = read_meeting_state(&dir).unwrap();
+        assert_eq!(state.phase, MEETING_PHASE_TRANSCRIBING);
+        assert_eq!(state.error.as_deref(), Some("test interruption"));
+
+        write_meeting_state(&dir, MEETING_PHASE_SUMMARIZED, None);
+        mark_meeting_interrupted_for_recovery(&meeting_id, "should not overwrite");
+
+        let state = read_meeting_state(&dir).unwrap();
+        assert_eq!(state.phase, MEETING_PHASE_SUMMARIZED);
+        assert_eq!(state.error, None);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn active_processing_status_does_not_show_done_from_stale_artifacts() {
+        let state = MeetingEngineState::new();
+        let meeting_id = format!("local-{}-status-test", now_ms());
+        let dir = meeting_dir_for_id(&meeting_id).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        write_meeting_state(&dir, MEETING_PHASE_SUMMARIZED, None);
+        write_test_wav(&dir.join("mic.wav"), &[1_000, 0]).unwrap();
+        fs::write(dir.join("meeting.ai.json"), "{}").unwrap();
+        {
+            let mut inner = state.jobs.lock();
+            inner.in_flight = Some(meeting_id.clone());
+        }
+        {
+            let mut snapshot = state.transcription.lock_recover();
+            snapshot.status = "running".to_string();
+        }
+
+        let status = meeting_processing_status(&state, meeting_id.clone()).unwrap();
+
+        assert!(status.running);
+        assert_eq!(status.stage, "transcribing");
+        assert_ne!(status.stage, MEETING_PHASE_SUMMARIZED);
+        assert!(status.has_intelligence);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn converts_native_samples_to_mono_f32() {
         assert_eq!(mono_from_f32(&[1.0, -1.0, 0.5, 0.0], 2), vec![0.0, 0.25]);
@@ -10860,6 +14061,51 @@ mod tests {
         assert!(paths.text.ends_with("meeting.merged.transcript.txt"));
         assert!(paths.json.ends_with("meeting.merged.transcript.json"));
         assert!(paths.whisper_out_base.ends_with("meeting.merged.whisper"));
+    }
+
+    #[test]
+    fn live_track_buffer_uses_rolling_context() {
+        let second = SAMPLE_RATE as usize;
+        let mut buffer = LiveTrackBuffer::new(LiveAudioSource::Mic);
+        let context = 45 * second;
+        let step = 12 * second;
+        let min = 2 * second;
+
+        buffer.push(vec![1; step]);
+        let first = buffer
+            .take_ready_window(context, step, min, false)
+            .expect("first step should be ready");
+        assert_eq!(first.start_sample, 0);
+        assert_eq!(first.emit_from_sample, 0);
+        assert_eq!(first.samples.len(), step);
+
+        buffer.push(vec![2; step]);
+        let second_window = buffer
+            .take_ready_window(context, step, min, false)
+            .expect("second step should be ready");
+        assert_eq!(second_window.start_sample, 0);
+        assert_eq!(second_window.emit_from_sample, step as u64);
+        assert_eq!(second_window.samples.len(), 2 * step);
+
+        buffer.push(vec![3; 30 * second]);
+        let rolled = buffer
+            .take_ready_window(context, step, min, false)
+            .expect("third step should include only rolling context");
+        assert_eq!(rolled.start_sample, 9 * SAMPLE_RATE as u64);
+        assert_eq!(rolled.emit_from_sample, 24 * SAMPLE_RATE as u64);
+        assert_eq!(rolled.samples.len(), context);
+    }
+
+    #[test]
+    fn meeting_whisper_language_is_hindi_for_all_tracks() {
+        assert_eq!(
+            whisper_language_for_track(MeetingAudioTrack::Mic, DEFAULT_WHISPER_LANGUAGE),
+            "hi"
+        );
+        assert_eq!(
+            whisper_language_for_track(MeetingAudioTrack::System, DEFAULT_WHISPER_LANGUAGE),
+            "hi"
+        );
     }
 
     #[test]
@@ -11028,6 +14274,100 @@ mod tests {
     }
 
     #[test]
+    fn audio_writer_finalizes_after_stop_even_if_sender_is_still_alive() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-audio-writer-stop-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mic.wav");
+        let writer = create_audio_wav_writer(&path, "mic").unwrap();
+        let (tx, rx) = mpsc::sync_channel::<Vec<i16>>(4);
+        tx.send(vec![100, -200, 300]).unwrap();
+        let stop = Arc::new(AtomicBool::new(true));
+
+        let summary = write_audio_wav(
+            &path,
+            writer,
+            rx,
+            SAMPLE_RATE,
+            Arc::new(AtomicU64::new(0)),
+            "mic",
+            stop,
+        )
+        .unwrap();
+
+        assert_eq!(summary.samples_written, 3);
+        assert_eq!(read_test_wav_samples(&path).unwrap(), vec![100, -200, 300]);
+        drop(tx);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn audio_writer_finalizes_after_stop_while_audio_keeps_arriving() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-audio-writer-busy-stop-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mic.wav");
+        let writer = create_audio_wav_writer(&path, "mic").unwrap();
+        let (tx, rx) = mpsc::sync_channel::<Vec<i16>>(128);
+        let stop = Arc::new(AtomicBool::new(false));
+        let producer_done = Arc::new(AtomicBool::new(false));
+
+        let writer_path = path.clone();
+        let writer_stop = Arc::clone(&stop);
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer_thread = thread::spawn(move || {
+            let result = write_audio_wav(
+                &writer_path,
+                writer,
+                rx,
+                SAMPLE_RATE,
+                Arc::new(AtomicU64::new(0)),
+                "mic",
+                writer_stop,
+            );
+            let _ = done_tx.send(result);
+        });
+
+        let producer_done_for_thread = Arc::clone(&producer_done);
+        let producer_thread = thread::spawn(move || {
+            while !producer_done_for_thread.load(Ordering::SeqCst) {
+                match tx.try_send(vec![100, -200, 300, -400]) {
+                    Ok(()) | Err(mpsc::TrySendError::Full(_)) => {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => break,
+                }
+            }
+        });
+
+        thread::sleep(Duration::from_millis(25));
+        stop.store(true, Ordering::SeqCst);
+        let result = match done_rx.recv_timeout(Duration::from_millis(750)) {
+            Ok(result) => result,
+            Err(e) => {
+                producer_done.store(true, Ordering::SeqCst);
+                let _ = producer_thread.join();
+                panic!("audio writer did not finalize while audio kept arriving: {e}");
+            }
+        };
+
+        producer_done.store(true, Ordering::SeqCst);
+        let _ = producer_thread.join();
+        let _ = writer_thread.join();
+
+        let summary = result.unwrap();
+        assert!(summary.samples_written > 0);
+        assert!(!read_test_wav_samples(&path).unwrap().is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn source_activity_segments_group_by_dominant_track() {
         let frames = vec![
             SourceActivityFrame {
@@ -11086,6 +14426,235 @@ mod tests {
             transcript,
             "[00:01 You] I am speaking.\n[00:01 Speaker 1] Remote person speaking."
         );
+    }
+
+    #[test]
+    fn speaker_name_map_updates_segments_and_transcript_labels() {
+        let mut segments = vec![
+            MeetingTranscriptSegment {
+                source: "system".to_string(),
+                speaker_id: "speaker_1".to_string(),
+                speaker_name: "Speaker 1".to_string(),
+                start_ms: 1_000,
+                end_ms: 2_000,
+                text: "Rahul, can you check the deployment?".to_string(),
+            },
+            MeetingTranscriptSegment {
+                source: "system".to_string(),
+                speaker_id: "speaker_1".to_string(),
+                speaker_name: "Speaker 1".to_string(),
+                start_ms: 2_000,
+                end_ms: 3_000,
+                text: "Yes, I will check it.".to_string(),
+            },
+        ];
+        let mut names = std::collections::HashMap::new();
+        names.insert("speaker_1".to_string(), "Rahul".to_string());
+
+        let replacements = apply_speaker_name_map(&mut segments, &names);
+        let transcript = format_meeting_timeline_transcript(&segments);
+        let cleaned = rewrite_speaker_labels_in_text(
+            "[00:01 Speaker 1] Rahul, can you check?\nSpeaker 1: Yes.",
+            &replacements,
+        );
+
+        assert_eq!(
+            replacements,
+            vec![("Speaker 1".to_string(), "Rahul".to_string())]
+        );
+        assert_eq!(segments[0].speaker_name, "Rahul");
+        assert!(transcript.contains("[00:01 Rahul]"));
+        assert_eq!(cleaned, "[00:01 Rahul] Rahul, can you check?\nRahul: Yes.");
+    }
+
+    #[test]
+    fn inferred_speaker_name_sanitizer_rejects_generic_or_unsafe_labels() {
+        assert_eq!(
+            sanitize_inferred_speaker_name("Rahul Suman"),
+            Some("Rahul Suman".to_string())
+        );
+        assert_eq!(sanitize_inferred_speaker_name("Speaker 1"), None);
+        assert_eq!(sanitize_inferred_speaker_name("Host"), None);
+        assert_eq!(sanitize_inferred_speaker_name("Unknown"), None);
+        assert_eq!(
+            sanitize_inferred_speaker_name("Rahul from engineering team today"),
+            None
+        );
+        assert_eq!(sanitize_inferred_speaker_name("Rahul [admin]"), None);
+    }
+
+    #[test]
+    fn suppresses_exact_mic_echo_duplicate() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-echo-dedupe-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let source_activity_path = dir.join("meeting.source-activity.json");
+        write_source_activity_for_test(
+            &source_activity_path,
+            vec![source_activity_for_test("system_audio", 0, 4_000)],
+        );
+
+        let filtered = suppress_mic_echo_segments(
+            vec![
+                system_segment_for_test(
+                    1_000,
+                    3_000,
+                    "What would you tell a man who can scroll for hours?",
+                ),
+                mic_segment_for_test(
+                    1_200,
+                    3_200,
+                    "What would you tell a man who can scroll for hours?",
+                ),
+            ],
+            Some(&source_activity_path),
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].source, "system");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn keeps_local_mic_segment_even_when_text_matches_system() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-echo-local-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let source_activity_path = dir.join("meeting.source-activity.json");
+        write_source_activity_for_test(
+            &source_activity_path,
+            vec![source_activity_for_test("local_mic", 1_000, 4_000)],
+        );
+
+        let filtered = suppress_mic_echo_segments(
+            vec![
+                system_segment_for_test(1_000, 3_000, "Let's pause here."),
+                mic_segment_for_test(1_100, 3_100, "Let's pause here."),
+            ],
+            Some(&source_activity_path),
+        );
+
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(
+            filtered
+                .iter()
+                .filter(|segment| is_mic_transcript_segment(segment))
+                .count(),
+            1
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn system_dominant_video_mode_drops_paraphrased_mic_bleed() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-video-echo-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let source_activity_path = dir.join("meeting.source-activity.json");
+        write_source_activity_for_test(
+            &source_activity_path,
+            vec![
+                source_activity_for_test("system_audio", 0, 120_000),
+                source_activity_for_test("local_mic", 120_000, 123_000),
+            ],
+        );
+
+        let filtered = suppress_mic_echo_segments(
+            vec![
+                system_segment_for_test(
+                    10_000,
+                    13_000,
+                    "Your brain is trained for instant rewards.",
+                ),
+                mic_segment_for_test(10_400, 13_400, "Your brain is trained for instant rewards."),
+                system_segment_for_test(
+                    20_000,
+                    23_000,
+                    "The problem is not laziness, it is dopamine.",
+                ),
+                mic_segment_for_test(
+                    20_500,
+                    23_500,
+                    "The problem is not laziness, it is dopamine.",
+                ),
+                system_segment_for_test(30_000, 33_000, "Focus feels difficult today."),
+                mic_segment_for_test(30_500, 33_500, "This is why focus feels impossible today."),
+                system_segment_for_test(121_000, 122_000, "Remote audio is still playing."),
+                mic_segment_for_test(121_200, 122_000, "I need to pause."),
+            ],
+            Some(&source_activity_path),
+        );
+
+        let mic_texts = filtered
+            .iter()
+            .filter(|segment| is_mic_transcript_segment(segment))
+            .map(|segment| segment.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(mic_texts, vec!["I need to pause."]);
+        assert_eq!(
+            filtered
+                .iter()
+                .filter(|segment| is_system_transcript_segment(segment))
+                .count(),
+            4
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    #[ignore]
+    fn echo_dedupe_demo_on_real_meeting_artifacts() {
+        let dir = PathBuf::from(
+            std::env::var("AIRNOTE_ECHO_DEDUPE_DEMO_DIR")
+                .expect("set AIRNOTE_ECHO_DEDUPE_DEMO_DIR to a saved meeting artifact folder"),
+        );
+        let transcript_path = dir.join("meeting.transcript.json");
+        let artifact: MeetingTranscriptArtifact =
+            serde_json::from_slice(&fs::read(&transcript_path).unwrap()).unwrap();
+        let before_mic = artifact
+            .segments
+            .iter()
+            .filter(|segment| is_mic_transcript_segment(segment))
+            .count();
+        let before_system = artifact
+            .segments
+            .iter()
+            .filter(|segment| is_system_transcript_segment(segment))
+            .count();
+
+        let filtered = suppress_mic_echo_segments(
+            artifact.segments,
+            Some(&dir.join("meeting.source-activity.json")),
+        );
+        let after_mic = filtered
+            .iter()
+            .filter(|segment| is_mic_transcript_segment(segment))
+            .count();
+        let after_system = filtered
+            .iter()
+            .filter(|segment| is_system_transcript_segment(segment))
+            .count();
+
+        eprintln!(
+            "echo_dedupe_demo: before_mic={before_mic} after_mic={after_mic} before_system={before_system} after_system={after_system} before_total={} after_total={}",
+            before_mic + before_system,
+            filtered.len()
+        );
+        assert_eq!(after_system, before_system);
+        assert!(after_mic < before_mic);
+        assert!(after_mic * 2 <= before_mic);
     }
 
     #[test]
@@ -11286,7 +14855,7 @@ mod tests {
     }
 
     #[test]
-    fn transcript_artifact_writes_diarization_json_with_person_labels() {
+    fn transcript_artifact_writes_legacy_source_diarization_json() {
         let dir = std::env::temp_dir().join(format!(
             "airnote-diarization-artifact-test-{}-{}",
             std::process::id(),
@@ -11341,8 +14910,6 @@ mod tests {
         let transcript_json: serde_json::Value =
             serde_json::from_slice(&fs::read(&paths.json).unwrap()).unwrap();
         let diarization_path = dir.join("meeting.diarization.json");
-        let final_diarization_path = dir.join("meeting.diarization.final.json");
-        let final_transcript_path = dir.join("meeting.transcript.final.json");
         let diarization_json: serde_json::Value =
             serde_json::from_slice(&fs::read(&diarization_path).unwrap()).unwrap();
 
@@ -11350,20 +14917,12 @@ mod tests {
             transcript_json["diarization_json_path"].as_str().unwrap(),
             diarization_path.to_string_lossy()
         );
-        assert_eq!(
-            transcript_json["final_diarization_json_path"]
-                .as_str()
-                .unwrap(),
-            final_diarization_path.to_string_lossy()
-        );
-        assert_eq!(
-            transcript_json["final_transcript_json_path"]
-                .as_str()
-                .unwrap(),
-            final_transcript_path.to_string_lossy()
-        );
+        assert!(transcript_json["final_diarization_json_path"].is_null());
+        assert!(transcript_json["final_transcript_json_path"].is_null());
         assert_eq!(transcript_json["segments"][0]["source"], "mic");
         assert_eq!(transcript_json["segments"][0]["speaker_name"], "You");
+        assert_eq!(transcript_json["segments"][1]["source"], "system");
+        assert_eq!(transcript_json["segments"][1]["speaker_name"], "Speaker 1");
         assert_eq!(diarization_json["method"], "source_track_v1");
         assert_eq!(diarization_json["speakers"][0]["speaker_name"], "You");
         assert_eq!(diarization_json["speakers"][1]["speaker_name"], "Speaker 1");
@@ -11411,6 +14970,116 @@ mod tests {
 
         let text = load_final_transcript_text(&snapshot).unwrap().unwrap();
         assert_eq!(text, "[00:00 Local Speaker 1] Hello.");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn light_diarization_assigns_speakers_by_overlap() {
+        let segments = vec![
+            MeetingTranscriptSegment {
+                source: "system".to_string(),
+                speaker_id: "speaker_1".to_string(),
+                speaker_name: "Speaker 1".to_string(),
+                start_ms: 1_000,
+                end_ms: 3_000,
+                text: "First remote speaker.".to_string(),
+            },
+            MeetingTranscriptSegment {
+                source: "system".to_string(),
+                speaker_id: "speaker_1".to_string(),
+                speaker_name: "Speaker 1".to_string(),
+                start_ms: 6_000,
+                end_ms: 7_500,
+                text: "Second remote speaker.".to_string(),
+            },
+            MeetingTranscriptSegment {
+                source: "mic".to_string(),
+                speaker_id: "you".to_string(),
+                speaker_name: "You".to_string(),
+                start_ms: 8_000,
+                end_ms: 9_000,
+                text: "Local user stays local.".to_string(),
+            },
+        ];
+        let turns = vec![
+            LightDiarizationTurn {
+                speaker_key: "remote-a".to_string(),
+                start_ms: 0,
+                end_ms: 5_000,
+                confidence: 0.9,
+            },
+            LightDiarizationTurn {
+                speaker_key: "remote-b".to_string(),
+                start_ms: 5_000,
+                end_ms: 8_000,
+                confidence: 0.9,
+            },
+        ];
+
+        let assigned = assign_light_diarization_to_transcript(&segments, &turns);
+
+        assert_eq!(assigned[0].speaker_name, "Speaker 1");
+        assert_eq!(assigned[1].speaker_name, "Speaker 2");
+        assert_eq!(assigned[2].speaker_name, "You");
+        assert_eq!(assigned[2].speaker_id, "you");
+    }
+
+    /// Runs the real light sherpa-onnx speaker detector against a copied local
+    /// meeting fixture. Ignored by default because it depends on downloaded
+    /// model files and local meeting data. Run with:
+    ///   AIRNOTE_TEST_LIGHT_DIARIZATION_MEETING_DIR="$HOME/Library/Application Support/VoicePolish/meetings/local-1781715448267-4" \
+    ///   cargo test -p said-desktop light_diarization_runs_on_real_meeting_fixture -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn light_diarization_runs_on_real_meeting_fixture() {
+        let Some(source_dir) =
+            std::env::var_os("AIRNOTE_TEST_LIGHT_DIARIZATION_MEETING_DIR").map(PathBuf::from)
+        else {
+            eprintln!("set AIRNOTE_TEST_LIGHT_DIARIZATION_MEETING_DIR to a meeting folder");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-light-diarization-fixture-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::copy(
+            source_dir.join("meeting.merged.wav"),
+            dir.join("meeting.merged.wav"),
+        )
+        .unwrap();
+        fs::copy(
+            source_dir.join("meeting.transcript.json"),
+            dir.join("meeting.transcript.json"),
+        )
+        .unwrap();
+
+        let paths = transcript_paths_for_stem(&dir, "meeting");
+        let final_paths = final_diarization_paths_for_transcript(&paths).unwrap();
+        let started = Instant::now();
+        run_light_final_diarization(&dir.join("meeting.merged.wav"), &paths, &final_paths).unwrap();
+        let elapsed = started.elapsed();
+        let final_artifact =
+            read_meeting_transcript_artifact(&final_paths.transcript_json).unwrap();
+        let speaker_count = final_artifact
+            .segments
+            .iter()
+            .map(|segment| segment.speaker_id.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        eprintln!(
+            "light diarization fixture: {} segments, {} speakers, {:.2?}",
+            final_artifact.segments.len(),
+            speaker_count,
+            elapsed
+        );
+
+        assert!(!final_artifact.segments.is_empty());
+        assert!(speaker_count >= 1);
+        assert!(final_paths.diarization_json.is_file());
+        assert!(final_paths.transcript_json.is_file());
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -11543,6 +15212,53 @@ mod tests {
     }
 
     #[test]
+    fn loads_recovered_meeting_audio_without_merged_wav() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-recovered-meeting-artifacts-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("mic.wav");
+        let system_path = dir.join("system.wav");
+        write_test_wav(&mic_path, &[1_000, 2_000, 0, 0]).unwrap();
+        write_test_wav(&system_path, &[0, 500, 1_000, 0]).unwrap();
+        fs::write(
+            dir.join("meeting.transcript.json"),
+            serde_json::json!({
+                "status": "completed",
+                "provider": "whisper.cpp",
+                "source_wav": mic_path,
+                "source_wavs": [mic_path, system_path],
+                "transcript": "[00:00 You] Recovered audio is playable.",
+                "segments": [
+                    {
+                        "source": "mic",
+                        "speaker_id": "you",
+                        "speaker_name": "You",
+                        "start_ms": 0,
+                        "end_ms": 1000,
+                        "text": "Recovered audio is playable."
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let artifacts = load_cached_meeting_artifacts_from_dir(Some("meeting-id"), &dir)
+            .unwrap()
+            .unwrap();
+
+        assert!(artifacts.audio_path.unwrap().ends_with("mic.wav"));
+        assert!(artifacts.audio_duration_ms.is_some());
+        assert_eq!(artifacts.transcript_source, "raw");
+        assert_eq!(artifacts.segments.len(), 1);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn merges_mic_and_system_wavs_into_meeting_audio() {
         let dir = std::env::temp_dir().join(format!(
             "airnote-merge-test-{}-{}",
@@ -11648,6 +15364,11 @@ mod tests {
         assert!(plan.summary.path.ends_with("meeting.merged.wav"));
         assert!(plan.output_paths.text.ends_with("meeting.transcript.txt"));
         assert_eq!(plan.source_wavs, vec![mic_path, system_path]);
+        assert!(
+            plan.source_activity_path
+                .as_ref()
+                .is_some_and(|path| path.ends_with("meeting.source-activity.json"))
+        );
         assert_eq!(audio.status, "completed");
         assert!(
             audio
@@ -11705,28 +15426,57 @@ mod tests {
         assert_eq!(plan.system.as_ref().map(|summary| &summary.path), None);
         assert!(plan.output_paths.text.ends_with("meeting.transcript.txt"));
         assert_eq!(plan.source_wavs, vec![mic_path]);
+        assert!(plan.source_activity_path.is_none());
         assert_eq!(audio.status, "skipped_silent_system_audio");
 
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn meeting_whisper_defaults_prefer_turbo_for_optimized_meeting_flow() {
-        let candidates = default_whisper_model_candidates(Path::new("/tmp/airnote-test-data"));
-
-        assert!(candidates[0].ends_with("models/ggml-large-v3-turbo.bin"));
-        assert!(
-            candidates
-                .iter()
-                .position(|path| path.ends_with("models/ggml-large-v3.bin"))
-                < candidates
-                    .iter()
-                    .position(|path| path.ends_with("models/ggml-small.bin"))
+    fn build_retranscribe_plan_carries_source_activity_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-retranscribe-plan-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        write_test_wav(&dir.join("mic.wav"), &[1_000, 2_000, 0, 0]).unwrap();
+        write_test_wav(&dir.join("system.wav"), &[0, 500, 1_000, 1_500]).unwrap();
+        write_test_wav(
+            &dir.join("meeting.merged.wav"),
+            &[1_000, 2_500, 1_000, 1_500],
+        )
+        .unwrap();
+        write_source_activity_for_test(
+            &dir.join("meeting.source-activity.json"),
+            vec![source_activity_for_test("system_audio", 0, 1_000)],
         );
+
+        let plan = build_retranscribe_plan(&dir).unwrap();
+
+        assert_eq!(
+            plan.source_wavs,
+            vec![dir.join("mic.wav"), dir.join("system.wav")]
+        );
+        assert!(
+            plan.source_activity_path
+                .as_ref()
+                .is_some_and(|path| path.ends_with("meeting.source-activity.json"))
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn meeting_whisper_model_dir_chooses_strongest_installed_model() {
+    fn meeting_whisper_defaults_prefer_q5_for_light_meeting_flow() {
+        let candidates = default_whisper_model_candidates(Path::new("/tmp/airnote-test-data"));
+
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].ends_with("models/ggml-large-v3-turbo-q5_0.bin"));
+    }
+
+    #[test]
+    fn meeting_whisper_model_dir_chooses_recommended_low_memory_model() {
         let dir = std::env::temp_dir().join(format!(
             "airnote-whisper-model-dir-test-{}-{}",
             std::process::id(),
@@ -11735,18 +15485,70 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         // Real-sized stubs: the resolver skips empty/partial models (< 1 MB).
         let blob = vec![0u8; (MIN_WHISPER_MODEL_BYTES + 1) as usize];
-        fs::write(dir.join("ggml-small.bin"), &blob).unwrap();
+        fs::write(dir.join("ggml-large-v3-turbo-q5_0.bin"), &blob).unwrap();
         fs::write(dir.join("ggml-large-v3-turbo.bin"), &blob).unwrap();
 
         let selected = first_whisper_model_in_dir(&dir).unwrap();
 
-        assert!(selected.ends_with("ggml-large-v3-turbo.bin"));
+        assert!(selected.ends_with("ggml-large-v3-turbo-q5_0.bin"));
 
         // A 0-byte placeholder must be ignored, not chosen.
         let empty_dir = dir.join("empty");
         fs::create_dir_all(&empty_dir).unwrap();
         fs::write(empty_dir.join("ggml-large-v3-turbo.bin"), b"").unwrap();
         assert!(first_whisper_model_in_dir(&empty_dir).is_none());
+
+        let legacy_only_dir = dir.join("legacy-only");
+        fs::create_dir_all(&legacy_only_dir).unwrap();
+        fs::write(legacy_only_dir.join("ggml-large-v3-turbo.bin"), &blob).unwrap();
+        assert!(first_whisper_model_in_dir(&legacy_only_dir).is_none());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn meeting_whisper_catalog_only_exposes_q5() {
+        let names = WHISPER_MODEL_CATALOG
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(names.len(), 1);
+        assert!(names.contains("ggml-large-v3-turbo-q5_0.bin"));
+    }
+
+    #[test]
+    fn meeting_whisper_cleanup_removes_legacy_models_and_keeps_q5() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-whisper-cleanup-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("ggml-large-v3-turbo-q5_0.bin"), b"keep").unwrap();
+        fs::write(dir.join("ggml-large-v3-turbo-q5_0.bin.part"), b"keep-part").unwrap();
+        fs::write(dir.join("ggml-large-v3-turbo.bin"), b"delete-full").unwrap();
+        fs::write(dir.join("ggml-medium.bin"), b"delete-medium").unwrap();
+        fs::write(dir.join("ggml-small-q5_0.bin.part"), b"delete-part").unwrap();
+        fs::write(dir.join("ggml-silero-v5.1.2.bin"), b"keep-vad").unwrap();
+
+        let result = cleanup_legacy_whisper_models_in_dir(&dir).unwrap();
+        let removed = result
+            .removed
+            .iter()
+            .map(|model| model.name.as_str())
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(removed.len(), 3);
+        assert!(removed.contains("ggml-large-v3-turbo.bin"));
+        assert!(removed.contains("ggml-medium.bin"));
+        assert!(removed.contains("ggml-small-q5_0.bin.part"));
+        assert!(dir.join("ggml-large-v3-turbo-q5_0.bin").exists());
+        assert!(dir.join("ggml-large-v3-turbo-q5_0.bin.part").exists());
+        assert!(dir.join("ggml-silero-v5.1.2.bin").exists());
+        assert!(!dir.join("ggml-large-v3-turbo.bin").exists());
+        assert!(!dir.join("ggml-medium.bin").exists());
+        assert!(!dir.join("ggml-small-q5_0.bin.part").exists());
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -11985,6 +15787,69 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_completed_transcript_is_resumable_until_terminal() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-resume-transcript-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let paths = transcript_paths_for_stem(&dir, "meeting");
+        let summary = MicCaptureSummary {
+            path: dir.join("mic.wav"),
+            samples_written: SAMPLE_RATE as u64,
+            dropped_chunks: 0,
+            native_rate: SAMPLE_RATE,
+            duration_ms: 1_000,
+            peak: 0.1,
+        };
+
+        write_meeting_state(&dir, MEETING_PHASE_TRANSCRIBING, None);
+        assert!(!should_resume_incomplete_transcript(&dir));
+
+        write_transcript_artifact(
+            &paths,
+            &summary,
+            "completed",
+            None,
+            DEFAULT_WHISPER_LANGUAGE,
+            "hello from the saved transcript",
+            Some(123),
+            Some("hello from the cleaned transcript"),
+            MeetingCleanupSnapshot::skipped("skipped_test", "test"),
+            Vec::new(),
+            vec![summary.path.clone()],
+            None,
+        );
+        assert!(should_resume_incomplete_transcript(&dir));
+
+        write_meeting_state(&dir, MEETING_PHASE_SUMMARIZED, None);
+        assert!(!should_resume_incomplete_transcript(&dir));
+
+        write_meeting_state(&dir, MEETING_PHASE_FAILED, Some("boom".to_string()));
+        assert!(!should_resume_incomplete_transcript(&dir));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn meeting_final_diarization_is_disabled() {
+        assert!(!meeting_final_diarization_enabled());
+        assert_eq!(meeting_final_diarization_mode(), FINAL_DIARIZATION_MODE_OFF);
+    }
+
+    #[test]
+    fn light_diarization_skips_only_over_the_duration_limit() {
+        let max_ms = 15 * 60 * 1000;
+
+        assert!(light_diarization_skip_reason_for_duration(max_ms, max_ms).is_none());
+        let reason = light_diarization_skip_reason_for_duration(max_ms + 1, max_ms)
+            .expect("duration over limit should skip");
+        assert!(reason.contains("light speaker detection skipped"));
+        assert!(reason.contains("900.0s"));
+    }
+
+    #[test]
     fn parses_title_and_tags_and_normalizes_them() {
         let response = r##"{
   "title": "\"Stryker Sentinel Pricing & Rollout.\"",
@@ -12039,6 +15904,65 @@ mod tests {
         assert_eq!(read_meeting_user_tags(&dir), vec!["Risk".to_string()]);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn mic_segment_for_test(start_ms: u64, end_ms: u64, text: &str) -> MeetingTranscriptSegment {
+        MeetingTranscriptSegment {
+            source: "mic".to_string(),
+            speaker_id: "you".to_string(),
+            speaker_name: "You".to_string(),
+            start_ms,
+            end_ms,
+            text: text.to_string(),
+        }
+    }
+
+    fn system_segment_for_test(start_ms: u64, end_ms: u64, text: &str) -> MeetingTranscriptSegment {
+        MeetingTranscriptSegment {
+            source: "system".to_string(),
+            speaker_id: "speaker_1".to_string(),
+            speaker_name: "Speaker 1".to_string(),
+            start_ms,
+            end_ms,
+            text: text.to_string(),
+        }
+    }
+
+    fn source_activity_for_test(source: &str, start_ms: u64, end_ms: u64) -> SourceActivitySegment {
+        SourceActivitySegment {
+            source: source.to_string(),
+            start_ms,
+            end_ms,
+            mic_rms: if source == "local_mic" || source == "overlap" {
+                0.20
+            } else {
+                0.0
+            },
+            system_rms: if source == "system_audio" || source == "overlap" {
+                0.20
+            } else {
+                0.0
+            },
+        }
+    }
+
+    fn write_source_activity_for_test(path: &Path, segments: Vec<SourceActivitySegment>) {
+        let artifact = MeetingAudioArtifact {
+            schema_version: 1,
+            status: "completed".to_string(),
+            mic_wav: "mic.wav".to_string(),
+            system_wav: "system.wav".to_string(),
+            merged_wav: Some("meeting.merged.wav".to_string()),
+            source_activity_path: Some(path.to_string_lossy().to_string()),
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+            duration_ms: segments.iter().map(|segment| segment.end_ms).max(),
+            samples_written: 0,
+            source_activity_segments: segments,
+            generated_at_ms: now_ms(),
+            error: None,
+        };
+        fs::write(path, serde_json::to_vec_pretty(&artifact).unwrap()).unwrap();
     }
 
     fn write_test_wav(path: &Path, samples: &[i16]) -> Result<(), hound::Error> {

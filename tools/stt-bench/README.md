@@ -27,6 +27,16 @@ python3 tools/stt-bench/run.py \
   --terms EMIAC,Macobs,Kubernetes,n8n,Perplexity,Claude,JavaScript
 ```
 
+Run Deepgram vs Apple SpeechAnalyzer over the latest WAV:
+
+```bash
+python3 tools/stt-bench/run.py \
+  --providers deepgram_raw,apple_speech \
+  --latest 1 \
+  --apple-speech-locale en-US \
+  --terms EMIAC,Macobs,Kubernetes,n8n,Perplexity,Claude,JavaScript
+```
+
 Run Vosk locally if you have a model:
 
 ```bash
@@ -60,6 +70,85 @@ python3 tools/stt-bench/run.py \
   --terms EMIAC,Macobs,Kubernetes,n8n
 ```
 
+Run FluidAudio if you have built `fluidaudiocli`:
+
+```bash
+python3 tools/stt-bench/run.py \
+  --providers fluid_audio \
+  --fluid-audio-bin /tmp/FluidAudio/.build/release/fluidaudiocli \
+  --fluid-audio-model-version v2 \
+  --fluid-audio-language en \
+  --latest 10 \
+  --terms EMIAC,Macobs,Kubernetes,n8n
+```
+
+Run Gladia or AssemblyAI if their keys are present in `.env`:
+
+```bash
+GLADIA_API_KEY=...
+ASSEMBLYAI_API_KEY=...
+
+python3 tools/stt-bench/run.py \
+  --providers gladia,assemblyai \
+  --gladia-model solaria-1 \
+  --gladia-code-switching \
+  --assemblyai-keyterms-from-terms \
+  --latest 10 \
+  --terms EMIAC,Macobs,Kubernetes,n8n
+```
+
+Run the final Sortformer diarization reconciler over a whisper.cpp JSON:
+
+```bash
+/tmp/airnote-nemo-venv/bin/python tools/stt-bench/sortformer_diarize.py \
+  --audio /path/to/meeting.asr.wav \
+  --transcript-json /path/to/meeting.whisper.json \
+  --model-path /path/to/diar_streaming_sortformer_4spk-v2.1.nemo \
+  --diarization-out /path/to/meeting.diarization.final.json \
+  --transcript-out /path/to/meeting.transcript.final.json
+```
+
+For benchmark fixtures with reference speaker segments, add:
+
+```bash
+  --reference-segments /path/to/reference.segments.json \
+  --metrics-out /path/to/final-diarization.metrics.json
+```
+
+The reconciler preserves ASR text segments and assigns speakers by diarization
+overlap. If Sortformer misses a region, the text remains in the final transcript
+with an unassigned/provisional speaker label. In track-wise meeting mode, obvious
+mic echo duplicates can be merged into the matching remote segment.
+
+When the input transcript is AirNote's combined meeting artifact and includes
+both `mic.wav` and `system.wav` in `source_wavs`, the same command automatically
+switches to track-wise finalization:
+
+- `mic.wav` is diarized into `Local Speaker 1`, `Local Speaker 2`, etc.
+- `system.wav` is diarized into `Remote Speaker 1`, `Remote Speaker 2`, etc.
+- the two labeled timelines are merged by timestamp into one final transcript.
+- if laptop-speaker audio leaks into the mic, source-activity and text-overlap
+  checks can merge the mic echo back into the matching remote speaker instead of
+  creating a fake local speaker. The final JSON records the decision under
+  `echo_suppression`.
+- unassigned ASR hallucinations that extend past the real audio duration are
+  dropped from the final transcript.
+- unassigned tail hallucinations are dropped only when the source-activity file
+  says that track was silent during the segment.
+
+For a no-model smoke test, pass existing per-track diarization JSON:
+
+```bash
+python3 tools/stt-bench/sortformer_diarize.py \
+  --audio /path/to/meeting.merged.wav \
+  --transcript-json /path/to/meeting.transcript.json \
+  --diarization-out /path/to/meeting.diarization.final.json \
+  --transcript-out /path/to/meeting.transcript.final.json \
+  --existing-track-diarization-json mic=/path/to/mic.diarization.json \
+  --existing-track-diarization-json system=/path/to/system.diarization.json \
+  --force-trackwise
+```
+
 ## Outputs
 
 Each run writes:
@@ -89,4 +178,3 @@ If no manifest is provided, the tool discovers WAV files under:
 - `~/Library/Application Support/Said/audio`
 
 and infers expected terms from DB final/polished/local/raw text plus `--terms`.
-

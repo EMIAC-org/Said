@@ -23,6 +23,8 @@ use uiautomation::UIElement;
 use uiautomation::UITreeWalker;
 use uiautomation::patterns::{UITextPattern, UIValuePattern};
 
+use crate::win_paster::find_unique_text_span_chars;
+
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, SMTO_ABORTIFHUNG, SendMessageTimeoutW,
@@ -47,11 +49,15 @@ enum Req {
     Selection,
     /// (app_name, control_type) of the focused element, for diagnostics.
     Info,
+    /// Select one exact text range in the focused element. Refuses absent or
+    /// duplicate matches so callers can safely paste over the selection.
+    SelectExactText { text: String },
 }
 
 enum Rep {
     Text(Option<String>),
     Info(Option<(String, String)>),
+    Bool(bool),
 }
 
 struct Reader {
@@ -99,6 +105,22 @@ pub fn info(timeout_ms: u64) -> Option<(String, String)> {
     match call(Req::Info, timeout_ms)? {
         Rep::Info(i) => i,
         _ => None,
+    }
+}
+
+/// Select an exact, unique text span in the focused element.
+pub fn select_exact_text(text: &str, timeout_ms: u64) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    match call(
+        Req::SelectExactText {
+            text: text.to_string(),
+        },
+        timeout_ms,
+    ) {
+        Some(Rep::Bool(selected)) => selected,
+        _ => false,
     }
 }
 
@@ -161,6 +183,7 @@ fn worker_main(rx: Receiver<(Req, SyncSender<Rep>)>) {
             Req::Value { fast, pid } => Rep::Text(read_value(&automation, fast, pid)),
             Req::Selection => Rep::Text(read_selection(&automation)),
             Req::Info => Rep::Info(read_info(&automation)),
+            Req::SelectExactText { text } => Rep::Bool(select_exact_text_range(&automation, &text)),
         };
         let _ = reply.try_send(rep);
     }
@@ -212,6 +235,43 @@ fn read_info(automation: &UIAutomation) -> Option<(String, String)> {
         .map(|c| format!("{c:?}"))
         .unwrap_or_default();
     Some((name, control))
+}
+
+fn select_exact_text_range(automation: &UIAutomation, text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    let current = match read_value(automation, false, None) {
+        Some(value) => value,
+        None => return false,
+    };
+    if find_unique_text_span_chars(&current, text).is_none() {
+        return false;
+    }
+
+    let el = match automation.get_focused_element() {
+        Ok(el) => el,
+        Err(_) => return false,
+    };
+    if el.is_password().unwrap_or(false) {
+        return false;
+    }
+    let tp = match el.get_pattern::<UITextPattern>() {
+        Ok(tp) => tp,
+        Err(_) => return false,
+    };
+    let document_range = match tp.get_document_range() {
+        Ok(range) => range,
+        Err(_) => return false,
+    };
+    let range = match document_range.find_text(text, false, false) {
+        Ok(range) => range,
+        Err(_) => return false,
+    };
+    if range.get_text(-1).ok().as_deref() != Some(text) {
+        return false;
+    }
+    range.select().is_ok()
 }
 
 fn value_pattern_text(el: &UIElement) -> Option<String> {

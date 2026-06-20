@@ -8,6 +8,7 @@ import {
   WifiOff,
   Mic,
   MicOff,
+  FileText,
   PhoneOff,
   CircleStop,
   Sparkles,
@@ -102,17 +103,12 @@ interface MeetingEngineStatus {
   transcript_cleanup_model?: string | null;
   transcript_cleanup_latency_ms?: number | null;
   transcript_cleanup_error?: string | null;
-  final_diarization_status?: string;
-  final_diarization_provider?: string | null;
-  final_diarization_latency_ms?: number | null;
-  final_diarization_json_path?: string | null;
   final_transcript_json_path?: string | null;
-  final_diarization_error?: string | null;
   transcription_error?: string | null;
   last_error?: string | null;
 }
 
-type TranscriptReviewMode = "final" | "cleaned" | "raw";
+type TranscriptReviewMode = "cleaned" | "raw";
 
 interface MeetingLiveTranscriptChunk {
   chunk_index: number;
@@ -259,7 +255,6 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   const [lastGateReason, setLastGateReason] = useState("not_started");
   const [engineError, setEngineError] = useState<string | null>(null);
   const [liveTranscriptStatus, setLiveTranscriptStatus] = useState("idle");
-  const [liveTranscriptModel, setLiveTranscriptModel] = useState<string | null>(null);
   const [liveTranscriptError, setLiveTranscriptError] = useState<string | null>(null);
   const [transcriptionRunning, setTranscriptionRunning] = useState(false);
   const [transcriptionStatus, setTranscriptionStatus] = useState("idle");
@@ -270,16 +265,10 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   const [, setTranscriptJsonPath] = useState<string | null>(null);
   const [transcriptText, setTranscriptText] = useState<string | null>(null);
   const [transcriptCleanedText, setTranscriptCleanedText] = useState<string | null>(null);
-  const [finalTranscriptText, setFinalTranscriptText] = useState<string | null>(null);
-  const [finalTranscriptJsonPath, setFinalTranscriptJsonPath] = useState<string | null>(null);
   const [transcriptCleanupStatus, setTranscriptCleanupStatus] = useState("idle");
   const [, setTranscriptCleanupModel] = useState<string | null>(null);
   const [, setTranscriptCleanupLatencyMs] = useState<number | null>(null);
   const [, setTranscriptCleanupError] = useState<string | null>(null);
-  const [finalDiarizationStatus, setFinalDiarizationStatus] = useState("idle");
-  const [, setFinalDiarizationProvider] = useState<string | null>(null);
-  const [, setFinalDiarizationLatencyMs] = useState<number | null>(null);
-  const [, setFinalDiarizationError] = useState<string | null>(null);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [transcriptReviewMode, setTranscriptReviewMode] = useState<TranscriptReviewMode>("raw");
   const [meetingAiStatus, setMeetingAiStatus] = useState("idle");
@@ -290,7 +279,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   const [, setMeetingAiModel] = useState<string | null>(null);
   const [, setMeetingAiLatencyMs] = useState<number | null>(null);
   const [, setMeetingAiError] = useState<string | null>(null);
-  const [aiChatOpen, setAiChatOpen] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
   const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
   const [controlBusy, setControlBusy] = useState(false);
   const [ending, setEnding] = useState(false);
@@ -324,7 +313,6 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
     setLastGateReason(status.last_gate_reason || "unknown");
     setEngineError(status.last_error || null);
     setLiveTranscriptStatus(status.live_transcript_status || "idle");
-    setLiveTranscriptModel(status.live_transcript_model || null);
     setLiveTranscriptError(status.live_transcript_error || null);
     setTranscriptionRunning(Boolean(status.transcription_running));
     setTranscriptionStatus(status.transcription_status || "idle");
@@ -335,16 +323,10 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
     setTranscriptJsonPath(status.transcript_json_path || null);
     setTranscriptText(status.transcript_text || null);
     setTranscriptCleanedText(status.transcript_cleaned_text || null);
-    setFinalTranscriptText(status.final_transcript_text || null);
-    setFinalTranscriptJsonPath(status.final_transcript_json_path || null);
     setTranscriptCleanupStatus(status.transcript_cleanup_status || "idle");
     setTranscriptCleanupModel(status.transcript_cleanup_model || null);
     setTranscriptCleanupLatencyMs(status.transcript_cleanup_latency_ms ?? null);
     setTranscriptCleanupError(status.transcript_cleanup_error || null);
-    setFinalDiarizationStatus(status.final_diarization_status || "idle");
-    setFinalDiarizationProvider(status.final_diarization_provider || null);
-    setFinalDiarizationLatencyMs(status.final_diarization_latency_ms ?? null);
-    setFinalDiarizationError(status.final_diarization_error || null);
     setTranscriptionError(status.transcription_error || null);
   }, []);
 
@@ -408,21 +390,6 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
       void invoke("hide_meeting_pill").catch(() => {});
     };
   }, [ended]);
-
-  // Auto-minimize the app once recording actually starts, so it gets out of the
-  // way and the floating pill takes over (minimizing also surfaces the pill via
-  // the focus-change watcher above). Fires once per meeting.
-  const autoMinimizedRef = useRef(false);
-  useEffect(() => {
-    if (ended || autoMinimizedRef.current || !(captureRunning || engineRunning)) return;
-    autoMinimizedRef.current = true;
-    // Show the pill explicitly (don't depend on the focus-change event timing),
-    // then minimize so it takes over immediately at meeting start.
-    void invoke("show_meeting_pill").catch(() => {});
-    void getCurrentWindow()
-      .minimize()
-      .catch(() => {});
-  }, [captureRunning, engineRunning, ended]);
 
   // Load this meeting's saved notes once.
   useEffect(() => {
@@ -544,14 +511,12 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
 
   useEffect(() => {
     const cleanupRunning = transcriptCleanupStatus === "running";
-    const finalDiarizationRunning =
-      finalDiarizationStatus === "running" || transcriptionStatus === "final_diarizing";
-    if (!ended && !transcriptionRunning && !cleanupRunning && !finalDiarizationRunning) return;
+    if (!ended && !transcriptionRunning && !cleanupRunning) return;
     const terminalTranscription =
       transcriptionStatus === "completed"
       || transcriptionStatus === "failed"
       || transcriptionStatus.startsWith("skipped_");
-    if (!cleanupRunning && !finalDiarizationRunning && terminalTranscription) return;
+    if (!cleanupRunning && terminalTranscription) return;
 
     const id = setInterval(() => {
       invoke<MeetingEngineStatus>("meeting_engine_get_status")
@@ -563,7 +528,6 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   }, [
     applyMeetingStatus,
     ended,
-    finalDiarizationStatus,
     transcriptionRunning,
     transcriptionStatus,
     transcriptCleanupStatus,
@@ -842,6 +806,8 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   const activeParticipants = participants.filter((p) => p.status !== "left").length;
   const conn = getConnection();
   const isOwner = !!meeting && !!conn && meeting.created_by === conn.accountId;
+  const anyTrackActive = micTrackActive || systemTrackActive;
+  const micWarning = Boolean(engineError) && systemTrackActive && !micTrackActive;
   const captureLabel = !engineRunning
     ? transcriptionRunning
       ? "Transcribing"
@@ -853,9 +819,9 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
         : captureRunning
           ? "Recording"
           : "Ready";
-  const engineReady = (engineRunning && !muted && !engineError) || transcriptionRunning;
+  const engineReady = (engineRunning && !muted && (anyTrackActive || !engineError)) || transcriptionRunning;
   const systemUnavailable = systemCaptureStatus === "unavailable" || Boolean(systemCaptureError);
-  const engineStatusLabel = engineError
+  const engineStatusLabel = engineError && !anyTrackActive
     ? "Mic error"
     : transcriptionRunning
       ? "Transcribing"
@@ -878,29 +844,27 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
           ? "System unavailable"
           : "Engine ready"
         : "Engine stopped";
+  const engineStatusTitle = [
+    engineError ? `Mic: ${engineError}` : null,
+    systemCaptureError ? `System: ${systemCaptureError}` : null,
+    transcriptionError || transcriptionStatus || lastGateReason,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const rawTranscript = transcriptText?.trim() || "";
   const cleanedTranscript = transcriptCleanedText?.trim() || "";
-  const finalTranscript = finalTranscriptText?.trim() || "";
   const liveTranscriptOverride = useMemo(() => {
     if (chunks.length === 0) return "";
     return chunks
       .map((chunk) => `[${formatTimestamp(chunk.timestamp_ms)} ${chunk.speaker_name}] ${chunk.text}`)
       .join("\n");
   }, [chunks]);
-  const hasFinalTranscript = finalDiarizationStatus === "completed" && finalTranscript.length > 0;
   const hasCleanedTranscript = transcriptCleanupStatus === "completed" && cleanedTranscript.length > 0;
-  const activeTranscriptText = transcriptReviewMode === "final" && hasFinalTranscript
-    ? finalTranscript
-    : transcriptReviewMode === "cleaned" && hasCleanedTranscript
+  const activeTranscriptText = transcriptReviewMode === "cleaned" && hasCleanedTranscript
       ? cleanedTranscript
       : rawTranscript;
-  const finalizationActive = finalDiarizationStatus === "running" || transcriptionStatus === "final_diarizing";
   const cleanupActive = transcriptCleanupStatus === "running" || transcriptionStatus === "cleaning";
-  const intelligenceSourceKey = hasFinalTranscript
-    ? `final:${finalTranscriptJsonPath || finalTranscript.length}`
-    : finalizationActive
-      ? ""
-      : hasCleanedTranscript
+  const intelligenceSourceKey = hasCleanedTranscript
         ? `cleaned:${cleanedTranscript.length}`
         : rawTranscript.length > 0
           ? `raw:${rawTranscript.length}`
@@ -910,9 +874,6 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   const chatCanSend = ended
     ? Boolean(activeTranscriptText || rawTranscript)
     : Boolean(liveChatTranscript);
-  const liveTranscriptModelLabel = liveTranscriptModel
-    ? liveTranscriptModel.split(/[\\/]/).pop() || liveTranscriptModel
-    : liveTranscriptStatus.replace(/_/g, " ");
   const liveChatUnavailableLabel = ended
     ? "Transcript is not ready yet."
     : liveTranscriptError
@@ -922,7 +883,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
         : liveTranscriptStatus.startsWith("skipped")
           ? "Live transcript could not start. Check whisper.cpp settings."
             : liveTranscriptStatus === "running" || liveTranscriptStatus === "running_with_errors"
-              ? `Listening with ${liveTranscriptModelLabel}; waiting for the first transcript chunk.`
+              ? "Listening; waiting for the first transcript chunk."
               : "Live chat starts after transcript chunks arrive.";
 
   const applyMeetingIntelligenceResult = useCallback((result: MeetingIntelligenceResult) => {
@@ -980,40 +941,33 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   }, [ended, loadCachedMeetingIntelligence, meetingAiRunning, meetingAiSummary]);
 
   useEffect(() => {
-    if (!ended || !intelligenceSourceKey || transcriptionRunning || finalizationActive || cleanupActive) {
+    if (!ended || !intelligenceSourceKey || transcriptionRunning || cleanupActive) {
       return;
     }
     void generateMeetingIntelligence(false);
   }, [
     cleanupActive,
     ended,
-    finalizationActive,
     generateMeetingIntelligence,
     intelligenceSourceKey,
     transcriptionRunning,
   ]);
 
   useEffect(() => {
-    if (hasFinalTranscript) {
-      setTranscriptReviewMode("final");
+    if (hasCleanedTranscript && transcriptReviewMode !== "cleaned") {
+      setTranscriptReviewMode("cleaned");
       return;
     }
     if (!hasCleanedTranscript && transcriptReviewMode !== "raw") {
       setTranscriptReviewMode("raw");
-    } else if (transcriptReviewMode === "final") {
-      setTranscriptReviewMode(hasCleanedTranscript ? "cleaned" : "raw");
     }
-  }, [hasCleanedTranscript, hasFinalTranscript, transcriptReviewMode]);
+  }, [hasCleanedTranscript, transcriptReviewMode]);
 
   const aiChatPanel = (
     <div
-      className="absolute right-4 top-4 bottom-4 z-40 w-[380px] max-w-[calc(100%-2rem)] rounded-xl flex flex-col overflow-hidden"
+      className="flex h-full min-h-0 flex-col overflow-hidden"
       style={{
-        background: "hsl(var(--surface-2) / 0.98)",
-        border: "1px solid hsl(var(--surface-4))",
-        boxShadow: "0 24px 70px hsl(0 0% 0% / 0.48)",
-        backdropFilter: "blur(28px) saturate(170%)",
-        WebkitBackdropFilter: "blur(28px) saturate(170%)",
+        background: "hsl(var(--surface-2))",
       }}
     >
       <div
@@ -1031,12 +985,13 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
         </div>
         <button
           type="button"
-          onClick={() => setAiChatOpen(false)}
-          className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors"
+          onClick={() => setNotesOpen(true)}
+          className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-bold transition-colors"
           style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
-          title="Close AI chat"
+          title="Open notes"
         >
-          <X size={14} />
+          <FileText size={13} />
+          Notes
         </button>
       </div>
 
@@ -1062,7 +1017,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
     // (summary, transcript, actions, AI chat, live processing stages) lives in
     // MeetingsView — the single source of truth. No duplicate notes page here.
     return (
-      <div className="h-full flex items-center justify-center">
+      <div className="h-full w-full flex items-center justify-center">
         <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
           <Loader2 size={16} className="animate-spin" />
           <span>Wrapping up your meeting…</span>
@@ -1074,11 +1029,9 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   // ── Main layout ────────────────────────────────────────────────────────────
 
   return (
-    <div className="h-full flex flex-col overflow-hidden relative">
-      <button
-        type="button"
-        onClick={() => setAiChatOpen(true)}
-        className="absolute top-3 left-1/2 -translate-x-1/2 z-30 h-11 px-5 rounded-full flex items-center gap-2 text-[12px] font-bold transition-transform hover:scale-[1.02]"
+    <div className="h-full w-full flex flex-col overflow-hidden relative">
+      <div
+        className="absolute top-3 left-1/2 z-30 flex h-11 -translate-x-1/2 items-center rounded-full px-5 text-[12px] font-bold"
         style={{
           background: "hsl(var(--surface-2) / 0.96)",
           border: "1px solid hsl(var(--surface-4))",
@@ -1087,14 +1040,12 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
           backdropFilter: "blur(24px) saturate(170%)",
           WebkitBackdropFilter: "blur(24px) saturate(170%)",
         }}
-        title="Open live meeting AI chat"
+        title="Meeting duration"
       >
-        <Sparkles size={16} style={{ color: "hsl(var(--primary))" }} />
         <span>
           {startedAtMs && !ended ? formatTimestamp(Math.max(0, clockMs - startedAtMs)) : "00:00"}
         </span>
-      </button>
-      {aiChatOpen && aiChatPanel}
+      </div>
 
       {confirmEnd && (
         <div
@@ -1137,17 +1088,69 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
         </div>
       )}
 
+      {notesOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-6"
+          style={{ background: "hsl(0 0% 0% / 0.55)" }}
+          onClick={() => setNotesOpen(false)}
+        >
+          <div
+            className="flex h-[min(720px,82vh)] w-full max-w-2xl flex-col rounded-2xl p-5"
+            style={{ background: "hsl(var(--surface-2))", border: "1px solid hsl(var(--surface-4))" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <FileText size={16} className="flex-shrink-0 text-muted-foreground" />
+                <h3 className="truncate text-[15px] font-bold text-foreground">Notes</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-semibold text-muted-foreground">
+                  {notesStatus === "saving" ? "Saving…" : notesStatus === "saved" ? "Saved" : ""}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setNotesOpen(false)}
+                  className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors"
+                  style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+                  title="Close notes"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+            <textarea
+              value={notes}
+              onChange={(e) => handleNotesChange(e.target.value)}
+              placeholder="Notes..."
+              spellCheck
+              className="min-h-0 flex-1 resize-none rounded-xl px-4 py-3 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:outline-none"
+              style={{
+                background: "hsl(var(--surface-1))",
+                border: "1px solid hsl(var(--surface-4))",
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Top bar */}
       <div
-        className="flex items-center justify-between px-5 py-3 flex-shrink-0"
+        data-tauri-drag-region
+        className="flex items-center justify-between px-5 py-3 flex-shrink-0 drag-region"
         style={{
           borderBottom: "1px solid hsl(var(--surface-4))",
         }}
       >
         <div className="flex items-center gap-3">
+          <div
+            data-tauri-drag-region
+            aria-hidden="true"
+            className="h-7 w-3 flex-shrink-0 drag-region"
+          />
           <button
             onClick={() => setConfirmEnd(true)}
-            className="flex items-center justify-center w-7 h-7 rounded-lg transition-colors hover:opacity-80"
+            className="flex items-center justify-center w-7 h-7 rounded-lg transition-colors hover:opacity-80 no-drag"
             style={{ background: "hsl(var(--surface-4))" }}
             title="Leave meeting"
           >
@@ -1217,10 +1220,11 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
           <button
             onClick={() => setConfirmEnd(true)}
             disabled={controlBusy}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-40"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-40 no-drag"
             style={{
-              background: "hsl(var(--surface-4))",
-              color: "hsl(var(--foreground))",
+              background: "hsl(354 80% 55% / 0.16)",
+              border: "1px solid hsl(354 80% 55% / 0.2)",
+              color: "hsl(354 85% 75%)",
             }}
             title="Leave meeting"
           >
@@ -1232,7 +1236,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
             <button
               onClick={() => void handleEndMeeting()}
               disabled={ending}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-40"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-40 no-drag"
               style={{
                 background: "hsl(354 80% 55% / 0.14)",
                 color: "hsl(354 85% 75%)",
@@ -1246,7 +1250,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
         </div>
       </div>
 
-      {/* Main content: left transcript + right tasks */}
+      {/* Main content: transcript + live AI chat */}
       <div className="flex flex-1 overflow-hidden min-h-0">
         {/* Left panel — Transcript (60%) */}
         <div
@@ -1301,34 +1305,14 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
           </div>
         </div>
 
-        {/* Right panel — Notes */}
-        <div className="flex-[2] flex flex-col overflow-hidden min-w-0">
-          <div className="flex flex-shrink-0 items-center justify-between px-4 py-3">
-            <h2 className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Notes
-            </h2>
-            <span className="text-[10px] text-muted-foreground">
-              {notesStatus === "saving" ? "Saving…" : notesStatus === "saved" ? "Saved" : ""}
-            </span>
-          </div>
-          <div className="min-h-0 flex-1 px-4 pb-24">
-            <textarea
-              value={notes}
-              onChange={(e) => handleNotesChange(e.target.value)}
-              placeholder="Jot notes during the meeting…  Saved to this meeting and used as context in AI chat."
-              spellCheck={false}
-              className="h-full w-full resize-none rounded-xl px-4 py-3 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:outline-none"
-              style={{
-                background: "hsl(var(--surface-2))",
-                border: "1px solid hsl(var(--surface-4))",
-              }}
-            />
-          </div>
+        {/* Right panel — AI Chat */}
+        <div className="flex-[2] min-w-0 overflow-hidden">
+          {aiChatPanel}
         </div>
       </div>
 
       {/* Meeting control dock */}
-      <div className="absolute left-6 bottom-4 z-20">
+      <div className="absolute left-6 bottom-8 z-20">
         <div
           className="flex items-center gap-2 px-2.5 py-2 rounded-full"
           style={{
@@ -1344,8 +1328,8 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
             disabled={controlBusy}
             className="flex items-center justify-center w-10 h-10 rounded-full transition-all disabled:opacity-40"
             style={{
-              background: "hsl(var(--surface-4))",
-              color: "hsl(var(--foreground))",
+              background: "hsl(354 80% 55% / 0.18)",
+              color: "hsl(354 85% 75%)",
             }}
             title="Leave meeting"
           >
@@ -1395,22 +1379,28 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
           <div
             className="flex items-center gap-1.5 h-8 px-3 rounded-full text-[11px] font-medium"
             title={
-              engineError || transcriptionError || systemCaptureError || transcriptionStatus || lastGateReason
+              engineStatusTitle
             }
             style={{
-              background: engineReady
-                ? "hsl(142 70% 45% / 0.12)"
-                : "hsl(354 80% 55% / 0.16)",
-              color: engineReady
-                ? "hsl(142 70% 65%)"
-                : "hsl(354 85% 75%)",
+              background: micWarning
+                ? "hsl(38 90% 55% / 0.14)"
+                : engineReady
+                  ? "hsl(142 70% 45% / 0.12)"
+                  : "hsl(354 80% 55% / 0.16)",
+              color: micWarning
+                ? "hsl(38 90% 72%)"
+                : engineReady
+                  ? "hsl(142 70% 65%)"
+                  : "hsl(354 85% 75%)",
             }}
           >
             <span
               className={captureRunning ? "w-1.5 h-1.5 rounded-full animate-pulse" : "w-1.5 h-1.5 rounded-full"}
               style={{
                 background: engineReady
-                  ? "hsl(142 70% 55%)"
+                  ? micWarning
+                    ? "hsl(38 90% 62%)"
+                    : "hsl(142 70% 55%)"
                   : "hsl(354 80% 65%)",
               }}
             />

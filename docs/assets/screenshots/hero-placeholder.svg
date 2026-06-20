@@ -1,0 +1,18 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Said app screenshot placeholder</title>
+  <desc id="desc">A placeholder where the main Said dashboard screenshot should be added.</desc>
+  <rect width="1280" height="720" rx="36" fill="#0F1117"/>
+  <rect x="48" y="48" width="1184" height="624" rx="28" fill="#171A22" stroke="#2B3140"/>
+  <rect x="80" y="88" width="220" height="544" rx="18" fill="#10131A"/>
+  <rect x="332" y="88" width="820" height="84" rx="18" fill="#202633"/>
+  <rect x="332" y="204" width="250" height="128" rx="18" fill="#202633"/>
+  <rect x="612" y="204" width="250" height="128" rx="18" fill="#202633"/>
+  <rect x="892" y="204" width="260" height="128" rx="18" fill="#202633"/>
+  <rect x="332" y="364" width="820" height="268" rx="18" fill="#202633"/>
+  <circle cx="190" cy="150" r="44" fill="#7CE0C3"/>
+  <rect x="126" y="230" width="128" height="14" rx="7" fill="#3A4254"/>
+  <rect x="126" y="270" width="104" height="14" rx="7" fill="#3A4254"/>
+  <rect x="126" y="310" width="140" height="14" rx="7" fill="#3A4254"/>
+  <text x="742" y="462" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="34" font-weight="700" fill="#F6F7FB">Add main app screenshot</text>
+  <text x="742" y="508" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20" fill="#9AA3B7">Replace docs/assets/screenshots/hero-placeholder.svg with hero.png</text>
+</svg>

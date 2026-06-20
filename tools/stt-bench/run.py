@@ -517,6 +517,98 @@ def provider_deepgram_raw(case: Case, args: argparse.Namespace) -> ProviderResul
     )
 
 
+def request_json(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: Optional[Dict[str, str]] = None,
+    data: Optional[bytes] = None,
+    timeout_s: int = 120,
+    provider_name: str = "provider",
+) -> Dict[str, Any]:
+    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")[:800]
+        raise RuntimeError(f"{provider_name} HTTP {exc.code}: {details}")
+    if not body:
+        return {}
+    return json.loads(body.decode("utf-8"))
+
+
+def request_json_body(
+    url: str,
+    body: Dict[str, Any],
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    timeout_s: int = 120,
+    provider_name: str = "provider",
+) -> Dict[str, Any]:
+    merged_headers = {"Content-Type": "application/json"}
+    if headers:
+        merged_headers.update(headers)
+    return request_json(
+        url,
+        method="POST",
+        headers=merged_headers,
+        data=json.dumps(body).encode("utf-8"),
+        timeout_s=timeout_s,
+        provider_name=provider_name,
+    )
+
+
+def multipart_file_body(
+    field_name: str,
+    path: Path,
+    *,
+    content_type: str = "audio/wav",
+) -> Tuple[bytes, str]:
+    boundary = f"----sttbench{int(time.time() * 1000)}"
+    filename = path.name
+    chunks = [
+        f"--{boundary}\r\n".encode("utf-8"),
+        (
+            f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'
+            f"Content-Type: {content_type}\r\n\r\n"
+        ).encode("utf-8"),
+        path.read_bytes(),
+        b"\r\n",
+        f"--{boundary}--\r\n".encode("utf-8"),
+    ]
+    return b"".join(chunks), boundary
+
+
+def poll_json_until_done(
+    url: str,
+    *,
+    headers: Dict[str, str],
+    done_statuses: Sequence[str],
+    error_statuses: Sequence[str],
+    timeout_s: int,
+    provider_name: str,
+) -> Dict[str, Any]:
+    deadline = time.monotonic() + timeout_s
+    last: Dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        last = request_json(
+            url,
+            headers=headers,
+            timeout_s=timeout_s,
+            provider_name=provider_name,
+        )
+        status = str(last.get("status", "")).lower()
+        if status in done_statuses:
+            return last
+        if status in error_statuses:
+            message = last.get("error") or last.get("error_code") or last
+            raise RuntimeError(f"{provider_name} status={status}: {message}")
+        time.sleep(1.0)
+    status = last.get("status", "unknown") if last else "unknown"
+    raise RuntimeError(f"{provider_name} timed out waiting for result; last status={status}")
+
+
 def provider_vosk(case: Case, args: argparse.Namespace) -> ProviderResult:
     model_path = Path(args.vosk_model or os.environ.get("VOSK_MODEL", "")).expanduser()
     if not str(model_path) or not model_path.exists():
@@ -627,6 +719,8 @@ def provider_whisper_cpp(case: Case, args: argparse.Namespace) -> ProviderResult
             out_base,
             "-np",
         ]
+        if args.whisper_cpp_prompt:
+            cmd.extend(["--prompt", args.whisper_cpp_prompt])
         t0 = time.perf_counter()
         proc = subprocess.run(cmd, text=True, capture_output=True, timeout=args.provider_timeout_s)
         latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -646,6 +740,252 @@ def provider_whisper_cpp(case: Case, args: argparse.Namespace) -> ProviderResult
     )
 
 
+def provider_apple_speech(case: Case, args: argparse.Namespace) -> ProviderResult:
+    if sys.platform != "darwin":
+        raise ProviderSkip("Apple SpeechAnalyzer is only available on macOS")
+    swiftc = args.apple_speech_swiftc_bin or shutil.which("swiftc")
+    if not swiftc:
+        raise ProviderSkip("swiftc is not installed or not on PATH")
+    helper = Path(args.apple_speech_helper).expanduser()
+    if not helper.is_file():
+        raise ProviderSkip(f"Apple helper not found: {helper}")
+    with tempfile.TemporaryDirectory(prefix="stt-bench-apple-speech-") as tmp:
+        binary = str(Path(tmp) / "apple_transcribe")
+        compile_cmd = [swiftc, "-parse-as-library", str(helper), "-o", binary]
+        compile_proc = subprocess.run(
+            compile_cmd,
+            text=True,
+            capture_output=True,
+            timeout=args.provider_timeout_s,
+        )
+        if compile_proc.returncode != 0:
+            raise RuntimeError((compile_proc.stderr or compile_proc.stdout).strip()[:800])
+
+        cmd = [binary, str(case.wav_path), args.apple_speech_locale]
+        t0 = time.perf_counter()
+        proc = subprocess.run(cmd, text=True, capture_output=True, timeout=args.provider_timeout_s)
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout).strip()[:800])
+        transcript = proc.stdout.strip()
+    return ProviderResult(
+        provider="apple_speech",
+        ok=bool(transcript),
+        transcript=transcript,
+        latency_ms=latency_ms,
+        model="SpeechAnalyzer/SpeechTranscriber",
+        extra={"locale": args.apple_speech_locale},
+    )
+
+
+def provider_fluid_audio(case: Case, args: argparse.Namespace) -> ProviderResult:
+    binary = (
+        args.fluid_audio_bin
+        or os.environ.get("FLUID_AUDIO_BIN", "")
+        or shutil.which("fluidaudiocli")
+        or "/tmp/FluidAudio/.build/release/fluidaudiocli"
+    )
+    if not binary or not Path(binary).expanduser().is_file():
+        raise ProviderSkip("set --fluid-audio-bin or FLUID_AUDIO_BIN to a built fluidaudiocli")
+    binary_path = str(Path(binary).expanduser())
+    cmd = [
+        binary_path,
+        "transcribe",
+        str(case.wav_path),
+        "--model-version",
+        args.fluid_audio_model_version,
+    ]
+    if args.fluid_audio_language:
+        cmd.extend(["--language", args.fluid_audio_language])
+    if args.fluid_audio_streaming:
+        cmd.append("--streaming")
+
+    temp_vocab: Optional[tempfile.TemporaryDirectory] = None
+    vocab_path = args.fluid_audio_custom_vocab
+    if args.fluid_audio_vocab_from_terms and case.expected_terms:
+        temp_vocab = tempfile.TemporaryDirectory(prefix="stt-bench-fluid-vocab-")
+        vocab_file = Path(temp_vocab.name) / "terms.txt"
+        vocab_file.write_text("\n".join(case.expected_terms) + "\n", encoding="utf-8")
+        vocab_path = str(vocab_file)
+    if vocab_path:
+        cmd.extend(["--custom-vocab", str(Path(vocab_path).expanduser())])
+
+    try:
+        t0 = time.perf_counter()
+        proc = subprocess.run(cmd, text=True, capture_output=True, timeout=args.provider_timeout_s)
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+    finally:
+        if temp_vocab is not None:
+            temp_vocab.cleanup()
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout).strip()[:800])
+    transcript = clean_fluid_audio_stdout(proc.stdout)
+    return ProviderResult(
+        provider="fluid_audio",
+        ok=bool(transcript),
+        transcript=transcript,
+        latency_ms=latency_ms,
+        model=f"FluidAudio {args.fluid_audio_model_version}",
+        extra={"language": args.fluid_audio_language, "streaming": args.fluid_audio_streaming},
+    )
+
+
+def provider_gladia(case: Case, args: argparse.Namespace) -> ProviderResult:
+    key = os.environ.get("GLADIA_API_KEY", "").strip()
+    if not key:
+        raise ProviderSkip("GLADIA_API_KEY is not set")
+    headers = {"x-gladia-key": key}
+    t0 = time.perf_counter()
+
+    multipart, boundary = multipart_file_body("audio", case.wav_path)
+    upload = request_json(
+        "https://api.gladia.io/v2/upload",
+        method="POST",
+        headers={
+            **headers,
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        data=multipart,
+        timeout_s=args.provider_timeout_s,
+        provider_name="Gladia upload",
+    )
+    audio_url = upload.get("audio_url")
+    if not audio_url:
+        raise RuntimeError(f"Gladia upload response missing audio_url: {upload}")
+
+    language_config: Dict[str, Any] = {"code_switching": args.gladia_code_switching}
+    languages = [item.strip() for item in args.gladia_languages.split(",") if item.strip()]
+    if languages:
+        language_config["languages"] = languages
+
+    body: Dict[str, Any] = {
+        "audio_url": audio_url,
+        "model": args.gladia_model,
+        "diarization": args.gladia_diarization,
+        "sentences": True,
+        "punctuation_enhanced": args.gladia_punctuation_enhanced,
+        "language_config": language_config,
+    }
+    if args.gladia_vocab_from_terms and case.expected_terms:
+        body["custom_vocabulary"] = case.expected_terms
+
+    submitted = request_json_body(
+        "https://api.gladia.io/v2/pre-recorded",
+        body,
+        headers=headers,
+        timeout_s=args.provider_timeout_s,
+        provider_name="Gladia submit",
+    )
+    result_url = submitted.get("result_url")
+    if not result_url:
+        job_id = submitted.get("id")
+        if not job_id:
+            raise RuntimeError(f"Gladia submit response missing id/result_url: {submitted}")
+        result_url = f"https://api.gladia.io/v2/pre-recorded/{job_id}"
+
+    result = poll_json_until_done(
+        result_url,
+        headers=headers,
+        done_statuses=("done",),
+        error_statuses=("error",),
+        timeout_s=args.provider_timeout_s,
+        provider_name="Gladia",
+    )
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    transcript = extract_gladia_transcript(result)
+    return ProviderResult(
+        provider="gladia",
+        ok=bool(transcript),
+        transcript=transcript,
+        latency_ms=latency_ms,
+        model=args.gladia_model,
+        extra={
+            "id": result.get("id") or submitted.get("id"),
+            "status": result.get("status"),
+            "diarization": args.gladia_diarization,
+        },
+    )
+
+
+def provider_assemblyai(case: Case, args: argparse.Namespace) -> ProviderResult:
+    key = os.environ.get("ASSEMBLYAI_API_KEY", "").strip() or os.environ.get("ASSEMBLY_API_KEY", "").strip()
+    if not key:
+        raise ProviderSkip("ASSEMBLYAI_API_KEY is not set")
+    headers = {"Authorization": key}
+    t0 = time.perf_counter()
+
+    upload = request_json(
+        "https://api.assemblyai.com/v2/upload",
+        method="POST",
+        headers={**headers, "Content-Type": "application/octet-stream"},
+        data=case.wav_path.read_bytes(),
+        timeout_s=args.provider_timeout_s,
+        provider_name="AssemblyAI upload",
+    )
+    audio_url = upload.get("upload_url")
+    if not audio_url:
+        raise RuntimeError(f"AssemblyAI upload response missing upload_url: {upload}")
+
+    body: Dict[str, Any] = {
+        "audio_url": audio_url,
+        "punctuate": True,
+        "format_text": True,
+        "speaker_labels": args.assemblyai_speaker_labels,
+        "language_detection": args.assemblyai_language_detection,
+    }
+    if args.assemblyai_speech_models:
+        body["speech_models"] = [
+            item.strip() for item in args.assemblyai_speech_models.split(",") if item.strip()
+        ]
+    if not args.assemblyai_language_detection and args.assemblyai_language_code:
+        body["language_code"] = args.assemblyai_language_code
+    if args.assemblyai_keyterms_from_terms and case.expected_terms:
+        body["keyterms_prompt"] = case.expected_terms
+
+    submitted = request_json_body(
+        "https://api.assemblyai.com/v2/transcript",
+        body,
+        headers=headers,
+        timeout_s=args.provider_timeout_s,
+        provider_name="AssemblyAI submit",
+    )
+    transcript_id = submitted.get("id")
+    if not transcript_id:
+        raise RuntimeError(f"AssemblyAI submit response missing id: {submitted}")
+
+    result = submitted
+    if str(result.get("status", "")).lower() not in {"completed", "error"}:
+        result = poll_json_until_done(
+            f"https://api.assemblyai.com/v2/transcript/{transcript_id}",
+            headers=headers,
+            done_statuses=("completed",),
+            error_statuses=("error",),
+            timeout_s=args.provider_timeout_s,
+            provider_name="AssemblyAI",
+        )
+    if str(result.get("status", "")).lower() == "error":
+        raise RuntimeError(f"AssemblyAI status=error: {result.get('error') or result}")
+
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    transcript = result.get("text") or " ".join(
+        item.get("text", "") for item in (result.get("utterances") or []) if item.get("text")
+    )
+    return ProviderResult(
+        provider="assemblyai",
+        ok=bool(transcript),
+        transcript=transcript,
+        latency_ms=latency_ms,
+        confidence=result.get("confidence"),
+        model=",".join(result.get("speech_models") or []) or result.get("speech_model") or "",
+        extra={
+            "id": transcript_id,
+            "status": result.get("status"),
+            "language_code": result.get("language_code"),
+            "utterances": len(result.get("utterances") or []),
+        },
+    )
+
+
 def clean_whisper_stdout(text: str) -> str:
     lines = []
     for line in text.splitlines():
@@ -659,6 +999,44 @@ def clean_whisper_stdout(text: str) -> str:
     return " ".join(lines).strip()
 
 
+def clean_fluid_audio_stdout(text: str) -> str:
+    text = re.sub(r"E5RT encountered.*?zero shape error\.", "", text, flags=re.DOTALL)
+    return " ".join(text.split()).strip()
+
+
+def extract_gladia_transcript(payload: Dict[str, Any]) -> str:
+    result = payload.get("result") or {}
+    for path in (
+        ("transcription", "full_transcript"),
+        ("transcription", "transcript"),
+        ("transcription", "text"),
+        ("full_transcript",),
+        ("transcript",),
+        ("text",),
+    ):
+        current: Any = result
+        for key in path:
+            if not isinstance(current, dict):
+                current = None
+                break
+            current = current.get(key)
+        if isinstance(current, str) and current.strip():
+            return current.strip()
+
+    utterances = result.get("utterances") or result.get("transcription", {}).get("utterances")
+    if isinstance(utterances, list):
+        parts = [item.get("text", "").strip() for item in utterances if isinstance(item, dict) and item.get("text")]
+        if parts:
+            return " ".join(parts)
+
+    sentences = result.get("sentences") or result.get("transcription", {}).get("sentences")
+    if isinstance(sentences, list):
+        parts = [item.get("text", "").strip() for item in sentences if isinstance(item, dict) and item.get("text")]
+        if parts:
+            return " ".join(parts)
+    return ""
+
+
 PROVIDERS: Dict[str, Callable[[Case, argparse.Namespace], ProviderResult]] = {
     "db_raw": provider_db_raw,
     "db_local": provider_db_local,
@@ -667,6 +1045,10 @@ PROVIDERS: Dict[str, Callable[[Case, argparse.Namespace], ProviderResult]] = {
     "vosk": provider_vosk,
     "faster_whisper": provider_faster_whisper,
     "whisper_cpp": provider_whisper_cpp,
+    "apple_speech": provider_apple_speech,
+    "fluid_audio": provider_fluid_audio,
+    "gladia": provider_gladia,
+    "assemblyai": provider_assemblyai,
 }
 
 
@@ -682,6 +1064,14 @@ def expand_providers(value: str) -> List[str]:
                 expanded.append("vosk")
             if os.environ.get("WHISPER_CPP_MODEL"):
                 expanded.append("whisper_cpp")
+            if sys.platform == "darwin":
+                expanded.append("apple_speech")
+            if os.environ.get("FLUID_AUDIO_BIN") or Path("/tmp/FluidAudio/.build/release/fluidaudiocli").is_file():
+                expanded.append("fluid_audio")
+            if os.environ.get("GLADIA_API_KEY"):
+                expanded.append("gladia")
+            if os.environ.get("ASSEMBLYAI_API_KEY") or os.environ.get("ASSEMBLY_API_KEY"):
+                expanded.append("assemblyai")
         elif item == "db":
             expanded.extend(["db_raw", "db_local", "db_polished"])
         else:
@@ -880,7 +1270,7 @@ def positive_int(value: str) -> int:
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--providers", default="auto", help="Comma-separated providers: auto, db, db_raw, db_local, db_polished, deepgram_raw, vosk, faster_whisper, whisper_cpp")
+    parser.add_argument("--providers", default="auto", help="Comma-separated providers: auto, db, db_raw, db_local, db_polished, deepgram_raw, apple_speech, fluid_audio, gladia, assemblyai, vosk, faster_whisper, whisper_cpp")
     parser.add_argument("--audio-dir", action="append", default=[], help="Directory containing WAV files. Can be passed multiple times.")
     parser.add_argument("--db", action="append", default=[], help="SQLite DB path. Can be passed multiple times.")
     parser.add_argument("--manifest", type=Path, help="JSONL manifest with wav/audio_id and expected terms.")
@@ -908,6 +1298,32 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--whisper-cpp-bin", default="")
     parser.add_argument("--whisper-cpp-model", default="")
     parser.add_argument("--whisper-cpp-language", default="hi")
+    parser.add_argument("--whisper-cpp-prompt", default="")
+    parser.add_argument("--apple-speech-locale", default="en-US")
+    parser.add_argument("--apple-speech-swiftc-bin", default="")
+    parser.add_argument("--apple-speech-helper", default=str(REPO_ROOT / "tools/stt-bench/apple_transcribe.swift"))
+
+    parser.add_argument("--fluid-audio-bin", default="")
+    parser.add_argument("--fluid-audio-model-version", default="v2", choices=["v2", "v3", "110m"])
+    parser.add_argument("--fluid-audio-language", default="en")
+    parser.add_argument("--fluid-audio-streaming", action="store_true")
+    parser.add_argument("--fluid-audio-custom-vocab", default="")
+    parser.add_argument("--fluid-audio-vocab-from-terms", action="store_true")
+
+    parser.add_argument("--gladia-model", default="solaria-1")
+    parser.add_argument("--gladia-languages", default="", help="Comma-separated language hints, empty lets Gladia detect.")
+    parser.add_argument("--gladia-code-switching", action="store_true", default=True)
+    parser.add_argument("--gladia-no-code-switching", action="store_false", dest="gladia_code_switching")
+    parser.add_argument("--gladia-diarization", action="store_true")
+    parser.add_argument("--gladia-punctuation-enhanced", action="store_true")
+    parser.add_argument("--gladia-vocab-from-terms", action="store_true")
+
+    parser.add_argument("--assemblyai-speech-models", default="", help="Comma-separated speech_models override, e.g. universal-3-pro.")
+    parser.add_argument("--assemblyai-language-detection", action="store_true", default=True)
+    parser.add_argument("--assemblyai-no-language-detection", action="store_false", dest="assemblyai_language_detection")
+    parser.add_argument("--assemblyai-language-code", default="en_us")
+    parser.add_argument("--assemblyai-speaker-labels", action="store_true")
+    parser.add_argument("--assemblyai-keyterms-from-terms", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -970,7 +1386,7 @@ def main(argv: Sequence[str]) -> int:
             detailed["term_matches"] = score["term_matches"]
             detailed["provider_extra"] = result.extra
             detailed_rows.append(detailed)
-            if args.sleep_s > 0 and provider in {"deepgram_raw"}:
+            if args.sleep_s > 0 and provider in {"deepgram_raw", "gladia", "assemblyai"}:
                 time.sleep(args.sleep_s)
 
     write_jsonl(out_dir / "results.jsonl", detailed_rows)

@@ -1,0 +1,63 @@
+{
+  "case": "ami-es2002a-5min",
+  "transcript_path": "tools/stt-bench/public-meetings/ami-es2002a-5min/airnote-final-sortformer.current.first5min.transcript.txt",
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "draft_latency_ms": 2902,
+  "verify_latency_ms": 2029,
+  "filtered_mom": {
+    "summary": "The meeting began with informal technical setup and introductions. Laura, the project manager, outlined the project to design a new remote control that is original, trendy, and user-friendly. The design process involves three stages of individual work followed by meetings. The team then participated in an icebreaker activity where they drew their favorite animals and described their characteristics on a whiteboard.",
+    "action_items": [],
+    "decisions": []
+  },
+  "raw_counts": {
+    "draft_actions": 0,
+    "draft_decisions": 0,
+    "verified_actions": 0,
+    "verified_decisions": 0,
+    "filtered_actions": 0,
+    "filtered_decisions": 0
+  },
+  "chat": [
+    {
+      "question": "What was the main topic of this meeting?",
+      "answer": "Based on the transcript, the main topic of the meeting was the kickoff for a project to design a new remote control that is original, trendy, and user-friendly. The project manager, Laura, outlined the design process, which involves three stages of individual work followed by meetings.",
+      "latency_ms": 2610
+    },
+    {
+      "question": "What concrete decisions were explicitly made? If none, say none.",
+      "answer": "Based on the provided transcript, no concrete decisions were explicitly made.",
+      "latency_ms": 1257
+    },
+    {
+      "question": "List only explicit action items or follow-ups, with owners only if the transcript gives them.",
+      "answer": "The transcript does not contain any explicit action items or follow-ups with assigned owners.",
+      "latency_ms": 1417
+    },
+    {
+      "question": "What important unresolved questions or risks remain?",
+      "answer": "Based on the transcript, there are no unresolved questions or risks mentioned. The discussion covers introductions, the project brief (designing an original, trendy, user-friendly remote control), the three-stage design process, and an icebreaker activity, but no uncertainties, blockers, or risks are raised.",
+      "latency_ms": 2354
+    },
+    {
+      "question": "Give a PM-ready brief with problem, approach, decisions, risks, and next steps. Mark uncertainty.",
+      "answer": "**Project Brief: New Remote Control Design**\n\n**Problem**\nThe team is tasked with designing a new remote control that is original, trendy, and user-friendly (per Laura, the project manager, at [01:49]).\n\n**Approach**\nThe design process will follow three iterative stages, each consisting of individual work followed by a team meeting ([02:25]). The kickoff meeting included introductions and an icebreaker activity where team members drew their favorite animals and described their characteristics on a whiteboard ([02:41]).\n\n**Decisions**\nNo explicit decisions are captured in the transcript.\n\n**Risks**\nNo risks are explicitly stated in the transcript.\n\n**Next Steps**\n- **Unassigned:** Begin the first stage of individual design work (implied by the three-stage process outlined at [02:25]).\n- **Unassigned:** Schedule the first follow-up meeting after individual work (implied by the process at [02:25]).\n\n**Uncertainty**\n- The transcript does not specify what deliverables or criteria are expected for each stage.\n- The brief’s requirements (“original, trendy, and user-friendly”) are stated but not yet detailed or scoped.",
+      "latency_ms": 6556
+    }
+  ],
+  "judge": {
+    "latency_ms": 4678,
+    "result": {
+      "summary_accuracy": 9,
+      "summary_coverage": 9,
+      "action_precision": 10,
+      "decision_precision": 10,
+      "chat_grounding": 9,
+      "overall": 9,
+      "issues": [
+        "Chat answer for 'What important unresolved questions or risks remain?' states 'no unresolved questions or risks mentioned', which is accurate based on the transcript, but the PM brief correctly identifies implicit uncertainties (e.g., unspecified deliverables, unscoped requirements). This is a minor inconsistency in strictness, not a factual error.",
+        "MoM summary is accurate and covers the key points, but it omits the specific team member names and roles mentioned during introductions (Laura, David, Andrew, Greg/Craig). This is a minor coverage gap."
+      ]
+    }
+  }
+}

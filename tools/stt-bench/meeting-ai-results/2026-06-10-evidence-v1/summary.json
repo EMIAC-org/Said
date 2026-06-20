@@ -1,0 +1,227 @@
+[
+  {
+    "case": "ami-es2002a-5min",
+    "transcript_path": "tools/stt-bench/public-meetings/ami-es2002a-5min/airnote-final-sortformer.current.first5min.transcript.txt",
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro",
+    "draft_latency_ms": 4721,
+    "verify_latency_ms": 2991,
+    "filtered_mom": {
+      "summary": "The meeting served as a kickoff for a project to design a new remote control that is original, trendy, and user-friendly. The project manager, Laura, outlined a three-stage design process involving individual work followed by meetings. Attendees introduced themselves: Laura as project manager, David as an industrial designer, Andrew as a marketing expert, and Greg (or Craig) as a digital interface specialist. The team then participated in an icebreaker activity where they drew their favorite animals on a whiteboard and described their characteristics. Andrew drew a beagle and valued physical affection, personality, and good health, while another participant drew a monkey described as small, cute, and furry.",
+      "action_items": [],
+      "decisions": []
+    },
+    "raw_counts": {
+      "draft_actions": 0,
+      "draft_decisions": 0,
+      "verified_actions": 0,
+      "verified_decisions": 0,
+      "filtered_actions": 0,
+      "filtered_decisions": 0
+    },
+    "chat": [
+      {
+        "question": "What was the main topic of this meeting?",
+        "answer": "The main topic of the meeting was the kickoff for a project to design a new remote control that is original, trendy, and user-friendly. Laura, the project manager, outlined a three-stage design process involving individual work followed by meetings.",
+        "latency_ms": 1894
+      },
+      {
+        "question": "What concrete decisions were explicitly made? If none, say none.",
+        "answer": "Based on the transcript, no concrete decisions were explicitly made.",
+        "latency_ms": 1055
+      },
+      {
+        "question": "List only explicit action items or follow-ups, with owners only if the transcript gives them.",
+        "answer": "The transcript does not contain any explicit action items or follow-ups.",
+        "latency_ms": 1378
+      },
+      {
+        "question": "What important unresolved questions or risks remain?",
+        "answer": "Based on the transcript, no unresolved questions or risks are explicitly discussed. The meeting focuses on introductions, the project brief, the design process, and an icebreaker activity. There is no mention of outstanding issues, concerns, or risks.",
+        "latency_ms": 2358
+      },
+      {
+        "question": "Give a PM-ready brief with problem, approach, decisions, risks, and next steps. Mark uncertainty.",
+        "answer": "Based on the provided transcript, here is a PM-ready brief. The transcript does not contain enough information to fully populate all requested sections, so uncertainties are marked.\n\n**Problem**\nThe team is tasked with designing a new remote control that is \"original, trendy, and user-friendly\" [01:49].\n\n**Approach**\nThe project manager, Laura, outlined a three-stage design process. Each stage consists of individual work followed by a meeting [02:25]. The meeting served as the project kickoff [00:56].\n\n**Decisions**\nNo decisions were captured in the transcript.\n\n**Risks**\nNo risks were discussed in the transcript.\n\n**Next Steps**\nThe immediate next step captured is an icebreaker activity where team members draw their favorite animal on a whiteboard [02:34]. The transcript does not specify the next formal project step after this activity concludes.\n\n**Uncertainty**\n- The specific deliverables for each of the three design stages are not mentioned.\n- The timeline for the project beyond the 25-minute kickoff meeting is not defined.\n- The roles of the team members (David, Andrew, Greg/Craig) beyond their titles were not elaborated upon.",
+        "latency_ms": 6867
+      }
+    ],
+    "judge": {
+      "latency_ms": 4961,
+      "result": {
+        "summary_accuracy": 8,
+        "summary_coverage": 8,
+        "action_precision": 10,
+        "decision_precision": 10,
+        "chat_grounding": 9,
+        "overall": 9,
+        "issues": [
+          "Summary mentions 'Greg (or Craig)' but transcript shows Speaker 4 says 'I'm Greg' and Laura later says 'Craig', which is a transcription ambiguity, not a MoM error.",
+          "Chat answer for 'PM-ready brief' correctly marks uncertainty and does not invent facts.",
+          "No action items or decisions were invented; MoM and chat correctly reflect absence of explicit commitments.",
+          "Chat answer for 'What important unresolved questions or risks remain?' is accurate given transcript lacks such discussion."
+        ]
+      }
+    }
+  },
+  {
+    "case": "ami-es2002a-20min",
+    "transcript_path": "tools/stt-bench/public-meetings/ami-es2002a-20min/airnote-final-sortformer.current.first20min.transcript.txt",
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro",
+    "draft_latency_ms": 8168,
+    "verify_latency_ms": 7171,
+    "filtered_mom": {
+      "summary": "Laura (project manager) kicked off the project to design a trendy, user-friendly remote control with a €25 selling price and a €12.50 production cost cap, targeting €15 million in international sales. The team—David (industrial designer), Andrew (marketing), and Craig (digital interface)—introduced themselves and completed an icebreaker activity. Discussion explored international design implications (regional characters, market positioning), the potential for a premium, multi-functional device (combining TV, DVD, satellite, and possibly home lighting), and user pain points like losing the remote. The meeting concluded with Laura assigning individual work for the next functional design stage, with a follow-up meeting scheduled in 30 minutes. No final decisions were made; the team discussed possibilities such as extra functionality and a unique selling point, but these remained tentative.",
+      "action_items": [
+        {
+          "title": "Work on the actual work and design of the remote control",
+          "assignee": "David",
+          "due": "before next meeting in 30 minutes",
+          "evidence": "as the industrial designer you're going to be working on you know the actual work and design of it"
+        },
+        {
+          "title": "Work on user interface and technical functions",
+          "assignee": "Craig",
+          "due": "before next meeting in 30 minutes",
+          "evidence": "for our user interface technical functions i guess that's you know like what we've been talking about what it'll actually do"
+        },
+        {
+          "title": "Think about requirements the remote control has to fulfill",
+          "assignee": "Andrew",
+          "due": "before next meeting in 30 minutes",
+          "evidence": "and uh more to being executive you'll be just thinking about what it actually what you know what requirements it has to has to fulfill"
+        }
+      ],
+      "decisions": []
+    },
+    "raw_counts": {
+      "draft_actions": 3,
+      "draft_decisions": 0,
+      "verified_actions": 3,
+      "verified_decisions": 0,
+      "filtered_actions": 3,
+      "filtered_decisions": 0
+    },
+    "chat": [
+      {
+        "question": "What was the main topic of this meeting?",
+        "answer": "The main topic of the meeting was the kick-off for a project to design a new, trendy, and user-friendly remote control.",
+        "latency_ms": 2147
+      },
+      {
+        "question": "What concrete decisions were explicitly made? If none, say none.",
+        "answer": "Based on the transcript, no concrete decisions were explicitly made. The team discussed possibilities such as extra functionality and a unique selling point, but these remained tentative.",
+        "latency_ms": 1639
+      },
+      {
+        "question": "List only explicit action items or follow-ups, with owners only if the transcript gives them.",
+        "answer": "Based on the transcript, the explicit action items and follow-ups assigned at the end of the meeting are:\n\n- **David** (industrial designer): Work on the actual work and design of the remote control.\n- **Craig** (digital interface): Work on user interface and technical functions.\n- **Andrew** (marketing): Think about the requirements the remote control has to fulfill.\n\nAll are due before the next meeting in 30 minutes.",
+        "latency_ms": 2983
+      },
+      {
+        "question": "What important unresolved questions or risks remain?",
+        "answer": "Based on the transcript, the following unresolved questions or risks remain:\n\n- **Scope of functionality**: It is unresolved whether the remote control will be limited to television features or include extra functions (e.g., controlling lighting, combining multiple devices). Andrew explicitly asked if they are keeping a “design commitment to television features” or going beyond, and Laura said “that’s up to us” [17:32–18:02].\n- **Production cost vs. feature trade-off**: David noted that the €12.50 production cost cap is a main factor limiting how much can be crammed into the device [18:04–18:16]. The risk of exceeding the cost target while adding premium or multi-device features remains unaddressed.\n- **International design implications**: The team discussed regional differences (characters, keypads, market positioning) but did not resolve how these will be handled in the design [09:11–10:15].\n- **Unique selling point**: Laura mentioned the need for “some kind of unique selling point” but no decision was made on what that would be [17:57–18:02].\n- **User pain points**: Issues like losing the remote were raised, but no solution (e.g., a beeping locator) was committed to [15:03–15:20].",
+        "latency_ms": 7892
+      },
+      {
+        "question": "Give a PM-ready brief with problem, approach, decisions, risks, and next steps. Mark uncertainty.",
+        "answer": "Based on the transcript, here is a PM-ready brief. Note that the meeting was an initial kick-off, so many elements are tentative and no formal decisions were made.\n\n**Problem**\nThe team needs to design a new remote control that is \"trendy and user-friendly.\" The project has specific financial targets: a €25 selling price and a production cost cap of €12.50, with a goal of €15 million in international sales.\n\n**Approach**\nThe design process is structured into three stages, each involving individual work followed by a team meeting. The immediate next stage is the \"functional design stage.\" The team discussed several possibilities for the product's direction, including:\n*   Designing for international markets, considering regional characters and different market positioning based on price.\n*   Creating a premium, multi-functional device that combines controls for TV, DVD, satellite, and potentially other systems like home lighting.\n*   Addressing user pain points, such as the ease of losing the remote (e.g., by including a \"find\" feature) and making the device more streamlined (e.g., a touch screen).\n\n**Decisions**\nNo final decisions were made during this meeting. The discussion of extra functionality and a unique selling point remained tentative. The project manager, Laura, stated that the direction is \"up to us\" but noted the production cost cap is a main limiting factor.\n\n**Risks & Uncertainties**\n*   **Unclear Market Position:** It is uncertain whether the €25 price point positions the remote as a premium product or a standard one. The team lacks competitive pricing data to benchmark this.\n*   **Undefined Scope:** The team has not committed to whether the remote's features will be limited to television or will expand to control other devices. This ambiguity could lead to scope creep or a product that fails to meet the cost target.\n*   **Production Cost Constraint:** The €12.50 production cost cap is a significant constraint that may limit the inclusion of advanced features like a touch screen or multi-device control.\n\n**Next Steps**\nIndividual work is assigned to be completed before the next meeting in 30 minutes:\n*   **David (Industrial Designer):** Work on the actual physical design of the remote control.\n*   **Craig (Digital Interface):** Work on the user interface and technical functions.\n*   **Andrew (Marketing):** Think about the requirements the remote control has to fulfill.",
+        "latency_ms": 12527
+      }
+    ],
+    "judge": {
+      "latency_ms": 6346,
+      "result": {
+        "summary_accuracy": 8,
+        "summary_coverage": 8,
+        "action_precision": 7,
+        "decision_precision": 10,
+        "chat_grounding": 9,
+        "overall": 8,
+        "issues": [
+          "Action item for Andrew is misassigned: transcript says 'more to being executive' (likely marketing), but MoM assigns 'Think about requirements' to Andrew, which is correct, but the evidence quote is garbled and does not clearly support the assignment.",
+          "Action item for Craig is slightly vague: transcript says 'for our user interface technical functions i guess that's you know like what we've been talking about what it'll actually do', which is not a crisp assignment, but MoM treats it as a firm action item.",
+          "Chat answer for unresolved questions correctly notes no decision on scope, but the transcript shows Laura explicitly said 'that's up to us', which is a decision to defer, not a pure unresolved question—minor nuance."
+        ]
+      }
+    }
+  },
+  {
+    "case": "ami-en2001a-30min-mix",
+    "transcript_path": "tools/stt-bench/public-meetings/ami-en2001a-30min/airnote-final-sortformer.current.mix-headset.first30min.transcript.txt",
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro",
+    "draft_latency_ms": 9798,
+    "verify_latency_ms": 5564,
+    "filtered_mom": {
+      "summary": "The team discussed Steve's feedback, which emphasized avoiding duplication of effort and prioritizing a working prototype by week six. They debated the data structure for the browser, considering whether to store importance measures at the word or utterance level, ultimately leaning towards utterance-level storage for simplicity and better skimming. The conversation covered the integration of offline calculations with the NightXML framework, the handling of multi-level meeting series data, and the separation of search functionality using SQL. Key unresolved questions include the feasibility of loading all data into memory and the exact method for linking their importance data to NightXML's existing utterance IDs.",
+      "action_items": [
+        {
+          "title": "Try to build a class that concatenates different waveforms in memory for audio skimming",
+          "assignee": "Speaker 3",
+          "due": null,
+          "evidence": "what I think I might try and build is basically a class that you just feed it a linked list of different waveforms, it'll just string them all together"
+        },
+        {
+          "title": "Ask Jonathan about lazy loading and memory issues with NightXML",
+          "assignee": "Speaker 1",
+          "due": null,
+          "evidence": "I'll probably ask Jonathan about it."
+        }
+      ],
+      "decisions": []
+    },
+    "raw_counts": {
+      "draft_actions": 4,
+      "draft_decisions": 0,
+      "verified_actions": 2,
+      "verified_decisions": 0,
+      "filtered_actions": 2,
+      "filtered_decisions": 0
+    },
+    "chat": [
+      {
+        "question": "What was the main topic of this meeting?",
+        "answer": "The main topic was settling on the data structure for the browser, specifically whether to store importance measures at the word or utterance level, and how to integrate offline calculations with the NightXML framework. The team also discussed prioritizing a working prototype by week six per Steve's feedback.",
+        "latency_ms": 2739
+      },
+      {
+        "question": "What concrete decisions were explicitly made? If none, say none.",
+        "answer": "None.",
+        "latency_ms": 1777
+      },
+      {
+        "question": "List only explicit action items or follow-ups, with owners only if the transcript gives them.",
+        "answer": "Based on the transcript, the explicit action items or follow-ups are:\n\n- **Speaker 3** will try to build a class that concatenates different waveforms in memory for audio skimming.  \n  *Evidence*: \"what I think I might try and build is basically a class that you just feed it a linked list of different waveforms, it'll just string them all together\" [17:00 Speaker 3]\n\n- **Speaker 1** will ask Jonathan about lazy loading and memory issues with NightXML.  \n  *Evidence*: \"I'll probably ask Jonathan about it.\" [20:09 Speaker 1]",
+        "latency_ms": 3512
+      },
+      {
+        "question": "What important unresolved questions or risks remain?",
+        "answer": "Based on the transcript, the key unresolved questions and risks are:\n\n- **Feasibility of loading all data into memory**: There is uncertainty about whether the system can load the entire meeting series data into memory without performance issues. Speaker 1 notes, “I'm still confused because I thought that's just what Jonathan said, that we can't do, like load a massive document of that size” [18:03], and later says, “I'll probably ask Jonathan about it” [20:09] regarding lazy loading and memory constraints.\n\n- **Linking importance data to NightXML utterance IDs**: The team is unsure how to tie their importance measures to NightXML’s existing data structure. Speaker 2 mentions, “But there's no ID for an utterance, I think. It's just for individual words” [27:02], and Speaker 4 adds, “I have only seen that the individual words have got an ID” [28:00]. This leaves open the question of how to reliably reference utterances.\n\n- **Handling multi-level meeting series data**: The group debates whether to treat the whole meeting series as one massive document or to create a virtual meeting structure with separate levels. Speaker 1 suggests, “if we can't actually load the whole thing in… create a virtual meeting out of the whole meeting series” [21:12–21:25], but no final decision is reached.\n\n- **Audio skimming feasibility**: While Speaker 3 proposes building a class to concatenate waveforms in memory [16:56–17:09], it remains untested whether the audio player can accept such input and handle word-level cuts smoothly.",
+        "latency_ms": 8830
+      },
+      {
+        "question": "Give a PM-ready brief with problem, approach, decisions, risks, and next steps. Mark uncertainty.",
+        "answer": "**PM‑Ready Brief**\n\n**Problem**  \nThe team needs to settle the data structure for the browser before building the week‑six prototype. The core tension is whether to store importance measures at the word level or the utterance level, and how to integrate offline calculations with the NightXML framework without exceeding memory limits.\n\n**Approach**  \n- **Utterance‑level storage** is the emerging consensus. It simplifies audio skimming, reduces memory, and naturally produces sentence‑like summaries. Word‑level calculations can still be done internally and then averaged or thresholded to produce utterance scores.  \n- **Offline calculations** will pre‑compute importance for every utterance in the corpus. The online browser will only load utterance IDs, scores, speaker labels, and timestamps – not raw audio or full annotations.  \n- **NightXML integration** will be done by creating a lightweight XML file that ties utterance scores to NightXML’s existing utterance IDs (or timestamps if IDs are missing). The browser will rely on NightXML’s event model for synchronisation.  \n- **Search** will be handled separately via SQL, returning timestamps that are fed back into NightXML to trigger display updates.  \n- **Multi‑level meeting series** may be handled by either loading all utterances into memory (if feasible) or by creating a “virtual meeting” XML that treats meetings as segments and segments as utterances, reusing the same display logic.\n\n**Decisions**  \n- **Utterance‑level importance storage** is the working decision (not yet formally ratified).  \n- **Audio skimming** will be done by concatenating waveforms in memory (Speaker 3 to prototype a class for this).  \n- **Search stays outside NightXML**, using SQL, and only passes timestamps back to the framework.\n\n**Risks & Uncertainties**  \n- **Memory feasibility** – It is unclear whether loading all utterances for a 70‑hour meeting series will fit in RAM. Jonathan previously warned against loading everything; Speaker 1 will ask him about lazy‑loading options.  \n- **Utterance IDs** – It is uncertain whether NightXML’s utterance segments already have IDs. If not, the team will need to add them or rely on timestamps.  \n- **Word‑level filtering** – Averaging word scores may dilute importance; a threshold or pre‑filter may be needed, but the impact on audio skimming is not yet resolved.  \n- **Multi‑level abstraction** – The “virtual meeting” approach is a fallback; the team has not decided whether to pursue it or attempt a single in‑memory load.\n\n**Next Steps**  \n1. **Speaker 3** – Prototype an in‑memory waveform concatenation class for audio skimming.  \n2. **Speaker 1** – Ask Jonathan about lazy loading and memory constraints in NightXML.  \n3. **Team** – Inspect NightXML code to confirm whether utterance segments have IDs and how timestamps are structured.  \n4. **Team** – Finalise the data structure decision (utterance‑level vs. word‑level) after the NightXML review.  \n5. **All** – Align offline output formats with the agreed data structure so the week‑six prototype can integrate pre‑annotated data.",
+        "latency_ms": 17997
+      }
+    ],
+    "judge": {
+      "latency_ms": 7346,
+      "result": {
+        "summary_accuracy": 8,
+        "summary_coverage": 8,
+        "action_precision": 10,
+        "decision_precision": 10,
+        "chat_grounding": 9,
+        "overall": 9,
+        "issues": [
+          "Summary mentions 'debated the data structure... ultimately leaning towards utterance-level storage' which is accurate, but the summary does not mention the alternative 'virtual meeting' fallback plan discussed at length.",
+          "Chat answer for 'What important unresolved questions or risks remain?' invents the risk 'Audio skimming feasibility' as an unresolved question. The transcript shows Speaker 3 committing to build the class and Speaker 1 saying 'That's okay, that we can do', indicating it was accepted as feasible, not an open risk.",
+          "Chat answer for 'PM-ready brief' lists 'Utterance‑level importance storage is the working decision (not yet formally ratified)' under Decisions. The transcript shows a leaning but no explicit decision was made; this is a slight overstatement."
+        ]
+      }
+    }
+  }
+]
