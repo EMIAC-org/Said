@@ -56,6 +56,22 @@ GENERATE_KWARGS = {
     "language": "hi",
     "no_repeat_ngram_size": 3,
 }
+# Pad the final decode with trailing silence so Whisper doesn't clip the last
+# word when the stream closes a frame after the final syllable.
+FINAL_TAIL_PAD_BYTES = int(0.4 * SAMPLE_RATE) * 2
+# Whisper hallucinates fluent text on silence/noise. Skip the final decode when
+# the captured audio is essentially silent. Kept low so genuinely quiet single
+# words still pass — only true near-silence is dropped.
+SILENCE_RMS_THRESHOLD = 45.0
+
+
+def _pcm_rms(pcm: bytes) -> float:
+    if len(pcm) < 2:
+        return 0.0
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    if samples.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(samples * samples)))
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -93,7 +109,23 @@ class SwiftEngine:
         HealthHandler.model_ready = True
         logging.info("Swift model ready")
 
-    def transcribe_pcm(self, pcm: bytes) -> str:
+    def build_prompt_ids(self, terms):
+        """Whisper initial-prompt biasing: prime the decoder with the user's
+        personal vocabulary (Kubernetes, n8n, EMIAC, ...) so the frozen weights
+        emit those as whole tokens instead of inventing a new phonetic garble
+        each utterance. Best-effort — returns None if unsupported."""
+        if not terms:
+            return None
+        try:
+            text = ", ".join(t.strip() for t in terms if t and t.strip())[:400]
+            if not text:
+                return None
+            return self.pipe.tokenizer.get_prompt_ids(text, return_tensors="np")
+        except Exception:
+            logging.exception("failed to build vocab prompt_ids; biasing disabled")
+            return None
+
+    def transcribe_pcm(self, pcm: bytes, prompt_ids=None) -> str:
         if len(pcm) < BYTES_PER_FRAME:
             return ""
         if len(pcm) > MAX_DECODE_BYTES:
@@ -102,25 +134,43 @@ class SwiftEngine:
                 chunk = pcm[start : start + MAX_DECODE_BYTES]
                 if len(chunk) < BYTES_PER_FRAME:
                     continue
-                text = self._transcribe_pcm_once(chunk)
+                text = self._transcribe_pcm_once(chunk, prompt_ids)
                 if text:
                     texts.append(text)
             return clean_transcript(" ".join(texts))
 
-        return self._transcribe_pcm_once(pcm)
+        return self._transcribe_pcm_once(pcm, prompt_ids)
 
-    def _transcribe_pcm_once(self, pcm: bytes) -> str:
+    def _transcribe_pcm_once(self, pcm: bytes, prompt_ids=None) -> str:
         samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-        result = self.pipe(
-            {"array": samples, "sampling_rate": SAMPLE_RATE},
-            generate_kwargs=GENERATE_KWARGS,
-        )
-        text = result.get("text", "") if isinstance(result, dict) else str(result)
+        text = self._run_pipe(samples, prompt_ids)
         text = clean_transcript(text)
         if is_suspicious_transcript(text):
             logging.warning("dropping suspicious Swift transcript: %r", text[:160])
             return ""
         return text
+
+    def _run_pipe(self, samples, prompt_ids) -> str:
+        gen = GENERATE_KWARGS
+        if prompt_ids is not None:
+            gen = {**GENERATE_KWARGS, "prompt_ids": prompt_ids}
+        try:
+            result = self.pipe(
+                {"array": samples, "sampling_rate": SAMPLE_RATE},
+                generate_kwargs=gen,
+            )
+        except Exception:
+            # Vocab biasing can be rejected by some transformers versions —
+            # never let it break dictation; fall back to an unbiased decode.
+            if prompt_ids is not None:
+                logging.exception("decode with prompt_ids failed; retrying unbiased")
+                result = self.pipe(
+                    {"array": samples, "sampling_rate": SAMPLE_RATE},
+                    generate_kwargs=GENERATE_KWARGS,
+                )
+            else:
+                raise
+        return result.get("text", "") if isinstance(result, dict) else str(result)
 
     def _warm_up(self) -> None:
         samples = np.zeros(SAMPLE_RATE, dtype=np.float32)
@@ -201,6 +251,12 @@ class LiveSession:
         self.decode_task: asyncio.Task | None = None
         self.decode_lock = asyncio.Lock()
         self.closed = False
+        self.prompt_ids = None
+
+    def set_vocab(self, terms) -> None:
+        self.prompt_ids = self.engine.build_prompt_ids(terms)
+        if self.prompt_ids is not None:
+            logging.info("Swift vocab biasing active (%d terms)", len(terms))
 
     def ingest_pcm(self, pcm: bytes) -> None:
         self.session_pcm.extend(pcm)
@@ -246,7 +302,9 @@ class LiveSession:
                 return
             self.last_decode_at = time.monotonic()
             try:
-                text = await asyncio.to_thread(self.engine.transcribe_pcm, pcm)
+                text = await asyncio.to_thread(
+                    self.engine.transcribe_pcm, pcm, self.prompt_ids
+                )
             except Exception as exc:
                 logging.exception("Swift decode failed")
                 await self._send_error(f"decode failed: {exc}")
@@ -267,9 +325,20 @@ class LiveSession:
         buf = bytes(self.session_pcm)
         final_text = ""
         if len(buf) >= BYTES_PER_FRAME:
+            # Skip near-silent sessions — decoding silence makes Whisper
+            # hallucinate fluent text (the "see shit happened" phantom on a pause).
+            if _pcm_rms(buf) < SILENCE_RMS_THRESHOLD:
+                logging.info("Swift finalize skipped — near-silence")
+                self.closed = True
+                return ""
+            # Pad trailing silence so the final word isn't clipped when the
+            # stream closes right after the last syllable.
+            padded = buf + (b"\x00" * FINAL_TAIL_PAD_BYTES)
             async with self.decode_lock:
                 try:
-                    final_text = await asyncio.to_thread(self.engine.transcribe_pcm, buf)
+                    final_text = await asyncio.to_thread(
+                        self.engine.transcribe_pcm, padded, self.prompt_ids
+                    )
                     if final_text:
                         self.latest_text = final_text
                 except Exception as exc:
@@ -301,6 +370,16 @@ async def handle_client(websocket, engine: SwiftEngine):
                 try:
                     payload = json.loads(message)
                 except json.JSONDecodeError:
+                    continue
+                if payload.get("type") in ("config", "vocab"):
+                    terms = (
+                        payload.get("vocab")
+                        or payload.get("hotwords")
+                        or payload.get("terms")
+                        or []
+                    )
+                    if isinstance(terms, list):
+                        session.set_vocab([str(t) for t in terms])
                     continue
                 if payload.get("type") == "finalize":
                     text = await session.finalize()

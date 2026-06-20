@@ -6,7 +6,7 @@ import {
   Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap, Cloud,
   Languages, MessageSquareText, Loader2, RefreshCw,
   Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, Download, Activity,
-  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown, Power,
+  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown, Power, BookOpen, AlertCircle,
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
@@ -30,6 +30,7 @@ import {
   getDesktopPrefs, setDesktopPrefs,
   readBackendLog, backendLogLocation, openLogFolder,
   openaiConnect, openaiStatus, openaiDisconnect,
+  openExternal,
   getServerSettingsStatus,
   getCredentialVaultStatus,
   syncCredentialVault,
@@ -1096,9 +1097,19 @@ export function SettingsView({
       const vault = await syncCredentialVault();
       await refreshVaultStatus();
       if (vault?.failed) {
-        const firstErr = vault.results?.find((r) => r.error)?.error;
+        // Name exactly which provider key the server rejected, so the user
+        // knows which one to fix (Abhishek's server-side validation returns
+        // a per-provider error; surface it instead of a generic failure).
+        const labels: Record<string, string> = {
+          groq: "Groq", deepgram: "Deepgram", cerebras: "Cerebras",
+          gemini: "Gemini", openai: "ChatGPT",
+        };
+        const bad = (vault.results ?? []).filter((r) => r.error);
+        const names = bad.map((r) => labels[r.provider] ?? r.provider).join(", ");
         throw new Error(
-          firstErr ?? "Keys saved locally but server vault sync failed — check you're signed in",
+          names
+            ? `${names} key${bad.length > 1 ? "s" : ""} rejected — check the value${bad.length > 1 ? "s" : ""} and save again.`
+            : "Keys saved locally but server vault sync failed — check you're signed in.",
         );
       }
 
@@ -2239,7 +2250,12 @@ export function SettingsView({
             {/* Save button */}
             <div className="flex items-center justify-between pt-1">
               {saveError && (
-                <p className="text-[12px]" style={{ color: "hsl(0 75% 75%)" }}>{saveError}</p>
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-medium"
+                  style={{ background: "hsl(0 75% 60% / 0.12)", color: "hsl(0 75% 72%)" }}
+                >
+                  <AlertCircle size={12} /> {saveError}
+                </span>
               )}
               <div className="ml-auto flex items-center gap-3">
                 {keySaved && (
@@ -2433,6 +2449,23 @@ export function SettingsView({
             icon={<Info size={16} />}
             label={`AirNote v${appVersion}`}
             description="Voice Polish Studio · Local-first · Tauri + Rust + React"
+          />
+
+          {/* User guide — every shortcut, dictation, polish & HUD, in one page. */}
+          <Row
+            icon={<BookOpen size={16} />}
+            label="User Guide & shortcuts"
+            description="All hotkeys, dictation, message polish & HUD placement — opens the full guide in your browser."
+            action={
+              <button
+                type="button"
+                onClick={() => void openExternal("https://airnote.emiactech.com/guide")}
+                className="rounded-lg border px-3 py-1.5 text-[13px] font-medium text-foreground transition-colors hover:bg-[hsl(var(--surface-3))]"
+                style={{ borderColor: "hsl(var(--surface-3))" }}
+              >
+                Open guide
+              </button>
+            }
           />
 
           {/* Diagnostics toggle — Sentry, opt-out. Requires restart. */}

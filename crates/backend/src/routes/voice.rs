@@ -2407,15 +2407,89 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let llm_result = match llm_task.await {
                 Ok(Ok(r))   => r,
                 Ok(Err(e))  => {
-                    let message = if invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e) {
+                    let auth_err = invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e);
+                    let message = if auth_err {
                         "OpenAI not connected — go to Settings to connect your account".to_string()
                     } else {
                         e.clone()
                     };
                     warn!("[voice] LLM error: {e}");
-                    yield Ok(Event::default().event("error").data(
-                        json!({"message": message, "audio_id": aid}).to_string()
-                    ));
+                    // Raw fallback: for TRANSIENT polish failures (rate-limit / timeout
+                    // / overloaded) paste the raw STT transcript rather than DROP the
+                    // dictation. Auth/config errors are NOT fallen back — they keep
+                    // surfacing so a bad/expired key isn't silently swallowed. The raw
+                    // text is script-guarded (no Devanagari leak), and the desktop
+                    // reconciles any streamed tokens against this `done`, so there is
+                    // no double-typing.
+                    let lower = e.to_lowercase();
+                    // Gate the raw fallback on the HTTP status: retry only on transient
+                    // server/rate codes, NEVER on auth/bad-key (401/403). This avoids
+                    // misclassifying a billing/quota 401 whose body mentions "rate" as
+                    // transient and silently pasting unpolished text instead of telling
+                    // the user to fix their key.
+                    let auth_failure = lower.contains("401")
+                        || lower.contains("403")
+                        || lower.contains("invalid_api_key")
+                        || lower.contains("invalid api key")
+                        || lower.contains("unauthorized")
+                        || lower.contains("forbidden");
+                    let transient = !auth_err
+                        && !auth_failure
+                        && (lower.contains("429")
+                            || lower.contains("500")
+                            || lower.contains("502")
+                            || lower.contains("503")
+                            || lower.contains("504")
+                            || lower.contains("408")
+                            || lower.contains("timeout")
+                            || lower.contains("timed out")
+                            || lower.contains("overloaded")
+                            || lower.contains("temporarily"));
+                    let fallback_text = if transient {
+                        if enforce_roman_hinglish {
+                            let t = if script::contains_devanagari(&resolved_transcript) {
+                                script::enforce_roman_hinglish(&resolved_transcript)
+                            } else {
+                                resolved_transcript.clone()
+                            };
+                            script::strip_non_latin_scripts(&t)
+                        } else {
+                            resolved_transcript.clone()
+                        }
+                    } else {
+                        String::new()
+                    };
+                    if transient && !fallback_text.trim().is_empty() {
+                        warn!("[voice] transient polish failure — pasting raw transcript as fallback");
+                        let total_ms = total_start.elapsed().as_millis() as i64;
+                        yield Ok(Event::default().event("done").data(
+                            json!({
+                                "recording_id": Uuid::new_v4().to_string(),
+                                "transcript":   resolved_transcript,
+                                "audio_id":     saved_audio_id,
+                                "source":       "voice",
+                                "target_app":   target_app,
+                                "output_language": prefs.output_language,
+                                "enriched_transcript": enriched_raw,
+                                "polished":     fallback_text,
+                                "model_used":   "raw_fallback",
+                                "confidence":   stt_confidence,
+                                "latency_ms": {
+                                    "transcribe": transcribe_ms,
+                                    "embed":      embed_ms,
+                                    "retrieve":   rag_ms,
+                                    "polish":     0,
+                                    "total":      total_ms,
+                                },
+                                "examples_used": 0,
+                            })
+                            .to_string()
+                        ));
+                    } else {
+                        yield Ok(Event::default().event("error").data(
+                            json!({"message": message, "audio_id": aid}).to_string()
+                        ));
+                    }
                     return;
                 }
                 Err(e) => {

@@ -51,6 +51,10 @@ pub enum SessionCommand {
         utterance_end_tx: Option<tokio_mpsc::UnboundedSender<String>>,
         /// Emits rolling partial text to the status bar while Caps Lock is held.
         live_partial_tx: Option<tokio_mpsc::UnboundedSender<String>>,
+        /// Personal vocabulary (starred keyterms) sent to the sidecar on connect
+        /// to bias the on-device Whisper model toward proper nouns it would
+        /// otherwise mangle. Empty = no biasing (unchanged behavior).
+        vocab: Vec<String>,
     },
     Audio {
         id: String,
@@ -226,7 +230,8 @@ async fn handle_session_command(
             pre_embed: _,
             utterance_end_tx: _,
             live_partial_tx,
-        } => match connect_ws().await {
+            vocab,
+        } => match connect_ws(&vocab).await {
             Ok(conn) => {
                 *ws = Some(conn);
                 *state = SessionState::Streaming;
@@ -322,7 +327,7 @@ async fn recv_coalesced(
     }
 }
 
-async fn connect_ws() -> Result<WsConnection, String> {
+async fn connect_ws(vocab: &[String]) -> Result<WsConnection, String> {
     let port = tokio::task::spawn_blocking(swift_stt_engine::ensure_running)
         .await
         .map_err(|e| format!("spawn failed: {e}"))??;
@@ -332,7 +337,16 @@ async fn connect_ws() -> Result<WsConnection, String> {
         .await
         .map_err(|_| "Swift WS connect timed out".to_string())?
         .map_err(|e| format!("Swift WS connect failed: {e}"))?;
-    let (write, read) = stream.split();
+    let (mut write, read) = stream.split();
+    // Bias the on-device Whisper model toward the user's personal vocabulary so
+    // proper nouns (Kubernetes, n8n, EMIAC, names) aren't mangled. Best-effort:
+    // a failed config send must never abort the recording.
+    if !vocab.is_empty() {
+        let frame = serde_json::json!({ "type": "config", "vocab": vocab }).to_string();
+        if let Err(e) = write.send(Message::Text(frame.into())).await {
+            warn!("[swift_session] vocab config send failed: {e}");
+        }
+    }
     let (partial_tx, partial_rx) = tokio_mpsc::unbounded_channel();
     tauri::async_runtime::spawn(async move {
         let mut read = read;
