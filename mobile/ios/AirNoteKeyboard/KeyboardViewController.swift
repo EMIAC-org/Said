@@ -703,11 +703,15 @@ final class KeyboardViewController: UIInputViewController {
             setState(.recording)
             DarwinSignal.shared.post(DarwinSignal.startDictation)
             ackTimer?.invalidate()
-            ackTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
+            // A live warm app acks within milliseconds. If its heartbeat is stale
+            // the app was force-quit (the `sessionWarmUntil` flag persists, but the
+            // process is gone) — so don't make the user wait the full 5s; fall back
+            // to the handoff almost immediately. We still SIGNAL first, so a live app
+            // whose heartbeat merely hiccuped still acks in time and dictates in place
+            // — this only shortens the timeout, it never skips the warm path.
+            let ackTimeout: TimeInterval = SharedStore.warmHeartbeatFresh ? 5.0 : 0.8
+            ackTimer = Timer.scheduledTimer(withTimeInterval: ackTimeout, repeats: false) { [weak self] _ in
                 guard let self, self.warmActive, !self.gotAck else { return }
-                // No ack after 5s — the warm app is genuinely gone (not just slow),
-                // so fall back to the handoff. (The app now acks immediately on
-                // wake, so a live session never reaches this.)
                 self.warmActive = false
                 self.coldHandoff()
             }
