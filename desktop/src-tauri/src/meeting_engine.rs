@@ -1356,6 +1356,27 @@ impl MeetingEngineState {
             self.muted.store(false, Ordering::SeqCst);
             return self.status();
         }
+        // Churn/abort guard (see MEETING_MIN_SESSION_MS): a stop that lands within
+        // the startup window discards the fragment without transcription, so a
+        // spurious double start→stop→start never transcribes a sub-second clip
+        // and marks the meeting FAILED — which would block recovery of the real
+        // recording that immediately follows.
+        if let Some(active_session) = session.as_ref() {
+            let age_ms = now_ms().saturating_sub(active_session.started_at_ms);
+            if age_ms < MEETING_MIN_SESSION_MS {
+                let dir = active_session.artifact_dir.clone();
+                self.active.store(false, Ordering::SeqCst);
+                self.muted.store(false, Ordering::SeqCst);
+                self.generation.fetch_add(1, Ordering::SeqCst);
+                *self.session.lock_recover() = None;
+                cleanup_empty_session_dir(&dir);
+                tracing::info!(
+                    age_ms,
+                    "[meeting_engine] stop within startup window — discarding fragment without transcription"
+                );
+                return self.status();
+            }
+        }
         let transcription_plan = self.prepare_transcription_source(
             session.as_ref(),
             mic_summary.clone(),
@@ -2027,6 +2048,13 @@ impl MeetingEngineState {
 const MEETING_JOB_MAX_ATTEMPTS: u32 = 3;
 const MEETING_JOB_BACKOFF_BASE_MS: u64 = 2_000;
 const MEETING_JOB_BACKOFF_MAX_MS: u64 = 30_000;
+
+/// A meeting session stopped within this window of starting captured nothing
+/// meaningful — typically a rapid start→stop→start (e.g. a React StrictMode
+/// double-mount in dev, or a quick re-entry). Such a stop is treated as an
+/// abort: the fragment is discarded without transcription, so it never marks
+/// the meeting FAILED and blocks recovery of the real recording that follows.
+const MEETING_MIN_SESSION_MS: u64 = 1_000;
 
 #[derive(Debug, Clone, PartialEq)]
 enum EnqueueOutcome {
@@ -3345,6 +3373,27 @@ pub fn meeting_engine_list_meetings(
 /// whisper turned into a word or two. Above this it has real content.
 const EMPTY_MEETING_MAX_WORDS: usize = 5;
 
+/// True if the meeting folder still holds a track with real, transcribable
+/// speech energy (not just silence/noise). Repairs WAV size headers first so an
+/// interrupted, never-finalized recording is measured correctly instead of
+/// reading as empty. Used to keep "clear empty meetings" from deleting a
+/// recording whose transcript merely failed or hasn't run yet.
+fn meeting_has_recoverable_speech(dir: &Path) -> bool {
+    for name in RECOVERABLE_MEETING_WAVS {
+        let wav = dir.join(name);
+        if !wav.is_file() {
+            continue;
+        }
+        let _ = repair_wav_header_sizes(&wav);
+        if let Some(summary) = capture_summary_from_wav(&wav) {
+            if has_transcribable_audio(&summary) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// A locally-stored meeting with effectively no content: never analyzed, not
 /// favorited, no user-set title, and only a few transcript words.
 fn meeting_is_empty(dir: &Path, id: &str, overrides: &MeetingOverrides) -> bool {
@@ -3356,7 +3405,15 @@ fn meeting_is_empty(dir: &Path, id: &str, overrides: &MeetingOverrides) -> bool 
     if dir.join("meeting.ai.json").is_file() {
         return false;
     }
-    meeting_dir_word_count(dir) < EMPTY_MEETING_MAX_WORDS
+    if meeting_dir_word_count(dir) >= EMPTY_MEETING_MAX_WORDS {
+        return false;
+    }
+    // Few/no transcript words — but if the recording still contains real speech,
+    // it's a recording whose transcription failed or hasn't run yet, NOT an
+    // empty silence/noise clip. Preserve it so a bulk "clear empty" never
+    // deletes recoverable audio. Genuine silence has no transcribable energy and
+    // is still cleared.
+    !meeting_has_recoverable_speech(dir)
 }
 
 /// Delete every empty meeting on this device (silence/noise recordings never
@@ -6043,6 +6100,21 @@ fn capture_summary_from_wav(path: &Path) -> Option<MicCaptureSummary> {
 /// mic + system tracks (matching the live pipeline); falls back to the merged
 /// track when the per-source WAVs are gone.
 fn build_retranscribe_plan(dir: &Path) -> Result<MeetingTranscriptionPlan, String> {
+    // Repair WAV size headers before reading. A recording interrupted before its
+    // graceful finalize (crash, force-quit, hard kill) leaves the RIFF/`data`
+    // chunk sizes at 0, so the file would read as 0 samples and be wrongly
+    // skipped as "empty" — losing a recording that is fully present on disk.
+    // `repair_wav_header_sizes` is idempotent, so already-finalized files are
+    // untouched.
+    for name in RECOVERABLE_MEETING_WAVS {
+        let wav = dir.join(name);
+        if wav.is_file() {
+            if let Err(e) = repair_wav_header_sizes(&wav) {
+                tracing::warn!(error = %e, path = %wav.display(), "[meeting_engine] retranscribe WAV header repair failed");
+            }
+        }
+    }
+
     let mic = capture_summary_from_wav(&dir.join("mic.wav"));
     let system = capture_summary_from_wav(&dir.join("system.wav"));
     let merged = capture_summary_from_wav(&dir.join("meeting.merged.wav"));
