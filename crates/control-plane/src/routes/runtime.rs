@@ -8,7 +8,10 @@
 //!
 //! This module intentionally does not persist raw transcript/audio by default.
 
-use std::{future, time::Instant};
+use std::{
+    future,
+    time::{Duration, Instant},
+};
 
 use aes_gcm::{
     Aes256Gcm, Nonce,
@@ -43,6 +46,11 @@ const GROQ_MODEL_SMART: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
 const OPENAI_AUDIO_TRANSCRIPTIONS_ENDPOINT: &str = "https://api.openai.com/v1/audio/transcriptions";
 const DEFAULT_OPENAI_TRANSCRIBE_MODEL: &str = "whisper-1";
 const DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL: &str = "deepseek-v4-flash";
+const DEEPGRAM_VALIDATE_ENDPOINT: &str = "https://api.deepgram.com/v1/projects";
+const GROQ_VALIDATE_ENDPOINT: &str = "https://api.groq.com/openai/v1/models";
+const OPENAI_VALIDATE_ENDPOINT: &str = "https://api.openai.com/v1/models";
+const GEMINI_VALIDATE_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models";
+const GATEWAY_VALIDATE_ENDPOINT: &str = "https://gateway.outreachdeal.com/v1/chat/completions";
 
 fn selected_polish_model(_selected_model: &str) -> &'static str {
     GROQ_MODEL_SMART
@@ -434,6 +442,10 @@ pub async fn save_credential(
         tenant::ensure_org_member(&state, user.account_id, org_id).await?;
     }
 
+    validate_provider_secret(&provider, secret)
+        .await
+        .map_err(ProviderValidationError::into_response)?;
+
     let encrypted = encrypt_secret(&state, secret)?;
     let display_name = req
         .display_name
@@ -585,6 +597,26 @@ pub async fn validate_credential(
             StatusCode::BAD_REQUEST,
             "credential secret is empty",
         ));
+    }
+
+    if let Err(err) = validate_provider_secret(&row.provider, secret.trim()).await {
+        let status = if err.permanent {
+            "invalid"
+        } else {
+            "validation_failed"
+        };
+        sqlx::query(
+            "UPDATE runtime_provider_credentials
+                SET status = $2, validated_at = now(), last_error = $3, updated_at = now()
+              WHERE id = $1",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(&err.message)
+        .execute(&state.db)
+        .await
+        .map_err(db_err)?;
+        return Err(err.into_response());
     }
 
     let row = sqlx::query_as::<_, CredentialRow>(
@@ -3470,6 +3502,7 @@ struct CredentialRow {
 #[derive(sqlx::FromRow)]
 struct CredentialSecretRow {
     id: Uuid,
+    provider: String,
     org_id: Option<Uuid>,
     account_id: Option<Uuid>,
     secret_ciphertext: String,
@@ -3654,7 +3687,7 @@ async fn load_owned_credential_secret(
     id: Uuid,
 ) -> Result<CredentialSecretRow, (StatusCode, Json<Value>)> {
     let row = sqlx::query_as::<_, CredentialSecretRow>(
-        "SELECT id, org_id, account_id, secret_ciphertext, secret_nonce
+        "SELECT id, provider, org_id, account_id, secret_ciphertext, secret_nonce
            FROM runtime_provider_credentials
           WHERE id = $1
             AND status <> 'revoked'
@@ -3877,6 +3910,137 @@ fn default_runtime_mode() -> String {
 
 fn default_runtime_source() -> String {
     "desktop_voice".to_string()
+}
+
+#[derive(Debug)]
+struct ProviderValidationError {
+    status: StatusCode,
+    message: String,
+    permanent: bool,
+}
+
+impl ProviderValidationError {
+    fn invalid(provider: &str) -> Self {
+        let name = provider_display_name(provider);
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: format!(
+                "{name} API key was rejected. Please paste a valid key and try again."
+            ),
+            permanent: true,
+        }
+    }
+
+    fn unavailable(provider: &str, reason: impl Into<String>) -> Self {
+        let name = provider_display_name(provider);
+        let reason = reason.into();
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: format!("Could not validate {name} API key right now: {reason}"),
+            permanent: false,
+        }
+    }
+
+    fn into_response(self) -> (StatusCode, Json<Value>) {
+        json_error(self.status, &self.message)
+    }
+}
+
+fn provider_display_name(provider: &str) -> &'static str {
+    match provider {
+        "deepgram" => "Deepgram",
+        "groq" => "Groq",
+        "openai" => "OpenAI",
+        "gemini" => "Gemini",
+        "gateway" => "Gateway",
+        _ => "Provider",
+    }
+}
+
+async fn validate_provider_secret(
+    provider: &str,
+    secret: &str,
+) -> Result<(), ProviderValidationError> {
+    let client = &*crate::HTTP_CLIENT;
+    let timeout = Duration::from_secs(10);
+    let resp = match provider {
+        "deepgram" => {
+            client
+                .get(DEEPGRAM_VALIDATE_ENDPOINT)
+                .header("Authorization", format!("Token {secret}"))
+                .timeout(timeout)
+                .send()
+                .await
+        }
+        "groq" => {
+            client
+                .get(GROQ_VALIDATE_ENDPOINT)
+                .bearer_auth(secret)
+                .timeout(timeout)
+                .send()
+                .await
+        }
+        "openai" => {
+            client
+                .get(OPENAI_VALIDATE_ENDPOINT)
+                .bearer_auth(secret)
+                .timeout(timeout)
+                .send()
+                .await
+        }
+        "gemini" => {
+            let url = format!(
+                "{GEMINI_VALIDATE_ENDPOINT}?key={}",
+                urlencoding::encode(secret)
+            );
+            client.get(url).timeout(timeout).send().await
+        }
+        "gateway" => {
+            let body = json!({
+                "model": GROQ_MODEL_FAST,
+                "stream": false,
+                "max_tokens": 1,
+                "temperature": 0,
+                "messages": [
+                    { "role": "user", "content": "ping" }
+                ]
+            });
+            client
+                .post(GATEWAY_VALIDATE_ENDPOINT)
+                .header("X-API-Key", secret)
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .timeout(timeout)
+                .send()
+                .await
+        }
+        _ => return Err(ProviderValidationError::invalid(provider)),
+    }
+    .map_err(|e| {
+        let reason = if e.is_timeout() {
+            "provider validation timed out"
+        } else {
+            "provider validation request failed"
+        };
+        ProviderValidationError::unavailable(provider, reason)
+    })?;
+
+    let status = resp.status();
+    if status.is_success() || status.as_u16() == 429 {
+        return Ok(());
+    }
+
+    if status.as_u16() == 401
+        || status.as_u16() == 403
+        || (provider == "gemini" && status.as_u16() == 400)
+    {
+        return Err(ProviderValidationError::invalid(provider));
+    }
+
+    Err(ProviderValidationError::unavailable(
+        provider,
+        format!("provider returned HTTP {status}"),
+    ))
 }
 
 fn normalize_provider(provider: &str) -> Result<String, (StatusCode, Json<Value>)> {
