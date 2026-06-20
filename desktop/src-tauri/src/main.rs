@@ -16,6 +16,11 @@ mod permissions;
 mod recovery; // crash-safe dictation audio capture + relaunch recovery
 mod server_runtime_stream;
 mod speaker_suppression;
+mod swift_model;
+#[cfg(target_os = "macos")]
+mod swift_stream;
+#[cfg(target_os = "macos")]
+mod swift_stt_engine;
 mod telemetry;
 
 use std::io::{Read, Seek, SeekFrom};
@@ -877,6 +882,9 @@ struct StreamingState(
 );
 
 struct DeepgramSessionState(dg_stream::SessionSender);
+
+#[cfg(target_os = "macos")]
+struct SwiftSessionState(swift_stream::SessionSender);
 
 /// Stores the most-recently polished text. Populated after every voice/text polish;
 /// cleared after it's pasted via Ctrl+Cmd+V or the `paste_latest` Tauri command.
@@ -2690,22 +2698,34 @@ struct SttRuntimeInfo {
     preferred_provider: String,
     effective_provider: String,
     deepgram_configured: bool,
+    swift_installed: bool,
+    swift_ready: bool,
 }
 
 #[tauri::command]
 async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeInfo, String> {
+    let swift_installed = swift_model::is_installed();
+    #[cfg(target_os = "macos")]
+    let swift_ready = swift_installed && swift_stt_engine::is_ready();
+    #[cfg(not(target_os = "macos"))]
+    let swift_ready = false;
+
     match get_endpoint(&backend) {
         Ok(ep) => match api::get_preferences(&ep).await {
             Ok(p) => {
                 let preferred = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
+                let effective =
+                    said_core::stt::effective_dictation_provider(&p.stt_provider, swift_installed);
                 let has_deepgram =
                     said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref())
                         .is_some();
                 Ok(SttRuntimeInfo {
-                    provider: preferred.clone(),
-                    preferred_provider: preferred.clone(),
-                    effective_provider: preferred,
+                    provider: effective.clone(),
+                    preferred_provider: preferred,
+                    effective_provider: effective,
                     deepgram_configured: has_deepgram,
+                    swift_installed,
+                    swift_ready,
                 })
             }
             Err(_) => Ok(SttRuntimeInfo {
@@ -2713,6 +2733,8 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
                 preferred_provider: "deepgram".into(),
                 effective_provider: "deepgram".into(),
                 deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
+                swift_installed,
+                swift_ready,
             }),
         },
         Err(_) => Ok(SttRuntimeInfo {
@@ -2720,20 +2742,29 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
             preferred_provider: "deepgram".into(),
             effective_provider: "deepgram".into(),
             deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
+            swift_installed,
+            swift_ready,
         }),
     }
 }
 
 fn hot_cache_effective_stt_provider(app: &tauri::AppHandle) -> String {
-    app.try_state::<HotPathCache>()
+    let raw = app
+        .try_state::<HotPathCache>()
         .and_then(|hot| {
             hot.0
                 .try_read()
                 .ok()
-                .map(|guard| said_core::stt::resolve_provider_from_pref(&guard.stt_provider))
+                .map(|guard| guard.stt_provider.clone())
         })
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "deepgram".to_string())
+        .unwrap_or_else(|| "deepgram".to_string());
+    said_core::stt::effective_dictation_provider(&raw, swift_model::is_installed())
+}
+
+#[cfg(target_os = "macos")]
+fn use_swift_local_stt(app: &tauri::AppHandle) -> bool {
+    said_core::stt::is_swift_local(&hot_cache_effective_stt_provider(app))
 }
 
 #[tauri::command]
@@ -2746,11 +2777,27 @@ async fn patch_preferences(
     update: api::PrefsUpdate,
 ) -> Result<api::Preferences, String> {
     tracing::info!(
-        "[patch_prefs] Tauri received: llm_provider={:?} selected_model={:?} tone={:?}",
+        "[patch_prefs] Tauri received: llm_provider={:?} selected_model={:?} tone={:?} stt_provider={:?}",
         update.llm_provider,
         update.selected_model,
-        update.tone_preset
+        update.tone_preset,
+        update.stt_provider
     );
+    #[cfg(target_os = "macos")]
+    if let Some(ref provider) = update.stt_provider {
+        if said_core::stt::is_swift_local(provider) && !swift_model::is_installed() {
+            return Err(
+                "Download the Swift Hinglish model before enabling local speech recognition"
+                    .to_string(),
+            );
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(ref provider) = update.stt_provider {
+        if said_core::stt::is_swift_local(provider) {
+            return Err("Local Swift STT is only available on macOS".to_string());
+        }
+    }
     let ep = get_endpoint(&backend)?;
     let result = api::patch_preferences(&ep, update).await;
     match &result {
@@ -2781,6 +2828,22 @@ async fn patch_preferences(
             hot.deepgram_key = p.deepgram_api_key.clone().unwrap_or_default();
             // Let meeting AI use the Groq key saved in Settings → API keys.
             meeting_engine::set_runtime_groq_api_key(p.groq_api_key.clone());
+            #[cfg(target_os = "macos")]
+            if said_core::stt::is_swift_local(&p.stt_provider) && swift_model::is_installed() {
+                let app_clone = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = tokio::task::spawn_blocking(swift_stt_engine::ensure_running)
+                        .await
+                        .map_err(|e| format!("spawn failed: {e}"))
+                        .and_then(|r| r)
+                    {
+                        tracing::warn!("[swift_stt] warm start failed: {e}");
+                    } else {
+                        tracing::info!("[swift_stt] sidecar warm");
+                    }
+                    let _ = app_clone;
+                });
+            }
         }
         Err(e) => tracing::warn!("[patch_prefs] backend error: {e}"),
     }
@@ -3604,7 +3667,16 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
         });
 
         let backend_for_pe = Arc::clone(&app.state::<BackendState>().0);
-        let session_tx = app.state::<DeepgramSessionState>().0.clone();
+        let use_swift = {
+            #[cfg(target_os = "macos")]
+            {
+                use_swift_local_stt(&app)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                false
+            }
+        };
         let backend_ep_for_server_runtime = backend_for_pe.lock().ok().and_then(|g| g.clone());
         let screen_context_for_server_runtime = app
             .try_state::<ScreenContextState>()
@@ -3617,39 +3689,96 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             }
         });
 
-        tauri::async_runtime::spawn(async move {
-            let pre_embed_info: Option<(String, String)> =
-                backend_for_pe.lock().ok().and_then(|g| {
-                    g.as_ref()
-                        .map(|ep| (format!("{}/v1/pre-embed", ep.url), ep.secret.clone()))
+        if use_swift {
+            #[cfg(target_os = "macos")]
+            {
+                let session_tx = app.state::<SwiftSessionState>().0.clone();
+                let app_for_partials = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let (live_partial_tx, mut live_partial_rx) =
+                        tokio::sync::mpsc::unbounded_channel::<String>();
+                    let app_emit = app_for_partials.clone();
+                    tauri::async_runtime::spawn(async move {
+                        while let Some(text) = live_partial_rx.recv().await {
+                            if text.trim().is_empty() {
+                                continue;
+                            }
+                            let _ = app_emit.emit(
+                                "voice-status",
+                                serde_json::json!({
+                                    "phase": "live_stt",
+                                    "transcript": text,
+                                }),
+                            );
+                        }
+                    });
+                    let start_cmd = swift_stream::SessionCommand::StartRecording {
+                        id: recording_id.clone(),
+                        result_tx: transcript_tx,
+                        pre_embed: None,
+                        utterance_end_tx: None,
+                        live_partial_tx: Some(live_partial_tx),
+                    };
+                    if let Err(err) = session_tx.send(start_cmd).await {
+                        if let swift_stream::SessionCommand::StartRecording { result_tx, .. } =
+                            err.0
+                        {
+                            let _ = result_tx.send(None);
+                        }
+                        return;
+                    }
+                    let server_runtime_mirror = backend_ep_for_server_runtime.and_then(|ep| {
+                        server_runtime_stream::maybe_spawn_live_audio_mirror(
+                            recording_id.clone(),
+                            ep,
+                            screen_context_for_server_runtime,
+                        )
+                    });
+                    swift_stream::spawn_audio_bridge_with_echo_gate(
+                        recording_id,
+                        chunk_recv,
+                        session_tx,
+                        echo_gate,
+                        server_runtime_mirror,
+                    );
                 });
-            let start_cmd = dg_stream::SessionCommand::StartRecording {
-                id: recording_id.clone(),
-                result_tx: transcript_tx,
-                pre_embed: pre_embed_info,
-                utterance_end_tx,
-            };
-            if let Err(err) = session_tx.send(start_cmd).await {
-                if let dg_stream::SessionCommand::StartRecording { result_tx, .. } = err.0 {
-                    let _ = result_tx.send(None);
-                }
-                return;
             }
-            let server_runtime_mirror = backend_ep_for_server_runtime.and_then(|ep| {
-                server_runtime_stream::maybe_spawn_live_audio_mirror(
-                    recording_id.clone(),
-                    ep,
-                    screen_context_for_server_runtime,
-                )
+        } else {
+            let session_tx = app.state::<DeepgramSessionState>().0.clone();
+            tauri::async_runtime::spawn(async move {
+                let pre_embed_info: Option<(String, String)> =
+                    backend_for_pe.lock().ok().and_then(|g| {
+                        g.as_ref()
+                            .map(|ep| (format!("{}/v1/pre-embed", ep.url), ep.secret.clone()))
+                    });
+                let start_cmd = dg_stream::SessionCommand::StartRecording {
+                    id: recording_id.clone(),
+                    result_tx: transcript_tx,
+                    pre_embed: pre_embed_info,
+                    utterance_end_tx,
+                };
+                if let Err(err) = session_tx.send(start_cmd).await {
+                    if let dg_stream::SessionCommand::StartRecording { result_tx, .. } = err.0 {
+                        let _ = result_tx.send(None);
+                    }
+                    return;
+                }
+                let server_runtime_mirror = backend_ep_for_server_runtime.and_then(|ep| {
+                    server_runtime_stream::maybe_spawn_live_audio_mirror(
+                        recording_id.clone(),
+                        ep,
+                        screen_context_for_server_runtime,
+                    )
+                });
+                dg_stream::spawn_audio_bridge_with_echo_gate(
+                    recording_id,
+                    chunk_recv,
+                    session_tx,
+                    echo_gate,
+                    server_runtime_mirror,
+                );
             });
-            dg_stream::spawn_audio_bridge_with_echo_gate(
-                recording_id,
-                chunk_recv,
-                session_tx,
-                echo_gate,
-                server_runtime_mirror,
-            );
-        });
+        }
     } else {
         tracing::debug!("[dg_stream] no chunk receiver — WS streaming not started");
     }
@@ -3891,22 +4020,36 @@ fn do_finish_recording(
             None
         } else if let Some(rx) = transcript_rx {
             let wait_start = tokio::time::Instant::now();
-            match tokio::time::timeout(std::time::Duration::from_millis(2500), rx).await {
+            let swift_local = said_core::stt::is_swift_local(&stt_provider);
+            let wait_ms = if swift_local {
+                // Swift finalize is instant when partials exist; keep a short safety margin.
+                ((wav_duration_s * 500.0) + 2000.0).clamp(4_000.0, 15_000.0) as u64
+            } else {
+                2_500
+            };
+            match tokio::time::timeout(std::time::Duration::from_millis(wait_ms), rx).await {
                 Ok(Ok(Some(t))) if !t.transcript.is_empty() => {
-                    let wait_ms = wait_start.elapsed().as_millis();
-                    // Quality gate: reject suspiciously short transcripts.
-                    // Normal speech is 2–3 words/sec (120–180 WPM).
-                    // Require at least 1 word/sec (60 WPM) — anything below
-                    // that means the WS likely dropped segments during drain.
+                    let elapsed_ms = wait_start.elapsed().as_millis();
                     let word_count = if t.meta.word_count > 0 {
                         t.meta.word_count
                     } else {
                         t.transcript.split_whitespace().count()
                     };
                     let expected_min_words = wav_duration_s.max(1.0) as usize;
-                    if word_count < expected_min_words && wav_duration_s > 3.0 {
+                    if let Some(reason) =
+                        reject_pre_transcript_reason(&t.transcript, word_count, wav_duration_s)
+                    {
                         tracing::warn!(
-                            "[finish] WS transcript too short after {wait_ms}ms: {} words for {:.1}s recording (expected ≥{}) — falling back to HTTP STT. transcript={:?}",
+                            "[finish] WS transcript rejected after {elapsed_ms}ms ({reason}) — falling back to HTTP STT. transcript={:?}",
+                            t.transcript
+                        );
+                        None
+                    } else if !swift_local
+                        && word_count < expected_min_words
+                        && wav_duration_s > 3.0
+                    {
+                        tracing::warn!(
+                            "[finish] WS transcript too short after {elapsed_ms}ms: {} words for {:.1}s recording (expected >= {}) — falling back to HTTP STT. transcript={:?}",
                             word_count,
                             wav_duration_s,
                             expected_min_words,
@@ -3915,7 +4058,7 @@ fn do_finish_recording(
                         None
                     } else {
                         tracing::info!(
-                            "[finish] ✓ WS pre-transcript ready session={session_tag} after {wait_ms}ms ({} chars, {} words, {:.1}s audio): \"{}\"",
+                            "[finish] ✓ WS pre-transcript ready session={session_tag} after {elapsed_ms}ms ({} chars, {} words, {:.1}s audio): \"{}\"",
                             t.transcript.len(),
                             word_count,
                             wav_duration_s,
@@ -4187,6 +4330,63 @@ fn do_finish_recording(
         // audio is no longer needed, so the orphan file must not linger.
         recovery::clear();
     });
+}
+
+fn reject_pre_transcript_reason(
+    transcript: &str,
+    word_count: usize,
+    wav_duration_s: f64,
+) -> Option<String> {
+    let trimmed = transcript.trim();
+    if trimmed.contains("<|") || trimmed.contains("|>") {
+        return Some("contains Whisper control tokens".to_string());
+    }
+    let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact.is_empty() {
+        return Some("empty transcript".to_string());
+    }
+    if !compact.chars().any(|c| c.is_alphanumeric()) {
+        return Some("no alphanumeric speech tokens".to_string());
+    }
+    let punct = compact.chars().filter(|c| !c.is_alphanumeric()).count();
+    if compact.chars().count() >= 20 && punct as f64 / compact.chars().count() as f64 > 0.65 {
+        return Some("mostly punctuation".to_string());
+    }
+    let normalized: Vec<String> = trimmed
+        .split_whitespace()
+        .map(|token| {
+            token
+                .trim_matches(|c: char| {
+                    !c.is_alphanumeric() && !('\u{0900}'..='\u{097F}').contains(&c)
+                })
+                .to_ascii_lowercase()
+        })
+        .filter(|token| !token.is_empty())
+        .collect();
+    if normalized.len() >= 8 {
+        let mut counts = std::collections::HashMap::<&str, usize>::new();
+        for token in &normalized {
+            *counts.entry(token.as_str()).or_insert(0) += 1;
+        }
+        let top = counts.values().copied().max().unwrap_or(0);
+        let unique_ratio = counts.len() as f64 / normalized.len() as f64;
+        let top_ratio = top as f64 / normalized.len() as f64;
+        let avg_len = normalized
+            .iter()
+            .map(|token| token.chars().count())
+            .sum::<usize>() as f64
+            / normalized.len() as f64;
+        if top_ratio >= 0.55 && unique_ratio <= 0.30 {
+            return Some("repetition loop".to_string());
+        }
+        if avg_len <= 1.25 && normalized.len() >= 12 {
+            return Some("single-character token loop".to_string());
+        }
+    }
+    if wav_duration_s > 2.0 && word_count > (wav_duration_s * 18.0).ceil() as usize {
+        return Some("implausible word rate".to_string());
+    }
+    None
 }
 
 /// Re-transcribe a recovered orphan recording. Uses a no-op event handler so the
@@ -7384,7 +7584,7 @@ fn main() {
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
 
-    let app_result = builder
+    let builder = builder
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![AUTOSTART_ARG]),
@@ -7654,6 +7854,14 @@ fn main() {
                                     bias,
                                 })
                                 .await;
+                            #[cfg(target_os = "macos")]
+                            if prefs_res.as_ref().is_ok_and(|p| {
+                                said_core::stt::is_swift_local(&p.stt_provider)
+                                    && swift_model::is_installed()
+                            }) {
+                                let _ = tokio::task::spawn_blocking(swift_stt_engine::ensure_running)
+                                    .await;
+                            }
                         });
 
                         // ── Periodic cache refresh every 5 minutes ────────────
@@ -8329,7 +8537,10 @@ fn main() {
         .manage(MeetingModeState::new())
         .manage(meeting_engine::MeetingEngineState::new())
         .manage(speaker_suppression::SpeakerSuppressionGuard::new())
-        .manage(LongDictationState::new())
+        .manage(LongDictationState::new());
+    #[cfg(target_os = "macos")]
+    let builder = builder.manage(SwiftSessionState(swift_stream::SwiftSession::spawn()));
+    let app_result = builder
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             get_snapshot,
@@ -8353,6 +8564,10 @@ fn main() {
             get_backend_endpoint,
             get_preferences,
             get_stt_runtime,
+            swift_model::swift_stt_model_status,
+            swift_model::swift_stt_download_model,
+            swift_model::swift_stt_cancel_download,
+            swift_model::swift_stt_delete_model,
             get_voice_prompt,
             save_voice_prompt_draft,
             apply_voice_prompt_draft,

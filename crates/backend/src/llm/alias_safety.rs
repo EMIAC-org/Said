@@ -464,6 +464,7 @@ static COMMON_WORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "zero",
         "one",
         "two",
+        "too",
         "three",
         "four",
         "five",

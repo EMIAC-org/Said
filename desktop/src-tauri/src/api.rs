@@ -857,8 +857,6 @@ pub struct RuntimeLiveConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeNotificationConfig {
-    pub connected: bool,
-    pub server_url: Option<String>,
     pub notifications_ws_url: Option<String>,
 }
 

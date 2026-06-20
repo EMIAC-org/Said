@@ -91,7 +91,7 @@ type BarState =
   | { kind: "processing"; phase: string }
   | { kind: "done" }
   | { kind: "pasted" }
-  | { kind: "manual_paste" }
+  | { kind: "manual_paste"; message?: string }
   | { kind: "error"; message: string; audioId?: string }
   | { kind: "learned"; term: string; message: string }
   | { kind: "email_saved"; email: string; message: string }
@@ -356,7 +356,8 @@ export default function StatusBar() {
     } catch { /* ignore */ }
     returnToIdleOrPinned(reason, true);
   };
-  const hasTranscript = bar.kind === "processing" && liveTranscript.trim().length > 0;
+  const hasTranscript =
+    (bar.kind === "recording" || bar.kind === "processing") && liveTranscript.trim().length > 0;
   const isInteractive =
     bar.kind === "confirming"
     || bar.kind === "negative_confirm"
@@ -383,7 +384,7 @@ export default function StatusBar() {
       case "processing": return bar.phase;
       case "done": return "Done";
       case "pasted": return "Pasted";
-      case "manual_paste": return "Pasted";
+      case "manual_paste": return bar.message || "Paste latest";
       case "error": return bar.message;
       case "learned": return bar.message;
       case "email_saved": return bar.message;
@@ -767,11 +768,14 @@ export default function StatusBar() {
       const { phase, transcript } = e.payload;
       console.info("[status-bar] voice-status event", phase);
       if (transcript?.trim()) setLiveTranscript(transcript.trim());
-      setBar((prev) =>
-        prev.kind === "processing"
+      setBar((prev) => {
+        if (prev.kind === "recording" && phase === "live_stt") {
+          return prev;
+        }
+        return prev.kind === "processing"
           ? (prev.phase === phase ? prev : { kind: "processing", phase })
-          : prev
-      );
+          : prev;
+      });
     }).then((fn) => {
       console.info("[status-bar] subscribed voice-status");
       subs.push(fn);
@@ -806,7 +810,11 @@ export default function StatusBar() {
       if (restorePinnedUpdate("auto-update-ready-after-output")) return;
       if (doneTimer.current) clearTimeout(doneTimer.current);
       playSound("whoosh");
-      setBar({ kind: e.payload.status });
+      setBar(
+        e.payload.status === "manual_paste"
+          ? { kind: "manual_paste", message: e.payload.message }
+          : { kind: "pasted" },
+      );
       doneTimer.current = setTimeout(
         () => setBar((prev) => isActionPromptKind(prev.kind) ? prev : { kind: "idle" }),
         e.payload.status === "pasted" ? 100 : 5200,

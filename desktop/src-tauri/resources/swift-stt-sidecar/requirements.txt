@@ -1,0 +1,5 @@
+numpy>=1.24
+transformers>=4.40
+torch>=2.1
+webrtcvad>=2.0.10
+websockets>=12.0

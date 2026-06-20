@@ -71,6 +71,10 @@ pub struct AppState {
     pub deepgram_api_key: String,
     /// Active STT vendor for server runtime (always "deepgram").
     pub stt_provider: String,
+    /// OpenAI API key for message-polish audio transcription.
+    pub openai_api_key: String,
+    /// OpenAI audio transcription model for message-polish audio.
+    pub openai_transcribe_model: String,
     pub groq_api_key: String,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
     /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).

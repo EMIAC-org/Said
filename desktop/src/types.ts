@@ -59,6 +59,8 @@ export interface SttRuntimeInfo {
   preferred_provider: string;
   effective_provider: string;
   deepgram_configured: boolean;
+  swift_installed: boolean;
+  swift_ready: boolean;
 }
 
 export interface Preferences {
