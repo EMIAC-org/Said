@@ -26,6 +26,7 @@ pub const VK_4: u32 = 0x34;
 pub const VK_5: u32 = 0x35;
 pub const VK_N: u32 = 0x4E;
 pub const VK_V: u32 = 0x56;
+pub const VK_R: u32 = 0x52;
 pub const VK_LCONTROL: u32 = 0xA2;
 pub const VK_RCONTROL: u32 = 0xA3;
 pub const VK_LMENU: u32 = 0xA4;
@@ -309,6 +310,13 @@ pub fn classify_shortcut(
     // excluded so AltGr keyboard layouts can keep producing text.
     if mods.ctrl && mods.alt && mods.left_alt && !mods.right_alt && !mods.shift && vk == VK_V {
         return Some(ShortcutAction::PasteLatest);
+    }
+
+    // Retry-last-from-audio: Ctrl+Left-Alt+R. Mirrors paste-latest's modifier
+    // choice (left-alt only so AltGr layouts keep producing text) and stays
+    // conflict-free vs browser shortcuts.
+    if mods.ctrl && mods.alt && mods.left_alt && !mods.right_alt && !mods.shift && vk == VK_R {
+        return Some(ShortcutAction::Hud(HudShortcutAction::RetryLastFromAudio));
     }
 
     // HUD shortcuts use Ctrl+Shift on Windows because the status bar already
@@ -661,6 +669,29 @@ mod tests {
             Some(ShortcutAction::Hud(
                 HudShortcutAction::ToggleMessagePolishMode
             ))
+        );
+    }
+
+    #[test]
+    fn ctrl_left_alt_r_fires_retry_last_from_audio() {
+        assert_eq!(
+            classify_shortcut(
+                VK_R,
+                EvtKind::KeyDown,
+                WinModifiers::ctrl_left_alt(),
+                RecordHotkey::CapsLock,
+            ),
+            Some(ShortcutAction::Hud(HudShortcutAction::RetryLastFromAudio))
+        );
+        // Ctrl+Shift+R must NOT fire retry (that's the browser hard-reload combo).
+        assert_eq!(
+            classify_shortcut(
+                VK_R,
+                EvtKind::KeyDown,
+                WinModifiers::ctrl_shift(),
+                RecordHotkey::CapsLock,
+            ),
+            None
         );
     }
 

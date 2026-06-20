@@ -27,6 +27,8 @@ pub enum HudShortcutAction {
     ResetPosition,
     /// ⇧⌘Space — toggle message-polish mode for normal dictation.
     ToggleMessagePolishMode,
+    /// ⇧⌘R — re-run the last dictation from its saved audio and paste the result.
+    RetryLastFromAudio,
 }
 
 #[cfg(target_os = "macos")]
@@ -82,6 +84,7 @@ mod imp {
 
         // macOS virtual key codes for special keys
         pub const KC_F: i64 = 3;
+        pub const KC_R: i64 = 15;
         pub const KC_SLASH: i64 = 44;
         pub const KC_PERIOD: i64 = 47;
         pub const KC_SPACE: i64 = 49;
@@ -255,6 +258,17 @@ mod imp {
         let shift = (flags & ffi::K_CG_FLAG_SHIFT) != 0;
         let alt = (flags & ffi::K_CG_FLAG_ALT) != 0;
         let ctrl = (flags & ffi::K_CG_FLAG_CONTROL) != 0;
+
+        // Retry-last-from-audio uses Ctrl+Option+R (NOT Cmd+Shift) so it never
+        // collides with browser hard-reload / Safari Reader (⇧⌘R). Same callback
+        // as the HUD shortcuts, just a different chord.
+        if ctrl && alt && !cmd && !shift && keycode == ffi::KC_R {
+            tracing::info!("[hotkey] ⌃⌥R → retry last dictation from audio");
+            if let Some(cb) = HUD_SHORTCUT_CB.get() {
+                cb(HudShortcutAction::RetryLastFromAudio);
+            }
+            return true;
+        }
 
         if !cmd || !shift || alt || ctrl {
             return false;
