@@ -3844,8 +3844,12 @@ fn do_cancel_recording(
         (stop_rx, snap)
     };
 
-    sync_tray(&app, &snap);
+    // Emit the idle snapshot FIRST. The webview clears its "polishing"/"recording"
+    // banner only on an idle app-state event, so this must reach the UI even if a
+    // later call (tray/status) fails — a missed idle event is exactly what strands
+    // the banner and the menu-bar mic indicator after a quick-tap cancel.
     let _ = app.emit("app-state", &snap);
+    sync_tray(&app, &snap);
     emit_meeting_stt_status(&app);
 
     if let Some(stop_rx) = stop_rx {
@@ -8350,22 +8354,26 @@ fn main() {
                                             HOTKEY_START_IN_FLIGHT.store(false, Ordering::SeqCst);
                                         }
                                     }
+                                    // _guard lives outside guard_panics so the in-flight
+                                    // flag is cleared on drop even if the body panics.
                                     let _guard = HotkeyStartGuard;
-                                    let current = hotkey_current_state(&shared, "divo start");
-                                    if current == Some(desktop::AppState::Idle) {
-                                        DIVO_START_PENDING.store(true, Ordering::SeqCst);
-                                        DIVO_FOLLOWUP_PENDING.store(false, Ordering::SeqCst);
-                                        DIVO_NEW_CHAT_PENDING.store(false, Ordering::SeqCst);
-                                        do_start_recording(&shared, &app_h);
-                                        if FINISH_AFTER_START.load(Ordering::SeqCst) {
-                                            request_queued_finish(
-                                                shared,
-                                                app_h,
-                                                back,
-                                                "divo_release_during_start",
-                                            );
+                                    guard_panics("divo.start", move || {
+                                        let current = hotkey_current_state(&shared, "divo start");
+                                        if current == Some(desktop::AppState::Idle) {
+                                            DIVO_START_PENDING.store(true, Ordering::SeqCst);
+                                            DIVO_FOLLOWUP_PENDING.store(false, Ordering::SeqCst);
+                                            DIVO_NEW_CHAT_PENDING.store(false, Ordering::SeqCst);
+                                            do_start_recording(&shared, &app_h);
+                                            if FINISH_AFTER_START.load(Ordering::SeqCst) {
+                                                request_queued_finish(
+                                                    shared,
+                                                    app_h,
+                                                    back,
+                                                    "divo_release_during_start",
+                                                );
+                                            }
                                         }
-                                    }
+                                    });
                                 });
                             }),
                             // release → finish & send to Divo
@@ -8374,27 +8382,29 @@ fn main() {
                                 let app_h = app_dr.clone();
                                 let back = Arc::clone(&back_dr);
                                 std::thread::spawn(move || {
-                                    // Capture the Ctrl+N intent now, before the async
-                                    // transcription, so the staged turn knows whether
-                                    // to default to a new chat.
-                                    DIVO_NEW_CHAT_PENDING
-                                        .store(hotkey::divo_take_new_chat(), Ordering::SeqCst);
-                                    let current = hotkey_current_state(&shared, "divo finish");
-                                    if current == Some(desktop::AppState::Recording) {
-                                        FINISH_AFTER_START.store(false, Ordering::SeqCst);
-                                        do_finish_recording(shared, app_h, back);
-                                    } else if (current == Some(desktop::AppState::Idle)
-                                        || current.is_none())
-                                        && (HOTKEY_START_IN_FLIGHT.load(Ordering::SeqCst)
-                                            || RECORDING_STARTING.load(Ordering::SeqCst))
-                                    {
-                                        request_queued_finish(
-                                            shared,
-                                            app_h,
-                                            back,
-                                            "divo_release_before_start",
-                                        );
-                                    }
+                                    guard_panics("divo.finish", move || {
+                                        // Capture the Ctrl+N intent now, before the async
+                                        // transcription, so the staged turn knows whether
+                                        // to default to a new chat.
+                                        DIVO_NEW_CHAT_PENDING
+                                            .store(hotkey::divo_take_new_chat(), Ordering::SeqCst);
+                                        let current = hotkey_current_state(&shared, "divo finish");
+                                        if current == Some(desktop::AppState::Recording) {
+                                            FINISH_AFTER_START.store(false, Ordering::SeqCst);
+                                            do_finish_recording(shared, app_h, back);
+                                        } else if (current == Some(desktop::AppState::Idle)
+                                            || current.is_none())
+                                            && (HOTKEY_START_IN_FLIGHT.load(Ordering::SeqCst)
+                                                || RECORDING_STARTING.load(Ordering::SeqCst))
+                                        {
+                                            request_queued_finish(
+                                                shared,
+                                                app_h,
+                                                back,
+                                                "divo_release_before_start",
+                                            );
+                                        }
+                                    });
                                 });
                             }),
                             // cancel → a shortcut (Ctrl+C etc.) tainted the hold; drop it
@@ -8402,14 +8412,16 @@ fn main() {
                                 let shared = Arc::clone(&shared_dc);
                                 let app_h = app_dc.clone();
                                 std::thread::spawn(move || {
-                                    DIVO_START_PENDING.store(false, Ordering::SeqCst);
-                                    DIVO_FOLLOWUP_PENDING.store(false, Ordering::SeqCst);
-                                    DIVO_NEW_CHAT_PENDING.store(false, Ordering::SeqCst);
-                                    let _ = hotkey::divo_take_new_chat();
-                                    let current = hotkey_current_state(&shared, "divo cancel");
-                                    if current == Some(desktop::AppState::Recording) {
-                                        do_cancel_recording(shared, app_h, "divo ctrl shortcut");
-                                    }
+                                    guard_panics("divo.cancel", move || {
+                                        DIVO_START_PENDING.store(false, Ordering::SeqCst);
+                                        DIVO_FOLLOWUP_PENDING.store(false, Ordering::SeqCst);
+                                        DIVO_NEW_CHAT_PENDING.store(false, Ordering::SeqCst);
+                                        let _ = hotkey::divo_take_new_chat();
+                                        let current = hotkey_current_state(&shared, "divo cancel");
+                                        if current == Some(desktop::AppState::Recording) {
+                                            do_cancel_recording(shared, app_h, "divo ctrl shortcut");
+                                        }
+                                    });
                                 });
                             }),
                         );
@@ -8766,6 +8778,9 @@ fn main() {
                 // tearing down the backend — otherwise an active recording is
                 // abandoned with a stale header and the whisper child orphans.
                 app.state::<meeting_engine::MeetingEngineState>().shutdown();
+                // Kill the Python Swift-STT sidecar too — otherwise every quit
+                // orphans a ~1.5GB Whisper process (they accumulate across runs).
+                swift_stt_engine::shutdown();
                 if let Ok(mut guard) = app.state::<BackendHandleState>().0.lock() {
                     drop(guard.take());
                 }

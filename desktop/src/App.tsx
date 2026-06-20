@@ -417,6 +417,21 @@ export default function App() {
     setDownloadToast({ path });
   }, []);
 
+  // Safety net for a stuck "transcribing"/"polishing" banner. The banner clears
+  // only on an idle/done/error event; if one is ever missed (e.g. a quick Divo
+  // Ctrl tap whose cancel teardown didn't reach the webview), force-clear it so
+  // the UI can never wedge. The timer resets on every status/token change, so it
+  // never fires during an active stream — only after activity has truly stopped.
+  useEffect(() => {
+    if (!statusPhase) return;
+    const t = setTimeout(() => {
+      setStatusPhase("");
+      setTokenBuf("");
+      setBusy(false);
+    }, 30_000);
+    return () => clearTimeout(t);
+  }, [statusPhase, tokenBuf]);
+
   // ── Real-time Tauri event subscriptions ────────────────────────────────────
   useEffect(() => {
     // State changes pushed from Rust (hotkey recording, processing, done)
