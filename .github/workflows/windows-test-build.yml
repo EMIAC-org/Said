@@ -45,7 +45,9 @@ jobs:
 
       - name: Install desktop deps
         working-directory: desktop
-        run: npm ci
+        # create-dmg pulls appdmg, which is darwin-only. The Windows NSIS build
+        # does not use it, so force npm to keep the lockfile install moving.
+        run: npm ci --force
 
       - name: Build airnote-backend sidecar
         shell: pwsh
