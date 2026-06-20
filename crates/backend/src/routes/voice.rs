@@ -676,7 +676,7 @@ async fn run_server_runtime_voice_probe(
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
             "server runtime returned {status}: {}",
-            &body[..body.len().min(240)]
+            said_core::text::truncate_utf8(&body, 240)
         ));
     }
 
@@ -885,7 +885,7 @@ async fn run_server_runtime_voice_wav_probe(
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
             "server audio runtime returned {status}: {}",
-            &body[..body.len().min(240)]
+            said_core::text::truncate_utf8(&body, 240)
         ));
     }
 
@@ -1088,7 +1088,7 @@ async fn run_server_runtime_voice_ws_probe(
                     .unwrap_or("server runtime websocket error");
                 return Err(format!(
                     "server audio runtime WS returned {error_kind} status={status} trace_id={trace_id}: {}",
-                    &message[..message.len().min(240)]
+                    said_core::text::truncate_utf8(&message, 240)
                 ));
             }
             _ => {}

@@ -234,7 +234,30 @@ fn fire_long_dictation() {
 }
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // Catch any panic before it unwinds across the Win32 kernel callback
+    // boundary (undefined behavior / process abort). On panic, pass the event
+    // through untouched — the safe default that never swallows a keystroke.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        hook_proc_inner(code, wparam, lparam)
+    }));
+    match result {
+        Ok(ret) => ret,
+        Err(_) => {
+            tracing::error!("[hotkey] recovered panic inside WH_KEYBOARD_LL hook_proc");
+            unsafe { CallNextHookEx(HHOOK::default(), code, wparam, lparam) }
+        }
+    }
+}
+
+unsafe fn hook_proc_inner(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code < 0 {
+        return unsafe { CallNextHookEx(HHOOK::default(), code, wparam, lparam) };
+    }
+
+    // Defensive: injected/synthetic events (AutoHotKey, IMEs, accessibility
+    // tools) can deliver a null KBDLLHOOKSTRUCT pointer. Dereferencing it is a
+    // hard segfault, so pass through instead.
+    if lparam.0 == 0 {
         return unsafe { CallNextHookEx(HHOOK::default(), code, wparam, lparam) };
     }
 

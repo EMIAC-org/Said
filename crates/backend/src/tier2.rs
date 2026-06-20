@@ -1898,14 +1898,7 @@ fn split_chunks(text: &str) -> Vec<&str> {
 }
 
 fn truncate_utf8_safe(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
+    said_core::text::truncate_utf8(s, max_bytes)
 }
 
 fn word_core(chunk: &str) -> &str {
