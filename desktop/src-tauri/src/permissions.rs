@@ -3,8 +3,6 @@ mod imp {
     use std::time::Duration;
 
     use block::ConcreteBlock;
-    use cocoa::base::nil;
-    use cocoa::foundation::NSString;
     use objc::runtime::Class;
     use objc::{msg_send, sel, sel_impl};
 
@@ -19,7 +17,16 @@ mod imp {
     }
 
     unsafe fn audio_media_type() -> *mut objc::runtime::Object {
-        unsafe { NSString::alloc(nil).init_str("soun") }
+        // AVMediaTypeAudio is the NSString "soun". Build it via objc msg_send
+        // directly so we don't depend on the deprecated cocoa::foundation helpers.
+        // Owned (+1) via alloc/init; callers release it like the previous code did.
+        unsafe {
+            let cls = Class::get("NSString").expect("NSString class is always available");
+            let obj: *mut objc::runtime::Object = msg_send![cls, alloc];
+            let s: *mut objc::runtime::Object =
+                msg_send![obj, initWithUTF8String: c"soun".as_ptr()];
+            s
+        }
     }
 
     pub fn microphone_granted() -> bool {
