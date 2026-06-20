@@ -716,9 +716,10 @@ mod system_reference {
                 >())
         {
             let extensible = unsafe { *(format_ptr as *const WAVEFORMATEXTENSIBLE) };
-            if extensible.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
+            let subformat = unsafe { std::ptr::addr_of!(extensible.SubFormat).read_unaligned() };
+            if subformat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
                 WindowsReferenceSampleFormat::F32
-            } else if extensible.SubFormat == KSDATAFORMAT_SUBTYPE_PCM {
+            } else if subformat == KSDATAFORMAT_SUBTYPE_PCM {
                 let valid_bits = unsafe { extensible.Samples.wValidBitsPerSample };
                 pcm_reference_format_for_bits(if valid_bits == 0 {
                     bits_per_sample
@@ -728,7 +729,7 @@ mod system_reference {
             } else {
                 return Err(format!(
                     "unsupported WASAPI speaker-reference extensible subformat: {:?}",
-                    extensible.SubFormat
+                    subformat
                 ));
             }
         } else {

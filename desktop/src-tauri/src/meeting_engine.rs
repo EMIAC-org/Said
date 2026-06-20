@@ -4549,9 +4549,10 @@ unsafe fn wasapi_mix_format_from_ptr(
             >())
     {
         let extensible = unsafe { *(format_ptr as *const WAVEFORMATEXTENSIBLE) };
-        if extensible.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
+        let subformat = unsafe { std::ptr::addr_of!(extensible.SubFormat).read_unaligned() };
+        if subformat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
             WindowsLoopbackSampleFormat::F32
-        } else if extensible.SubFormat == KSDATAFORMAT_SUBTYPE_PCM {
+        } else if subformat == KSDATAFORMAT_SUBTYPE_PCM {
             let valid_bits = unsafe { extensible.Samples.wValidBitsPerSample };
             pcm_sample_format_for_bits(if valid_bits == 0 {
                 bits_per_sample
@@ -4561,7 +4562,7 @@ unsafe fn wasapi_mix_format_from_ptr(
         } else {
             return Err(format!(
                 "unsupported WASAPI extensible subformat: {:?}",
-                extensible.SubFormat
+                subformat
             ));
         }
     } else {
