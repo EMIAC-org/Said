@@ -3234,6 +3234,11 @@ pub async fn voice_polish(
             }),
         ));
     }
+    // Deterministic sentence-case + terminal punctuation. The light-touch polish
+    // prompt (anti-"Scout meltdown") intentionally under-edits casing/punctuation,
+    // so guarantee them mechanically here — never re-triggers LLM over-editing.
+    let output = tidy_casing(&output);
+
     deferred_events.push(("llm_complete", Some(model_ms), json!({"model": model})));
 
     tracing::info!(
@@ -4230,6 +4235,65 @@ fn replace_token_core(output_word: &str, source_core: &str) -> String {
 
 /// Codex (ChatGPT) model used for polish when an org has connected ChatGPT.
 const CODEX_POLISH_MODEL: &str = "gpt-5.4-mini";
+
+/// Deterministic sentence-case + terminal punctuation for the dictation output.
+/// The light-touch polish prompt under-edits casing/punctuation; this guarantees
+/// them mechanically. Conservative: only capitalizes the first letter of each
+/// sentence and appends a single '.' when the text ends without terminal
+/// punctuation. Never rewrites words, so it can't re-trigger LLM over-editing.
+fn tidy_casing(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(trimmed.len() + 1);
+    let mut at_sentence_start = true;
+    for ch in trimmed.chars() {
+        if at_sentence_start && ch.is_alphabetic() {
+            out.extend(ch.to_uppercase());
+            at_sentence_start = false;
+            continue;
+        }
+        out.push(ch);
+        if ch == '.' || ch == '?' || ch == '!' {
+            at_sentence_start = true;
+        } else if !ch.is_whitespace() {
+            at_sentence_start = false;
+        }
+    }
+    if out
+        .chars()
+        .rev()
+        .find(|c| !c.is_whitespace())
+        .is_some_and(char::is_alphanumeric)
+    {
+        out.push('.');
+    }
+    out
+}
+
+#[cfg(test)]
+mod tidy_casing_tests {
+    use super::tidy_casing;
+
+    #[test]
+    fn capitalizes_and_terminates() {
+        assert_eq!(tidy_casing("haan ye theek hai"), "Haan ye theek hai.");
+        assert_eq!(tidy_casing("yes. okay"), "Yes. Okay.");
+    }
+
+    #[test]
+    fn leaves_correct_text_unchanged() {
+        assert_eq!(tidy_casing("Hello world."), "Hello world.");
+        assert_eq!(tidy_casing("Is it ready?"), "Is it ready?");
+    }
+
+    #[test]
+    fn empty_and_numeric_safe() {
+        assert_eq!(tidy_casing(""), "");
+        assert_eq!(tidy_casing("250 ms"), "250 ms.");
+    }
+}
 
 /// The org's connected-ChatGPT access token, transparently refreshed if expired.
 /// Returns `None` when the org hasn't connected ChatGPT (so polish stays on Groq,
