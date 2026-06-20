@@ -11962,7 +11962,7 @@ pub struct WhisperModelCleanupResult {
 #[tauri::command]
 pub fn meeting_list_whisper_models() -> Vec<WhisperModelInfo> {
     let dir = meeting_whisper_models_dir();
-    let active = resolve_whisper_cpp_config().ok().map(|config| config.model);
+    let active = selected_whisper_model_path();
     let mut models = Vec::new();
     for (name, _, _) in WHISPER_MODEL_CATALOG {
         let path = dir.join(name);
@@ -12621,8 +12621,7 @@ fn env_bool(name: &str, default: bool) -> bool {
 fn resolve_whisper_cpp_config() -> Result<WhisperCppConfig, String> {
     let binary = env_path("AIRNOTE_WHISPER_CPP_BIN")
         .or_else(|| env_path("WHISPER_CPP_BIN"))
-        // Bundled sidecar inside the shipped .app (build-dmg.sh copies whisper-cli
-        // into Contents/MacOS next to the app binary). Preferred over PATH so a
+        // Bundled sidecar inside the shipped app. Preferred over PATH so a
         // packaged install transcribes without any dev tooling present.
         .or_else(find_bundled_whisper_cli)
         .or_else(|| find_on_path("whisper-cli"))
@@ -12632,18 +12631,10 @@ fn resolve_whisper_cpp_config() -> Result<WhisperCppConfig, String> {
                 .to_string()
         })?;
 
-    let model = env_path("AIRNOTE_WHISPER_CPP_MODEL")
-        .or_else(|| env_path("WHISPER_CPP_MODEL"))
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(is_supported_meeting_whisper_model_name)
-        })
-        .or_else(default_whisper_model_path)
-        .ok_or_else(|| {
-            "whisper.cpp model not found; set AIRNOTE_WHISPER_CPP_MODEL or WHISPER_CPP_MODEL"
-                .to_string()
-        })?;
+    let model = selected_whisper_model_path().ok_or_else(|| {
+        "whisper.cpp model not found; set AIRNOTE_WHISPER_CPP_MODEL or WHISPER_CPP_MODEL"
+            .to_string()
+    })?;
 
     let language = DEFAULT_WHISPER_LANGUAGE.to_string();
     let prompt = meeting_env("AIRNOTE_MEETING_WHISPER_PROMPT")
@@ -12756,10 +12747,10 @@ fn resolve_whisper_cpp_config() -> Result<WhisperCppConfig, String> {
     })
 }
 
-/// Locate a `whisper-cli` binary bundled inside the shipped app. The DMG build
-/// copies it into `Contents/MacOS` next to the app executable; the dev/release
-/// target dirs are also walked so `just dev` finds a synced copy. None if absent
-/// (callers then fall back to PATH).
+/// Locate a `whisper-cli` binary bundled inside the shipped app. Tauri
+/// externalBin strips the target suffix in normal bundles, but dev and failed
+/// packaging runs may leave target-suffixed files, so both forms are checked.
+/// None if absent (callers then fall back to PATH).
 fn find_bundled_whisper_cli() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     bundled_whisper_cli_candidates_from_exe(&exe)
@@ -12783,8 +12774,14 @@ fn bundled_whisper_cli_candidates_from_exe(exe: &Path) -> Vec<PathBuf> {
     candidates
 }
 
-fn whisper_cli_binary_names() -> [&'static str; 2] {
-    ["whisper-cli", "whisper-cli.exe"]
+fn whisper_cli_binary_names() -> [&'static str; 5] {
+    [
+        "whisper-cli",
+        "whisper-cli.exe",
+        "whisper-cli-x86_64-pc-windows-msvc.exe",
+        "whisper-cli-aarch64-apple-darwin",
+        "whisper-cli-x86_64-apple-darwin",
+    ]
 }
 
 /// Directories inside a shipped `.app` where bundled models may live, relative
@@ -12796,7 +12793,10 @@ fn bundled_models_dirs() -> Vec<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(d) = exe.parent() {
             dirs.push(d.to_path_buf());
+            dirs.push(d.join("models"));
+            dirs.push(d.join("resources").join("models"));
             dirs.push(d.join("..").join("Resources").join("models"));
+            dirs.push(d.join("..").join("resources").join("models"));
         }
     }
     dirs
@@ -12881,6 +12881,13 @@ fn is_usable_whisper_model(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn is_supported_usable_whisper_model(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(is_supported_meeting_whisper_model_name)
+        && is_usable_whisper_model(path)
+}
+
 fn env_path(key: &str) -> Option<PathBuf> {
     env_file_path(key)
 }
@@ -12948,6 +12955,22 @@ fn default_whisper_model_path() -> Option<PathBuf> {
         .and_then(|dir| first_whisper_model_in_dir(&dir))
         .or_else(default_data_dir_whisper_model_path)
         .or_else(default_dev_repo_whisper_model_path)
+}
+
+fn selected_whisper_model_path() -> Option<PathBuf> {
+    choose_whisper_model_path(
+        env_path("AIRNOTE_WHISPER_CPP_MODEL").or_else(|| env_path("WHISPER_CPP_MODEL")),
+        default_whisper_model_path(),
+    )
+}
+
+fn choose_whisper_model_path(
+    configured: Option<PathBuf>,
+    fallback: Option<PathBuf>,
+) -> Option<PathBuf> {
+    configured
+        .filter(|path| is_supported_usable_whisper_model(path))
+        .or(fallback)
 }
 
 fn default_data_dir_whisper_model_path() -> Option<PathBuf> {
@@ -13378,6 +13401,9 @@ mod tests {
         )));
         assert!(candidates.contains(&PathBuf::from(
             "/tmp/AirNote.app/Contents/MacOS/whisper-cli.exe"
+        )));
+        assert!(candidates.contains(&PathBuf::from(
+            "/tmp/AirNote.app/Contents/MacOS/whisper-cli-x86_64-pc-windows-msvc.exe"
         )));
         assert!(candidates.contains(&PathBuf::from(
             "/tmp/AirNote.app/Contents/MacOS/release/whisper-cli.exe"
@@ -15503,6 +15529,25 @@ mod tests {
         fs::create_dir_all(&legacy_only_dir).unwrap();
         fs::write(legacy_only_dir.join("ggml-large-v3-turbo.bin"), &blob).unwrap();
         assert!(first_whisper_model_in_dir(&legacy_only_dir).is_none());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn meeting_whisper_model_selection_does_not_require_binary() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-whisper-active-model-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let blob = vec![0u8; (MIN_WHISPER_MODEL_BYTES + 1) as usize];
+        let model = dir.join("ggml-large-v3-turbo-q5_0.bin");
+        fs::write(&model, &blob).unwrap();
+
+        let selected = choose_whisper_model_path(Some(model.clone()), None).unwrap();
+
+        assert_eq!(selected, model);
 
         let _ = fs::remove_dir_all(dir);
     }

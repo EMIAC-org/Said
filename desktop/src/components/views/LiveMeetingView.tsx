@@ -562,8 +562,13 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   }, [applyMeetingStatus]);
 
   const handleEndMeeting = useCallback(async () => {
+    if (ending) return;
+
     const conn = getConnection();
-    if (!conn || ending) return;
+    if (!conn || meetingId.startsWith("local-")) {
+      await handleLeave();
+      return;
+    }
 
     setEnding(true);
     setControlError(null);
@@ -585,7 +590,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
     } finally {
       setEnding(false);
     }
-  }, [applyMeetingStatus, ending, meetingId]);
+  }, [applyMeetingStatus, ending, handleLeave, meetingId]);
 
   useEffect(() => {
     const conn = getConnection();

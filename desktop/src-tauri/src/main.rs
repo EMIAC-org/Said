@@ -1890,6 +1890,8 @@ fn show_meeting_pill(app: tauri::AppHandle) {
         .skip_taskbar(true)
         .focused(false)
         .resizable(false)
+        .shadow(false)
+        .transparent(true)
         .build()
         {
             Ok(win) => {

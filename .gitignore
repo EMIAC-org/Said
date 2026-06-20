@@ -10,6 +10,9 @@
 /target
 **/target/
 
+# Generated Tauri sidecars
+desktop/src-tauri/binaries/whisper-cli-*
+
 # Node / frontend dependencies
 desktop/node_modules/
 **/node_modules/

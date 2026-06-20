@@ -23,6 +23,7 @@ console.info("[status-bar:entry]", {
 
 if (isMeetingPill) {
   // Floating live-meeting pill — minimal always-on-top capsule.
+  document.documentElement.dataset.theme = "dark";
   document.documentElement.classList.add("statusbar-mode");
   document.body.classList.add("statusbar-mode");
   root.render(

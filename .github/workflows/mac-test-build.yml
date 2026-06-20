@@ -96,6 +96,15 @@ jobs:
             "desktop/src-tauri/binaries/airnote-backend-aarch64-apple-darwin"
           chmod +x "desktop/src-tauri/binaries/airnote-backend-aarch64-apple-darwin"
 
+      - name: Build whisper-cli sidecar
+        timeout-minutes: 20
+        run: |
+          scripts/build-whisper-cli.sh aarch64-apple-darwin
+          mkdir -p desktop/src-tauri/binaries
+          cp "target/aarch64-apple-darwin/release/whisper-cli" \
+            "desktop/src-tauri/binaries/whisper-cli-aarch64-apple-darwin"
+          chmod +x "desktop/src-tauri/binaries/whisper-cli-aarch64-apple-darwin"
+
       - name: Build AirNote.app
         timeout-minutes: 25
         env:
@@ -118,12 +127,20 @@ jobs:
           set -euo pipefail
           APP_PATH="target/aarch64-apple-darwin/release/bundle/macos/${PRODUCT_NAME}.app"
           EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/airnote-backend"
+          EMBEDDED_WHISPER="$APP_PATH/Contents/MacOS/whisper-cli"
           ENTITLEMENTS="desktop/src-tauri/AirNote.entitlements"
           BUNDLE_ID="com.emiac.airnote.desktop"
           test -d "$APP_PATH"
           test -x "$EMBEDDED_BACKEND"
+          test -x "$EMBEDDED_WHISPER"
           rm -f "$APP_PATH/Contents/MacOS/.env"
+          mkdir -p "$APP_PATH/Contents/Resources/models"
+          cp target/whisper-models/ggml-silero-*.bin "$APP_PATH/Contents/Resources/models/"
           xattr -cr "$APP_PATH" 2>/dev/null || true
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --entitlements "$ENTITLEMENTS" \
+            "$EMBEDDED_WHISPER"
           codesign --force --options runtime --timestamp \
             --sign "$APPLE_SIGNING_IDENTITY" \
             --entitlements "$ENTITLEMENTS" \
@@ -133,6 +150,7 @@ jobs:
             --entitlements "$ENTITLEMENTS" \
             "$APP_PATH"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign --verify --strict --verbose=2 "$EMBEDDED_WHISPER"
           ACTUAL_ID=$(codesign -dv "$APP_PATH" 2>&1 | awk -F= '/^Identifier=/ {print $2}')
           test "$ACTUAL_ID" = "$BUNDLE_ID"
           echo "Signed app verified: $APP_PATH"
