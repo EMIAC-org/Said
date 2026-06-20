@@ -8863,6 +8863,8 @@ fn main() {
                 app.state::<meeting_engine::MeetingEngineState>().shutdown();
                 // Kill the Python Swift-STT sidecar too — otherwise every quit
                 // orphans a ~1.5GB Whisper process (they accumulate across runs).
+                // macOS-only: the Swift-STT sidecar module is not compiled on Windows.
+                #[cfg(target_os = "macos")]
                 swift_stt_engine::shutdown();
                 if let Ok(mut guard) = app.state::<BackendHandleState>().0.lock() {
                     drop(guard.take());
