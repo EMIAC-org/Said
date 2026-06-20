@@ -27,7 +27,8 @@ pub enum HudShortcutAction {
     ResetPosition,
     /// ⇧⌘Space — toggle message-polish mode for normal dictation.
     ToggleMessagePolishMode,
-    /// ⇧⌘R — re-run the last dictation from its saved audio and paste the result.
+    /// ⌃⌥R (macOS) / Ctrl+Left-Alt+R (Windows) — re-run the last dictation from its
+    /// saved audio (full STT + polish) and paste the result.
     RetryLastFromAudio,
 }
 

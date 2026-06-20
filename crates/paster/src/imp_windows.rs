@@ -667,7 +667,7 @@ mod windows_tests {
         unsafe {
             let _ = CloseClipboard();
         }
-        matches!(read, Ok(ref s) if s == probe)
+        matches!(read, Some(ref s) if s.as_str() == probe)
     }
 
     /// Write Unicode text to the clipboard via the same code path that `paste`

@@ -2422,15 +2422,29 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     // reconciles any streamed tokens against this `done`, so there is
                     // no double-typing.
                     let lower = e.to_lowercase();
+                    // Gate the raw fallback on the HTTP status: retry only on transient
+                    // server/rate codes, NEVER on auth/bad-key (401/403). This avoids
+                    // misclassifying a billing/quota 401 whose body mentions "rate" as
+                    // transient and silently pasting unpolished text instead of telling
+                    // the user to fix their key.
+                    let auth_failure = lower.contains("401")
+                        || lower.contains("403")
+                        || lower.contains("invalid_api_key")
+                        || lower.contains("invalid api key")
+                        || lower.contains("unauthorized")
+                        || lower.contains("forbidden");
                     let transient = !auth_err
+                        && !auth_failure
                         && (lower.contains("429")
-                            || lower.contains("rate")
+                            || lower.contains("500")
+                            || lower.contains("502")
+                            || lower.contains("503")
+                            || lower.contains("504")
+                            || lower.contains("408")
                             || lower.contains("timeout")
                             || lower.contains("timed out")
                             || lower.contains("overloaded")
-                            || lower.contains("temporarily")
-                            || lower.contains("502")
-                            || lower.contains("503"));
+                            || lower.contains("temporarily"));
                     let fallback_text = if transient {
                         if enforce_roman_hinglish {
                             let t = if script::contains_devanagari(&resolved_transcript) {
