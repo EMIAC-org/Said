@@ -69,7 +69,8 @@
       "icons/icon_512x512.png"
     ],
     "externalBin": [
-      "binaries/airnote-backend"
+      "binaries/airnote-backend",
+      "binaries/whisper-cli"
     ],
     "resources": [
       "resources/swift-stt-sidecar/server.py",

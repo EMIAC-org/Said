@@ -117,6 +117,96 @@
       border-radius: 0 7px 7px 0;
     }
     .note p { margin: 0; font-size: 12px; }
+    .platform-guide {
+      margin: 10px 0 16px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.018));
+    }
+    .platform-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: flex-start;
+      margin-bottom: 12px;
+    }
+    .platform-head p { margin: 3px 0 0; }
+    .platform-title {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .platform-toggle {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      padding: 4px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 8px;
+      background: rgba(0,0,0,.22);
+      min-width: 210px;
+    }
+    .platform-radio {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .platform-label {
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: background .18s ease, color .18s ease, box-shadow .18s ease;
+    }
+    .platform-label:hover { color: var(--text); background: rgba(255,255,255,.055); }
+    #platform-mac:checked ~ .platform-label.mac,
+    #platform-windows:checked ~ .platform-label.windows {
+      background: var(--green);
+      color: #07110d;
+      box-shadow: 0 8px 18px rgba(98,230,184,.14);
+    }
+    .platform-panels {
+      grid-column: 1 / -1;
+      border-top: 1px solid rgba(255,255,255,.07);
+      margin-top: 8px;
+      padding-top: 8px;
+    }
+    .platform-panel { display: none; }
+    #platform-mac:checked ~ .platform-panels .mac-panel,
+    #platform-windows:checked ~ .platform-panels .windows-panel {
+      display: block;
+    }
+    .platform-panel table { margin-bottom: 0; }
+    .platform-summary {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .platform-summary .mini {
+      min-height: 62px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 8px;
+      padding: 10px;
+      background: rgba(0,0,0,.16);
+    }
+    .platform-summary .mini strong {
+      display: block;
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+    .platform-summary .mini span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
     .demo {
       position: relative;
       overflow: hidden;
@@ -552,6 +642,16 @@
       .bug-mini-meta { height: 20px; font-size: 8px; }
       .bug-mini-upload { height: 30px; font-size: 8px; padding: 6px 8px; }
       .submit-chip { height: 24px; font-size: 8px; margin-top: 7px; }
+      .platform-head {
+        display: block;
+      }
+      .platform-toggle {
+        min-width: 0;
+        margin-top: 12px;
+      }
+      .platform-summary {
+        grid-template-columns: 1fr;
+      }
     }
     @media (max-width: 390px) {
       .w { padding-left: 10px; padding-right: 10px; }
@@ -587,41 +687,57 @@
     </div>
   </section>
 
-  <h2>Core Shortcuts</h2>
-  <table>
-    <tr>
-      <th>Shortcut</th>
-      <th>What it does</th>
-    </tr>
-    <tr>
-      <td><span class="k">Fn</span> hold</td>
-      <td>Record while held. Release to process and type the final output into the active app.</td>
-    </tr>
-    <tr>
-      <td><span class="kc"><span class="k">Fn</span><span class="k">Space</span></span></td>
-      <td>Long dictation lock. Start recording, lock it, then press <span class="k">Fn</span> again to finish.</td>
-    </tr>
-    <tr>
-      <td><span class="kc"><span class="k">⇧</span><span class="k">⌘</span><span class="k">Space</span></span></td>
-      <td>Toggle <strong>Polish Mode</strong> for voice dictation. When on, AirNote waits and pastes the polished message once.</td>
-    </tr>
-    <tr>
-      <td><span class="kc"><span class="k">⌥</span><span class="k">1</span></span></td>
-      <td><strong>Polish selected message</strong>. Select text in any app, press left Option + 1, and AirNote replaces only that selection with polished English.</td>
-    </tr>
-    <tr>
-      <td><span class="kc"><span class="k">⌥</span><span class="k">2</span></span></td>
-      <td>Selected-text English conversion/cleanup shortcut.</td>
-    </tr>
-    <tr>
-      <td><span class="kc"><span class="k">⌥</span><span class="k">5</span></span></td>
-      <td>Selected-text Hinglish shortcut.</td>
-    </tr>
-    <tr>
-      <td><span class="kc"><span class="k">⌃</span><span class="k">⌘</span><span class="k">V</span></span></td>
-      <td>Paste the last AirNote output again if the target app rejected the first paste.</td>
-    </tr>
-  </table>
+  <h2 id="shortcuts">Core Shortcuts</h2>
+  <section class="platform-guide" aria-labelledby="platform-shortcuts-title">
+    <div class="platform-head">
+      <div>
+        <div id="platform-shortcuts-title" class="platform-title">Choose your system</div>
+        <p>Use the toggle to check the shortcut names for your keyboard. The behavior is the same; only the modifier keys change.</p>
+      </div>
+      <div class="platform-toggle" aria-label="Operating system shortcut toggle">
+        <input class="platform-radio" type="radio" name="platform" id="platform-mac" checked>
+        <input class="platform-radio" type="radio" name="platform" id="platform-windows">
+        <label class="platform-label mac" for="platform-mac">macOS</label>
+        <label class="platform-label windows" for="platform-windows">Windows</label>
+        <div class="platform-panels">
+          <div class="platform-panel mac-panel">
+            <div class="platform-summary">
+              <div class="mini"><strong>Dictation</strong><span>Hold Fn by default, or choose Caps Lock / Right Option in Settings.</span></div>
+              <div class="mini"><strong>Polish Mode</strong><span>Shift + Command + Space toggles final-message polish.</span></div>
+              <div class="mini"><strong>Selected text</strong><span>Option + 1..5 runs polish/convert shortcuts.</span></div>
+            </div>
+            <table>
+              <tr><th>Shortcut</th><th>What it does</th></tr>
+              <tr><td><span class="k">Fn</span> hold</td><td>Record while held. Release to process and type the final output into the active app.</td></tr>
+              <tr><td><span class="kc"><span class="k">Fn</span><span class="k">Space</span></span></td><td>Long dictation lock. Start recording, lock it, then press <span class="k">Fn</span> again to finish.</td></tr>
+              <tr><td><span class="kc"><span class="k">⇧</span><span class="k">⌘</span><span class="k">Space</span></span></td><td>Toggle <strong>Polish Mode</strong> for voice dictation. When on, AirNote waits and pastes the polished message once.</td></tr>
+              <tr><td><span class="kc"><span class="k">⌥</span><span class="k">1</span></span></td><td><strong>Polish selected message</strong>. Select text in any app, press left Option + 1, and AirNote replaces only that selection with polished English.</td></tr>
+              <tr><td><span class="kc"><span class="k">⌥</span><span class="k">2</span></span></td><td>Selected-text English conversion/cleanup shortcut.</td></tr>
+              <tr><td><span class="kc"><span class="k">⌥</span><span class="k">5</span></span></td><td>Selected-text Hinglish shortcut.</td></tr>
+              <tr><td><span class="kc"><span class="k">⌃</span><span class="k">⌘</span><span class="k">V</span></span></td><td>Paste the last AirNote output again if the target app rejected the first paste.</td></tr>
+            </table>
+          </div>
+          <div class="platform-panel windows-panel">
+            <div class="platform-summary">
+              <div class="mini"><strong>Dictation</strong><span>Hold Caps Lock by default, or choose Right Alt in Settings.</span></div>
+              <div class="mini"><strong>Polish Mode</strong><span>Ctrl + Shift + Space toggles final-message polish.</span></div>
+              <div class="mini"><strong>Selected text</strong><span>Left Alt + 1..5 runs polish/convert shortcuts.</span></div>
+            </div>
+            <table>
+              <tr><th>Shortcut</th><th>What it does</th></tr>
+              <tr><td><span class="k">Caps Lock</span> hold</td><td>Record while held. Release to process and type the final output into the active app.</td></tr>
+              <tr><td><span class="kc"><span class="k">Caps Lock</span><span class="k">Space</span></span></td><td>Long dictation lock. Start recording, lock it, then press <span class="k">Caps Lock</span> again to finish.</td></tr>
+              <tr><td><span class="kc"><span class="k">Ctrl</span><span class="k">Shift</span><span class="k">Space</span></span></td><td>Toggle <strong>Polish Mode</strong> for voice dictation. When on, AirNote waits and pastes the polished message once.</td></tr>
+              <tr><td><span class="kc"><span class="k">Alt</span><span class="k">1</span></span></td><td><strong>Polish selected message</strong>. Select text in any app, press left Alt + 1, and AirNote replaces only that selection with polished English.</td></tr>
+              <tr><td><span class="kc"><span class="k">Alt</span><span class="k">2</span></span></td><td>Selected-text English conversion/cleanup shortcut.</td></tr>
+              <tr><td><span class="kc"><span class="k">Alt</span><span class="k">5</span></span></td><td>Selected-text Hinglish shortcut.</td></tr>
+              <tr><td><span class="kc"><span class="k">Ctrl</span><span class="k">Left Alt</span><span class="k">V</span></span></td><td>Paste the last AirNote output again if the target app rejected the first paste. Right Alt is intentionally avoided for AltGr keyboards.</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <div class="note">
     <p><strong>Rule of thumb:</strong> normal dictation is fast and direct. Polish Mode is for messages that should sound professional, so it intentionally waits for the final polished version and pastes once.</p>
@@ -641,8 +757,8 @@
     </div>
     <div class="card">
       <div class="tag">Voice mode</div>
-      <div class="step"><span class="num">1</span><p>Press <span class="kc"><span class="k">⇧</span><span class="k">⌘</span><span class="k">Space</span></span>. The pill shows <strong>Polish mode on</strong>.</p></div>
-      <div class="step"><span class="num">2</span><p>Speak normally with <span class="k">Fn</span>. AirNote transcribes first, then runs a message-polish pass.</p></div>
+      <div class="step"><span class="num">1</span><p>Turn on Polish Mode: macOS uses <span class="kc"><span class="k">⇧</span><span class="k">⌘</span><span class="k">Space</span></span>; Windows uses <span class="kc"><span class="k">Ctrl</span><span class="k">Shift</span><span class="k">Space</span></span>.</p></div>
+      <div class="step"><span class="num">2</span><p>Speak normally with your record key: <span class="k">Fn</span> on macOS by default, or <span class="k">Caps Lock</span> on Windows by default.</p></div>
       <div class="step"><span class="num">3</span><p>The target app receives only the final polished message. No draft text is streamed into the field.</p></div>
     </div>
   </div>
@@ -651,9 +767,9 @@
   <div class="grid two">
     <div class="card">
       <div class="tag">Placement</div>
-      <div class="step"><span class="num">1</span><p>Press <span class="kc"><span class="k">⇧</span><span class="k">⌘</span><span class="k">/</span></span> to make the status pill movable.</p></div>
+      <div class="step"><span class="num">1</span><p>Make the status pill movable: macOS uses <span class="kc"><span class="k">⇧</span><span class="k">⌘</span><span class="k">/</span></span>; Windows uses <span class="kc"><span class="k">Ctrl</span><span class="k">Shift</span><span class="k">/</span></span>.</p></div>
       <div class="step"><span class="num">2</span><p>Drag the pill anywhere that feels comfortable for your screen.</p></div>
-      <div class="step"><span class="num">3</span><p>Press <span class="kc"><span class="k">⇧</span><span class="k">⌘</span><span class="k">.</span></span> to reset it to the centered default position.</p></div>
+      <div class="step"><span class="num">3</span><p>Reset it to center: macOS uses <span class="kc"><span class="k">⇧</span><span class="k">⌘</span><span class="k">.</span></span>; Windows uses <span class="kc"><span class="k">Ctrl</span><span class="k">Shift</span><span class="k">.</span></span>.</p></div>
     </div>
     <div class="demo move-demo">
       <div class="screen">
@@ -665,7 +781,7 @@
     </div>
   </div>
 
-  <h2>Polish Selected Text With Option + 1</h2>
+  <h2>Polish Selected Text</h2>
   <div class="grid two">
     <div class="demo select-demo">
       <div class="screen">
@@ -673,14 +789,14 @@
         <div class="window">
           <div class="before">Let me know if you want to jump on call right away i will set it up in few minutes and then you can query anything in Zoho Books using your Claude account.</div>
           <div class="after">Please let me know if you would like to get on a call right away. I can set it up in a few minutes, and then you can ask anything about Zoho Books using your Claude account.</div>
-          <div class="mini-cursor">⌥ 1</div>
+          <div class="mini-cursor">⌥/Alt 1</div>
         </div>
       </div>
     </div>
     <div class="card">
       <div class="tag">Selected text</div>
       <div class="step"><span class="num">1</span><p>Select the rough message in Slack, WhatsApp, Gmail, Chrome, Notes, or any editable app.</p></div>
-      <div class="step"><span class="num">2</span><p>Press <span class="kc"><span class="k">⌥</span><span class="k">1</span></span>. Use the left Option key if your keyboard has two.</p></div>
+      <div class="step"><span class="num">2</span><p>Press <span class="kc"><span class="k">⌥</span><span class="k">1</span></span> on macOS, or <span class="kc"><span class="k">Alt</span><span class="k">1</span></span> on Windows. Use the left modifier key when your keyboard has two.</p></div>
       <div class="step"><span class="num">3</span><p>AirNote replaces only the selected text. It should not hit Enter or send the message.</p></div>
     </div>
   </div>
@@ -688,7 +804,7 @@
   <h2>What Polish Means</h2>
   <div class="ex">
     <div class="in">Input: Hello Aaron, I'm done with detailed documentation. I can walk you through approach and then finalise scope before execution. Let me know time for evening call as per your time zone.</div>
-    <div class="arrow">Option + 1 / Polish Mode output</div>
+    <div class="arrow">Option + 1 / Alt + 1 / Polish Mode output</div>
     <div class="out">Hello Aaron, I have completed the detailed documentation. I can walk you through the approach, and then we can finalize the scope before proceeding with execution. Please let me know a suitable time for the evening call based on your time zone.</div>
   </div>
   <p>Polish Mode improves language and structure, but it should preserve names, numbers, rates, dates, legal/commercial facts, questions, and intent.</p>
@@ -755,12 +871,12 @@
 
   <h2>Permissions Needed</h2>
   <table>
-    <tr><td><strong>Accessibility</strong></td><td>Types or replaces text in the focused app.</td></tr>
-    <tr><td><strong>Input Monitoring</strong></td><td>Detects global shortcuts like Fn, Option + 1, and Shift + Command + Space.</td></tr>
-    <tr><td><strong>Microphone</strong></td><td>Records your voice for dictation.</td></tr>
+    <tr><th>System</th><th>What AirNote needs</th></tr>
+    <tr><td><strong>macOS</strong></td><td><strong>Accessibility</strong> to type or replace text, <strong>Input Monitoring</strong> to detect global shortcuts like Fn / Option + 1 / Shift + Command + Space, and <strong>Microphone</strong> to record your voice.</td></tr>
+    <tr><td><strong>Windows</strong></td><td><strong>Microphone</strong> for dictation. AirNote uses the Windows keyboard hook for global shortcuts and SendInput for typing, so there is no macOS-style Accessibility or Input Monitoring grant.</td></tr>
   </table>
 
-  <p class="footer">AirNote v2.3 · EMIAC · May 2026</p>
+  <p class="footer">AirNote v2.4 · EMIAC · June 2026</p>
 </div>
 </body>
 </html>

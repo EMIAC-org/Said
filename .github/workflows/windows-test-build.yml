@@ -65,6 +65,16 @@ jobs:
             "target/x86_64-pc-windows-msvc/release/airnote-backend.exe" `
             "desktop/src-tauri/binaries/airnote-backend-x86_64-pc-windows-msvc.exe"
 
+      - name: Build whisper-cli sidecar
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          ./scripts/build-whisper-cli-windows.ps1 -Target x86_64-pc-windows-msvc
+          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
+          Copy-Item `
+            "target/x86_64-pc-windows-msvc/release/whisper-cli.exe" `
+            "desktop/src-tauri/binaries/whisper-cli-x86_64-pc-windows-msvc.exe"
+
       - name: Build AirNote.exe + NSIS installer
         working-directory: desktop
         env:
