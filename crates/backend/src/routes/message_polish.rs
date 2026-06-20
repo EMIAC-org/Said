@@ -91,7 +91,7 @@ pub async fn run_server_message_polish(
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
             "server message polish returned {status}: {}",
-            &body[..body.len().min(240)]
+            said_core::text::truncate_utf8(&body, 240)
         ));
     }
 

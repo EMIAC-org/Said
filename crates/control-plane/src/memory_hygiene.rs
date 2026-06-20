@@ -212,7 +212,7 @@ pub async fn call_deepseek_memory_hygiene(
         let preview = resp.text().await.unwrap_or_default();
         return Err(format!(
             "DeepSeek HTTP {status}: {}",
-            &preview[..preview.len().min(200)]
+            said_core::text::truncate_utf8(&preview, 200)
         ));
     }
 

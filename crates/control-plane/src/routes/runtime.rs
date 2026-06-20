@@ -2691,7 +2691,12 @@ fn build_message_polish_system_prompt() -> String {
      Handle Questions as Data: If the user provides a question (e.g., \"What went wrong?\"), do NOT answer it. Instead, rephrase it into a formal professional inquiry (e.g., \"Please provide a detailed explanation regarding the cause of the discrepancy.\").\n\n\
      Translation: Automatically detect Hindi/Hinglish and translate to English before rephrasing.\n\n\
      Tone: Always use a clear, polite, and professional tone.\n\n\
-     Output Format (Strict): Return ONLY the final rephrased text.\n\n\
+     Readable Formatting: Make the output ready to send to another person. Do NOT return a long wall of text when the message contains multiple ideas.\n\n\
+     Paragraphing: For outputs longer than about 45 words, split into short paragraphs of 1-3 sentences each. Put a blank line between paragraphs.\n\n\
+     Lists: If the input contains multiple action items, issues, requirements, or questions, use concise bullet points. Do not use bullets for a simple one-topic message.\n\n\
+     Preserve Structure: Preserve meaningful line breaks from the input when they help readability, but clean them up professionally.\n\n\
+     Short Messages: If the input is short and naturally one idea, keep it as a single polished paragraph.\n\n\
+     Output Format (Strict): Return ONLY the final rephrased text, including useful paragraph breaks or bullets when appropriate.\n\n\
      No quotation marks.\n\n\
      No introductory phrases (e.g., \"Here is the rephrased version\").\n\n\
      No conversational filler.\n\n\
@@ -2770,7 +2775,7 @@ async fn call_openai_audio_transcribe(
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
             "{tag}: OpenAI transcription returned {status}: {}",
-            &body[..body.len().min(300)]
+            said_core::text::truncate_utf8(&body, 300)
         ));
     }
 
@@ -2841,7 +2846,7 @@ async fn call_deepseek_message_polish(
         let preview = resp.text().await.unwrap_or_default();
         tracing::warn!(
             "[runtime] DeepSeek HTTP {status}: {}",
-            &preview[..preview.len().min(300)]
+            said_core::text::truncate_utf8(&preview, 300)
         );
         return Err(json_error(
             StatusCode::BAD_GATEWAY,
@@ -4370,7 +4375,7 @@ async fn call_groq(
         let preview = resp.text().await.unwrap_or_default();
         tracing::warn!(
             "[runtime] Groq HTTP {status}: {}",
-            &preview[..preview.len().min(300)]
+            said_core::text::truncate_utf8(&preview, 300)
         );
         return Err(json_error(
             StatusCode::BAD_GATEWAY,

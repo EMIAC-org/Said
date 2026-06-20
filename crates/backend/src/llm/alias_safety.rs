@@ -329,7 +329,7 @@ async fn call_judge(client: &Client, groq_key: &str, user_prompt: &str) -> Optio
         let preview = resp.text().await.unwrap_or_default();
         warn!(
             "[alias-safety] judge returned {status}: {}",
-            &preview[..preview.len().min(200)]
+            said_core::text::truncate_utf8(&preview, 200)
         );
         return None;
     }

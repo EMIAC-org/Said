@@ -162,7 +162,7 @@ async fn call_groq(
         let preview = resp.text().await.unwrap_or_default();
         return Err(format!(
             "Groq returned {status}: {}",
-            &preview[..preview.len().min(400)]
+            said_core::text::truncate_utf8(&preview, 400)
         ));
     };
 

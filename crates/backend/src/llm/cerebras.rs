@@ -94,7 +94,7 @@ pub async fn stream_polish(
         warn!("[cerebras] HTTP {status}: {body_text}");
         return Err(format!(
             "Cerebras API error {status}: {}",
-            &body_text[..body_text.len().min(400)]
+            said_core::text::truncate_utf8(&body_text, 400)
         ));
     }
 
