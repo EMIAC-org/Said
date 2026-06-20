@@ -76,6 +76,45 @@ final class WarmDictationHost: ObservableObject {
         DarwinSignal.shared.observe(DarwinSignal.sessionControl) { [weak self] in
             Task { @MainActor in self?.setSessionEnabled(SharedStore.sessionEnabled) }
         }
+        // Removed from the app switcher (deck): iOS posts this just before tearing
+        // the scene down. `willTerminate` never fires on a force-quit, but this does
+        // — and because the warm session keeps the app alive in the background, the
+        // handler gets to run and clear the notch before the process dies. We end
+        // the Activity synchronously (semaphore) because a fire-and-forget Task can
+        // lose the race with termination.
+        NotificationCenter.default.addObserver(
+            forName: UIScene.didDisconnectNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleSceneDisconnect() }
+        }
+    }
+
+    /// App is being removed from the deck. Tear down the warm engine + clear the
+    /// notch NOW. Keep `sessionEnabled` ON so the session auto-restarts next launch
+    /// (the user's intent persists — they removed the app, they didn't turn it off).
+    private func handleSceneDisconnect() {
+        stopHeartbeat()
+        warmWindowTask?.cancel()
+        warmWindowTask = nil
+        isStreaming = false
+        SharedStore.sessionWarmUntil = nil
+        warmUntil = nil
+        streamer.stopWarmEngine()
+        #if canImport(ActivityKit)
+        // Block briefly so the async end() completes before the process is killed —
+        // the validated pattern for ending Live Activities during scene teardown.
+        let semaphore = DispatchSemaphore(value: 0)
+        let held = liveActivity
+        liveActivity = nil
+        Task.detached {
+            await held?.end(nil, dismissalPolicy: .immediate)
+            for activity in Activity<DictationSessionAttributes>.activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 2.0)
+        #endif
     }
 
     /// Called (while foreground) right after a handoff dictation completes, to
