@@ -189,6 +189,10 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Baked into the binary via option_env!("DEEPSEEK_API_KEY") for meeting
+          # summaries. Set the DEEPSEEK_API_KEY repo secret; absent → summaries are
+          # disabled (graceful), build still succeeds.
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         working-directory: desktop
         run: |
           # Build only the .app bundle here. Signing, DMG creation, notarization,
@@ -335,10 +339,21 @@ jobs:
             "target/${{ matrix.target }}/release/airnote-backend.exe" `
             "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}.exe"
 
+      # Vulkan SDK gives whisper-cli GPU acceleration on Windows (parity with the
+      # macOS Metal build). The build script auto-detects it; if this step ever
+      # fails the script falls back to a CPU-only build, so the pipeline is not
+      # broken — it just ships without GPU for that run.
+      - name: Setup Vulkan SDK (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          choco install vulkan-sdk -y --no-progress
+
       - name: Build whisper-cli sidecar (Windows)
         if: matrix.platform == 'windows'
         shell: pwsh
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: |
           ./scripts/build-whisper-cli-windows.ps1 -Target ${{ matrix.target }}
           New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
@@ -352,6 +367,10 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Baked into the binary via option_env!("DEEPSEEK_API_KEY") for meeting
+          # summaries. Set the DEEPSEEK_API_KEY repo secret; absent → summaries are
+          # disabled (graceful), build still succeeds.
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         working-directory: desktop
         run: npm run tauri:build -- --target ${{ matrix.target }}
 
