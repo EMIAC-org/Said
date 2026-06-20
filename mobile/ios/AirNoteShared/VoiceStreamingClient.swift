@@ -342,7 +342,17 @@ public final class VoiceStreamingClient {
     }
 
     private func startAudioEngine() async throws {
-        try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
+        // Coexist with other audio (music, podcasts, video): `.playAndRecord` +
+        // `.mixWithOthers` lets the user keep listening while the dictation session
+        // is warm, instead of `.record` silencing everything system-wide. Output
+        // defaults to the speaker / high-quality Bluetooth. The mic capture lifecycle
+        // is intentionally unchanged, so in-place background dictation, the warm
+        // keepalive, and live partials behave exactly as before.
+        try audioSession.setCategory(
+            .playAndRecord,
+            mode: .measurement,
+            options: [.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP]
+        )
         // Low-latency capture: request a short I/O buffer BEFORE activating (the
         // OS only honours "preferred" values while inactive). ~5ms trims capture
         // latency and yields finer audio chunks that reach the server sooner.

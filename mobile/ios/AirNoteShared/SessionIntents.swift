@@ -1,5 +1,6 @@
 #if canImport(AppIntents)
 import AppIntents
+import AirNoteShared
 #if canImport(ActivityKit)
 import ActivityKit
 #endif
@@ -7,9 +8,14 @@ import ActivityKit
 /// App Intents invoked by the Live Activity (Dynamic Island) Stop/Resume buttons.
 /// They flip the persisted session intent + post a Darwin signal; the app's
 /// WarmDictationHost reconciles the actual warm engine.
+///
+/// These adopt `LiveActivityIntent` (NOT plain `AppIntent`): a Live Activity button
+/// that performs its action in the BACKGROUND without launching the app must adopt
+/// `LiveActivityIntent`, or `perform()` won't run reliably from the notch — which is
+/// exactly why the Stop button looked dead.
 
 @available(iOS 17.0, *)
-public struct StopSessionIntent: AppIntent {
+public struct StopSessionIntent: LiveActivityIntent {
     public static var title: LocalizedStringResource = "Pause AirNote session"
     /// Pausing only ends the warm engine — no need to foreground the app.
     public static var openAppWhenRun: Bool = false
@@ -37,7 +43,7 @@ public struct StopSessionIntent: AppIntent {
 }
 
 @available(iOS 17.0, *)
-public struct ResumeSessionIntent: AppIntent {
+public struct ResumeSessionIntent: LiveActivityIntent {
     public static var title: LocalizedStringResource = "Resume AirNote session"
     /// Resuming must foreground the app — iOS only lets a foreground app start the
     /// mic, so we open AirNote, which re-arms the warm session on becoming active.

@@ -3102,8 +3102,9 @@ pub async fn voice_polish(
     }
 
     let model_start = Instant::now();
-    let output = call_groq(
+    let output = polish_llm(
         &state,
+        tenant_ctx.active_org_id,
         &credential.secret,
         model,
         &system_prompt,
@@ -4061,6 +4062,95 @@ fn replace_token_core(output_word: &str, source_core: &str) -> String {
         source_core,
         &output_word[end..]
     )
+}
+
+/// Codex (ChatGPT) model used for polish when an org has connected ChatGPT.
+const CODEX_POLISH_MODEL: &str = "gpt-5.4-mini";
+
+/// The org's connected-ChatGPT access token, transparently refreshed if expired.
+/// Returns `None` when the org hasn't connected ChatGPT (so polish stays on Groq,
+/// byte-for-byte unchanged) or when a refresh fails.
+async fn active_openai_token(state: &AppState, org_id: Uuid) -> Option<String> {
+    let row: Option<(
+        Option<String>,
+        Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>,
+    )> = sqlx::query_as(
+        "SELECT openai_access_token, openai_refresh_token, openai_token_expires_at \
+         FROM orgs WHERE id = $1",
+    )
+    .bind(org_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+    let (access, refresh, expires) = row?;
+    let access = access.filter(|t| !t.trim().is_empty())?;
+
+    // Still valid (60s safety margin), or no expiry recorded → use as-is.
+    let needs_refresh =
+        matches!(expires, Some(exp) if exp <= chrono::Utc::now() + chrono::Duration::seconds(60));
+    if !needs_refresh {
+        return Some(access);
+    }
+
+    // Expired → refresh via the codex client and persist the rotated tokens.
+    let refresh = refresh.filter(|t| !t.trim().is_empty())?;
+    let tokens = crate::codex_client::refresh_token(&refresh).await.ok()?;
+    let new_refresh = tokens.refresh_token.clone().unwrap_or(refresh);
+    let new_expires = chrono::Utc::now() + chrono::Duration::seconds(tokens.expires_in);
+    let _ = sqlx::query(
+        "UPDATE orgs SET openai_access_token = $1, openai_refresh_token = $2, \
+         openai_token_expires_at = $3 WHERE id = $4",
+    )
+    .bind(&tokens.access_token)
+    .bind(&new_refresh)
+    .bind(new_expires)
+    .bind(org_id)
+    .execute(&state.db)
+    .await;
+    Some(tokens.access_token)
+}
+
+/// Polish via the org's connected ChatGPT (Codex) when available, else Groq.
+///
+/// ANY Codex problem — no connection, expired/invalid token, API error, timeout,
+/// or empty output — silently falls back to Groq, so dictation can never break.
+/// Orgs that haven't connected ChatGPT take the Groq path with zero behaviour
+/// change. This mirrors the desktop's "ChatGPT polishes your dictation, falls back
+/// to Groq" model, at the cloud/org level. Desktop is unaffected (it polishes
+/// locally and never calls this endpoint).
+async fn polish_llm(
+    state: &AppState,
+    org_id: Option<Uuid>,
+    groq_secret: &str,
+    groq_model: &str,
+    system_prompt: &str,
+    user_message: &str,
+) -> Result<String, (StatusCode, Json<Value>)> {
+    if let Some(org_id) = org_id {
+        if let Some(token) = active_openai_token(state, org_id).await {
+            let codex = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                crate::codex_client::call_codex(
+                    &token,
+                    CODEX_POLISH_MODEL,
+                    system_prompt,
+                    user_message,
+                ),
+            )
+            .await;
+            match codex {
+                Ok(Ok(resp)) if !resp.text.trim().is_empty() => return Ok(resp.text),
+                Ok(Ok(_)) => tracing::warn!("[polish] codex returned empty — falling back to groq"),
+                Ok(Err(e)) => {
+                    tracing::warn!("[polish] codex failed ({e}) — falling back to groq")
+                }
+                Err(_) => tracing::warn!("[polish] codex timed out — falling back to groq"),
+            }
+        }
+    }
+    call_groq(state, groq_secret, groq_model, system_prompt, user_message).await
 }
 
 async fn call_groq(

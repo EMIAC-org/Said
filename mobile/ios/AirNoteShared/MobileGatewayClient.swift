@@ -629,6 +629,38 @@ public protocol MobileGatewayClient {
     /// Rewrite arbitrary text into a chosen tone/language via the (text-in) runtime
     /// voice-polish engine. `tonePreset == nil` falls back to the account's saved tone.
     func rewriteText(_ text: String, tonePreset: String?, outputLanguage: String, screenContext: String?, safeVocabTerms: [String]) async throws -> String
+    /// ChatGPT (OpenAI) account connection for the active org (admin-only). Mirrors
+    /// the desktop's "Connect ChatGPT" — once connected, the cloud polishes dictation
+    /// with ChatGPT, falling back to Groq. PKCE OAuth: `connect` returns the auth URL +
+    /// verifier; the client opens it, catches the loopback code, then calls `complete`.
+    func openaiConnect() async throws -> OpenAIConnectInfo
+    func openaiComplete(code: String, codeVerifier: String) async throws
+    func openaiStatus() async throws -> OpenAIConnectionStatus
+    func openaiDisconnect() async throws
+}
+
+/// PKCE handshake material returned by `POST /v1/openai/connect`.
+public struct OpenAIConnectInfo: Decodable, Sendable {
+    public let authUrl: String
+    public let codeVerifier: String
+    public let state: String
+    enum CodingKeys: String, CodingKey {
+        case authUrl = "auth_url"
+        case codeVerifier = "code_verifier"
+        case state
+    }
+}
+
+/// `GET /v1/openai/status` — whether the org has ChatGPT connected.
+public struct OpenAIConnectionStatus: Decodable, Sendable {
+    public let connected: Bool
+    public let planType: String?
+    public let label: String?
+    enum CodingKeys: String, CodingKey {
+        case connected
+        case planType = "plan_type"
+        case label
+    }
 }
 
 public typealias GatewayAuthTokenProvider = () -> String?
@@ -733,6 +765,10 @@ public struct PreviewMobileGatewayClient: MobileGatewayClient {
     public func divoThread(id: String) async throws -> DivoThread { DivoThread(id: id, title: "Preview", messages: []) }
     public func divoChat(message: String, threadID: String?) async throws -> DivoChatResult { DivoChatResult(content: "Preview answer.", threadID: threadID ?? "preview") }
     public func rewriteText(_ text: String, tonePreset: String?, outputLanguage: String, screenContext: String?, safeVocabTerms: [String]) async throws -> String { "Polished: \(text)" }
+    public func openaiConnect() async throws -> OpenAIConnectInfo { OpenAIConnectInfo(authUrl: "https://chatgpt.com/", codeVerifier: "preview", state: "preview") }
+    public func openaiComplete(code: String, codeVerifier: String) async throws {}
+    public func openaiStatus() async throws -> OpenAIConnectionStatus { OpenAIConnectionStatus(connected: false, planType: nil, label: nil) }
+    public func openaiDisconnect() async throws {}
 }
 #endif
 
@@ -1293,6 +1329,54 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         authorize(&urlRequest)
         let (data, response) = try await session.data(for: urlRequest)
         try Self.validate(data, response: response)
+    }
+
+    // MARK: ChatGPT (OpenAI) account connection — admin-only on the server.
+
+    public func openaiConnect() async throws -> OpenAIConnectInfo {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/openai/connect"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&req)
+        let (data, response) = try await session.data(for: req)
+        try Self.validate(data, response: response)
+        return try decoder.decode(OpenAIConnectInfo.self, from: data)
+    }
+
+    public func openaiComplete(code: String, codeVerifier: String) async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/openai/complete"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&req)
+        req.httpBody = try encoder.encode(OpenAICompleteBody(code: code, codeVerifier: codeVerifier))
+        let (data, response) = try await session.data(for: req)
+        try Self.validate(data, response: response)
+    }
+
+    public func openaiStatus() async throws -> OpenAIConnectionStatus {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/openai/status"))
+        req.httpMethod = "GET"
+        authorize(&req)
+        let (data, response) = try await session.data(for: req)
+        try Self.validate(data, response: response)
+        return try decoder.decode(OpenAIConnectionStatus.self, from: data)
+    }
+
+    public func openaiDisconnect() async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/openai/disconnect"))
+        req.httpMethod = "DELETE"
+        authorize(&req)
+        let (data, response) = try await session.data(for: req)
+        try Self.validate(data, response: response)
+    }
+
+    private struct OpenAICompleteBody: Encodable {
+        let code: String
+        let codeVerifier: String
+        enum CodingKeys: String, CodingKey {
+            case code
+            case codeVerifier = "code_verifier"
+        }
     }
 
     public func listLearningEvents(limit: Int) async throws -> [RuntimeLearningEvent] {
