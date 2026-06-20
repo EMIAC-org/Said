@@ -27,6 +27,7 @@ public enum SharedStore {
         static let pendingKbdText = "airnote.shared.pending_kbd_text"
         static let pendingKbdTextAt = "airnote.shared.pending_kbd_text_at"
         static let sessionWarmUntil = "airnote.shared.session_warm_until"
+        static let warmHeartbeatAt = "airnote.shared.warm_heartbeat_at"
         static let sessionDurationMinutes = "airnote.shared.session_duration_minutes"
         static let safeVocabTerms = "airnote.shared.safe_vocab_terms"
         static let keyboardLivePartial = "airnote.shared.kbd_live_partial"
@@ -133,6 +134,26 @@ public enum SharedStore {
     public static var isSessionWarm: Bool {
         guard let until = sessionWarmUntil else { return false }
         return until > Date()
+    }
+
+    /// Liveness heartbeat: the warm app stamps this every ~2s while the mic engine
+    /// is genuinely running. Unlike `sessionWarmUntil` (a persisted flag that
+    /// survives a force-quit and lies about a dead app), a stale heartbeat means
+    /// the app was killed — so the keyboard can fall back instantly instead of
+    /// signalling a dead app and waiting out the 5s ack timeout.
+    public static var warmHeartbeatAt: Date? {
+        get {
+            let ts = defaults?.double(forKey: Key.warmHeartbeatAt) ?? 0
+            return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
+        }
+        set { defaults?.set(newValue?.timeIntervalSince1970 ?? 0, forKey: Key.warmHeartbeatAt) }
+    }
+
+    /// True only if the warm app proved itself alive within the last 6s. A generous
+    /// window (the heartbeat fires every ~2s) so a momentary hiccup never trips it.
+    public static var warmHeartbeatFresh: Bool {
+        guard let at = warmHeartbeatAt else { return false }
+        return Date().timeIntervalSince(at) < 6
     }
 
     /// Onboarding-complete flag, in the App Group so it survives a reinstall

@@ -17,6 +17,7 @@ struct SettingsScreen: View {
                     if !env.orgs.isEmpty { enterpriseSection }
                     workspaceSection
                     dictationSection
+                    if !env.orgs.isEmpty { ChatGPTConnectSection(gateway: env.gateway) }
                     permissionsSection
                     appearanceSection
                     privacySection

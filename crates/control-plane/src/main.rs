@@ -64,11 +64,7 @@ struct Cli {
     openai_api_key: String,
 
     /// OpenAI audio transcription model for message-polish audio
-    #[arg(
-        long,
-        env = "OPENAI_TRANSCRIBE_MODEL",
-        default_value = "whisper-1"
-    )]
+    #[arg(long, env = "OPENAI_TRANSCRIBE_MODEL", default_value = "whisper-1")]
     openai_transcribe_model: String,
 
     /// Groq API key for server-runtime polish latency probes
