@@ -294,6 +294,12 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoffRef = useRef(1000); // start at 1s, doubles up to 8s
   const unmountedRef = useRef(false);
+  // Pending "stop on unmount" timer. Deferred + cancelable so React StrictMode's
+  // dev double-mount (mount → cleanup → mount) doesn't fire a spurious stop that
+  // would race the now-async stop_session and discard the freshly re-armed
+  // session. A real unmount lets it fire; a meetingId change is handled by the
+  // backend (start of a different id stops the previous meeting).
+  const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const endedRef = useRef(false); // track ended via ref to avoid stale closures
   const isFirstConnectRef = useRef(true);
   const lastIntelligenceKeyRef = useRef<string | null>(null);
@@ -429,6 +435,12 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   // ── Meeting engine session (start on mount, stop on unmount) ────────────
   useEffect(() => {
     let cancelled = false;
+    // A StrictMode remount re-runs this effect immediately after the cleanup —
+    // cancel the pending stop so we don't tear down the session we're re-arming.
+    if (stopTimerRef.current) {
+      clearTimeout(stopTimerRef.current);
+      stopTimerRef.current = null;
+    }
     invoke<MeetingEngineStatus>("meeting_engine_start_session", { meetingId })
       .then((status) => {
         if (!cancelled) {
@@ -441,7 +453,12 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
 
     return () => {
       cancelled = true;
-      invoke("meeting_engine_stop_session").catch(() => {});
+      // Defer the stop one tick. On a StrictMode double-mount the re-run above
+      // clears this before it fires; on a real unmount it fires.
+      stopTimerRef.current = setTimeout(() => {
+        stopTimerRef.current = null;
+        invoke("meeting_engine_stop_session").catch(() => {});
+      }, 0);
       setEngineRunning(false);
       setCaptureRunning(false);
       setMicTrackActive(false);
