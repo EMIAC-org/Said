@@ -112,17 +112,12 @@ export function Sidebar({
       className="flex flex-col h-full overflow-hidden flex-shrink-0 relative"
       style={{
         width:      "var(--sidebar-width)",
-        // Glass sidebar — wallpaper bleeds through softly, deep black tint
-        // keeps text readable. Values tuned via the live glass control
-        // panel at .context/said-glass-control.html.
-        background: "hsl(var(--glass-bg))",
-        backdropFilter: "blur(40px) saturate(180%)",
-        WebkitBackdropFilter: "blur(40px) saturate(180%)",
-        borderRight: "1px solid hsl(var(--glass-stroke))",
+        background: "hsl(var(--surface-1))",
+        borderRight: "1px solid hsl(var(--border))",
       }}
     >
       {/* ── Brand header — drag region ── */}
-      <div className="flex items-center h-[var(--topbar-height)] px-4 flex-shrink-0">
+      <div className="flex items-center h-[var(--topbar-height)] pl-[86px] pr-4 flex-shrink-0">
         <div
           data-tauri-drag-region
           className="w-3 flex-shrink-0 drag-region"
