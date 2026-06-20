@@ -6902,6 +6902,17 @@ fn whisper_process_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+#[cfg(windows)]
+fn hide_meeting_child_console(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_meeting_child_console(_command: &mut Command) {}
+
 fn fail_if_cancelled(cancel_check: Option<&dyn Fn() -> bool>, label: &str) -> Result<(), String> {
     if cancel_check.is_some_and(|check| check()) {
         return Err(format!("{label} cancelled"));
@@ -7376,6 +7387,7 @@ fn transcribe_with_whisper_cpp_for(
     let _whisper_process_guard = acquire_whisper_process_lock(cancel_check)?;
     fail_if_cancelled(cancel_check, "whisper.cpp")?;
     let started = Instant::now();
+    hide_meeting_child_console(&mut cmd);
     #[cfg(unix)]
     {
         // whisper-cli can be long-running and may spawn helper work internally;
@@ -8016,6 +8028,7 @@ fn run_final_diarization_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    hide_meeting_child_console(&mut cmd);
     let child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn final diarization command: {e}"))?;
