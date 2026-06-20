@@ -143,6 +143,9 @@ pub fn swift_stt_cancel_download() -> Result<(), String> {
 #[tauri::command]
 pub fn swift_stt_delete_model() -> Result<(), String> {
     let _ = swift_stt_cancel_download();
+    // The Swift STT engine only exists on macOS; on other targets there's
+    // nothing running to shut down before we remove the weights.
+    #[cfg(target_os = "macos")]
     crate::swift_stt_engine::shutdown();
     remove_model_dir(&model_dir())
 }

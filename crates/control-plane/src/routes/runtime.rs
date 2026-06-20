@@ -40,8 +40,7 @@ use crate::{AppState, auth::AuthUser, memory_hygiene, org_quota, tenant};
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL_FAST: &str = "llama-3.1-8b-instant";
 const GROQ_MODEL_SMART: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
-const OPENAI_AUDIO_TRANSCRIPTIONS_ENDPOINT: &str =
-    "https://api.openai.com/v1/audio/transcriptions";
+const OPENAI_AUDIO_TRANSCRIPTIONS_ENDPOINT: &str = "https://api.openai.com/v1/audio/transcriptions";
 const DEFAULT_OPENAI_TRANSCRIBE_MODEL: &str = "whisper-1";
 const DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL: &str = "deepseek-v4-flash";
 
@@ -2501,7 +2500,13 @@ pub async fn voice_wav(
     let polish_start = Instant::now();
     let (output, model, prompt_version, history_source) = if message_polish_mode {
         if state.deepseek_api_key.trim().is_empty() {
-            let _ = mark_runtime_session(&state, run_id, "failed", Some("message_polish_unconfigured")).await;
+            let _ = mark_runtime_session(
+                &state,
+                run_id,
+                "failed",
+                Some("message_polish_unconfigured"),
+            )
+            .await;
             return Err(json_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "DEEPSEEK_API_KEY is not configured on the server",
@@ -2519,7 +2524,9 @@ pub async fn voice_wav(
         {
             Ok(output) => output,
             Err(err) => {
-                let _ = mark_runtime_session(&state, run_id, "failed", Some("message_polish_failed")).await;
+                let _ =
+                    mark_runtime_session(&state, run_id, "failed", Some("message_polish_failed"))
+                        .await;
                 return Err(err);
             }
         };
