@@ -86,15 +86,22 @@ pub fn build_ws_url(base: &str, bias: &BiasPackage, sample_rate: u32) -> String 
 }
 
 fn append_bias_params(url: &mut String, bias: &BiasPackage) {
-    for term in bias
-        .keyterms
-        .iter()
-        .map(|t| t.trim())
-        .filter(|t| !t.is_empty())
-        .take(MAX_KEYTERMS)
-    {
-        url.push_str("&keyterm=");
-        url.push_str(&urlencode(term));
+    // Keyterm prompting (Nova-3) helps en/multi, but on `hi` it catastrophically
+    // over-biases — the model repeats the keyterm and shreds Hindi sentence
+    // structure (e.g. "my name is anugra and anugra and anugra...", dropping
+    // "गुप्ता है और मैं"). Suppress keyterms on hi. The English rescue requests
+    // with stt_mode="multi", so it still carries them where they actually help.
+    if bias.stt_mode != "hi" {
+        for term in bias
+            .keyterms
+            .iter()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .take(MAX_KEYTERMS)
+        {
+            url.push_str("&keyterm=");
+            url.push_str(&urlencode(term));
+        }
     }
 
     for replacement in bias
@@ -143,9 +150,9 @@ mod tests {
     }
 
     #[test]
-    fn batch_url_includes_keyterms_and_replacements() {
+    fn batch_url_includes_keyterms_on_multi_and_replacements() {
         let bias = BiasPackage {
-            stt_mode: "hi".into(),
+            stt_mode: "multi".into(),
             keyterms: vec!["AcmeCorp".into(), "WidgetX".into()],
             replacements: vec![
                 ReplacementRule {
@@ -159,9 +166,28 @@ mod tests {
             ],
         };
         let url = build_batch_url("https://api.deepgram.com/v1/listen", &bias);
-        assert!(url.contains("language=hi"));
+        assert!(url.contains("language=multi"));
         assert!(url.contains("&keyterm=AcmeCorp"));
         assert!(url.contains("&replace=widget%20ten:WidgetX"));
+        assert!(url.contains("&replace=ack%20me:AcmeCorp"));
+    }
+
+    #[test]
+    fn batch_url_suppresses_keyterms_on_hi() {
+        // Keyterms over-bias Hindi (Nova-3 hi repeats them and shreds the
+        // sentence), so hi requests must carry NO keyterms — deterministic
+        // replacements still apply.
+        let bias = BiasPackage {
+            stt_mode: "hi".into(),
+            keyterms: vec!["AcmeCorp".into(), "WidgetX".into()],
+            replacements: vec![ReplacementRule {
+                find: "ack me".into(),
+                replace: Some("AcmeCorp".into()),
+            }],
+        };
+        let url = build_batch_url("https://api.deepgram.com/v1/listen", &bias);
+        assert!(url.contains("language=hi"));
+        assert!(!url.contains("keyterm="));
         assert!(url.contains("&replace=ack%20me:AcmeCorp"));
     }
 

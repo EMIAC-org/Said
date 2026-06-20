@@ -2992,8 +2992,19 @@ fn choose_candidate(
         rescue_quality.protected_hits,
         rescue_quality.too_short,
     );
-    if rescue_quality.score > primary_quality.score + 0.5 {
-        info!("[voice] rescue transcript won over primary");
+    // Language-aware tiebreak. The default +0.5 margin keeps a noisy multi
+    // rescue from overriding a good Hindi primary. But when the rescue came
+    // back English-only (Deepgram detected no Hindi), the user dictated English
+    // that hi mangled — accept the rescue on a near-tie so n8n/kubernetes/etc.
+    // survive. Mixed/Hindi rescues keep +0.5; pure-Hindi clips never reach here
+    // (poor=false → no rescue runs), so Hindi quality is provably untouched.
+    let rescue_english_only = !rescue.meta.languages.is_empty()
+        && rescue.meta.languages.iter().all(|l| l.starts_with("en"));
+    let margin = if rescue_english_only { 0.0 } else { 0.5 };
+    if rescue_quality.score > primary_quality.score + margin {
+        info!(
+            "[voice] rescue transcript won over primary (margin={margin}, en_only={rescue_english_only})"
+        );
         rescue
     } else {
         primary
