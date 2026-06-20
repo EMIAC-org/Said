@@ -19,7 +19,6 @@ pub async fn polish_transcript(
     screen_context: Option<&str>,
     safe_vocab_terms: &[String],
 ) -> Result<String, String> {
-    let formatted_transcript = number_format::apply(transcript);
     // Standalone CLI/comparison path has no account — keep the historical neutral default.
     let system_prompt = build_voice_system_prompt(
         output_language,
@@ -28,15 +27,46 @@ pub async fn polish_transcript(
         screen_context,
         safe_vocab_terms,
     );
+    polish_transcript_with_prompt(
+        transcript,
+        output_language,
+        selected_model,
+        groq_api_key,
+        &system_prompt,
+        safe_vocab_terms,
+    )
+    .await
+}
+
+/// Identical pipeline to [`polish_transcript`] but with a caller-supplied system
+/// prompt. Lets the persona-lab harness A/B different polish personas through the
+/// exact server post-processing (number_format → script guard → literal restore →
+/// email recover) without re-implementing any of those guards.
+pub async fn polish_transcript_with_prompt(
+    transcript: &str,
+    output_language: &str,
+    selected_model: &str,
+    groq_api_key: &str,
+    system_prompt: &str,
+    safe_vocab_terms: &[String],
+) -> Result<String, String> {
+    let formatted_transcript = number_format::apply(transcript);
     let user_message = build_voice_user_message(&formatted_transcript, output_language);
 
-    let model = if selected_model == "smart" {
+    // Test-harness only: `POLISH_CHAT_MODEL` overrides the model so the
+    // persona lab can A/B on whatever provider has a local key (the live
+    // server polishes through `routes/runtime.rs`, never this path).
+    let default_model = if selected_model == "smart" {
         GROQ_MODEL_SMART
     } else {
         GROQ_MODEL_FAST
     };
+    let model = std::env::var("POLISH_CHAT_MODEL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| default_model.to_string());
 
-    let output = call_groq(groq_api_key, model, &system_prompt, &user_message).await?;
+    let output = call_groq(groq_api_key, &model, system_prompt, &user_message).await?;
     // Defensive guard: weak models occasionally echo the polish prompt's
     // role-anchor instructions into the output; strip any leaked lines.
     let output = strip_leaked_instructions(&output);
@@ -57,9 +87,17 @@ async fn call_groq(
 ) -> Result<String, String> {
     let estimated_input_tokens = user_message.len() / 4;
     let max_tokens = (estimated_input_tokens * 2 + 256).min(4096);
+    // Test-harness only: `POLISH_TEMPERATURE` lets the persona lab try the
+    // research-backed anti-degeneration setting (≈0.2 instead of greedy 0.0,
+    // which Groq clamps to 1e-8 and is the repetition-loop trigger). Defaults
+    // to 0.0 so the live behaviour of this standalone path is unchanged.
+    let temperature: f64 = std::env::var("POLISH_TEMPERATURE")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0.0);
     let body = json!({
         "model": model,
-        "temperature": 0.0,
+        "temperature": temperature,
         "top_p": 0.9,
         "max_tokens": max_tokens,
         "stream": false,
@@ -83,12 +121,18 @@ async fn call_groq(
     // instead of failing the whole dictation. 8B on the on-demand tier is only
     // ~6000 TPM and the polish prompt is large, so a burst of dictations hits
     // the limit; a short wait + retry turns a hard failure into a brief delay.
+    // Test-harness only: `POLISH_CHAT_ENDPOINT` lets the persona lab target any
+    // OpenAI-compatible provider (OpenAI, DeepSeek) when no Groq key is around.
+    // Defaults to Groq, so the live server path is unaffected.
+    let endpoint =
+        std::env::var("POLISH_CHAT_ENDPOINT").unwrap_or_else(|_| GROQ_ENDPOINT.to_string());
+
     const MAX_ATTEMPTS: u32 = 3;
     let mut attempt = 0u32;
     let resp = loop {
         attempt += 1;
         let resp = client
-            .post(GROQ_ENDPOINT)
+            .post(&endpoint)
             .header("Authorization", format!("Bearer {api_key}"))
             .header("Content-Type", "application/json")
             .json(&body)

@@ -2136,7 +2136,7 @@ async fn polish_runtime_transcript(
         "ok",
         Some(prompt_ms),
         None,
-        json!({"prompt_version": "core-fidelity-2.3.3"}),
+        json!({"prompt_version": "core-light-touch-2026-06-20"}),
     )
     .await?;
 
@@ -3095,7 +3095,7 @@ pub async fn voice_polish(
                 "ok",
                 Some(prompt_ms),
                 None,
-                json!({"prompt_version": "core-fidelity-2.3.3"}),
+                json!({"prompt_version": "core-light-touch-2026-06-20"}),
             )
             .await;
         });
@@ -3269,7 +3269,7 @@ pub async fn voice_polish(
         run_id: run_id.to_string(),
         output,
         model_used: model.to_string(),
-        prompt_version: "core-fidelity-2.3.3".to_string(),
+        prompt_version: "core-light-touch-2026-06-20".to_string(),
         latency_ms: RuntimeLatency {
             prompt: prompt_ms,
             model: model_ms,
@@ -4164,7 +4164,12 @@ async fn call_groq(
     let max_tokens = (estimated_input_tokens * 2 + 256).min(4096);
     let body = json!({
         "model": model,
-        "temperature": 0.0,
+        // 0.2, not greedy 0.0. Groq clamps temperature 0 to 1e-8 — effectively
+        // greedy — which is the trigger for Llama-4-Scout repetition meltdowns
+        // ("The The The…") on long Hinglish input. Groq silently ignores
+        // frequency/presence penalties, so a small temperature + a short prompt
+        // is the only working mitigation (Holtzman 2019; temp-0 48x-loop study).
+        "temperature": 0.2,
         "top_p": 0.9,
         "max_tokens": max_tokens,
         "stream": false,
