@@ -147,19 +147,17 @@ fn sidecar_script_path() -> Option<PathBuf> {
     if dev.is_file() {
         return Some(dev);
     }
-    std::env::current_exe().ok().and_then(|exe| {
-        let resources = exe
-            .parent()?
-            .parent()?
-            .join("Resources")
+    let exe = std::env::current_exe().ok()?;
+    let bundle_resources = exe.parent()?.parent()?.join("Resources");
+    [
+        bundle_resources
+            .join("resources")
             .join("swift-stt-sidecar")
-            .join("server.py");
-        if resources.is_file() {
-            Some(resources)
-        } else {
-            None
-        }
-    })
+            .join("server.py"),
+        bundle_resources.join("swift-stt-sidecar").join("server.py"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
 }
 
 fn python_binary(script: &PathBuf) -> Result<PathBuf, String> {

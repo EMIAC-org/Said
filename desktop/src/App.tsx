@@ -747,18 +747,15 @@ export default function App() {
               onEnterpriseDisconnect={handleEnterpriseDisconnect}
             />
 
-            {/* ── The "mat" — elevated content surface ───────
-                Dense near-black, mostly opaque so the content area reads as
-                solid. Values tuned via the live glass control panel at
-                .context/said-glass-control.html. */}
+            {/* ── The "mat" — solid elevated content surface ─────── */}
             <main className="flex-1 overflow-hidden p-3 pt-2">
               <div
                 className="h-full rounded-2xl overflow-hidden"
                 style={{
-                  background: "hsl(var(--glass-bg-strong))",
-                  backdropFilter: "blur(40px) saturate(190%)",
-                  WebkitBackdropFilter: "blur(40px) saturate(190%)",
-                  boxShadow: "var(--shadow-glass)",
+                  background: "hsl(var(--surface-3))",
+                  border: "1px solid hsl(var(--glass-stroke-strong))",
+                  boxShadow:
+                    "inset 0 1px 0 hsl(0 0% 100% / 0.055), 0 18px 54px hsl(0 0% 0% / 0.46)",
                 }}
               >
                 {activeView === "dashboard" && (
