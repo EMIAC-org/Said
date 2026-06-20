@@ -167,21 +167,74 @@ fn sidecar_script_path() -> Option<PathBuf> {
 }
 
 fn python_binary(script: &PathBuf) -> Result<PathBuf, String> {
+    // 1. Explicit override always wins.
     if let Ok(custom) = std::env::var("AIRNOTE_SWIFT_PYTHON") {
         let path = PathBuf::from(custom);
         if path.is_file() {
             return Ok(path);
         }
     }
-    let venv = script
-        .parent()
-        .map(|p| p.join(".venv").join("bin").join("python3"));
-    if let Some(py) = venv {
+    // 2. A provisioned venv sitting next to the sidecar script.
+    if let Some(parent) = script.parent() {
+        let py = parent.join(".venv").join("bin").join("python3");
         if py.is_file() {
             return Ok(py);
         }
     }
-    which_python3()
+    // 3. Probe known interpreters and pick the first that actually has the
+    //    sidecar's deps. A GUI app launched from Finder inherits only a minimal
+    //    PATH (/usr/bin:/bin:...), so `which python3` resolves to Apple's
+    //    /usr/bin/python3 — which lacks numpy/torch/transformers and makes the
+    //    sidecar exit(1). So we must verify each candidate before trusting it,
+    //    rather than blindly using whatever is first on PATH.
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    // python.org framework builds (prefer the newest version).
+    if let Ok(entries) = std::fs::read_dir("/Library/Frameworks/Python.framework/Versions") {
+        let mut versions: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path().join("bin").join("python3"))
+            .filter(|p| p.is_file())
+            .collect();
+        versions.sort();
+        versions.reverse();
+        candidates.extend(versions);
+    }
+    // Homebrew (arm64 + intel) and common symlink locations.
+    for p in ["/opt/homebrew/bin/python3", "/usr/local/bin/python3"] {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            candidates.push(pb);
+        }
+    }
+    // Whatever is on PATH (last — under a GUI launch this is usually Apple's).
+    if let Ok(p) = which_python3() {
+        if !candidates.contains(&p) {
+            candidates.push(p);
+        }
+    }
+
+    for cand in &candidates {
+        if python_has_sidecar_deps(cand) {
+            info!("[swift_stt] using python interpreter {cand:?}");
+            return Ok(cand.clone());
+        }
+    }
+    Err("no Python 3 with the Swift STT sidecar requirements (numpy/torch/transformers) was found — install them (pip install -r requirements.txt) or set AIRNOTE_SWIFT_PYTHON".to_string())
+}
+
+/// Verify an interpreter can import the sidecar's hard dependencies. Run at most
+/// a couple of times at warm-up (not per dictation), so the import cost is
+/// acceptable and prevents selecting a bare interpreter that would exit(1) the
+/// instant the sidecar starts.
+fn python_has_sidecar_deps(py: &PathBuf) -> bool {
+    Command::new(py)
+        .arg("-c")
+        .arg("import numpy, torch, transformers")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn which_python3() -> Result<PathBuf, String> {
