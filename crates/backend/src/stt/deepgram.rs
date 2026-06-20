@@ -341,8 +341,7 @@ mod tests {
         };
         let url = build_batch_url(DEEPGRAM_URL, &bias);
         assert!(url.contains("language=hi"));
-        // hi suppresses keyterms (over-bias guard); replacements still apply.
-        assert!(!url.contains("keyterm="));
+        assert!(url.contains("keyterm=AcmeCorp"));
         assert!(url.contains("replace=ack%20me:AcmeCorp"));
     }
 }

@@ -147,23 +147,19 @@ fn sidecar_script_path() -> Option<PathBuf> {
     if dev.is_file() {
         return Some(dev);
     }
-    // Packaged app: tauri.conf.json lists the sidecar as
-    // `resources/swift-stt-sidecar/server.py`, and Tauri's bundler preserves
-    // that relative path, so the file lands at
-    //   Contents/Resources/resources/swift-stt-sidecar/server.py
-    // (note the nested lowercase `resources/`). Probe the nested layout first,
-    // then the flat one, so we resolve the script regardless of how a given
-    // build config places it.
-    let exe = std::env::current_exe().ok()?;
-    let bundle_resources = exe.parent()?.parent()?.join("Resources");
-    let candidates = [
-        bundle_resources
-            .join("resources")
+    std::env::current_exe().ok().and_then(|exe| {
+        let resources = exe
+            .parent()?
+            .parent()?
+            .join("Resources")
             .join("swift-stt-sidecar")
-            .join("server.py"),
-        bundle_resources.join("swift-stt-sidecar").join("server.py"),
-    ];
-    candidates.into_iter().find(|p| p.is_file())
+            .join("server.py");
+        if resources.is_file() {
+            Some(resources)
+        } else {
+            None
+        }
+    })
 }
 
 fn python_binary(script: &PathBuf) -> Result<PathBuf, String> {
