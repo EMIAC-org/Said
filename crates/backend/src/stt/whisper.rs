@@ -120,14 +120,7 @@ pub fn transcribe_wav(wav_data: &[u8], language: &str) -> Result<TranscriptResul
 }
 
 fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
+    said_core::text::truncate_utf8(s, max_bytes)
 }
 
 fn decode_wav_to_f32(wav_data: &[u8]) -> Result<Vec<f32>, String> {

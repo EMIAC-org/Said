@@ -225,7 +225,7 @@ pub async fn call_json(
         let body = resp.text().await.unwrap_or_default();
         warn!(
             "[codex-json] HTTP {status}: {}",
-            &body[..body.len().min(300)]
+            said_core::text::truncate_utf8(&body, 300)
         );
         return Err(format!("Codex API error {status}"));
     }

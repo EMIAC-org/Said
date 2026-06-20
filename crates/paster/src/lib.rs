@@ -176,6 +176,11 @@ mod imp {
     /// Copy an AX attribute value. Returns an owned CF object (caller must CFRelease).
     unsafe fn ax_attr(element: *const c_void, attr: &str) -> Option<*mut c_void> {
         let key = unsafe { cf_str(attr) };
+        // cf_str returns null if CFString allocation fails (OOM). CFRelease(null)
+        // is undefined behavior, and the AX call needs a valid key — bail out.
+        if key.is_null() {
+            return None;
+        }
         let mut value: *mut c_void = std::ptr::null_mut();
         let err = unsafe { ffi::AXUIElementCopyAttributeValue(element, key, &mut value) };
         unsafe { ffi::CFRelease(key) };
@@ -189,6 +194,12 @@ mod imp {
     /// Set an AX boolean attribute on an element (returns the AX error code).
     unsafe fn ax_set_bool(element: *const c_void, attr: &str) -> i32 {
         let key = unsafe { cf_str(attr) };
+        // cf_str returns null if CFString allocation fails (OOM). CFRelease(null)
+        // is undefined behavior — return a non-zero (failure) AX code instead.
+        // Callers only treat 0 as success, so -1 reads as a benign failure.
+        if key.is_null() {
+            return -1;
+        }
         // SAFETY: kCFBooleanTrue is a valid CFTypeRef (CFBooleanRef is toll-free bridged)
         let err = unsafe { ffi::AXUIElementSetAttributeValue(element, key, ffi::kCFBooleanTrue) };
         unsafe { ffi::CFRelease(key) };
@@ -1216,6 +1227,11 @@ mod imp {
         let limit = n.min(128);
         for i in 0..limit {
             let child = unsafe { ffi::CFArrayGetValueAtIndex(children as *const _, i) };
+            // Some AX providers (Electron/Chromium) can return null elements in
+            // the children array; recursing into one segfaults. Skip them.
+            if child.is_null() {
+                continue;
+            }
             unsafe { collect_all_text(child, depth + 1, max_depth, out) };
         }
         unsafe { ffi::CFRelease(children) };

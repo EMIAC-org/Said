@@ -170,7 +170,7 @@ async fn call_chat(
         let preview = resp.text().await.unwrap_or_default();
         warn!(
             "[alias-review] {provider} returned {status}: {}",
-            &preview[..preview.len().min(200)]
+            said_core::text::truncate_utf8(&preview, 200)
         );
         return None;
     }

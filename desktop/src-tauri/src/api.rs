@@ -202,7 +202,7 @@ fn http_error_event(
     status: reqwest::StatusCode,
     body: &str,
 ) -> (String, Option<String>) {
-    let preview = &body[..body.len().min(300)];
+    let preview = said_core::text::truncate_utf8(&body, 300);
     if let Ok(val) = serde_json::from_str::<Value>(body) {
         let error_code = val
             .get("error_code")
@@ -410,7 +410,7 @@ where
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
             "text/refine-last error {status}: {}",
-            &body[..body.len().min(300)]
+            said_core::text::truncate_utf8(&body, 300)
         ));
     }
 
@@ -458,7 +458,7 @@ where
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
             "voice/repair error {status}: {}",
-            &body[..body.len().min(300)]
+            said_core::text::truncate_utf8(&body, 300)
         ));
     }
 
@@ -690,7 +690,7 @@ pub async fn patch_preferences(
     serde_json::from_str::<Preferences>(&text).map_err(|e| {
         format!(
             "parse prefs failed: {e} — raw: {}",
-            &text[..text.len().min(200)]
+            said_core::text::truncate_utf8(&text, 200)
         )
     })
 }
@@ -777,7 +777,7 @@ pub async fn test_voice_prompt(
     serde_json::from_str::<PromptTestResponse>(&text).map_err(|e| {
         format!(
             "parse voice prompt test failed: {e} — raw: {}",
-            &text[..text.len().min(200)]
+            said_core::text::truncate_utf8(&text, 200)
         )
     })
 }
@@ -1174,7 +1174,7 @@ fn extract_error(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|v| v["error"].as_str().map(str::to_string))
-        .unwrap_or_else(|| body[..body.len().min(200)].to_string())
+        .unwrap_or_else(|| said_core::text::truncate_utf8(&body, 200).to_string())
 }
 
 // ── Edit feedback ─────────────────────────────────────────────────────────────

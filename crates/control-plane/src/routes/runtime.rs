@@ -2775,7 +2775,7 @@ async fn call_openai_audio_transcribe(
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
             "{tag}: OpenAI transcription returned {status}: {}",
-            &body[..body.len().min(300)]
+            said_core::text::truncate_utf8(&body, 300)
         ));
     }
 
@@ -2846,7 +2846,7 @@ async fn call_deepseek_message_polish(
         let preview = resp.text().await.unwrap_or_default();
         tracing::warn!(
             "[runtime] DeepSeek HTTP {status}: {}",
-            &preview[..preview.len().min(300)]
+            said_core::text::truncate_utf8(&preview, 300)
         );
         return Err(json_error(
             StatusCode::BAD_GATEWAY,
@@ -4439,7 +4439,7 @@ async fn call_groq(
         let preview = resp.text().await.unwrap_or_default();
         tracing::warn!(
             "[runtime] Groq HTTP {status}: {}",
-            &preview[..preview.len().min(300)]
+            said_core::text::truncate_utf8(&preview, 300)
         );
         return Err(json_error(
             StatusCode::BAD_GATEWAY,

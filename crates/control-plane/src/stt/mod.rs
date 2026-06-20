@@ -41,7 +41,7 @@ async fn call_deepgram_batch(
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
             "{tag}: Deepgram returned {status}: {}",
-            &body[..body.len().min(300)]
+            said_core::text::truncate_utf8(&body, 300)
         ));
     }
 
