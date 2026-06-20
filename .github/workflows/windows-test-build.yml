@@ -45,9 +45,14 @@ jobs:
 
       - name: Install desktop deps
         working-directory: desktop
-        # create-dmg pulls appdmg, which is darwin-only. The Windows NSIS build
-        # does not use it, so force npm to keep the lockfile install moving.
-        run: npm ci --force
+        shell: pwsh
+        run: |
+          # create-dmg pulls appdmg/fs-xattr, which are darwin-only. The
+          # Windows NSIS build does not use create-dmg, so remove it only in
+          # this runner workspace before doing the lockfile install.
+          npm pkg delete devDependencies.create-dmg
+          npm install --package-lock-only --ignore-scripts
+          npm ci
 
       - name: Build airnote-backend sidecar
         shell: pwsh
