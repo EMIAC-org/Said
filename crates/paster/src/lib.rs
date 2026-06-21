@@ -356,19 +356,22 @@ mod imp {
                 }
             };
 
-            if let Some(val_cf) = ax_attr(el as *const _, "AXValue") {
-                let result = cfstring_to_rust(val_cf as *const _);
+            // Read AXValue, releasing each owned ref exactly once. Releasing
+            // el/app inside the block *and* falling through to the tail release
+            // used to double-free `el`/`app` whenever AXValue existed but was
+            // not a CFString (cfstring_to_rust → None) — a CoreFoundation
+            // over-release that crashes in CFRelease.
+            let result = if let Some(val_cf) = ax_attr(el as *const _, "AXValue") {
+                let r = cfstring_to_rust(val_cf as *const _);
                 ffi::CFRelease(val_cf);
-                ffi::CFRelease(el);
-                ffi::CFRelease(app);
-                if result.is_some() {
-                    return result;
-                }
-            }
+                r
+            } else {
+                None
+            };
 
             ffi::CFRelease(el);
             ffi::CFRelease(app);
-            None
+            result
         }
     }
 
@@ -403,15 +406,21 @@ mod imp {
             };
 
             // ── Step 1: try AXValue directly ──────────────────────────────────
+            // Release each owned ref exactly once and never use `app` after it
+            // is released. The old code released el/app inside this block then
+            // fell through, double-freeing them (and using app after free) when
+            // AXValue was present but not a CFString.
             if let Some(val_cf) = ax_attr(el as *const _, "AXValue") {
                 let result = cfstring_to_rust(val_cf as *const _);
                 ffi::CFRelease(val_cf);
-                ffi::CFRelease(el);
-                ffi::CFRelease(app);
                 if result.is_some() {
+                    ffi::CFRelease(el);
+                    ffi::CFRelease(app);
                     return result;
                 }
             }
+            // Done with el; app stays alive for the steps below.
+            ffi::CFRelease(el);
 
             // ── Step 2: unlock Chrome / Electron AX tree, retry AXValue ──────
             // Chrome: AXEnhancedUserInterface (what VoiceOver sets on activation)
@@ -423,7 +432,6 @@ mod imp {
             thread::sleep(Duration::from_millis(200));
 
             // Re-fetch the focused element — the tree may have rebuilt.
-            ffi::CFRelease(el);
             let el2 = match ax_attr(app as *const _, "AXFocusedUIElement") {
                 Some(e) => e,
                 None => {
@@ -435,9 +443,9 @@ mod imp {
             if let Some(val_cf) = ax_attr(el2 as *const _, "AXValue") {
                 let result = cfstring_to_rust(val_cf as *const _);
                 ffi::CFRelease(val_cf);
-                ffi::CFRelease(el2);
-                ffi::CFRelease(app);
                 if result.is_some() {
+                    ffi::CFRelease(el2);
+                    ffi::CFRelease(app);
                     return result;
                 }
             }
@@ -502,19 +510,23 @@ mod imp {
                 }
             };
 
-            if let Some(val_cf) = ax_attr(el as *const _, "AXValue") {
-                let result = cfstring_to_rust(val_cf as *const _);
+            // Read AXValue, releasing each owned ref exactly once. Releasing
+            // el/app inside the block *and* falling through to the tail release
+            // used to double-free `el`/`app` whenever AXValue existed but was
+            // not a CFString (cfstring_to_rust → None) — a CoreFoundation
+            // over-release that crashes in CFRelease. This is the edit-watch's
+            // hot read path, so the bad AXValue type is hit routinely.
+            let result = if let Some(val_cf) = ax_attr(el as *const _, "AXValue") {
+                let r = cfstring_to_rust(val_cf as *const _);
                 ffi::CFRelease(val_cf);
-                ffi::CFRelease(el);
-                ffi::CFRelease(app);
-                if result.is_some() {
-                    return result;
-                }
-            }
+                r
+            } else {
+                None
+            };
 
             ffi::CFRelease(el);
             ffi::CFRelease(app);
-            None
+            result
         }
     }
 
@@ -547,20 +559,24 @@ mod imp {
                 }
             };
 
+            // Release each owned ref exactly once and never use `app` after it
+            // is released — same double-free/use-after-free fix as the system-
+            // wide path above (triggered when AXValue isn't a CFString).
             if let Some(val_cf) = ax_attr(el as *const _, "AXValue") {
                 let result = cfstring_to_rust(val_cf as *const _);
                 ffi::CFRelease(val_cf);
-                ffi::CFRelease(el);
-                ffi::CFRelease(app);
                 if result.is_some() {
+                    ffi::CFRelease(el);
+                    ffi::CFRelease(app);
                     return result;
                 }
             }
+            // Done with el; app stays alive for the steps below.
+            ffi::CFRelease(el);
 
             let _unlocked = ax_enable_ui(app as *const _);
             thread::sleep(Duration::from_millis(200));
 
-            ffi::CFRelease(el);
             let el2 = match ax_attr(app as *const _, "AXFocusedUIElement") {
                 Some(e) => e,
                 None => {
@@ -572,9 +588,9 @@ mod imp {
             if let Some(val_cf) = ax_attr(el2 as *const _, "AXValue") {
                 let result = cfstring_to_rust(val_cf as *const _);
                 ffi::CFRelease(val_cf);
-                ffi::CFRelease(el2);
-                ffi::CFRelease(app);
                 if result.is_some() {
+                    ffi::CFRelease(el2);
+                    ffi::CFRelease(app);
                     return result;
                 }
             }
