@@ -24,7 +24,11 @@ async fn call_deepgram_batch(
     wav_data: Vec<u8>,
     tag: &str,
 ) -> Result<String, String> {
-    let url = "https://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true";
+    let bias = said_core::deepgram::BiasPackage {
+        stt_mode: "hi".to_string(),
+        ..Default::default()
+    };
+    let url = said_core::deepgram::build_batch_url("https://api.deepgram.com/v1/listen", &bias);
     let client = &*crate::HTTP_CLIENT;
     let resp = client
         .post(url)
@@ -89,8 +93,14 @@ async fn connect_deepgram_ws(
     Box<dyn std::error::Error + Send + Sync>,
 > {
     use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
-    let url = format!(
-        "wss://api.deepgram.com/v1/listen?model=nova-3&language=hi&smart_format=true&encoding=linear16&sample_rate={sample_rate}&channels=1&interim_results=true&endpointing=1000&utterance_end_ms=2000"
+    let bias = said_core::deepgram::BiasPackage {
+        stt_mode: "hi".to_string(),
+        ..Default::default()
+    };
+    let url = said_core::deepgram::build_ws_url(
+        "wss://api.deepgram.com/v1/listen",
+        &bias,
+        sample_rate,
     );
     let mut request = url.into_client_request()?;
     request

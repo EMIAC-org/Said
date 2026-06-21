@@ -9,6 +9,7 @@
 //! This module intentionally does not persist raw transcript/audio by default.
 
 use std::{
+    convert::Infallible,
     future,
     time::{Duration, Instant},
 };
@@ -21,7 +22,10 @@ use axum::{
     Json,
     extract::{Path, Query, State, WebSocketUpgrade, ws::Message},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
 use base64::{Engine as _, engine::general_purpose};
 use futures_util::{SinkExt, StreamExt};
@@ -29,6 +33,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use tokio::sync::mpsc;
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message as DgMessage};
 use uuid::Uuid;
 
@@ -52,8 +57,26 @@ const OPENAI_VALIDATE_ENDPOINT: &str = "https://api.openai.com/v1/models";
 const GEMINI_VALIDATE_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const GATEWAY_VALIDATE_ENDPOINT: &str = "https://gateway.outreachdeal.com/v1/chat/completions";
 
-fn selected_polish_model(_selected_model: &str) -> &'static str {
-    GROQ_MODEL_SMART
+fn normalize_voice_polish_model(selected_model: &str) -> String {
+    let model = selected_model.trim().to_ascii_lowercase();
+    if model == "smart" || model.contains("maverick") || model.contains("scout") {
+        "smart".to_string()
+    } else if model == "deepseek" || model == "fast" || model.contains("8b") || model.contains("instant") {
+        "fast".to_string()
+    } else {
+        "fast".to_string()
+    }
+}
+
+fn selected_polish_model(selected_model: &str) -> &'static str {
+    match normalize_voice_polish_model(selected_model).as_str() {
+        "smart" => GROQ_MODEL_SMART,
+        _ => GROQ_MODEL_FAST,
+    }
+}
+
+fn polish_model_label(selected_model: &str) -> String {
+    selected_polish_model(selected_model).to_string()
 }
 
 fn learning_judge_model() -> String {
@@ -64,7 +87,7 @@ fn learning_judge_model() -> String {
         .as_str()
     {
         "" | "fast" | "8b" => GROQ_MODEL_FAST.to_string(),
-        "smart" | "scout" => GROQ_MODEL_SMART.to_string(),
+        "smart" | "scout" | "maverick" => GROQ_MODEL_SMART.to_string(),
         other => other.to_string(),
     }
 }
@@ -1349,8 +1372,8 @@ async fn handle_voice_ws(
                         selected_model = value
                             .get("selected_model")
                             .and_then(Value::as_str)
-                            .unwrap_or("fast")
-                            .to_string();
+                            .map(normalize_voice_polish_model)
+                            .unwrap_or_else(|| default_selected_model());
                         output_language = value
                             .get("output_language")
                             .and_then(Value::as_str)
@@ -1648,7 +1671,7 @@ async fn handle_voice_ws(
                                 "phase": "polishing"
                             }).to_string())).await;
 
-                            let model_used = selected_polish_model(&selected_model);
+                            let model_used = polish_model_label(&selected_model);
                             let polish_start = Instant::now();
                             match polish_runtime_transcript(
                                 &state,
@@ -2172,7 +2195,8 @@ async fn polish_runtime_transcript(
     )
     .await?;
 
-    let model = selected_polish_model(selected_model);
+    let selected_model = normalize_voice_polish_model(selected_model);
+    let model = selected_polish_model(&selected_model);
     let active_org_id = primary_org_id(state, account_id).await?;
     let credential = runtime_provider_secret(state, account_id, active_org_id, "groq").await?;
     let model_start = Instant::now();
@@ -2182,12 +2206,13 @@ async fn polish_runtime_transcript(
         model,
         &system_prompt,
         &user_message,
+        None,
     )
     .await;
     let model_ms = model_start.elapsed().as_millis() as i64;
 
     match output {
-        Ok(output) => {
+        Ok(raw_output) => {
             let _ = update_credential_used(state, credential.credential_id).await;
             insert_provider_usage(
                 state,
@@ -2211,7 +2236,7 @@ async fn polish_runtime_transcript(
             )
             .await?;
             let output =
-                crate::voice_polish_standalone::enforce_output_script(&output, output_language);
+                crate::voice_polish_standalone::enforce_output_script(&raw_output, output_language);
             let restored = restore_literal_tokens(&formatted_transcript, &output, safe_vocab_terms);
             let restored = restore_numeric_literal_tokens(&formatted_transcript, &restored);
             if restored != output {
@@ -2631,7 +2656,7 @@ pub async fn voice_wav(
 
         (
             output,
-            selected_polish_model(&req.selected_model).to_string(),
+            polish_model_label(&req.selected_model),
             "server-runtime-wav-probe-2026-06-07".to_string(),
             "server_wav",
         )
@@ -2994,10 +3019,97 @@ pub async fn voice_polish(
     user: AuthUser,
     Json(req): Json<VoicePolishRequest>,
 ) -> Result<Json<VoicePolishResponse>, (StatusCode, Json<Value>)> {
+    let response = execute_voice_polish(state, headers, user, req, None).await?;
+    Ok(Json(response))
+}
+
+pub async fn voice_polish_stream(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Json(req): Json<VoicePolishRequest>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)>
+{
+    let (event_tx, event_rx) = mpsc::channel::<Result<Event, Infallible>>(128);
+
+    tokio::spawn(async move {
+        let (token_tx, mut token_rx) = mpsc::channel::<String>(128);
+        let polish_task =
+            tokio::spawn(
+                async move { execute_voice_polish(state, headers, user, req, Some(token_tx)).await },
+            );
+
+        while let Some(token) = token_rx.recv().await {
+            if event_tx
+                .send(Ok(Event::default()
+                    .event("token")
+                    .data(json!({ "token": token }).to_string())))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+
+        match polish_task.await {
+            Ok(Ok(response)) => {
+                let payload = serde_json::to_string(&response).unwrap_or_else(|_| {
+                    json!({
+                        "output": &response.output,
+                        "model_used": &response.model_used,
+                        "latency_ms": &response.latency_ms,
+                    })
+                    .to_string()
+                });
+                let _ = event_tx
+                    .send(Ok(Event::default().event("done").data(payload)))
+                    .await;
+            }
+            Ok(Err((status, body))) => {
+                let message = runtime_error_message(&body);
+                let _ = event_tx
+                    .send(Ok(Event::default().event("error").data(
+                        json!({
+                            "status": status.as_u16(),
+                            "message": message,
+                        })
+                        .to_string(),
+                    )))
+                    .await;
+            }
+            Err(err) => {
+                let _ = event_tx
+                    .send(Ok(Event::default().event("error").data(
+                        json!({
+                            "message": format!("server runtime stream task failed: {err}"),
+                        })
+                        .to_string(),
+                    )))
+                    .await;
+            }
+        }
+    });
+
+    let stream = futures_util::stream::unfold(event_rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+async fn execute_voice_polish(
+    state: AppState,
+    headers: HeaderMap,
+    user: AuthUser,
+    req: VoicePolishRequest,
+    token_tx: Option<mpsc::Sender<String>>,
+) -> Result<VoicePolishResponse, (StatusCode, Json<Value>)> {
+    let inbound_start = Instant::now();
     let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
     if let Some(org_id) = tenant_ctx.active_org_id {
         org_quota::check_runtime_quota(&state, org_id).await?;
     }
+    let tenant_ms = inbound_start.elapsed().as_millis() as i64;
     let total_start = Instant::now();
     let transcript = req.transcript.trim();
     if transcript.is_empty() {
@@ -3007,11 +3119,27 @@ pub async fn voice_polish(
         ));
     }
 
+    tracing::info!(
+        "[runtime] voice polish inbound account={} client_run_id={} selected_model_raw={} output_language={} transcript_chars={} words={} safe_vocab_terms={} screen_context_chars={} tenant_ms={}",
+        user.account_id,
+        req.client_run_id.as_deref().unwrap_or("none"),
+        req.selected_model,
+        req.output_language,
+        transcript.chars().count(),
+        transcript.split_whitespace().count(),
+        req.safe_vocab_terms.len(),
+        req.screen_context.as_ref().map(|s| s.chars().count()).unwrap_or(0),
+        tenant_ms,
+    );
+
+    let memory_start = Instant::now();
     let server_memory = load_runtime_memory(&state, user.account_id)
         .await
         .unwrap_or_default();
     let merged_vocab = merge_vocab_terms(&req.safe_vocab_terms, &server_memory.vocab_terms);
+    let memory_ms = memory_start.elapsed().as_millis() as i64;
 
+    let session_start = Instant::now();
     let run_id = create_runtime_session(
         &state,
         user.account_id,
@@ -3030,6 +3158,7 @@ pub async fn voice_polish(
         }),
     )
     .await?;
+    let session_ms = session_start.elapsed().as_millis() as i64;
 
     let prompt_start = Instant::now();
     let formatted_transcript = crate::number_format::apply(transcript);
@@ -3083,7 +3212,9 @@ pub async fn voice_polish(
     };
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
 
-    let model = selected_polish_model(&req.selected_model);
+    let selected_model = normalize_voice_polish_model(&req.selected_model);
+    let model = selected_polish_model(&selected_model);
+    let credential_start = Instant::now();
     let credential =
         match runtime_provider_secret(&state, user.account_id, tenant_ctx.active_org_id, "groq")
             .await
@@ -3110,15 +3241,22 @@ pub async fn voice_polish(
                 return Err(err);
             }
         };
+    let credential_ms = credential_start.elapsed().as_millis() as i64;
 
     tracing::info!(
-        "[runtime] voice polish start account={} run_id={} model={} credential_scope={} transcript_chars={} vocab_hints={}",
+        "[runtime] voice polish start account={} run_id={} model={} selected_model={} credential_scope={} transcript_chars={} vocab_hints={} setup_ms={{tenant:{}, memory:{}, session:{}, prompt:{}, credential:{}}}",
         user.account_id,
         run_id,
         model,
+        selected_model,
         credential.scope,
         transcript.len(),
         merged_vocab.len(),
+        tenant_ms,
+        memory_ms,
+        session_ms,
+        prompt_ms,
+        credential_ms,
     );
 
     {
@@ -3139,19 +3277,29 @@ pub async fn voice_polish(
     }
 
     let model_start = Instant::now();
-    let output = polish_llm(
+    let llm_result = polish_llm(
         &state,
         tenant_ctx.active_org_id,
         &credential.secret,
         model,
         &system_prompt,
         &user_message,
+        token_tx,
     )
     .await;
     let model_ms = model_start.elapsed().as_millis() as i64;
     let total_ms = total_start.elapsed().as_millis() as i64;
+    tracing::info!(
+        "[runtime] voice polish model complete account={} run_id={} model={} model_ms={} total_so_far_ms={} pre_model_ms={}",
+        user.account_id,
+        run_id,
+        model,
+        model_ms,
+        total_ms,
+        total_ms.saturating_sub(model_ms),
+    );
 
-    let output = match output {
+    let output = match llm_result {
         Ok(output) => output,
         Err(err) => {
             let _ = insert_stage_event(
@@ -3161,7 +3309,7 @@ pub async fn voice_polish(
                 "error",
                 Some(model_ms),
                 Some("model_failed"),
-                json!({}),
+                json!({"model": model, "provider": "groq"}),
             )
             .await;
             let _ = insert_provider_usage(
@@ -3239,7 +3387,11 @@ pub async fn voice_polish(
             }),
         ));
     }
-    deferred_events.push(("llm_complete", Some(model_ms), json!({"model": model})));
+    deferred_events.push((
+        "llm_complete",
+        Some(model_ms),
+        json!({"model": model, "provider": "groq"}),
+    ));
 
     tracing::info!(
         "[runtime] voice polish done account={} run_id={} model={} output_chars={} model_ms={} total_ms={}",
@@ -3262,8 +3414,7 @@ pub async fn voice_polish(
         let bg_output = output.clone();
         let bg_client_run_id = req.client_run_id.clone();
         let bg_account_id = user.account_id;
-        // #3: reuse the org already resolved + membership-validated by
-        // resolve_tenant instead of re-deriving it via primary_org_id.
+        let bg_model = model.to_string();
         let org_id_for_history = tenant_ctx.active_org_id;
         tokio::spawn(async move {
             let _ = update_credential_used(&bg_state, bg_credential.credential_id).await;
@@ -3272,7 +3423,7 @@ pub async fn voice_polish(
                 run_id,
                 &bg_credential,
                 "groq",
-                Some(model),
+                Some(&bg_model),
                 Some(model_ms),
                 "ok",
                 None,
@@ -3293,7 +3444,7 @@ pub async fn voice_polish(
                 None,
                 &bg_transcript,
                 &bg_output,
-                model,
+                &bg_model,
                 "server_polish",
                 None,
                 Some(model_ms),
@@ -3302,7 +3453,7 @@ pub async fn voice_polish(
         });
     }
 
-    Ok(Json(VoicePolishResponse {
+    Ok(VoicePolishResponse {
         run_id: run_id.to_string(),
         output,
         model_used: model.to_string(),
@@ -3312,7 +3463,7 @@ pub async fn voice_polish(
             model: model_ms,
             total: total_ms,
         },
-    }))
+    })
 }
 
 // ── Persistence helpers ─────────────────────────────────────────────────────
@@ -4296,6 +4447,7 @@ async fn polish_llm(
     groq_model: &str,
     system_prompt: &str,
     user_message: &str,
+    token_tx: Option<mpsc::Sender<String>>,
 ) -> Result<String, (StatusCode, Json<Value>)> {
     if let Some(org_id) = org_id {
         if let Some(token) = active_openai_token(state, org_id).await {
@@ -4319,7 +4471,15 @@ async fn polish_llm(
             }
         }
     }
-    call_groq(state, groq_secret, groq_model, system_prompt, user_message).await
+    call_groq(
+        state,
+        groq_secret,
+        groq_model,
+        system_prompt,
+        user_message,
+        token_tx,
+    )
+    .await
 }
 
 async fn call_groq(
@@ -4328,20 +4488,21 @@ async fn call_groq(
     model: &str,
     system_prompt: &str,
     user_message: &str,
+    token_tx: Option<mpsc::Sender<String>>,
 ) -> Result<String, (StatusCode, Json<Value>)> {
     let estimated_input_tokens = user_message.len() / 4;
     let max_tokens = (estimated_input_tokens * 2 + 256).min(4096);
     let body = json!({
         "model": model,
         // 0.2, not greedy 0.0. Groq clamps temperature 0 to 1e-8 — effectively
-        // greedy — which is the trigger for Llama-4-Scout repetition meltdowns
-        // ("The The The…") on long Hinglish input. Groq silently ignores
+        // greedy — which can trigger repetition loops ("The The The…") on long
+        // Hinglish input for some Llama models. Groq silently ignores
         // frequency/presence penalties, so a small temperature + a short prompt
         // is the only working mitigation (Holtzman 2019; temp-0 48x-loop study).
         "temperature": 0.2,
         "top_p": 0.9,
         "max_tokens": max_tokens,
-        "stream": false,
+        "stream": true,
         "stop": [
             "=== BEGIN TRANSCRIPT",
             "=== END TRANSCRIPT",
@@ -4355,6 +4516,7 @@ async fn call_groq(
     });
 
     let client = &*crate::HTTP_CLIENT;
+    let request_started = Instant::now();
     let resp = client
         .post(GROQ_ENDPOINT)
         .header("Authorization", format!("Bearer {api_key}"))
@@ -4369,6 +4531,7 @@ async fn call_groq(
                 &format!("server runtime model request failed: {e}"),
             )
         })?;
+    let headers_ms = request_started.elapsed().as_millis() as i64;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -4383,27 +4546,100 @@ async fn call_groq(
         ));
     }
 
-    let value: Value = resp.json().await.map_err(|e| {
-        json_error(
-            StatusCode::BAD_GATEWAY,
-            &format!("server runtime model response parse failed: {e}"),
-        )
-    })?;
+    let mut stream = resp.bytes_stream();
+    let mut pending = Vec::<u8>::new();
+    let mut output = String::new();
+    let mut chunk_count = 0usize;
+    let mut ttft_ms: Option<i64> = None;
+    let mut saw_done = false;
 
-    let output = value
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| {
+            json_error(
+                StatusCode::BAD_GATEWAY,
+                &format!("server runtime model stream failed: {e}"),
+            )
+        })?;
+        pending.extend_from_slice(&chunk);
+
+        while let Some(newline_pos) = pending.iter().position(|byte| *byte == b'\n') {
+            let mut line = pending.drain(..=newline_pos).collect::<Vec<_>>();
+            while matches!(line.last(), Some(b'\n' | b'\r')) {
+                line.pop();
+            }
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(line) = std::str::from_utf8(&line) else {
+                return Err(json_error(
+                    StatusCode::BAD_GATEWAY,
+                    "server runtime model stream returned invalid UTF-8",
+                ));
+            };
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+            if data == "[DONE]" {
+                saw_done = true;
+                break;
+            }
+            let value = serde_json::from_str::<Value>(data).map_err(|e| {
+                json_error(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("server runtime model stream parse failed: {e}"),
+                )
+            })?;
+            if let Some(error) = value.get("error") {
+                tracing::warn!(
+                    "[runtime] Groq stream error: {}",
+                    said_core::text::truncate_utf8(&error.to_string(), 300)
+                );
+                return Err(json_error(
+                    StatusCode::BAD_GATEWAY,
+                    "server runtime model stream returned an error",
+                ));
+            }
+            if let Some(delta) = value
+                .get("choices")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("delta"))
+                .and_then(|d| d.get("content"))
+                .and_then(Value::as_str)
+            {
+                if !delta.is_empty() {
+                    ttft_ms.get_or_insert_with(|| request_started.elapsed().as_millis() as i64);
+                    chunk_count += 1;
+                    output.push_str(delta);
+                    if let Some(token_tx) = token_tx.as_ref() {
+                        let _ = token_tx.send(delta.to_string()).await;
+                    }
+                }
+            }
+        }
+
+        if saw_done {
+            break;
+        }
+    }
+
+    tracing::info!(
+        "[runtime] Groq stream complete model={} headers_ms={} ttft_ms={:?} total_ms={} chunks={} saw_done={} output_chars={}",
+        model,
+        headers_ms,
+        ttft_ms,
+        request_started.elapsed().as_millis(),
+        chunk_count,
+        saw_done,
+        output.chars().count()
+    );
+
+    let output = output.trim().to_string();
 
     if output.is_empty() {
         return Err(json_error(
             StatusCode::BAD_GATEWAY,
-            "server runtime model returned empty output",
+            "server runtime model stream returned empty output",
         ));
     }
 
@@ -4661,6 +4897,7 @@ Return JSON only:
         &learning_judge_model(),
         system_prompt,
         &user_message,
+        None,
     )
     .await?;
     let Some(value) = parse_json_object_from_model(&raw) else {
@@ -4746,6 +4983,7 @@ Return JSON only:
         &learning_judge_model(),
         system_prompt,
         &user_message,
+        None,
     )
     .await?;
     let Some(value) = parse_json_object_from_model(&raw) else {

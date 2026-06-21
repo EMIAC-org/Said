@@ -170,7 +170,7 @@ fn prefs_update_from_server_settings(body: &Value) -> Option<PrefsUpdate> {
     let mut changed = false;
 
     if let Some(v) = body.get("selected_model").and_then(Value::as_str) {
-        update.selected_model = Some(v.to_string());
+        update.selected_model = Some(crate::store::prefs::normalize_selected_model(v));
         changed = true;
     }
     if let Some(v) = body.get("output_language").and_then(Value::as_str) {

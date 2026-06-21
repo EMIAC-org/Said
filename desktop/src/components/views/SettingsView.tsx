@@ -1944,7 +1944,6 @@ export function SettingsView({
                 />
               </button>
             </div>
-
           </div>
         </Section>
 

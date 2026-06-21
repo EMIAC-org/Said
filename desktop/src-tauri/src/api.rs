@@ -8,7 +8,7 @@ use reqwest::Client;
 use said_core::deepgram::{BiasPackage, TranscriptMeta};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::backend::BackendEndpoint;
 
@@ -269,6 +269,39 @@ where
 {
     let url = format!("{}/v1/voice/polish", ep.url);
     let client = Client::new();
+    let request_start = std::time::Instant::now();
+    let wav_bytes = wav_data.len();
+    let pre_transcript_chars = pre_transcript
+        .as_ref()
+        .map(|t| t.chars().count())
+        .unwrap_or(0);
+    let pre_transcript_words = pre_transcript
+        .as_ref()
+        .map(|t| t.split_whitespace().count())
+        .unwrap_or(0);
+    let has_pre_transcript = pre_transcript.is_some();
+    let has_pre_transcript_meta = pre_transcript_meta.is_some();
+    let screen_context_chars = screen_context
+        .as_ref()
+        .map(|s| s.chars().take(500).count())
+        .unwrap_or(0);
+    let has_repair_mode = repair_mode.is_some();
+    let has_target_app = target_app.is_some();
+    let client_run_id_label = client_run_id.as_deref().unwrap_or("none").to_string();
+
+    info!(
+        "[api] voice/polish request start run_id={} wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} pre_meta={} message_polish={} repair_mode={} screen_context_chars={} target_app_present={}",
+        client_run_id_label,
+        wav_bytes,
+        has_pre_transcript,
+        pre_transcript_chars,
+        pre_transcript_words,
+        has_pre_transcript_meta,
+        message_polish_mode,
+        has_repair_mode,
+        screen_context_chars,
+        has_target_app,
+    );
 
     let mut form = reqwest::multipart::Form::new();
     if !wav_data.is_empty() {
@@ -318,6 +351,15 @@ where
         .send()
         .await
         .map_err(|e| format!("voice polish request failed: {e}"))?;
+    let response_headers_ms = request_start.elapsed().as_millis();
+    info!(
+        "[api] voice/polish response headers run_id={} status={} after={}ms pre_transcript_present={} wav_bytes={}",
+        client_run_id_label,
+        resp.status(),
+        response_headers_ms,
+        has_pre_transcript,
+        wav_bytes,
+    );
 
     if !resp.status().is_success() {
         let status = resp.status();

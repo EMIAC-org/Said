@@ -36,7 +36,7 @@ function Chip({ children }: { children: React.ReactNode }) {
 }
 
 function modelLabel(modelUsed: string): { label: string; cls: string } {
-  if (modelUsed.includes('scout')) {
+  if (modelUsed.includes('maverick') || modelUsed.includes('scout')) {
     return { label: 'Smart', cls: 'text-info bg-info-bg' }
   }
   return { label: 'Fast', cls: 'bg-surface-4 text-fg-3' }

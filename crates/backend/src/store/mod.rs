@@ -72,6 +72,7 @@ const MIGRATION_040: &str = include_str!("migrations/040_active_org_id.sql");
 const MIGRATION_041: &str = include_str!("migrations/041_telemetry.sql");
 const MIGRATION_042: &str = include_str!("migrations/042_telemetry_stt.sql");
 const MIGRATION_043: &str = include_str!("migrations/043_sarvam_api_key.sql");
+const MIGRATION_044: &str = include_str!("migrations/044_normalize_deepseek_polish_model.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -466,6 +467,14 @@ fn run_migrations(pool: &DbPool) {
             .expect("migration 043 failed");
         conn.execute_batch("PRAGMA user_version = 43")
             .expect("failed to set user_version to 43");
+    }
+
+    if version < 44 {
+        info!("running migration 044_normalize_deepseek_polish_model");
+        conn.execute_batch(MIGRATION_044)
+            .expect("migration 044 failed");
+        conn.execute_batch("PRAGMA user_version = 44")
+            .expect("failed to set user_version to 44");
     }
 }
 
