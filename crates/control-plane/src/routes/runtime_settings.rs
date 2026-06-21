@@ -176,7 +176,11 @@ fn normalize_runtime_selected_model(selected_model: String) -> String {
     let model = selected_model.trim().to_ascii_lowercase();
     if model == "smart" || model.contains("maverick") || model.contains("scout") {
         "smart".to_string()
-    } else if model == "deepseek" || model == "fast" || model.contains("8b") || model.contains("instant") {
+    } else if model == "deepseek"
+        || model == "fast"
+        || model.contains("8b")
+        || model.contains("instant")
+    {
         "fast".to_string()
     } else {
         "fast".to_string()

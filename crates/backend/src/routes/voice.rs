@@ -25,7 +25,7 @@ use said_core::deepgram::{BiasPackage, TranscriptMeta};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::convert::Infallible;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{
     connect_async,
@@ -43,6 +43,107 @@ fn server_stt_probe_enabled() -> bool {
             .as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+const LIVE_TOKEN_MIN_FLUSH_INTERVAL: Duration = Duration::from_millis(28);
+const LIVE_TOKEN_MIN_CHARS: usize = 18;
+const LIVE_TOKEN_MAX_CHARS: usize = 64;
+const LIVE_TOKEN_HARD_MAX_CHARS: usize = 96;
+
+struct LiveTokenCoalescer {
+    buffer: String,
+    last_flush: Instant,
+}
+
+impl LiveTokenCoalescer {
+    fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            last_flush: Instant::now(),
+        }
+    }
+
+    fn push(&mut self, token: String) -> Vec<String> {
+        if token == STREAM_RESET_SENTINEL {
+            self.buffer.clear();
+            self.last_flush = Instant::now();
+            return vec![token];
+        }
+
+        self.buffer.push_str(&token);
+        self.drain_ready(false)
+    }
+
+    fn flush(&mut self) -> Vec<String> {
+        if self.buffer.is_empty() {
+            return Vec::new();
+        }
+        self.last_flush = Instant::now();
+        vec![std::mem::take(&mut self.buffer)]
+    }
+
+    fn drain_ready(&mut self, final_flush: bool) -> Vec<String> {
+        if self.buffer.is_empty() {
+            return Vec::new();
+        }
+
+        let now = Instant::now();
+        let force = final_flush
+            || self.buffer.len() >= LIVE_TOKEN_MAX_CHARS
+            || self.buffer.contains('\n')
+            || ends_with_live_token_boundary(&self.buffer);
+        let timed = self.buffer.len() >= LIVE_TOKEN_MIN_CHARS
+            && now.duration_since(self.last_flush) >= LIVE_TOKEN_MIN_FLUSH_INTERVAL;
+
+        if !force && !timed {
+            return Vec::new();
+        }
+
+        let Some(split_at) = live_token_safe_split(&self.buffer, force) else {
+            return Vec::new();
+        };
+        if split_at == 0 {
+            return Vec::new();
+        }
+
+        let release = self.buffer[..split_at].to_string();
+        self.buffer = self.buffer[split_at..].to_string();
+        self.last_flush = now;
+        vec![release]
+    }
+}
+
+fn live_token_safe_split(buffer: &str, force: bool) -> Option<usize> {
+    if buffer.is_empty() {
+        return None;
+    }
+    if buffer.chars().last().is_some_and(is_live_token_boundary) {
+        return Some(buffer.len());
+    }
+
+    let mut last_boundary = None;
+    for (idx, ch) in buffer.char_indices() {
+        if ch.is_whitespace() {
+            last_boundary = Some(idx + ch.len_utf8());
+        }
+    }
+    if last_boundary.is_some() {
+        return last_boundary;
+    }
+
+    if force && buffer.len() >= LIVE_TOKEN_HARD_MAX_CHARS {
+        return Some(buffer.len());
+    }
+
+    None
+}
+
+fn ends_with_live_token_boundary(buffer: &str) -> bool {
+    buffer.chars().last().is_some_and(is_live_token_boundary)
+}
+
+fn is_live_token_boundary(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, '.' | ',' | '!' | '?' | ':' | ';' | ')' | ']' | '}')
 }
 
 // ── Audio file helpers ────────────────────────────────────────────────────────
@@ -2585,7 +2686,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             ));
 
             let mut stream_filter =
-                StreamSafetyFilter::new(StreamProvider::from_llm_provider("server_runtime"), &resolved_transcript);
+                StreamSafetyFilter::new(StreamProvider::Groq, &resolved_transcript);
+            let mut token_coalescer = LiveTokenCoalescer::new();
 
             while let Some(raw_token) = token_rx.recv().await {
                 let filtered = stream_filter.push_token(raw_token);
@@ -2607,9 +2709,15 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     } else {
                         token
                     };
-                    yield Ok(Event::default().event("token")
-                        .data(json!({"token": token}).to_string()));
+                    for chunk in token_coalescer.push(token) {
+                        yield Ok(Event::default().event("token")
+                            .data(json!({"token": chunk}).to_string()));
+                    }
                 }
+            }
+            for chunk in token_coalescer.flush() {
+                yield Ok(Event::default().event("token")
+                    .data(json!({"token": chunk}).to_string()));
             }
 
             match runtime_task.await {
@@ -3872,6 +3980,52 @@ mod scrub_tests {
 // These tests cover the pure, side-effect-free math in wav_duration_secs and
 // estimated_secs.  They are a reliability safety net: if the byte offsets in the
 // WAV header parser drift, these catch it immediately.
+
+#[cfg(test)]
+mod live_token_tests {
+    use super::{LIVE_TOKEN_MAX_CHARS, LiveTokenCoalescer};
+    use crate::llm::stream_safety::STREAM_RESET_SENTINEL;
+
+    #[test]
+    fn coalescer_does_not_flush_partial_words() {
+        let mut c = LiveTokenCoalescer::new();
+        assert!(c.push("Hel".to_string()).is_empty());
+        assert!(c.push("lo wor".to_string()).is_empty());
+
+        let out = c.push("ld ".to_string());
+        assert_eq!(out, vec!["Hello world ".to_string()]);
+    }
+
+    #[test]
+    fn coalescer_flushes_remainder_at_end() {
+        let mut c = LiveTokenCoalescer::new();
+        assert!(c.push("Hello wor".to_string()).is_empty());
+        assert_eq!(c.flush(), vec!["Hello wor".to_string()]);
+        assert!(c.flush().is_empty());
+    }
+
+    #[test]
+    fn coalescer_splits_at_last_space_when_buffer_gets_large() {
+        let mut c = LiveTokenCoalescer::new();
+        let input = format!("{} partial", "word ".repeat((LIVE_TOKEN_MAX_CHARS / 5) + 2));
+        let out = c.push(input);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].ends_with(' '));
+        assert!(!out[0].ends_with("partial"));
+        assert_eq!(c.flush(), vec!["partial".to_string()]);
+    }
+
+    #[test]
+    fn coalescer_reset_clears_buffer_and_passes_sentinel() {
+        let mut c = LiveTokenCoalescer::new();
+        assert!(c.push("Hello wor".to_string()).is_empty());
+        assert_eq!(
+            c.push(STREAM_RESET_SENTINEL.to_string()),
+            vec![STREAM_RESET_SENTINEL]
+        );
+        assert!(c.flush().is_empty());
+    }
+}
 
 #[cfg(test)]
 mod audio_tests {

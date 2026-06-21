@@ -61,18 +61,19 @@ fn normalize_voice_polish_model(selected_model: &str) -> String {
     let model = selected_model.trim().to_ascii_lowercase();
     if model == "smart" || model.contains("maverick") || model.contains("scout") {
         "smart".to_string()
-    } else if model == "deepseek" || model == "fast" || model.contains("8b") || model.contains("instant") {
+    } else if model == "deepseek"
+        || model == "fast"
+        || model.contains("8b")
+        || model.contains("instant")
+    {
         "fast".to_string()
     } else {
         "fast".to_string()
     }
 }
 
-fn selected_polish_model(selected_model: &str) -> &'static str {
-    match normalize_voice_polish_model(selected_model).as_str() {
-        "smart" => GROQ_MODEL_SMART,
-        _ => GROQ_MODEL_FAST,
-    }
+fn selected_polish_model(_selected_model: &str) -> &'static str {
+    GROQ_MODEL_SMART
 }
 
 fn polish_model_label(selected_model: &str) -> String {
@@ -1338,7 +1339,6 @@ async fn handle_voice_ws(
     let mut screen_context: Option<String> = None;
     let mut client_run_id: Option<String> = None;
     let mut saw_first_transcript_event = false;
-    let mut stt_sample_rate: u32 = 16_000;
 
     loop {
         tokio::select! {
@@ -1469,7 +1469,6 @@ async fn handle_voice_ws(
                                 continue;
                             }
                         };
-                        stt_sample_rate = sample_rate;
                         let credential_provider =
                             runtime_stt_credential_provider(&stt_provider);
                         let stt_credential = match runtime_provider_secret(
@@ -3028,16 +3027,17 @@ pub async fn voice_polish_stream(
     headers: HeaderMap,
     user: AuthUser,
     Json(req): Json<VoicePolishRequest>,
-) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)>
-{
+) -> Result<
+    Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>,
+    (StatusCode, Json<Value>),
+> {
     let (event_tx, event_rx) = mpsc::channel::<Result<Event, Infallible>>(128);
 
     tokio::spawn(async move {
         let (token_tx, mut token_rx) = mpsc::channel::<String>(128);
-        let polish_task =
-            tokio::spawn(
-                async move { execute_voice_polish(state, headers, user, req, Some(token_tx)).await },
-            );
+        let polish_task = tokio::spawn(async move {
+            execute_voice_polish(state, headers, user, req, Some(token_tx)).await
+        });
 
         while let Some(token) = token_rx.recv().await {
             if event_tx
@@ -3128,7 +3128,10 @@ async fn execute_voice_polish(
         transcript.chars().count(),
         transcript.split_whitespace().count(),
         req.safe_vocab_terms.len(),
-        req.screen_context.as_ref().map(|s| s.chars().count()).unwrap_or(0),
+        req.screen_context
+            .as_ref()
+            .map(|s| s.chars().count())
+            .unwrap_or(0),
         tenant_ms,
     );
 
@@ -4513,27 +4516,36 @@ async fn polish_llm(
     user_message: &str,
     token_tx: Option<mpsc::Sender<String>>,
 ) -> Result<String, (StatusCode, Json<Value>)> {
-    if let Some(org_id) = org_id {
-        if let Some(token) = active_openai_token(state, org_id).await {
-            let codex = tokio::time::timeout(
-                std::time::Duration::from_secs(15),
-                crate::codex_client::call_codex(
-                    &token,
-                    CODEX_POLISH_MODEL,
-                    system_prompt,
-                    user_message,
-                ),
-            )
-            .await;
-            match codex {
-                Ok(Ok(resp)) if !resp.text.trim().is_empty() => return Ok(resp.text),
-                Ok(Ok(_)) => tracing::warn!("[polish] codex returned empty — falling back to groq"),
-                Ok(Err(e)) => {
-                    tracing::warn!("[polish] codex failed ({e}) — falling back to groq")
+    let wants_stream = token_tx.is_some();
+    if !wants_stream {
+        if let Some(org_id) = org_id {
+            if let Some(token) = active_openai_token(state, org_id).await {
+                let codex = tokio::time::timeout(
+                    std::time::Duration::from_secs(15),
+                    crate::codex_client::call_codex(
+                        &token,
+                        CODEX_POLISH_MODEL,
+                        system_prompt,
+                        user_message,
+                    ),
+                )
+                .await;
+                match codex {
+                    Ok(Ok(resp)) if !resp.text.trim().is_empty() => return Ok(resp.text),
+                    Ok(Ok(_)) => {
+                        tracing::warn!("[polish] codex returned empty — falling back to groq")
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!("[polish] codex failed ({e}) — falling back to groq")
+                    }
+                    Err(_) => tracing::warn!("[polish] codex timed out — falling back to groq"),
                 }
-                Err(_) => tracing::warn!("[polish] codex timed out — falling back to groq"),
             }
         }
+    } else {
+        tracing::info!(
+            "[runtime] voice polish stream requested — using Groq streaming path for live tokens"
+        );
     }
     call_groq(
         state,
@@ -4556,6 +4568,7 @@ async fn call_groq(
 ) -> Result<String, (StatusCode, Json<Value>)> {
     let estimated_input_tokens = user_message.len() / 4;
     let max_tokens = (estimated_input_tokens * 2 + 256).min(4096);
+    let stream_tokens = token_tx.is_some();
     let body = json!({
         "model": model,
         // 0.2, not greedy 0.0. Groq clamps temperature 0 to 1e-8 — effectively
@@ -4566,7 +4579,7 @@ async fn call_groq(
         "temperature": 0.2,
         "top_p": 0.9,
         "max_tokens": max_tokens,
-        "stream": true,
+        "stream": stream_tokens,
         "stop": [
             "=== BEGIN TRANSCRIPT",
             "=== END TRANSCRIPT",
@@ -4610,100 +4623,126 @@ async fn call_groq(
         ));
     }
 
-    let mut stream = resp.bytes_stream();
-    let mut pending = Vec::<u8>::new();
-    let mut output = String::new();
-    let mut chunk_count = 0usize;
-    let mut ttft_ms: Option<i64> = None;
-    let mut saw_done = false;
+    if let Some(token_tx) = token_tx {
+        let mut stream = resp.bytes_stream();
+        let mut pending = Vec::<u8>::new();
+        let mut output = String::new();
+        let mut chunk_count = 0usize;
+        let mut ttft_ms: Option<i64> = None;
+        let mut saw_done = false;
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| {
-            json_error(
-                StatusCode::BAD_GATEWAY,
-                &format!("server runtime model stream failed: {e}"),
-            )
-        })?;
-        pending.extend_from_slice(&chunk);
-
-        while let Some(newline_pos) = pending.iter().position(|byte| *byte == b'\n') {
-            let mut line = pending.drain(..=newline_pos).collect::<Vec<_>>();
-            while matches!(line.last(), Some(b'\n' | b'\r')) {
-                line.pop();
-            }
-            if line.is_empty() {
-                continue;
-            }
-            let Ok(line) = std::str::from_utf8(&line) else {
-                return Err(json_error(
-                    StatusCode::BAD_GATEWAY,
-                    "server runtime model stream returned invalid UTF-8",
-                ));
-            };
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim();
-            if data == "[DONE]" {
-                saw_done = true;
-                break;
-            }
-            let value = serde_json::from_str::<Value>(data).map_err(|e| {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| {
                 json_error(
                     StatusCode::BAD_GATEWAY,
-                    &format!("server runtime model stream parse failed: {e}"),
+                    &format!("server runtime model stream failed: {e}"),
                 )
             })?;
-            if let Some(error) = value.get("error") {
-                tracing::warn!(
-                    "[runtime] Groq stream error: {}",
-                    said_core::text::truncate_utf8(&error.to_string(), 300)
-                );
-                return Err(json_error(
-                    StatusCode::BAD_GATEWAY,
-                    "server runtime model stream returned an error",
-                ));
-            }
-            if let Some(delta) = value
-                .get("choices")
-                .and_then(|c| c.get(0))
-                .and_then(|c| c.get("delta"))
-                .and_then(|d| d.get("content"))
-                .and_then(Value::as_str)
-            {
-                if !delta.is_empty() {
-                    ttft_ms.get_or_insert_with(|| request_started.elapsed().as_millis() as i64);
-                    chunk_count += 1;
-                    output.push_str(delta);
-                    if let Some(token_tx) = token_tx.as_ref() {
+            pending.extend_from_slice(&chunk);
+
+            while let Some(newline_pos) = pending.iter().position(|byte| *byte == b'\n') {
+                let mut line = pending.drain(..=newline_pos).collect::<Vec<_>>();
+                while matches!(line.last(), Some(b'\n' | b'\r')) {
+                    line.pop();
+                }
+                if line.is_empty() {
+                    continue;
+                }
+                let Ok(line) = std::str::from_utf8(&line) else {
+                    return Err(json_error(
+                        StatusCode::BAD_GATEWAY,
+                        "server runtime model stream returned invalid UTF-8",
+                    ));
+                };
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
+                let data = data.trim();
+                if data == "[DONE]" {
+                    saw_done = true;
+                    break;
+                }
+                let value = serde_json::from_str::<Value>(data).map_err(|e| {
+                    json_error(
+                        StatusCode::BAD_GATEWAY,
+                        &format!("server runtime model stream parse failed: {e}"),
+                    )
+                })?;
+                if let Some(error) = value.get("error") {
+                    tracing::warn!(
+                        "[runtime] Groq stream error: {}",
+                        said_core::text::truncate_utf8(&error.to_string(), 300)
+                    );
+                    return Err(json_error(
+                        StatusCode::BAD_GATEWAY,
+                        "server runtime model stream returned an error",
+                    ));
+                }
+                if let Some(delta) = value
+                    .get("choices")
+                    .and_then(|c| c.get(0))
+                    .and_then(|c| c.get("delta"))
+                    .and_then(|d| d.get("content"))
+                    .and_then(Value::as_str)
+                {
+                    if !delta.is_empty() {
+                        ttft_ms.get_or_insert_with(|| request_started.elapsed().as_millis() as i64);
+                        chunk_count += 1;
+                        output.push_str(delta);
                         let _ = token_tx.send(delta.to_string()).await;
                     }
                 }
             }
+
+            if saw_done {
+                break;
+            }
         }
 
-        if saw_done {
-            break;
+        tracing::info!(
+            "[runtime] Groq stream complete model={} headers_ms={} ttft_ms={:?} total_ms={} chunks={} saw_done={} output_chars={}",
+            model,
+            headers_ms,
+            ttft_ms,
+            request_started.elapsed().as_millis(),
+            chunk_count,
+            saw_done,
+            output.chars().count()
+        );
+
+        let output = output.trim().to_string();
+
+        if output.is_empty() {
+            return Err(json_error(
+                StatusCode::BAD_GATEWAY,
+                "server runtime model stream returned empty output",
+            ));
         }
+
+        return Ok(output);
     }
 
-    tracing::info!(
-        "[runtime] Groq stream complete model={} headers_ms={} ttft_ms={:?} total_ms={} chunks={} saw_done={} output_chars={}",
-        model,
-        headers_ms,
-        ttft_ms,
-        request_started.elapsed().as_millis(),
-        chunk_count,
-        saw_done,
-        output.chars().count()
-    );
+    let value: Value = resp.json().await.map_err(|e| {
+        json_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("server runtime model response parse failed: {e}"),
+        )
+    })?;
 
-    let output = output.trim().to_string();
+    let output = value
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
 
     if output.is_empty() {
         return Err(json_error(
             StatusCode::BAD_GATEWAY,
-            "server runtime model stream returned empty output",
+            "server runtime model returned empty output",
         ));
     }
 

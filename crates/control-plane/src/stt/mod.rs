@@ -97,11 +97,8 @@ async fn connect_deepgram_ws(
         stt_mode: "hi".to_string(),
         ..Default::default()
     };
-    let url = said_core::deepgram::build_ws_url(
-        "wss://api.deepgram.com/v1/listen",
-        &bias,
-        sample_rate,
-    );
+    let url =
+        said_core::deepgram::build_ws_url("wss://api.deepgram.com/v1/listen", &bias, sample_rate);
     let mut request = url.into_client_request()?;
     request
         .headers_mut()

@@ -41,8 +41,9 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
         .await?;
 
     info!("[store] applying schema");
+    let mut conn = pool.acquire().await?;
     sqlx::query("SELECT pg_advisory_lock(hashtext('said_control_plane_migrations'))")
-        .execute(&pool)
+        .execute(&mut *conn)
         .await?;
     // Run each migration file sequentially; split on statement boundaries
     let migration_result = async {
@@ -50,7 +51,7 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
             for stmt in migration.split(';') {
                 let trimmed = stmt.trim();
                 if !trimmed.is_empty() {
-                    sqlx::query(trimmed).execute(&pool).await?;
+                    sqlx::query(trimmed).execute(&mut *conn).await?;
                 }
             }
         }
@@ -59,7 +60,7 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
     .await;
     let unlock_result =
         sqlx::query("SELECT pg_advisory_unlock(hashtext('said_control_plane_migrations'))")
-            .execute(&pool)
+            .execute(&mut *conn)
             .await;
     migration_result?;
     unlock_result?;
