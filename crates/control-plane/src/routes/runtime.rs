@@ -2193,7 +2193,7 @@ async fn polish_runtime_transcript(
         "ok",
         Some(prompt_ms),
         None,
-        json!({"prompt_version": "core-literal-hybrid-2026-06-21"}),
+        json!({"prompt_version": "core-legacy-literal-2026-06-07"}),
     )
     .await?;
 
@@ -3302,7 +3302,7 @@ async fn execute_voice_polish(
                 "ok",
                 Some(prompt_ms),
                 None,
-                json!({"prompt_version": "core-literal-hybrid-2026-06-21"}),
+                json!({"prompt_version": "core-legacy-literal-2026-06-07"}),
             )
             .await;
         });
@@ -3506,7 +3506,7 @@ async fn execute_voice_polish(
         run_id: run_id.to_string(),
         output,
         model_used: model.to_string(),
-        prompt_version: "core-literal-hybrid-2026-06-21".to_string(),
+        prompt_version: "core-legacy-literal-2026-06-07".to_string(),
         latency_ms: RuntimeLatency {
             prompt: prompt_ms,
             model: model_ms,
