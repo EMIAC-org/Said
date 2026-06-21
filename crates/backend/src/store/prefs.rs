@@ -72,6 +72,21 @@ pub struct PrefsUpdate {
     pub stt_provider: Option<String>,
 }
 
+pub fn normalize_selected_model(raw: &str) -> String {
+    let model = raw.trim().to_ascii_lowercase();
+    if model == "smart" || model.contains("maverick") || model.contains("scout") {
+        "smart".into()
+    } else if model == "deepseek"
+        || model == "fast"
+        || model.contains("8b")
+        || model.contains("instant")
+    {
+        "fast".into()
+    } else {
+        "fast".into()
+    }
+}
+
 pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
     let conn = pool.get().ok()?;
     conn.query_row(
@@ -85,7 +100,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
         |row| {
             Ok(Preferences {
                 user_id: row.get(0)?,
-                selected_model: row.get(1)?,
+                selected_model: normalize_selected_model(&row.get::<_, String>(1)?),
                 tone_preset: row.get(2)?,
                 custom_prompt: row.get(3)?,
                 language: row.get(4)?,
@@ -131,6 +146,7 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
     let now = now_ms();
 
     if let Some(v) = update.selected_model {
+        let v = normalize_selected_model(&v);
         conn.execute(
             "UPDATE preferences SET selected_model = ?1, updated_at = ?2 WHERE user_id = ?3",
             params![v, now, user_id],
@@ -271,7 +287,28 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_record_hotkey;
+    use super::{normalize_record_hotkey, normalize_selected_model};
+
+    #[test]
+    fn normalizes_smart_model_aliases_to_smart() {
+        assert_eq!(normalize_selected_model("smart"), "smart");
+        assert_eq!(normalize_selected_model("maverick"), "smart");
+        assert_eq!(
+            normalize_selected_model("meta-llama/llama-4-maverick-17b-128e-instruct"),
+            "smart"
+        );
+        assert_eq!(
+            normalize_selected_model("meta-llama/llama-4-scout-17b-16e-instruct"),
+            "smart"
+        );
+    }
+
+    #[test]
+    fn normalizes_fast_model_aliases_to_fast() {
+        assert_eq!(normalize_selected_model("fast"), "fast");
+        assert_eq!(normalize_selected_model("llama-3.1-8b-instant"), "fast");
+        assert_eq!(normalize_selected_model("deepseek"), "fast");
+    }
 
     #[test]
     fn normalizes_record_hotkey_values() {

@@ -21,6 +21,8 @@ mod swift_model;
 mod swift_stream;
 #[cfg(target_os = "macos")]
 mod swift_stt_engine;
+#[cfg(target_os = "macos")]
+mod swift_stt_guard;
 mod telemetry;
 
 use std::io::{Read, Seek, SeekFrom};
@@ -4556,6 +4558,41 @@ async fn run_voice_polish_sse(
         paster::read_focused_value_fast()
     };
 
+    let pre_transcript_chars = pre_transcript
+        .as_ref()
+        .map(|t| t.transcript.chars().count())
+        .unwrap_or(0);
+    let pre_transcript_words = pre_transcript
+        .as_ref()
+        .map(|t| t.transcript.split_whitespace().count())
+        .unwrap_or(0);
+    let pre_transcript_meta = pre_transcript.as_ref().map(|t| {
+        format!(
+            "confidence={:.2} mean_word_confidence={:.2} meta_words={} mode={}",
+            t.meta.confidence, t.meta.mean_word_confidence, t.meta.word_count, t.meta.stt_mode
+        )
+    });
+    let pipeline_path = if pre_transcript.is_some() {
+        "wav_plus_ws_pretranscript"
+    } else {
+        "wav_requires_backend_stt"
+    };
+    tracing::info!(
+        "[pipeline] backend handoff run_id={} path={} wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} message_polish={} repair_mode={} screen_context_chars={} meta={}",
+        client_run_id.as_deref().unwrap_or("none"),
+        pipeline_path,
+        wav.len(),
+        pre_transcript.is_some(),
+        pre_transcript_chars,
+        pre_transcript_words,
+        message_polish_mode,
+        repair_mode.is_some(),
+        screen_context
+            .as_ref()
+            .map(|s| s.chars().count())
+            .unwrap_or(0),
+        pre_transcript_meta.as_deref().unwrap_or("none"),
+    );
     tracing::info!(
         "[pipeline] → sending to backend: wav={}KB pre_transcript={}",
         wav.len() / 1024,
@@ -4569,7 +4606,7 @@ async fn run_voice_polish_sse(
                     format!("\"{}\"", t.transcript)
                 }
             })
-            .unwrap_or_else(|| "none (will use HTTP STT)".into()),
+            .unwrap_or_else(|| "none (backend must run STT)".into()),
     );
     let mut on_polish_event = move |event| {
         match &event {
@@ -4684,7 +4721,9 @@ async fn run_voice_polish_sse(
     let wav_len = wav.len();
     let target_app_for_telemetry = target_app.clone();
     let done_result = if let Some(transcript) = pre_transcript {
-        tracing::info!("[pipeline] fast path: sending WAV + WS transcript to backend");
+        tracing::info!(
+            "[pipeline] fast path: sending WAV + WS transcript to backend (backend should skip HTTP STT unless rescue is triggered)"
+        );
         api::stream_voice_polish(
             &ep,
             wav,
@@ -7796,6 +7835,8 @@ fn main() {
                 } else {
                     backend_guard::reap_previous();
                 }
+                #[cfg(target_os = "macos")]
+                swift_stt_guard::reap_previous();
                 match backend::spawn() {
                     Ok(handle) => {
                         // Extract all endpoint clones BEFORE storing (move) the handle.
@@ -8031,6 +8072,8 @@ fn main() {
                             if cleanup_owned_backend {
                                 backend_guard::kill_from_pid_file();
                             }
+                            #[cfg(target_os = "macos")]
+                            swift_stt_guard::kill_from_pid_file();
                             app_handle.exit(0);
                         }
                     });
@@ -8871,6 +8914,8 @@ fn main() {
                     drop(guard.take());
                 }
                 backend_guard::clear_pid_file();
+                #[cfg(target_os = "macos")]
+                swift_stt_guard::clear_pid_file();
             }
             _ => {}
         });

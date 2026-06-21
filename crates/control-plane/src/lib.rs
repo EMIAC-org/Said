@@ -148,6 +148,10 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::runtime::voice_polish),
         )
         .route(
+            "/v1/runtime/voice/polish/stream",
+            post(routes::runtime::voice_polish_stream),
+        )
+        .route(
             "/v1/runtime/message-polish",
             post(routes::runtime::message_polish),
         )

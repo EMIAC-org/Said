@@ -25,7 +25,7 @@ use said_core::deepgram::{BiasPackage, TranscriptMeta};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::convert::Infallible;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{
     connect_async,
@@ -43,6 +43,107 @@ fn server_stt_probe_enabled() -> bool {
             .as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+const LIVE_TOKEN_MIN_FLUSH_INTERVAL: Duration = Duration::from_millis(28);
+const LIVE_TOKEN_MIN_CHARS: usize = 18;
+const LIVE_TOKEN_MAX_CHARS: usize = 64;
+const LIVE_TOKEN_HARD_MAX_CHARS: usize = 96;
+
+struct LiveTokenCoalescer {
+    buffer: String,
+    last_flush: Instant,
+}
+
+impl LiveTokenCoalescer {
+    fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            last_flush: Instant::now(),
+        }
+    }
+
+    fn push(&mut self, token: String) -> Vec<String> {
+        if token == STREAM_RESET_SENTINEL {
+            self.buffer.clear();
+            self.last_flush = Instant::now();
+            return vec![token];
+        }
+
+        self.buffer.push_str(&token);
+        self.drain_ready(false)
+    }
+
+    fn flush(&mut self) -> Vec<String> {
+        if self.buffer.is_empty() {
+            return Vec::new();
+        }
+        self.last_flush = Instant::now();
+        vec![std::mem::take(&mut self.buffer)]
+    }
+
+    fn drain_ready(&mut self, final_flush: bool) -> Vec<String> {
+        if self.buffer.is_empty() {
+            return Vec::new();
+        }
+
+        let now = Instant::now();
+        let force = final_flush
+            || self.buffer.len() >= LIVE_TOKEN_MAX_CHARS
+            || self.buffer.contains('\n')
+            || ends_with_live_token_boundary(&self.buffer);
+        let timed = self.buffer.len() >= LIVE_TOKEN_MIN_CHARS
+            && now.duration_since(self.last_flush) >= LIVE_TOKEN_MIN_FLUSH_INTERVAL;
+
+        if !force && !timed {
+            return Vec::new();
+        }
+
+        let Some(split_at) = live_token_safe_split(&self.buffer, force) else {
+            return Vec::new();
+        };
+        if split_at == 0 {
+            return Vec::new();
+        }
+
+        let release = self.buffer[..split_at].to_string();
+        self.buffer = self.buffer[split_at..].to_string();
+        self.last_flush = now;
+        vec![release]
+    }
+}
+
+fn live_token_safe_split(buffer: &str, force: bool) -> Option<usize> {
+    if buffer.is_empty() {
+        return None;
+    }
+    if buffer.chars().last().is_some_and(is_live_token_boundary) {
+        return Some(buffer.len());
+    }
+
+    let mut last_boundary = None;
+    for (idx, ch) in buffer.char_indices() {
+        if ch.is_whitespace() {
+            last_boundary = Some(idx + ch.len_utf8());
+        }
+    }
+    if last_boundary.is_some() {
+        return last_boundary;
+    }
+
+    if force && buffer.len() >= LIVE_TOKEN_HARD_MAX_CHARS {
+        return Some(buffer.len());
+    }
+
+    None
+}
+
+fn ends_with_live_token_boundary(buffer: &str) -> bool {
+    buffer.chars().last().is_some_and(is_live_token_boundary)
+}
+
+fn is_live_token_boundary(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, '.' | ',' | '!' | '?' | ':' | ';' | ')' | ']' | '}')
 }
 
 // ── Audio file helpers ────────────────────────────────────────────────────────
@@ -178,6 +279,10 @@ struct ServerRuntimeVoiceResponse {
 
 #[derive(Debug, Deserialize)]
 struct ServerRuntimeLatency {
+    #[serde(default)]
+    prompt: i64,
+    #[serde(default)]
+    model: i64,
     total: i64,
 }
 
@@ -244,6 +349,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
     }
 
     // ── Extract multipart fields ───────────────────────────────────────────────
+    let request_start = Instant::now();
     let mut wav_data: Vec<u8> = Vec::new();
     let mut target_app: Option<String> = None;
     let mut pre_transcript: Option<String> = None; // P5: from Deepgram WS
@@ -300,6 +406,32 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             _ => {}
         }
     }
+    let parse_ms = request_start.elapsed().as_millis();
+    let pre_chars = pre_transcript
+        .as_ref()
+        .map(|t| t.chars().count())
+        .unwrap_or(0);
+    let pre_words = pre_transcript
+        .as_ref()
+        .map(|t| t.split_whitespace().count())
+        .unwrap_or(0);
+    info!(
+        "[voice] multipart parsed in {}ms wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} pre_meta={} message_polish={} repair_mode={} screen_context_chars={} target_app_present={} client_run_id={}",
+        parse_ms,
+        wav_data.len(),
+        pre_transcript.is_some(),
+        pre_chars,
+        pre_words,
+        pre_transcript_meta.is_some(),
+        message_polish_mode,
+        repair_mode.is_some(),
+        screen_context
+            .as_ref()
+            .map(|s| s.chars().count())
+            .unwrap_or(0),
+        target_app.is_some(),
+        client_run_id.as_deref().unwrap_or("none"),
+    );
 
     polish_with_input(
         state,
@@ -623,6 +755,7 @@ async fn run_server_runtime_voice_probe(
     screen_context: Option<&str>,
     vocab_entries: &[VocabEntry],
 ) -> Result<(crate::llm::PolishResult, String), String> {
+    let setup_start = Instant::now();
     let Some(user) = crate::store::users::get_user(pool, user_id) else {
         return Err("local user not found".to_string());
     };
@@ -659,6 +792,21 @@ async fn run_server_runtime_voice_probe(
 
     let url = format!("{}/v1/runtime/voice/polish", base_url.trim_end_matches('/'));
     let start = Instant::now();
+    info!(
+        "[voice] server runtime request start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} screen_context_chars={} setup_ms={}",
+        req.client_run_id.as_deref().unwrap_or("none"),
+        url,
+        transcript.chars().count(),
+        transcript.split_whitespace().count(),
+        selected_model,
+        output_language,
+        req.safe_vocab_terms.len(),
+        req.screen_context
+            .as_ref()
+            .map(|s| s.chars().count())
+            .unwrap_or(0),
+        setup_start.elapsed().as_millis(),
+    );
     let resp = crate::cp_client::with_org_context(
         http_client
             .post(&url)
@@ -687,6 +835,207 @@ async fn run_server_runtime_voice_probe(
     let measured_ms = start.elapsed().as_millis() as u64;
     let server_ms = parsed.latency_ms.total.max(0) as u64;
     let polish_ms = measured_ms.max(server_ms);
+    info!(
+        "[voice] server runtime request done run_id={} model={} measured_roundtrip_ms={} server_total_ms={} server_prompt_ms={} server_model_ms={} output_chars={} overhead_ms={}",
+        req.client_run_id.as_deref().unwrap_or("none"),
+        parsed.model_used,
+        measured_ms,
+        server_ms,
+        parsed.latency_ms.prompt,
+        parsed.latency_ms.model,
+        parsed.output.chars().count(),
+        measured_ms.saturating_sub(server_ms),
+    );
+
+    Ok((
+        crate::llm::PolishResult {
+            polished: parsed.output,
+            polish_ms,
+        },
+        format!("server-runtime:{}", parsed.model_used),
+    ))
+}
+
+async fn run_server_runtime_voice_stream(
+    http_client: reqwest::Client,
+    pool: crate::store::DbPool,
+    user_id: String,
+    client_run_id: Option<String>,
+    transcript: String,
+    output_language: String,
+    selected_model: String,
+    screen_context: Option<String>,
+    vocab_entries: Vec<VocabEntry>,
+    token_tx: mpsc::Sender<String>,
+) -> Result<(crate::llm::PolishResult, String), String> {
+    let setup_start = Instant::now();
+    let Some(user) = crate::store::users::get_user(&pool, &user_id) else {
+        return Err("local user not found".to_string());
+    };
+    let token = user
+        .cloud_token
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "server runtime requires AirNote sign-in".to_string())?;
+    let base_url = user
+        .enterprise_server_url
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("https://airnote.emiactech.com")
+        .to_string();
+
+    let safe_vocab_terms = vocab_entries
+        .iter()
+        .map(|entry| entry.term.trim().to_string())
+        .filter(|term| !term.is_empty())
+        .take(20)
+        .collect::<Vec<_>>();
+
+    let req = ServerRuntimeVoiceRequest {
+        transcript,
+        output_language,
+        selected_model,
+        screen_context: screen_context.map(|s| s.chars().take(500).collect()),
+        safe_vocab_terms,
+        client_run_id: client_run_id
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| Some(Uuid::new_v4().to_string())),
+    };
+
+    let url = format!(
+        "{}/v1/runtime/voice/polish/stream",
+        base_url.trim_end_matches('/')
+    );
+    let start = Instant::now();
+    info!(
+        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} screen_context_chars={} setup_ms={}",
+        req.client_run_id.as_deref().unwrap_or("none"),
+        url,
+        req.transcript.chars().count(),
+        req.transcript.split_whitespace().count(),
+        req.selected_model,
+        req.output_language,
+        req.safe_vocab_terms.len(),
+        req.screen_context
+            .as_ref()
+            .map(|s| s.chars().count())
+            .unwrap_or(0),
+        setup_start.elapsed().as_millis(),
+    );
+
+    let resp = crate::cp_client::with_org_context(
+        http_client
+            .post(&url)
+            .bearer_auth(token)
+            .header("Accept", "text/event-stream")
+            .json(&req)
+            .timeout(std::time::Duration::from_secs(30)),
+        Some(&user),
+    )
+    .send()
+    .await
+    .map_err(|e| format!("server runtime stream request failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "server runtime stream returned {status}: {}",
+            said_core::text::truncate_utf8(&body, 240)
+        ));
+    }
+
+    let mut byte_stream = resp.bytes_stream();
+    let mut buffer = String::new();
+    let mut event_name = String::from("message");
+    let mut data_lines: Vec<String> = Vec::new();
+    let mut parsed_done: Option<ServerRuntimeVoiceResponse> = None;
+    let mut token_count = 0usize;
+    let mut first_token_ms: Option<u128> = None;
+
+    while let Some(chunk) = byte_stream.next().await {
+        let chunk = chunk.map_err(|e| format!("server runtime stream read failed: {e}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(newline_pos) = buffer.find('\n') {
+            let mut line = buffer[..newline_pos].to_string();
+            buffer = buffer[newline_pos + 1..].to_string();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+
+            if line.is_empty() {
+                if !data_lines.is_empty() {
+                    let data = data_lines.join("\n");
+                    match event_name.as_str() {
+                        "token" => {
+                            let value = serde_json::from_str::<serde_json::Value>(&data)
+                                .map_err(|e| format!("server runtime token parse failed: {e}"))?;
+                            if let Some(token) = value.get("token").and_then(|v| v.as_str()) {
+                                if !token.is_empty() {
+                                    first_token_ms
+                                        .get_or_insert_with(|| start.elapsed().as_millis());
+                                    token_count += 1;
+                                    token_tx.send(token.to_string()).await.map_err(|_| {
+                                        "server runtime token receiver closed".to_string()
+                                    })?;
+                                }
+                            }
+                        }
+                        "done" => {
+                            parsed_done = Some(
+                                serde_json::from_str::<ServerRuntimeVoiceResponse>(&data).map_err(
+                                    |e| format!("server runtime done parse failed: {e}"),
+                                )?,
+                            );
+                        }
+                        "error" => {
+                            let value = serde_json::from_str::<serde_json::Value>(&data)
+                                .unwrap_or_else(|_| json!({ "message": data }));
+                            let message = value
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("server runtime stream failed");
+                            return Err(message.to_string());
+                        }
+                        "status" | "message" => {}
+                        other => {
+                            debug!("[voice] ignoring server runtime stream event={other}");
+                        }
+                    }
+                }
+                event_name.clear();
+                event_name.push_str("message");
+                data_lines.clear();
+                continue;
+            }
+
+            if let Some(rest) = line.strip_prefix("event:") {
+                event_name = rest.trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("data:") {
+                data_lines.push(rest.trim_start().to_string());
+            }
+        }
+    }
+
+    let parsed =
+        parsed_done.ok_or_else(|| "server runtime stream ended without done".to_string())?;
+    let measured_ms = start.elapsed().as_millis() as u64;
+    let server_ms = parsed.latency_ms.total.max(0) as u64;
+    let polish_ms = measured_ms.max(server_ms);
+    info!(
+        "[voice] server runtime stream done run_id={} model={} measured_roundtrip_ms={} server_total_ms={} server_prompt_ms={} server_model_ms={} first_token_ms={:?} tokens={} output_chars={} overhead_ms={}",
+        req.client_run_id.as_deref().unwrap_or("none"),
+        parsed.model_used,
+        measured_ms,
+        server_ms,
+        parsed.latency_ms.prompt,
+        parsed.latency_ms.model,
+        first_token_ms,
+        token_count,
+        parsed.output.chars().count(),
+        measured_ms.saturating_sub(server_ms),
+    );
 
     Ok((
         crate::llm::PolishResult {
@@ -1225,6 +1574,7 @@ fn downmix_stereo_i16_to_mono(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response {
+    let pre_stream_start = Instant::now();
     let VoicePolishInput {
         wav_data,
         target_app,
@@ -1241,11 +1591,32 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         warn!("[voice] received empty audio and no pre_transcript");
         return StatusCode::BAD_REQUEST.into_response();
     }
+    info!(
+        "[voice] input accepted wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} message_polish={} repair_mode={} screen_context_chars={} client_run_id={}",
+        wav_data.len(),
+        pre_transcript.is_some(),
+        pre_transcript
+            .as_ref()
+            .map(|t| t.chars().count())
+            .unwrap_or(0),
+        pre_transcript
+            .as_ref()
+            .map(|t| t.split_whitespace().count())
+            .unwrap_or(0),
+        message_polish_mode,
+        repair_mode.is_some(),
+        screen_context
+            .as_ref()
+            .map(|s| s.chars().count())
+            .unwrap_or(0),
+        client_run_id.as_deref().unwrap_or("none"),
+    );
 
     // Save audio to disk (1-day retention) before exposing audio_id in history.
     // This costs only a few ms, and prevents UI play/download buttons from
     // pointing at a WAV file that failed to save.
     let audio_id = Uuid::new_v4().to_string();
+    let save_start = Instant::now();
     let saved_audio_id = if !wav_data.is_empty() {
         let aid = audio_id.clone();
         let data = wav_data.clone();
@@ -1263,6 +1634,13 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
     } else {
         None
     };
+    info!(
+        "[voice] pre-stream audio save done in {}ms saved_audio={} audio_id={} wav_bytes={}",
+        save_start.elapsed().as_millis(),
+        saved_audio_id.is_some(),
+        saved_audio_id.as_deref().unwrap_or("none"),
+        wav_data.len(),
+    );
 
     let audio_secs = wav_duration_secs(&wav_data);
 
@@ -1294,10 +1672,19 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             terms
         })
     };
+    let prefetch_start = Instant::now();
     let (prefs_opt, (word_corrections, mut stt_replacement_rules), vocab_full) = tokio::join!(
         crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id),
         crate::get_lexicon_cached(&state.lexicon_cache, &pool, &user_id),
         async { vocab_task.await.unwrap_or_default() },
+    );
+    info!(
+        "[voice] pre-stream prefs/lexicon/vocab fetched in {}ms prefs_found={} corrections={} stt_rules={} vocab_terms={}",
+        prefetch_start.elapsed().as_millis(),
+        prefs_opt.is_some(),
+        word_corrections.len(),
+        stt_replacement_rules.len(),
+        vocab_full.len(),
     );
     let company_aliases = company_vocab::load_aliases(&pool, &user_id);
     for rule in company_aliases {
@@ -1367,6 +1754,25 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         })
         .await
         .unwrap_or_else(|_| BiasPackage::default());
+        info!(
+            "[voice] SSE stream start after_pre_stream={}ms selected_model={} output_language={} server_runtime={} server_audio_runtime={} stt_provider={} wav_bytes={} audio_seconds={:.2} pre_transcript_present={} pre_chars={} pre_words={} message_polish={} client_run_id={}",
+            pre_stream_start.elapsed().as_millis(),
+            prefs.selected_model,
+            prefs.output_language,
+            prefs.server_runtime_enabled,
+            prefs.server_audio_runtime_enabled,
+            stt_provider,
+            wav_data.len(),
+            audio_secs,
+            pre_transcript.is_some(),
+            pre_transcript.as_ref().map(|t| t.chars().count()).unwrap_or(0),
+            pre_transcript
+                .as_ref()
+                .map(|t| t.split_whitespace().count())
+                .unwrap_or(0),
+            message_polish_mode,
+            client_run_id.as_deref().unwrap_or("none"),
+        );
 
         // ── Pipeline-start summary ───────────────────────────────────────────────
         let bg_active = crate::BG_TASK_COUNT.load(std::sync::atomic::Ordering::Relaxed);
@@ -1779,8 +2185,26 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         info!("[voice] stt_provider={stt_provider:?}");
         let audio_seconds = wav_duration_seconds(&wav_data);
         let use_alt_stt = said_core::stt::use_batch_stt_only(&stt_provider);
+        let inbound_pre_transcript = pre_transcript.is_some();
+        if inbound_pre_transcript && use_alt_stt {
+            info!(
+                "[voice] stt decision: dropping pre_transcript because provider={} is batch-only",
+                stt_provider
+            );
+        }
         let pre_transcript = if use_alt_stt { None } else { pre_transcript };
+        info!(
+            "[voice] stt decision provider={} batch_only_provider={} inbound_pre_transcript={} using_pre_transcript={} batch_http_stt={} wav_bytes={} audio_seconds={:.2}",
+            stt_provider,
+            use_alt_stt,
+            inbound_pre_transcript,
+            pre_transcript.is_some(),
+            pre_transcript.is_none(),
+            wav_data.len(),
+            audio_seconds,
+        );
         let (stt_transcript_raw, enriched_raw, stt_confidence, transcribe_ms) = if let Some(t) = pre_transcript {
+            let stt_start = Instant::now();
             let plain = strip_confidence_markers(&t);
             let ws_meta = pre_transcript_meta.unwrap_or_else(|| TranscriptMeta {
                 enriched_transcript: t.clone(),
@@ -1817,6 +2241,15 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     return;
                 }
             };
+            info!(
+                "[voice] stt path=ws_pretranscript chosen_source={} rescue_triggered={} decision_ms={} transcript_chars={} words={} confidence={:.2}",
+                chosen.source,
+                rescue_ms > 0,
+                stt_start.elapsed().as_millis(),
+                chosen.transcript.chars().count(),
+                chosen.meta.word_count,
+                chosen.meta.confidence,
+            );
             let ms = total_start.elapsed().as_millis() as i64;
             info!(
                 "[timing] STT={}ms (WS pre-transcript{} {} words)",
@@ -1831,6 +2264,13 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 ms,
             )
         } else {
+            let stt_start = Instant::now();
+            info!(
+                "[voice] stt path=batch_http_stt start provider={} wav_bytes={} audio_seconds={:.2}",
+                stt_provider,
+                wav_data.len(),
+                audio_seconds,
+            );
             yield Ok(Event::default().event("status")
                 .data(json!({"phase": "transcribing"}).to_string()));
 
@@ -1849,8 +2289,11 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     Ok(result) => {
                         let ms = total_start.elapsed().as_millis() as i64;
                         info!(
-                            "[timing] STT={}ms (groq_whisper, {} words, conf={:.2})",
-                            ms, result.word_count, result.confidence,
+                            "[timing] STT={}ms (groq_whisper, {} words, conf={:.2}, decision_ms={})",
+                            ms,
+                            result.word_count,
+                            result.confidence,
+                            stt_start.elapsed().as_millis(),
                         );
                         (
                             result.transcript,
@@ -1879,8 +2322,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         Ok(Ok(result)) => {
                             let ms = total_start.elapsed().as_millis() as i64;
                             info!(
-                                "[timing] STT={}ms (whisper_local, {} words)",
-                                ms, result.word_count,
+                                "[timing] STT={}ms (whisper_local, {} words, decision_ms={})",
+                                ms,
+                                result.word_count,
+                                stt_start.elapsed().as_millis(),
                             );
                             (
                                 result.transcript,
@@ -1921,11 +2366,12 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     Ok((chosen, _rescue_ms)) => {
                         let ms = total_start.elapsed().as_millis() as i64;
                         info!(
-                            "[timing] STT={}ms ({}, {} words, conf={:.2})",
+                            "[timing] STT={}ms ({}, {} words, conf={:.2}, decision_ms={})",
                             ms,
                             chosen.source,
                             chosen.meta.word_count,
-                            chosen.meta.confidence
+                            chosen.meta.confidence,
+                            stt_start.elapsed().as_millis(),
                         );
                         (
                             chosen.transcript,
@@ -2225,31 +2671,65 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             yield Ok(Event::default().event("status")
                 .data(json!({"phase": "server_polishing", "transcript": &resolved_transcript}).to_string()));
             info!("[timing] LLM start — provider=server_runtime selected_model={:?}", prefs.selected_model);
-            match run_server_runtime_voice_probe(
-                &http_client,
-                &pool,
-                &user_id,
-                client_run_id.as_deref(),
-                &resolved_transcript,
-                &prefs.output_language,
-                &prefs.selected_model,
-                screen_context.as_deref(),
-                &vocab_entries,
-            )
-            .await {
-                Ok((result, model)) => {
+            let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
+            let runtime_task = tokio::spawn(run_server_runtime_voice_stream(
+                http_client.clone(),
+                pool.clone(),
+                user_id.clone(),
+                client_run_id.clone(),
+                resolved_transcript.clone(),
+                prefs.output_language.clone(),
+                prefs.selected_model.clone(),
+                screen_context.clone(),
+                vocab_entries.clone(),
+                token_tx,
+            ));
+
+            let mut stream_filter =
+                StreamSafetyFilter::new(StreamProvider::Groq, &resolved_transcript);
+            let mut token_coalescer = LiveTokenCoalescer::new();
+
+            while let Some(raw_token) = token_rx.recv().await {
+                let filtered = stream_filter.push_token(raw_token);
+                if filtered.unsafe_detected {
+                    warn!("[voice] stream safety disabled live typing for provider=server_runtime");
+                }
+                for token in filtered.tokens {
+                    let token = if enforce_roman_hinglish && token != STREAM_RESET_SENTINEL {
+                        let mut t = token;
+                        if script::contains_devanagari(&t) {
+                            if !saw_script_rewrite {
+                                saw_script_rewrite = true;
+                                yield Ok(Event::default().event("token")
+                                    .data(json!({"token": STREAM_RESET_SENTINEL}).to_string()));
+                            }
+                            t = script::enforce_roman_hinglish(&t);
+                        }
+                        script::strip_non_latin_scripts(&t)
+                    } else {
+                        token
+                    };
+                    for chunk in token_coalescer.push(token) {
+                        yield Ok(Event::default().event("token")
+                            .data(json!({"token": chunk}).to_string()));
+                    }
+                }
+            }
+            for chunk in token_coalescer.flush() {
+                yield Ok(Event::default().event("token")
+                    .data(json!({"token": chunk}).to_string()));
+            }
+
+            match runtime_task.await {
+                Ok(Ok((result, model))) => {
                     info!(
-                        "[voice] server runtime probe returned {} chars using {model}",
+                        "[voice] server runtime stream returned {} chars using {model}",
                         result.polished.len()
                     );
-                    (
-                        result,
-                        model,
-                        StreamSafetyFilter::new(StreamProvider::from_llm_provider("server_runtime"), &resolved_transcript),
-                    )
+                    (result, model, stream_filter)
                 }
-                Err(e) => {
-                    warn!("[voice] server runtime probe failed; falling back to local polish: {e}");
+                Ok(Err(e)) => {
+                    warn!("[voice] server runtime stream failed; falling back to local polish: {e}");
                     yield Ok(Event::default().event("status")
                         .data(json!({"phase": "server_runtime_fallback", "transcript": &resolved_transcript}).to_string()));
 
@@ -2294,6 +2774,62 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             } else {
                                 format!(
                                     "server runtime failed ({e}); local fallback failed ({local_e})"
+                                )
+                            };
+                            warn!("[voice] server runtime fallback failed: {local_e}");
+                            yield Ok(Event::default().event("error").data(
+                                json!({"message": message, "audio_id": aid}).to_string()
+                            ));
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("[voice] server runtime stream task panicked: {e}");
+                    yield Ok(Event::default().event("status")
+                        .data(json!({"phase": "server_runtime_fallback", "transcript": &resolved_transcript}).to_string()));
+
+                    let fallback_provider = prefs.llm_provider.clone();
+                    match run_local_voice_polish_no_stream(
+                        http_client.clone(),
+                        pool.clone(),
+                        user_id.clone(),
+                        fallback_provider.clone(),
+                        prefs.selected_model.clone(),
+                        gateway_key.clone(),
+                        gemini_key.clone(),
+                        groq_key.clone(),
+                        cerebras_key.clone(),
+                        system_prompt.clone(),
+                        user_message.clone(),
+                    )
+                    .await {
+                        Ok((result, model)) => {
+                            info!(
+                                "[voice] server runtime fallback succeeded locally using {model} ({} chars)",
+                                result.polished.len()
+                            );
+                            (
+                                result,
+                                format!("server-runtime-fallback:{model}"),
+                                StreamSafetyFilter::new(
+                                    StreamProvider::from_llm_provider(&fallback_provider),
+                                    &resolved_transcript,
+                                ),
+                            )
+                        }
+                        Err(local_e) => {
+                            let message = if invalidate_openai_session_on_auth_error(
+                                &pool,
+                                &user_id,
+                                &fallback_provider,
+                                &local_e,
+                            ) {
+                                "OpenAI not connected — go to Settings to connect your account"
+                                    .to_string()
+                            } else {
+                                format!(
+                                    "server runtime task failed ({e}); local fallback failed ({local_e})"
                                 )
                             };
                             warn!("[voice] server runtime fallback failed: {local_e}");
@@ -2906,11 +3442,32 @@ async fn maybe_rescue_transcript(
     if let Some(primary) = primary_ws {
         let primary_quality = assess_candidate(&primary, audio_seconds, bias);
         let Some(rescue_mode) = rescue_mode_for(&primary_quality, &primary.meta.stt_mode) else {
+            info!(
+                "[stt] ws_pretranscript accepted without rescue source={} score={:.2} poor={} protected_hits={} too_short={}",
+                primary.source,
+                primary_quality.score,
+                primary_quality.poor,
+                primary_quality.protected_hits,
+                primary_quality.too_short,
+            );
             return Ok((primary, 0));
         };
         if wav_data.is_empty() {
+            info!(
+                "[stt] ws_pretranscript rescue skipped because wav is empty source={} rescue_mode={}",
+                primary.source, rescue_mode,
+            );
             return Ok((primary, 0));
         }
+        info!(
+            "[stt] ws_pretranscript rescue triggered source={} rescue_mode={} score={:.2} poor={} protected_hits={} too_short={}",
+            primary.source,
+            rescue_mode,
+            primary_quality.score,
+            primary_quality.poor,
+            primary_quality.protected_hits,
+            primary_quality.too_short,
+        );
         let rescue = run_batch_transcript(
             client,
             provider,
@@ -2936,8 +3493,25 @@ async fn maybe_rescue_transcript(
     .await?;
     let primary_quality = assess_candidate(&primary, audio_seconds, bias);
     let Some(rescue_mode) = rescue_mode_for(&primary_quality, &bias.stt_mode) else {
+        info!(
+            "[stt] batch_primary accepted without rescue source={} score={:.2} poor={} protected_hits={} too_short={}",
+            primary.source,
+            primary_quality.score,
+            primary_quality.poor,
+            primary_quality.protected_hits,
+            primary_quality.too_short,
+        );
         return Ok((primary, 0));
     };
+    info!(
+        "[stt] batch_primary rescue triggered source={} rescue_mode={} score={:.2} poor={} protected_hits={} too_short={}",
+        primary.source,
+        rescue_mode,
+        primary_quality.score,
+        primary_quality.poor,
+        primary_quality.protected_hits,
+        primary_quality.too_short,
+    );
     let rescue = run_batch_transcript(
         client,
         provider,
@@ -2966,8 +3540,24 @@ async fn run_batch_transcript(
     bias: BiasPackage,
     source: String,
 ) -> Result<TranscriptCandidate, String> {
+    let start = Instant::now();
+    info!(
+        "[stt] batch_http request source={} wav_bytes={} stt_mode={} keyterms={} replacements={}",
+        source,
+        wav_data.len(),
+        bias.stt_mode,
+        bias.keyterms.len(),
+        bias.replacements.len(),
+    );
     let result = deepgram::transcribe(client, api_key, wav_data, &bias).await?;
     let meta = result.meta();
+    info!(
+        "[stt] batch_http done source={} elapsed_ms={} words={} confidence={:.2}",
+        source,
+        start.elapsed().as_millis(),
+        meta.word_count,
+        meta.confidence,
+    );
     Ok(TranscriptCandidate {
         transcript: result.transcript,
         meta,
@@ -3390,6 +3980,52 @@ mod scrub_tests {
 // These tests cover the pure, side-effect-free math in wav_duration_secs and
 // estimated_secs.  They are a reliability safety net: if the byte offsets in the
 // WAV header parser drift, these catch it immediately.
+
+#[cfg(test)]
+mod live_token_tests {
+    use super::{LIVE_TOKEN_MAX_CHARS, LiveTokenCoalescer};
+    use crate::llm::stream_safety::STREAM_RESET_SENTINEL;
+
+    #[test]
+    fn coalescer_does_not_flush_partial_words() {
+        let mut c = LiveTokenCoalescer::new();
+        assert!(c.push("Hel".to_string()).is_empty());
+        assert!(c.push("lo wor".to_string()).is_empty());
+
+        let out = c.push("ld ".to_string());
+        assert_eq!(out, vec!["Hello world ".to_string()]);
+    }
+
+    #[test]
+    fn coalescer_flushes_remainder_at_end() {
+        let mut c = LiveTokenCoalescer::new();
+        assert!(c.push("Hello wor".to_string()).is_empty());
+        assert_eq!(c.flush(), vec!["Hello wor".to_string()]);
+        assert!(c.flush().is_empty());
+    }
+
+    #[test]
+    fn coalescer_splits_at_last_space_when_buffer_gets_large() {
+        let mut c = LiveTokenCoalescer::new();
+        let input = format!("{} partial", "word ".repeat((LIVE_TOKEN_MAX_CHARS / 5) + 2));
+        let out = c.push(input);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].ends_with(' '));
+        assert!(!out[0].ends_with("partial"));
+        assert_eq!(c.flush(), vec!["partial".to_string()]);
+    }
+
+    #[test]
+    fn coalescer_reset_clears_buffer_and_passes_sentinel() {
+        let mut c = LiveTokenCoalescer::new();
+        assert!(c.push("Hello wor".to_string()).is_empty());
+        assert_eq!(
+            c.push(STREAM_RESET_SENTINEL.to_string()),
+            vec![STREAM_RESET_SENTINEL]
+        );
+        assert!(c.flush().is_empty());
+    }
+}
 
 #[cfg(test)]
 mod audio_tests {

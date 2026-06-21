@@ -94,7 +94,7 @@ struct Cli {
 async fn main() {
     install_rustls_crypto_provider();
 
-    let _ = dotenvy::dotenv();
+    load_dotenv();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -136,10 +136,14 @@ async fn main() {
     };
     let stt_provider = said_control_plane::stt::runtime_stt_provider();
     info!(
-        "[cp] runtime stt_provider={} credential env: deepgram={} groq={} runtime_credentials_key={}",
+        "[cp] runtime stt_provider={} credential env: deepgram={} groq={} deepseek={} runtime_credentials_key={}",
         stt_provider,
         !cli.deepgram_api_key.trim().is_empty(),
         !groq_api_key.trim().is_empty(),
+        !std::env::var("DEEPSEEK_API_KEY")
+            .unwrap_or_default()
+            .trim()
+            .is_empty(),
         !cli.runtime_credentials_key.trim().is_empty(),
     );
 
@@ -208,6 +212,20 @@ async fn main() {
         .with_graceful_shutdown(shutdown)
         .await
         .expect("server failed");
+}
+
+fn load_dotenv() {
+    if dotenvy::dotenv().is_ok() {
+        return;
+    }
+    // `just dev-admin` sources repo-root `.env`, but `cargo run` from this crate does not.
+    let root_env = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join(".env"));
+    if let Some(path) = root_env {
+        let _ = dotenvy::from_path(path);
+    }
 }
 
 fn install_rustls_crypto_provider() {

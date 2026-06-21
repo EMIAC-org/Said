@@ -2965,15 +2965,22 @@ fn safe_meeting_dir_id(meeting_id: Option<&str>) -> Option<String> {
         .then(|| id.to_string())
 }
 
+// MUST be async. In Tauri v2 a synchronous command runs on the MAIN thread; in
+// optimized/release builds the meeting's recurring IPC saturates the main thread
+// tightly enough that a sync `stop_session` never gets dispatched — "End meeting"
+// hangs and this fn is never even entered (its first log line never appears).
+// (Making the pollers async alone was insufficient for release builds.) As an
+// async command it runs on the async runtime, so End always dispatches. The body
+// has no `.await`, so `State<'_>` is fine; `stop()` is bounded by STOP_TIMEOUT.
 #[tauri::command]
-pub fn meeting_engine_stop_session(
+pub async fn meeting_engine_stop_session(
     app: AppHandle,
     state: State<'_, MeetingEngineState>,
-) -> MeetingEngineStatus {
+) -> Result<MeetingEngineStatus, String> {
     tracing::info!("[meeting_engine] stop session");
     let status = state.stop();
     let _ = app.emit(STATUS_EVENT, status.clone());
-    status
+    Ok(status)
 }
 
 #[tauri::command]

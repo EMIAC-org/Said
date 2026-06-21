@@ -13,18 +13,18 @@
 @layer base {
   /* ── DARK (default) — Cursor-style near-black + periwinkle accent ───── */
   :root {
-    --background:           240 6% 6%;         /* near-black floor with a hint of warmth */
-    --foreground:           240 6% 92%;
-    --card:                 240 5% 10%;
+    --background:           240 8% 2.5%;       /* punchy black app chrome */
+    --foreground:           240 6% 93%;
+    --card:                 240 5% 10.5%;
     --card-foreground:      240 6% 92%;
     --popover:              240 6% 12%;
     --popover-foreground:   240 6% 92%;
 
-    --primary:              226 80% 78%;       /* soft periwinkle — single brand accent */
+    --primary:              226 92% 79%;       /* crisp periwinkle — single brand accent */
     --primary-foreground:   240 8% 8%;
 
-    --accent-violet:        226 80% 78%;       /* alias to primary — drop violet noise */
-    --accent-violet-soft:   226 80% 78% / 0.14;
+    --accent-violet:        226 92% 79%;       /* alias to primary — drop violet noise */
+    --accent-violet-soft:   226 92% 79% / 0.16;
 
     --secondary:            240 5% 16%;
     --secondary-foreground: 240 6% 88%;
@@ -37,7 +37,7 @@
     --destructive:          354 80% 62%;
     --destructive-foreground: 0 0% 98%;
 
-    --border:               240 5% 16%;
+    --border:               240 5% 18%;
     --input:                240 5% 12%;
     --ring:                 226 80% 78%;
     --radius:               12px;              /* slightly tighter — Cursor uses 8-12 */
@@ -46,18 +46,18 @@
 
     /* ── Surface hierarchy — Cursor-grade near-blacks, tuned via
        the live glass control panel (.context/said-glass-control.html). */
-    --surface-1:            240 5% 3%;         /* page floor / sidebar rail */
-    --surface-2:            240 5% 4.5%;       /* the mat */
-    --surface-3:            240 5% 7.5%;       /* primary card surface */
-    --surface-4:            240 5% 13%;        /* chips / icon backplates */
-    --surface-hover:        240 5% 11%;
+    --surface-1:            235 8% 6.5%;       /* sidebar rail */
+    --surface-2:            240 7% 3.5%;       /* outer mat / gutter */
+    --surface-3:            240 5% 9.5%;       /* primary content surface */
+    --surface-4:            240 5% 15%;        /* chips / icon backplates */
+    --surface-hover:        240 5% 13%;
 
-    /* ── Glass tokens — macOS-style deep blur, hairline inset borders ─ */
-    --glass-bg:             240 5% 10% / 0.62;
-    --glass-bg-strong:      240 5% 12% / 0.78;
-    --glass-stroke:         0 0% 100% / 0.06;
-    --glass-stroke-strong:  0 0% 100% / 0.09;
-    --glass-highlight:      0 0% 100% / 0.04;
+    /* ── Surface tokens — nearly opaque now that the main window is native. */
+    --glass-bg:             240 5% 10% / 0.96;
+    --glass-bg-strong:      240 5% 9.5% / 0.985;
+    --glass-stroke:         0 0% 100% / 0.075;
+    --glass-stroke-strong:  0 0% 100% / 0.12;
+    --glass-highlight:      0 0% 100% / 0.055;
 
     /* ── Pill active (pure white pill on near-black — Cursor pattern) ── */
     --pill-active-bg:       0 0% 98%;
@@ -93,12 +93,10 @@
     --shadow-pop:
       0 30px 80px hsl(0 0% 0% / 0.65);
 
-    /* Ambient wallpaper bleed — faint periwinkle wash visible only at the
-       edges of the window. Drives the subtle "glass over wallpaper" feel
-       even though the app fills the whole window. */
+    /* Ambient wash — visible as depth inside the app, not as wallpaper bleed. */
     --mesh-bg:
-      radial-gradient(60% 50% at 10% 0%,  hsl(226 80% 60% / 0.06) 0%, transparent 55%),
-      radial-gradient(50% 50% at 100% 100%, hsl(220 60% 50% / 0.05) 0%, transparent 60%);
+      radial-gradient(60% 50% at 10% 0%,  hsl(226 90% 62% / 0.022) 0%, transparent 55%),
+      radial-gradient(50% 50% at 100% 100%, hsl(220 70% 54% / 0.018) 0%, transparent 60%);
 
     --sidebar-width:        220px;
     --topbar-height:        48px;
@@ -193,16 +191,13 @@
 
   html, body {
     height: 100%;
-    background: transparent;
+    background: hsl(var(--background));
     color: hsl(var(--foreground));
-    transition: color 0.25s ease;
+    transition: background-color 0.25s ease, color 0.25s ease;
   }
 
-  /* Deep near-black overlay + faint ambient wash on top of the native
-     macOS vibrancy. The vibrancy provides the live blur of the desktop
-     wallpaper; this overlay tints it down to a Cursor-grade near-black
-     so the wallpaper is suggested, not seen.
-     Values tuned via .context/said-glass-control.html. */
+  /* Solid app floor with a faint ambient wash. Floating statusbar windows
+     disable this below so their transparent overlay behavior is unchanged. */
   body::before {
     content: "";
     position: fixed;
@@ -215,7 +210,7 @@
   }
 
   :root {
-    --body-overlay: hsl(240 5% 2% / 0.81);
+    --body-overlay: hsl(240 8% 2.5% / 1);
   }
   [data-theme="light"] {
     --body-overlay: hsl(220 22% 93% / 0.99);
@@ -228,9 +223,14 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: geometricPrecision;
-    letter-spacing: -0.005em;
+    letter-spacing: 0;
     overflow: hidden;
     user-select: none;
+  }
+
+  html:not(.statusbar-mode) #app {
+    min-height: 100%;
+    background: hsl(var(--background));
   }
 
   .tabular-nums {
@@ -279,15 +279,14 @@
             app-region: no-drag;
   }
 
-  /* ── Glass surface utilities — macOS-style deep blur + hairline ─────
-     .glass        : default panel — translucent, blurred
+  /* ── Surface utilities — solid dark panels with a light blur fallback ─
+     .glass        : default panel — mostly opaque
      .glass-strong : content-heavy (modals, popovers, dropdowns)
-     Both use backdrop-filter blur 28-32px with saturate boost so the
-     ambient wallpaper bleed (--mesh-bg) shows through tastefully. */
+     Blur is intentionally subtle because the app window itself is opaque. */
   .glass {
     background: hsl(var(--glass-bg));
-    backdrop-filter: blur(30px) saturate(180%);
-    -webkit-backdrop-filter: blur(30px) saturate(180%);
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
     box-shadow:
       inset 0 0 0 1px hsl(var(--glass-stroke)),
       inset 0 1px 0 hsl(0 0% 100% / 0.04),
@@ -295,8 +294,8 @@
   }
   .glass-strong {
     background: hsl(var(--glass-bg-strong));
-    backdrop-filter: blur(36px) saturate(200%);
-    -webkit-backdrop-filter: blur(36px) saturate(200%);
+    backdrop-filter: blur(14px) saturate(125%);
+    -webkit-backdrop-filter: blur(14px) saturate(125%);
     box-shadow:
       inset 0 0 0 1px hsl(var(--glass-stroke-strong)),
       inset 0 1px 0 hsl(0 0% 100% / 0.05),
