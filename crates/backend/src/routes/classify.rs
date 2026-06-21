@@ -1549,15 +1549,15 @@ pub async fn classify(
     let has_negatives = !negative_terms.is_empty();
     if !review_candidates.is_empty() {
         let local_count = review_candidates.len();
-        // Candidates the server's auto-learn judge already declined ("local_fallback")
-        // or that we locally chose to offer as a manual choice ("local_ask") must NOT
-        // be re-sent to that judge — it would just re-drop them and the review card
-        // would vanish in logged-in mode. Refine only the rest, then re-append these
-        // verbatim.
+        // Locally generated review candidates already passed the desktop/backend
+        // safety gates and still require explicit user confirmation. Do not send
+        // them back through the server analyzer as a second judge, because a
+        // narrower server response can make valid multi-word review items vanish
+        // in logged-in mode.
         let (local_only, to_refine): (Vec<ReviewCandidate>, Vec<ReviewCandidate>) =
-            review_candidates.into_iter().partition(|candidate| {
-                candidate.tag == "local_fallback" || candidate.tag == "local_ask"
-            });
+            review_candidates
+                .into_iter()
+                .partition(is_locally_owned_review_candidate);
         let mut refined = if to_refine.is_empty() {
             to_refine
         } else {
@@ -2541,6 +2541,11 @@ fn push_unique_review_candidate(candidates: &mut Vec<ReviewCandidate>, candidate
         return;
     }
     candidates.push(candidate);
+}
+
+fn is_locally_owned_review_candidate(candidate: &ReviewCandidate) -> bool {
+    candidate.tag.starts_with("local_")
+        || matches!(candidate.tag.as_str(), "stt" | "alias_safety" | "added")
 }
 
 enum ReviewCandidateContextTrim {
@@ -3894,6 +3899,71 @@ mod tests {
                 .iter()
                 .any(|candidate| candidate.corrected == "Kafka")
         );
+    }
+
+    #[test]
+    fn multi_token_hunk_surfaces_each_local_review_candidate() {
+        let pool = mem_pool();
+        let transcript = "bimmicop anugruh status bhejo";
+        let polished = "bimmicop anugruh status bhejo";
+        let kept = "Macobs Anugra status bhejo";
+        let hunks = edit_diff::diff(transcript, polished, kept);
+
+        let changes = deterministic_classify_hunks(&hunks, transcript, polished, kept, &pool, "u1");
+        let candidates =
+            local_review_candidates_from_analyzer(&changes, &pool, "u1", kept, "hinglish");
+
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().any(|candidate| {
+            candidate.original == "bimmicop"
+                && candidate.corrected == "Macobs"
+                && candidate.tag == "local_deterministic"
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate.original == "anugruh"
+                && candidate.corrected == "Anugra"
+                && candidate.tag == "local_deterministic"
+        }));
+    }
+
+    #[test]
+    fn locally_owned_review_candidates_skip_server_refine() {
+        for tag in [
+            "local_fallback",
+            "local_ask",
+            "local_deterministic",
+            "local_token_collapse",
+            "local_alias_review",
+            "stt",
+            "alias_safety",
+            "added",
+        ] {
+            let candidate = ReviewCandidate {
+                original: "macops".to_string(),
+                corrected: "Macobs".to_string(),
+                term_type: "proper_noun".to_string(),
+                learnable: true,
+                tag: tag.to_string(),
+            };
+            assert!(
+                is_locally_owned_review_candidate(&candidate),
+                "{tag} should stay local-owned"
+            );
+        }
+
+        for tag in ["server", "server_llm"] {
+            let candidate = ReviewCandidate {
+                original: "macops".to_string(),
+                corrected: "Macobs".to_string(),
+                term_type: "proper_noun".to_string(),
+                learnable: true,
+                tag: tag.to_string(),
+            };
+            assert!(
+                !is_locally_owned_review_candidate(&candidate),
+                "{tag} should still be server-refinable"
+            );
+        }
     }
 
     #[test]
