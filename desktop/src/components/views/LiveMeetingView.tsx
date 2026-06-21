@@ -294,6 +294,12 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoffRef = useRef(1000); // start at 1s, doubles up to 8s
   const unmountedRef = useRef(false);
+  // Pending "stop on unmount" timer. Deferred + cancelable so React StrictMode's
+  // dev double-mount (mount → cleanup → mount) doesn't fire a spurious stop that
+  // would race the now-async stop_session and discard the freshly re-armed
+  // session. A real unmount lets it fire; a meetingId change is handled by the
+  // backend (start of a different id stops the previous meeting).
+  const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const endedRef = useRef(false); // track ended via ref to avoid stale closures
   const isFirstConnectRef = useRef(true);
   const lastIntelligenceKeyRef = useRef<string | null>(null);
@@ -429,6 +435,12 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   // ── Meeting engine session (start on mount, stop on unmount) ────────────
   useEffect(() => {
     let cancelled = false;
+    // A StrictMode remount re-runs this effect immediately after the cleanup —
+    // cancel the pending stop so we don't tear down the session we're re-arming.
+    if (stopTimerRef.current) {
+      clearTimeout(stopTimerRef.current);
+      stopTimerRef.current = null;
+    }
     invoke<MeetingEngineStatus>("meeting_engine_start_session", { meetingId })
       .then((status) => {
         if (!cancelled) {
@@ -441,7 +453,12 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
 
     return () => {
       cancelled = true;
-      invoke("meeting_engine_stop_session").catch(() => {});
+      // Defer the stop one tick. On a StrictMode double-mount the re-run above
+      // clears this before it fires; on a real unmount it fires.
+      stopTimerRef.current = setTimeout(() => {
+        stopTimerRef.current = null;
+        invoke("meeting_engine_stop_session").catch(() => {});
+      }, 0);
       setEngineRunning(false);
       setCaptureRunning(false);
       setMicTrackActive(false);
@@ -549,17 +566,36 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
   }, [applyMeetingStatus]);
 
   const handleLeave = useCallback(async () => {
+    if (controlBusy) return;
     setControlBusy(true);
     setControlError(null);
     try {
-      const status = await invoke<MeetingEngineStatus>("meeting_engine_stop_session");
+      // Cap the wait so a slow/blocked backend command can never permanently
+      // wedge the UI (button stuck disabled). The stop is idempotent and the
+      // recording self-heals via startup recovery, so retrying is always safe.
+      const status = await Promise.race([
+        invoke<MeetingEngineStatus>("meeting_engine_stop_session"),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  "Ending is taking longer than expected — your recording is safe and will be processed. Please try again.",
+                ),
+              ),
+            12000,
+          ),
+        ),
+      ]);
       applyMeetingStatus(status);
       setEnded(true);
     } catch (e) {
       setControlError(e instanceof Error ? e.message : String(e));
+    } finally {
+      // ALWAYS clear busy — even on throw/timeout — so the button re-enables.
+      setControlBusy(false);
     }
-    setControlBusy(false);
-  }, [applyMeetingStatus]);
+  }, [applyMeetingStatus, controlBusy]);
 
   const handleEndMeeting = useCallback(async () => {
     if (ending) return;
@@ -573,20 +609,37 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
     setEnding(true);
     setControlError(null);
     try {
-      const url = conn.serverUrl.replace(/\/+$/, "");
-      const res = await fetch(`${url}/v1/meetings/${meetingId}/end`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${conn.jwt}` },
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? "Failed to end meeting");
-      }
+      // Stop the local capture engine FIRST so the recording is always
+      // finalized (valid WAV headers) and queued for transcription — even if the
+      // server-side end call below fails. Previously a network/auth error on
+      // /end threw before this ran, orphaning the local recording and losing the
+      // transcript.
       const status = await invoke<MeetingEngineStatus>("meeting_engine_stop_session").catch(() => null);
       if (status) applyMeetingStatus(status);
+
+      // Best-effort: notify the server the meeting has ended. A failure here is
+      // surfaced but does not undo the local stop above.
+      try {
+        const url = conn.serverUrl.replace(/\/+$/, "");
+        const res = await fetch(`${url}/v1/meetings/${meetingId}/end`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${conn.jwt}` },
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          setControlError(
+            data.error ?? "Meeting stopped locally, but the server could not be notified.",
+          );
+        }
+      } catch (e) {
+        setControlError(
+          e instanceof Error
+            ? `Meeting stopped locally, but the server could not be notified: ${e.message}`
+            : "Meeting stopped locally, but the server could not be notified.",
+        );
+      }
+
       setEnded(true);
-    } catch (e) {
-      setControlError(e instanceof Error ? e.message : String(e));
     } finally {
       setEnding(false);
     }

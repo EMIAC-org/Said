@@ -65,9 +65,18 @@ jobs:
             "target/x86_64-pc-windows-msvc/release/airnote-backend.exe" `
             "desktop/src-tauri/binaries/airnote-backend-x86_64-pc-windows-msvc.exe"
 
+      # Vulkan SDK gives whisper-cli GPU acceleration (parity with macOS Metal).
+      # The build script auto-detects it and falls back to CPU-only if absent, so
+      # a failure here never breaks the build.
+      - name: Setup Vulkan SDK
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          choco install vulkan-sdk -y --no-progress
+
       - name: Build whisper-cli sidecar
         shell: pwsh
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: |
           ./scripts/build-whisper-cli-windows.ps1 -Target x86_64-pc-windows-msvc
           New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null

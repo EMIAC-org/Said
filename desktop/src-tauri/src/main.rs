@@ -2259,6 +2259,46 @@ fn smart_repair_last(app: &tauri::AppHandle) {
     }
 }
 
+/// ⌃⌥R: re-run the LAST dictation as a fresh, FULL-quality attempt — re-transcribe
+/// (STT) AND re-polish from the saved audio. Unlike `smart_repair_last` (which tries
+/// a quick re-polish first and only escalates to a full reprocess on a second press),
+/// this ALWAYS does the full reprocess from the recorded voice, so the user gets a
+/// proper attempt even if the first transcript or polish failed — never a degraded one.
+fn retry_last_from_audio(app: &tauri::AppHandle) {
+    let last_action = app
+        .state::<LastActionState>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
+    match last_action {
+        Some(LastAction::Voice(action)) => match action.audio_id.clone() {
+            Some(audio_id) => {
+                tracing::info!("[retry] full reprocess from saved audio {audio_id}");
+                retry_recording_internal(app.clone(), audio_id);
+            }
+            None => {
+                let _ = app.emit(
+                    "voice-error",
+                    serde_json::json!({
+                        "message": "Saved audio is no longer available to retry.",
+                        "audio_id": null,
+                    }),
+                );
+            }
+        },
+        _ => {
+            let _ = app.emit(
+                "voice-error",
+                serde_json::json!({
+                    "message": "Nothing recent to retry yet.",
+                    "audio_id": null,
+                }),
+            );
+        }
+    }
+}
+
 /// Switch output language from the tray menu and persist to SQLite.
 fn tray_set_output_language(app: &tauri::AppHandle, lang: &str) {
     if !matches!(lang, "hinglish" | "english" | "hindi") {
@@ -3336,6 +3376,34 @@ fn request_queued_finish(
     });
 }
 
+/// Best-effort fetch of the user's starred vocabulary keyterms from the local
+/// backend, used to bias the on-device Swift STT model toward proper nouns it
+/// would otherwise mangle (Kubernetes, n8n, EMIAC, names). Tight timeout because
+/// this runs on the recording-start path — a slow or failed fetch returns no
+/// terms (no biasing) rather than delaying dictation.
+#[cfg(target_os = "macos")]
+async fn fetch_stt_keyterms(ep: &BackendEndpoint) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct BiasKeyterms {
+        #[serde(default)]
+        keyterms: Vec<String>,
+    }
+    match reqwest::Client::new()
+        .get(format!("{}/v1/stt/bias", ep.url))
+        .header("Authorization", ep.bearer())
+        .timeout(std::time::Duration::from_millis(400))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => resp
+            .json::<BiasKeyterms>()
+            .await
+            .map(|b| b.keyterms)
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 /// Start recording. Called when user presses Caps Lock (or taps the button).
 fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     // Reject if another start is already in progress
@@ -3731,12 +3799,21 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                             );
                         }
                     });
+                    // Best-effort vocab biasing for the on-device model. Uses
+                    // .as_ref() so the endpoint stays available for the live
+                    // mirror below; tight timeout means a slow/failed fetch
+                    // never delays dictation start.
+                    let vocab: Vec<String> = match backend_ep_for_server_runtime.as_ref() {
+                        Some(ep) => fetch_stt_keyterms(ep).await,
+                        None => Vec::new(),
+                    };
                     let start_cmd = swift_stream::SessionCommand::StartRecording {
                         id: recording_id.clone(),
                         result_tx: transcript_tx,
                         pre_embed: None,
                         utterance_end_tx: None,
                         live_partial_tx: Some(live_partial_tx),
+                        vocab,
                     };
                     if let Err(err) = session_tx.send(start_cmd).await {
                         if let swift_stream::SessionCommand::StartRecording { result_tx, .. } =
@@ -8526,6 +8603,12 @@ fn main() {
                                 tracing::info!("[hotkey] ⇧⌘Space → toggle message polish mode");
                                 toggle_message_polish_mode(&app_h);
                             }
+                            hotkey::HudShortcutAction::RetryLastFromAudio => {
+                                tracing::info!(
+                                    "[hotkey] ⌃⌥R / Ctrl+Left-Alt+R → full retry of last dictation from saved audio"
+                                );
+                                retry_last_from_audio(&app_h);
+                            }
                         });
                     }));
 
@@ -8823,11 +8906,15 @@ fn main() {
                 app.state::<meeting_engine::MeetingEngineState>().shutdown();
                 // Kill the Python Swift-STT sidecar too — otherwise every quit
                 // orphans a ~1.5GB Whisper process (they accumulate across runs).
+                // macOS-only: the swift_stt_engine module is gated to macOS, so
+                // the call must be too or Windows fails to compile.
+                #[cfg(target_os = "macos")]
                 swift_stt_engine::shutdown();
                 if let Ok(mut guard) = app.state::<BackendHandleState>().0.lock() {
                     drop(guard.take());
                 }
                 backend_guard::clear_pid_file();
+                #[cfg(target_os = "macos")]
                 swift_stt_guard::clear_pid_file();
             }
             _ => {}
