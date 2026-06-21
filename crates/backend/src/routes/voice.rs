@@ -4,6 +4,7 @@
 //!   audio        — WAV bytes  (required)
 //!   target_app   — bundle-id of the focused app  (optional)
 //!   pre_transcript — transcript already obtained via Deepgram WS streaming  (optional, P5)
+//!   persist_audio — whether to save the WAV for history/download/retry  (optional, default true)
 //!
 //! Pipeline: auth → load prefs → STT → evidence collection → dynamic prompt →
 //!           LLM stream → post-LLM passes → SSE.
@@ -167,6 +168,10 @@ fn estimated_secs(word_count: i64) -> f64 {
     word_count as f64 * 60.0 / 130.0
 }
 
+fn should_save_audio(persist_audio: bool, wav_data: &[u8]) -> bool {
+    persist_audio && !wav_data.is_empty()
+}
+
 /// Directory where WAV recordings are saved locally (1-day retention).
 fn audio_dir() -> std::path::PathBuf {
     let base = dirs::data_local_dir()
@@ -258,6 +263,7 @@ struct VoicePolishInput {
     screen_context: Option<String>,
     message_polish_mode: bool,
     client_run_id: Option<String>,
+    persist_audio: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -358,6 +364,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
     let mut screen_context: Option<String> = None;
     let mut message_polish_mode = false;
     let mut client_run_id: Option<String> = None;
+    let mut persist_audio = true;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name() {
@@ -399,6 +406,18 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
                     .await
                     .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
                     .unwrap_or(false);
+            }
+            Some("persist_audio") => {
+                persist_audio = field
+                    .text()
+                    .await
+                    .map(|s| {
+                        matches!(
+                            s.trim().to_ascii_lowercase().as_str(),
+                            "1" | "true" | "yes" | "on"
+                        )
+                    })
+                    .unwrap_or(true);
             }
             Some("client_run_id") => {
                 client_run_id = field.text().await.ok().filter(|s| !s.trim().is_empty());
@@ -444,6 +463,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             screen_context,
             message_polish_mode,
             client_run_id,
+            persist_audio,
         },
     )
     .await
@@ -478,6 +498,7 @@ pub async fn polish_transcript(
             screen_context: None,
             message_polish_mode: false,
             client_run_id: None,
+            persist_audio: false,
         },
     )
     .await
@@ -1584,6 +1605,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         screen_context,
         message_polish_mode,
         client_run_id,
+        persist_audio,
     } = input;
 
     // Allow empty WAV when the caller supplied a pre_transcript (P5 / WS path).
@@ -1592,7 +1614,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         return StatusCode::BAD_REQUEST.into_response();
     }
     info!(
-        "[voice] input accepted wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} message_polish={} repair_mode={} screen_context_chars={} client_run_id={}",
+        "[voice] input accepted wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} message_polish={} repair_mode={} screen_context_chars={} client_run_id={} persist_audio={}",
         wav_data.len(),
         pre_transcript.is_some(),
         pre_transcript
@@ -1610,6 +1632,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             .map(|s| s.chars().count())
             .unwrap_or(0),
         client_run_id.as_deref().unwrap_or("none"),
+        persist_audio,
     );
 
     // Save audio to disk (1-day retention) before exposing audio_id in history.
@@ -1617,7 +1640,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
     // pointing at a WAV file that failed to save.
     let audio_id = Uuid::new_v4().to_string();
     let save_start = Instant::now();
-    let saved_audio_id = if !wav_data.is_empty() {
+    let saved_audio_id = if should_save_audio(persist_audio, &wav_data) {
         let aid = audio_id.clone();
         let data = wav_data.clone();
         match tokio::task::spawn_blocking(move || save_audio(&aid, &data).is_some()).await {
@@ -1635,11 +1658,12 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         None
     };
     info!(
-        "[voice] pre-stream audio save done in {}ms saved_audio={} audio_id={} wav_bytes={}",
+        "[voice] pre-stream audio save done in {}ms saved_audio={} audio_id={} wav_bytes={} persist_audio={}",
         save_start.elapsed().as_millis(),
         saved_audio_id.is_some(),
         saved_audio_id.as_deref().unwrap_or("none"),
         wav_data.len(),
+        persist_audio,
     );
 
     let audio_secs = wav_duration_secs(&wav_data);
@@ -4029,7 +4053,7 @@ mod live_token_tests {
 
 #[cfg(test)]
 mod audio_tests {
-    use super::{estimated_secs, extract_pcm16_wav, wav_duration_secs};
+    use super::{estimated_secs, extract_pcm16_wav, should_save_audio, wav_duration_secs};
 
     fn pcm_wav(channels: u16, sample_rate: u32, data: &[u8]) -> Vec<u8> {
         let byte_rate = sample_rate * channels as u32 * 2;
@@ -4113,6 +4137,13 @@ mod audio_tests {
     #[test]
     fn estimated_secs_65_words_is_30s() {
         assert!((estimated_secs(65) - 30.0_f64).abs() < 1e-9);
+    }
+
+    #[test]
+    fn persist_audio_flag_controls_audio_save() {
+        assert!(should_save_audio(true, &[1, 2, 3]));
+        assert!(!should_save_audio(false, &[1, 2, 3]));
+        assert!(!should_save_audio(true, &[]));
     }
 
     #[test]

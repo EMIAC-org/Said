@@ -892,6 +892,30 @@ struct SwiftSessionState(swift_stream::SessionSender);
 /// cleared after it's pasted via the global paste-latest hotkey or command.
 struct LatestResult(std::sync::Arc<Mutex<Option<String>>>);
 
+const RETRY_REPROCESS_WINDOW_MS: i64 = 5_000;
+
+#[derive(Clone, Debug)]
+struct RetryShortcutPress {
+    recording_id: String,
+    pressed_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RetryShortcutDecision {
+    PasteFirst,
+    FullReprocess,
+}
+
+struct RetryShortcutState(Mutex<Option<RetryShortcutPress>>);
+
+#[derive(Clone, Debug)]
+struct LastVoiceAudio {
+    recording_id: String,
+    wav: Vec<u8>,
+}
+
+struct LastVoiceAudioState(Mutex<Option<LastVoiceAudio>>);
+
 fn paste_latest_hotkey_label() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -904,6 +928,36 @@ fn paste_latest_hotkey_label() -> &'static str {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         "Paste latest"
+    }
+}
+
+fn retry_hotkey_label() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Cmd+Option+R"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Ctrl+Left Alt+R"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        "Retry last"
+    }
+}
+
+fn decide_retry_shortcut(
+    previous: Option<&RetryShortcutPress>,
+    recording_id: &str,
+    now_ms: i64,
+) -> RetryShortcutDecision {
+    if previous.is_some_and(|prev| {
+        prev.recording_id == recording_id
+            && now_ms.saturating_sub(prev.pressed_at_ms) <= RETRY_REPROCESS_WINDOW_MS
+    }) {
+        RetryShortcutDecision::FullReprocess
+    } else {
+        RetryShortcutDecision::PasteFirst
     }
 }
 
@@ -1311,6 +1365,65 @@ fn cache_last_voice_action(
     if let Ok(mut guard) = app.state::<LastActionState>().0.lock() {
         *guard = Some(action);
     }
+}
+
+fn cache_last_voice_audio(app: &tauri::AppHandle, recording_id: &str, wav: Vec<u8>) {
+    if wav.is_empty() {
+        return;
+    }
+    let byte_count = wav.len();
+    let state = app.state::<LastVoiceAudioState>();
+    if let Ok(mut guard) = state.0.lock() {
+        *guard = Some(LastVoiceAudio {
+            recording_id: recording_id.to_string(),
+            wav,
+        });
+    }
+    tracing::debug!(
+        "[retry] cached latest voice audio in RAM recording_id={} bytes={}",
+        recording_id,
+        byte_count
+    );
+}
+
+fn retry_shortcut_decision(app: &tauri::AppHandle, recording_id: &str) -> RetryShortcutDecision {
+    let now = now_ms();
+    let state = app.state::<RetryShortcutState>();
+    let Ok(mut guard) = state.0.lock() else {
+        tracing::warn!("[retry] retry shortcut state lock failed; using paste-first behavior");
+        return RetryShortcutDecision::PasteFirst;
+    };
+    let decision = decide_retry_shortcut(guard.as_ref(), recording_id, now);
+    match decision {
+        RetryShortcutDecision::PasteFirst => {
+            *guard = Some(RetryShortcutPress {
+                recording_id: recording_id.to_string(),
+                pressed_at_ms: now,
+            });
+        }
+        RetryShortcutDecision::FullReprocess => {
+            *guard = None;
+        }
+    }
+    decision
+}
+
+fn retry_cached_audio(app: &tauri::AppHandle, recording_id: &str) -> Option<Vec<u8>> {
+    let state = app.state::<LastVoiceAudioState>();
+    let guard = state.0.lock().ok()?;
+    let cached = guard.as_ref()?;
+    (cached.recording_id == recording_id).then(|| cached.wav.clone())
+}
+
+fn emit_retry_notice(app: &tauri::AppHandle, message: &str) {
+    let _ = present_status_bar_native(app, "retry-last", false);
+    let _ = app.emit(
+        "voice-output",
+        serde_json::json!({
+            "status": "manual_paste",
+            "message": message,
+        }),
+    );
 }
 
 fn cache_last_text_transform(
@@ -2259,11 +2372,8 @@ fn smart_repair_last(app: &tauri::AppHandle) {
     }
 }
 
-/// ⌃⌥R: re-run the LAST dictation as a fresh, FULL-quality attempt — re-transcribe
-/// (STT) AND re-polish from the saved audio. Unlike `smart_repair_last` (which tries
-/// a quick re-polish first and only escalates to a full reprocess on a second press),
-/// this ALWAYS does the full reprocess from the recorded voice, so the user gets a
-/// proper attempt even if the first transcript or polish failed — never a degraded one.
+/// Retry shortcut: first press instantly re-pastes the last voice output; a second
+/// quick press escalates to a full STT + polish reprocess when audio is available.
 fn retry_last_from_audio(app: &tauri::AppHandle) {
     let last_action = app
         .state::<LastActionState>()
@@ -2272,21 +2382,85 @@ fn retry_last_from_audio(app: &tauri::AppHandle) {
         .ok()
         .and_then(|g| g.clone());
     match last_action {
-        Some(LastAction::Voice(action)) => match action.audio_id.clone() {
-            Some(audio_id) => {
-                tracing::info!("[retry] full reprocess from saved audio {audio_id}");
-                retry_recording_internal(app.clone(), audio_id);
+        Some(LastAction::Voice(action)) => {
+            match retry_shortcut_decision(app, &action.recording_id) {
+                RetryShortcutDecision::PasteFirst => {
+                    if action.polished.trim().is_empty() {
+                        let _ = app.emit(
+                            "voice-error",
+                            serde_json::json!({
+                                "message": "Nothing recent to paste yet.",
+                                "audio_id": null,
+                            }),
+                        );
+                        return;
+                    }
+                    tracing::info!(
+                        "[retry] {} first press → re-paste recording_id={} chars={}",
+                        retry_hotkey_label(),
+                        action.recording_id,
+                        action.polished.chars().count()
+                    );
+                    match paster::paste(&action.polished) {
+                        Ok(()) => emit_retry_notice(app, "Re-pasted last output"),
+                        Err(e) => {
+                            tracing::warn!("[retry] re-paste failed: {e}");
+                            let _ = app.emit(
+                                "voice-error",
+                                serde_json::json!({
+                                    "message": format!("Could not paste last output: {e}"),
+                                    "audio_id": null,
+                                }),
+                            );
+                        }
+                    }
+                }
+                RetryShortcutDecision::FullReprocess => {
+                    tracing::info!(
+                        "[retry] {} second press → full reprocess recording_id={}",
+                        retry_hotkey_label(),
+                        action.recording_id
+                    );
+                    emit_retry_notice(app, "Reprocessing last recording");
+                    if let Some(wav) = retry_cached_audio(app, &action.recording_id) {
+                        let shared = Arc::clone(&app.state::<SharedApp>().0);
+                        let backend = Arc::clone(&app.state::<BackendState>().0);
+                        if let Err(e) = retry_recording_wav_spawn(wav, shared, backend, app.clone())
+                        {
+                            let _ = app.emit(
+                                "voice-error",
+                                serde_json::json!({
+                                    "message": e,
+                                    "audio_id": null,
+                                }),
+                            );
+                        }
+                    } else if let Some(audio_id) = action.audio_id.clone() {
+                        let shared = Arc::clone(&app.state::<SharedApp>().0);
+                        let backend = Arc::clone(&app.state::<BackendState>().0);
+                        if let Err(e) =
+                            retry_recording_spawn(audio_id, shared, backend, app.clone())
+                        {
+                            let _ = app.emit(
+                                "voice-error",
+                                serde_json::json!({
+                                    "message": e,
+                                    "audio_id": null,
+                                }),
+                            );
+                        }
+                    } else {
+                        let _ = app.emit(
+                            "voice-error",
+                            serde_json::json!({
+                                "message": "Audio unavailable for full reprocess. Press the record hotkey to try again.",
+                                "audio_id": null,
+                            }),
+                        );
+                    }
+                }
             }
-            None => {
-                let _ = app.emit(
-                    "voice-error",
-                    serde_json::json!({
-                        "message": "Saved audio is no longer available to retry.",
-                        "audio_id": null,
-                    }),
-                );
-            }
-        },
+        }
         _ => {
             let _ = app.emit(
                 "voice-error",
@@ -4204,6 +4378,8 @@ fn do_finish_recording(
             .try_state::<ScreenContextState>()
             .and_then(|s| s.0.lock().ok()?.clone());
 
+        let persist_audio = should_persist_audio_for_voice(&back_arc2, is_meeting, is_divo).await;
+
         let result = run_voice_polish_sse(
             &back_arc2,
             wav,
@@ -4215,6 +4391,7 @@ fn do_finish_recording(
             &app2,
             is_meeting,
             is_divo,
+            persist_audio,
         )
         .await;
 
@@ -4489,6 +4666,29 @@ fn reject_pre_transcript_reason(
     None
 }
 
+async fn should_persist_audio_for_voice(
+    back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
+    is_meeting: bool,
+    is_divo: bool,
+) -> bool {
+    if is_meeting || is_divo {
+        return false;
+    }
+    let ep = match back_arc.lock().ok().and_then(|g| g.clone()) {
+        Some(ep) => ep,
+        None => return true,
+    };
+    match api::get_preferences(&ep).await {
+        Ok(prefs) => prefs.server_runtime_enabled || prefs.server_audio_runtime_enabled,
+        Err(e) => {
+            tracing::warn!(
+                "[privacy] could not read prefs for audio persistence; preserving legacy save behavior: {e}"
+            );
+            true
+        }
+    }
+}
+
 /// Re-transcribe a recovered orphan recording. Uses a no-op event handler so the
 /// pipeline performs zero typing/pasting — recovery must never inject text into
 /// whatever app happens to be focused at launch. Returns transcript + polished text.
@@ -4502,6 +4702,7 @@ async fn recover_transcribe(ep: &BackendEndpoint, wav: Vec<u8>) -> Result<api::P
         None,
         None,
         None,
+        false,
         false,
         |_event: api::PolishEvent| {},
     )
@@ -4522,6 +4723,7 @@ async fn run_voice_polish_sse(
     app: &tauri::AppHandle,
     #[allow(unused_variables)] is_meeting: bool,
     is_divo: bool,
+    persist_audio: bool,
 ) -> Result<api::PolishDone, String> {
     let ep = {
         let lock = back_arc.lock().map_err(|_| "backend lock failed")?;
@@ -4556,6 +4758,12 @@ async fn run_voice_polish_sse(
         None
     } else {
         paster::read_focused_value_fast()
+    };
+
+    let retry_wav = if !suppress_local && !wav.is_empty() {
+        Some(wav.clone())
+    } else {
+        None
     };
 
     let pre_transcript_chars = pre_transcript
@@ -4734,6 +4942,7 @@ async fn run_voice_polish_sse(
             repair_mode,
             screen_context,
             message_polish_mode,
+            persist_audio,
             &mut on_polish_event,
         )
         .await
@@ -4748,6 +4957,7 @@ async fn run_voice_polish_sse(
             repair_mode,
             screen_context,
             message_polish_mode,
+            persist_audio,
             &mut on_polish_event,
         )
         .await
@@ -4857,6 +5067,9 @@ async fn run_voice_polish_sse(
     if !is_divo && !done.polished.is_empty() {
         if let Ok(mut g) = app.state::<LatestResult>().0.lock() {
             *g = Some(done.polished.clone());
+        }
+        if let Some(wav_bytes) = retry_wav {
+            cache_last_voice_audio(app, &done.recording_id, wav_bytes);
         }
         cache_last_voice_action(app, &done, LastRepairStage::None);
         tracing::debug!(
@@ -5477,6 +5690,15 @@ fn retry_recording_spawn(
     let wav_path = audio_dir.join(format!("{audio_id}.wav"));
     let wav = std::fs::read(&wav_path).map_err(|e| format!("saved audio not found: {e}"))?;
 
+    retry_recording_wav_spawn(wav, shared, backend, app)
+}
+
+fn retry_recording_wav_spawn(
+    wav: Vec<u8>,
+    shared: Arc<Mutex<DesktopApp>>,
+    backend: Arc<Mutex<Option<BackendEndpoint>>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     // Mark as processing so the UI shows a spinner
     {
         let mut d = shared.lock().map_err(|_| "lock failed")?;
@@ -5502,6 +5724,7 @@ fn retry_recording_spawn(
             &app2,
             false,
             false, // not a Divo turn
+            false, // retry output should not create another saved-audio copy
         )
         .await;
 
@@ -6476,27 +6699,45 @@ fn get_performance_snapshot(
 const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(50);
 const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
-
-/// Faster settle for single high-jargon word replacements.
-/// If the user replaced exactly one word and it has brand/acronym
-/// characteristics, fire classify after just 1.5 seconds of stability.
-const EDIT_QUICK_SETTLE_MS: u64 = 1500;
+const EDIT_WATCH_MIN_QUIET_AFTER_EDIT: Duration = Duration::from_secs(8);
 
 /// Compute edit-watch timeouts scaled by sentence length.
-/// Short sentences (≤15 words) = 15s max, 6s idle, 3s settle.
-/// Long sentences (50+ words) = 45s max, 12s idle, 8s settle.
-/// Users need more time to read and find errors in longer text.
-fn edit_watch_timeouts(word_count: usize) -> (Duration, Duration, u64) {
+/// Short sentences (≤15 words) = 15s no-edit max, 8s post-edit quiet window.
+/// Long sentences (50+ words) get more time to read and find errors.
+fn edit_watch_timeouts(word_count: usize) -> (Duration, Duration, Duration) {
     let words = word_count.max(5).min(80) as f64;
     // Linear scale: 15s base + 0.6s per word above 15
-    let max_secs = 15.0 + (words - 15.0).max(0.0) * 0.6;
-    let max_duration = Duration::from_secs_f64(max_secs.min(45.0));
-    // Idle timeout: 6s base + 0.15s per word above 15
-    let idle_secs = 6.0 + (words - 15.0).max(0.0) * 0.15;
-    let idle_timeout = Duration::from_secs_f64(idle_secs.min(15.0));
-    // Settle: 3s base + 0.1s per word above 15
-    let settle_secs = (3.0 + (words - 15.0).max(0.0) * 0.1).min(10.0);
-    (max_duration, idle_timeout, settle_secs as u64)
+    let no_edit_secs = 15.0 + (words - 15.0).max(0.0) * 0.6;
+    let no_edit_timeout = Duration::from_secs_f64(no_edit_secs.min(45.0));
+    // Quiet timeout: 8s minimum after the last edit, with extra time for longer text.
+    let quiet_secs = 6.0 + (words - 15.0).max(0.0) * 0.15;
+    let quiet_timeout =
+        Duration::from_secs_f64(quiet_secs.min(15.0)).max(EDIT_WATCH_MIN_QUIET_AFTER_EDIT);
+    let hard_max_timeout = no_edit_timeout + quiet_timeout;
+    (no_edit_timeout, quiet_timeout, hard_max_timeout)
+}
+
+fn edit_watch_finish_reason(
+    saw_edit: bool,
+    idle_elapsed: Duration,
+    started_elapsed: Duration,
+    no_edit_timeout: Duration,
+    quiet_timeout: Duration,
+    hard_max_timeout: Duration,
+) -> Option<&'static str> {
+    if saw_edit {
+        if idle_elapsed > quiet_timeout {
+            Some("quiet_after_edit")
+        } else if started_elapsed > hard_max_timeout {
+            Some("hard_max_after_edit")
+        } else {
+            None
+        }
+    } else if started_elapsed > no_edit_timeout {
+        Some("no_edit_timeout")
+    } else {
+        None
+    }
 }
 
 async fn blocking_ax_option<T, F>(label: &'static str, f: F) -> Option<T>
@@ -6684,13 +6925,13 @@ async fn watch_for_edit(
 
     // Scale timeouts by sentence length — long sentences need more reading time
     let word_count = polished.split_whitespace().count();
-    let (max_duration, idle_timeout, stable_settle_secs) = edit_watch_timeouts(word_count);
+    let (no_edit_timeout, quiet_timeout, hard_max_timeout) = edit_watch_timeouts(word_count);
     tracing::info!(
-        "[edit-watch] word_count={word_count} max={}s idle={}s settle={stable_settle_secs}s",
-        max_duration.as_secs(),
-        idle_timeout.as_secs(),
+        "[edit-watch] word_count={word_count} no_edit={}s quiet={}s hard_max={}s",
+        no_edit_timeout.as_secs(),
+        quiet_timeout.as_secs(),
+        hard_max_timeout.as_secs(),
     );
-    let mut edit_stable_since: Option<Instant> = None;
     let mut last_edit_snapshot: Option<String> = None;
     // Capture-error metadata, hoisted so we can ship it to the backend's
     // CAPTURE_ERROR pre-filter alongside the edit text.
@@ -6794,30 +7035,24 @@ async fn watch_for_edit(
                 best_candidate = now_val.clone();
             }
             last_edit_snapshot = Some(now_val.clone());
-            edit_stable_since = None; // edit is active, not stable yet
             last_val = now_val;
         } else if last_change_at.elapsed() > Duration::from_secs(2) {
             current_interval = EDIT_WATCH_SLOW_INTERVAL;
-            // Track stable-edit: field stopped changing after an edit was seen
-            if last_edit_snapshot.is_some() && edit_stable_since.is_none() {
-                edit_stable_since = Some(Instant::now());
-            }
         }
 
-        // NEW: stable edit detection — fire early if edit region stopped changing
-        if let Some(stable_since) = edit_stable_since {
-            if stable_since.elapsed().as_secs() >= stable_settle_secs {
-                tracing::info!(
-                    "[edit-watch] edit stabilised for {stable_settle_secs}s — firing classify (total {}ms, words={word_count})",
-                    started.elapsed().as_millis(),
-                );
-                break;
-            }
-        }
-
-        let done = idle_at.elapsed() > idle_timeout || started.elapsed() > max_duration;
-
-        if done {
+        if let Some(reason) = edit_watch_finish_reason(
+            last_edit_snapshot.is_some(),
+            idle_at.elapsed(),
+            started.elapsed(),
+            no_edit_timeout,
+            quiet_timeout,
+            hard_max_timeout,
+        ) {
+            tracing::info!(
+                "[edit-watch] finish reason={reason} total={}ms idle={}ms words={word_count}",
+                started.elapsed().as_millis(),
+                idle_at.elapsed().as_millis(),
+            );
             break;
         }
     }
@@ -8605,7 +8840,7 @@ fn main() {
                             }
                             hotkey::HudShortcutAction::RetryLastFromAudio => {
                                 tracing::info!(
-                                    "[hotkey] ⌃⌥R / Ctrl+Left-Alt+R → full retry of last dictation from saved audio"
+                                    "[hotkey] ⌘⌥R / Ctrl+Left-Alt+R → retry last dictation"
                                 );
                                 retry_last_from_audio(&app_h);
                             }
@@ -8688,6 +8923,8 @@ fn main() {
         .manage(PerformanceState(Mutex::new(sysinfo::System::new_all())))
         .manage(TrayCache(Mutex::new(TrayCacheInner::default())))
         .manage(LatestResult(std::sync::Arc::new(Mutex::new(None))))
+        .manage(RetryShortcutState(Mutex::new(None)))
+        .manage(LastVoiceAudioState(Mutex::new(None)))
         .manage(LastActionState(Mutex::new(None)))
         .manage(HotPathCache(Arc::new(tokio::sync::RwLock::new(HotPathCacheInner::default()))))
         .manage(StatusBarHideGen(Arc::new(AtomicU64::new(0))))
@@ -8986,6 +9223,105 @@ mod meaningful_edit_tests {
     #[test]
     fn rejects_zero_alphanumeric_word_changes() {
         assert!(!is_meaningful_edit("hello world", "hello   world"));
+    }
+}
+
+#[cfg(test)]
+mod retry_shortcut_tests {
+    use super::{
+        RETRY_REPROCESS_WINDOW_MS, RetryShortcutDecision, RetryShortcutPress, decide_retry_shortcut,
+    };
+
+    #[test]
+    fn first_press_pastes() {
+        assert_eq!(
+            decide_retry_shortcut(None, "rec-1", 10_000),
+            RetryShortcutDecision::PasteFirst
+        );
+    }
+
+    #[test]
+    fn quick_second_press_reprocesses_same_recording() {
+        let previous = RetryShortcutPress {
+            recording_id: "rec-1".to_string(),
+            pressed_at_ms: 10_000,
+        };
+        assert_eq!(
+            decide_retry_shortcut(Some(&previous), "rec-1", 10_000 + RETRY_REPROCESS_WINDOW_MS),
+            RetryShortcutDecision::FullReprocess
+        );
+    }
+
+    #[test]
+    fn late_or_different_second_press_pastes() {
+        let previous = RetryShortcutPress {
+            recording_id: "rec-1".to_string(),
+            pressed_at_ms: 10_000,
+        };
+        assert_eq!(
+            decide_retry_shortcut(Some(&previous), "rec-1", 10_001 + RETRY_REPROCESS_WINDOW_MS),
+            RetryShortcutDecision::PasteFirst
+        );
+        assert_eq!(
+            decide_retry_shortcut(Some(&previous), "rec-2", 10_100),
+            RetryShortcutDecision::PasteFirst
+        );
+    }
+}
+
+#[cfg(test)]
+mod edit_watch_timeout_tests {
+    use std::time::Duration;
+
+    use super::{edit_watch_finish_reason, edit_watch_timeouts};
+
+    #[test]
+    fn short_edits_wait_at_least_eight_seconds_after_last_change() {
+        let (_no_edit, quiet, _hard) = edit_watch_timeouts(5);
+        assert!(quiet >= Duration::from_secs(8));
+    }
+
+    #[test]
+    fn delayed_second_edit_resets_quiet_window() {
+        let (no_edit, quiet, hard) = edit_watch_timeouts(5);
+        assert_eq!(
+            edit_watch_finish_reason(
+                true,
+                quiet - Duration::from_millis(1),
+                Duration::from_secs(14),
+                no_edit,
+                quiet,
+                hard,
+            ),
+            None
+        );
+        assert_eq!(
+            edit_watch_finish_reason(
+                true,
+                quiet + Duration::from_millis(1),
+                Duration::from_secs(18),
+                no_edit,
+                quiet,
+                hard,
+            ),
+            Some("quiet_after_edit")
+        );
+    }
+
+    #[test]
+    fn no_edit_uses_original_max_window() {
+        let (no_edit, quiet, hard) = edit_watch_timeouts(5);
+        assert_eq!(
+            edit_watch_finish_reason(
+                false,
+                Duration::from_secs(0),
+                no_edit + Duration::from_millis(1),
+                no_edit,
+                quiet,
+                hard,
+            ),
+            Some("no_edit_timeout")
+        );
     }
 }
 
