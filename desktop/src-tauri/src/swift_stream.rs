@@ -19,7 +19,7 @@ pub use crate::dg_stream::StreamingTranscript;
 const AUDIO_BRIDGE_BUFFER_CHUNKS: usize = 64;
 const COMMAND_BUFFER_CHUNKS: usize = AUDIO_BRIDGE_BUFFER_CHUNKS + 16;
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
-const FINALIZE_TIMEOUT: Duration = Duration::from_millis(2_500);
+const FINALIZE_TIMEOUT: Duration = Duration::from_secs(8);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,15 +95,21 @@ impl FinishSource {
 }
 
 enum FinishDecision {
-    Final(String),
+    Final(FinalTranscript),
     LatestPartial,
     NoTranscript,
 }
 
 struct FinishOutcome {
     source: FinishSource,
+    sidecar_source: Option<String>,
     transcript_chars: usize,
     word_count: usize,
+}
+
+struct FinalTranscript {
+    text: String,
+    source: Option<String>,
 }
 
 impl ActiveRecording {
@@ -145,9 +151,11 @@ impl ActiveRecording {
     }
 
     fn finish(mut self, decision: FinishDecision) -> FinishOutcome {
+        let mut sidecar_source = None;
         let source = match decision {
-            FinishDecision::Final(text) => {
-                if self.accept_text(&text, false) {
+            FinishDecision::Final(final_transcript) => {
+                sidecar_source = final_transcript.source;
+                if self.accept_text(&final_transcript.text, false) {
                     FinishSource::SwiftFinal
                 } else if self.has_latest_partial() {
                     FinishSource::SwiftLivePartialFallback
@@ -192,6 +200,7 @@ impl ActiveRecording {
         }
         FinishOutcome {
             source,
+            sidecar_source,
             transcript_chars,
             word_count,
         }
@@ -210,19 +219,14 @@ struct WsConnection {
 
 enum TranscriptEvent {
     Partial(String),
-    Final(String),
+    Final(FinalTranscript),
 }
 
 impl TranscriptEvent {
     fn text(&self) -> &str {
         match self {
-            Self::Partial(text) | Self::Final(text) => text,
-        }
-    }
-
-    fn into_text(self) -> String {
-        match self {
-            Self::Partial(text) | Self::Final(text) => text,
+            Self::Partial(text) => text,
+            Self::Final(final_transcript) => &final_transcript.text,
         }
     }
 }
@@ -332,13 +336,13 @@ async fn handle_session_command(
                     .await;
             }
             let wait_start = tokio::time::Instant::now();
-            let final_text = {
+            let final_transcript = {
                 let mut active_slot = active.as_mut();
                 wait_final_or_partial_drain(ws.as_mut(), &mut active_slot).await
             };
             let finalize_wait_ms = wait_start.elapsed().as_millis();
-            let decision = if let Some(text) = final_text {
-                FinishDecision::Final(text)
+            let decision = if let Some(final_transcript) = final_transcript {
+                FinishDecision::Final(final_transcript)
             } else if active
                 .as_ref()
                 .is_some_and(ActiveRecording::has_latest_partial)
@@ -350,8 +354,9 @@ async fn handle_session_command(
             if let Some(rec) = active.take() {
                 let outcome = rec.finish(decision);
                 info!(
-                    "[swift_session] finalized id={id} source={} had_partial_before={} chars={} words={} wait_ms={finalize_wait_ms}",
+                    "[swift_session] finalized id={id} source={} sidecar_source={} had_partial_before={} chars={} words={} wait_ms={finalize_wait_ms}",
                     outcome.source.as_str(),
+                    outcome.sidecar_source.as_deref().unwrap_or("none"),
                     had_partial_before_finalize,
                     outcome.transcript_chars,
                     outcome.word_count
@@ -464,7 +469,7 @@ async fn connect_ws(vocab: &[String]) -> Result<WsConnection, String> {
 async fn drain_partial_rx(
     conn: Option<&mut WsConnection>,
     active: &mut Option<&mut ActiveRecording>,
-) -> Option<String> {
+) -> Option<FinalTranscript> {
     let Some(conn) = conn else { return None };
     while let Ok(event) = conn.partial_rx.try_recv() {
         match event {
@@ -473,7 +478,7 @@ async fn drain_partial_rx(
                     rec.note_partial(&text);
                 }
             }
-            TranscriptEvent::Final(text) => return Some(text),
+            TranscriptEvent::Final(final_transcript) => return Some(final_transcript),
         }
     }
     None
@@ -482,7 +487,7 @@ async fn drain_partial_rx(
 async fn wait_final_or_partial_drain(
     conn: Option<&mut WsConnection>,
     active: &mut Option<&mut ActiveRecording>,
-) -> Option<String> {
+) -> Option<FinalTranscript> {
     let conn = conn?;
     let hard_deadline = tokio::time::Instant::now() + FINALIZE_TIMEOUT;
     loop {
@@ -501,7 +506,7 @@ async fn wait_final_or_partial_drain(
                         rec.note_partial(&text);
                     }
                 }
-                TranscriptEvent::Final(text) => return Some(text),
+                TranscriptEvent::Final(final_transcript) => return Some(final_transcript),
             },
             Ok(None) | Err(_) => break,
         }
@@ -520,7 +525,10 @@ fn parse_ws_event(msg: &Message) -> Option<TranscriptEvent> {
     let text = v.get("text")?.as_str()?.to_string();
     match kind {
         "partial" => Some(TranscriptEvent::Partial(text)),
-        "final" => Some(TranscriptEvent::Final(text)),
+        "final" => Some(TranscriptEvent::Final(FinalTranscript {
+            text,
+            source: v.get("source").and_then(|s| s.as_str()).map(str::to_string),
+        })),
         _ => None,
     }
 }
@@ -622,10 +630,14 @@ mod tests {
         let mut rec = ActiveRecording::new("test".to_string(), tx, None);
         assert!(rec.note_partial("older live partial"));
 
-        let outcome = rec.finish(FinishDecision::Final("fresh final text".to_string()));
+        let outcome = rec.finish(FinishDecision::Final(FinalTranscript {
+            text: "fresh final text".to_string(),
+            source: Some("final_decode".to_string()),
+        }));
 
         let payload = rx.await.expect("result sent").expect("transcript");
         assert_eq!(outcome.source, FinishSource::SwiftFinal);
+        assert_eq!(outcome.sidecar_source.as_deref(), Some("final_decode"));
         assert_eq!(payload.transcript, "fresh final text");
         assert_eq!(payload.meta.word_count, 3);
     }
@@ -636,10 +648,14 @@ mod tests {
         let mut rec = ActiveRecording::new("test".to_string(), tx, None);
         assert!(rec.note_partial("complete live partial"));
 
-        let outcome = rec.finish(FinishDecision::Final(String::new()));
+        let outcome = rec.finish(FinishDecision::Final(FinalTranscript {
+            text: String::new(),
+            source: Some("empty_final".to_string()),
+        }));
 
         let payload = rx.await.expect("result sent").expect("transcript");
         assert_eq!(outcome.source, FinishSource::SwiftLivePartialFallback);
+        assert_eq!(outcome.sidecar_source.as_deref(), Some("empty_final"));
         assert_eq!(payload.transcript, "complete live partial");
         assert_eq!(payload.meta.word_count, 3);
     }
@@ -692,11 +708,16 @@ pub fn spawn_audio_bridge_with_echo_gate(
     std::thread::spawn(move || {
         let native_rate = chunk_recv.native_rate;
         let sync_rx: mpsc::Receiver<Vec<f32>> = chunk_recv.rx;
+        let bridge_started = std::time::Instant::now();
+        let mut chunks_sent = 0usize;
+        let mut bytes_sent = 0usize;
+        let mut chunks_dropped = 0usize;
         while let Ok(chunk_f32) = sync_rx.recv() {
             let resampled = resample_to_16k(&chunk_f32, native_rate);
             if let Some(gate) = &echo_gate {
                 let decision = gate.filter_mic_samples_16k(&resampled);
                 if !decision.allow {
+                    chunks_dropped += 1;
                     continue;
                 }
             }
@@ -711,28 +732,59 @@ pub fn spawn_audio_bridge_with_echo_gate(
             if let Some(mirror_tx) = &mirror_tx {
                 let _ = mirror_tx.send(AudioMirrorCommand::Pcm(pcm.clone()));
             }
+            let pcm_len = pcm.len();
             match session_tx.try_send(SessionCommand::Audio {
                 id: recording_id.clone(),
                 pcm,
             }) {
-                Ok(()) => {}
-                Err(tokio_mpsc::error::TrySendError::Full(_)) => continue,
+                Ok(()) => {
+                    chunks_sent += 1;
+                    bytes_sent += pcm_len;
+                }
+                Err(tokio_mpsc::error::TrySendError::Full(_)) => {
+                    chunks_dropped += 1;
+                    continue;
+                }
                 Err(tokio_mpsc::error::TrySendError::Closed(_)) => break,
             }
         }
+        info!(
+            "[swift_session] audio bridge drained id={} chunks={} bytes={} dropped={} native_rate={} elapsed_ms={}",
+            recording_id,
+            chunks_sent,
+            bytes_sent,
+            chunks_dropped,
+            native_rate,
+            bridge_started.elapsed().as_millis()
+        );
         if let Some(mirror_tx) = &mirror_tx {
             let _ = mirror_tx.send(AudioMirrorCommand::Finalize);
         }
         let mut finalize = Some(SessionCommand::Finalize {
             id: recording_id.clone(),
         });
+        let finalize_started = std::time::Instant::now();
         let deadline = std::time::Instant::now() + WS_SEND_TIMEOUT;
         while let Some(cmd) = finalize.take() {
             match session_tx.try_send(cmd) {
-                Ok(()) => break,
+                Ok(()) => {
+                    info!(
+                        "[swift_session] finalize enqueued id={} after_ms={}",
+                        recording_id,
+                        finalize_started.elapsed().as_millis()
+                    );
+                    break;
+                }
                 Err(tokio_mpsc::error::TrySendError::Full(cmd)) => {
                     if std::time::Instant::now() >= deadline {
-                        warn!("[swift_session] finalize send timed out id={recording_id}");
+                        warn!(
+                            "[swift_session] finalize send timed out id={} after_ms={} chunks={} bytes={} dropped={}",
+                            recording_id,
+                            finalize_started.elapsed().as_millis(),
+                            chunks_sent,
+                            bytes_sent,
+                            chunks_dropped
+                        );
                         break;
                     }
                     finalize = Some(cmd);

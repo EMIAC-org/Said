@@ -70,7 +70,7 @@ const MEETING_PAUSE_MS: u64 = 900;
 const MEETING_MIN_CHUNK_MS: u64 = 700;
 const MEETING_MAX_CHUNK_MS: u64 = 30_000;
 const AUTOSTART_ARG: &str = "--airnote-autostart";
-const SWIFT_FINAL_HANDOFF_WAIT_MS: u64 = 2_700;
+const SWIFT_FINAL_HANDOFF_WAIT_MS: u64 = 8_500;
 
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
