@@ -217,9 +217,12 @@ fun AirNoteAndroidApp(
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val sessionStore = remember { AndroidSecureSessionStore(context.applicationContext) }
+    val settingsStore = remember { AndroidSettingsStore(context.applicationContext) }
+    val diagnosticsStore = remember { AndroidDiagnosticsStore(context.applicationContext) }
     val recorder = remember { AndroidVoiceRecorder() }
     val scope = rememberCoroutineScope()
     var gatewaySession by remember { mutableStateOf(sessionStore.read()) }
+    var polishPrefs by remember { mutableStateOf(settingsStore.readPolishPreferences()) }
     var setupComplete by rememberSaveable { mutableStateOf(false) }
     var appearanceModeRaw by rememberSaveable { mutableStateOf(AndroidAppearanceMode.System.name) }
     val appearanceMode = AndroidAppearanceMode.entries
@@ -236,6 +239,15 @@ fun AirNoteAndroidApp(
     var voiceMessage by rememberSaveable { mutableStateOf("Tap to record a short dictation.") }
     var voiceLevel by rememberSaveable { mutableStateOf(0f) }
     var voiceResult by rememberSaveable { mutableStateOf<String?>(null) }
+    var diagnosticsSnapshot by remember {
+        mutableStateOf(
+            diagnosticsStore.snapshot(
+                serverUrl = polishPrefs.gatewayBaseUrl,
+                authState = if (gatewaySession == null) "signed_out" else "signed_in",
+                micPermission = if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) "granted" else "missing",
+            ),
+        )
+    }
     var historyMessage by rememberSaveable { mutableStateOf(if (BuildConfig.USE_MOCK_GATEWAY) "Preview history" else "History not loaded") }
     val history = remember { mutableStateListOf<RuntimeHistoryItem>() }
     var learningItem by remember { mutableStateOf<RuntimeHistoryItem?>(null) }
@@ -243,14 +255,32 @@ fun AirNoteAndroidApp(
     var learningMessage by rememberSaveable { mutableStateOf("Pick a saved dictation to review an edit.") }
     var learningWorking by rememberSaveable { mutableStateOf(false) }
     val learningCandidates = remember { mutableStateListOf<RuntimeLearningCandidate>() }
-    val gateway = remember(gatewaySession?.token) {
+    val gateway = remember(gatewaySession?.token, polishPrefs.gatewayBaseUrl) {
         if (BuildConfig.USE_MOCK_GATEWAY) {
             MockGatewayClient()
         } else {
-            HttpGatewayClient(BuildConfig.GATEWAY_BASE_URL) {
+            HttpGatewayClient(polishPrefs.gatewayBaseUrl) {
                 gatewaySession?.token ?: sessionStore.read()?.token
             }
         }
+    }
+
+    fun refreshDiagnostics() {
+        diagnosticsSnapshot = diagnosticsStore.snapshot(
+            serverUrl = polishPrefs.gatewayBaseUrl,
+            authState = if (gatewaySession == null) "signed_out" else "signed_in",
+            micPermission = if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) "granted" else "missing",
+        )
+    }
+
+    fun reloadPolishPrefs() {
+        val nextPrefs = settingsStore.readPolishPreferences()
+        polishPrefs = nextPrefs
+        diagnosticsSnapshot = diagnosticsStore.snapshot(
+            serverUrl = nextPrefs.gatewayBaseUrl,
+            authState = if (gatewaySession == null) "signed_out" else "signed_in",
+            micPermission = if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) "granted" else "missing",
+        )
     }
 
     fun cancelLearningReview() {
@@ -270,6 +300,11 @@ fun AirNoteAndroidApp(
     }
 
     fun analyzeLearning() {
+        if (!polishPrefs.learningEnabled) {
+            learningMessage = "Learning review is off in Android settings."
+            learningCandidates.clear()
+            return
+        }
         val item = learningItem ?: return
         val kept = learningText.trim()
         if (kept.isBlank()) {
@@ -305,6 +340,11 @@ fun AirNoteAndroidApp(
     }
 
     fun confirmLearning() {
+        if (!polishPrefs.learningEnabled) {
+            learningMessage = "Learning review is off in Android settings."
+            learningCandidates.clear()
+            return
+        }
         val item = learningItem ?: return
         val items = learningCandidates.filter { it.learnable }
         if (items.isEmpty()) {
@@ -403,8 +443,15 @@ fun AirNoteAndroidApp(
     }
 
     fun beginVoiceRecording() {
+        if (!BuildConfig.USE_MOCK_GATEWAY && gatewaySession?.token == null) {
+            voicePhase = AndroidVoicePhase.Error
+            voiceMessage = "Sign in before recording on the live Gateway."
+            refreshDiagnostics()
+            return
+        }
+        val route = AndroidAudioRoute.current(context.applicationContext)
         voiceResult = null
-        voiceMessage = "Listening. Speak naturally, then tap Stop."
+        voiceMessage = "Listening on ${route.label}. Speak naturally, then tap Stop."
         val started = recorder.start(context.applicationContext, scope) { level ->
             scope.launch { voiceLevel = level }
         }
@@ -413,6 +460,8 @@ fun AirNoteAndroidApp(
         } else {
             voicePhase = AndroidVoicePhase.Error
             voiceMessage = "Microphone is unavailable. Check Android permissions."
+            diagnosticsStore.recordFailure("microphone_unavailable")
+            refreshDiagnostics()
         }
     }
 
@@ -424,26 +473,37 @@ fun AirNoteAndroidApp(
             voicePhase = AndroidVoicePhase.Uploading
             voiceMessage = "Sending audio to AirNote Gateway."
             voiceLevel = 0f
+            val clientRunId = "android-${UUID.randomUUID()}"
+            diagnosticsStore.recordRequestStarted(clientRunId)
+            refreshDiagnostics()
             val result = runCatching {
                 val wav = recorder.stop()
                 require(wav.size > 44) { "No audio was captured. Try again." }
                 gateway.polishWav(
                     wavBytes = wav,
-                    clientRunId = "android-${UUID.randomUUID()}",
+                    clientRunId = clientRunId,
                     deviceId = androidDeviceId(context.applicationContext),
+                    outputLanguage = polishPrefs.outputLanguage.wireValue,
+                    selectedModel = polishPrefs.selectedModel.wireValue,
+                    safeVocabTerms = polishPrefs.safeVocabTerms,
                 )
             }
             result.fold(
                 onSuccess = { response ->
                     voicePhase = AndroidVoicePhase.Complete
                     voiceResult = response.output
-                    voiceMessage = "Polished in ${response.totalLatencyMs.takeIf { it > 0 } ?: 0} ms."
+                    diagnosticsStore.recordVoiceSuccess(response.runId.ifBlank { clientRunId }, response.totalLatencyMs)
+                    val routeNote = if (recorder.routeChanged) " Route changed: ${recorder.routeSummary}." else ""
+                    voiceMessage = "Polished in ${response.totalLatencyMs.takeIf { it > 0 } ?: 0} ms.$routeNote"
+                    refreshDiagnostics()
                     refreshHistory()
                 },
                 onFailure = { error ->
                     voicePhase = AndroidVoicePhase.Error
                     voiceResult = null
                     voiceMessage = error.message ?: "AirNote could not finish this recording."
+                    diagnosticsStore.recordFailure(voiceMessage)
+                    refreshDiagnostics()
                 },
             )
         }
@@ -454,16 +514,21 @@ fun AirNoteAndroidApp(
         voicePhase = AndroidVoicePhase.Idle
         voiceMessage = "Recording cancelled."
         voiceLevel = 0f
+        diagnosticsStore.recordFailure("")
+        refreshDiagnostics()
     }
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (granted) {
+            refreshDiagnostics()
             beginVoiceRecording()
         } else {
             voicePhase = AndroidVoicePhase.Error
             voiceMessage = "Microphone permission is required for dictation."
+            diagnosticsStore.recordFailure("microphone_permission_denied")
+            refreshDiagnostics()
         }
     }
 
@@ -492,8 +557,36 @@ fun AirNoteAndroidApp(
                 voiceMessage = voiceMessage,
                 voiceLevel = voiceLevel,
                 voiceResult = voiceResult,
+                polishPrefs = polishPrefs,
+                diagnosticsSnapshot = diagnosticsSnapshot,
                 appearanceMode = appearanceMode,
                 onAppearanceModeChange = { appearanceModeRaw = it.name },
+                onGatewayPresetChange = { preset ->
+                    settingsStore.setGatewayBaseUrl(preset.url)
+                    reloadPolishPrefs()
+                    runtimeStatus = if (BuildConfig.USE_MOCK_GATEWAY) "Preview" else "Unknown"
+                },
+                onOutputLanguageChange = { language ->
+                    settingsStore.setOutputLanguage(language)
+                    reloadPolishPrefs()
+                },
+                onSelectedModelChange = { model ->
+                    settingsStore.setSelectedModel(model)
+                    reloadPolishPrefs()
+                },
+                onLearningEnabledChange = { enabled ->
+                    settingsStore.setLearningEnabled(enabled)
+                    reloadPolishPrefs()
+                },
+                onAddSafeVocabTerm = { term ->
+                    val added = settingsStore.addSafeVocabTerm(term)
+                    reloadPolishPrefs()
+                    added
+                },
+                onRemoveSafeVocabTerm = { term ->
+                    settingsStore.removeSafeVocabTerm(term)
+                    reloadPolishPrefs()
+                },
                 onVoiceAction = ::handleVoiceAction,
                 onCancelVoice = ::cancelVoiceRecording,
                 onRefreshHistory = ::refreshHistory,
@@ -1083,8 +1176,16 @@ private fun HomeScreen(
     voiceMessage: String,
     voiceLevel: Float,
     voiceResult: String?,
+    polishPrefs: AndroidPolishPreferences,
+    diagnosticsSnapshot: AndroidDiagnosticsSnapshot,
     appearanceMode: AndroidAppearanceMode,
     onAppearanceModeChange: (AndroidAppearanceMode) -> Unit,
+    onGatewayPresetChange: (AndroidGatewayPreset) -> Unit,
+    onOutputLanguageChange: (AndroidOutputLanguage) -> Unit,
+    onSelectedModelChange: (AndroidPolishModel) -> Unit,
+    onLearningEnabledChange: (Boolean) -> Unit,
+    onAddSafeVocabTerm: (String) -> Boolean,
+    onRemoveSafeVocabTerm: (String) -> Unit,
     onVoiceAction: () -> Unit,
     onCancelVoice: () -> Unit,
     onRefreshHistory: () -> Unit,
@@ -1102,6 +1203,8 @@ private fun HomeScreen(
     onReplaySetup: () -> Unit,
 ) {
     val context = LocalContext.current
+    var vocabDraft by rememberSaveable { mutableStateOf("") }
+    var vocabMessage by rememberSaveable { mutableStateOf("Safe vocab terms are sent as existing server hints.") }
 
     AirNoteBackground {
         Column(
@@ -1138,8 +1241,8 @@ private fun HomeScreen(
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         MiniStat("Runtime", runtimeStatus, Modifier.weight(1f))
-                        MiniStat("Style", "Work", Modifier.weight(1f))
-                        MiniStat("Lang", "Hinglish", Modifier.weight(1f))
+                        MiniStat("Model", polishPrefs.selectedModel.label, Modifier.weight(1f))
+                        MiniStat("Lang", polishPrefs.outputLanguage.label, Modifier.weight(1f))
                     }
                     Column(
                         modifier = Modifier
@@ -1213,6 +1316,79 @@ private fun HomeScreen(
             AirNoteCard(padding = 14.dp) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        SectionLabel("Polish Controls")
+                        Spacer(Modifier.weight(1f))
+                        Text("Bubble + app", color = AirNotePalette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    OutputLanguageControl(
+                        selected = polishPrefs.outputLanguage,
+                        onSelected = onOutputLanguageChange,
+                    )
+                    PolishModelControl(
+                        selected = polishPrefs.selectedModel,
+                        onSelected = onSelectedModelChange,
+                    )
+                    SetupRow(
+                        Icons.Rounded.Tune,
+                        "Tone and rewrite",
+                        "The WAV endpoint uses the account's server-default tone. Shorter/formal rewrite stays disabled until this endpoint supports it.",
+                        "Server",
+                    )
+                }
+            }
+
+            AirNoteCard(padding = 14.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SectionLabel("Words")
+                        Spacer(Modifier.weight(1f))
+                        Text("${polishPrefs.safeVocabTerms.size}/50", color = AirNotePalette.Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Text(vocabMessage, color = AirNotePalette.Muted, fontSize = 12.sp, lineHeight = 17.sp)
+                    OutlinedTextField(
+                        value = vocabDraft,
+                        onValueChange = { vocabDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("Name, acronym, or word") },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    )
+                    Button(
+                        onClick = {
+                            val added = onAddSafeVocabTerm(vocabDraft)
+                            vocabMessage = if (added) {
+                                "Vocabulary hint added for future Android requests."
+                            } else {
+                                "Enter a new term between 2 and 80 characters."
+                            }
+                            if (added) vocabDraft = ""
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AirNotePalette.PrimaryButtonFill,
+                            contentColor = AirNotePalette.PrimaryButtonContent,
+                        ),
+                    ) {
+                        Icon(Icons.Rounded.Language, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Add vocabulary hint", fontWeight = FontWeight.SemiBold)
+                    }
+                    if (polishPrefs.safeVocabTerms.isEmpty()) {
+                        SetupRow(Icons.Rounded.Language, "No local Android hints", "Server vocabulary still applies through the existing account memory.", "Empty")
+                    } else {
+                        polishPrefs.safeVocabTerms.forEach { term ->
+                            VocabTermRow(term = term, onRemove = { onRemoveSafeVocabTerm(term) })
+                        }
+                    }
+                }
+            }
+
+            AirNoteCard(padding = 14.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         SectionLabel("Settings")
                         Spacer(Modifier.weight(1f))
                         Text(appearanceMode.detail, color = AirNotePalette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -1226,6 +1402,15 @@ private fun HomeScreen(
                     AppearancePreferenceControl(
                         selected = appearanceMode,
                         onSelected = onAppearanceModeChange,
+                    )
+                    GatewayPresetControl(
+                        selectedUrl = polishPrefs.gatewayBaseUrl,
+                        onSelected = onGatewayPresetChange,
+                    )
+                    ToggleRow(
+                        label = "Explicit learning review enabled",
+                        checked = polishPrefs.learningEnabled,
+                        onCheckedChange = onLearningEnabledChange,
                     )
                 }
             }
@@ -1297,7 +1482,13 @@ private fun HomeScreen(
                                     val clipboard = context.getSystemService(ClipboardManager::class.java)
                                     clipboard?.setPrimaryClip(ClipData.newPlainText("AirNote", item.displayText))
                                 },
-                                onLearn = { onStartLearningReview(item) },
+                                onLearn = {
+                                    if (polishPrefs.learningEnabled) {
+                                        onStartLearningReview(item)
+                                    } else {
+                                        vocabMessage = "Learning review is off in Android settings."
+                                    }
+                                },
                                 onDelete = { onDeleteHistory(item) },
                             )
                         }
@@ -1334,12 +1525,200 @@ private fun HomeScreen(
                 }
             }
 
+            AirNoteCard(padding = 14.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SectionLabel("Diagnostics")
+                        Spacer(Modifier.weight(1f))
+                        Text(BuildConfig.VERSION_NAME, color = AirNotePalette.Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    DiagnosticRow("Server", diagnosticsSnapshot.serverUrl)
+                    DiagnosticRow("Auth", diagnosticsSnapshot.authState)
+                    DiagnosticRow("Mic", diagnosticsSnapshot.micPermission)
+                    DiagnosticRow("Accessibility", if (diagnosticsSnapshot.accessibilityEnabled) "enabled" else "missing")
+                    DiagnosticRow("Audio route", diagnosticsSnapshot.audioRoute)
+                    DiagnosticRow("Last request", diagnosticsSnapshot.lastRequestId.ifBlank { "none" })
+                    DiagnosticRow("Last latency", "${diagnosticsSnapshot.lastLatencyMs} ms")
+                    DiagnosticRow("Last insert", diagnosticsSnapshot.lastInsertionResult)
+                    DiagnosticRow("Last failure", diagnosticsSnapshot.lastFailure.ifBlank { "none" })
+                }
+            }
+
             SectionLabel("Tools")
-            ToolRow(Icons.Rounded.Tune, "Language and style", "Auto, Hinglish, Work")
+            ToolRow(Icons.Rounded.Tune, "Language and model", "${polishPrefs.outputLanguage.label}, ${polishPrefs.selectedModel.label}")
             ToolRow(Icons.Rounded.History, "History", "Copy, retry, and recover")
             ToolRow(Icons.Rounded.Language, "Vocabulary", "Names, aliases, and terms")
             ToolRow(Icons.Rounded.Settings, "Settings", "Privacy, Gateway, diagnostics")
         }
+    }
+}
+
+@Composable
+private fun OutputLanguageControl(
+    selected: AndroidOutputLanguage,
+    onSelected: (AndroidOutputLanguage) -> Unit,
+) {
+    PreferenceSegmentedControl(
+        title = "Language",
+        items = AndroidOutputLanguage.entries,
+        selected = selected,
+        label = { it.label },
+        detail = { it.detail },
+        onSelected = onSelected,
+    )
+}
+
+@Composable
+private fun PolishModelControl(
+    selected: AndroidPolishModel,
+    onSelected: (AndroidPolishModel) -> Unit,
+) {
+    PreferenceSegmentedControl(
+        title = "Model",
+        items = AndroidPolishModel.entries,
+        selected = selected,
+        label = { it.label },
+        detail = { it.detail },
+        onSelected = onSelected,
+    )
+}
+
+@Composable
+private fun GatewayPresetControl(
+    selectedUrl: String,
+    onSelected: (AndroidGatewayPreset) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SetupRow(
+            Icons.Rounded.Bolt,
+            "Gateway",
+            normalizeGatewayUrl(selectedUrl),
+            AndroidGatewayPreset.fromUrl(selectedUrl)?.label ?: "Custom",
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            AndroidGatewayPreset.entries.forEach { preset ->
+                val active = normalizeGatewayUrl(preset.url) == normalizeGatewayUrl(selectedUrl)
+                OutlinedButton(
+                    onClick = { onSelected(preset) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp),
+                    shape = RoundedCornerShape(9.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = if (active) AirNotePalette.PrimaryButtonContent else AirNotePalette.ForegroundFixed,
+                        containerColor = if (active) AirNotePalette.PrimaryButtonFill else Color.Transparent,
+                    ),
+                    border = BorderStroke(1.dp, if (active) AirNotePalette.PrimaryButtonFill else AirNotePalette.BorderStrong),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                ) {
+                    Text(preset.label, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun <T> PreferenceSegmentedControl(
+    title: String,
+    items: List<T>,
+    selected: T,
+    label: (T) -> String,
+    detail: (T) -> String,
+    onSelected: (T) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, color = AirNotePalette.ForegroundFixed, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text(detail(selected), color = AirNotePalette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            items.forEach { item ->
+                val active = item == selected
+                OutlinedButton(
+                    onClick = { onSelected(item) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp),
+                    shape = RoundedCornerShape(9.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = if (active) AirNotePalette.PrimaryButtonContent else AirNotePalette.ForegroundFixed,
+                        containerColor = if (active) AirNotePalette.PrimaryButtonFill else Color.Transparent,
+                    ),
+                    border = BorderStroke(1.dp, if (active) AirNotePalette.PrimaryButtonFill else AirNotePalette.BorderStrong),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                ) {
+                    Text(label(item), fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VocabTermRow(
+    term: String,
+    onRemove: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(AirNotePalette.SurfaceRaised.copy(alpha = 0.52f), RoundedCornerShape(10.dp))
+            .border(1.dp, AirNotePalette.Border, RoundedCornerShape(10.dp))
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .background(AirNotePalette.Accent.copy(alpha = 0.12f), RoundedCornerShape(8.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(term.take(1).uppercase(), color = AirNotePalette.Accent, fontWeight = FontWeight.Bold)
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(term, color = AirNotePalette.ForegroundFixed, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text("Sent as safe_vocab_terms on Android voice requests", color = AirNotePalette.Muted, fontSize = 12.sp)
+        }
+        OutlinedButton(
+            onClick = onRemove,
+            modifier = Modifier.height(32.dp),
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.Danger),
+            border = BorderStroke(1.dp, AirNotePalette.Danger.copy(alpha = 0.35f)),
+            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp),
+        ) {
+            Icon(Icons.Rounded.Delete, contentDescription = "Remove vocabulary hint", modifier = Modifier.size(15.dp))
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticRow(
+    label: String,
+    value: String,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(AirNotePalette.SurfaceRaised.copy(alpha = 0.52f), RoundedCornerShape(10.dp))
+            .border(1.dp, AirNotePalette.Border, RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(label, color = AirNotePalette.Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(104.dp))
+        Text(
+            value,
+            color = AirNotePalette.ForegroundFixed,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 

@@ -1,8 +1,11 @@
 package com.emiac.airnote.android
 
+import android.text.InputType
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class SetupModelTest {
     @Test
@@ -69,6 +72,63 @@ class SetupModelTest {
         )
 
         assertEquals("raw transcript", item.displayText)
+    }
+
+    @Test
+    fun runtimeVoicePayloadIncludesOnlySupportedAndroidFields() {
+        val payload = runtimeVoicePayloadFields(
+            wavBytes = byteArrayOf(1, 2, 3),
+            clientRunId = "android-test-run",
+            deviceId = "android-device",
+            outputLanguage = "hinglish",
+            selectedModel = "smart",
+            safeVocabTerms = listOf("N8N", "  EMIAC  ", "N8N"),
+        )
+
+        assertEquals("hinglish", payload.outputLanguage)
+        assertEquals("smart", payload.selectedModel)
+        assertEquals("android-test-run", payload.clientRunId)
+        assertEquals("android", payload.platform)
+        assertEquals(listOf("N8N", "EMIAC"), payload.safeVocabTerms)
+    }
+
+    @Test
+    fun vocabTermsAreSanitizedForSafeHints() {
+        assertEquals("EMIAC Tech", sanitizeVocabTerm(" EMIAC   Tech "))
+        assertNull(sanitizeVocabTerm("x"))
+        assertEquals("bad term", sanitizeVocabTerm("bad\nterm"))
+        assertNull(sanitizeVocabTerm("bad\u0001term"))
+    }
+
+    @Test
+    fun fieldSafetyBlocksPasswordAndOtpLikeFields() {
+        assertTrue(
+            AndroidFieldSafety.isSensitiveField(
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                isPassword = false,
+                text = null,
+                hint = null,
+                className = null,
+            ),
+        )
+        assertTrue(
+            AndroidFieldSafety.isSensitiveField(
+                inputType = InputType.TYPE_CLASS_NUMBER,
+                isPassword = false,
+                text = null,
+                hint = "Enter OTP",
+                className = "android.widget.EditText",
+            ),
+        )
+        assertFalse(
+            AndroidFieldSafety.isSensitiveField(
+                inputType = InputType.TYPE_CLASS_TEXT,
+                isPassword = false,
+                text = "Write a message",
+                hint = "Message",
+                className = "android.widget.EditText",
+            ),
+        )
     }
 
     private fun runtimeStatus(activeCredentials: Int, memoryReady: Boolean): RuntimeStatus =

@@ -12,7 +12,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.provider.Settings
-import android.text.InputType
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -37,7 +36,8 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val recorder = AndroidVoiceRecorder()
     private lateinit var sessionStore: AndroidSecureSessionStore
-    private lateinit var gateway: GatewayClient
+    private lateinit var settingsStore: AndroidSettingsStore
+    private lateinit var diagnosticsStore: AndroidDiagnosticsStore
     private var phase = BubblePhase.Idle
     private var lastResult: RuntimeVoiceResult? = null
 
@@ -45,13 +45,8 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         sessionStore = AndroidSecureSessionStore(applicationContext)
-        gateway = if (BuildConfig.USE_MOCK_GATEWAY) {
-            MockGatewayClient()
-        } else {
-            HttpGatewayClient(BuildConfig.GATEWAY_BASE_URL) {
-                sessionStore.read()?.token
-            }
-        }
+        settingsStore = AndroidSettingsStore(applicationContext)
+        diagnosticsStore = AndroidDiagnosticsStore(applicationContext)
         showBubble()
     }
 
@@ -118,10 +113,19 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
         val mark = chip("|||", phase.accentColor)
         attachDragHandler(mark, params)
         bubble.addView(mark)
+        val prefs = settingsStore.readPolishPreferences()
 
         when (phase) {
             BubblePhase.Idle -> {
                 bubble.addView(actionChip("AirNote", primary = true) { startDictation() })
+                bubble.addView(actionChip(prefs.outputLanguage.label) {
+                    settingsStore.cycleOutputLanguage()
+                    renderBubble()
+                })
+                bubble.addView(actionChip(prefs.selectedModel.label) {
+                    settingsStore.cycleSelectedModel()
+                    renderBubble()
+                })
             }
             BubblePhase.Recording -> {
                 bubble.addView(actionChip("Stop", primary = true) { finishDictation() })
@@ -129,6 +133,7 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
             }
             BubblePhase.Uploading -> {
                 bubble.addView(chip("Polishing", Color.rgb(237, 237, 245)))
+                bubble.addView(chip(prefs.outputLanguage.label, Color.rgb(158, 179, 250)))
             }
             BubblePhase.Complete -> {
                 val primary = if (canAttemptInsert()) "Insert" else "Copy"
@@ -136,6 +141,7 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
                     if (canAttemptInsert()) insertResult() else copyResult("Copied")
                 })
                 bubble.addView(actionChip("Copy") { copyResult("Copied") })
+                bubble.addView(actionChip("Retry") { startDictation() })
                 bubble.addView(actionChip("Saved") { acknowledgeSaved() })
             }
             BubblePhase.Error -> {
@@ -180,24 +186,39 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
         phase = BubblePhase.Uploading
         renderBubble()
         serviceScope.launch {
+            val prefs = settingsStore.readPolishPreferences()
+            val clientRunId = "android-bubble-${UUID.randomUUID()}"
+            diagnosticsStore.recordRequestStarted(clientRunId)
+            val requestGateway = if (BuildConfig.USE_MOCK_GATEWAY) {
+                MockGatewayClient()
+            } else {
+                HttpGatewayClient(prefs.gatewayBaseUrl) {
+                    sessionStore.read()?.token
+                }
+            }
             val result = runCatching {
                 val wav = recorder.stop()
                 require(wav.size > WAV_HEADER_SIZE) { "No audio captured" }
-                gateway.polishWav(
+                requestGateway.polishWav(
                     wavBytes = wav,
-                    clientRunId = "android-bubble-${UUID.randomUUID()}",
+                    clientRunId = clientRunId,
                     deviceId = androidDeviceId(),
+                    outputLanguage = prefs.outputLanguage.wireValue,
+                    selectedModel = prefs.selectedModel.wireValue,
+                    safeVocabTerms = prefs.safeVocabTerms,
                 )
             }
             result.fold(
                 onSuccess = { response ->
                     lastResult = response
+                    diagnosticsStore.recordVoiceSuccess(response.runId.ifBlank { clientRunId }, response.totalLatencyMs)
                     phase = BubblePhase.Complete
                     renderBubble()
                 },
-                onFailure = {
+                onFailure = { error ->
                     lastResult = null
                     phase = BubblePhase.Error
+                    diagnosticsStore.recordFailure(error.message ?: "bubble_voice_failed")
                     renderBubbleWithNotice("Failed")
                 },
             )
@@ -216,7 +237,9 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
         val node = focusedInputNode()
         if (node == null || isSecureField(node)) {
             copyToClipboard(text)
-            renderBubbleWithNotice(if (node == null) "Copied" else "Secure copy")
+            val notice = if (node == null) "Copied" else "Secure copy"
+            diagnosticsStore.recordInsertionResult(notice)
+            renderBubbleWithNotice(notice)
             scheduleReset()
             return
         }
@@ -236,8 +259,10 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
         }
 
         if (pasted || setEmptyField) {
+            diagnosticsStore.recordInsertionResult("inserted")
             renderBubbleWithNotice("Inserted")
         } else {
+            diagnosticsStore.recordInsertionResult("copied_fallback")
             renderBubbleWithNotice("Copied")
         }
         scheduleReset()
@@ -246,6 +271,7 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
     private fun copyResult(notice: String) {
         val text = lastResult?.output?.takeIf { it.isNotBlank() } ?: return
         copyToClipboard(text)
+        diagnosticsStore.recordInsertionResult(notice)
         renderBubbleWithNotice(notice)
         scheduleReset()
     }
@@ -308,12 +334,13 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
     }
 
     private fun isSecureField(node: AccessibilityNodeInfo): Boolean {
-        if (node.isPassword) return true
-        val variation = node.inputType and InputType.TYPE_MASK_VARIATION
-        return variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
-            variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
-            variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
-            variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        return AndroidFieldSafety.isSensitiveField(
+            inputType = node.inputType,
+            isPassword = node.isPassword,
+            text = node.text,
+            hint = node.hintText,
+            className = node.className,
+        )
     }
 
     private fun copyToClipboard(text: String) {

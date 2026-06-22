@@ -1,10 +1,10 @@
 package com.emiac.airnote.android
 
-import android.util.Base64
 import java.io.BufferedReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -116,6 +116,7 @@ interface GatewayClient {
         deviceId: String,
         outputLanguage: String = "hinglish",
         selectedModel: String = "fast",
+        safeVocabTerms: List<String> = emptyList(),
     ): RuntimeVoiceResult
 }
 
@@ -170,6 +171,7 @@ class MockGatewayClient : GatewayClient {
         deviceId: String,
         outputLanguage: String,
         selectedModel: String,
+        safeVocabTerms: List<String>,
     ): RuntimeVoiceResult =
         RuntimeVoiceResult(
             runId = clientRunId,
@@ -295,15 +297,16 @@ class HttpGatewayClient(
         deviceId: String,
         outputLanguage: String,
         selectedModel: String,
+        safeVocabTerms: List<String>,
     ): RuntimeVoiceResult {
-        val body = JSONObject()
-            .put("wav_b64", Base64.encodeToString(wavBytes, Base64.NO_WRAP))
-            .put("output_language", outputLanguage)
-            .put("selected_model", selectedModel)
-            .put("client_run_id", clientRunId)
-            .put("device_id", deviceId)
-            .put("platform", "android")
-            .put("app_version", BuildConfig.VERSION_NAME)
+        val body = buildRuntimeVoicePayload(
+            wavBytes = wavBytes,
+            clientRunId = clientRunId,
+            deviceId = deviceId,
+            outputLanguage = outputLanguage,
+            selectedModel = selectedModel,
+            safeVocabTerms = safeVocabTerms,
+        )
         val json = requestJson("/v1/runtime/voice/wav", method = "POST", body = body, authorized = true)
         val latency = json.optJSONObject("latency_ms")
         return RuntimeVoiceResult(
@@ -454,3 +457,63 @@ class HttpGatewayClient(
             tag = optString("tag"),
         )
 }
+
+internal fun buildRuntimeVoicePayload(
+    wavBytes: ByteArray,
+    clientRunId: String,
+    deviceId: String,
+    outputLanguage: String,
+    selectedModel: String,
+    safeVocabTerms: List<String>,
+): JSONObject {
+    val fields = runtimeVoicePayloadFields(
+        wavBytes = wavBytes,
+        clientRunId = clientRunId,
+        deviceId = deviceId,
+        outputLanguage = outputLanguage,
+        selectedModel = selectedModel,
+        safeVocabTerms = safeVocabTerms,
+    )
+    return JSONObject()
+        .put("wav_b64", fields.wavB64)
+        .put("output_language", fields.outputLanguage)
+        .put("selected_model", fields.selectedModel)
+        .put("client_run_id", fields.clientRunId)
+        .put("device_id", fields.deviceId)
+        .put("platform", fields.platform)
+        .put("app_version", fields.appVersion)
+        .put("safe_vocab_terms", JSONArray(fields.safeVocabTerms))
+}
+
+internal data class RuntimeVoicePayloadFields(
+    val wavB64: String,
+    val outputLanguage: String,
+    val selectedModel: String,
+    val clientRunId: String,
+    val deviceId: String,
+    val platform: String,
+    val appVersion: String,
+    val safeVocabTerms: List<String>,
+)
+
+internal fun runtimeVoicePayloadFields(
+    wavBytes: ByteArray,
+    clientRunId: String,
+    deviceId: String,
+    outputLanguage: String,
+    selectedModel: String,
+    safeVocabTerms: List<String>,
+): RuntimeVoicePayloadFields =
+    RuntimeVoicePayloadFields(
+        wavB64 = Base64.getEncoder().encodeToString(wavBytes),
+        outputLanguage = outputLanguage,
+        selectedModel = selectedModel,
+        clientRunId = clientRunId,
+        deviceId = deviceId,
+        platform = "android",
+        appVersion = BuildConfig.VERSION_NAME,
+        safeVocabTerms = safeVocabTerms
+            .mapNotNull(::sanitizeVocabTerm)
+            .distinctBy { it.lowercase() }
+            .take(50),
+    )
