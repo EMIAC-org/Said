@@ -2193,7 +2193,7 @@ async fn polish_runtime_transcript(
         "ok",
         Some(prompt_ms),
         None,
-        json!({"prompt_version": "core-literal-hybrid-2026-06-21"}),
+        json!({"prompt_version": "core-legacy-literal-2026-06-07"}),
     )
     .await?;
 
@@ -3302,7 +3302,7 @@ async fn execute_voice_polish(
                 "ok",
                 Some(prompt_ms),
                 None,
-                json!({"prompt_version": "core-literal-hybrid-2026-06-21"}),
+                json!({"prompt_version": "core-legacy-literal-2026-06-07"}),
             )
             .await;
         });
@@ -3506,7 +3506,7 @@ async fn execute_voice_polish(
         run_id: run_id.to_string(),
         output,
         model_used: model.to_string(),
-        prompt_version: "core-literal-hybrid-2026-06-21".to_string(),
+        prompt_version: "core-legacy-literal-2026-06-07".to_string(),
         latency_ms: RuntimeLatency {
             prompt: prompt_ms,
             model: model_ms,
@@ -4538,7 +4538,11 @@ fn voice_output_reject_reason(output: &str, transcript: &str) -> Option<&'static
 }
 
 fn has_obvious_repetition_loop(text: &str) -> bool {
-    let tokens = normalized_words(text);
+    let tokens: Vec<String> = normalized_words(text)
+        .into_iter()
+        .map(|token| compact_alnum(&token))
+        .filter(|token| !token.is_empty())
+        .collect();
     if tokens.len() < 3 {
         return false;
     }
@@ -6341,7 +6345,7 @@ fn vocab_compact_match(term: &str, spoken: &str) -> bool {
     if term == spoken {
         return true;
     }
-    if term.len() >= 4 && (term.contains(spoken) || spoken.contains(term)) {
+    if term.len() >= 4 && spoken.contains(term) {
         return true;
     }
     if term.chars().next() != spoken.chars().next() {
@@ -6349,7 +6353,11 @@ fn vocab_compact_match(term: &str, spoken: &str) -> bool {
     }
     let distance = levenshtein_bounded(term, spoken, 3);
     let max_len = term.chars().count().max(spoken.chars().count());
-    let allowed = if max_len <= 4 {
+    let has_digit =
+        term.chars().any(|c| c.is_ascii_digit()) || spoken.chars().any(|c| c.is_ascii_digit());
+    let allowed = if max_len <= 4 && has_digit {
+        2
+    } else if max_len <= 4 {
         1
     } else if max_len <= 8 {
         2
