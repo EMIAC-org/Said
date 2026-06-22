@@ -1,6 +1,10 @@
 //! Local Swift STT live streaming session (mirrors `dg_stream` actor contract).
 
-use std::sync::{Arc, mpsc};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::time::Duration;
 
 use crate::echo_gate::EchoGateShared;
@@ -21,6 +25,36 @@ const COMMAND_BUFFER_CHUNKS: usize = AUDIO_BRIDGE_BUFFER_CHUNKS + 16;
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const FINALIZE_TIMEOUT: Duration = Duration::from_secs(8);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const STOP_DRAIN_QUIET: Duration = Duration::from_millis(350);
+const STOP_DRAIN_MAX: Duration = Duration::from_millis(1_500);
+
+#[derive(Clone)]
+pub struct AudioBridgeStopHandle {
+    recording_id: String,
+    stop_requested: Arc<AtomicBool>,
+}
+
+impl AudioBridgeStopHandle {
+    fn new(recording_id: String) -> Self {
+        Self {
+            recording_id,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn recording_id(&self) -> &str {
+        &self.recording_id
+    }
+
+    pub fn request_stop(&self, reason: &str) {
+        let was_set = self.stop_requested.swap(true, Ordering::AcqRel);
+        info!(
+            "[swift_session] audio bridge stop requested id={} reason={} already_requested={}",
+            self.recording_id, reason, was_set
+        );
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
@@ -704,20 +738,50 @@ pub fn spawn_audio_bridge_with_echo_gate(
     session_tx: SessionSender,
     echo_gate: Option<Arc<EchoGateShared>>,
     mirror_tx: Option<tokio_mpsc::UnboundedSender<AudioMirrorCommand>>,
-) {
+) -> AudioBridgeStopHandle {
+    let stop_handle = AudioBridgeStopHandle::new(recording_id.clone());
+    let stop_requested = Arc::clone(&stop_handle.stop_requested);
     std::thread::spawn(move || {
         let native_rate = chunk_recv.native_rate;
         let sync_rx: mpsc::Receiver<Vec<f32>> = chunk_recv.rx;
         let bridge_started = std::time::Instant::now();
+        let mut stop_seen_at: Option<std::time::Instant> = None;
+        let mut drain_reason = "channel_closed";
         let mut chunks_sent = 0usize;
         let mut bytes_sent = 0usize;
         let mut chunks_dropped = 0usize;
-        while let Ok(chunk_f32) = sync_rx.recv() {
+        loop {
+            let stop_requested_now = stop_requested.load(Ordering::Acquire);
+            if stop_requested_now && stop_seen_at.is_none() {
+                stop_seen_at = Some(std::time::Instant::now());
+                info!("[swift_session] audio bridge draining after stop id={recording_id}");
+            }
+            let timeout = if stop_requested_now {
+                STOP_DRAIN_QUIET
+            } else {
+                STOP_POLL_INTERVAL
+            };
+            let chunk_f32 = match sync_rx.recv_timeout(timeout) {
+                Ok(chunk) => chunk,
+                Err(mpsc::RecvTimeoutError::Timeout) if stop_requested_now => {
+                    drain_reason = "stop_quiet";
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    drain_reason = "channel_closed";
+                    break;
+                }
+            };
             let resampled = resample_to_16k(&chunk_f32, native_rate);
             if let Some(gate) = &echo_gate {
                 let decision = gate.filter_mic_samples_16k(&resampled);
                 if !decision.allow {
                     chunks_dropped += 1;
+                    if stop_seen_at.is_some_and(|started| started.elapsed() >= STOP_DRAIN_MAX) {
+                        drain_reason = "stop_max_after_drops";
+                        break;
+                    }
                     continue;
                 }
             }
@@ -747,10 +811,16 @@ pub fn spawn_audio_bridge_with_echo_gate(
                 }
                 Err(tokio_mpsc::error::TrySendError::Closed(_)) => break,
             }
+            if stop_seen_at.is_some_and(|started| started.elapsed() >= STOP_DRAIN_MAX) {
+                drain_reason = "stop_max";
+                break;
+            }
         }
         info!(
-            "[swift_session] audio bridge drained id={} chunks={} bytes={} dropped={} native_rate={} elapsed_ms={}",
+            "[swift_session] audio bridge drained id={} reason={} stop_requested={} chunks={} bytes={} dropped={} native_rate={} elapsed_ms={}",
             recording_id,
+            drain_reason,
+            stop_requested.load(Ordering::Acquire),
             chunks_sent,
             bytes_sent,
             chunks_dropped,
@@ -795,6 +865,7 @@ pub fn spawn_audio_bridge_with_echo_gate(
         }
         debug!("[swift_session] audio bridge done id={recording_id}");
     });
+    stop_handle
 }
 
 #[cfg(not(target_os = "macos"))]

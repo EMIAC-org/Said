@@ -938,6 +938,115 @@ struct DeepgramSessionState(dg_stream::SessionSender);
 #[cfg(target_os = "macos")]
 struct SwiftSessionState(swift_stream::SessionSender);
 
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct SwiftBridgeStopInner {
+    handle: Option<swift_stream::AudioBridgeStopHandle>,
+    pending_stop: Option<(String, String)>,
+}
+
+#[cfg(target_os = "macos")]
+struct SwiftBridgeStopState(Mutex<SwiftBridgeStopInner>);
+
+#[cfg(target_os = "macos")]
+fn store_swift_bridge_stop_handle(
+    app: &tauri::AppHandle,
+    handle: swift_stream::AudioBridgeStopHandle,
+) {
+    let recording_id = handle.recording_id().to_string();
+    let Some(state) = app.try_state::<SwiftBridgeStopState>() else {
+        tracing::warn!("[swift_session] missing bridge stop state id={recording_id}");
+        return;
+    };
+    match state.0.lock() {
+        Ok(mut current) => {
+            if let Some((pending_id, pending_reason)) = current.pending_stop.take() {
+                if pending_id == recording_id {
+                    tracing::info!(
+                        "[swift_session] applying pending bridge stop id={recording_id} reason={pending_reason}"
+                    );
+                    handle.request_stop(&pending_reason);
+                } else {
+                    tracing::warn!(
+                        "[swift_session] dropping stale pending bridge stop pending_id={} new_id={recording_id}",
+                        pending_id
+                    );
+                }
+            }
+            if let Some(previous) = current.handle.replace(handle) {
+                tracing::warn!(
+                    "[swift_session] replaced stale bridge stop handle previous_id={} new_id={recording_id}",
+                    previous.recording_id()
+                );
+            } else {
+                tracing::info!("[swift_session] bridge stop handle stored id={recording_id}");
+            }
+        }
+        Err(_) => {
+            tracing::warn!("[swift_session] bridge stop state poisoned id={recording_id}");
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn request_swift_bridge_stop(app: &tauri::AppHandle, recording_id: Option<&str>, reason: &str) {
+    let Some(state) = app.try_state::<SwiftBridgeStopState>() else {
+        return;
+    };
+    let (handle, queued_pending) = match state.0.lock() {
+        Ok(mut current) => {
+            let matches = current
+                .handle
+                .as_ref()
+                .is_some_and(|handle| recording_id.map_or(true, |id| id == handle.recording_id()));
+            if matches {
+                (current.handle.take(), false)
+            } else {
+                let mut queued_pending = false;
+                if let Some(handle) = current.handle.as_ref() {
+                    tracing::warn!(
+                        "[swift_session] dropping stale bridge stop handle current_id={} expected={:?} reason={reason}",
+                        handle.recording_id(),
+                        recording_id
+                    );
+                    current.handle = None;
+                } else if let Some(id) = recording_id {
+                    current.pending_stop = Some((id.to_string(), reason.to_string()));
+                    tracing::warn!(
+                        "[swift_session] bridge stop handle not ready; queued pending stop id={id} reason={reason}"
+                    );
+                    queued_pending = true;
+                }
+                if current.handle.is_none() && !queued_pending {
+                    if let Some(id) = recording_id {
+                        current.pending_stop = Some((id.to_string(), reason.to_string()));
+                        tracing::warn!(
+                            "[swift_session] bridge stop handle not ready after stale drop; queued pending stop id={id} reason={reason}"
+                        );
+                        queued_pending = true;
+                    }
+                }
+                (None, queued_pending)
+            }
+        }
+        Err(_) => {
+            tracing::warn!(
+                "[swift_session] bridge stop state poisoned expected={:?} reason={reason}",
+                recording_id
+            );
+            (None, false)
+        }
+    };
+    if let Some(handle) = handle {
+        handle.request_stop(reason);
+    } else if !queued_pending {
+        tracing::warn!(
+            "[swift_session] bridge stop handle unavailable expected={:?} reason={reason}",
+            recording_id
+        );
+    }
+}
+
 /// Stores the most-recently polished text. Populated after every voice/text polish;
 /// cleared after it's pasted via the global paste-latest hotkey or command.
 struct LatestResult(std::sync::Arc<Mutex<Option<String>>>);
@@ -4008,13 +4117,14 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                             screen_context_for_server_runtime,
                         )
                     });
-                    swift_stream::spawn_audio_bridge_with_echo_gate(
+                    let bridge_stop_handle = swift_stream::spawn_audio_bridge_with_echo_gate(
                         recording_id,
                         chunk_recv,
                         session_tx,
                         echo_gate,
                         server_runtime_mirror,
                     );
+                    store_swift_bridge_stop_handle(&app_for_partials, bridge_stop_handle);
                 });
             }
         } else {
@@ -4074,6 +4184,11 @@ fn do_cancel_recording(
         *route = None;
     }
 
+    #[cfg(target_os = "macos")]
+    let cancel_run_id = app
+        .try_state::<RecordingSessionState>()
+        .and_then(|session| session.current().map(|(_, id)| id));
+
     let _ = app
         .state::<StreamingState>()
         .0
@@ -4090,7 +4205,13 @@ fn do_cancel_recording(
             return;
         }
         let stop_rx = match d.begin_stop() {
-            Ok((stop_rx, _)) => Some(stop_rx),
+            Ok((stop_rx, _)) => {
+                #[cfg(target_os = "macos")]
+                if use_swift_local_stt(&app) {
+                    request_swift_bridge_stop(&app, cancel_run_id.as_deref(), reason);
+                }
+                Some(stop_rx)
+            }
             Err(e) => {
                 tracing::warn!("[meeting_mode] cancel failed ({reason}): {e}");
                 None
@@ -4184,6 +4305,10 @@ fn do_finish_recording(
 
     let (stop_rx, was_too_short) = match begin_stop {
         Ok((stop_rx, was_too_short, snap)) => {
+            #[cfg(target_os = "macos")]
+            if use_swift_local_stt(&app) {
+                request_swift_bridge_stop(&app, client_run_id.as_deref(), "finish_begin_stop");
+            }
             sync_tray(&app, &snap);
             let _ = app.emit("app-state", &snap);
             (stop_rx, was_too_short)
@@ -8939,6 +9064,10 @@ fn main() {
         .manage(LongDictationState::new());
     #[cfg(target_os = "macos")]
     let builder = builder.manage(SwiftSessionState(swift_stream::SwiftSession::spawn()));
+    #[cfg(target_os = "macos")]
+    let builder = builder.manage(SwiftBridgeStopState(Mutex::new(
+        SwiftBridgeStopInner::default(),
+    )));
     let app_result = builder
         .invoke_handler(tauri::generate_handler![
             bootstrap,
