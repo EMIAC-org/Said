@@ -8,9 +8,9 @@ export const downloads = {
       "https://airnote.emiactech.com/releases/2.4.0/AirNote_2.4.0_aarch64.dmg",
   },
   windows: {
-    latestVersion: "2.2.9",
+    latestVersion: "2.3.6",
     latestSetup:
-      "https://airnote.emiactech.com/releases/2.2.9/AirNote_2.2.9_x64-setup.exe",
+      "https://airnote.emiactech.com/releases/2.3.6/AirNote_2.3.6_x64-setup.exe",
   },
 };
 

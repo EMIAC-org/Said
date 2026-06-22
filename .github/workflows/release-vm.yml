@@ -108,9 +108,23 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
-      - name: Install desktop deps
+      - name: Install desktop deps (Mac)
+        if: matrix.platform == 'darwin'
         working-directory: desktop
         run: npm ci
+
+      - name: Install desktop deps (Windows)
+        if: matrix.platform == 'windows'
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          # `create-dmg` is macOS-only and pulls `appdmg` (`os: darwin`),
+          # which makes `npm ci` fail on Windows. The Windows installer path
+          # only needs Tauri/NSIS, so remove the Mac-only dev tool in the
+          # ephemeral runner checkout and keep platform optional deps intact.
+          npm pkg delete devDependencies.create-dmg
+          npm install --package-lock-only --ignore-scripts
+          npm ci
 
       # ── macOS: import signing certificate into CI keychain ────────────────
       - name: Import Apple codesign certificate
