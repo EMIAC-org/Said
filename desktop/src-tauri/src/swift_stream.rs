@@ -26,8 +26,19 @@ const WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const FINALIZE_TIMEOUT: Duration = Duration::from_secs(8);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const STOP_DRAIN_QUIET: Duration = Duration::from_millis(350);
-const STOP_DRAIN_MAX: Duration = Duration::from_millis(1_500);
+// Post-release drain budget. Mic audio is streamed to the sidecar in real time
+// while the key is held, so by the moment of release the sidecar already holds
+// essentially all spoken audio — only a tiny in-flight tail (recorder ring +
+// channel + WS pipe, a few tens of ms because the bridge keeps up with realtime
+// and drops nothing) still needs flushing. The recorder keeps feeding real-time
+// *silence* after release, so the quiet-gap detector can never fire while it
+// streams and the hard cap is what actually governs the wait. The old 1.5s cap
+// therefore spent ~1.25s on every recording flushing post-release silence the
+// user had already stopped producing. Keep the cap just long enough to flush the
+// genuine tail — the full WAV remains the rescue path and finalize pads 0.4s of
+// trailing silence, so trimming this loses no speech.
+const STOP_DRAIN_QUIET: Duration = Duration::from_millis(120);
+const STOP_DRAIN_MAX: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub struct AudioBridgeStopHandle {
