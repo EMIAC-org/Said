@@ -10,8 +10,6 @@ interface DashboardViewProps {
   onToggle:        () => void;
   onAccessibility: () => void;
   onNavigate?:     (view: string) => void;
-  statusPhase?:    string;
-  liveText?:       string;
   pendingEdits?:   PendingEdit[];
   onResolvePending?: (id: string, action: "approve" | "skip") => void;
   onDownloadSuccess?: (path: string) => void;
@@ -22,14 +20,10 @@ interface DashboardViewProps {
 
 export function DashboardView({
   snapshot,
-  statusPhase       = "",
-  liveText          = "",
 }: DashboardViewProps) {
   return (
     <EditorialDashboard
       snapshot={snapshot}
-      statusPhase={statusPhase}
-      liveText={liveText}
     />
   );
 }

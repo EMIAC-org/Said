@@ -6,8 +6,6 @@ import type { AppSnapshot, Recording } from "@/types";
 
 interface Props {
   snapshot:           AppSnapshot | null;
-  statusPhase?:       string;
-  liveText?:          string;
   onDownloadSuccess?: (path: string) => void;
   onNavigate?:        (view: string) => void;
   refreshKey?:        number;
@@ -29,7 +27,7 @@ interface Props {
  *     Copy / Listen / Download actions.
  */
 export function SplitDashboard({
-  snapshot, statusPhase, liveText, onDownloadSuccess, onNavigate, refreshKey = 0,
+  snapshot, onDownloadSuccess, onNavigate, refreshKey = 0,
 }: Props) {
   const [recordings, setRecordings] = useState<Recording[]>([]);
 
@@ -59,37 +57,6 @@ export function SplitDashboard({
 
   return (
     <div className="h-full overflow-hidden" style={{ padding: 16 }}>
-
-      {/* Live polish strip — only when in flight */}
-      {(statusPhase || liveText) && (
-        <div
-          className="rounded-xl mb-3 px-5 py-4 relative overflow-hidden"
-          style={{
-            background:
-              "radial-gradient(80% 60% at 0% 0%, hsl(var(--primary) / 0.10), transparent 60%), hsl(var(--surface-3))",
-            boxShadow: "inset 0 0 0 1px hsl(var(--glass-stroke-strong))",
-          }}
-        >
-          <div className="flex items-center gap-2 mb-2">
-            <span
-              className="w-2 h-2 rounded-full animate-pulse"
-              style={{ background: "hsl(var(--primary))", boxShadow: "0 0 10px hsl(var(--primary))" }}
-            />
-            <span
-              className="text-[10px] font-bold uppercase tracking-[0.14em]"
-              style={{ color: "hsl(var(--primary))" }}
-            >
-              {statusPhase === "transcribing" ? "Transcribing audio" : "Polishing with LLM"}
-            </span>
-          </div>
-          {liveText && (
-            <p className="text-[14px] leading-relaxed" style={{ color: "hsl(var(--foreground))" }}>
-              {liveText}
-              <span className="caret-blink" />
-            </p>
-          )}
-        </div>
-      )}
 
       <div
         className="grid h-full"
