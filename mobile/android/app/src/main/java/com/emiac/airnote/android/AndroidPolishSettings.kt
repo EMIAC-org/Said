@@ -60,6 +60,13 @@ class AndroidSettingsStore(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("airnote_android_settings", Context.MODE_PRIVATE)
 
+    fun isSetupComplete(): Boolean =
+        prefs.getBoolean(KEY_SETUP_COMPLETE, false)
+
+    fun setSetupComplete(complete: Boolean) {
+        prefs.edit().putBoolean(KEY_SETUP_COMPLETE, complete).apply()
+    }
+
     fun readPolishPreferences(): AndroidPolishPreferences =
         AndroidPolishPreferences(
             gatewayBaseUrl = normalizeGatewayUrl(
@@ -86,6 +93,14 @@ class AndroidSettingsStore(context: Context) {
 
     fun setLearningEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_LEARNING_ENABLED, enabled).apply()
+    }
+
+    fun applyRuntimeSettings(settings: RuntimeSettings) {
+        prefs.edit()
+            .putString(KEY_OUTPUT_LANGUAGE, AndroidOutputLanguage.fromWire(settings.outputLanguage).wireValue)
+            .putString(KEY_SELECTED_MODEL, AndroidPolishModel.fromWire(settings.selectedModel).wireValue)
+            .putBoolean(KEY_LEARNING_ENABLED, settings.learningEnabled)
+            .apply()
     }
 
     fun addSafeVocabTerm(rawTerm: String): Boolean {
@@ -136,6 +151,7 @@ class AndroidSettingsStore(context: Context) {
     }
 
     private companion object {
+        const val KEY_SETUP_COMPLETE = "setup_complete"
         const val KEY_GATEWAY_BASE_URL = "gateway_base_url"
         const val KEY_OUTPUT_LANGUAGE = "output_language"
         const val KEY_SELECTED_MODEL = "selected_model"

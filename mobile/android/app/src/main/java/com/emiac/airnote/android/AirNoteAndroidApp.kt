@@ -56,6 +56,7 @@ import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
@@ -223,7 +224,7 @@ fun AirNoteAndroidApp(
     val scope = rememberCoroutineScope()
     var gatewaySession by remember { mutableStateOf(sessionStore.read()) }
     var polishPrefs by remember { mutableStateOf(settingsStore.readPolishPreferences()) }
-    var setupComplete by rememberSaveable { mutableStateOf(false) }
+    var setupComplete by rememberSaveable { mutableStateOf(settingsStore.isSetupComplete()) }
     var appearanceModeRaw by rememberSaveable { mutableStateOf(AndroidAppearanceMode.System.name) }
     val appearanceMode = AndroidAppearanceMode.entries
         .firstOrNull { it.name == appearanceModeRaw }
@@ -418,6 +419,11 @@ fun AirNoteAndroidApp(
         } else if (gatewaySession?.token != null) {
             runtimeStatus = runCatching { gateway.runtimeStatus().readinessLabel }
                 .getOrElse { "unreachable" }
+            runCatching { gateway.runtimeSettings() }
+                .onSuccess { settings ->
+                    settingsStore.applyRuntimeSettings(settings)
+                    reloadPolishPrefs()
+                }
             refreshHistory()
         } else {
             history.clear()
@@ -435,6 +441,11 @@ fun AirNoteAndroidApp(
             gatewaySession = saved
             runtimeStatus = runCatching { gateway.runtimeStatus().readinessLabel }
                 .getOrElse { "unreachable" }
+            runCatching { gateway.runtimeSettings() }
+                .onSuccess { settings ->
+                    settingsStore.applyRuntimeSettings(settings)
+                    reloadPolishPrefs()
+                }
             refreshHistory()
         }.onFailure {
             runtimeStatus = "auth_failed"
@@ -606,6 +617,7 @@ fun AirNoteAndroidApp(
                     cancelLearningReview()
                     cancelVoiceRecording()
                     sessionStore.clear()
+                    settingsStore.setSetupComplete(false)
                     gatewaySession = null
                     runtimeStatus = if (BuildConfig.USE_MOCK_GATEWAY) "Preview" else "Unknown"
                     setupComplete = false
@@ -627,6 +639,7 @@ fun AirNoteAndroidApp(
                     }
                 },
                 onFinish = {
+                    settingsStore.setSetupComplete(true)
                     setupComplete = true
                     refreshHistory()
                 },
@@ -710,6 +723,7 @@ private fun SetupFlowScreen(
     onAuthenticate: suspend (String, String, Boolean) -> Result<GatewayAuthResponse>,
     onFinish: () -> Unit,
 ) {
+    val context = LocalContext.current
     var step by rememberSaveable { mutableStateOf(AndroidSetupStep.Welcome) }
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
@@ -721,12 +735,24 @@ private fun SetupFlowScreen(
     var bubbleEnabled by rememberSaveable { mutableStateOf(false) }
     var previewState by rememberSaveable { mutableStateOf(AndroidPreviewState.Ready) }
 
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        micChecked = granted
+    }
+    LaunchedEffect(step) {
+        if (step == AndroidSetupStep.Microphone) {
+            micChecked = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        }
+        if (step == AndroidSetupStep.Bubble) {
+            bubbleEnabled = isAirNoteAccessibilityEnabled(context)
+        }
+    }
     val canContinue = when (step) {
         AndroidSetupStep.Account -> BuildConfig.USE_MOCK_GATEWAY || accountEmail != null
         AndroidSetupStep.Privacy -> privacyAccepted
-        AndroidSetupStep.Bubble -> bubbleEnabled
+        AndroidSetupStep.Bubble -> true
         else -> true
     }
 
@@ -807,9 +833,11 @@ private fun SetupFlowScreen(
                         )
                         AndroidSetupStep.Bubble -> BubbleStep(
                             enabled = bubbleEnabled,
-                            onEnabledChange = { bubbleEnabled = it },
                             onOpenAccessibility = {
                                 context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                            },
+                            onRefreshAccessibility = {
+                                bubbleEnabled = isAirNoteAccessibilityEnabled(context)
                             },
                         )
                         AndroidSetupStep.Preview -> PreviewStep(
@@ -829,7 +857,6 @@ private fun SetupFlowScreen(
                     when (step) {
                         AndroidSetupStep.Welcome,
                         AndroidSetupStep.Privacy,
-                        AndroidSetupStep.Bubble,
                         -> step.next()?.let { step = it }
                         AndroidSetupStep.Account -> {
                             if (BuildConfig.USE_MOCK_GATEWAY) {
@@ -846,7 +873,13 @@ private fun SetupFlowScreen(
                             if (micChecked) {
                                 step.next()?.let { step = it }
                             } else {
-                                micChecked = true
+                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                        AndroidSetupStep.Bubble -> {
+                            bubbleEnabled = isAirNoteAccessibilityEnabled(context)
+                            if (bubbleEnabled || BuildConfig.USE_MOCK_GATEWAY) {
+                                step.next()?.let { step = it }
                             }
                         }
                         AndroidSetupStep.Preview -> onFinish()
@@ -1015,17 +1048,27 @@ private fun MicrophoneStep(checked: Boolean) {
 @Composable
 private fun BubbleStep(
     enabled: Boolean,
-    onEnabledChange: (Boolean) -> Unit,
     onOpenAccessibility: () -> Unit,
+    onRefreshAccessibility: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        SetupRow(Icons.Rounded.Lock, "Accessibility service", "Lets AirNote find focused text fields and insert results.", "Step 1")
+        SetupRow(
+            Icons.Rounded.Lock,
+            "Accessibility service",
+            "Lets AirNote find focused text fields and insert results.",
+            if (enabled) "Enabled" else "Required",
+        )
         SetupRow(Icons.Rounded.Keyboard, "Bubble over keyboard", "AirNote appears above the keyboard instead of replacing it.", if (enabled) "On" else "Off")
         SetupRow(Icons.Rounded.Bolt, "Battery unrestricted", "Keeps the bubble available after the phone sleeps.", "Step 3")
-        ToggleRow(
-            label = "Bubble preview enabled",
-            checked = enabled,
-            onCheckedChange = onEnabledChange,
+        Text(
+            text = if (enabled) {
+                "AirNote can show the bubble above your existing keyboard."
+            } else {
+                "Enable AirNote in Android Accessibility settings, return here, then refresh service status."
+            },
+            color = AirNotePalette.Muted,
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
         )
         OutlinedButton(
             onClick = onOpenAccessibility,
@@ -1040,6 +1083,20 @@ private fun BubbleStep(
             Icon(Icons.Rounded.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
             Text("Open Android settings", fontWeight = FontWeight.SemiBold)
+        }
+        OutlinedButton(
+            onClick = onRefreshAccessibility,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp),
+            shape = RoundedCornerShape(10.dp),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = if (enabled) AirNotePalette.Success else AirNotePalette.Accent),
+            border = BorderStroke(1.dp, if (enabled) AirNotePalette.Success.copy(alpha = 0.35f) else AirNotePalette.Accent.copy(alpha = 0.30f)),
+            contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+        ) {
+            Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(if (enabled) "AirNote bubble is enabled" else "Refresh service status", fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -1205,6 +1262,7 @@ private fun HomeScreen(
     val context = LocalContext.current
     var vocabDraft by rememberSaveable { mutableStateOf("") }
     var vocabMessage by rememberSaveable { mutableStateOf("Safe vocab terms are sent as existing server hints.") }
+    var diagnosticsMessage by rememberSaveable { mutableStateOf("Redacted diagnostics include no audio or dictated text.") }
 
     AirNoteBackground {
         Column(
@@ -1541,6 +1599,59 @@ private fun HomeScreen(
                     DiagnosticRow("Last latency", "${diagnosticsSnapshot.lastLatencyMs} ms")
                     DiagnosticRow("Last insert", diagnosticsSnapshot.lastInsertionResult)
                     DiagnosticRow("Last failure", diagnosticsSnapshot.lastFailure.ifBlank { "none" })
+                    Text(
+                        text = diagnosticsMessage,
+                        color = AirNotePalette.Muted,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(ClipboardManager::class.java)
+                                clipboard?.setPrimaryClip(
+                                    ClipData.newPlainText(
+                                        "AirNote Android diagnostics",
+                                        diagnosticsSnapshot.redactedSummary,
+                                    ),
+                                )
+                                diagnosticsMessage = "Copied redacted diagnostics."
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp),
+                            shape = RoundedCornerShape(9.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.ForegroundFixed),
+                            border = BorderStroke(1.dp, AirNotePalette.BorderStrong),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        ) {
+                            Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Copy", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                val share = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_SUBJECT, "AirNote Android diagnostics")
+                                    putExtra(Intent.EXTRA_TEXT, diagnosticsSnapshot.redactedSummary)
+                                }
+                                context.startActivity(Intent.createChooser(share, "Share AirNote diagnostics"))
+                                diagnosticsMessage = "Shared redacted diagnostics."
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp),
+                            shape = RoundedCornerShape(9.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.Accent),
+                            border = BorderStroke(1.dp, AirNotePalette.Accent.copy(alpha = 0.30f)),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        ) {
+                            Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Share", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
+                    }
                 }
             }
 

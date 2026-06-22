@@ -101,6 +101,33 @@ class SetupModelTest {
     }
 
     @Test
+    fun gatewayUrlsAreNormalizedForAndroidSettings() {
+        assertEquals("https://airnote-dev.103.180.163.41.sslip.io", normalizeGatewayUrl("https://airnote-dev.103.180.163.41.sslip.io/"))
+        assertEquals("https://airnote.emiactech.com", normalizeGatewayUrl("airnote.emiactech.com"))
+    }
+
+    @Test
+    fun diagnosticsSummaryAvoidsRawDictationData() {
+        val summary = AndroidDiagnosticsSnapshot(
+            serverUrl = "https://airnote-dev.103.180.163.41.sslip.io",
+            authState = "signed_in",
+            micPermission = "granted",
+            accessibilityEnabled = true,
+            audioRoute = "Phone mic",
+            lastRequestId = "android-test",
+            lastLatencyMs = 123,
+            lastInsertionResult = "inserted",
+            lastFailure = "",
+        ).redactedSummary
+
+        assertTrue(summary.contains("server=https://airnote-dev.103.180.163.41.sslip.io"))
+        assertTrue(summary.contains("request=android-test"))
+        assertFalse(summary.contains("transcript"))
+        assertFalse(summary.contains("output="))
+        assertFalse(summary.contains("wav"))
+    }
+
+    @Test
     fun fieldSafetyBlocksPasswordAndOtpLikeFields() {
         assertTrue(
             AndroidFieldSafety.isSensitiveField(
