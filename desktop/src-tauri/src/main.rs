@@ -5805,6 +5805,77 @@ fn retry_recording(
     retry_recording_spawn(audio_id, Arc::clone(&state.0), Arc::clone(&backend.0), app)
 }
 
+/// Re-transcribe a saved recording on-device when "Beta Mode" (Swift local) is
+/// the selected STT provider, so ⌃⌥R retry honors the Settings choice instead of
+/// always using the backend's Deepgram STT. Returns the local transcript to hand
+/// the backend as a pre-transcript (so it only polishes), or `None` — for
+/// Deepgram users, an unavailable model, or any failure — so retry transparently
+/// falls back to backend STT.
+#[cfg(target_os = "macos")]
+async fn swift_local_retry_pre_transcript(
+    app: &tauri::AppHandle,
+    backend: &Arc<Mutex<Option<BackendEndpoint>>>,
+    wav: &[u8],
+) -> Option<dg_stream::StreamingTranscript> {
+    if !use_swift_local_stt(app) || !swift_model::is_installed() {
+        return None;
+    }
+    let pcm = wav_to_pcm16(wav)?;
+    if pcm.is_empty() {
+        return None;
+    }
+    let endpoint = backend.lock().ok().and_then(|g| g.clone());
+    let vocab = match endpoint.as_ref() {
+        Some(ep) => fetch_stt_keyterms(ep).await,
+        None => Vec::new(),
+    };
+    let transcript = swift_stream::transcribe_pcm_oneshot(pcm, vocab).await?;
+    tracing::info!(
+        "[retry] Beta Mode local re-transcribe ready chars={} words={}",
+        transcript.transcript.len(),
+        transcript.meta.word_count
+    );
+    Some(transcript)
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn swift_local_retry_pre_transcript(
+    _app: &tauri::AppHandle,
+    _backend: &Arc<Mutex<Option<BackendEndpoint>>>,
+    _wav: &[u8],
+) -> Option<dg_stream::StreamingTranscript> {
+    None
+}
+
+/// Strip the WAV container from a saved recording into raw 16 kHz mono linear16
+/// little-endian PCM for the Swift sidecar. Returns `None` (→ backend STT) if the
+/// audio isn't the recorder's canonical 16 kHz / mono / int16 format.
+#[cfg(target_os = "macos")]
+fn wav_to_pcm16(wav: &[u8]) -> Option<Vec<u8>> {
+    let mut reader = hound::WavReader::new(std::io::Cursor::new(wav)).ok()?;
+    let spec = reader.spec();
+    if spec.channels != 1
+        || spec.sample_rate != 16_000
+        || spec.bits_per_sample != 16
+        || spec.sample_format != hound::SampleFormat::Int
+    {
+        tracing::warn!(
+            "[retry] saved WAV is {}Hz {}ch {}bit — not sidecar-ready, using backend STT",
+            spec.sample_rate,
+            spec.channels,
+            spec.bits_per_sample
+        );
+        return None;
+    }
+    Some(
+        reader
+            .samples::<i16>()
+            .filter_map(Result::ok)
+            .flat_map(i16::to_le_bytes)
+            .collect(),
+    )
+}
+
 fn retry_recording_internal(app: tauri::AppHandle, audio_id: String) {
     let shared = Arc::clone(&app.state::<SharedApp>().0);
     let backend = Arc::clone(&app.state::<BackendState>().0);
@@ -5841,12 +5912,17 @@ fn retry_recording_spawn(
     let back_arc2 = Arc::clone(&backend);
 
     tauri::async_runtime::spawn(async move {
+        // Honor the Settings STT selection on retry: when Beta Mode (Swift local)
+        // is active, re-transcribe the saved audio on-device and hand the backend
+        // that transcript (so it only polishes). For Deepgram users — or any local
+        // failure — this is None and the backend runs its own STT as before.
+        let pre_transcript = swift_local_retry_pre_transcript(&app2, &back_arc2, &wav).await;
         let result = run_voice_polish_sse(
             &back_arc2,
             wav,
             None,
             None,
-            None,
+            pre_transcript,
             Some("preserve_recall".into()),
             None, // no screen context for re-polish
             &app2,
