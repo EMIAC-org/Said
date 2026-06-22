@@ -72,8 +72,11 @@ fn normalize_voice_polish_model(selected_model: &str) -> String {
     }
 }
 
-fn selected_polish_model(_selected_model: &str) -> &'static str {
-    GROQ_MODEL_SMART
+fn selected_polish_model(selected_model: &str) -> &'static str {
+    match normalize_voice_polish_model(selected_model).as_str() {
+        "smart" => GROQ_MODEL_SMART,
+        _ => GROQ_MODEL_FAST,
+    }
 }
 
 fn polish_model_label(selected_model: &str) -> String {
@@ -2190,7 +2193,7 @@ async fn polish_runtime_transcript(
         "ok",
         Some(prompt_ms),
         None,
-        json!({"prompt_version": "core-light-touch-2026-06-20"}),
+        json!({"prompt_version": "core-literal-hybrid-2026-06-21"}),
     )
     .await?;
 
@@ -2287,7 +2290,25 @@ async fn polish_runtime_transcript(
                 )
                 .await?;
             }
-            Ok(email_output)
+            let output = tidy_casing(&email_output);
+            let (output, guard_reason) =
+                guard_voice_polish_output(&output, &formatted_transcript, output_language);
+            if let Some(reason) = guard_reason {
+                insert_stage_event(
+                    state,
+                    run_id,
+                    "output_guard",
+                    "ok",
+                    None,
+                    None,
+                    json!({
+                        "reason": reason,
+                        "fallback_chars": output.chars().count(),
+                    }),
+                )
+                .await?;
+            }
+            Ok(output)
         }
         Err(err) => {
             let _ = insert_provider_usage(
@@ -2375,7 +2396,6 @@ pub async fn voice_wav(
     let server_memory = load_runtime_memory(&state, user.account_id)
         .await
         .unwrap_or_default();
-    let merged_vocab = merge_vocab_terms(&req.safe_vocab_terms, &server_memory.vocab_terms);
 
     let run_id = create_runtime_session(
         &state,
@@ -2391,7 +2411,7 @@ pub async fn voice_wav(
             "endpoint": "voice_wav",
             "mode": session_mode,
             "wav_bytes": wav_data.len(),
-            "safe_vocab_terms": merged_vocab.len(),
+            "safe_vocab_terms": req.safe_vocab_terms.len(),
             "server_vocab_count": server_memory.vocab_terms.len(),
         }),
     )
@@ -2610,6 +2630,11 @@ pub async fn voice_wav(
             "server_message_polish_audio",
         )
     } else {
+        let merged_vocab = merge_vocab_terms(
+            &req.safe_vocab_terms,
+            &server_memory.vocab_terms,
+            &transcript,
+        );
         let output = match polish_runtime_transcript(
             &state,
             user.account_id,
@@ -3139,7 +3164,11 @@ async fn execute_voice_polish(
     let server_memory = load_runtime_memory(&state, user.account_id)
         .await
         .unwrap_or_default();
-    let merged_vocab = merge_vocab_terms(&req.safe_vocab_terms, &server_memory.vocab_terms);
+    let merged_vocab = merge_vocab_terms(
+        &req.safe_vocab_terms,
+        &server_memory.vocab_terms,
+        transcript,
+    );
     let memory_ms = memory_start.elapsed().as_millis() as i64;
 
     let session_start = Instant::now();
@@ -3273,7 +3302,7 @@ async fn execute_voice_polish(
                 "ok",
                 Some(prompt_ms),
                 None,
-                json!({"prompt_version": "core-light-touch-2026-06-20"}),
+                json!({"prompt_version": "core-literal-hybrid-2026-06-21"}),
             )
             .await;
         });
@@ -3390,10 +3419,22 @@ async fn execute_voice_polish(
             }),
         ));
     }
-    // Deterministic sentence-case + terminal punctuation. The light-touch polish
-    // prompt (anti-"Scout meltdown") intentionally under-edits casing/punctuation,
-    // so guarantee them mechanically here — never re-triggers LLM over-editing.
+    // Deterministic sentence-case + terminal punctuation. The prompt stays
+    // minimal-edit, so guarantee casing/punctuation mechanically here without
+    // re-triggering LLM over-editing.
     let output = tidy_casing(&output);
+    let (output, guard_reason) =
+        guard_voice_polish_output(&output, &formatted_transcript, &req.output_language);
+    if let Some(reason) = guard_reason {
+        deferred_events.push((
+            "output_guard",
+            None,
+            json!({
+                "reason": reason,
+                "fallback_chars": output.chars().count(),
+            }),
+        ));
+    }
 
     deferred_events.push((
         "llm_complete",
@@ -3465,7 +3506,7 @@ async fn execute_voice_polish(
         run_id: run_id.to_string(),
         output,
         model_used: model.to_string(),
-        prompt_version: "core-light-touch-2026-06-20".to_string(),
+        prompt_version: "core-literal-hybrid-2026-06-21".to_string(),
         latency_ms: RuntimeLatency {
             prompt: prompt_ms,
             model: model_ms,
@@ -4431,9 +4472,111 @@ fn tidy_casing(input: &str) -> String {
     out
 }
 
+fn guard_voice_polish_output(
+    output: &str,
+    transcript: &str,
+    output_language: &str,
+) -> (String, Option<&'static str>) {
+    let stripped = crate::voice_polish_standalone::strip_leaked_instructions(output);
+    if stripped != output && !stripped.trim().is_empty() {
+        if voice_output_reject_reason(&stripped, transcript).is_none() {
+            return (tidy_casing(&stripped), Some("stripped_prompt_leak"));
+        }
+    }
+
+    if let Some(reason) = voice_output_reject_reason(&stripped, transcript) {
+        let fallback =
+            crate::voice_polish_standalone::enforce_output_script(transcript, output_language);
+        return (tidy_casing(&fallback), Some(reason));
+    }
+
+    (stripped, None)
+}
+
+fn voice_output_reject_reason(output: &str, transcript: &str) -> Option<&'static str> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return Some("empty_output");
+    }
+
+    let lower = trimmed.to_lowercase();
+    let start = lower.trim_start();
+    const START_MARKERS: &[&str] = &[
+        "the given response",
+        "here is the",
+        "explanation:",
+        "output:",
+        "input:",
+        "transcript:",
+        "as an ai",
+    ];
+    if START_MARKERS.iter().any(|marker| start.starts_with(marker)) {
+        return Some("instruction_leak");
+    }
+    const BODY_MARKERS: &[&str] = &[
+        "known correct terms",
+        "final instruction",
+        "begin transcript",
+        "end transcript",
+        "polish my message mode",
+    ];
+    if BODY_MARKERS.iter().any(|marker| lower.contains(marker)) {
+        return Some("instruction_leak");
+    }
+
+    let output_chars = trimmed.chars().count();
+    let transcript_chars = transcript.trim().chars().count().max(1);
+    if output_chars > 300 && output_chars > transcript_chars.saturating_mul(3) + 160 {
+        return Some("length_explosion");
+    }
+
+    if has_obvious_repetition_loop(trimmed) {
+        return Some("repetition_loop");
+    }
+
+    None
+}
+
+fn has_obvious_repetition_loop(text: &str) -> bool {
+    let tokens = normalized_words(text);
+    if tokens.len() < 3 {
+        return false;
+    }
+
+    let mut previous = "";
+    let mut run = 0usize;
+    for token in &tokens {
+        if token == previous {
+            run += 1;
+        } else {
+            previous = token;
+            run = 1;
+        }
+        if run >= 4 || (run >= 3 && token.chars().count() <= 2) {
+            return true;
+        }
+    }
+
+    for size in 2..=5 {
+        if tokens.len() < size * 3 {
+            continue;
+        }
+        for start in 0..=tokens.len() - size * 3 {
+            let a = &tokens[start..start + size];
+            let b = &tokens[start + size..start + size * 2];
+            let c = &tokens[start + size * 2..start + size * 3];
+            if a == b && b == c {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tidy_casing_tests {
-    use super::tidy_casing;
+    use super::{guard_voice_polish_output, tidy_casing, voice_output_reject_reason};
 
     #[test]
     fn capitalizes_and_terminates() {
@@ -4451,6 +4594,30 @@ mod tidy_casing_tests {
     fn empty_and_numeric_safe() {
         assert_eq!(tidy_casing(""), "");
         assert_eq!(tidy_casing("250 ms"), "250 ms.");
+    }
+
+    #[test]
+    fn output_guard_falls_back_on_length_explosion() {
+        let transcript = "Depress and deep audit karo.";
+        let bad = "The given response is already follows the format. ".repeat(20);
+        let (output, reason) = guard_voice_polish_output(&bad, transcript, "hinglish");
+        assert_eq!(reason, Some("instruction_leak"));
+        assert_eq!(output, transcript);
+    }
+
+    #[test]
+    fn output_guard_allows_small_valid_vocab_fix() {
+        let reason =
+            voice_output_reject_reason("Deepgram ka use karenge.", "deep gram ka use karenge");
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn output_guard_rejects_repetition_loop() {
+        assert_eq!(
+            voice_output_reject_reason("Theek hai 1 1 1.", "Theek hai one."),
+            Some("repetition_loop")
+        );
     }
 }
 
@@ -6074,16 +6241,151 @@ fn infer_source_for_corrected(
     best.map(|(_, surface)| surface)
 }
 
-fn merge_vocab_terms(request: &[String], server: &[String]) -> Vec<String> {
+fn merge_vocab_terms(request: &[String], server: &[String], transcript: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut merged = Vec::with_capacity(request.len() + server.len());
-    for term in request.iter().chain(server.iter()) {
+    for term in request {
+        let lower = term.to_lowercase();
+        if !lower.is_empty() && seen.insert(lower) {
+            merged.push(term.clone());
+        }
+    }
+    for term in server {
+        if !is_vocab_term_relevant_to_transcript(term, transcript) {
+            continue;
+        }
         let lower = term.to_lowercase();
         if !lower.is_empty() && seen.insert(lower) {
             merged.push(term.clone());
         }
     }
     merged
+}
+
+fn is_vocab_term_relevant_to_transcript(term: &str, transcript: &str) -> bool {
+    let term_norm = normalize_learning_text(term);
+    if term_norm.is_empty() {
+        return false;
+    }
+    if contains_normalized_phrase(transcript, &term_norm) {
+        return true;
+    }
+
+    let term_compact = compact_alnum(&term_norm);
+    if term_compact.len() < 2 {
+        return false;
+    }
+    let transcript_words = normalized_words(transcript);
+    if transcript_words.is_empty() {
+        return false;
+    }
+    let transcript_compact = compact_alnum(&transcript_words.join(""));
+    if term_compact.len() >= 4
+        && (transcript_compact.contains(&term_compact)
+            || transcript_compact.contains(&expand_digits_for_match(&term_compact)))
+    {
+        return true;
+    }
+
+    for start in 0..transcript_words.len() {
+        for end in (start + 1)..=(start + 4).min(transcript_words.len()) {
+            let chunk = transcript_words[start..end].join("");
+            let chunk_compact = compact_alnum(&chunk);
+            if chunk_compact.is_empty() {
+                continue;
+            }
+            if vocab_compact_match(&term_compact, &chunk_compact) {
+                return true;
+            }
+            let expanded = expand_digits_for_match(&term_compact);
+            if expanded != term_compact && vocab_compact_match(&expanded, &chunk_compact) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn compact_alnum(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+fn expand_digits_for_match(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        match ch {
+            '0' => out.push_str("zero"),
+            '1' => out.push_str("one"),
+            '2' => out.push_str("two"),
+            '3' => out.push_str("three"),
+            '4' => out.push_str("four"),
+            '5' => out.push_str("five"),
+            '6' => out.push_str("six"),
+            '7' => out.push_str("seven"),
+            '8' => out.push_str("eight"),
+            '9' => out.push_str("nine"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn vocab_compact_match(term: &str, spoken: &str) -> bool {
+    if term.is_empty() || spoken.is_empty() {
+        return false;
+    }
+    if term == spoken {
+        return true;
+    }
+    if term.len() >= 4 && (term.contains(spoken) || spoken.contains(term)) {
+        return true;
+    }
+    if term.chars().next() != spoken.chars().next() {
+        return false;
+    }
+    let distance = levenshtein_bounded(term, spoken, 3);
+    let max_len = term.chars().count().max(spoken.chars().count());
+    let allowed = if max_len <= 4 {
+        1
+    } else if max_len <= 8 {
+        2
+    } else {
+        3
+    };
+    distance <= allowed
+}
+
+fn levenshtein_bounded(left: &str, right: &str, max_distance: usize) -> usize {
+    let left_chars: Vec<char> = left.chars().collect();
+    let right_chars: Vec<char> = right.chars().collect();
+    if left_chars.len().abs_diff(right_chars.len()) > max_distance {
+        return max_distance + 1;
+    }
+
+    let mut prev: Vec<usize> = (0..=right_chars.len()).collect();
+    let mut curr = vec![0usize; right_chars.len() + 1];
+
+    for (i, left_ch) in left_chars.iter().enumerate() {
+        curr[0] = i + 1;
+        let mut row_min = curr[0];
+        for (j, right_ch) in right_chars.iter().enumerate() {
+            let substitution = if left_ch == right_ch { 0 } else { 1 };
+            curr[j + 1] = (prev[j + 1] + 1)
+                .min(curr[j] + 1)
+                .min(prev[j] + substitution);
+            row_min = row_min.min(curr[j + 1]);
+        }
+        if row_min > max_distance {
+            return max_distance + 1;
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[right_chars.len()]
 }
 
 fn apply_exact_resolver(
@@ -6607,6 +6909,45 @@ mod tests {
     }
 
     #[test]
+    fn selected_polish_model_respects_fast_and_smart() {
+        assert_eq!(selected_polish_model("fast"), GROQ_MODEL_FAST);
+        assert_eq!(selected_polish_model("deepseek"), GROQ_MODEL_FAST);
+        assert_eq!(selected_polish_model("smart"), GROQ_MODEL_SMART);
+        assert_eq!(selected_polish_model("scout"), GROQ_MODEL_SMART);
+    }
+
+    #[test]
+    fn server_vocab_requires_transcript_evidence() {
+        assert!(is_vocab_term_relevant_to_transcript(
+            "Deepgram",
+            "deep gram ka use karenge"
+        ));
+        assert!(is_vocab_term_relevant_to_transcript(
+            "Kafka",
+            "kaafka nahi chal raha"
+        ));
+        assert!(is_vocab_term_relevant_to_transcript(
+            "n8n",
+            "n 10 automation flow check karo"
+        ));
+        assert!(!is_vocab_term_relevant_to_transcript(
+            "Deepgram",
+            "depress and deep audit karo"
+        ));
+    }
+
+    #[test]
+    fn merge_vocab_keeps_request_terms_but_filters_unrelated_server_terms() {
+        let request = vec!["UserProvided".to_string()];
+        let server = vec!["Deepgram".to_string(), "Kafka".to_string()];
+        let merged = merge_vocab_terms(&request, &server, "kaafka nahi chal raha");
+        assert_eq!(
+            merged,
+            vec!["UserProvided".to_string(), "Kafka".to_string()]
+        );
+    }
+
+    #[test]
     fn restores_product_like_token_replaced_by_model() {
         let output = restore_literal_tokens(
             "Macobs ka pachas percent growth hai",
@@ -6663,7 +7004,7 @@ mod tests {
         assert!(prompt.contains("\"hello\" stays \"hello\""));
         assert!(prompt.contains("\"time\" stays \"time\""));
         assert!(prompt.contains("\"kaam\" stays \"kaam\""));
-        assert!(prompt.contains("must not become \"Namaste"));
+        assert!(prompt.contains("not \"Namaste bhai kaise ho\""));
         assert!(user.contains("BEGIN TRANSCRIPT"));
     }
 

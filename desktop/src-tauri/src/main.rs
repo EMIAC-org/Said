@@ -3122,6 +3122,8 @@ static LAST_FINISH_MS: AtomicU64 = AtomicU64::new(0);
 const MIN_CYCLE_GAP_MS: u64 = 300;
 const QUEUED_FINISH_TIMEOUT_MS: u64 = 2_500;
 const QUEUED_FINISH_POLL_MS: u64 = 25;
+const RELEASE_MIC_CLEANUP_DELAY_MS: u64 = 850;
+const RELEASE_MIC_CLEANUP_RECHECK_MS: u64 = 1_800;
 
 fn now_ms_desktop() -> u64 {
     std::time::SystemTime::now()
@@ -3372,6 +3374,105 @@ fn request_queued_finish(
             }
 
             std::thread::sleep(std::time::Duration::from_millis(QUEUED_FINISH_POLL_MS));
+        }
+    });
+}
+
+fn schedule_release_mic_cleanup(
+    shared: Arc<Mutex<DesktopApp>>,
+    app: tauri::AppHandle,
+    back: Arc<Mutex<Option<BackendEndpoint>>>,
+    reason: &'static str,
+) {
+    std::thread::spawn(move || {
+        for (attempt, delay_ms) in [
+            (1usize, RELEASE_MIC_CLEANUP_DELAY_MS),
+            (2usize, RELEASE_MIC_CLEANUP_RECHECK_MS),
+        ] {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+
+            if app
+                .try_state::<LongDictationState>()
+                .map(|s| s.locked.load(Ordering::SeqCst))
+                .unwrap_or(false)
+            {
+                tracing::debug!(
+                    "[mic-cleanup] skipped after release — long dictation is intentionally locked"
+                );
+                return;
+            }
+
+            let state_and_mic = shared
+                .try_lock()
+                .ok()
+                .map(|d| (d.state, d.mic_stream_held()));
+            let Some((state, mic_held)) = state_and_mic else {
+                tracing::debug!(
+                    "[mic-cleanup] shared app lock busy after release attempt={attempt} reason={reason}"
+                );
+                continue;
+            };
+
+            match state {
+                desktop::AppState::Recording => {
+                    let route = app
+                        .try_state::<RecordingRouteState>()
+                        .and_then(|route| route.0.lock().ok().and_then(|g| *g));
+                    if route == Some(RecordingRoute::Meeting) {
+                        tracing::debug!(
+                            "[mic-cleanup] skipped after release — meeting capture owns recording"
+                        );
+                        return;
+                    }
+
+                    tracing::warn!(
+                        "[mic-cleanup] release left recorder in recording state — finishing now attempt={attempt} reason={reason}"
+                    );
+                    diag::breadcrumb(format!("mic_cleanup:finish:{reason}:{attempt}"));
+                    said_core::reporter::report_event(
+                        "mic_cleanup.finish_after_release",
+                        said_core::reporter::Severity::Warning,
+                        serde_json::json!({
+                            "attempt": attempt,
+                            "reason": reason,
+                            "trail": diag::breadcrumbs(20),
+                        }),
+                    );
+                    do_finish_recording(shared, app, back);
+                    return;
+                }
+                desktop::AppState::Processing | desktop::AppState::Idle if mic_held => {
+                    let stop_rx = {
+                        let mut d = match shared.lock() {
+                            Ok(g) => g,
+                            Err(p) => p.into_inner(),
+                        };
+                        d.release_mic_stream()
+                    };
+                    if let Some(stop_rx) = stop_rx {
+                        tracing::warn!(
+                            "[mic-cleanup] forced stale mic stream release state={} attempt={} reason={}",
+                            state.as_str(),
+                            attempt,
+                            reason
+                        );
+                        diag::breadcrumb(format!("mic_cleanup:force_release:{reason}:{attempt}"));
+                        std::thread::spawn(move || {
+                            let _ = stop_rx.recv_timeout(std::time::Duration::from_secs(3));
+                        });
+                    }
+                    return;
+                }
+                _ => {
+                    if attempt == 2 {
+                        tracing::debug!(
+                            "[mic-cleanup] release cleanup clean state={} mic_held={} reason={reason}",
+                            state.as_str(),
+                            mic_held
+                        );
+                    }
+                }
+            }
         }
     });
 }
@@ -8411,6 +8512,12 @@ fn main() {
                                 // Normal AirNote route. This also applies while the
                                 // meeting view is open but meeting capture is muted.
                                 let back = Arc::clone(&back_hold_release);
+                                schedule_release_mic_cleanup(
+                                    Arc::clone(&shared),
+                                    app_h.clone(),
+                                    Arc::clone(&back),
+                                    "record_hotkey_release",
+                                );
                                 std::thread::spawn(move || {
                                     let current = hotkey_current_state(&shared, "finish");
                                     if current == Some(desktop::AppState::Recording) {
@@ -8501,6 +8608,12 @@ fn main() {
                                 let shared = Arc::clone(&shared_dr);
                                 let app_h = app_dr.clone();
                                 let back = Arc::clone(&back_dr);
+                                schedule_release_mic_cleanup(
+                                    Arc::clone(&shared),
+                                    app_h.clone(),
+                                    Arc::clone(&back),
+                                    "divo_hotkey_release",
+                                );
                                 std::thread::spawn(move || {
                                     guard_panics("divo.finish", move || {
                                         // Capture the Ctrl+N intent now, before the async

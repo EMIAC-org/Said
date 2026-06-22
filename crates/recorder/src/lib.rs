@@ -324,6 +324,20 @@ impl AudioRecorder {
         Some(reply_rx)
     }
 
+    /// True while this recorder still owns handles that can keep the platform
+    /// input stream alive. Used by desktop-side release cleanup to catch missed
+    /// hotkey-release transitions without touching CoreAudio from the main thread.
+    pub fn mic_stream_held(&self) -> bool {
+        self.cmd_tx.is_some() || self.chunk_tx.is_some() || self.level_tx.is_some()
+    }
+
+    /// Best-effort emergency release for a recorder that still owns its mic
+    /// stream after the app already moved past the normal stop point. The caller
+    /// should drain the returned receiver on a background thread and discard it.
+    pub fn release_mic_stream(&mut self) -> Option<StopReceiver> {
+        self.initiate_stop()
+    }
+
     pub fn collect_wav_result(reply_rx: StopReceiver) -> Result<Vec<u8>, String> {
         let (samples_f32, native_rate) = match reply_rx.recv_timeout(STOP_REPLY_TIMEOUT) {
             Ok(reply) => reply,

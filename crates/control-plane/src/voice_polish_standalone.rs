@@ -204,7 +204,7 @@ fn parse_retry_seconds(msg: &str) -> Option<f64> {
 /// the polish prompt's role-anchor instructions into the output. When a
 /// high-confidence leak signature is present, drop the leaked lines and keep
 /// the real cleaned text; normal output (no signature) is returned untouched.
-fn strip_leaked_instructions(output: &str) -> String {
+pub(crate) fn strip_leaked_instructions(output: &str) -> String {
     // Stored lowercase, matched case-insensitively. Only phrases that come
     // from the prompt, never from real dictation, to avoid false positives.
     const LEAK_MARKERS: &[&str] = &[
