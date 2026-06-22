@@ -19,7 +19,7 @@ pub use crate::dg_stream::StreamingTranscript;
 const AUDIO_BRIDGE_BUFFER_CHUNKS: usize = 64;
 const COMMAND_BUFFER_CHUNKS: usize = AUDIO_BRIDGE_BUFFER_CHUNKS + 16;
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
-const FINALIZE_TIMEOUT: Duration = Duration::from_secs(12);
+const FINALIZE_TIMEOUT: Duration = Duration::from_millis(2_500);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +77,35 @@ struct ActiveRecording {
     word_count: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinishSource {
+    SwiftFinal,
+    SwiftLivePartialFallback,
+    SwiftNone,
+}
+
+impl FinishSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SwiftFinal => "swift_final",
+            Self::SwiftLivePartialFallback => "swift_live_partial_fallback",
+            Self::SwiftNone => "swift_none",
+        }
+    }
+}
+
+enum FinishDecision {
+    Final(String),
+    LatestPartial,
+    NoTranscript,
+}
+
+struct FinishOutcome {
+    source: FinishSource,
+    transcript_chars: usize,
+    word_count: usize,
+}
+
 impl ActiveRecording {
     fn new(
         id: String,
@@ -92,12 +121,18 @@ impl ActiveRecording {
         }
     }
 
-    fn note_partial(&mut self, text: &str) -> bool {
+    fn has_latest_partial(&self) -> bool {
+        !self.latest_text.trim().is_empty()
+    }
+
+    fn accept_text(&mut self, text: &str, emit_live: bool) -> bool {
         if let Some(text) = clean_swift_transcript(text) {
             self.latest_text = text;
             self.word_count = self.latest_text.split_whitespace().count();
-            if let Some(tx) = &self.live_partial_tx {
-                let _ = tx.send(self.latest_text.clone());
+            if emit_live {
+                if let Some(tx) = &self.live_partial_tx {
+                    let _ = tx.send(self.latest_text.clone());
+                }
             }
             true
         } else {
@@ -105,18 +140,39 @@ impl ActiveRecording {
         }
     }
 
-    fn finish(mut self, text: Option<String>, allow_latest_partial: bool) {
-        let accepted_final = text.as_deref().is_some_and(|t| self.note_partial(t));
-        if !accepted_final && !allow_latest_partial {
-            self.latest_text.clear();
-            self.word_count = 0;
-        }
+    fn note_partial(&mut self, text: &str) -> bool {
+        self.accept_text(text, true)
+    }
+
+    fn finish(mut self, decision: FinishDecision) -> FinishOutcome {
+        let source = match decision {
+            FinishDecision::Final(text) => {
+                if self.accept_text(&text, false) {
+                    FinishSource::SwiftFinal
+                } else if self.has_latest_partial() {
+                    FinishSource::SwiftLivePartialFallback
+                } else {
+                    self.latest_text.clear();
+                    self.word_count = 0;
+                    FinishSource::SwiftNone
+                }
+            }
+            FinishDecision::LatestPartial if self.has_latest_partial() => {
+                FinishSource::SwiftLivePartialFallback
+            }
+            FinishDecision::LatestPartial | FinishDecision::NoTranscript => {
+                self.latest_text.clear();
+                self.word_count = 0;
+                FinishSource::SwiftNone
+            }
+        };
         let transcript = self.latest_text.trim().to_string();
         let word_count = if self.word_count > 0 {
             self.word_count
         } else {
             transcript.split_whitespace().count()
         };
+        let transcript_chars = transcript.len();
         let meta = TranscriptMeta {
             enriched_transcript: transcript.clone(),
             confidence: 1.0,
@@ -133,6 +189,11 @@ impl ActiveRecording {
         };
         if let Some(tx) = self.result_tx.take() {
             let _ = tx.send(payload);
+        }
+        FinishOutcome {
+            source,
+            transcript_chars,
+            word_count,
         }
     }
 }
@@ -260,30 +321,61 @@ async fn handle_session_command(
             if !active.as_ref().is_some_and(|a| a.id == id) {
                 return true;
             }
-            let has_partial = active
+            *state = SessionState::Finalizing;
+            let had_partial_before_finalize = active
                 .as_ref()
-                .is_some_and(|a| !a.latest_text.trim().is_empty());
+                .is_some_and(ActiveRecording::has_latest_partial);
             if let Some(conn) = ws.as_mut() {
                 let _ = conn
                     .write
                     .send(Message::Text(r#"{"type":"finalize"}"#.to_string().into()))
                     .await;
             }
-            let mut active_slot = active.as_mut();
-            let final_text = wait_final_on_rx(ws.as_mut(), &mut active_slot).await;
+            let wait_start = tokio::time::Instant::now();
+            let final_text = {
+                let mut active_slot = active.as_mut();
+                wait_final_or_partial_drain(ws.as_mut(), &mut active_slot).await
+            };
+            let finalize_wait_ms = wait_start.elapsed().as_millis();
+            let decision = if let Some(text) = final_text {
+                FinishDecision::Final(text)
+            } else if active
+                .as_ref()
+                .is_some_and(ActiveRecording::has_latest_partial)
+            {
+                FinishDecision::LatestPartial
+            } else {
+                FinishDecision::NoTranscript
+            };
             if let Some(rec) = active.take() {
-                rec.finish(final_text, false);
+                let outcome = rec.finish(decision);
+                info!(
+                    "[swift_session] finalized id={id} source={} had_partial_before={} chars={} words={} wait_ms={finalize_wait_ms}",
+                    outcome.source.as_str(),
+                    had_partial_before_finalize,
+                    outcome.transcript_chars,
+                    outcome.word_count
+                );
             }
             if let Some(conn) = ws.as_mut() {
                 let _ = conn.write.close().await;
             }
             *ws = None;
             *state = SessionState::Idle;
-            info!("[swift_session] finalized id={id} had_partial={has_partial}");
         }
         SessionCommand::Shutdown => {
             if let Some(rec) = active.take() {
-                rec.finish(None, true);
+                let outcome = if rec.has_latest_partial() {
+                    rec.finish(FinishDecision::LatestPartial)
+                } else {
+                    rec.finish(FinishDecision::NoTranscript)
+                };
+                info!(
+                    "[swift_session] shutdown finalized source={} chars={} words={}",
+                    outcome.source.as_str(),
+                    outcome.transcript_chars,
+                    outcome.word_count
+                );
             }
             if let Some(mut conn) = ws.take() {
                 let _ = conn.write.close().await;
@@ -375,39 +467,42 @@ async fn drain_partial_rx(
 ) -> Option<String> {
     let Some(conn) = conn else { return None };
     while let Ok(event) = conn.partial_rx.try_recv() {
-        if let Some(rec) = active.as_mut() {
-            rec.note_partial(event.text());
-        }
-        if let TranscriptEvent::Final(text) = event {
-            return Some(text);
+        match event {
+            TranscriptEvent::Partial(text) => {
+                if let Some(rec) = active.as_mut() {
+                    rec.note_partial(&text);
+                }
+            }
+            TranscriptEvent::Final(text) => return Some(text),
         }
     }
     None
 }
 
-async fn wait_final_on_rx(
+async fn wait_final_or_partial_drain(
     conn: Option<&mut WsConnection>,
     active: &mut Option<&mut ActiveRecording>,
 ) -> Option<String> {
     let conn = conn?;
-    let deadline = tokio::time::Instant::now() + FINALIZE_TIMEOUT;
+    let hard_deadline = tokio::time::Instant::now() + FINALIZE_TIMEOUT;
     loop {
         if let Some(final_text) = drain_partial_rx(Some(conn), active).await {
             return Some(final_text);
         }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let now = tokio::time::Instant::now();
+        let remaining = hard_deadline.saturating_duration_since(now);
         if remaining.is_zero() {
             break;
         }
         match tokio::time::timeout(remaining, conn.partial_rx.recv()).await {
-            Ok(Some(event)) => {
-                if let Some(rec) = active.as_mut() {
-                    rec.note_partial(event.text());
+            Ok(Some(event)) => match event {
+                TranscriptEvent::Partial(text) => {
+                    if let Some(rec) = active.as_mut() {
+                        rec.note_partial(&text);
+                    }
                 }
-                if let TranscriptEvent::Final(text) = event {
-                    return Some(text);
-                }
-            }
+                TranscriptEvent::Final(text) => return Some(text),
+            },
             Ok(None) | Err(_) => break,
         }
     }
@@ -522,27 +617,68 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn finish_without_final_rejects_stale_partial() {
+    async fn finish_with_final_uses_clean_final_text() {
         let (tx, rx) = oneshot::channel();
         let mut rec = ActiveRecording::new("test".to_string(), tx, None);
-        assert!(rec.note_partial("stale partial text"));
+        assert!(rec.note_partial("older live partial"));
 
-        rec.finish(None, false);
+        let outcome = rec.finish(FinishDecision::Final("fresh final text".to_string()));
 
+        let payload = rx.await.expect("result sent").expect("transcript");
+        assert_eq!(outcome.source, FinishSource::SwiftFinal);
+        assert_eq!(payload.transcript, "fresh final text");
+        assert_eq!(payload.meta.word_count, 3);
+    }
+
+    #[tokio::test]
+    async fn finish_with_empty_final_falls_back_to_latest_active_partial() {
+        let (tx, rx) = oneshot::channel();
+        let mut rec = ActiveRecording::new("test".to_string(), tx, None);
+        assert!(rec.note_partial("complete live partial"));
+
+        let outcome = rec.finish(FinishDecision::Final(String::new()));
+
+        let payload = rx.await.expect("result sent").expect("transcript");
+        assert_eq!(outcome.source, FinishSource::SwiftLivePartialFallback);
+        assert_eq!(payload.transcript, "complete live partial");
+        assert_eq!(payload.meta.word_count, 3);
+    }
+
+    #[tokio::test]
+    async fn finish_without_final_uses_latest_active_partial() {
+        let (tx, rx) = oneshot::channel();
+        let mut rec = ActiveRecording::new("test".to_string(), tx, None);
+        assert!(rec.note_partial("latest live partial"));
+
+        let outcome = rec.finish(FinishDecision::LatestPartial);
+
+        let payload = rx.await.expect("result sent").expect("transcript");
+        assert_eq!(outcome.source, FinishSource::SwiftLivePartialFallback);
+        assert_eq!(payload.transcript, "latest live partial");
+        assert_eq!(payload.meta.word_count, 3);
+    }
+
+    #[tokio::test]
+    async fn finish_without_final_or_partial_returns_none() {
+        let (tx, rx) = oneshot::channel();
+        let rec = ActiveRecording::new("test".to_string(), tx, None);
+
+        let outcome = rec.finish(FinishDecision::LatestPartial);
+
+        assert_eq!(outcome.source, FinishSource::SwiftNone);
         assert!(rx.await.expect("result sent").is_none());
     }
 
     #[tokio::test]
-    async fn finish_with_final_uses_clean_final_text() {
+    async fn finish_with_suspicious_partial_returns_none() {
         let (tx, rx) = oneshot::channel();
         let mut rec = ActiveRecording::new("test".to_string(), tx, None);
-        assert!(rec.note_partial("stale partial text"));
+        assert!(!rec.note_partial(""));
 
-        rec.finish(Some("fresh final text".to_string()), false);
+        let outcome = rec.finish(FinishDecision::LatestPartial);
 
-        let payload = rx.await.expect("result sent").expect("transcript");
-        assert_eq!(payload.transcript, "fresh final text");
-        assert_eq!(payload.meta.word_count, 3);
+        assert_eq!(outcome.source, FinishSource::SwiftNone);
+        assert!(rx.await.expect("result sent").is_none());
     }
 }
 

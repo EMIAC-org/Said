@@ -70,6 +70,7 @@ const MEETING_PAUSE_MS: u64 = 900;
 const MEETING_MIN_CHUNK_MS: u64 = 700;
 const MEETING_MAX_CHUNK_MS: u64 = 30_000;
 const AUTOSTART_ARG: &str = "--airnote-autostart";
+const SWIFT_FINAL_HANDOFF_WAIT_MS: u64 = 2_700;
 
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
@@ -882,6 +883,55 @@ struct ScreenContextState(Mutex<Option<String>>);
 struct StreamingState(
     Mutex<Option<tokio::sync::oneshot::Receiver<Option<dg_stream::StreamingTranscript>>>>,
 );
+
+#[derive(Clone)]
+struct SwiftLivePartialSnapshot {
+    recording_id: String,
+    transcript: String,
+}
+
+struct SwiftLivePartialState(Mutex<Option<SwiftLivePartialSnapshot>>);
+
+fn swift_live_partial_to_transcript(text: String) -> dg_stream::StreamingTranscript {
+    let word_count = text.split_whitespace().count();
+    dg_stream::StreamingTranscript {
+        transcript: text.clone(),
+        meta: said_core::deepgram::TranscriptMeta {
+            enriched_transcript: text,
+            confidence: 1.0,
+            mean_word_confidence: 1.0,
+            low_confidence_count: 0,
+            word_count,
+            languages: vec!["hi".to_string()],
+            stt_mode: "swift_local_live_partial".to_string(),
+        },
+    }
+}
+
+fn swift_live_partial_for_recording(
+    app: &tauri::AppHandle,
+    recording_id: Option<&str>,
+) -> Option<dg_stream::StreamingTranscript> {
+    let snapshot = app
+        .try_state::<SwiftLivePartialState>()?
+        .0
+        .lock()
+        .ok()?
+        .clone()?;
+    if recording_id.is_some_and(|id| id != snapshot.recording_id) {
+        tracing::warn!(
+            "[swift_live] ignoring partial for stale recording id={} expected={:?}",
+            snapshot.recording_id,
+            recording_id
+        );
+        return None;
+    }
+    let text = snapshot.transcript.trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+    Some(swift_live_partial_to_transcript(text))
+}
 
 struct DeepgramSessionState(dg_stream::SessionSender);
 
@@ -3885,17 +3935,44 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 tauri::async_runtime::spawn(async move {
                     let (live_partial_tx, mut live_partial_rx) =
                         tokio::sync::mpsc::unbounded_channel::<String>();
+                    if let Some(state) = app_for_partials.try_state::<SwiftLivePartialState>() {
+                        if let Ok(mut latest) = state.0.lock() {
+                            *latest = None;
+                        }
+                    }
                     let app_emit = app_for_partials.clone();
+                    let recording_id_for_live = recording_id.clone();
                     tauri::async_runtime::spawn(async move {
+                        let mut last_logged = String::new();
                         while let Some(text) = live_partial_rx.recv().await {
-                            if text.trim().is_empty() {
+                            let transcript = text.trim().to_string();
+                            if transcript.is_empty() {
                                 continue;
+                            }
+                            if let Some(state) = app_emit.try_state::<SwiftLivePartialState>() {
+                                if let Ok(mut latest) = state.0.lock() {
+                                    *latest = Some(SwiftLivePartialSnapshot {
+                                        recording_id: recording_id_for_live.clone(),
+                                        transcript: transcript.clone(),
+                                    });
+                                }
+                            }
+                            if transcript != last_logged {
+                                let words = transcript.split_whitespace().count();
+                                tracing::info!(
+                                    "[swift_live] partial id={} chars={} words={} text={:?}",
+                                    recording_id_for_live,
+                                    transcript.len(),
+                                    words,
+                                    transcript.chars().take(160).collect::<String>()
+                                );
+                                last_logged = transcript.clone();
                             }
                             let _ = app_emit.emit(
                                 "voice-status",
                                 serde_json::json!({
                                     "phase": "live_stt",
-                                    "transcript": text,
+                                    "transcript": transcript,
                                 }),
                             );
                         }
@@ -4222,11 +4299,58 @@ fn do_finish_recording(
         } else if let Some(rx) = transcript_rx {
             let wait_start = tokio::time::Instant::now();
             let swift_local = said_core::stt::is_swift_local(&stt_provider);
+            let swift_live_at_finish = swift_local
+                && swift_live_partial_for_recording(&app2, client_run_id.as_deref()).is_some();
             let wait_ms = if swift_local {
-                // Swift finalize is instant when partials exist; keep a short safety margin.
-                ((wav_duration_s * 500.0) + 2000.0).clamp(4_000.0, 15_000.0) as u64
+                SWIFT_FINAL_HANDOFF_WAIT_MS
             } else {
                 2_500
+            };
+            if swift_local {
+                tracing::info!(
+                    "[finish] Swift final handoff wait={}ms live_partial_at_start={} audio={:.1}s",
+                    wait_ms,
+                    swift_live_at_finish,
+                    wav_duration_s
+                );
+            }
+            let try_swift_live_fallback = |reason: &str| -> Option<dg_stream::StreamingTranscript> {
+                if !swift_local {
+                    return None;
+                }
+                let Some(t) = swift_live_partial_for_recording(&app2, client_run_id.as_deref())
+                else {
+                    tracing::warn!(
+                        "[finish] Swift live partial fallback unavailable after {}ms reason={reason} run_id={:?}",
+                        wait_start.elapsed().as_millis(),
+                        client_run_id.as_deref()
+                    );
+                    return None;
+                };
+                let word_count = if t.meta.word_count > 0 {
+                    t.meta.word_count
+                } else {
+                    t.transcript.split_whitespace().count()
+                };
+                if let Some(reject_reason) =
+                    reject_pre_transcript_reason(&t.transcript, word_count, wav_duration_s)
+                {
+                    tracing::warn!(
+                        "[finish] Swift live partial fallback rejected after {}ms reason={reason} reject={reject_reason} transcript={:?}",
+                        wait_start.elapsed().as_millis(),
+                        t.transcript
+                    );
+                    return None;
+                }
+                tracing::info!(
+                    "[finish] ✓ Swift live partial fallback ready after {}ms reason={reason} ({} chars, {} words, {:.1}s audio): \"{}\"",
+                    wait_start.elapsed().as_millis(),
+                    t.transcript.len(),
+                    word_count,
+                    wav_duration_s,
+                    t.transcript
+                );
+                Some(t)
             };
             match tokio::time::timeout(std::time::Duration::from_millis(wait_ms), rx).await {
                 Ok(Ok(Some(t))) if !t.transcript.is_empty() => {
@@ -4270,31 +4394,31 @@ fn do_finish_recording(
                 }
                 Ok(Ok(Some(_))) => {
                     tracing::info!(
-                        "[finish] WS transcript empty after {}ms — falling back to HTTP STT",
+                        "[finish] WS transcript empty after {}ms — checking Swift live fallback",
                         wait_start.elapsed().as_millis()
                     );
-                    None
+                    try_swift_live_fallback("empty_ws_transcript")
                 }
                 Ok(Ok(None)) => {
                     tracing::info!(
-                        "[finish] WS unavailable after {}ms — falling back to HTTP STT",
+                        "[finish] WS unavailable after {}ms — checking Swift live fallback",
                         wait_start.elapsed().as_millis()
                     );
-                    None
+                    try_swift_live_fallback("ws_unavailable")
                 }
                 Ok(Err(_)) => {
                     tracing::info!(
-                        "[finish] WS transcript sender dropped after {}ms — falling back to HTTP STT",
+                        "[finish] WS transcript sender dropped after {}ms — checking Swift live fallback",
                         wait_start.elapsed().as_millis()
                     );
-                    None
+                    try_swift_live_fallback("sender_dropped")
                 }
                 Err(_) => {
                     tracing::warn!(
-                        "[finish] WS transcript timed out after {}ms — falling back to HTTP STT",
+                        "[finish] WS transcript timed out after {}ms — checking Swift live fallback",
                         wait_start.elapsed().as_millis()
                     );
-                    None
+                    try_swift_live_fallback("ws_timeout")
                 }
             }
         } else {
@@ -8795,6 +8919,7 @@ fn main() {
         .manage(EditTargetState(Mutex::new(None)))
         .manage(ScreenContextState(Mutex::new(None)))
         .manage(StreamingState(Mutex::new(None)))
+        .manage(SwiftLivePartialState(Mutex::new(None)))
         .manage(RecordingRouteState(Mutex::new(None)))
         .manage(divo::DivoState::new())
         .manage(DeepgramSessionState(dg_stream::DeepgramSession::spawn()))
