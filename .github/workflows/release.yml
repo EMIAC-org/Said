@@ -111,7 +111,7 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
-      - name: Install desktop deps (macOS)
+      - name: Install desktop deps (Mac)
         if: matrix.platform == 'darwin'
         working-directory: desktop
         run: npm ci
@@ -121,8 +121,10 @@ jobs:
         working-directory: desktop
         shell: pwsh
         run: |
-          # create-dmg depends on darwin-only packages. Windows NSIS builds do
-          # not use it, so remove it in this runner workspace before npm ci.
+          # `create-dmg` is macOS-only and pulls `appdmg` (`os: darwin`),
+          # which makes `npm ci` fail on Windows. The Windows installer path
+          # only needs Tauri/NSIS, so remove the Mac-only dev tool in the
+          # ephemeral runner checkout and keep platform optional deps intact.
           npm pkg delete devDependencies.create-dmg
           npm install --package-lock-only --ignore-scripts
           npm ci
@@ -171,17 +173,6 @@ jobs:
             "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}"
           chmod +x "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}"
 
-      - name: Build whisper-cli sidecar (Mac)
-        if: matrix.platform == 'darwin'
-        shell: bash
-        timeout-minutes: 20
-        run: |
-          scripts/build-whisper-cli.sh "${{ matrix.target }}"
-          mkdir -p desktop/src-tauri/binaries
-          cp "target/${{ matrix.target }}/release/whisper-cli" \
-            "desktop/src-tauri/binaries/whisper-cli-${{ matrix.target }}"
-          chmod +x "desktop/src-tauri/binaries/whisper-cli-${{ matrix.target }}"
-
       - name: Build AirNote.app only (Mac)
         if: matrix.platform == 'darwin'
         shell: bash
@@ -189,10 +180,6 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Baked into the binary via option_env!("DEEPSEEK_API_KEY") for meeting
-          # summaries. Set the DEEPSEEK_API_KEY repo secret; absent → summaries are
-          # disabled (graceful), build still succeeds.
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         working-directory: desktop
         run: |
           # Build only the .app bundle here. Signing, DMG creation, notarization,
@@ -214,23 +201,14 @@ jobs:
           set -euo pipefail
           APP_PATH="target/${{ matrix.target }}/release/bundle/macos/${PRODUCT_NAME}.app"
           EMBEDDED_BACKEND="$APP_PATH/Contents/MacOS/airnote-backend"
-          EMBEDDED_WHISPER="$APP_PATH/Contents/MacOS/whisper-cli"
           ENTITLEMENTS="desktop/src-tauri/AirNote.entitlements"
           BUNDLE_ID="com.emiac.airnote.desktop"
 
           test -d "$APP_PATH"
           test -x "$EMBEDDED_BACKEND"
-          test -x "$EMBEDDED_WHISPER"
 
           rm -f "$APP_PATH/Contents/MacOS/.env"
-          mkdir -p "$APP_PATH/Contents/Resources/models"
-          cp target/whisper-models/ggml-silero-*.bin "$APP_PATH/Contents/Resources/models/"
           xattr -cr "$APP_PATH" 2>/dev/null || true
-
-          codesign --force --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" \
-            --entitlements "$ENTITLEMENTS" \
-            "$EMBEDDED_WHISPER"
 
           codesign --force --options runtime --timestamp \
             --sign "$APPLE_SIGNING_IDENTITY" \
@@ -244,7 +222,6 @@ jobs:
 
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           codesign --verify --strict --verbose=2 "$EMBEDDED_BACKEND"
-          codesign --verify --strict --verbose=2 "$EMBEDDED_WHISPER"
 
           ACTUAL_ID=$(codesign -dv "$APP_PATH" 2>&1 | awk -F= '/^Identifier=/ {print $2}')
           test "$ACTUAL_ID" = "$BUNDLE_ID"
@@ -339,38 +316,12 @@ jobs:
             "target/${{ matrix.target }}/release/airnote-backend.exe" `
             "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}.exe"
 
-      # Vulkan SDK gives whisper-cli GPU acceleration on Windows (parity with the
-      # macOS Metal build). The build script auto-detects it; if this step ever
-      # fails the script falls back to a CPU-only build, so the pipeline is not
-      # broken — it just ships without GPU for that run.
-      - name: Setup Vulkan SDK (Windows)
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          choco install vulkan-sdk -y --no-progress
-
-      - name: Build whisper-cli sidecar (Windows)
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        timeout-minutes: 30
-        run: |
-          ./scripts/build-whisper-cli-windows.ps1 -Target ${{ matrix.target }}
-          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
-          Copy-Item `
-            "target/${{ matrix.target }}/release/whisper-cli.exe" `
-            "desktop/src-tauri/binaries/whisper-cli-${{ matrix.target }}.exe"
-
       - name: Build AirNote.exe + NSIS installer (Windows)
         if: matrix.platform == 'windows'
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Baked into the binary via option_env!("DEEPSEEK_API_KEY") for meeting
-          # summaries. Set the DEEPSEEK_API_KEY repo secret; absent → summaries are
-          # disabled (graceful), build still succeeds.
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         working-directory: desktop
         run: npm run tauri:build -- --target ${{ matrix.target }}
 
