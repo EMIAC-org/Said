@@ -14,13 +14,22 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
         let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
         loop {
             interval.tick().await;
+            let mut conn = match db.acquire().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    warn!("[vocab-worker] lock connection failed: {e}");
+                    continue;
+                }
+            };
             let lock: Result<bool, sqlx::Error> = sqlx::query_scalar(
                 "SELECT pg_try_advisory_lock(hashtext('airnote_vocab_aggregation'))",
             )
-            .fetch_one(&db)
+            .fetch_one(&mut *conn)
             .await;
             match lock {
                 Ok(true) => {
+                    let (tenant_cache, runtime_memory_cache, profile_cache) =
+                        crate::new_setup_caches();
                     let state = AppState {
                         db: db.clone(),
                         started_at: std::sync::Arc::new(std::time::Instant::now()),
@@ -37,6 +46,8 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                         openai_api_key: String::new(),
                         openai_transcribe_model: "whisper-1".to_string(),
                         groq_api_key: String::new(),
+                        cerebras_api_key: String::new(),
+                        deepinfra_api_key: String::new(),
                         diagnostics_rate_limit:
                             routes::diagnostics::DiagnosticsRateLimiter::default(),
                         divo_base_url: String::new(),
@@ -45,6 +56,9 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                         deepseek_api_key: String::new(),
                         deepseek_base_url: String::new(),
                         deepseek_message_polish_model: String::new(),
+                        tenant_cache,
+                        runtime_memory_cache,
+                        profile_cache,
                     };
                     match routes::vocab::aggregate_all_orgs(&state).await {
                         Ok((terms, aliases)) => {
@@ -63,7 +77,7 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                     let _ = sqlx::query(
                         "SELECT pg_advisory_unlock(hashtext('airnote_vocab_aggregation'))",
                     )
-                    .execute(&db)
+                    .execute(&mut *conn)
                     .await;
                 }
                 Ok(false) => {

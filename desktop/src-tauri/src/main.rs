@@ -11,6 +11,8 @@ mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plan
 mod echo_gate;
 mod enterprise_oauth;
 mod meeting_engine;
+mod notch_sidecar;
+mod whisper_dictation_stream; // Turbo Q5 live partials during dictation // native Swift notch-HUD sidecar (append-only, AIRNOTE_NOTCH_SIDECAR)
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
 mod recovery; // crash-safe dictation audio capture + relaunch recovery
@@ -25,9 +27,10 @@ mod swift_stt_engine;
 mod swift_stt_guard;
 mod telemetry;
 
+use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{SinkExt, StreamExt};
@@ -71,6 +74,7 @@ const MEETING_MIN_CHUNK_MS: u64 = 700;
 const MEETING_MAX_CHUNK_MS: u64 = 30_000;
 const AUTOSTART_ARG: &str = "--airnote-autostart";
 const SWIFT_FINAL_HANDOFF_WAIT_MS: u64 = 8_500;
+static EMITTED_PROFILE_REVIEW_JOBS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
@@ -718,11 +722,18 @@ enum LiveTypingDecision {
 #[derive(Debug, Default)]
 struct LiveTypingGuard {
     disabled: bool,
+    typed_tokens: usize,
 }
 
 impl LiveTypingGuard {
     fn on_token(&mut self, token: &str) -> LiveTypingDecision {
         if token == STREAM_RESET_SENTINEL {
+            if self.typed_tokens == 0 {
+                tracing::info!(
+                    "[main] live typing reset before target typing — keeping word-by-word enabled"
+                );
+                return LiveTypingDecision::PreviewOnly;
+            }
             self.disabled = true;
             return LiveTypingDecision::ResetAndDisable;
         }
@@ -730,6 +741,10 @@ impl LiveTypingGuard {
             return LiveTypingDecision::PreviewOnly;
         }
         LiveTypingDecision::TypeToken
+    }
+
+    fn note_typed(&mut self) {
+        self.typed_tokens += 1;
     }
 }
 
@@ -908,7 +923,49 @@ fn swift_live_partial_to_transcript(text: String) -> dg_stream::StreamingTranscr
     }
 }
 
-fn swift_live_partial_for_recording(
+fn whisper_local_to_transcript(text: String) -> dg_stream::StreamingTranscript {
+    let word_count = text.split_whitespace().count();
+    dg_stream::StreamingTranscript {
+        transcript: text.clone(),
+        meta: said_core::deepgram::TranscriptMeta {
+            enriched_transcript: text,
+            confidence: 1.0,
+            mean_word_confidence: 1.0,
+            low_confidence_count: 0,
+            word_count,
+            languages: vec!["hi".to_string()],
+            stt_mode: "whisper_local_batch".to_string(),
+        },
+    }
+}
+
+async fn whisper_local_pre_transcript(
+    wav: &[u8],
+    language: &str,
+) -> Option<dg_stream::StreamingTranscript> {
+    if !meeting_engine::dictation_whisper_model_installed() {
+        return None;
+    }
+    let wav = wav.to_vec();
+    let language = language.to_string();
+    let started = std::time::Instant::now();
+    let transcript = tokio::task::spawn_blocking(move || {
+        meeting_engine::transcribe_dictation_wav_bytes(&wav, &language)
+    })
+    .await
+    .map_err(|e| format!("spawn failed: {e}"))
+    .and_then(|r| r)
+    .ok()?;
+    tracing::info!(
+        "[finish] whisper.cpp local STT ready in {}ms chars={} words={}",
+        started.elapsed().as_millis(),
+        transcript.len(),
+        transcript.split_whitespace().count()
+    );
+    Some(whisper_local_to_transcript(transcript))
+}
+
+fn dictation_live_partial_for_recording(
     app: &tauri::AppHandle,
     recording_id: Option<&str>,
 ) -> Option<dg_stream::StreamingTranscript> {
@@ -920,7 +977,7 @@ fn swift_live_partial_for_recording(
         .clone()?;
     if recording_id.is_some_and(|id| id != snapshot.recording_id) {
         tracing::warn!(
-            "[swift_live] ignoring partial for stale recording id={} expected={:?}",
+            "[live_stt] ignoring partial for stale recording id={} expected={:?}",
             snapshot.recording_id,
             recording_id
         );
@@ -931,6 +988,49 @@ fn swift_live_partial_for_recording(
         return None;
     }
     Some(swift_live_partial_to_transcript(text))
+}
+
+fn spawn_dictation_live_partial_listener(
+    app: tauri::AppHandle,
+    recording_id: String,
+    mut live_partial_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    log_tag: &'static str,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut last_logged = String::new();
+        while let Some(text) = live_partial_rx.recv().await {
+            let transcript = text.trim().to_string();
+            if transcript.is_empty() {
+                continue;
+            }
+            if let Some(state) = app.try_state::<SwiftLivePartialState>() {
+                if let Ok(mut latest) = state.0.lock() {
+                    *latest = Some(SwiftLivePartialSnapshot {
+                        recording_id: recording_id.clone(),
+                        transcript: transcript.clone(),
+                    });
+                }
+            }
+            if transcript != last_logged {
+                let words = transcript.split_whitespace().count();
+                tracing::info!(
+                    "[{log_tag}] partial id={} chars={} words={} text={:?}",
+                    recording_id,
+                    transcript.len(),
+                    words,
+                    transcript.chars().take(160).collect::<String>()
+                );
+                last_logged = transcript.clone();
+            }
+            let _ = app.emit(
+                "voice-status",
+                serde_json::json!({
+                    "phase": "live_stt",
+                    "transcript": transcript,
+                }),
+            );
+        }
+    });
 }
 
 struct DeepgramSessionState(dg_stream::SessionSender);
@@ -1790,12 +1890,22 @@ fn sync_tray_on_main(handle: &tauri::AppHandle, state: &str) {
 
 // ── Floating status bar ───────────────────────────────────────────────────────
 
+/// When true, the native notch HUD sidecar owns the dictation surface and the
+/// legacy status-bar pill is fully suppressed. Set once at startup. Guarding
+/// `create_status_bar` here is the single chokepoint — it also neutralises the
+/// auto-recreate paths in `present_status_bar_native` / `sync_status_bar_on_main`.
+static NOTCH_FIRST_CLASS: AtomicBool = AtomicBool::new(false);
+
 /// Create the always-on-top floating status pill.
 ///
 /// The window loads the same SPA with an explicit statusbar marker so
 /// `main.tsx` renders `<StatusBar />` instead of the full app. It starts hidden
 /// at idle and is shown by `sync_status_bar()` when recording/processing begins.
 fn create_status_bar(app: &tauri::AppHandle) {
+    if NOTCH_FIRST_CLASS.load(Ordering::Relaxed) {
+        // Notch sidecar is the HUD; never bring up the pill (incl. auto-recreate).
+        return;
+    }
     if app.get_webview_window("status-bar").is_some() {
         tracing::info!("[status-bar] create skipped; window already exists");
         return;
@@ -2868,6 +2978,15 @@ async fn get_preferences(backend: State<'_, BackendState>) -> Result<api::Prefer
 }
 
 #[tauri::command]
+async fn list_polish_models(
+    backend: State<'_, BackendState>,
+    beta: bool,
+) -> Result<api::ListPolishModelsResponse, String> {
+    let ep = get_endpoint(&backend)?;
+    api::list_polish_models(&ep, beta).await
+}
+
+#[tauri::command]
 async fn get_voice_prompt(
     backend: State<'_, BackendState>,
 ) -> Result<api::PromptTemplateResponse, String> {
@@ -2918,22 +3037,31 @@ struct SttRuntimeInfo {
     deepgram_configured: bool,
     swift_installed: bool,
     swift_ready: bool,
+    whisper_installed: bool,
+    whisper_ready: bool,
+    whisper_vad_installed: bool,
 }
 
 #[tauri::command]
 async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeInfo, String> {
     let swift_installed = swift_model::is_installed();
+    let whisper_installed = meeting_engine::dictation_whisper_model_installed();
     #[cfg(target_os = "macos")]
     let swift_ready = swift_installed && swift_stt_engine::is_ready();
     #[cfg(not(target_os = "macos"))]
     let swift_ready = false;
+    let whisper_ready = whisper_installed && meeting_engine::dictation_whisper_runtime_ready();
+    let whisper_vad_installed = meeting_engine::silero_vad_model_installed();
 
     match get_endpoint(&backend) {
         Ok(ep) => match api::get_preferences(&ep).await {
             Ok(p) => {
                 let preferred = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
-                let effective =
-                    said_core::stt::effective_dictation_provider(&p.stt_provider, swift_installed);
+                let effective = said_core::stt::effective_dictation_provider(
+                    &p.stt_provider,
+                    swift_installed,
+                    whisper_installed,
+                );
                 let has_deepgram =
                     said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref())
                         .is_some();
@@ -2944,6 +3072,9 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
                     deepgram_configured: has_deepgram,
                     swift_installed,
                     swift_ready,
+                    whisper_installed,
+                    whisper_ready,
+                    whisper_vad_installed,
                 })
             }
             Err(_) => Ok(SttRuntimeInfo {
@@ -2953,6 +3084,9 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
                 deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
                 swift_installed,
                 swift_ready,
+                whisper_installed,
+                whisper_ready,
+                whisper_vad_installed,
             }),
         },
         Err(_) => Ok(SttRuntimeInfo {
@@ -2962,6 +3096,9 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
             deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
             swift_installed,
             swift_ready,
+            whisper_installed,
+            whisper_ready,
+            whisper_vad_installed,
         }),
     }
 }
@@ -2977,12 +3114,29 @@ fn hot_cache_effective_stt_provider(app: &tauri::AppHandle) -> String {
         })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "deepgram".to_string());
-    said_core::stt::effective_dictation_provider(&raw, swift_model::is_installed())
+    said_core::stt::effective_dictation_provider(
+        &raw,
+        swift_model::is_installed(),
+        meeting_engine::dictation_whisper_model_installed(),
+    )
+}
+
+fn deepgram_session_key_for_provider(stt_provider: &str, deepgram_key: &str) -> String {
+    if said_core::stt::is_deepgram(stt_provider) {
+        deepgram_key.to_string()
+    } else {
+        String::new()
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn use_swift_local_stt(app: &tauri::AppHandle) -> bool {
     said_core::stt::is_swift_local(&hot_cache_effective_stt_provider(app))
+}
+
+fn use_whisper_local_stt(app: &tauri::AppHandle) -> bool {
+    said_core::stt::is_whisper_local(&hot_cache_effective_stt_provider(app))
+        && meeting_engine::dictation_whisper_model_installed()
 }
 
 #[tauri::command]
@@ -3006,6 +3160,16 @@ async fn patch_preferences(
         if said_core::stt::is_swift_local(provider) && !swift_model::is_installed() {
             return Err(
                 "Download the Swift Hinglish model before enabling local speech recognition"
+                    .to_string(),
+            );
+        }
+    }
+    if let Some(ref provider) = update.stt_provider {
+        if said_core::stt::is_whisper_local(provider)
+            && !meeting_engine::dictation_whisper_model_installed()
+        {
+            return Err(
+                "Download the Turbo Q5 model before enabling offline whisper speech recognition"
                     .to_string(),
             );
         }
@@ -3075,7 +3239,8 @@ async fn patch_preferences(
                 hot.stt_mode = bias.stt_mode;
                 hot.keyterms = bias.keyterms;
                 hot.replacements = bias.replacements;
-                let deepgram_key = hot.deepgram_key.clone();
+                let deepgram_key =
+                    deepgram_session_key_for_provider(&hot.stt_provider, &hot.deepgram_key);
                 let session_bias = said_core::deepgram::BiasPackage {
                     stt_mode: hot.stt_mode.clone(),
                     keyterms: hot.keyterms.clone(),
@@ -3132,7 +3297,8 @@ async fn submit_edit_feedback(
                 hot.stt_mode = bias.stt_mode;
                 hot.keyterms = bias.keyterms;
                 hot.replacements = bias.replacements;
-                let deepgram_key = hot.deepgram_key.clone();
+                let deepgram_key =
+                    deepgram_session_key_for_provider(&hot.stt_provider, &hot.deepgram_key);
                 let session_bias = said_core::deepgram::BiasPackage {
                     stt_mode: hot.stt_mode.clone(),
                     keyterms: hot.keyterms.clone(),
@@ -3970,6 +4136,50 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             .try_state::<RecordingSessionState>()
             .and_then(|s| s.current().map(|(_, id)| id))
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let stt_language = app
+            .try_state::<HotPathCache>()
+            .and_then(|hot| hot.0.try_read().ok().map(|guard| guard.language.clone()))
+            .filter(|lang| !lang.is_empty())
+            .unwrap_or_else(|| "hi".to_string());
+
+        if use_whisper_local_stt(app) && !is_meeting_capture {
+            if !meeting_engine::silero_vad_model_installed() {
+                tracing::warn!(
+                    "[stt] Silero VAD missing — downloading; whisper runs without VAD until install completes"
+                );
+                let app_vad = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = meeting_engine::meeting_download_silero_vad_model(app_vad).await
+                    {
+                        tracing::warn!("[stt] Silero VAD download failed: {e}");
+                    }
+                });
+            }
+            tracing::info!(
+                "[stt] provider={stt_provider} — live whisper.cpp partials during recording"
+            );
+            let (live_partial_tx, live_partial_rx) =
+                tokio::sync::mpsc::unbounded_channel::<String>();
+            if let Some(state) = app.try_state::<SwiftLivePartialState>() {
+                if let Ok(mut latest) = state.0.lock() {
+                    *latest = None;
+                }
+            }
+            spawn_dictation_live_partial_listener(
+                app.clone(),
+                recording_id.clone(),
+                live_partial_rx,
+                "whisper_live",
+            );
+            whisper_dictation_stream::spawn_live_whisper_bridge(
+                recording_id,
+                chunk_recv,
+                stt_language,
+                live_partial_tx,
+            );
+            return;
+        }
+
         if batch_only_stt && !is_meeting_capture {
             tracing::info!(
                 "[stt] provider={stt_provider} — skipping Deepgram WS; backend will batch-STT on release"
@@ -4042,50 +4252,19 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 let session_tx = app.state::<SwiftSessionState>().0.clone();
                 let app_for_partials = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let (live_partial_tx, mut live_partial_rx) =
+                    let (live_partial_tx, live_partial_rx) =
                         tokio::sync::mpsc::unbounded_channel::<String>();
                     if let Some(state) = app_for_partials.try_state::<SwiftLivePartialState>() {
                         if let Ok(mut latest) = state.0.lock() {
                             *latest = None;
                         }
                     }
-                    let app_emit = app_for_partials.clone();
-                    let recording_id_for_live = recording_id.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let mut last_logged = String::new();
-                        while let Some(text) = live_partial_rx.recv().await {
-                            let transcript = text.trim().to_string();
-                            if transcript.is_empty() {
-                                continue;
-                            }
-                            if let Some(state) = app_emit.try_state::<SwiftLivePartialState>() {
-                                if let Ok(mut latest) = state.0.lock() {
-                                    *latest = Some(SwiftLivePartialSnapshot {
-                                        recording_id: recording_id_for_live.clone(),
-                                        transcript: transcript.clone(),
-                                    });
-                                }
-                            }
-                            if transcript != last_logged {
-                                let words = transcript.split_whitespace().count();
-                                tracing::info!(
-                                    "[swift_live] partial id={} chars={} words={} text={:?}",
-                                    recording_id_for_live,
-                                    transcript.len(),
-                                    words,
-                                    transcript.chars().take(160).collect::<String>()
-                                );
-                                last_logged = transcript.clone();
-                            }
-                            let _ = app_emit.emit(
-                                "voice-status",
-                                serde_json::json!({
-                                    "phase": "live_stt",
-                                    "transcript": transcript,
-                                }),
-                            );
-                        }
-                    });
+                    spawn_dictation_live_partial_listener(
+                        app_for_partials.clone(),
+                        recording_id.clone(),
+                        live_partial_rx,
+                        "swift_live",
+                    );
                     // Best-effort vocab biasing for the on-device model. Uses
                     // .as_ref() so the endpoint stays available for the live
                     // mirror below; tight timeout means a slow/failed fetch
@@ -4414,9 +4593,32 @@ fn do_finish_recording(
 
         let message_polish_mode = said_core::prefs::load().message_polish_mode;
         let stt_provider = hot_cache_effective_stt_provider(&app2);
-        let pre_transcript: Option<dg_stream::StreamingTranscript> = if message_polish_mode
-            || said_core::stt::use_batch_stt_only(&stt_provider)
-        {
+        let stt_language = app2
+            .try_state::<HotPathCache>()
+            .and_then(|hot| hot.0.try_read().ok().map(|guard| guard.language.clone()))
+            .filter(|lang| !lang.is_empty())
+            .unwrap_or_else(|| "hi".to_string());
+        let pre_transcript: Option<dg_stream::StreamingTranscript> = if message_polish_mode {
+            tracing::info!("[finish] message polish mode — skipping STT pre-transcript");
+            None
+        } else if said_core::stt::is_whisper_local(&stt_provider) {
+            if let Some(t) = whisper_local_pre_transcript(&wav, &stt_language).await {
+                Some(t)
+            } else if let Some(t) =
+                dictation_live_partial_for_recording(&app2, client_run_id.as_deref())
+            {
+                tracing::info!(
+                    "[finish] whisper.cpp using live partial fallback ({} chars)",
+                    t.transcript.len()
+                );
+                Some(t)
+            } else {
+                tracing::warn!(
+                    "[finish] whisper.cpp local STT failed — backend will try cloud STT fallback"
+                );
+                None
+            }
+        } else if said_core::stt::use_batch_stt_only(&stt_provider) {
             tracing::info!(
                 "[finish] batch-only STT (provider={stt_provider}) — skipping WS pre-transcript"
             );
@@ -4425,7 +4627,7 @@ fn do_finish_recording(
             let wait_start = tokio::time::Instant::now();
             let swift_local = said_core::stt::is_swift_local(&stt_provider);
             let swift_live_at_finish = swift_local
-                && swift_live_partial_for_recording(&app2, client_run_id.as_deref()).is_some();
+                && dictation_live_partial_for_recording(&app2, client_run_id.as_deref()).is_some();
             let wait_ms = if swift_local {
                 SWIFT_FINAL_HANDOFF_WAIT_MS
             } else {
@@ -4443,7 +4645,7 @@ fn do_finish_recording(
                 if !swift_local {
                     return None;
                 }
-                let Some(t) = swift_live_partial_for_recording(&app2, client_run_id.as_deref())
+                let Some(t) = dictation_live_partial_for_recording(&app2, client_run_id.as_deref())
                 else {
                     tracing::warn!(
                         "[finish] Swift live partial fallback unavailable after {}ms reason={reason} run_id={:?}",
@@ -4898,6 +5100,7 @@ async fn run_voice_polish_sse(
     let fail_count2 = fail_count.clone();
     let live_guard = std::sync::Arc::new(std::sync::Mutex::new(LiveTypingGuard {
         disabled: message_polish_mode,
+        typed_tokens: 0,
     }));
     let live_guard2 = live_guard.clone();
     let typed_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -4988,6 +5191,9 @@ async fn run_voice_polish_sse(
                 // Type word-by-word directly into focused app via AX
                 match paster::type_text(token) {
                     Ok(true) => {
+                        if let Ok(mut guard) = live_guard2.lock() {
+                            guard.note_typed();
+                        }
                         if let Ok(mut text) = typed_text2.lock() {
                             text.push_str(token);
                         }
@@ -5916,7 +6122,17 @@ fn retry_recording_spawn(
         // is active, re-transcribe the saved audio on-device and hand the backend
         // that transcript (so it only polishes). For Deepgram users — or any local
         // failure — this is None and the backend runs its own STT as before.
-        let pre_transcript = swift_local_retry_pre_transcript(&app2, &back_arc2, &wav).await;
+        let stt_provider = hot_cache_effective_stt_provider(&app2);
+        let stt_language = app2
+            .try_state::<HotPathCache>()
+            .and_then(|hot| hot.0.try_read().ok().map(|guard| guard.language.clone()))
+            .filter(|lang| !lang.is_empty())
+            .unwrap_or_else(|| "hi".to_string());
+        let pre_transcript = if said_core::stt::is_whisper_local(&stt_provider) {
+            whisper_local_pre_transcript(&wav, &stt_language).await
+        } else {
+            swift_local_retry_pre_transcript(&app2, &back_arc2, &wav).await
+        };
         let result = run_voice_polish_sse(
             &back_arc2,
             wav,
@@ -6007,7 +6223,8 @@ async fn resolve_pending_edit(
                 hot.stt_mode = bias.stt_mode;
                 hot.keyterms = bias.keyterms;
                 hot.replacements = bias.replacements;
-                let deepgram_key = hot.deepgram_key.clone();
+                let deepgram_key =
+                    deepgram_session_key_for_provider(&hot.stt_provider, &hot.deepgram_key);
                 let session_bias = said_core::deepgram::BiasPackage {
                     stt_mode: hot.stt_mode.clone(),
                     keyterms: hot.keyterms.clone(),
@@ -6040,6 +6257,166 @@ async fn list_vocabulary(
 ) -> Result<api::VocabListResponse, String> {
     let ep = get_endpoint(&backend)?;
     api::list_vocabulary(&ep).await
+}
+
+#[tauri::command]
+async fn get_profile_memory(backend: State<'_, BackendState>) -> Result<serde_json::Value, String> {
+    let ep = get_endpoint(&backend)?;
+    api::get_profile_memory(&ep).await
+}
+
+fn profile_review_jobs() -> &'static Mutex<HashSet<String>> {
+    EMITTED_PROFILE_REVIEW_JOBS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn profile_review_candidate_values(proposal: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for term in proposal
+        .get("stable_terms")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let corrected = term
+            .get("term")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if corrected.is_empty() {
+            continue;
+        }
+        out.push(serde_json::json!({
+            "original": "",
+            "corrected": corrected,
+            "term_type": term.get("term_type").and_then(|v| v.as_str()).unwrap_or("profile_term"),
+            "learnable": true,
+            "tag": "profile term",
+        }));
+    }
+    for alias in proposal
+        .get("aliases")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let original = alias
+            .get("source_phrase")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let corrected = alias
+            .get("canonical_phrase")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if corrected.is_empty() {
+            continue;
+        }
+        out.push(serde_json::json!({
+            "original": original,
+            "corrected": corrected,
+            "term_type": alias.get("term_type").and_then(|v| v.as_str()).unwrap_or("profile_alias"),
+            "learnable": true,
+            "tag": "profile memory",
+        }));
+    }
+    out
+}
+
+fn emit_profile_review_if_needed(app: &tauri::AppHandle, memory: &serde_json::Value) -> bool {
+    let Some(proposals) = memory.get("pending_proposals").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    for proposal in proposals {
+        let Some(job_id) = proposal.get("job_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let already_emitted = {
+            let Ok(mut seen) = profile_review_jobs().lock() else {
+                continue;
+            };
+            !seen.insert(job_id.to_string())
+        };
+        if already_emitted {
+            continue;
+        }
+        let candidates = profile_review_candidate_values(proposal);
+        if candidates.is_empty() {
+            continue;
+        }
+        let _ = present_status_bar_native(app, "vocab-review", false);
+        let _ = app.emit(
+            "vocab-review",
+            serde_json::json!({
+                "candidates": candidates,
+                "recording_id": format!("profile:{job_id}"),
+                "source": "profile_memory",
+                "reason": proposal.get("reason").and_then(|v| v.as_str()).unwrap_or("Profile memory proposal"),
+            }),
+        );
+        tracing::info!(
+            "[profile-memory] emitted review card job={} candidates={}",
+            job_id,
+            candidates.len()
+        );
+        return true;
+    }
+    false
+}
+
+fn poll_profile_memory_review(app: tauri::AppHandle, ep: BackendEndpoint) {
+    tauri::async_runtime::spawn(async move {
+        for delay in [
+            Duration::from_secs(4),
+            Duration::from_secs(8),
+            Duration::from_secs(12),
+            Duration::from_secs(18),
+            Duration::from_secs(26),
+        ] {
+            tokio::time::sleep(delay).await;
+            match api::get_profile_memory(&ep).await {
+                Ok(memory) => {
+                    let pending = memory
+                        .get("pending_proposals")
+                        .and_then(|v| v.as_array())
+                        .map(Vec::len)
+                        .unwrap_or(0);
+                    tracing::info!("[profile-memory] poll pending={pending}");
+                    if emit_profile_review_if_needed(&app, &memory) {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("[profile-memory] poll failed: {e}");
+                    break;
+                }
+            }
+        }
+    });
+}
+
+#[tauri::command]
+async fn approve_profile_proposal(
+    app: tauri::AppHandle,
+    backend: State<'_, BackendState>,
+    job_id: String,
+) -> Result<serde_json::Value, String> {
+    let ep = get_endpoint(&backend)?;
+    let result = api::approve_profile_proposal(&ep, &job_id).await?;
+    let _ = app.emit("vocabulary-changed", ());
+    Ok(result)
+}
+
+#[tauri::command]
+async fn dismiss_profile_proposal(
+    app: tauri::AppHandle,
+    backend: State<'_, BackendState>,
+    job_id: String,
+) -> Result<serde_json::Value, String> {
+    let ep = get_endpoint(&backend)?;
+    let result = api::dismiss_profile_proposal(&ep, &job_id).await?;
+    let _ = app.emit("vocabulary-changed", ());
+    Ok(result)
 }
 
 #[tauri::command]
@@ -6770,6 +7147,277 @@ fn get_endpoint(backend: &State<'_, BackendState>) -> Result<BackendEndpoint, St
     lock.clone().ok_or_else(|| "backend not started".into())
 }
 
+// ── Native notch HUD sidecar wiring ─────────────────────────────────────────
+// `wire_notch_events` mirrors the status-bar event stream into the Swift HUD via
+// in-process Rust listeners; `handle_notch_action` routes the HUD's user actions
+// back through the same backend endpoints the React status bar uses.
+
+/// Register Rust-side listeners that forward each status-bar event to the
+/// sidecar. Payload field names already match the sidecar protocol (snake_case),
+/// so most events are pass-through with a `type` tag added.
+fn wire_notch_events(app: &tauri::AppHandle, sidecar: &notch_sidecar::NotchSidecar) {
+    use tauri::Listener as _;
+
+    // app-state carries the full snapshot; the HUD only needs the coarse state.
+    {
+        let sc = sidecar.clone();
+        app.listen("app-state", move |e| {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(e.payload()) {
+                if let Some(state) = v.get("state").and_then(|s| s.as_str()) {
+                    sc.send(&serde_json::json!({ "type": "state", "kind": state }));
+                }
+            }
+        });
+    }
+
+    // voice-level uses `level`; the HUD protocol uses `value`.
+    {
+        let sc = sidecar.clone();
+        app.listen("voice-level", move |e| {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(e.payload()) {
+                let level = v.get("level").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                sc.send(&serde_json::json!({ "type": "level", "value": level }));
+            }
+        });
+    }
+
+    // Pass-through events: forward the payload verbatim with a `type` tag.
+    let passthrough: [(&str, &str); 13] = [
+        ("voice-status", "status"),
+        ("voice-done", "done"),
+        ("voice-output", "output"),
+        ("voice-error", "error"),
+        ("vocab-learned", "learned"),
+        ("email-learned", "email_saved"),
+        ("vocab-queued", "queued"),
+        ("vocab-confirm", "confirm"),
+        ("vocab-review", "review"),
+        ("vocab-negative", "negative_confirm"),
+        ("vocab-wrong-fixed", "wrong_fixed"),
+        ("status-bar-placement-mode", "placement"),
+        ("auto-update-ready", "update_ready"),
+    ];
+    for (event, ty) in passthrough {
+        let sc = sidecar.clone();
+        app.listen(event, move |e| {
+            let mut v: serde_json::Value =
+                serde_json::from_str(e.payload()).unwrap_or_else(|_| serde_json::json!({}));
+            if !v.is_object() {
+                v = serde_json::json!({});
+            }
+            v["type"] = serde_json::Value::String(ty.to_string());
+            sc.send(&v);
+        });
+    }
+}
+
+fn notch_str(v: &serde_json::Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Route a sidecar action back to the same backend endpoints the React status
+/// bar invokes. Runs on the sidecar reader thread; HTTP work is spawned async.
+fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
+    let ty = action.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match ty {
+        "ready" => tracing::info!("[notch] sidecar ready"),
+
+        // confirm a single vocab term (learn | skip) → /v1/confirm-term
+        "confirm" => {
+            let endpoint = notch_endpoint(app);
+            if let Some(ep) = endpoint {
+                let term = notch_str(&action, "term");
+                let original = notch_str(&action, "original");
+                let decision = notch_str(&action, "decision");
+                let recording_id = action
+                    .get("recording_id")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string());
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let body = serde_json::json!({
+                        "term": term, "original": original,
+                        "action": decision, "recording_id": recording_id,
+                    });
+                    let ok = reqwest::Client::new()
+                        .post(format!("{}/v1/confirm-term", ep.url))
+                        .header("Authorization", ep.bearer())
+                        .json(&body)
+                        .send()
+                        .await
+                        .map(|r| r.status().is_success())
+                        .unwrap_or(false);
+                    if ok && decision == "learn" {
+                        let _ = app.emit("vocabulary-changed", ());
+                    }
+                });
+            }
+        }
+
+        // approve a server-owned profile memory proposal
+        "profile_approve" => {
+            let endpoint = notch_endpoint(app);
+            if let Some(ep) = endpoint {
+                let job_id = notch_str(&action, "recording_id")
+                    .strip_prefix("profile:")
+                    .unwrap_or("")
+                    .to_string();
+                if !job_id.is_empty() {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if api::approve_profile_proposal(&ep, &job_id).await.is_ok() {
+                            let _ = app.emit("vocabulary-changed", ());
+                            let _ = app.emit(
+                                "vocab-learned",
+                                serde_json::json!({
+                                    "term": "Profile memory",
+                                    "message": "Saved profile memory",
+                                }),
+                            );
+                        }
+                    });
+                }
+            }
+        }
+
+        // dismiss a server-owned profile memory proposal
+        "profile_dismiss" => {
+            let endpoint = notch_endpoint(app);
+            if let Some(ep) = endpoint {
+                let job_id = notch_str(&action, "recording_id")
+                    .strip_prefix("profile:")
+                    .unwrap_or("")
+                    .to_string();
+                if !job_id.is_empty() {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if api::dismiss_profile_proposal(&ep, &job_id).await.is_ok() {
+                            let _ = app.emit("vocabulary-changed", ());
+                        }
+                    });
+                }
+            }
+        }
+
+        // batch-learn reviewed corrections → api::confirm_batch
+        "confirm_batch" => {
+            let endpoint = notch_endpoint(app);
+            if let Some(ep) = endpoint {
+                let recording_id = action
+                    .get("recording_id")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string());
+                if let Some(job_id) = recording_id
+                    .as_deref()
+                    .and_then(|id| id.strip_prefix("profile:"))
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match api::approve_profile_proposal(&ep, &job_id).await {
+                            Ok(_) => {
+                                let _ = app.emit("vocabulary-changed", ());
+                                let _ = app.emit(
+                                    "vocab-learned",
+                                    serde_json::json!({
+                                        "term": "Profile memory",
+                                        "message": "Saved profile memory",
+                                    }),
+                                );
+                                tracing::info!(
+                                    "[profile-memory] approved profile proposal from notch confirm_batch job={job_id}"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "[profile-memory] approve from notch confirm_batch failed job={job_id}: {e}"
+                                );
+                            }
+                        }
+                    });
+                    return;
+                }
+                let pairs: Vec<(String, String)> = action
+                    .get("items")
+                    .and_then(|i| i.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| {
+                                Some((
+                                    v.get("original")?.as_str()?.to_string(),
+                                    v.get("corrected")?.as_str()?.to_string(),
+                                ))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !pairs.is_empty() {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if api::confirm_batch(&ep, &pairs, recording_id.as_deref())
+                            .await
+                            .is_ok()
+                        {
+                            let _ = app.emit("vocabulary-changed", ());
+                        }
+                    });
+                }
+            }
+        }
+
+        // stop a wrong correction → /v1/block-correction
+        "block" => {
+            let endpoint = notch_endpoint(app);
+            if let Some(ep) = endpoint {
+                let variant = notch_str(&action, "variant");
+                let wrong = notch_str(&action, "wrong_replacement");
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let body =
+                        serde_json::json!({ "variant": variant, "wrong_replacement": wrong });
+                    let ok = reqwest::Client::new()
+                        .post(format!("{}/v1/block-correction", ep.url))
+                        .header("Authorization", ep.bearer())
+                        .json(&body)
+                        .send()
+                        .await
+                        .map(|r| r.status().is_success())
+                        .unwrap_or(false);
+                    if ok {
+                        let _ = app.emit("vocabulary-changed", ());
+                    }
+                });
+            }
+        }
+
+        // retry a failed dictation (honours the selected STT provider)
+        "retry" => {
+            let audio_id = notch_str(&action, "audio_id");
+            if !audio_id.is_empty() {
+                let state = app.state::<SharedApp>();
+                let backend = app.state::<BackendState>();
+                let _ = retry_recording(audio_id, state, backend, app.clone());
+            }
+        }
+
+        // sidecar already collapsed locally; nothing to do server-side.
+        "dismiss" => {}
+
+        // undo / apply_update / snooze_update / copy_recent / reposition:
+        // not yet wired to backend logic — logged for follow-up.
+        other => tracing::info!("[notch] unhandled action: {other}"),
+    }
+}
+
+fn notch_endpoint(app: &tauri::AppHandle) -> Option<BackendEndpoint> {
+    let backend = app.state::<BackendState>();
+    get_endpoint(&backend).ok()
+}
+
 fn said_log_dir() -> std::path::PathBuf {
     said_core::paths::log_dir()
 }
@@ -7402,6 +8050,7 @@ async fn watch_for_edit(
             &user_kept,
             capture_method,
             capture_meta,
+            client_run_id.as_deref(),
         )
         .await
         {
@@ -7661,7 +8310,10 @@ async fn watch_for_edit(
                             hot.stt_mode = bias.stt_mode;
                             hot.keyterms = bias.keyterms;
                             hot.replacements = bias.replacements;
-                            let deepgram_key = hot.deepgram_key.clone();
+                            let deepgram_key = deepgram_session_key_for_provider(
+                                &hot.stt_provider,
+                                &hot.deepgram_key,
+                            );
                             let session_bias = said_core::deepgram::BiasPackage {
                                 stt_mode: hot.stt_mode.clone(),
                                 keyterms: hot.keyterms.clone(),
@@ -8396,12 +9048,14 @@ fn main() {
                                 keyterms: c.keyterms.clone(),
                                 replacements: c.replacements.clone(),
                             };
+                            let session_deepgram_key =
+                                deepgram_session_key_for_provider(&c.stt_provider, &deepgram_key);
                             drop(c);
                             let dg_session = app_h.state::<DeepgramSessionState>();
                             let _ = dg_session
                                 .0
                                 .send(dg_stream::SessionCommand::Reconfigure {
-                                    deepgram_key,
+                                    deepgram_key: session_deepgram_key,
                                     bias,
                                 })
                                 .await;
@@ -8440,7 +9094,8 @@ fn main() {
                                         hot.stt_mode = bias.stt_mode;
                                         hot.keyterms = bias.keyterms;
                                         hot.replacements = bias.replacements;
-                                        let deepgram_key = hot.deepgram_key.clone();
+                                        let deepgram_key =
+                                            deepgram_session_key_for_provider(&hot.stt_provider, &hot.deepgram_key);
                                         let session_bias = said_core::deepgram::BiasPackage {
                                             stt_mode: hot.stt_mode.clone(),
                                             keyterms: hot.keyterms.clone(),
@@ -8585,8 +9240,33 @@ fn main() {
                     });
                 }
 
-                // ── Floating status bar ────────────────────────────────────────
-                create_status_bar(app.handle());
+                // ── HUD surface: native notch sidecar (first-class) or the pill ─
+                // The notch sidecar is the primary HUD by default. Opt out with
+                // AIRNOTE_NOTCH_SIDECAR=0 to use the legacy status-bar pill; we
+                // also fall back to the pill if the notch binary is missing.
+                {
+                    let notch_enabled = std::env::var("AIRNOTE_NOTCH_SIDECAR")
+                        .map(|v| v != "0")
+                        .unwrap_or(true);
+                    let mut notch_active = false;
+                    if notch_enabled {
+                        let action_handle = app.handle().clone();
+                        if let Some(sidecar) = notch_sidecar::spawn(move |action| {
+                            handle_notch_action(&action_handle, action)
+                        }) {
+                            wire_notch_events(app.handle(), &sidecar);
+                            app.manage(sidecar);
+                            NOTCH_FIRST_CLASS.store(true, Ordering::SeqCst);
+                            notch_active = true;
+                            tracing::info!("[notch] sidecar first-class — status-bar pill suppressed");
+                        } else {
+                            tracing::warn!("[notch] sidecar binary not found — using status-bar pill");
+                        }
+                    }
+                    if !notch_active {
+                        create_status_bar(app.handle());
+                    }
+                }
 
                 // ── Frontend-ready handshake ───────────────────────────────────
                 // The status-bar WebView emits "frontend-ready" once all its event
@@ -9167,6 +9847,7 @@ fn main() {
             set_status_bar_interactive,
             get_backend_endpoint,
             get_preferences,
+            list_polish_models,
             get_stt_runtime,
             swift_model::swift_stt_model_status,
             swift_model::swift_stt_download_model,
@@ -9221,6 +9902,9 @@ fn main() {
             dismiss_pending_edit,
             // Vocabulary management
             list_vocabulary,
+            get_profile_memory,
+            approve_profile_proposal,
+            dismiss_profile_proposal,
             add_vocabulary_term,
             delete_vocabulary_term,
             confirm_term,
@@ -9262,6 +9946,9 @@ fn main() {
             meeting_engine::meeting_whisper_model_catalog,
             meeting_engine::meeting_cancel_model_download,
             meeting_engine::meeting_download_whisper_model,
+            meeting_engine::meeting_download_silero_vad_model,
+            meeting_engine::meeting_delete_silero_vad_model,
+            meeting_engine::silero_vad_model_status,
             meeting_engine::meeting_delete_whisper_model,
             meeting_engine::meeting_cleanup_legacy_whisper_models,
             meeting_engine::meeting_ensure_active_model,
@@ -9440,11 +10127,23 @@ mod live_typing_guard_tests {
     fn streams_until_reset_then_previews() {
         let mut guard = LiveTypingGuard::default();
         assert_eq!(guard.on_token("Hello"), LiveTypingDecision::TypeToken);
+        guard.note_typed();
         assert_eq!(guard.on_token("world"), LiveTypingDecision::TypeToken);
+        guard.note_typed();
         assert_eq!(
             guard.on_token(STREAM_RESET_SENTINEL),
             LiveTypingDecision::ResetAndDisable
         );
         assert_eq!(guard.on_token("final"), LiveTypingDecision::PreviewOnly);
+    }
+
+    #[test]
+    fn reset_before_any_target_typing_does_not_disable_streaming() {
+        let mut guard = LiveTypingGuard::default();
+        assert_eq!(
+            guard.on_token(STREAM_RESET_SENTINEL),
+            LiveTypingDecision::PreviewOnly
+        );
+        assert_eq!(guard.on_token("final"), LiveTypingDecision::TypeToken);
     }
 }

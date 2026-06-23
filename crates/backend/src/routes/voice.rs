@@ -211,7 +211,7 @@ use crate::{
     AppState,
     embedder::gemini,
     llm::{
-        cerebras, gateway, gemini_direct, groq, openai_codex,
+        openai_codex,
         prompt::{
             VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE, VocabEntry,
             build_user_message_with_hints, build_voice_repair_system_prompt,
@@ -543,63 +543,45 @@ pub async fn repair_transcript(
         let cerebras_key = prefs.cerebras_api_key.clone()
             .or_else(|| std::env::var("CEREBRAS_API_KEY").ok())
             .unwrap_or_default();
+        let deepinfra_key = prefs.deepinfra_api_key.clone()
+            .or_else(|| std::env::var("DEEPINFRA_API_KEY").ok())
+            .unwrap_or_default();
         let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
         let sys_p = system_prompt.clone();
         let usr_m = user_message.clone();
         let client_c = http_client.clone();
         let groq_key_for_recovery = groq_key.clone();
         let llm_provider = prefs.llm_provider.clone();
-        let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
+        let route = crate::llm::polish_dispatch::voice_polish_route(&prefs.selected_model);
+        let openai_token_opt = if llm_provider == "openai_codex" {
             let pool_tok = pool.clone();
             let uid_tok = user_id.clone();
             let tok = tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
                 .await
                 .unwrap_or(None);
-            (openai_codex::MODEL_MINI.to_string(), tok.map(|t| t.access_token))
-        } else if llm_provider == "gemini_direct" {
-            (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
-        } else if llm_provider == "groq" {
-            (
-                if prefs.selected_model == "smart" {
-                    groq::GROQ_MODEL_SMART
-                } else {
-                    groq::GROQ_MODEL_FAST
-                }
-                .to_string(),
-                None,
-            )
-        } else if llm_provider == "cerebras" {
-            (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
+            tok.map(|t| t.access_token)
         } else {
-            (said_core::resolve_model(&prefs.selected_model).to_string(), None)
+            None
         };
         let llm_provider_for_task = llm_provider.clone();
-        let actual_model_used = model_for_llm.clone();
+        let actual_model_used = route.label();
 
         let llm_task = tokio::spawn(async move {
-            if llm_provider_for_task == "openai_codex" {
-                let access_token = openai_token_opt.as_deref().unwrap_or("");
-                if access_token.is_empty() {
-                    return Err("OpenAI not connected — go to Settings to connect your account".to_string());
-                }
-                openai_codex::stream_polish(
-                    &client_c, access_token, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else if llm_provider_for_task == "gemini_direct" {
-                gemini_direct::stream_polish(
-                    &client_c, &gemini_key, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else if llm_provider_for_task == "groq" {
-                groq::stream_polish(
-                    &client_c, &groq_key, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else if llm_provider_for_task == "cerebras" {
-                cerebras::stream_polish(
-                    &client_c, &cerebras_key, &model_for_llm, &sys_p, &usr_m, token_tx,
-                ).await
-            } else {
-                gateway::stream_polish(&client_c, &gateway_key, &model_for_llm, &sys_p, &usr_m, token_tx).await
-            }
+            crate::llm::polish_dispatch::stream_polish_routed(
+                &client_c,
+                &route,
+                &groq_key,
+                &gateway_key,
+                &gemini_key,
+                &cerebras_key,
+                &deepinfra_key,
+                openai_token_opt.as_deref(),
+                &llm_provider_for_task,
+                &sys_p,
+                &usr_m,
+                token_tx,
+            )
+            .await
         });
 
         let enforce_roman_hinglish = output_language == "hinglish";
@@ -1056,100 +1038,43 @@ async fn run_local_voice_polish_no_stream(
     gemini_key: String,
     groq_key: String,
     cerebras_key: String,
+    deepinfra_key: String,
     system_prompt: String,
     user_message: String,
 ) -> Result<(crate::llm::PolishResult, String), String> {
-    let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
+    let route = crate::llm::polish_dispatch::voice_polish_route(&selected_model);
+    let openai_token_opt = if llm_provider == "openai_codex" {
         let pool_tok = pool.clone();
         let uid_tok = user_id.clone();
         let tok = tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
             .await
             .unwrap_or(None);
-        (
-            openai_codex::MODEL_MINI.to_string(),
-            tok.map(|t| t.access_token),
-        )
-    } else if llm_provider == "gemini_direct" {
-        (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
-    } else if llm_provider == "groq" {
-        (
-            if selected_model == "smart" {
-                groq::GROQ_MODEL_SMART
-            } else {
-                groq::GROQ_MODEL_FAST
-            }
-            .to_string(),
-            None,
-        )
-    } else if llm_provider == "cerebras" {
-        (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
+        tok.map(|t| t.access_token)
     } else {
-        (said_core::resolve_model(&selected_model).to_string(), None)
+        None
     };
 
     let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
     let drain = tokio::spawn(async move { while token_rx.recv().await.is_some() {} });
 
-    let result = if llm_provider == "openai_codex" {
-        let access_token = openai_token_opt.as_deref().unwrap_or("");
-        if access_token.is_empty() {
-            return Err(
-                "OpenAI not connected — go to Settings to connect your account".to_string(),
-            );
-        }
-        openai_codex::stream_polish(
-            &http_client,
-            access_token,
-            &model_for_llm,
-            &system_prompt,
-            &user_message,
-            token_tx,
-        )
-        .await
-    } else if llm_provider == "gemini_direct" {
-        gemini_direct::stream_polish(
-            &http_client,
-            &gemini_key,
-            &model_for_llm,
-            &system_prompt,
-            &user_message,
-            token_tx,
-        )
-        .await
-    } else if llm_provider == "groq" {
-        groq::stream_polish(
-            &http_client,
-            &groq_key,
-            &model_for_llm,
-            &system_prompt,
-            &user_message,
-            token_tx,
-        )
-        .await
-    } else if llm_provider == "cerebras" {
-        cerebras::stream_polish(
-            &http_client,
-            &cerebras_key,
-            &model_for_llm,
-            &system_prompt,
-            &user_message,
-            token_tx,
-        )
-        .await
-    } else {
-        gateway::stream_polish(
-            &http_client,
-            &gateway_key,
-            &model_for_llm,
-            &system_prompt,
-            &user_message,
-            token_tx,
-        )
-        .await
-    };
+    let result = crate::llm::polish_dispatch::stream_polish_routed(
+        &http_client,
+        &route,
+        &groq_key,
+        &gateway_key,
+        &gemini_key,
+        &cerebras_key,
+        &deepinfra_key,
+        openai_token_opt.as_deref(),
+        &llm_provider,
+        &system_prompt,
+        &user_message,
+        token_tx,
+    )
+    .await;
 
     let _ = drain.await;
-    result.map(|r| (r, model_for_llm))
+    result.map(|r| (r, route.label()))
 }
 
 async fn run_server_runtime_voice_wav_probe(
@@ -1698,10 +1623,23 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
     let Some(prefs_for_guard) = prefs_opt.as_ref() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
+    let require_stt_key = !message_polish_mode && pre_transcript.is_none();
+    info!(
+        "[voice] key guard require_stt_key={} pre_transcript_present={} message_polish={} prefs_stt_provider={}",
+        require_stt_key,
+        pre_transcript.is_some(),
+        message_polish_mode,
+        prefs_for_guard.stt_provider,
+    );
     let missing = if message_polish_mode {
         Vec::new()
     } else {
-        crate::routes::key_guard::missing_voice_api_keys(&pool, &user_id, prefs_for_guard)
+        crate::routes::key_guard::missing_voice_api_keys(
+            &pool,
+            &user_id,
+            prefs_for_guard,
+            require_stt_key,
+        )
     };
     if !missing.is_empty() {
         return crate::routes::key_guard::missing_api_keys_response(missing);
@@ -1743,6 +1681,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             .unwrap_or_default();
         let cerebras_key = prefs.cerebras_api_key.clone()
             .or_else(|| std::env::var("CEREBRAS_API_KEY").ok())
+            .unwrap_or_default();
+        let deepinfra_key = prefs.deepinfra_api_key.clone()
+            .or_else(|| std::env::var("DEEPINFRA_API_KEY").ok())
             .unwrap_or_default();
 
         let stt_bias_package = tokio::task::spawn_blocking({
@@ -2667,7 +2608,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let groq_key_for_recovery = groq_key.clone();
         let llm_start = Instant::now();
         let mut saw_script_rewrite = false;
-        let (mut llm_result, actual_model_used, stream_filter) = if prefs.server_runtime_enabled {
+        let (mut llm_result, actual_model_used, stream_filter) = if crate::store::prefs::server_runtime_forced() {
             yield Ok(Event::default().event("status")
                 .data(json!({"phase": "server_polishing", "transcript": &resolved_transcript}).to_string()));
             info!("[timing] LLM start — provider=server_runtime selected_model={:?}", prefs.selected_model);
@@ -2744,6 +2685,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         gemini_key.clone(),
                         groq_key.clone(),
                         cerebras_key.clone(),
+                        deepinfra_key.clone(),
                         system_prompt.clone(),
                         user_message.clone(),
                     )
@@ -2800,6 +2742,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         gemini_key.clone(),
                         groq_key.clone(),
                         cerebras_key.clone(),
+                        deepinfra_key.clone(),
                         system_prompt.clone(),
                         user_message.clone(),
                     )
@@ -2848,29 +2791,16 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let client_c    = http_client.clone();
 
             let llm_provider = prefs.llm_provider.clone();
-            let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
+            let route = crate::llm::polish_dispatch::voice_polish_route(&prefs.selected_model);
+            let openai_token_opt = if llm_provider == "openai_codex" {
                 let pool_tok = pool.clone();
                 let uid_tok  = user_id.clone();
                 let tok = tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
                     .await
                     .unwrap_or(None);
-                (openai_codex::MODEL_MINI.to_string(), tok.map(|t| t.access_token))
-            } else if llm_provider == "gemini_direct" {
-                (gemini_direct::GEMINI_DIRECT_MODEL.to_string(), None)
-            } else if llm_provider == "groq" {
-                (
-                    if prefs.selected_model == "smart" {
-                        groq::GROQ_MODEL_SMART
-                    } else {
-                        groq::GROQ_MODEL_FAST
-                    }
-                    .to_string(),
-                    None,
-                )
-            } else if llm_provider == "cerebras" {
-                (cerebras::CEREBRAS_MODEL_DEFAULT.to_string(), None)
+                tok.map(|t| t.access_token)
             } else {
-                (said_core::resolve_model(&prefs.selected_model).to_string(), None)
+                None
             };
             let llm_provider_for_task = llm_provider.clone();
 
@@ -2878,34 +2808,27 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let gk_gemini   = gemini_key.clone();
             let gk_groq     = groq_key.clone();
             let gk_cerebras = cerebras_key.clone();
+            let gk_deepinfra = deepinfra_key.clone();
 
-            info!("[timing] LLM start — provider={llm_provider:?} model={model_for_llm:?}");
-            let actual_model_used = model_for_llm.clone();
+            info!("[timing] LLM start — route={:?}", route.label());
+            let actual_model_used = route.label();
 
             let llm_task = tokio::spawn(async move {
-                if llm_provider_for_task == "openai_codex" {
-                    let access_token = openai_token_opt.as_deref().unwrap_or("");
-                    if access_token.is_empty() {
-                        return Err("OpenAI not connected — go to Settings to connect your account".to_string());
-                    }
-                    openai_codex::stream_polish(
-                        &client_c, access_token, &model_for_llm, &sys_p, &usr_m, token_tx,
-                    ).await
-                } else if llm_provider_for_task == "gemini_direct" {
-                    gemini_direct::stream_polish(
-                        &client_c, &gk_gemini, &model_for_llm, &sys_p, &usr_m, token_tx,
-                    ).await
-                } else if llm_provider_for_task == "groq" {
-                    groq::stream_polish(
-                        &client_c, &gk_groq, &model_for_llm, &sys_p, &usr_m, token_tx,
-                    ).await
-                } else if llm_provider_for_task == "cerebras" {
-                    cerebras::stream_polish(
-                        &client_c, &gk_cerebras, &model_for_llm, &sys_p, &usr_m, token_tx,
-                    ).await
-                } else {
-                    gateway::stream_polish(&client_c, &gk, &model_for_llm, &sys_p, &usr_m, token_tx).await
-                }
+                crate::llm::polish_dispatch::stream_polish_routed(
+                    &client_c,
+                    &route,
+                    &gk_groq,
+                    &gk,
+                    &gk_gemini,
+                    &gk_cerebras,
+                    &gk_deepinfra,
+                    openai_token_opt.as_deref(),
+                    &llm_provider_for_task,
+                    &sys_p,
+                    &usr_m,
+                    token_tx,
+                )
+                .await
             });
 
             let mut stream_filter =

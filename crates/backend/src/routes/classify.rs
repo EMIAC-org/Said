@@ -25,6 +25,7 @@ use crate::{
         analyzer::{self, AnalyzedChange, ChangeReason},
         edit_diff, promotion_gate,
     },
+    profile_learn_handoff::{self, ProfileLearnHandoff},
     store::{
         corrections, email_memory, history, pending_promotions, prefs::get_prefs, stt_replacements,
         tier2_edit_policy, users, vectors, vocab_embeddings, vocab_fts, vocabulary,
@@ -59,6 +60,9 @@ pub struct ClassifyBody {
     /// user pasting more text on top of our paste — not a typed edit.
     #[serde(default)]
     pub matches_clipboard: bool,
+    /// Desktop runtime session id for correlating with control-plane `runtime_sessions`.
+    #[serde(default)]
+    pub client_run_id: Option<String>,
 }
 
 fn default_capture_method() -> String {
@@ -92,6 +96,45 @@ fn post_runtime_memory_dirty(state: AppState) {
             .send()
             .await;
     });
+}
+
+fn queue_profile_learn_handoff(
+    state: AppState,
+    edit_event_id: &Option<String>,
+    body: &ClassifyBody,
+    rec: &history::Recording,
+    transcript: &str,
+    output_language: &str,
+) {
+    let Some(edit_event_id) = edit_event_id.clone() else {
+        return;
+    };
+    profile_learn_handoff::post_profile_learn_from_edit(
+        state,
+        ProfileLearnHandoff {
+            edit_event_id,
+            recording_id: body.recording_id.clone(),
+            raw_transcript: rec
+                .raw_transcript
+                .clone()
+                .filter(|t| !t.trim().is_empty())
+                .or_else(|| Some(transcript.to_string())),
+            ai_output: body.ai_output.clone(),
+            user_kept: body.user_kept.clone(),
+            target_app: rec.target_app.clone(),
+            output_language: Some(output_language.to_string()),
+            model_used: Some(rec.model_used.clone()),
+            capture_confidence: Some(
+                profile_learn_handoff::capture_confidence_label(&body.capture_method).to_string(),
+            ),
+            client_run_id: body
+                .client_run_id
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        },
+    );
 }
 
 fn post_runtime_client_event(
@@ -428,6 +471,22 @@ pub async fn classify(
     State(state): State<AppState>,
     Json(body): Json<ClassifyBody>,
 ) -> (StatusCode, Json<ClassifyResponse>) {
+    let learning_enabled = get_prefs(&state.pool, &state.default_user_id)
+        .map(|p| p.learning_enabled)
+        .unwrap_or(true);
+    crate::legacy_learning::with_legacy_write_scope(
+        learning_enabled,
+        classify_inner(state, body, learning_enabled),
+    )
+    .await
+}
+
+async fn classify_inner(
+    state: AppState,
+    body: ClassifyBody,
+    learning_enabled: bool,
+) -> (StatusCode, Json<ClassifyResponse>) {
+    let audit_only = crate::legacy_learning::audit_only_legacy_mutations();
     // ── Step 1: Look up recording + preferences ──────────────────────────────
     let rec = match history::get_recording(&state.pool, &body.recording_id) {
         Some(r) => r,
@@ -445,14 +504,11 @@ pub async fn classify(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| rec.transcript.clone());
     let prefs = get_prefs(&state.pool, &state.default_user_id);
-    if prefs.as_ref().map(|p| !p.learning_enabled).unwrap_or(false) {
+    if audit_only {
         info!(
-            "[classify] learning disabled — skipping {}",
-            body.recording_id
-        );
-        return (
-            StatusCode::OK,
-            Json(empty_response("no_edit", "learning disabled")),
+            "[classify] legacy learning frozen — audit-only for {} (debug old writes: {}=1)",
+            body.recording_id,
+            crate::legacy_learning::DEBUG_LEGACY_WRITES_ENV,
         );
     }
     let output_language = prefs
@@ -540,7 +596,7 @@ pub async fn classify(
     }
 
     history::apply_edit_feedback(&state.pool, &body.recording_id, &body.user_kept);
-    if let Some(edit_event_id) = vectors::insert_edit_event(
+    let edit_event_id = vectors::insert_edit_event(
         &state.pool,
         &rec.user_id,
         Some(&rec.id),
@@ -548,10 +604,11 @@ pub async fn classify(
         &body.ai_output,
         &body.user_kept,
         rec.target_app.as_deref(),
-    ) {
+    );
+    if let Some(ref id) = edit_event_id {
         info!(
             "[classify] edit_event {} created for recording {}",
-            edit_event_id, rec.id
+            id, rec.id
         );
     } else {
         warn!(
@@ -559,7 +616,7 @@ pub async fn classify(
             body.recording_id
         );
     }
-    let learned_emails = email_memory::upsert_many_from_text(
+    let mut learned_emails = email_memory::upsert_many_from_text(
         &state.pool,
         &state.default_user_id,
         &body.user_kept,
@@ -799,30 +856,40 @@ pub async fn classify(
                     server_candidates.len(),
                     learnable_count
                 );
-                post_runtime_client_event(
+                if !audit_only {
+                    post_runtime_client_event(
+                        state.clone(),
+                        "classify_edit_result",
+                        body.recording_id.clone(),
+                        analyzer_output.overall_class.clone(),
+                        hash_text(&body.ai_output),
+                        hash_text(&body.user_kept),
+                        serde_json::json!({
+                            "learned": false,
+                            "notify": false,
+                            "promoted_count": 0,
+                            "promoted_term_count": 0,
+                            "learned_email_count": learned_emails.len(),
+                            "queued_term_count": 0,
+                            "negative_count": negative_terms.len(),
+                            "review_candidate_count": server_candidates.len(),
+                            "change_count": change_count,
+                            "capture_method": body.capture_method,
+                            "source": "server_raw_learning_judge",
+                            "memory": {
+                                "accepted_terms": [],
+                                "accepted_aliases": [],
+                            },
+                        }),
+                    );
+                }
+                queue_profile_learn_handoff(
                     state.clone(),
-                    "classify_edit_result",
-                    body.recording_id.clone(),
-                    analyzer_output.overall_class.clone(),
-                    hash_text(&body.ai_output),
-                    hash_text(&body.user_kept),
-                    serde_json::json!({
-                        "learned": false,
-                        "notify": false,
-                        "promoted_count": 0,
-                        "promoted_term_count": 0,
-                        "learned_email_count": learned_emails.len(),
-                        "queued_term_count": 0,
-                        "negative_count": negative_terms.len(),
-                        "review_candidate_count": server_candidates.len(),
-                        "change_count": change_count,
-                        "capture_method": body.capture_method,
-                        "source": "server_raw_learning_judge",
-                        "memory": {
-                            "accepted_terms": [],
-                            "accepted_aliases": [],
-                        },
-                    }),
+                    &edit_event_id,
+                    &body,
+                    &rec,
+                    &transcript,
+                    &output_language,
                 );
                 return (
                     StatusCode::OK,
@@ -872,7 +939,7 @@ pub async fn classify(
 
     let mut promoted_count = 0_usize;
     let mut promoted_terms: Vec<String> = Vec::new();
-    let queued_terms: Vec<QueuedTerm> = Vec::new();
+    let mut queued_terms: Vec<QueuedTerm> = Vec::new();
     let mut review_candidates: Vec<ReviewCandidate> = Vec::new();
     let mut has_repeat = false;
     let mut learned = false;
@@ -1587,14 +1654,15 @@ pub async fn classify(
 
     // Only retrain if something was actually committed (not pending review).
     // When review candidates exist, retrain happens after confirm-batch.
-    if (learned || has_negatives) && !has_review {
+    if (learned || has_negatives) && !has_review && !audit_only {
         schedule_onnx_retrain(state.clone());
     }
 
     if !learned_emails.is_empty() {
         learned = true;
     }
-    let notify = (learned && (promoted_count > 0 || policy_touched)) || !learned_emails.is_empty();
+    let mut notify =
+        (learned && (promoted_count > 0 || policy_touched)) || !learned_emails.is_empty();
 
     let change_count = analyzer_output.changes.len();
     info!(
@@ -1609,7 +1677,8 @@ pub async fn classify(
         review_candidates.len(),
     );
 
-    if learned || notify || has_negatives || has_review || !queued_terms.is_empty() {
+    if !audit_only && (learned || notify || has_negatives || has_review || !queued_terms.is_empty())
+    {
         post_runtime_client_event(
             state.clone(),
             "classify_edit_result",
@@ -1636,8 +1705,32 @@ pub async fn classify(
         );
     }
     if promoted_count > 0 || policy_touched {
-        post_runtime_memory_dirty(state.clone());
+        if !audit_only {
+            post_runtime_memory_dirty(state.clone());
+        }
     }
+
+    if audit_only {
+        info!(
+            "[classify] audit-only: {} change(s) classified, legacy writes skipped for {}",
+            change_count, body.recording_id,
+        );
+        learned = false;
+        notify = false;
+        promoted_count = 0;
+        promoted_terms.clear();
+        learned_emails.clear();
+        queued_terms.clear();
+    }
+
+    queue_profile_learn_handoff(
+        state.clone(),
+        &edit_event_id,
+        &body,
+        &rec,
+        &transcript,
+        &output_language,
+    );
 
     (
         StatusCode::OK,
@@ -3697,6 +3790,7 @@ mod tests {
     use r2d2_sqlite::SqliteConnectionManager;
 
     fn mem_pool() -> crate::store::DbPool {
+        crate::legacy_learning::enable_debug_legacy_writes_for_tests();
         let mgr = SqliteConnectionManager::memory();
         let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
         let conn = pool.get().unwrap();

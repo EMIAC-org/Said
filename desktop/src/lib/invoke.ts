@@ -6,6 +6,7 @@ import type {
   CloudAuthResponse,
   CloudStatus,
   HistoryItem,
+  ListPolishModelsResponse,
   PendingEditsResponse,
   PerformanceSnapshot,
   PolishDone,
@@ -272,6 +273,19 @@ export async function getSttRuntime(): Promise<SttRuntimeInfo | null> {
   if (!isTauriRuntime()) return null;
   try {
     return await tauriInvoke<SttRuntimeInfo>("get_stt_runtime");
+  } catch {
+    return null;
+  }
+}
+
+export async function listPolishModels(
+  beta = true
+): Promise<ListPolishModelsResponse | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<ListPolishModelsResponse>("list_polish_models", {
+      beta,
+    });
   } catch {
     return null;
   }
@@ -850,6 +864,79 @@ export interface VocabListResponse {
   total: number;
 }
 
+export interface ProfileMemoryTerm {
+  term: string;
+  term_type?: string | null;
+  evidence?: string | null;
+}
+
+export interface ProfileMemoryAlias {
+  source_phrase: string;
+  canonical_phrase: string;
+  status: string;
+  confidence?: number | null;
+  evidence_count?: number | null;
+  reason?: string | null;
+}
+
+export interface ProfileMemoryDomain {
+  name: string;
+  weight?: number | null;
+  evidence?: string | null;
+}
+
+export interface ProfileLearningProposal {
+  job_id: string;
+  edit_event_id: string;
+  status: string;
+  from_version: number;
+  created_at: string;
+  updated_at: string;
+  ai_output: string;
+  user_kept: string;
+  raw_transcript?: string | null;
+  classification?: string | null;
+  confidence?: number | null;
+  reason?: string | null;
+  delta_summary?: Record<string, unknown>;
+  stable_terms: ProfileMemoryTerm[];
+  aliases: ProfileMemoryAlias[];
+  domains: ProfileMemoryDomain[];
+}
+
+export interface ProfileMemoryResponse {
+  profile: {
+    version: number;
+    status: string;
+    profile_markdown: string;
+    updated_at: string;
+  };
+  pending_proposals: ProfileLearningProposal[];
+  stable_terms: ProfileMemoryTerm[];
+  aliases: ProfileMemoryAlias[];
+  domains: ProfileMemoryDomain[];
+}
+
+export async function getProfileMemory(): Promise<ProfileMemoryResponse | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<ProfileMemoryResponse>("get_profile_memory");
+  } catch (e) {
+    console.error("get_profile_memory failed", e);
+    return null;
+  }
+}
+
+export async function approveProfileProposal(jobId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await tauriInvoke("approve_profile_proposal", { jobId });
+}
+
+export async function dismissProfileProposal(jobId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await tauriInvoke("dismiss_profile_proposal", { jobId });
+}
+
 export async function listVocabulary(): Promise<VocabListResponse> {
   if (!isTauriRuntime()) return { terms: [], total: 0 };
   try {
@@ -977,6 +1064,7 @@ export interface DesktopPrefs {
   update_channel: "stable" | "beta";
   message_polish_mode: boolean;
   launch_at_login: boolean;
+  beta_mode: boolean;
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
@@ -986,6 +1074,7 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
       update_channel: "stable",
       message_polish_mode: false,
       launch_at_login: false,
+      beta_mode: false,
     };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");

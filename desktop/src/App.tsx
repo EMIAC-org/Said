@@ -4,6 +4,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { InviteTeamModal } from "@/components/InviteTeamModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { OnboardingFlow } from "@/components/OnboardingFlow";
+import { loadOnboardingProgress } from "@/lib/onboardingProgress";
 import { Topbar } from "@/components/Topbar";
 import { DashboardView } from "@/components/views/DashboardView";
 import { HistoryView } from "@/components/views/HistoryView";
@@ -59,6 +60,13 @@ import { startDailyAutoUpdateCheck } from "@/lib/autoUpdate";
 import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
+
+interface SwiftModelStatus {
+  installed: boolean;
+  size_bytes: number;
+  path: string;
+  downloading_percent: number | null;
+}
 
 export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "meetings" | "divo" | "settings" | "live-meeting";
 const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "meetings", "divo", "settings", "live-meeting"];
@@ -206,6 +214,7 @@ export default function App() {
       return false;
     }
   });
+  const [swiftModelInstalled, setSwiftModelInstalled] = useState<boolean | null>(null);
   // ── Retry toast ───────────────────────────────────────────────────────────
   const [retryToast, setRetryToast] = useState<{ message: string; audioId: string } | null>(null);
 
@@ -293,6 +302,25 @@ export default function App() {
       });
     refreshHistory();
   }, [refreshHistory]);
+
+  useEffect(() => {
+    if (!snapshot?.platform) return;
+    if (snapshot.platform !== "macos") {
+      setSwiftModelInstalled(true);
+      return;
+    }
+    let alive = true;
+    invoke<SwiftModelStatus>("swift_stt_model_status")
+      .then((status) => {
+        if (alive) setSwiftModelInstalled(status.installed);
+      })
+      .catch(() => {
+        if (alive) setSwiftModelInstalled(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [snapshot?.platform]);
 
   useEffect(() => {
     let alive = true;
@@ -680,8 +708,10 @@ export default function App() {
     !!snapshot?.input_monitoring_granted;
 
   const needsEnterprise = enterpriseGate === "required";
-  const needsSetup = !corePermissionsReady || !onboardingComplete;
-  const workspaceOnly = needsEnterprise && onboardingComplete && corePermissionsReady;
+  const swiftSetupRequired = snapshot?.platform === "macos" && swiftModelInstalled !== true;
+  const needsSetup = !corePermissionsReady || !onboardingComplete || swiftSetupRequired;
+  const workspaceOnly =
+    needsEnterprise && onboardingComplete && corePermissionsReady && !swiftSetupRequired;
 
   if (needsEnterprise || needsSetup) {
     return (
@@ -689,6 +719,9 @@ export default function App() {
         snapshot={snapshotWithHistory}
         workspaceOnly={workspaceOnly}
         enterpriseRequired={needsEnterprise}
+        initialProgress={loadOnboardingProgress()}
+        requireLocalModelSetup={swiftSetupRequired}
+        onLocalModelReady={() => setSwiftModelInstalled(true)}
         onEnterpriseConnected={handleEnterpriseConnected}
         onMicrophone={handleMicrophone}
         onAccessibility={handleAccessibility}

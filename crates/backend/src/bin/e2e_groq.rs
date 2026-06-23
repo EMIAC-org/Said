@@ -280,6 +280,7 @@ fn make_test_prefs() -> Preferences {
         gemini_api_key: None,
         groq_api_key: None,
         cerebras_api_key: None,
+        deepinfra_api_key: None,
         llm_provider: "groq".to_string(),
         stt_provider: "deepgram".to_string(),
     }

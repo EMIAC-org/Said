@@ -54,3 +54,10 @@ models/*.bin
 
 # Local STT benchmark HF weights (ephemeral; purged after compare)
 tools/stt-compare/.hf-cache/
+
+# Reference repo (read-only design reference; not part of the build)
+/boring.notch/
+
+# Native notch HUD sidecar (Swift) — build output + staged sidecar binary
+desktop/notch-sidecar/.build/
+desktop/src-tauri/binaries/airnote-notch-*

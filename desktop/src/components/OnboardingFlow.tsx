@@ -1,7 +1,9 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   Check,
+  Cpu,
+  Download,
   ExternalLink,
   Eye,
   EyeOff,
@@ -12,15 +14,35 @@ import {
   Wifi,
   LogOut,
   Loader2,
+  X,
 } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import { OnboardingShell } from "@/components/OnboardingShell";
 import { EnterpriseConnectForm } from "@/components/EnterpriseConnectForm";
 import type { EnterpriseConnection } from "@/lib/enterprise";
-import { getConnection, completeEmailAuth, DEFAULT_CLOUD_SERVER_URL } from "@/lib/enterprise";
+import {
+  getConnection,
+  completeEmailAuth,
+  DEFAULT_CLOUD_SERVER_URL,
+  loadSavedAuthMode,
+} from "@/lib/enterprise";
 import type { AppSnapshot, Preferences } from "@/types";
-import { getPreferences, patchPreferences, openExternal } from "@/lib/invoke";
+import { getPreferences, invoke, patchPreferences, openExternal } from "@/lib/invoke";
+import {
+  clearOnboardingProgress,
+  computeResumeProgress,
+  loadOnboardingProgress,
+  ONBOARDING_STEPS,
+  ONBOARDING_STEP_IDS,
+  saveOnboardingProgress,
+  shellStepStatus,
+  stepIndex as onboardingStepIndex,
+  firstUndoneStep,
+  type OnboardingProgress,
+  type OnboardingStep,
+} from "@/lib/onboardingProgress";
 
-type Step = "welcome" | "account" | "permissions" | "keys" | "hotkey";
+type Step = OnboardingStep;
 
 interface Props {
   snapshot: AppSnapshot | null;
@@ -34,9 +56,36 @@ interface Props {
   onEnterpriseConnected?: (conn: EnterpriseConnection) => void;
   /** Reconnect-only mode — skip welcome/permissions/keys/hotkey. */
   workspaceOnly?: boolean;
+  /** Restored onboarding progress from localStorage. */
+  initialProgress?: OnboardingProgress | null;
+  /** Existing macOS users must install the local Swift model before continuing. */
+  requireLocalModelSetup?: boolean;
+  /** Called once the local Swift model is installed. */
+  onLocalModelReady?: () => void;
 }
 
-const STEPS: Step[] = ["welcome", "account", "permissions", "keys", "hotkey"];
+interface SwiftModelStatus {
+  installed: boolean;
+  size_bytes: number;
+  path: string;
+  downloading_percent: number | null;
+}
+
+interface SwiftDownloadProgress {
+  received: number;
+  total: number;
+  status: "downloading" | "done" | "cancelled" | "error";
+  error: string | null;
+}
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+  if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
+  if (bytes > 0) return `${Math.round(bytes / 1e3)} KB`;
+  return "—";
+}
+
+const STEPS = ONBOARDING_STEP_IDS;
 const TOTAL_STEPS = STEPS.length;
 
 function stepLabel(step: Step): string {
@@ -89,26 +138,41 @@ export function OnboardingFlow({
   enterpriseRequired = false,
   onEnterpriseConnected,
   workspaceOnly = false,
+  initialProgress = null,
+  requireLocalModelSetup = false,
+  onLocalModelReady,
 }: Props) {
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [groqKey, setGroqKey] = useState("");
   const [deepgramKey, setDeepgramKey] = useState("");
   const [keySaving, setKeySaving] = useState(false);
   const [keyError, setKeyError] = useState("");
+  const [swiftModel, setSwiftModel] = useState<SwiftModelStatus | null>(null);
+  const [swiftDownload, setSwiftDownload] = useState<SwiftDownloadProgress | null>(null);
+  const [swiftBusy, setSwiftBusy] = useState(false);
+  const [swiftError, setSwiftError] = useState("");
   const [workspacePreview, setWorkspacePreview] = useState<EnterpriseConnection | null>(null);
+  const [userNavigatedManually, setUserNavigatedManually] = useState(false);
+  const resumeSynced = useRef(false);
 
-  // account step: personal vs workspace sub-view.
-  // Personal sign-up is the default for everyone; only the Settings reconnect
-  // path (workspaceOnly) lands directly on the workspace screen. NOTE:
-  // `enterpriseRequired` here just means "not signed in yet" (true for every
-  // fresh user, personal included) — it must NOT force the workspace screen.
-  const [authMode, setAuthMode] = useState<"personal" | "workspace">(
-    workspaceOnly ? "workspace" : "personal",
+  const [progress, setProgress] = useState<OnboardingProgress>(() =>
+    computeResumeProgress(initialProgress ?? loadOnboardingProgress(), {
+      workspaceOnly,
+      snapshot: null,
+      prefs: null,
+    }),
   );
-  // personal email signup/login
+
+  const [authMode, setAuthMode] = useState<"personal" | "workspace">(() => {
+    if (workspaceOnly) {
+      return loadSavedAuthMode() ?? initialProgress?.authMode ?? progress.authMode;
+    }
+    return progress.authMode;
+  });
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [emailSignup, setEmailSignup] = useState(true); // true = create, false = log in
+  const [emailSignup, setEmailSignup] = useState(true);
   const [personalLoading, setPersonalLoading] = useState(false);
   const [personalError, setPersonalError] = useState("");
 
@@ -116,6 +180,9 @@ export function OnboardingFlow({
   const accGranted = snapshot?.accessibility_granted ?? false;
   const imGranted = snapshot?.input_monitoring_granted ?? false;
   const isWindows = snapshot?.platform === "windows";
+  const isMac = snapshot?.platform === "macos";
+
+  const [step, setStep] = useState<Step>(() => progress.currentStep);
 
   useEffect(() => {
     getPreferences().then((p) => {
@@ -127,33 +194,209 @@ export function OnboardingFlow({
     });
   }, []);
 
-  const hasKeys = !!(prefs?.groq_api_key && prefs?.deepgram_api_key);
-
-  const [step, setStep] = useState<Step>(() => (workspaceOnly ? "account" : "welcome"));
-
-  const stepIndex = STEPS.indexOf(step);
-
-  const goNext = useCallback(() => {
-    const idx = STEPS.indexOf(step);
-    if (idx >= STEPS.length - 1) return;
-    let next = STEPS[idx + 1];
-    if (next === "account" && !enterpriseRequired && getConnection()) {
-      next = STEPS[idx + 2] ?? next;
+  const refreshSwiftModel = useCallback(async () => {
+    if (!isMac) {
+      setSwiftModel(null);
+      return null;
     }
-    setStep(next);
-  }, [step, enterpriseRequired]);
+    try {
+      const status = await invoke<SwiftModelStatus>("swift_stt_model_status");
+      setSwiftModel(status);
+      if (status.installed) onLocalModelReady?.();
+      return status;
+    } catch (e) {
+      setSwiftError(e instanceof Error ? e.message : String(e));
+      return null;
+    }
+  }, [isMac, onLocalModelReady]);
+
+  useEffect(() => {
+    void refreshSwiftModel();
+  }, [refreshSwiftModel]);
+
+  useEffect(() => {
+    if (!isMac) return;
+    const unlistenP = listen<SwiftDownloadProgress>("swift-model-download", (event) => {
+      const payload = event.payload;
+      if (payload.status === "downloading") {
+        setSwiftDownload(payload);
+        setSwiftError("");
+      } else {
+        setSwiftDownload(null);
+      }
+      if (payload.status === "done") {
+        void refreshSwiftModel();
+      }
+      if (payload.status === "error") {
+        setSwiftError(payload.error || "Swift model download failed.");
+      }
+    });
+    return () => {
+      void unlistenP.then((fn) => fn());
+    };
+  }, [isMac, refreshSwiftModel]);
+
+  useEffect(() => {
+    if (resumeSynced.current) return;
+    if (!prefs && !snapshot) return;
+    resumeSynced.current = true;
+    const next = computeResumeProgress(initialProgress ?? loadOnboardingProgress(), {
+      workspaceOnly,
+      snapshot,
+      prefs,
+    });
+    setProgress(next);
+    saveOnboardingProgress(next);
+    setStep(next.currentStep);
+    setAuthMode(next.authMode);
+  }, [initialProgress, workspaceOnly, snapshot, prefs]);
+
+  useEffect(() => {
+    saveOnboardingProgress({ authMode });
+  }, [authMode]);
+
+  const swiftInstalled = isMac ? (swiftModel?.installed ?? false) : true;
+  const hasKeys = isMac
+    ? !!(prefs?.groq_api_key?.trim() && swiftInstalled && prefs.stt_provider === "swift_local")
+    : !!(prefs?.groq_api_key?.trim() && prefs?.deepgram_api_key?.trim());
+  const canSaveVoiceEngine = isMac
+    ? !!groqKey.trim() && swiftInstalled
+    : !!groqKey.trim() && !!deepgramKey.trim();
+  const permsReady = micGranted && (isWindows || (accGranted && imGranted));
+  const stepIndex = onboardingStepIndex(step);
+
+  const applyProgress = useCallback((patch: Partial<OnboardingProgress>) => {
+    const updated = saveOnboardingProgress(patch);
+    setProgress(updated);
+    return updated;
+  }, []);
+
+  const goToStep = useCallback(
+    (target: Step, opts?: { manual?: boolean; authMode?: "personal" | "workspace" }) => {
+      if (opts?.manual) setUserNavigatedManually(true);
+      else setUserNavigatedManually(false);
+      const idx = onboardingStepIndex(target);
+      const nextAuth = opts?.authMode ?? authMode;
+      if (opts?.authMode) setAuthMode(nextAuth);
+      const updated = applyProgress({
+        currentStep: target,
+        maxStepIndex: workspaceOnly
+          ? ONBOARDING_STEPS.length - 1
+          : Math.max(progress.maxStepIndex, idx),
+        authMode: nextAuth,
+      });
+      setStep(updated.currentStep);
+    },
+    [applyProgress, authMode, progress.maxStepIndex, workspaceOnly],
+  );
+
+  const advanceToNextUndone = useCallback(
+    (patch?: Partial<Record<OnboardingStep, "done">>) => {
+      setUserNavigatedManually(false);
+      const status = { ...progress.stepStatus, ...patch };
+
+      if (step === "welcome") status.welcome = "done";
+      if (step === "account" && getConnection()) status.account = "done";
+      if (step === "permissions" && permsReady) status.permissions = "done";
+      if (step === "keys" && hasKeys) status.keys = "done";
+
+      let next = firstUndoneStep(status);
+      while (next === "account" && !enterpriseRequired && getConnection()) {
+        status.account = "done";
+        next = firstUndoneStep(status);
+      }
+
+      if (!next) {
+        applyProgress({
+          stepStatus: status,
+          maxStepIndex: workspaceOnly ? ONBOARDING_STEPS.length - 1 : progress.maxStepIndex,
+        });
+        return;
+      }
+
+      const nextIdx = onboardingStepIndex(next);
+      const updated = applyProgress({
+        currentStep: next,
+        maxStepIndex: workspaceOnly
+          ? ONBOARDING_STEPS.length - 1
+          : Math.max(progress.maxStepIndex, nextIdx),
+        stepStatus: status,
+        authMode,
+      });
+      setStep(updated.currentStep);
+    },
+    [
+      step,
+      progress,
+      authMode,
+      enterpriseRequired,
+      permsReady,
+      hasKeys,
+      applyProgress,
+      workspaceOnly,
+    ],
+  );
 
   const goBack = useCallback(() => {
-    const idx = STEPS.indexOf(step);
-    if (idx > 0) setStep(STEPS[idx - 1]);
-  }, [step]);
+    const idx = onboardingStepIndex(step);
+    if (idx <= 0) return;
+    setUserNavigatedManually(true);
+    const prev = STEPS[idx - 1];
+    const nextAuth = prev === "welcome" ? "personal" : authMode;
+    if (nextAuth !== authMode) setAuthMode(nextAuth);
+    goToStep(prev, { manual: true, authMode: nextAuth });
+  }, [step, authMode, goToStep]);
+
+  const handleStepSelect = useCallback(
+    (index: number) => {
+      const limit = workspaceOnly ? ONBOARDING_STEPS.length - 1 : progress.maxStepIndex;
+      if (index > limit) return;
+      const target = STEPS[index];
+      if (!target || target === step) return;
+      const nextAuth = target === "welcome" ? "personal" : authMode;
+      if (nextAuth !== authMode) setAuthMode(nextAuth);
+      goToStep(target, { manual: true, authMode: nextAuth });
+    },
+    [progress.maxStepIndex, step, authMode, goToStep, workspaceOnly],
+  );
+
+  useEffect(() => {
+    if (!requireLocalModelSetup || workspaceOnly || !isMac || swiftInstalled) return;
+    if (step === "keys" && progress.stepStatus.keys !== "done") return;
+    const updated = applyProgress({
+      currentStep: "keys",
+      maxStepIndex: Math.max(progress.maxStepIndex, onboardingStepIndex("keys")),
+      stepStatus: { ...progress.stepStatus, keys: "pending" },
+    });
+    setStep(updated.currentStep);
+  }, [
+    applyProgress,
+    isMac,
+    progress.maxStepIndex,
+    progress.stepStatus,
+    requireLocalModelSetup,
+    step,
+    swiftInstalled,
+    workspaceOnly,
+  ]);
+
+  const maxReachableIndex = workspaceOnly
+    ? ONBOARDING_STEPS.length - 1
+    : progress.maxStepIndex;
+
+  const navProps = {
+    steps: ONBOARDING_STEPS.map((s, index) => ({ ...s, index })),
+    currentStepIndex: stepIndex,
+    maxReachableIndex,
+    stepStatus: shellStepStatus(progress, step),
+    onStepSelect: handleStepSelect,
+  };
 
   const handleWorkspaceContinue = useCallback(() => {
     if (!workspacePreview) return;
     onEnterpriseConnected?.(workspacePreview);
-    if (workspaceOnly) return;
-    goNext();
-  }, [workspacePreview, onEnterpriseConnected, workspaceOnly, goNext]);
+    advanceToNextUndone({ account: "done" });
+  }, [workspacePreview, onEnterpriseConnected, advanceToNextUndone]);
 
   const handlePersonalSubmit = useCallback(async () => {
     const trimmedEmail = email.trim();
@@ -171,8 +414,7 @@ export function OnboardingFlow({
         emailSignup,
       );
       onEnterpriseConnected?.(conn);
-      if (workspaceOnly) return;
-      goNext();
+      advanceToNextUndone({ account: "done" });
     } catch (e) {
       setPersonalError(
         (e as Error).message ||
@@ -181,26 +423,41 @@ export function OnboardingFlow({
     } finally {
       setPersonalLoading(false);
     }
-  }, [email, password, emailSignup, onEnterpriseConnected, workspaceOnly, goNext]);
+  }, [email, password, emailSignup, onEnterpriseConnected, advanceToNextUndone]);
 
-  // Auto-advance the permissions step once the required grants are in (delay so
-  // the user sees the green check before the screen swaps). Windows only needs
-  // microphone — Accessibility / Input Monitoring are macOS-only TCC gates.
   useEffect(() => {
-    const permsReady = micGranted && (isWindows || (accGranted && imGranted));
+    if (userNavigatedManually) return;
     if (step === "permissions" && permsReady) {
-      const t = setTimeout(goNext, 700);
+      const t = setTimeout(() => {
+        advanceToNextUndone({ permissions: "done" });
+      }, 700);
       return () => clearTimeout(t);
     }
     if (step === "keys" && hasKeys) {
-      const t = setTimeout(goNext, 300);
+      const t = setTimeout(() => {
+        advanceToNextUndone({ keys: "done" });
+      }, 300);
       return () => clearTimeout(t);
     }
-  }, [step, micGranted, accGranted, imGranted, isWindows, hasKeys, goNext]);
+  }, [
+    step,
+    permsReady,
+    hasKeys,
+    advanceToNextUndone,
+    userNavigatedManually,
+  ]);
 
   const handleSaveKeys = useCallback(async () => {
-    if (!groqKey.trim() || !deepgramKey.trim()) {
-      setKeyError("Both keys are required.");
+    if (!groqKey.trim()) {
+      setKeyError("Groq key is required.");
+      return;
+    }
+    if (isMac && !swiftInstalled) {
+      setKeyError("Download the local Swift model before continuing.");
+      return;
+    }
+    if (!isMac && !deepgramKey.trim()) {
+      setKeyError("Deepgram key is required on this platform.");
       return;
     }
     setKeySaving(true);
@@ -208,22 +465,64 @@ export function OnboardingFlow({
     try {
       const updated = await patchPreferences({
         groq_api_key: groqKey.trim(),
-        deepgram_api_key: deepgramKey.trim(),
+        ...(isMac ? {} : { deepgram_api_key: deepgramKey.trim() }),
         llm_provider: "groq",
+        stt_provider: isMac ? "swift_local" : "deepgram",
       });
-      if (updated) setPrefs(updated);
-      goNext();
+      if (updated) {
+        setPrefs(updated);
+        if (isMac) onLocalModelReady?.();
+        applyProgress({
+          stepStatus: { ...progress.stepStatus, keys: "done" },
+        });
+      }
+      advanceToNextUndone({ keys: "done" });
     } catch {
       setKeyError("Failed to save keys. Try again.");
     } finally {
       setKeySaving(false);
     }
-  }, [groqKey, deepgramKey, goNext]);
+  }, [
+    applyProgress,
+    deepgramKey,
+    advanceToNextUndone,
+    groqKey,
+    isMac,
+    onLocalModelReady,
+    progress.stepStatus,
+    swiftInstalled,
+  ]);
+
+  const handleSwiftDownload = useCallback(async () => {
+    setSwiftBusy(true);
+    setSwiftError("");
+    setKeyError("");
+    try {
+      await invoke("swift_stt_download_model");
+      const status = await refreshSwiftModel();
+      if (status?.installed) onLocalModelReady?.();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg !== "cancelled") setSwiftError(msg);
+    } finally {
+      setSwiftBusy(false);
+    }
+  }, [onLocalModelReady, refreshSwiftModel]);
+
+  const handleSwiftCancel = useCallback(async () => {
+    await invoke("swift_stt_cancel_download").catch(() => {});
+    setSwiftDownload(null);
+  }, []);
 
   const handleHotkeySelect = useCallback(async (key: string) => {
     await patchPreferences({ record_hotkey: key });
+    if (workspaceOnly) {
+      advanceToNextUndone({ hotkey: "done" });
+      return;
+    }
+    clearOnboardingProgress();
     onFinish();
-  }, [onFinish]);
+  }, [workspaceOnly, advanceToNextUndone, onFinish]);
 
   // ── Step 1: Welcome ──────────────────────────────────────────────────────
   if (step === "welcome") {
@@ -236,7 +535,7 @@ export function OnboardingFlow({
         subtitle={
           isWindows
             ? "A two-minute setup. Create your account, grant microphone access, add Groq + Deepgram keys, pick a hold-key — then you’ll never type by hand again."
-            : "A two-minute setup. Create your account, grant three permissions, add Groq + Deepgram keys, pick a hold-key — then you’ll never type by hand again."
+            : "A two-minute setup. Create your account, grant three permissions, download the local Swift model, add Groq, pick a hold-key — then you’ll never type by hand again."
         }
         brandTagline={
           isWindows
@@ -244,11 +543,16 @@ export function OnboardingFlow({
             : "Voice polish for Mac. Hold a key, speak, release — AirNote types polished text into any app."
         }
         brandKicker={isWindows ? "Built for Windows" : "Built for macOS"}
-        brandQuote="It’s like typing, except your brain is the keyboard."
+        brandQuote={
+          isWindows
+            ? "It’s like typing, except your brain is the keyboard."
+            : "Local speech recognition first. Cloud STT only if you choose it later."
+        }
         bottomNote={<span>{isWindows ? "Windows 10/11" : "macOS 14+"}</span>}
+        {...navProps}
       >
         <div className="mt-7 flex flex-col gap-2.5">
-          <button onClick={goNext} className="btn-primary btn-lg w-full">
+          <button onClick={() => advanceToNextUndone({ welcome: "done" })} className="btn-primary btn-lg w-full">
             Get started
             <ArrowRight size={14} />
           </button>
@@ -275,7 +579,8 @@ export function OnboardingFlow({
         brandQuote="One sign-in, then just hold the key and talk."
         topRight={<span>{stepLabel(step)}</span>}
         bottomNote={<span>Free to start · no credit card</span>}
-        onBack={workspaceOnly ? undefined : goBack}
+        onBack={stepIndex > 0 ? goBack : undefined}
+        {...navProps}
       >
         <div className="mt-7 flex flex-col gap-3">
           <div className="flex items-center justify-end">
@@ -374,14 +679,10 @@ export function OnboardingFlow({
 
   // ── Step 2b: Account — connect workspace (secondary, org server) ───────────
   if (step === "account") {
-    // Back from the workspace screen always returns to the personal screen
-    // (workspace is the opt-in secondary path). Settings reconnect has no back.
-    const workspaceBack = workspaceOnly
-      ? undefined
-      : () => {
-          setAuthMode("personal");
-          setWorkspacePreview(null);
-        };
+    const workspaceBack = () => {
+      setAuthMode("personal");
+      setWorkspacePreview(null);
+    };
     return (
       <OnboardingShell
         step={stepIndex}
@@ -405,6 +706,7 @@ export function OnboardingFlow({
           )
         }
         onBack={workspaceBack}
+        {...navProps}
       >
         {workspacePreview ? (
           <div className="mt-7 flex flex-col gap-4">
@@ -455,13 +757,22 @@ export function OnboardingFlow({
             </button>
           </div>
         ) : (
-          <div className="mt-7">
+          <div className="mt-7 flex flex-col gap-3">
             <EnterpriseConnectForm
               compact
               variant="onboarding"
               onConnected={setWorkspacePreview}
               onCancel={workspaceBack}
             />
+            {workspaceOnly && (
+              <button
+                type="button"
+                className="text-[11px] text-center text-muted-foreground hover:text-foreground transition-colors"
+                onClick={workspaceBack}
+              >
+                Sign in with email instead
+              </button>
+            )}
           </div>
         )}
       </OnboardingShell>
@@ -490,10 +801,15 @@ export function OnboardingFlow({
             : "macOS will ask you once for each permission. AirNote detects each grant the moment it happens."
         }
         brandKicker="Privacy"
-        brandQuote="Audio never leaves the path between your mic and Deepgram. Nothing is stored on our servers."
+        brandQuote={
+          isWindows
+            ? "Audio goes only to your selected speech provider. Nothing is stored on our servers."
+            : "Speech recognition runs locally after the Swift model is installed. Nothing is stored on our servers."
+        }
         topRight={<span>{stepLabel(step)}</span>}
         bottomNote={<span>Change any time in Settings → Permissions</span>}
         onBack={goBack}
+        {...navProps}
       >
         <div className="mt-7">
           <PermRow
@@ -525,7 +841,7 @@ export function OnboardingFlow({
 
         <div className="mt-6">
           <button
-            onClick={goNext}
+            onClick={() => advanceToNextUndone({ permissions: "done" })}
             disabled={!allGranted}
             className="btn-primary btn-lg w-full"
           >
@@ -539,21 +855,49 @@ export function OnboardingFlow({
 
   // ── Step 4: API keys ─────────────────────────────────────────────────────
   if (step === "keys") {
+    const swiftDownloadPct =
+      swiftDownload && swiftDownload.total > 0
+        ? Math.min(100, Math.round((swiftDownload.received / swiftDownload.total) * 100))
+        : null;
     return (
       <OnboardingShell
         step={stepIndex}
         totalSteps={TOTAL_STEPS}
         eyebrow="Voice engine"
-        title="Connect your voice."
-        subtitle="Groq + Deepgram are required to start dictating."
-        brandTagline="Groq polishes; Deepgram transcribes. Both have free tiers that cover daily use."
+        title={isMac ? "Set up local dictation." : "Connect your voice."}
+        subtitle={
+          isMac
+            ? "Download the local Swift model, then add Groq for polish. Deepgram stays off unless you select it later."
+            : "Groq + Deepgram are required to start dictating."
+        }
+        brandTagline={
+          isMac
+            ? "Swift local transcribes on this Mac. Groq polishes the final text."
+            : "Groq polishes; Deepgram transcribes. Both have free tiers that cover daily use."
+        }
         brandKicker="Stored locally"
-        brandQuote={`Your keys never leave this ${isWindows ? "PC" : "Mac"} except directly to Groq and Deepgram.`}
+        brandQuote={
+          isMac
+            ? "Your Groq key stays on this Mac. The speech model stays local."
+            : "Your keys never leave this PC except directly to Groq and Deepgram."
+        }
         topRight={<span>{stepLabel(step)}</span>}
-        bottomNote={<span>Optional services (e.g. Gemini) live in Settings</span>}
         onBack={goBack}
+        {...navProps}
       >
         <div className="mt-7 flex flex-col gap-3">
+          {isMac && (
+            <SwiftModelCard
+              installed={swiftInstalled}
+              sizeBytes={swiftModel?.size_bytes ?? 0}
+              progressPct={swiftDownloadPct ?? swiftModel?.downloading_percent ?? null}
+              busy={swiftBusy}
+              error={swiftError}
+              onDownload={() => void handleSwiftDownload()}
+              onCancel={() => void handleSwiftCancel()}
+            />
+          )}
+
           <KeyCard
             color="#f55036"
             letter="G"
@@ -564,16 +908,18 @@ export function OnboardingFlow({
             onChange={setGroqKey}
             connected={!!prefs?.groq_api_key}
           />
-          <KeyCard
-            color="#0a8d8a"
-            letter="D"
-            name="Deepgram"
-            href="https://console.deepgram.com/signup"
-            placeholder="Paste your Deepgram key"
-            value={deepgramKey}
-            onChange={setDeepgramKey}
-            connected={!!prefs?.deepgram_api_key}
-          />
+          {!isMac && (
+            <KeyCard
+              color="#0a8d8a"
+              letter="D"
+              name="Deepgram"
+              href="https://console.deepgram.com/signup"
+              placeholder="Paste your Deepgram key"
+              value={deepgramKey}
+              onChange={setDeepgramKey}
+              connected={!!prefs?.deepgram_api_key}
+            />
+          )}
 
           {keyError && (
             <p className="text-[12px] text-center" style={{ color: "hsl(var(--destructive))" }}>
@@ -583,7 +929,7 @@ export function OnboardingFlow({
 
           <button
             onClick={handleSaveKeys}
-            disabled={keySaving || !groqKey.trim() || !deepgramKey.trim()}
+            disabled={keySaving || !canSaveVoiceEngine}
             className="btn-primary btn-lg w-full mt-1"
           >
             {keySaving ? "Saving…" : "Continue"}
@@ -617,6 +963,7 @@ export function OnboardingFlow({
       topRight={<span>{stepLabel(step)}</span>}
       bottomNote={<span>Press Caps Lock anywhere to dictate, once setup is done</span>}
       onBack={goBack}
+      {...navProps}
     >
       <div className="mt-7">
         {options.map((opt) => {
@@ -689,6 +1036,116 @@ function PermRow({
         <button onClick={onAllow} className="btn-ghost text-[11.5px]" style={{ height: 28 }}>
           Allow
         </button>
+      )}
+    </div>
+  );
+}
+
+// ── Local model setup card ───────────────────────────────────────────────────
+
+function SwiftModelCard({
+  installed,
+  sizeBytes,
+  progressPct,
+  busy,
+  error,
+  onDownload,
+  onCancel,
+}: {
+  installed: boolean;
+  sizeBytes: number;
+  progressPct: number | null;
+  busy: boolean;
+  error: string;
+  onDownload: () => void;
+  onCancel: () => void;
+}) {
+  const downloading = progressPct !== null && !installed;
+  return (
+    <div
+      className="rounded-lg p-3"
+      style={{
+        background: "hsl(0 0% 100% / 0.025)",
+        boxShadow: "inset 0 0 0 1px hsl(var(--glass-stroke))",
+      }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2 min-w-0">
+          <span
+            className="w-[18px] h-[18px] rounded-[5px] grid place-items-center text-[10px] font-bold shrink-0"
+            style={{ background: "#6c5ce7", color: "white" }}
+          >
+            <Cpu size={11} />
+          </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-[12.5px] font-semibold" style={{ color: "hsl(var(--foreground))" }}>
+                Swift local model
+              </span>
+              {installed && (
+                <span className="accent-pill" style={{ color: "hsl(140 65% 65%)", background: "hsl(140 65% 50% / 0.14)" }}>
+                  Installed
+                </span>
+              )}
+            </div>
+            <p className="text-[11.5px] mt-1" style={{ color: "hsl(var(--muted-foreground))" }}>
+              Required for macOS dictation. Runs speech recognition locally before Groq polish.
+            </p>
+            {installed && sizeBytes > 0 && (
+              <p className="text-[11px] mt-1" style={{ color: "hsl(var(--muted-foreground))" }}>
+                {formatSize(sizeBytes)} installed
+              </p>
+            )}
+          </div>
+        </div>
+
+        {installed ? (
+          <Check size={16} style={{ color: "hsl(140 65% 65%)" }} />
+        ) : downloading ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="btn-ghost text-[11px] shrink-0"
+            style={{ height: 28 }}
+          >
+            <X size={12} />
+            Cancel
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onDownload}
+            disabled={busy}
+            className="btn-ghost text-[11px] shrink-0"
+            style={{ height: 28 }}
+          >
+            {busy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+            Download
+          </button>
+        )}
+      </div>
+
+      {downloading && (
+        <div className="mt-3">
+          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "hsl(var(--surface-3))" }}>
+            <div
+              className="h-full rounded-full transition-all"
+              style={{
+                width: `${Math.max(4, progressPct ?? 0)}%`,
+                background: "hsl(var(--primary))",
+              }}
+            />
+          </div>
+          <p className="text-[11px] mt-1" style={{ color: "hsl(var(--muted-foreground))" }}>
+            Downloading {progressPct ?? 0}%
+          </p>
+        </div>
+      )}
+
+      {error && (
+        <p className="text-[11.5px] mt-2" style={{ color: "hsl(var(--destructive))" }}>
+          {error}
+        </p>
       )}
     </div>
   );

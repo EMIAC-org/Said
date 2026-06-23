@@ -27,9 +27,9 @@ pub struct Mode {
 }
 
 pub const MODES: &[Mode] = &[Mode {
-    key: "smart",
-    label: "Llama 4 Scout (Groq)",
-    model: "meta-llama/llama-4-scout-17b-16e-instruct",
+    key: "cerebras-gpt-oss",
+    label: "GPT OSS 120B (Cerebras)",
+    model: polish::model::CEREBRAS_POLISH_MODEL_GPT_OSS,
     icon: "fast",
 }];
 
@@ -49,9 +49,9 @@ pub fn mode_label() -> &'static str {
     MODES[0].label
 }
 
-/// Returns the Groq Llama 4 Scout model — the default smart model.
-pub fn resolve_model(_key_or_model: &str) -> &'static str {
-    "meta-llama/llama-4-scout-17b-16e-instruct"
+/// Returns the polish model route (Groq GPT OSS 120B for smart tier).
+pub fn resolve_model(key_or_model: &str) -> String {
+    polish::model::resolve_polish_route(key_or_model).label()
 }
 
 pub fn api_key() -> String {

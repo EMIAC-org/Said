@@ -1597,6 +1597,27 @@ export default function StatusBar() {
     const isLastPage = page >= totalPages - 1;
 
     const handleLearn = async () => {
+      if (bar.recordingId.startsWith("profile:")) {
+        const jobId = bar.recordingId.slice("profile:".length);
+        if (!jobId) return;
+        try {
+          await invoke("approve_profile_proposal", { jobId });
+          playSound("levelUp");
+          setBar({
+            kind: "learned",
+            term: "Profile memory",
+            message: "Saved profile memory",
+          });
+          if (doneTimer.current) clearTimeout(doneTimer.current);
+          doneTimer.current = setTimeout(() => {
+            setBar({ kind: "idle" });
+            invoke("dismiss_status_bar").catch(() => {});
+          }, 3000);
+        } catch (e) {
+          console.error("[review] approve_profile_proposal failed", e);
+        }
+        return;
+      }
       const items = bar.candidates
         .filter((_, i) => sel.has(i))
         .map((c) => ({ original: c.original, corrected: c.corrected }));
@@ -1630,6 +1651,14 @@ export default function StatusBar() {
       } catch (e) { console.error("[review] confirm_batch failed", e); }
     };
     const handleSkip = () => {
+      if (bar.recordingId.startsWith("profile:")) {
+        const jobId = bar.recordingId.slice("profile:".length);
+        if (jobId) {
+          invoke("dismiss_profile_proposal", { jobId }).catch((e) => {
+            console.error("[review] dismiss_profile_proposal failed", e);
+          });
+        }
+      }
       setReviewPage(0);
       setBar({ kind: "idle" });
       invoke("dismiss_status_bar").catch(() => {});

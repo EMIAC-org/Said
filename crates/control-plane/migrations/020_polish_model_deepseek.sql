@@ -5,4 +5,11 @@ ALTER TABLE runtime_user_settings
 
 ALTER TABLE runtime_user_settings
     ADD CONSTRAINT chk_runtime_settings_model
-        CHECK (selected_model IN ('fast', 'smart', 'deepseek'));
+        CHECK (selected_model IN (
+            'fast', 'smart', 'deepseek',
+            'cerebras-gpt-oss',
+            'groq-gpt-oss-20b',
+            'groq-scout',
+            'groq-70b',
+            'phi4'
+        ));

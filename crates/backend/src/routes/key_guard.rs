@@ -45,9 +45,10 @@ pub fn missing_voice_api_keys(
     pool: &DbPool,
     user_id: &str,
     prefs: &Preferences,
+    require_stt_key: bool,
 ) -> Vec<&'static str> {
     let mut missing = Vec::new();
-    if !has_stt_key(prefs) {
+    if require_stt_key && !has_stt_key(prefs) {
         missing.push("deepgram");
     }
     if !has_llm_credential(pool, user_id, prefs) {

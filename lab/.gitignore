@@ -1,0 +1,16 @@
+cache/*
+!cache/.gitkeep
+runs/*
+!runs/.gitkeep
+model_runs/*
+!model_runs/.gitkeep
+latency_runs/*
+!latency_runs/.gitkeep
+matrix_runs/*
+!matrix_runs/.gitkeep
+matrix_runs/*
+!matrix_runs/.gitkeep
+user_profiles/*
+!user_profiles/.gitkeep
+__pycache__/
+*.pyc

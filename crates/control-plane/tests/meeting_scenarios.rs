@@ -35,6 +35,8 @@ impl TestServer {
         let db = store::connect(&db_url).await.expect("connect to Postgres");
         let hub = meeting_hub::MeetingHub::new(db.clone());
 
+        let (tenant_cache, runtime_memory_cache, profile_cache) =
+            said_control_plane::new_setup_caches();
         let state = AppState {
             db: db.clone(),
             started_at: Arc::new(Instant::now()),
@@ -51,6 +53,8 @@ impl TestServer {
             openai_api_key: String::new(),
             openai_transcribe_model: "whisper-1".to_string(),
             groq_api_key: String::new(),
+            cerebras_api_key: String::new(),
+            deepinfra_api_key: String::new(),
             diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
             divo_base_url: String::new(),
             runtime_credentials_key: "test-runtime-credentials-key".into(),
@@ -58,6 +62,9 @@ impl TestServer {
             deepseek_api_key: String::new(),
             deepseek_base_url: String::new(),
             deepseek_message_polish_model: String::new(),
+            tenant_cache,
+            runtime_memory_cache,
+            profile_cache,
         };
 
         let app = build_router(state);

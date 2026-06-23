@@ -1,4 +1,5 @@
 const STORAGE_KEY = "said:enterprise";
+const AUTH_MODE_KEY = "said:onboarding-auth-mode";
 const PENDING_SERVER_URL_KEY = "said:enterprise-pending-url";
 const RECENT_WORKSPACES_KEY = "said:enterprise-recent-urls";
 const DEVICE_ID_FALLBACK_KEY = "said:enterprise-device-id";
@@ -6,6 +7,34 @@ const MAX_RECENT_WORKSPACES = 5;
 
 /** Default AirNote cloud server for personal (non-org) accounts. */
 export const DEFAULT_CLOUD_SERVER_URL = "https://airnote.emiactech.com";
+
+export type OnboardingAuthMode = "personal" | "workspace";
+
+/** Personal email on the cloud server vs org workspace (Lark or custom URL). */
+export function deriveAuthMode(conn: EnterpriseConnection): OnboardingAuthMode {
+  const isCloud =
+    normalizeServerUrl(conn.serverUrl) === normalizeServerUrl(DEFAULT_CLOUD_SERVER_URL);
+  if (conn.authSource === "email" && isCloud) return "personal";
+  return "workspace";
+}
+
+export function saveAuthMode(mode: OnboardingAuthMode): void {
+  try {
+    localStorage.setItem(AUTH_MODE_KEY, mode);
+  } catch {
+    // ignore
+  }
+}
+
+export function loadSavedAuthMode(): OnboardingAuthMode | null {
+  try {
+    const v = localStorage.getItem(AUTH_MODE_KEY);
+    if (v === "personal" || v === "workspace") return v;
+  } catch {
+    // ignore
+  }
+  return null;
+}
 
 function fallbackDeviceId(): string {
   try {
@@ -654,6 +683,7 @@ async function persistEnterpriseConnection(
   orgName?: string,
 ): Promise<void> {
   saveConnection(conn);
+  saveAuthMode(deriveAuthMode(conn));
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");

@@ -231,6 +231,14 @@ fn upsert_inner(
     language: Option<&str>,
     example_context: Option<&str>,
 ) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "vocabulary",
+            "upsert",
+            "vocabulary::upsert_inner",
+        );
+        return false;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
@@ -345,6 +353,10 @@ fn upsert_inner(
 /// Decrement weight on a negative signal (e.g. user reverted a learned term).
 /// Removes the row when weight drops to or below 0.
 pub fn demote(pool: &DbPool, user_id: &str, term: &str, penalty: f64) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write("vocabulary", "demote", "vocabulary::demote");
+        return false;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return false,
@@ -553,6 +565,14 @@ pub const MEANING_REFRESH_THRESHOLD: i64 = 3;
 /// next refresh trigger fires after MEANING_REFRESH_THRESHOLD more examples.
 /// Called fire-and-forget after the LLM completes meaning generation.
 pub fn update_meaning(pool: &DbPool, user_id: &str, term: &str, meaning: &str) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "vocabulary",
+            "update_meaning",
+            "vocabulary::update_meaning",
+        );
+        return false;
+    }
     let Ok(conn) = pool.get() else {
         return false;
     };
@@ -577,6 +597,14 @@ pub fn update_meaning(pool: &DbPool, user_id: &str, term: &str, meaning: &str) -
 }
 
 pub fn update_term_type(pool: &DbPool, user_id: &str, term: &str, term_type: &str) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "vocabulary",
+            "update_term_type",
+            "vocabulary::update_term_type",
+        );
+        return false;
+    }
     let Ok(conn) = pool.get() else {
         return false;
     };
@@ -590,6 +618,14 @@ pub fn update_term_type(pool: &DbPool, user_id: &str, term: &str, term_type: &st
 }
 
 pub fn update_example_context(pool: &DbPool, user_id: &str, term: &str, ctx: &str) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "vocabulary",
+            "update_example_context",
+            "vocabulary::update_example_context",
+        );
+        return false;
+    }
     let Ok(conn) = pool.get() else {
         return false;
     };
@@ -606,6 +642,14 @@ pub fn update_example_context(pool: &DbPool, user_id: &str, term: &str, ctx: &st
 /// path on every new observed example. Returns the new counter value so the
 /// caller can decide whether to trigger a meaning refresh.
 pub fn bump_examples_since_meaning(pool: &DbPool, user_id: &str, term: &str) -> i64 {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "vocabulary",
+            "bump_examples_since_meaning",
+            "vocabulary::bump_examples_since_meaning",
+        );
+        return 0;
+    }
     let Ok(conn) = pool.get() else {
         return 0;
     };
@@ -667,6 +711,14 @@ pub fn meaning_needs_refresh(pool: &DbPool, user_id: &str, term: &str) -> bool {
 /// Recompute missing `term_type` values for legacy rows that predate the
 /// structured-vocabulary prompt. Cheap local repair run at startup.
 pub fn backfill_missing_term_types(pool: &DbPool) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "vocabulary",
+            "backfill_missing_term_types",
+            "vocabulary::backfill_missing_term_types",
+        );
+        return 0;
+    }
     let Ok(conn) = pool.get() else {
         return 0;
     };
@@ -708,6 +760,14 @@ pub fn backfill_missing_term_types(pool: &DbPool) -> usize {
 /// Matching is case-insensitive whole-word. Weight is capped at 5.0.
 /// Returns the number of terms that received a bump.
 pub fn reward_active_terms(pool: &DbPool, user_id: &str, polished_text: &str, bump: f64) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "vocabulary",
+            "reward_active_terms",
+            "vocabulary::reward_active_terms",
+        );
+        return 0;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return 0,
@@ -781,6 +841,7 @@ mod tests {
     use r2d2_sqlite::SqliteConnectionManager;
 
     fn mem_pool() -> DbPool {
+        crate::legacy_learning::enable_debug_legacy_writes_for_tests();
         let mgr = SqliteConnectionManager::memory();
         let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
         // Minimal schema needed by these tests.

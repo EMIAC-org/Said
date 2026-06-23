@@ -44,7 +44,9 @@ pub struct Preferences {
     pub groq_api_key: Option<String>,
     #[serde(default)]
     pub cerebras_api_key: Option<String>,
-    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
+    #[serde(default)]
+    pub deepinfra_api_key: Option<String>,
+    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     #[serde(default = "default_llm_provider")]
     pub llm_provider: String,
     /// STT routing: "deepgram"
@@ -101,7 +103,9 @@ pub struct PrefsUpdate {
     pub groq_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cerebras_api_key: Option<Option<String>>,
-    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deepinfra_api_key: Option<Option<String>>,
+    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_provider: Option<String>,
     /// STT routing: "deepgram"
@@ -235,6 +239,8 @@ fn redact_pref_key_fields(raw: &str) -> String {
         "deepgram_api_key",
         "gemini_api_key",
         "groq_api_key",
+        "cerebras_api_key",
+        "deepinfra_api_key",
     ] {
         if let Some(slot) = value.get_mut(field) {
             *slot = match slot {
@@ -735,6 +741,38 @@ pub async fn patch_preferences(
             said_core::text::truncate_utf8(&text, 200)
         )
     })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolishModelEntry {
+    pub key: String,
+    pub label: String,
+    pub provider: String,
+    pub model_id: String,
+    pub beta_only: bool,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListPolishModelsResponse {
+    pub models: Vec<PolishModelEntry>,
+    pub selected_model: String,
+}
+
+pub async fn list_polish_models(
+    ep: &BackendEndpoint,
+    beta: bool,
+) -> Result<ListPolishModelsResponse, String> {
+    let url = format!("{}/v1/polish/models?beta={}", ep.url, beta);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("list polish models failed: {e}"))?
+        .json::<ListPolishModelsResponse>()
+        .await
+        .map_err(|e| format!("parse polish models failed: {e}"))
 }
 
 pub async fn get_voice_prompt(ep: &BackendEndpoint) -> Result<PromptTemplateResponse, String> {
@@ -1400,9 +1438,10 @@ pub async fn classify_edit(
     user_kept: &str,
     capture_method: &str,
     capture_meta: CaptureMeta,
+    client_run_id: Option<&str>,
 ) -> Result<ClassifyEditResponse, String> {
     let url = format!("{}/v1/classify-edit", ep.url);
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "recording_id":        recording_id,
         "ai_output":           ai_output,
         "user_kept":           user_kept,
@@ -1411,6 +1450,9 @@ pub async fn classify_edit(
         "app_switched":        capture_meta.app_switched,
         "matches_clipboard":   capture_meta.matches_clipboard,
     });
+    if let Some(run_id) = client_run_id.map(str::trim).filter(|s| !s.is_empty()) {
+        body["client_run_id"] = serde_json::Value::String(run_id.to_string());
+    }
     Client::new()
         .post(&url)
         .header("Authorization", ep.bearer())
@@ -1483,6 +1525,53 @@ pub struct VocabRow {
 pub struct VocabListResponse {
     pub terms: Vec<VocabRow>,
     pub total: i64,
+}
+
+pub async fn get_profile_memory(ep: &BackendEndpoint) -> Result<Value, String> {
+    let url = format!("{}/v1/profile-memory", ep.url);
+    let resp = Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("profile memory failed: {e}"))?;
+    json_or_error(resp, "profile memory").await
+}
+
+pub async fn approve_profile_proposal(ep: &BackendEndpoint, job_id: &str) -> Result<Value, String> {
+    let url = format!("{}/v1/profile-memory/proposals/{job_id}/approve", ep.url);
+    let resp = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("approve profile proposal failed: {e}"))?;
+    json_or_error(resp, "approve profile proposal").await
+}
+
+pub async fn dismiss_profile_proposal(ep: &BackendEndpoint, job_id: &str) -> Result<Value, String> {
+    let url = format!("{}/v1/profile-memory/proposals/{job_id}/dismiss", ep.url);
+    let resp = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("dismiss profile proposal failed: {e}"))?;
+    json_or_error(resp, "dismiss profile proposal").await
+}
+
+async fn json_or_error(resp: reqwest::Response, label: &str) -> Result<Value, String> {
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("{label} error {status}: {}", extract_error(&text)));
+    }
+    serde_json::from_str::<Value>(&text).map_err(|e| {
+        format!(
+            "parse {label} failed: {e} — raw: {}",
+            said_core::text::truncate_utf8(&text, 240)
+        )
+    })
 }
 
 /// Full vocab list with metadata, for the management view.

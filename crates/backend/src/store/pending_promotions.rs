@@ -59,6 +59,14 @@ pub fn record_sighting(
     output_language: &str,
     k: i64,
 ) -> Option<PromotionDecision> {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "pending_promotions",
+            "record_sighting",
+            "pending_promotions::record_sighting",
+        );
+        return None;
+    }
     let conn = pool.get().ok()?;
     let correct = correct_form.trim();
     if correct.is_empty() {

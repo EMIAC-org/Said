@@ -433,6 +433,28 @@ pub async fn sync_memory(
     user: AuthUser,
     Json(req): Json<MemorySyncRequest>,
 ) -> Result<Json<MemorySyncResponse>, (StatusCode, Json<Value>)> {
+    let total_items = req.vocab_terms.len()
+        + req.stt_replacements.len()
+        + req.edit_policy_rules.len()
+        + req.email_memory.len();
+    if crate::legacy_personal_memory::audit_only_personal_mutations() {
+        crate::legacy_personal_memory::skip_legacy_personal_write(
+            "sync_memory",
+            "POST /v1/runtime/memory/sync",
+            user.account_id,
+            total_items,
+        );
+        return Ok(Json(MemorySyncResponse {
+            accepted_vocab: 0,
+            accepted_aliases: 0,
+            accepted_policies: 0,
+            accepted_emails: 0,
+            blocked_vocab: req.vocab_terms.len(),
+            blocked_aliases: req.stt_replacements.len(),
+            skipped: req.edit_policy_rules.len() + req.email_memory.len(),
+        }));
+    }
+
     let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
     let org_id = tenant_ctx.active_org_id;
 
@@ -617,6 +639,9 @@ pub async fn sync_memory(
 
     if accepted_vocab > 0 || accepted_aliases > 0 || accepted_policies > 0 || accepted_emails > 0 {
         let _ = memory_hygiene::mark_memory_dirty(&state.db, user.account_id).await;
+        // Synced vocab/replacements/policy changed — drop the cached learning
+        // memory so the next dictation re-loads it.
+        crate::routes::runtime::invalidate_runtime_memory_cache(&state, user.account_id);
     }
 
     Ok(Json(MemorySyncResponse {

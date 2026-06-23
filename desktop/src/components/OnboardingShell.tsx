@@ -1,6 +1,12 @@
 import React from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Check } from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
+
+export interface OnboardingStepNavItem {
+  id: string;
+  label: string;
+  index: number;
+}
 
 export function OnboardingShell({
   step,
@@ -14,6 +20,11 @@ export function OnboardingShell({
   topRight,
   bottomNote,
   onBack,
+  steps,
+  currentStepIndex,
+  maxReachableIndex,
+  stepStatus,
+  onStepSelect,
   children,
 }: {
   step: number;
@@ -27,6 +38,11 @@ export function OnboardingShell({
   topRight?: React.ReactNode;
   bottomNote?: React.ReactNode;
   onBack?: () => void;
+  steps?: OnboardingStepNavItem[];
+  currentStepIndex?: number;
+  maxReachableIndex?: number;
+  stepStatus?: Record<string, "pending" | "done" | "current">;
+  onStepSelect?: (index: number) => void;
   children: React.ReactNode;
 }) {
   return (
@@ -169,10 +185,42 @@ export function OnboardingShell({
           {children}
         </div>
 
-        <div className="flex items-center justify-end flex-shrink-0" style={{ minHeight: 24 }}>
-          <span className="text-[11px]" style={{ color: "hsl(var(--muted-foreground) / 0.6)" }}>
-            {bottomNote ?? `Step ${step + 1} of ${totalSteps}`}
-          </span>
+        <div className="flex flex-col gap-2 flex-shrink-0">
+          {steps && steps.length > 0 && (
+            <nav className="onb-stepnav" aria-label="Onboarding steps">
+              {steps.map((item) => {
+                const status = stepStatus?.[item.id] ?? "pending";
+                const reachable =
+                  typeof maxReachableIndex === "number" && item.index <= maxReachableIndex;
+                const isCurrent =
+                  typeof currentStepIndex === "number" && item.index === currentStepIndex;
+                const clickable = reachable && !isCurrent && !!onStepSelect;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`onb-stepnav-pill onb-stepnav-${status}${clickable ? " onb-stepnav-clickable" : ""}${!reachable ? " onb-stepnav-locked" : ""}`}
+                    disabled={!clickable}
+                    onClick={() => clickable && onStepSelect?.(item.index)}
+                    aria-current={isCurrent ? "step" : undefined}
+                    title={item.label}
+                  >
+                    {status === "done" ? (
+                      <Check size={10} strokeWidth={2.5} className="onb-stepnav-check" />
+                    ) : (
+                      <span className="onb-stepnav-dot" />
+                    )}
+                    <span className="onb-stepnav-label">{item.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+          )}
+          <div className="flex items-center justify-end" style={{ minHeight: 24 }}>
+            <span className="text-[11px]" style={{ color: "hsl(var(--muted-foreground) / 0.6)" }}>
+              {bottomNote ?? `Step ${step + 1} of ${totalSteps}`}
+            </span>
+          </div>
         </div>
       </div>
     </div>

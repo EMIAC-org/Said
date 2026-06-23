@@ -71,6 +71,14 @@ struct Cli {
     #[arg(long, env = "GROQ_API_KEY", default_value = "")]
     groq_api_key: String,
 
+    /// Cerebras API key for server-runtime beta polish models
+    #[arg(long, env = "CEREBRAS_API_KEY", default_value = "")]
+    cerebras_api_key: String,
+
+    /// DeepInfra API key for server-runtime beta polish models (Phi-4)
+    #[arg(long, env = "DEEPINFRA_API_KEY", default_value = "")]
+    deepinfra_api_key: String,
+
     /// Legacy gateway key fallback for server-runtime polish latency probes
     #[arg(long, env = "GATEWAY_API_KEY", default_value = "")]
     gateway_api_key: String,
@@ -136,10 +144,12 @@ async fn main() {
     };
     let stt_provider = said_control_plane::stt::runtime_stt_provider();
     info!(
-        "[cp] runtime stt_provider={} credential env: deepgram={} groq={} deepseek={} runtime_credentials_key={}",
+        "[cp] runtime stt_provider={} credential env: deepgram={} groq={} cerebras={} deepinfra={} deepseek={} runtime_credentials_key={}",
         stt_provider,
         !cli.deepgram_api_key.trim().is_empty(),
         !groq_api_key.trim().is_empty(),
+        !cli.cerebras_api_key.trim().is_empty(),
+        !cli.deepinfra_api_key.trim().is_empty(),
         !std::env::var("DEEPSEEK_API_KEY")
             .unwrap_or_default()
             .trim()
@@ -159,8 +169,11 @@ async fn main() {
     let deepseek_message_polish_model = std::env::var("DEEPSEEK_MESSAGE_POLISH_MODEL")
         .unwrap_or_else(|_| "deepseek-v4-flash".to_string());
 
+    let (tenant_cache, runtime_memory_cache, profile_cache) =
+        said_control_plane::new_setup_caches();
+
     let state = AppState {
-        db,
+        db: db.clone(),
         started_at: Arc::new(Instant::now()),
         lark,
         hub,
@@ -170,6 +183,8 @@ async fn main() {
         openai_api_key: cli.openai_api_key,
         openai_transcribe_model: cli.openai_transcribe_model,
         groq_api_key,
+        cerebras_api_key: cli.cerebras_api_key,
+        deepinfra_api_key: cli.deepinfra_api_key,
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
         divo_base_url: cli.divo_base_url,
         runtime_credentials_key: cli.runtime_credentials_key,
@@ -177,7 +192,12 @@ async fn main() {
         deepseek_api_key,
         deepseek_base_url,
         deepseek_message_polish_model,
+        tenant_cache,
+        runtime_memory_cache,
+        profile_cache,
     };
+
+    said_control_plane::profile::updater::worker::start_profile_updater_worker(state.clone());
 
     let app = build_router(state);
 

@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AirNote — Notch HUD Preview</title>
+<style>
+  /* ------------------------------------------------------------------ *
+   *  AirNote Notch HUD — UI/UX preview (v2: minimal listening)          *
+   *  Listening = a yellow recording dot in the notch bar + the chin     *
+   *  expands ALONG THE X-AXIS showing ONLY the live transcript.         *
+   *  No "LISTENING" label, no timer, no audio bars.                     *
+   *  accent hsl(226 80% 78%); rec dot = amber.                          *
+   * ------------------------------------------------------------------ */
+
+  :root {
+    --accent: hsl(226 80% 78%);
+    --accent-dim: hsl(226 80% 78% / 0.55);
+    --accent-glow: hsl(226 80% 78% / 0.30);
+    --accent-soft: hsl(226 80% 78% / 0.14);
+    --ok: #34d399;
+    --warn: #ffd60a;
+    --amber: #ffc83d;
+    --err: #ff453a;
+    --ink: hsl(240 6% 92%);
+    --ink-dim: hsl(240 5% 60%);
+    --ink-faint: hsl(240 5% 42%);
+    --hairline: rgba(255, 255, 255, 0.08);
+    --spring-open: cubic-bezier(0.22, 1.0, 0.30, 1.18);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0a0a0d;
+    color: var(--ink);
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ============== LEFT: the simulated screen stage ================= */
+  .stage-wrap { position: relative; display: flex; flex-direction: column; min-width: 0; }
+  .stage-top {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 20px; border-bottom: 1px solid var(--hairline);
+    background: #0c0c10; z-index: 5;
+  }
+  .stage-top h1 { font-size: 13px; font-weight: 650; margin: 0; }
+  .stage-top .sub { font-size: 11.5px; color: var(--ink-faint); }
+  .seg {
+    margin-left: auto; display: inline-flex;
+    background: rgba(255,255,255,0.05); border: 1px solid var(--hairline);
+    border-radius: 9px; padding: 3px; gap: 2px;
+  }
+  .seg button {
+    appearance: none; border: 0; background: transparent; color: var(--ink-dim);
+    font: inherit; font-size: 12px; font-weight: 560; padding: 6px 13px;
+    border-radius: 6px; cursor: pointer; transition: background .18s, color .18s; white-space: nowrap;
+  }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #0b0c14; }
+
+  .screen {
+    position: relative; flex: 1; margin: 22px; border-radius: 16px; overflow: hidden;
+    background:
+      radial-gradient(120% 90% at 18% 0%, #3a2d5e 0%, transparent 55%),
+      radial-gradient(120% 100% at 90% 20%, #1d3a5c 0%, transparent 50%),
+      linear-gradient(160deg, #14121d 0%, #0d1018 60%, #0a0c12 100%);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05), 0 30px 80px -30px #000;
+    isolation: isolate;
+  }
+  .menubar {
+    position: absolute; top: 0; left: 0; right: 0; height: 26px;
+    display: flex; align-items: center; padding: 0 14px; font-size: 12px;
+    color: rgba(255,255,255,0.82); background: rgba(0,0,0,0.18); backdrop-filter: blur(8px); z-index: 1;
+  }
+  .menubar .logo { font-weight: 700; margin-right: 16px; }
+  .menubar .mi { margin-right: 14px; opacity: 0.8; font-weight: 500; }
+  .menubar .right { margin-left: auto; display: flex; gap: 14px; opacity: 0.85; }
+
+  /* ===================== THE NOTCH HUD ============================= */
+  .hud { position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 20; display: flex; justify-content: center; }
+
+  .notch {
+    position: relative; background: #000; color: var(--ink); overflow: hidden;
+    width: 200px; height: 34px; border-radius: 0 0 12px 12px;
+    transition: width .42s var(--spring-open), height .42s var(--spring-open), border-radius .42s var(--spring-open);
+    will-change: width, height; box-shadow: 0 8px 26px -8px rgba(0,0,0,0.7);
+  }
+  /* outward-flaring "ears" — inverse-corner radial-gradient trick */
+  .notch::before, .notch::after {
+    content: ""; position: absolute; top: 0; width: 12px; height: 12px; pointer-events: none; transition: opacity .25s ease;
+  }
+  .notch::before { left: -12px; background: radial-gradient(circle at bottom left, transparent 12px, #000 12.5px); }
+  .notch::after  { right: -12px; background: radial-gradient(circle at bottom right, transparent 12px, #000 12.5px); }
+
+  /* FLAT-DISPLAY: synthetic floating pill */
+  body[data-device="flat"] .hud { top: 10px; }
+  body[data-device="flat"] .notch { border-radius: 18px; box-shadow: 0 10px 34px -10px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,255,255,0.06); }
+  body[data-device="flat"] .notch::before, body[data-device="flat"] .notch::after { opacity: 0; }
+  body[data-device="flat"] .notch.open { border-radius: 22px; }
+
+  .camera {
+    position: absolute; top: 11px; left: 50%; transform: translateX(-50%);
+    width: 8px; height: 8px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #2a2a32, #000 70%);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.04); z-index: 6; transition: opacity .2s ease;
+  }
+  body[data-device="flat"] .camera { opacity: 0; }
+
+  /* ── Recording indicator dot: lives in the notch BAR (top-left) ── */
+  .rec-dot {
+    position: absolute; top: 12px; left: 18px;
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--amber); opacity: 0; z-index: 7;
+    transition: opacity .18s ease, background .2s ease;
+  }
+  body.state-listening .rec-dot { opacity: 1; background: var(--amber); box-shadow: 0 0 9px hsl(45 100% 55% / .55); animation: pulse 1.25s ease-in-out infinite; }
+  body.state-polishing .rec-dot { opacity: 1; background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); animation: pulse 1.0s ease-in-out infinite; }
+  body.state-pasted   .rec-dot { opacity: 1; background: var(--ok); box-shadow: 0 0 8px hsl(160 60% 45% / .5); }
+  body[data-device="flat"] .rec-dot { top: 14px; left: 16px; }
+
+  /* CLOSED ROW: ready dot (idle only) */
+  .closed-row {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    padding: 0 16px; opacity: 1; transition: opacity .18s ease;
+  }
+  .notch.open .closed-row { opacity: 0; pointer-events: none; }
+  .ready-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
+
+  /* OPEN BODY: content below the camera line */
+  .open-body {
+    position: absolute; left: 0; right: 0; top: 30px; bottom: 0; padding: 0;
+    display: flex; flex-direction: column; opacity: 0; transform: translateY(-5px);
+    transition: opacity .2s ease .04s, transform .26s var(--spring-open) .02s; pointer-events: none;
+  }
+  .notch.open .open-body { opacity: 1; transform: none; pointer-events: auto; }
+  body[data-device="flat"] .open-body { top: 14px; }
+
+  /* ── Minimal voice chin: the live transcript ONLY, one line ── */
+  .voice-min {
+    display: none; align-items: center; height: 100%;
+    padding: 0 18px 6px; overflow: hidden;
+  }
+  body.state-listening .voice-min,
+  body.state-polishing .voice-min,
+  body.state-pasted    .voice-min { display: flex; }
+  .voice-min .vtext {
+    font-size: 13.5px; line-height: 1.3; width: 100%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--ink);
+  }
+  /* listening: fixed max-width chin; the transcript ROLLS inside it —
+     latest words stay pinned at the right, older words slide under the
+     left fade. The chin does NOT keep widening. */
+  .voice-min.rolling { justify-content: flex-end; }
+  .voice-min.rolling .vtext {
+    width: auto; max-width: 100%; text-overflow: clip;
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 42px, #000 100%);
+            mask-image: linear-gradient(90deg, transparent 0, #000 42px, #000 100%);
+  }
+  body.state-listening .voice-min .vtext { color: var(--ink-dim); }
+  .voice-min .caret { color: var(--amber); font-weight: 400; animation: blink 1s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ===================== CARD / TOAST states ====================== */
+  #card { display: none; flex-direction: column; height: 100%; padding: 4px 0 0; }
+  .kicker-row { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+  .kicker { font-size: 11px; font-weight: 650; letter-spacing: .3px; color: var(--ink-dim); text-transform: uppercase; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .dot.accent { background: var(--accent); } .dot.ok { background: var(--ok); }
+  .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
+  .cbody { font-size: 12.5px; line-height: 1.45; color: var(--ink); flex: 1; }
+  .cbody strong { font-weight: 650; }
+  .chip { display: inline-block; padding: 1px 7px; border-radius: 6px; background: var(--accent); color: #0b0c14; font-weight: 600; font-size: 12px; }
+  .strike { text-decoration: line-through; color: var(--ink-faint); }
+  .footer { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+  .btn { appearance: none; border: 1px solid var(--hairline); background: rgba(255,255,255,.05); color: var(--ink); font: inherit; font-size: 12px; font-weight: 560; padding: 7px 12px; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; transition: filter .12s; }
+  .btn:hover { filter: brightness(1.15); }
+  .btn.primary { background: var(--accent); color: #0b0c14; border-color: var(--accent); }
+  .btn.ghost { background: transparent; color: var(--ink-dim); }
+  .kbd { font-size: 10px; opacity: .7; }
+  .card-pad { padding: 0 16px; }
+
+  .toast { display: flex; align-items: center; gap: 9px; height: 100%; padding: 0 18px; }
+  .toast .label { font-size: 13px; color: var(--ink); }
+  .toast .label .muted { color: var(--ink-dim); }
+  .undo { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; color: var(--accent); background: none; border: 0; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid rgba(255,255,255,.18); border-top-color: var(--accent); animation: spin .7s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .scan { height: 6px; border-radius: 99px; margin: 0 18px; background: linear-gradient(90deg,#3a2f00,var(--warn),#3a2f00); background-size: 200% 100%; animation: scan 1.1s linear infinite; }
+  @keyframes scan { to { background-position: -200% 0; } }
+
+  .rev-q { font-size: 11px; color: var(--ink-faint); margin-bottom: 7px; }
+  .rev-list { display: flex; flex-direction: column; gap: 5px; flex: 1; overflow: hidden; }
+  .rev-row { display: flex; gap: 9px; align-items: flex-start; padding: 7px 9px; border-radius: 9px; background: rgba(255,255,255,.03); border: 1px solid transparent; cursor: pointer; transition: background .12s, border-color .12s; }
+  .rev-row.sel { background: var(--accent-soft); border-color: hsl(226 80% 78% / .35); }
+  .rev-letter { width: 18px; height: 18px; border-radius: 5px; background: rgba(255,255,255,.08); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: var(--ink-dim); flex: none; margin-top: 1px; }
+  .rev-row.sel .rev-letter { background: var(--accent); color: #0b0c14; }
+  .rev-copy { font-size: 12px; line-height: 1.3; }
+  .rev-copy .p { color: var(--ink); font-weight: 620; } .rev-copy .d { color: var(--ink-faint); }
+
+  @keyframes pulse { 0%,100%{ transform: scale(1); opacity:1 } 50%{ transform: scale(1.35); opacity:.5 } }
+
+  .recents { display: none; flex-direction: column; gap: 2px; overflow: hidden; padding: 4px 8px; }
+  body.state-recent .recents { display: flex; }
+  .recents .row { display: flex; align-items: baseline; gap: 10px; padding: 7px 9px; border-radius: 9px; transition: background .15s; }
+  .recents .row:hover { background: rgba(255,255,255,0.05); }
+  .recents .row .t { font-size: 12.5px; color: var(--ink); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .recents .row .ago { font-size: 10.5px; color: var(--ink-faint); }
+
+  .hint { position: absolute; top: calc(100% + 10px); left: 50%; transform: translateX(-50%); font-size: 11px; color: rgba(255,255,255,0.42); white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .25s; }
+  .hud:hover .hint { opacity: 1; }
+
+  /* ===================== RIGHT: control rail ====================== */
+  .rail { border-left: 1px solid var(--hairline); background: #0c0c10; display: flex; flex-direction: column; overflow-y: auto; }
+  .rail section { padding: 15px 18px; border-bottom: 1px solid var(--hairline); }
+  .rail h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--ink-faint); margin: 0 0 11px; font-weight: 650; }
+
+  .dictate { width: 100%; appearance: none; border: 0; background: var(--accent); color: #0b0c14; font: inherit; font-size: 13.5px; font-weight: 650; padding: 13px; border-radius: 11px; cursor: pointer; user-select: none; transition: transform .08s, filter .15s; }
+  .dictate:active { transform: scale(0.98); filter: brightness(1.06); }
+  .dictate small { display:block; font-weight:500; font-size: 10.5px; opacity:.7; margin-top:2px; }
+  .auto-row { display: flex; gap: 8px; margin-top: 10px; }
+  .auto-row button { flex: 1; appearance: none; border: 1px solid var(--hairline); background: rgba(255,255,255,0.04); color: var(--ink); font: inherit; font-size: 12px; font-weight: 560; padding: 9px; border-radius: 9px; cursor: pointer; transition: all .15s; }
+  .auto-row button:hover { border-color: var(--accent-dim); }
+
+  .grp { margin-bottom: 12px; }
+  .grp:last-child { margin-bottom: 0; }
+  .grp .gl { font-size: 10px; font-weight: 600; letter-spacing: .4px; color: var(--ink-faint); text-transform: uppercase; margin-bottom: 6px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips button { appearance: none; border: 1px solid var(--hairline); background: rgba(255,255,255,0.04); color: var(--ink-dim); font: inherit; font-size: 11.5px; font-weight: 540; padding: 6px 10px; border-radius: 8px; cursor: pointer; transition: all .15s; }
+  .chips button:hover { border-color: var(--accent-dim); color: var(--ink); }
+  .chips button.active { background: var(--accent); color: #0b0c14; border-color: var(--accent); }
+
+  .note { font-size: 11.5px; line-height: 1.5; color: var(--ink-dim); }
+  .note b { color: var(--ink); font-weight: 600; }
+  .note code { background: rgba(255,255,255,.06); padding: 1px 4px; border-radius: 4px; font-size: 10.5px; }
+  .note + .note { margin-top: 9px; }
+</style>
+</head>
+<body data-device="notch" class="state-idle">
+
+  <!-- ===================== STAGE ===================== -->
+  <div class="stage-wrap">
+    <div class="stage-top">
+      <div>
+        <h1>AirNote — Native Notch HUD</h1>
+        <div class="sub">minimal listening · yellow dot + live transcript, expands on the x-axis</div>
+      </div>
+      <div class="seg" role="group" aria-label="device">
+        <button id="dev-notch" aria-pressed="true">Notched Mac</button>
+        <button id="dev-flat" aria-pressed="false">Flat display</button>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="menubar">
+        <span class="logo">&#63743;</span>
+        <span class="mi">Finder</span><span class="mi">File</span><span class="mi">Edit</span><span class="mi">View</span>
+        <span class="right"><span>&#128268;</span><span>&#128246;</span><span>9:41</span></span>
+      </div>
+
+      <div class="hud">
+        <div class="notch" id="notch">
+          <div class="camera"></div>
+          <div class="rec-dot" id="recDot"></div>
+
+          <div class="closed-row">
+            <span class="ready-dot" title="ready"></span>
+          </div>
+
+          <div class="open-body">
+            <!-- voice states: minimal — live transcript only -->
+            <div class="voice-min" id="voiceMin">
+              <span class="vtext" id="vtext"></span>
+            </div>
+
+            <!-- recents (hover-open) -->
+            <div class="recents" id="recents">
+              <div class="row"><span class="t">Kal ka demo 3 baje shift kar dena, calendar update kar diya.</span><span class="ago">2m</span></div>
+              <div class="row"><span class="t">Send the Q3 numbers to Rahul before standup tomorrow.</span><span class="ago">14m</span></div>
+              <div class="row"><span class="t">Ye paragraph thoda formal kar do, client ke liye hai.</span><span class="ago">1h</span></div>
+              <div class="row"><span class="t">Remind me to renew the domain on Friday.</span><span class="ago">3h</span></div>
+            </div>
+
+            <!-- learning toasts + feedback cards + system -->
+            <div id="card"></div>
+          </div>
+        </div>
+        <div class="hint" id="hint">Hold Caps Lock to dictate · hover to see recents</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== CONTROL RAIL ===================== -->
+  <aside class="rail">
+    <section>
+      <h2>Try it</h2>
+      <button class="dictate" id="dictate">Hold to Dictate
+        <small>press &amp; hold — watch the chin grow on the x-axis</small>
+      </button>
+      <div class="auto-row">
+        <button id="auto">&#9654; Auto demo</button>
+        <button id="recentBtn">Recents panel</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Every pill state</h2>
+
+      <div class="grp">
+        <div class="gl">Dictation (minimal)</div>
+        <div class="chips">
+          <button data-s="idle" class="active">Idle</button>
+          <button data-s="listening">Listening</button>
+          <button data-s="polishing">Polishing</button>
+          <button data-s="pasted">Pasted</button>
+          <button data-s="manual_paste">Manual paste</button>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="gl">Learning</div>
+        <div class="chips">
+          <button data-s="learned">Learned + Undo</button>
+          <button data-s="queued">Queued</button>
+          <button data-s="wrong_fixed">Wrong fixed</button>
+          <button data-s="retraining">Retraining</button>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="gl">Feedback (actionable cards)</div>
+        <div class="chips">
+          <button data-s="confirming">Is this a brand?</button>
+          <button data-s="negative_confirm">Stop correction?</button>
+          <button data-s="reviewing">Review corrections</button>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="gl">System</div>
+        <div class="chips">
+          <button data-s="error">Error + Retry</button>
+          <button data-s="update_ready">Update ready</button>
+          <button data-s="recent">Recents</button>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>The minimal listening UX</h2>
+      <p class="note"><b>Idle:</b> bare notch. <b>Hotkey →</b> an <b>amber recording dot</b> appears in the notch bar (left of the camera) and the chin <b>expands along the x-axis</b>, growing wider as you speak.</p>
+      <p class="note">The chin shows <b>only the live transcript</b> — no "LISTENING" label, no timer, no audio bars. Dot colour tracks the phase: <b>amber</b> listening → <b>periwinkle</b> polishing → <b>green</b> pasted.</p>
+    </section>
+
+    <section>
+      <h2>The "blackhead" rule</h2>
+      <p class="note"><b>Notched Mac:</b> dot sits in the bar beside the real camera; transcript drops below the camera line; chin flares into the bezel. <b>Flat display:</b> synthetic floating pill, same behaviour. Toggle above to compare.</p>
+    </section>
+  </aside>
+
+<script>
+  const body = document.body;
+  const notch = document.getElementById('notch');
+  const voiceMin = document.getElementById('voiceMin');
+  const vtext = document.getElementById('vtext');
+  const cardEl = document.getElementById('card');
+  const hint = document.getElementById('hint');
+
+  // ── card / toast HTML (unchanged feedback + learning + system) ──
+  function toast(dotClass, labelHTML, extra='') {
+    return `<div class="toast"><span class="dot ${dotClass}"></span><span class="label">${labelHTML}</span>${extra}</div>`;
+  }
+  const CARDS = {
+    manual_paste: { size:[300, 84], html:
+      `<div class="toast" style="height:auto;padding-bottom:8px"><span class="dot warn"></span><span class="label">Press <strong>⌘V</strong> to paste</span></div><div class="scan"></div>` },
+    learned: { size:[300, 70], html:
+      toast('ok', `<strong>Salesforce</strong> learned`, `<button class="undo">↩ Undo</button>`) },
+    queued: { size:[330, 70], html:
+      toast('accent', `<strong>Kubernetes</strong> <span class="muted">— 2 more edits to learn</span>`) },
+    wrong_fixed: { size:[350, 70], html:
+      toast('ok', `Got it — won't type “JIF” for “GIF”`) },
+    retraining: { size:[260, 70], html:
+      `<div class="toast"><span class="spin"></span><span class="label">Improving model…</span></div>` },
+
+    confirming: { size:[330, 156], html:
+      `<div class="card-pad"><div class="kicker-row"><span class="dot warn"></span><span class="kicker">Quick question</span></div>
+       <div class="cbody">You changed <span class="strike">sales force</span> → <span class="chip">Salesforce</span><br>
+       Is <strong>“Salesforce”</strong> a product, brand, or name?</div>
+       <div class="footer"><button class="btn ghost">No, just rephrasing</button><button class="btn primary">Yes, learn it <span class="kbd">⏎</span></button></div></div>` },
+    negative_confirm: { size:[342, 162], html:
+      `<div class="card-pad"><div class="kicker-row"><span class="dot err"></span><span class="kicker">Wrong correction detected</span></div>
+       <div class="cbody">AirNote keeps changing <span class="chip">GIF</span> to <strong>“JIF”</strong> but you changed it back.<br>
+       Should I stop this correction?</div>
+       <div class="footer"><button class="btn ghost">It was right this time</button><button class="btn primary">Yes, stop it <span class="kbd">⏎</span></button></div></div>` },
+    reviewing: { size:[388, 270], html: reviewHTML() },
+
+    error: { size:[346, 110], html:
+      `<div class="card-pad"><div class="kicker-row"><span class="dot err"></span><span class="kicker">Couldn’t polish</span></div>
+       <div class="cbody">Network timed out reaching the server.</div>
+       <div class="footer"><button class="btn ghost">Dismiss</button><button class="btn primary">Retry</button></div></div>` },
+    update_ready: { size:[330, 132], html:
+      `<div class="card-pad"><div class="kicker-row"><span class="dot ok"></span><span class="kicker">Update downloaded</span></div>
+       <div class="cbody">AirNote 2.4.1 is ready. Restart to finish updating.</div>
+       <div class="footer"><button class="btn ghost">Later</button><button class="btn primary">Restart</button></div></div>` },
+  };
+
+  function reviewHTML() {
+    const rows = [
+      { l:'A', p:'Salesforce', d:'— was “sales force” · brand', sel:true },
+      { l:'B', p:'Kubernetes', d:'— was “cuber netting” · term', sel:true },
+      { l:'C', p:'Anish',      d:'— was “a niche” · name', sel:true },
+    ];
+    const list = rows.map((r,i)=>
+      `<div class="rev-row${r.sel?' sel':''}" data-i="${i}"><span class="rev-letter">${r.l}</span>
+         <span class="rev-copy"><span class="p">${r.p}</span> <span class="d">${r.d}</span></span></div>`).join('');
+    return `<div class="card-pad" style="display:flex;flex-direction:column;height:100%">
+      <div class="kicker" id="revCount" style="margin-bottom:3px">3 selected</div>
+      <div class="rev-q">These will be learned</div>
+      <div class="rev-list">${list}</div>
+      <div class="footer"><button class="btn ghost">Skip</button><button class="btn primary" id="revBtn">Learn 3 <span class="kbd">⏎</span></button></div></div>`;
+  }
+  function wireReview() {
+    const rows = [...cardEl.querySelectorAll('.rev-row')];
+    const count = cardEl.querySelector('#revCount');
+    const btn = cardEl.querySelector('#revBtn');
+    const refresh = () => {
+      const n = rows.filter(r => r.classList.contains('sel')).length;
+      count.textContent = `${n} selected${n !== 3 ? ' · 3 total' : ''}`;
+      btn.innerHTML = (n > 0 ? `Learn ${n}` : 'Learn') + ` <span class="kbd">⏎</span>`;
+      btn.style.opacity = n > 0 ? '1' : '.5';
+    };
+    rows.forEach(r => r.addEventListener('click', () => { r.classList.toggle('sel'); refresh(); }));
+  }
+
+  // ── sizing: voice states are WIDE + SHORT (x-axis expansion) ──
+  const TOP = () => body.dataset.device === 'flat' ? 14 : 30;   // camera offset
+  const VOICE = { listening: 36, polishing: 36, pasted: 44 };   // chin (below camera)
+  const RECENT_H = 220;
+
+  // the live-transcript sample, revealed word-by-word while listening
+  const SAMPLE = "kal ka demo teen baje shift kar dena aur Rahul ko Q3 ke numbers bhej dena standup se pehle warna client thoda upset ho jaayega".split(" ");
+  const POLISHED = "Kal ka demo teen baje shift kar dena, aur Rahul ko Q3 ke numbers bhej dena standup se pehle.";
+
+  let state = 'idle';
+  let demoTimers = [];
+  let typeTimer = null;
+  const clearDemo = () => { demoTimers.forEach(clearTimeout); demoTimers = []; if (typeTimer) { clearInterval(typeTimer); typeTimer = null; } };
+
+  function open(on) { notch.classList.toggle('open', on); }
+  function resize(w, h) {
+    notch.style.width = w + 'px';
+    notch.style.height = h + 'px';
+    notch.style.borderRadius = body.dataset.device === 'flat' ? '22px' : '0 0 22px 22px';
+  }
+  function collapse() {
+    notch.classList.remove('open');
+    notch.style.width = ''; notch.style.height = ''; notch.style.borderRadius = '';
+  }
+
+  function setState(s) {
+    state = s;
+    body.className = 'state-' + s;
+    document.querySelectorAll('.chips button').forEach(b => b.classList.toggle('active', b.dataset.s === s));
+    cardEl.style.display = 'none';
+    voiceMin.classList.remove('rolling');
+    if (typeTimer) { clearInterval(typeTimer); typeTimer = null; }
+
+    if (s === 'idle') { collapse(); return; }
+
+    if (s === 'listening') {
+      open(true);
+      // Expand ONCE to the max width (a single smooth grow from the always-black
+      // notch), then let the transcript ROLL inside that fixed box.
+      resize(480, TOP() + VOICE.listening);
+      voiceMin.classList.add('rolling');
+      let i = 0;
+      vtext.innerHTML = '<span class="caret">▍</span>';
+      typeTimer = setInterval(() => {
+        i++;
+        vtext.innerHTML = SAMPLE.slice(0, i).join(' ') + ' <span class="caret">▍</span>';
+        if (i >= SAMPLE.length) { clearInterval(typeTimer); typeTimer = null; }
+      }, 230);
+      return;
+    }
+    if (s === 'polishing') {
+      open(true);
+      resize(440, TOP() + VOICE.polishing);
+      vtext.textContent = SAMPLE.join(' ');
+      return;
+    }
+    if (s === 'pasted') {
+      open(true);
+      resize(470, TOP() + VOICE.pasted);
+      vtext.textContent = POLISHED;
+      return;
+    }
+    if (s === 'recent') {
+      open(true);
+      resize(440, TOP() + RECENT_H);
+      return;
+    }
+
+    const def = CARDS[s];
+    if (def) {
+      open(true);
+      cardEl.style.display = 'flex';
+      cardEl.innerHTML = def.html;
+      resize(def.size[0], TOP() + (def.size[1] - 30));   // def heights authored against 30px camera offset
+      if (s === 'reviewing') wireReview();
+    }
+  }
+
+  // controls
+  document.querySelectorAll('.chips button').forEach(b => b.addEventListener('click', () => { clearDemo(); setState(b.dataset.s); }));
+
+  const dictate = document.getElementById('dictate');
+  const holdStart = (e) => { e.preventDefault(); clearDemo(); setState('listening'); };
+  const holdEnd = () => {
+    if (state !== 'listening') return;
+    setState('polishing');
+    demoTimers.push(setTimeout(() => setState('pasted'), 850));
+    demoTimers.push(setTimeout(() => setState('idle'), 2900));
+  };
+  dictate.addEventListener('mousedown', holdStart);
+  dictate.addEventListener('touchstart', holdStart, {passive:false});
+  window.addEventListener('mouseup', holdEnd);
+  dictate.addEventListener('touchend', holdEnd);
+
+  document.getElementById('auto').addEventListener('click', () => {
+    clearDemo();
+    setState('listening');
+    demoTimers.push(setTimeout(() => setState('polishing'), 3000));
+    demoTimers.push(setTimeout(() => setState('pasted'), 3900));
+    demoTimers.push(setTimeout(() => setState('confirming'), 6200));
+    demoTimers.push(setTimeout(() => setState('learned'), 9000));
+    demoTimers.push(setTimeout(() => setState('reviewing'), 11500));
+    demoTimers.push(setTimeout(() => setState('idle'), 15500));
+  });
+  document.getElementById('recentBtn').addEventListener('click', () => { clearDemo(); setState('recent'); });
+
+  const devNotch = document.getElementById('dev-notch');
+  const devFlat = document.getElementById('dev-flat');
+  function setDevice(d) {
+    body.dataset.device = d;
+    devNotch.setAttribute('aria-pressed', d === 'notch');
+    devFlat.setAttribute('aria-pressed', d === 'flat');
+    hint.textContent = d === 'flat' ? 'Synthetic notch · no physical cutout' : 'Hold Caps Lock to dictate · hover to see recents';
+    if (state !== 'idle') setState(state);
+  }
+  devNotch.addEventListener('click', () => setDevice('notch'));
+  devFlat.addEventListener('click', () => setDevice('flat'));
+
+  // hover-when-idle → recents
+  let hoverTimer = null;
+  notch.addEventListener('mouseenter', () => { if (state !== 'idle') return; hoverTimer = setTimeout(() => { if (state === 'idle') setState('recent'); }, 350); });
+  notch.addEventListener('mouseleave', () => { clearTimeout(hoverTimer); if (state === 'recent') setState('idle'); });
+
+  setState('idle');
+</script>
+</body>
+</html>

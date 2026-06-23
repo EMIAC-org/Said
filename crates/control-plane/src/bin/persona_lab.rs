@@ -186,6 +186,7 @@ async fn main() {
                 no_rag,
                 no_corr,
                 &vocab,
+                None,
                 |_| false,
             );
             match polish_transcript_with_prompt(

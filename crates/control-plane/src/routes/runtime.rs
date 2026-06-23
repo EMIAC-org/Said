@@ -11,6 +11,7 @@
 use std::{
     convert::Infallible,
     future,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -38,6 +39,10 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::Message as DgMessage};
 use uuid::Uuid;
 
 use crate::notification_hub::DesktopNotification;
+use crate::profile;
+use crate::routes::runtime_profile::{
+    load_profile_for_polish, log_profile_shadow, profile_markdown_for_prompt,
+};
 use crate::stt::{self, runtime_stt_credential_provider};
 use crate::voice_polish_standalone::{
     build_rewrite_system_prompt, build_rewrite_user_message, build_voice_system_prompt,
@@ -46,8 +51,6 @@ use crate::voice_polish_standalone::{
 use crate::{AppState, auth::AuthUser, memory_hygiene, org_quota, tenant};
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL_FAST: &str = "llama-3.1-8b-instant";
-const GROQ_MODEL_SMART: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
 const OPENAI_AUDIO_TRANSCRIPTIONS_ENDPOINT: &str = "https://api.openai.com/v1/audio/transcriptions";
 const DEFAULT_OPENAI_TRANSCRIBE_MODEL: &str = "whisper-1";
 const DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL: &str = "deepseek-v4-flash";
@@ -56,42 +59,160 @@ const GROQ_VALIDATE_ENDPOINT: &str = "https://api.groq.com/openai/v1/models";
 const OPENAI_VALIDATE_ENDPOINT: &str = "https://api.openai.com/v1/models";
 const GEMINI_VALIDATE_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const GATEWAY_VALIDATE_ENDPOINT: &str = "https://gateway.outreachdeal.com/v1/chat/completions";
+const RUNTIME_PROMPT_LOG_ENV: &str = "AIRNOTE_RUNTIME_PROMPT_LOG";
+const RUNTIME_PROMPT_LOG_PATH_ENV: &str = "AIRNOTE_RUNTIME_PROMPT_LOG_PATH";
 
-fn normalize_voice_polish_model(selected_model: &str) -> String {
-    let model = selected_model.trim().to_ascii_lowercase();
-    if model == "smart" || model.contains("maverick") || model.contains("scout") {
-        "smart".to_string()
-    } else if model == "deepseek"
-        || model == "fast"
-        || model.contains("8b")
-        || model.contains("instant")
-    {
-        "fast".to_string()
-    } else {
-        "fast".to_string()
+struct RuntimePromptDebug<'a> {
+    route: &'a str,
+    account_id: Uuid,
+    run_id: Uuid,
+    provider: &'a str,
+    model: &'a str,
+    selected_model: &'a str,
+    output_language: &'a str,
+    tone_preset: &'a str,
+    prompt_kind: &'a str,
+    profile_version: Option<i64>,
+    profile_status: &'a str,
+    profile_cache_hit: bool,
+    profile_chars: usize,
+    profile_injected: bool,
+    transcript_chars: usize,
+    user_message: &'a str,
+    system_prompt: &'a str,
+}
+
+fn runtime_prompt_debug_enabled() -> bool {
+    matches!(
+        std::env::var(RUNTIME_PROMPT_LOG_ENV)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn runtime_prompt_debug_path() -> PathBuf {
+    std::env::var(RUNTIME_PROMPT_LOG_PATH_ENV)
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("airnote-runtime-prompt.log"))
+}
+
+async fn write_runtime_prompt_debug_log(meta: RuntimePromptDebug<'_>) {
+    if !runtime_prompt_debug_enabled() {
+        return;
+    }
+
+    let path = runtime_prompt_debug_path();
+    let unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let profile_version = meta
+        .profile_version
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let body = format!(
+        "AirNote runtime prompt debug dump\n\
+         overwritten_at_unix_ms={unix_ms}\n\
+         route={route}\n\
+         account_id={account_id}\n\
+         run_id={run_id}\n\
+         provider={provider}\n\
+         model={model}\n\
+         selected_model={selected_model}\n\
+         output_language={output_language}\n\
+         tone_preset={tone_preset}\n\
+         prompt_kind={prompt_kind}\n\
+         profile_version={profile_version}\n\
+         profile_status={profile_status}\n\
+         profile_cache_hit={profile_cache_hit}\n\
+         profile_chars={profile_chars}\n\
+         profile_injected={profile_injected}\n\
+         transcript_chars={transcript_chars}\n\
+         system_prompt_chars={system_prompt_chars}\n\
+         user_message_chars={user_message_chars}\n\
+         \n\
+         ===== SYSTEM PROMPT =====\n\
+         {system_prompt}\n\
+         \n\
+         ===== USER MESSAGE =====\n\
+         {user_message}\n",
+        route = meta.route,
+        account_id = meta.account_id,
+        run_id = meta.run_id,
+        provider = meta.provider,
+        model = meta.model,
+        selected_model = meta.selected_model,
+        output_language = meta.output_language,
+        tone_preset = meta.tone_preset,
+        prompt_kind = meta.prompt_kind,
+        profile_status = meta.profile_status,
+        profile_cache_hit = meta.profile_cache_hit,
+        profile_chars = meta.profile_chars,
+        profile_injected = meta.profile_injected,
+        transcript_chars = meta.transcript_chars,
+        system_prompt_chars = meta.system_prompt.chars().count(),
+        user_message_chars = meta.user_message.chars().count(),
+        system_prompt = meta.system_prompt,
+        user_message = meta.user_message,
+    );
+
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Err(err) = tokio::fs::create_dir_all(parent).await {
+            tracing::warn!(
+                "[runtime] prompt debug dump failed to create parent path={}: {err}",
+                path.display()
+            );
+            return;
+        }
+    }
+
+    match tokio::fs::write(&path, body).await {
+        Ok(()) => tracing::info!(
+            "[runtime] prompt debug dump wrote path={} run_id={} prompt_chars={} profile_version={} profile_injected={}",
+            path.display(),
+            meta.run_id,
+            meta.system_prompt.chars().count(),
+            profile_version,
+            meta.profile_injected,
+        ),
+        Err(err) => tracing::warn!(
+            "[runtime] prompt debug dump failed path={}: {err}",
+            path.display()
+        ),
     }
 }
 
-fn selected_polish_model(selected_model: &str) -> &'static str {
-    match normalize_voice_polish_model(selected_model).as_str() {
-        "smart" => GROQ_MODEL_SMART,
-        _ => GROQ_MODEL_FAST,
-    }
+fn normalize_voice_polish_model(selected_model: &str) -> String {
+    said_core::polish::model::validate_polish_model_key(selected_model)
+}
+
+fn selected_polish_model(selected_model: &str) -> String {
+    said_core::polish::model::resolve_polish_route(selected_model).model
+}
+
+fn selected_polish_route(selected_model: &str) -> said_core::polish::model::PolishRoute {
+    said_core::polish::model::resolve_polish_route(selected_model)
 }
 
 fn polish_model_label(selected_model: &str) -> String {
-    selected_polish_model(selected_model).to_string()
+    said_core::polish::model::polish_model_label(selected_model)
 }
 
 fn learning_judge_model() -> String {
+    use said_core::polish::model::{GROQ_POLISH_MODEL_FAST, groq_polish_model_smart};
     match std::env::var("AIRNOTE_LEARNING_JUDGE_MODEL")
-        .unwrap_or_else(|_| GROQ_MODEL_FAST.to_string())
+        .unwrap_or_else(|_| GROQ_POLISH_MODEL_FAST.to_string())
         .trim()
         .to_ascii_lowercase()
         .as_str()
     {
-        "" | "fast" | "8b" => GROQ_MODEL_FAST.to_string(),
-        "smart" | "scout" | "maverick" => GROQ_MODEL_SMART.to_string(),
+        "" | "fast" | "8b" => GROQ_POLISH_MODEL_FAST.to_string(),
+        "smart" | "scout" | "maverick" | "gpt-oss" => groq_polish_model_smart(),
         other => other.to_string(),
     }
 }
@@ -343,7 +464,7 @@ pub struct LearningReviewCandidate {
     pub tag: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserEditSpan {
     pub pasted_span: String,
     pub kept_span: String,
@@ -2176,6 +2297,18 @@ async fn polish_runtime_transcript(
     }
 
     let (tone_preset, custom_prompt) = account_polish_persona(state, account_id).await;
+    let active_org_id = primary_org_id(state, account_id).await?;
+    let org_scope = profile::resolve_org_scope(&tenant::TenantContext {
+        account_id,
+        active_org_id,
+        org_role: None,
+        personal_mode: active_org_id.is_none(),
+    });
+    let (cached_profile, profile_cache_hit) =
+        load_profile_for_polish(state, account_id, org_scope).await;
+    log_profile_shadow(cached_profile.as_ref(), profile_cache_hit);
+    let profile_md = profile_markdown_for_prompt(cached_profile.as_ref());
+
     let prompt_start = Instant::now();
     let system_prompt = build_voice_system_prompt(
         output_language,
@@ -2183,6 +2316,7 @@ async fn polish_runtime_transcript(
         custom_prompt.as_deref(),
         screen_context,
         safe_vocab_terms,
+        profile_md,
     );
     let user_message = build_voice_user_message(&formatted_transcript, output_language);
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
@@ -2193,19 +2327,49 @@ async fn polish_runtime_transcript(
         "ok",
         Some(prompt_ms),
         None,
-        json!({"prompt_version": "core-legacy-literal-2026-06-07"}),
+        json!({"prompt_version": said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION}),
     )
     .await?;
 
     let selected_model = normalize_voice_polish_model(selected_model);
-    let model = selected_polish_model(&selected_model);
-    let active_org_id = primary_org_id(state, account_id).await?;
-    let credential = runtime_provider_secret(state, account_id, active_org_id, "groq").await?;
+    let route = selected_polish_route(&selected_model);
+    let model = route.model.clone();
+    let provider_label = route.provider;
+    write_runtime_prompt_debug_log(RuntimePromptDebug {
+        route: "polish_runtime_transcript",
+        account_id,
+        run_id,
+        provider: provider_label,
+        model: &model,
+        selected_model: &selected_model,
+        output_language,
+        tone_preset: &tone_preset,
+        prompt_kind: "voice_polish",
+        profile_version: cached_profile.as_ref().map(|p| p.version),
+        profile_status: cached_profile
+            .as_ref()
+            .map(|p| p.status.as_str())
+            .unwrap_or("missing"),
+        profile_cache_hit,
+        profile_chars: profile_md.map(|p| p.chars().count()).unwrap_or(0),
+        profile_injected: profile_md.is_some(),
+        transcript_chars: transcript.chars().count(),
+        user_message: &user_message,
+        system_prompt: &system_prompt,
+    })
+    .await;
     let model_start = Instant::now();
-    let output = call_groq(
+    let active_org_id = primary_org_id(state, account_id).await?;
+    let credential =
+        runtime_provider_secret(state, account_id, active_org_id, provider_label).await?;
+    let secret = credential.secret.clone();
+    let polish_credential = Some(credential);
+    let output = polish_llm(
         state,
-        &credential.secret,
-        model,
+        active_org_id,
+        provider_label,
+        &secret,
+        &model,
         &system_prompt,
         &user_message,
         None,
@@ -2215,18 +2379,20 @@ async fn polish_runtime_transcript(
 
     match output {
         Ok(raw_output) => {
-            let _ = update_credential_used(state, credential.credential_id).await;
-            insert_provider_usage(
-                state,
-                run_id,
-                &credential,
-                "groq",
-                Some(model),
-                Some(model_ms),
-                "ok",
-                None,
-            )
-            .await?;
+            if let Some(ref credential) = polish_credential {
+                let _ = update_credential_used(state, credential.credential_id).await;
+                insert_provider_usage(
+                    state,
+                    run_id,
+                    credential,
+                    provider_label,
+                    Some(model.as_str()),
+                    Some(model_ms),
+                    "ok",
+                    None,
+                )
+                .await?;
+            }
             insert_stage_event(
                 state,
                 run_id,
@@ -2234,7 +2400,7 @@ async fn polish_runtime_transcript(
                 "ok",
                 Some(model_ms),
                 None,
-                json!({"model": model, "provider": "groq"}),
+                json!({"model": model, "provider": provider_label}),
             )
             .await?;
             let output =
@@ -2311,17 +2477,19 @@ async fn polish_runtime_transcript(
             Ok(output)
         }
         Err(err) => {
-            let _ = insert_provider_usage(
-                state,
-                run_id,
-                &credential,
-                "groq",
-                Some(model),
-                Some(model_ms),
-                "error",
-                Some("model_failed"),
-            )
-            .await;
+            if let Some(ref credential) = polish_credential {
+                let _ = insert_provider_usage(
+                    state,
+                    run_id,
+                    credential,
+                    provider_label,
+                    Some(model.as_str()),
+                    Some(model_ms),
+                    "error",
+                    Some("model_failed"),
+                )
+                .await;
+            }
             let _ = insert_stage_event(
                 state,
                 run_id,
@@ -2329,7 +2497,7 @@ async fn polish_runtime_transcript(
                 "error",
                 Some(model_ms),
                 Some("model_failed"),
-                json!({"model": model, "provider": "groq"}),
+                json!({"model": model, "provider": provider_label}),
             )
             .await;
             Err(err)
@@ -2393,7 +2561,7 @@ pub async fn voice_wav(
         "runtime_wav_probe"
     };
 
-    let server_memory = load_runtime_memory(&state, user.account_id)
+    let server_memory = load_runtime_memory_cached(&state, user.account_id)
         .await
         .unwrap_or_default();
 
@@ -3161,7 +3329,7 @@ async fn execute_voice_polish(
     );
 
     let memory_start = Instant::now();
-    let server_memory = load_runtime_memory(&state, user.account_id)
+    let server_memory = load_runtime_memory_cached(&state, user.account_id)
         .await
         .unwrap_or_default();
     let merged_vocab = merge_vocab_terms(
@@ -3221,10 +3389,71 @@ async fn execute_voice_polish(
         .map(str::trim)
         .filter(|t| !t.is_empty());
     let is_rewrite = explicit_tone.is_some();
-    let (tone_preset, custom_prompt) = match explicit_tone {
-        Some(raw) => (normalize_tone_preset(raw), None),
-        None => account_polish_persona(&state, user.account_id).await,
+
+    // Resolve the model route up front (pure CPU, no I/O) so the provider
+    // credential lookup can run concurrently with the persona read below.
+    let selected_model = normalize_voice_polish_model(&req.selected_model);
+    let route = selected_polish_route(&selected_model);
+    let model = route.model.clone();
+    let provider_label = route.provider;
+    let prompt_cpu_ms = prompt_start.elapsed().as_millis() as i64;
+
+    // Persona (tone/custom prompt) and the provider credential are two
+    // independent, uncached DB reads that used to run back-to-back before the
+    // model call. Resolve them concurrently so the two round-trips overlap into
+    // one. On the rewrite path the tone is explicit, so persona needs no DB hit.
+    let credential_start = Instant::now();
+    let persona_fut = async {
+        match explicit_tone {
+            Some(raw) => (normalize_tone_preset(raw), None),
+            None => account_polish_persona(&state, user.account_id).await,
+        }
     };
+    let credential_fut = runtime_provider_secret(
+        &state,
+        user.account_id,
+        tenant_ctx.active_org_id,
+        provider_label,
+    );
+    let ((tone_preset, custom_prompt), credential_lookup) =
+        tokio::join!(persona_fut, credential_fut);
+    let credential_ms = credential_start.elapsed().as_millis() as i64;
+
+    let (api_secret, polish_credential, credential_scope) = match credential_lookup {
+        Ok(credential) => {
+            let scope = credential.scope.clone();
+            (credential.secret.clone(), Some(credential), scope)
+        }
+        Err(err) => {
+            let _ = insert_stage_event(
+                &state,
+                run_id,
+                "credential_lookup",
+                "error",
+                None,
+                Some("provider_credential_missing"),
+                json!({"provider": provider_label}),
+            )
+            .await;
+            let _ = mark_runtime_session(
+                &state,
+                run_id,
+                "failed",
+                Some("provider_credential_missing"),
+            )
+            .await;
+            return Err(err);
+        }
+    };
+
+    // Build the prompt now that the persona has resolved (pure CPU).
+    let build_start = Instant::now();
+    let org_scope = profile::resolve_org_scope(&tenant_ctx);
+    let (cached_profile, profile_cache_hit) =
+        load_profile_for_polish(&state, user.account_id, org_scope).await;
+    log_profile_shadow(cached_profile.as_ref(), profile_cache_hit);
+    let profile_md = profile_markdown_for_prompt(cached_profile.as_ref());
+
     let (system_prompt, user_message) = if is_rewrite {
         (
             build_rewrite_system_prompt(&tone_preset, &req.output_language),
@@ -3238,50 +3467,21 @@ async fn execute_voice_polish(
                 custom_prompt.as_deref(),
                 req.screen_context.as_deref(),
                 &merged_vocab,
+                profile_md,
             ),
             build_voice_user_message(&formatted_transcript, &req.output_language),
         )
     };
-    let prompt_ms = prompt_start.elapsed().as_millis() as i64;
-
-    let selected_model = normalize_voice_polish_model(&req.selected_model);
-    let model = selected_polish_model(&selected_model);
-    let credential_start = Instant::now();
-    let credential =
-        match runtime_provider_secret(&state, user.account_id, tenant_ctx.active_org_id, "groq")
-            .await
-        {
-            Ok(credential) => credential,
-            Err(err) => {
-                let _ = insert_stage_event(
-                    &state,
-                    run_id,
-                    "credential_lookup",
-                    "error",
-                    None,
-                    Some("provider_credential_missing"),
-                    json!({"provider": "groq"}),
-                )
-                .await;
-                let _ = mark_runtime_session(
-                    &state,
-                    run_id,
-                    "failed",
-                    Some("provider_credential_missing"),
-                )
-                .await;
-                return Err(err);
-            }
-        };
-    let credential_ms = credential_start.elapsed().as_millis() as i64;
+    let prompt_ms = prompt_cpu_ms + build_start.elapsed().as_millis() as i64;
 
     tracing::info!(
-        "[runtime] voice polish start account={} run_id={} model={} selected_model={} credential_scope={} transcript_chars={} vocab_hints={} setup_ms={{tenant:{}, memory:{}, session:{}, prompt:{}, credential:{}}}",
+        "[runtime] voice polish start account={} run_id={} model={} provider={} selected_model={} credential_scope={} transcript_chars={} vocab_hints={} setup_ms={{tenant:{}, memory:{}, session:{}, prompt:{}, credential:{}}}",
         user.account_id,
         run_id,
         model,
+        provider_label,
         selected_model,
-        credential.scope,
+        credential_scope,
         transcript.len(),
         merged_vocab.len(),
         tenant_ms,
@@ -3290,6 +3490,33 @@ async fn execute_voice_polish(
         prompt_ms,
         credential_ms,
     );
+    write_runtime_prompt_debug_log(RuntimePromptDebug {
+        route: "execute_voice_polish",
+        account_id: user.account_id,
+        run_id,
+        provider: provider_label,
+        model: &model,
+        selected_model: &selected_model,
+        output_language: &req.output_language,
+        tone_preset: &tone_preset,
+        prompt_kind: if is_rewrite {
+            "rewrite"
+        } else {
+            "voice_polish"
+        },
+        profile_version: cached_profile.as_ref().map(|p| p.version),
+        profile_status: cached_profile
+            .as_ref()
+            .map(|p| p.status.as_str())
+            .unwrap_or("missing"),
+        profile_cache_hit,
+        profile_chars: profile_md.map(|p| p.chars().count()).unwrap_or(0),
+        profile_injected: !is_rewrite && profile_md.is_some(),
+        transcript_chars: transcript.chars().count(),
+        user_message: &user_message,
+        system_prompt: &system_prompt,
+    })
+    .await;
 
     {
         // Telemetry only — fire-and-forget so it never gates the model call (#4).
@@ -3302,7 +3529,7 @@ async fn execute_voice_polish(
                 "ok",
                 Some(prompt_ms),
                 None,
-                json!({"prompt_version": "core-legacy-literal-2026-06-07"}),
+                json!({"prompt_version": said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION}),
             )
             .await;
         });
@@ -3312,8 +3539,9 @@ async fn execute_voice_polish(
     let llm_result = polish_llm(
         &state,
         tenant_ctx.active_org_id,
-        &credential.secret,
-        model,
+        provider_label,
+        &api_secret,
+        &model,
         &system_prompt,
         &user_message,
         token_tx,
@@ -3341,20 +3569,22 @@ async fn execute_voice_polish(
                 "error",
                 Some(model_ms),
                 Some("model_failed"),
-                json!({"model": model, "provider": "groq"}),
+                json!({"model": model, "provider": provider_label}),
             )
             .await;
-            let _ = insert_provider_usage(
-                &state,
-                run_id,
-                &credential,
-                "groq",
-                Some(model),
-                Some(model_ms),
-                "error",
-                Some("model_failed"),
-            )
-            .await;
+            if let Some(ref credential) = polish_credential {
+                let _ = insert_provider_usage(
+                    &state,
+                    run_id,
+                    credential,
+                    provider_label,
+                    Some(model.as_str()),
+                    Some(model_ms),
+                    "error",
+                    Some("model_failed"),
+                )
+                .await;
+            }
             let _ = mark_runtime_session(&state, run_id, "failed", Some("model_failed")).await;
             return Err(err);
         }
@@ -3439,13 +3669,14 @@ async fn execute_voice_polish(
     deferred_events.push((
         "llm_complete",
         Some(model_ms),
-        json!({"model": model, "provider": "groq"}),
+        json!({"model": model, "provider": provider_label}),
     ));
 
     tracing::info!(
-        "[runtime] voice polish done account={} run_id={} model={} output_chars={} model_ms={} total_ms={}",
+        "[runtime] voice polish done account={} run_id={} provider={} model={} output_chars={} model_ms={} total_ms={}",
         user.account_id,
         run_id,
+        provider_label,
         model,
         output.len(),
         model_ms,
@@ -3458,7 +3689,8 @@ async fn execute_voice_polish(
     // surfaced — a telemetry write must not turn a successful polish into a 500.
     {
         let bg_state = state.clone();
-        let bg_credential = credential.clone();
+        let bg_credential = polish_credential.clone();
+        let bg_provider = provider_label.to_string();
         let bg_transcript = transcript.to_string();
         let bg_output = output.clone();
         let bg_client_run_id = req.client_run_id.clone();
@@ -3466,18 +3698,20 @@ async fn execute_voice_polish(
         let bg_model = model.to_string();
         let org_id_for_history = tenant_ctx.active_org_id;
         tokio::spawn(async move {
-            let _ = update_credential_used(&bg_state, bg_credential.credential_id).await;
-            let _ = insert_provider_usage(
-                &bg_state,
-                run_id,
-                &bg_credential,
-                "groq",
-                Some(&bg_model),
-                Some(model_ms),
-                "ok",
-                None,
-            )
-            .await;
+            if let Some(ref credential) = bg_credential {
+                let _ = update_credential_used(&bg_state, credential.credential_id).await;
+                let _ = insert_provider_usage(
+                    &bg_state,
+                    run_id,
+                    credential,
+                    &bg_provider,
+                    Some(&bg_model),
+                    Some(model_ms),
+                    "ok",
+                    None,
+                )
+                .await;
+            }
             for (name, latency_ms, payload) in deferred_events {
                 let _ =
                     insert_stage_event(&bg_state, run_id, name, "ok", latency_ms, None, payload)
@@ -3493,7 +3727,7 @@ async fn execute_voice_polish(
                 None,
                 &bg_transcript,
                 &bg_output,
-                &bg_model,
+                &format!("{bg_provider}:{bg_model}"),
                 "server_polish",
                 None,
                 Some(model_ms),
@@ -3506,7 +3740,7 @@ async fn execute_voice_polish(
         run_id: run_id.to_string(),
         output,
         model_used: model.to_string(),
-        prompt_version: "core-legacy-literal-2026-06-07".to_string(),
+        prompt_version: said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION.to_string(),
         latency_ms: RuntimeLatency {
             prompt: prompt_ms,
             model: model_ms,
@@ -3986,6 +4220,8 @@ async fn runtime_provider_secret(
         "deepgram" => !state.deepgram_api_key.trim().is_empty(),
         "openai" => !state.openai_api_key.trim().is_empty(),
         "groq" => !state.groq_api_key.trim().is_empty(),
+        "cerebras" => !state.cerebras_api_key.trim().is_empty(),
+        "deepinfra" => !state.deepinfra_api_key.trim().is_empty(),
         _ => false,
     };
 
@@ -4009,6 +4245,8 @@ async fn runtime_provider_secret(
         "deepgram" => state.deepgram_api_key.trim(),
         "openai" => state.openai_api_key.trim(),
         "groq" => state.groq_api_key.trim(),
+        "cerebras" => state.cerebras_api_key.trim(),
+        "deepinfra" => state.deepinfra_api_key.trim(),
         _ => "",
     };
     if tenant::allow_platform_credential_fallback() && !fallback.is_empty() {
@@ -4095,7 +4333,7 @@ fn default_output_language() -> String {
 }
 
 fn default_selected_model() -> String {
-    "smart".to_string()
+    said_core::polish::model::DEFAULT_POLISH_MODEL_KEY.to_string()
 }
 
 fn default_voice_wav_mode() -> String {
@@ -4202,7 +4440,7 @@ async fn validate_provider_secret(
         }
         "gateway" => {
             let body = json!({
-                "model": GROQ_MODEL_FAST,
+                "model": said_core::polish::model::GROQ_POLISH_MODEL_FAST,
                 "stream": false,
                 "max_tokens": 1,
                 "temperature": 0,
@@ -4251,7 +4489,9 @@ async fn validate_provider_secret(
 fn normalize_provider(provider: &str) -> Result<String, (StatusCode, Json<Value>)> {
     let provider = provider.trim().to_lowercase();
     match provider.as_str() {
-        "deepgram" | "groq" | "openai" | "gemini" | "gateway" => Ok(provider),
+        "deepgram" | "groq" | "openai" | "gemini" | "gateway" | "cerebras" | "deepinfra" => {
+            Ok(provider)
+        }
         _ => Err(json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "unknown provider",
@@ -4681,12 +4921,14 @@ async fn active_openai_token(state: &AppState, org_id: Uuid) -> Option<String> {
 async fn polish_llm(
     state: &AppState,
     org_id: Option<Uuid>,
-    groq_secret: &str,
-    groq_model: &str,
+    polish_provider: &str,
+    api_secret: &str,
+    polish_model: &str,
     system_prompt: &str,
     user_message: &str,
     token_tx: Option<mpsc::Sender<String>>,
 ) -> Result<String, (StatusCode, Json<Value>)> {
+    tracing::info!("[runtime] polish_llm provider={polish_provider} model={polish_model}");
     let wants_stream = token_tx.is_some();
     if !wants_stream {
         if let Some(org_id) = org_id {
@@ -4715,18 +4957,42 @@ async fn polish_llm(
         }
     } else {
         tracing::info!(
-            "[runtime] voice polish stream requested — using Groq streaming path for live tokens"
+            "[runtime] voice polish stream requested — provider={polish_provider} model={polish_model}"
         );
     }
-    call_groq(
-        state,
-        groq_secret,
-        groq_model,
-        system_prompt,
-        user_message,
-        token_tx,
-    )
-    .await
+    match polish_provider {
+        "cerebras" => {
+            crate::cerebras::call_cerebras(
+                api_secret,
+                polish_model,
+                system_prompt,
+                user_message,
+                token_tx,
+            )
+            .await
+        }
+        "deepinfra" => {
+            crate::deepinfra::call_deepinfra(
+                api_secret,
+                polish_model,
+                system_prompt,
+                user_message,
+                token_tx,
+            )
+            .await
+        }
+        _ => {
+            call_groq(
+                state,
+                api_secret,
+                polish_model,
+                system_prompt,
+                user_message,
+                token_tx,
+            )
+            .await
+        }
+    }
 }
 
 async fn call_groq(
@@ -4738,9 +5004,9 @@ async fn call_groq(
     token_tx: Option<mpsc::Sender<String>>,
 ) -> Result<String, (StatusCode, Json<Value>)> {
     let estimated_input_tokens = user_message.len() / 4;
-    let max_tokens = (estimated_input_tokens * 2 + 256).min(4096);
+    let mut max_tokens = (estimated_input_tokens * 2 + 256).min(8192) as u32;
     let stream_tokens = token_tx.is_some();
-    let body = json!({
+    let mut body = json!({
         "model": model,
         // 0.2, not greedy 0.0. Groq clamps temperature 0 to 1e-8 — effectively
         // greedy — which can trigger repetition loops ("The The The…") on long
@@ -4762,6 +5028,13 @@ async fn call_groq(
             { "role": "user", "content": user_message }
         ]
     });
+    if model.contains("gpt-oss") {
+        max_tokens = max_tokens.max(4096);
+        body["max_tokens"] = json!(max_tokens);
+        body["reasoning_effort"] = json!("low");
+    }
+
+    tracing::info!("[runtime] POST {GROQ_ENDPOINT} model={model}");
 
     let client = &*crate::HTTP_CLIENT;
     let request_started = Instant::now();
@@ -4922,7 +5195,8 @@ async fn call_groq(
 
 // ── Learning memory: helpers, loader, resolver ─────────────────────────────
 
-struct RuntimeMemory {
+#[derive(Clone)]
+pub struct RuntimeMemory {
     vocab_terms: Vec<String>,
     replacements: Vec<(String, String)>,
     policy_rules: Vec<(String, String)>,
@@ -5415,6 +5689,12 @@ enum UserEditOp {
     Equal,
     Delete(usize),
     Insert(usize),
+}
+
+/// Deterministically extract exact pasted_output -> user_kept word spans.
+/// This function does not decide learnability; it only records what changed.
+pub fn compute_user_edit_spans(pasted_output: &str, user_kept: &str) -> Vec<UserEditSpan> {
+    extract_user_edit_spans(pasted_output, user_kept)
 }
 
 /// Deterministically extract exact pasted_output -> user_kept word spans.
@@ -6556,11 +6836,37 @@ fn replace_phrase_core(first_word: &str, last_word: &str, correct: &str) -> Stri
     format!("{}{}{}", &first_word[..start], correct, &last_word[end..])
 }
 
+/// Cached entry point for per-account learning memory. Returns a warm clone
+/// when present (zero DB round-trips); otherwise loads from the DB and caches.
+/// Any write to `personal_vocab_terms` / `personal_stt_replacements` /
+/// `personal_edit_policy_rules` MUST call `invalidate_runtime_memory_cache`.
+async fn load_runtime_memory_cached(
+    state: &AppState,
+    account_id: Uuid,
+) -> Result<RuntimeMemory, sqlx::Error> {
+    if let Some(hit) = state.runtime_memory_cache.get(&account_id) {
+        return Ok(hit);
+    }
+    let memory = load_runtime_memory(state, account_id).await?;
+    state
+        .runtime_memory_cache
+        .insert(account_id, memory.clone());
+    Ok(memory)
+}
+
+/// Drop the cached learning memory for an account after a learning write.
+pub fn invalidate_runtime_memory_cache(state: &AppState, account_id: Uuid) {
+    state.runtime_memory_cache.invalidate(&account_id);
+}
+
 async fn load_runtime_memory(
     state: &AppState,
     account_id: Uuid,
 ) -> Result<RuntimeMemory, sqlx::Error> {
-    let vocab_rows: Vec<(String,)> = sqlx::query_as(
+    // The three lists are independent — issue them concurrently so the load is
+    // one round-trip of latency instead of three (each is ~400ms over the
+    // tunnelled dev DB; this also halves DB time in production).
+    let vocab = sqlx::query_as::<_, (String,)>(
         "SELECT term
            FROM personal_vocab_terms
           WHERE account_id = $1 AND status = 'active'
@@ -6568,10 +6874,9 @@ async fn load_runtime_memory(
           LIMIT 80",
     )
     .bind(account_id)
-    .fetch_all(&state.db)
-    .await?;
+    .fetch_all(&state.db);
 
-    let replacement_rows: Vec<(String, String)> = sqlx::query_as(
+    let replacements = sqlx::query_as::<_, (String, String)>(
         "SELECT transcript_form, correct_form
            FROM personal_stt_replacements
           WHERE account_id = $1
@@ -6581,10 +6886,9 @@ async fn load_runtime_memory(
           LIMIT 60",
     )
     .bind(account_id)
-    .fetch_all(&state.db)
-    .await?;
+    .fetch_all(&state.db);
 
-    let policy_rows: Vec<(String, String)> = sqlx::query_as(
+    let policy = sqlx::query_as::<_, (String, String)>(
         "SELECT variant_form, correct_form
            FROM personal_edit_policy_rules
           WHERE account_id = $1 AND status = 'active'
@@ -6592,8 +6896,10 @@ async fn load_runtime_memory(
           LIMIT 60",
     )
     .bind(account_id)
-    .fetch_all(&state.db)
-    .await?;
+    .fetch_all(&state.db);
+
+    let (vocab_rows, replacement_rows, policy_rows) =
+        tokio::try_join!(vocab, replacements, policy)?;
 
     Ok(RuntimeMemory {
         vocab_terms: vocab_rows.into_iter().map(|(t,)| t).collect(),
@@ -6657,6 +6963,25 @@ async fn judge_and_upsert_client_learning_event(
             "status": "ignored", "accepted_terms": 0, "accepted_aliases": 0,
             "blocked_terms": 0, "blocked_aliases": 0, "ignored": 1,
             "reasons": ["empty_memory_payload"]
+        }));
+    }
+
+    if crate::legacy_personal_memory::audit_only_personal_mutations() {
+        let item_count = accepted_terms_raw.len() + accepted_aliases_raw.len();
+        crate::legacy_personal_memory::skip_legacy_personal_write(
+            "judge_and_upsert_client_learning_event",
+            "classify_edit_result",
+            user.account_id,
+            item_count,
+        );
+        return Ok(json!({
+            "status": "audit_only",
+            "accepted_terms": 0,
+            "accepted_aliases": 0,
+            "blocked_terms": accepted_terms_raw.len() as i64,
+            "blocked_aliases": accepted_aliases_raw.len() as i64,
+            "ignored": 0,
+            "reasons": ["personal_memory_writes_frozen_profile_pipeline_canonical"]
         }));
     }
 
@@ -6857,6 +7182,9 @@ async fn judge_and_upsert_client_learning_event(
     let total_blocked = blocked_term_count + blocked_alias_count;
     if total_accepted > 0 {
         let _ = memory_hygiene::mark_memory_dirty(&state.db, user.account_id).await;
+        // New learned vocab/replacements/policy landed — drop the cached memory
+        // so the next dictation re-loads it.
+        invalidate_runtime_memory_cache(state, user.account_id);
     }
     let status = if total_accepted > 0 && total_blocked == 0 {
         "accepted"
@@ -6918,10 +7246,17 @@ mod tests {
 
     #[test]
     fn selected_polish_model_respects_fast_and_smart() {
-        assert_eq!(selected_polish_model("fast"), GROQ_MODEL_FAST);
-        assert_eq!(selected_polish_model("deepseek"), GROQ_MODEL_FAST);
-        assert_eq!(selected_polish_model("smart"), GROQ_MODEL_SMART);
-        assert_eq!(selected_polish_model("scout"), GROQ_MODEL_SMART);
+        use said_core::polish::model::{GROQ_POLISH_MODEL_FAST, GROQ_POLISH_MODEL_SMART_DEFAULT};
+        assert_eq!(selected_polish_model("fast"), GROQ_POLISH_MODEL_FAST);
+        assert_eq!(selected_polish_model("deepseek"), GROQ_POLISH_MODEL_FAST);
+        assert_eq!(
+            selected_polish_model("smart"),
+            GROQ_POLISH_MODEL_SMART_DEFAULT
+        );
+        assert_eq!(
+            selected_polish_model("scout"),
+            GROQ_POLISH_MODEL_SMART_DEFAULT
+        );
     }
 
     #[test]
@@ -7006,13 +7341,15 @@ mod tests {
 
     #[test]
     fn server_voice_prompt_forbids_normal_word_translation() {
-        let prompt = build_voice_system_prompt("hinglish", "neutral", None, None, &[]);
+        let prompt = build_voice_system_prompt("hinglish", "neutral", None, None, &[], None);
         let user = build_voice_user_message("hello भाई कैसे हो", "hinglish");
 
+        assert!(prompt.contains("intentful dictation polisher"));
+        assert!(prompt.contains("STT as noisy evidence, not ground truth"));
         assert!(prompt.contains("\"hello\" stays \"hello\""));
         assert!(prompt.contains("\"time\" stays \"time\""));
         assert!(prompt.contains("\"kaam\" stays \"kaam\""));
-        assert!(prompt.contains("not \"Namaste bhai kaise ho\""));
+        assert!(prompt.contains("\"deep gram API key\" -> \"Deepgram API key\""));
         assert!(user.contains("BEGIN TRANSCRIPT"));
     }
 

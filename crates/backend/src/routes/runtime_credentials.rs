@@ -448,6 +448,7 @@ fn provider_secrets(prefs: &Preferences) -> Vec<ProviderSecret> {
             secret,
         });
     }
+    // Cerebras + DeepInfra are server-managed (control-plane .env) — not synced from users.
     out
 }
 
@@ -483,6 +484,7 @@ mod tests {
             gemini_api_key: None,
             groq_api_key: None,
             cerebras_api_key: None,
+            deepinfra_api_key: None,
             llm_provider: "groq".into(),
             stt_provider: "deepgram".into(),
         };

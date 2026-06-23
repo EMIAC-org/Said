@@ -12103,6 +12103,13 @@ const WHISPER_MODEL_CATALOG: &[(&str, &str, u64)] = &[(
     573_000_000,
 )];
 
+/// Silero VAD ggml model for whisper.cpp `--vad` (speech-only segments).
+pub const SILERO_VAD_MODEL_NAME: &str = "ggml-silero-v5.1.2.bin";
+const SILERO_VAD_MODEL_URL: &str =
+    "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
+const SILERO_VAD_SIZE_HINT: u64 = 900_000;
+const MIN_SILERO_VAD_BYTES: u64 = 100_000;
+
 fn meeting_whisper_models_dir() -> PathBuf {
     said_core::paths::data_dir().join("models")
 }
@@ -12432,8 +12439,9 @@ pub async fn meeting_download_whisper_model(app: AppHandle, name: String) -> Res
     }
 
     let name_for_task = name.clone();
+    let app_dl = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        download_whisper_model_blocking(&app, &name_for_task, &url, total_hint, &dir, &dest)
+        download_whisper_model_blocking(&app_dl, &name_for_task, &url, total_hint, &dir, &dest)
     })
     .await
     .map_err(|e| format!("download task failed: {e}"))?;
@@ -12443,6 +12451,16 @@ pub async fn meeting_download_whisper_model(app: AppHandle, name: String) -> Res
     }
     if let Ok(mut cancels) = model_download_cancels().lock() {
         cancels.remove(&name);
+    }
+    if result.is_ok() && !silero_vad_model_installed() {
+        let app_auto = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = meeting_download_silero_vad_model(app_auto).await {
+                tracing::warn!(
+                    "[meeting_engine] auto Silero VAD download after whisper model: {e}"
+                );
+            }
+        });
     }
     result
 }
@@ -12581,6 +12599,228 @@ pub fn meeting_cleanup_legacy_whisper_models() -> Result<WhisperModelCleanupResu
     // clears the setting. It never selects a removed file.
     meeting_ensure_active_model();
     Ok(result)
+}
+
+// ── Dictation whisper.cpp (shared Turbo Q5 model) ───────────────────────────
+
+pub fn dictation_whisper_model_installed() -> bool {
+    selected_whisper_model_path().is_some()
+}
+
+pub fn dictation_whisper_runtime_ready() -> bool {
+    resolve_whisper_cpp_config().is_ok()
+}
+
+pub fn silero_vad_model_installed() -> bool {
+    resolve_silero_vad_model_path().is_some()
+}
+
+#[derive(Debug, Serialize)]
+pub struct SileroVadModelStatus {
+    pub name: String,
+    pub installed: bool,
+    pub size_bytes: u64,
+    pub path: String,
+}
+
+#[tauri::command]
+pub fn silero_vad_model_status() -> SileroVadModelStatus {
+    let path = resolve_silero_vad_model_path();
+    let installed = path.is_some();
+    let size_bytes = path
+        .as_ref()
+        .and_then(|p| fs::metadata(p).ok())
+        .map(|m| m.len())
+        .unwrap_or(0);
+    SileroVadModelStatus {
+        name: SILERO_VAD_MODEL_NAME.to_string(),
+        installed,
+        size_bytes,
+        path: path.map(|p| p.display().to_string()).unwrap_or_default(),
+    }
+}
+
+/// Download the Silero VAD model whisper.cpp uses for `--vad` speech filtering.
+#[tauri::command]
+pub async fn meeting_download_silero_vad_model(app: AppHandle) -> Result<(), String> {
+    let name = SILERO_VAD_MODEL_NAME.to_string();
+    let dir = meeting_whisper_models_dir();
+    let dest = dir.join(&name);
+    if is_usable_silero_vad_model(&dest) {
+        return Ok(());
+    }
+    {
+        let mut inflight = model_downloads_inflight()
+            .lock()
+            .map_err(|_| "download registry poisoned".to_string())?;
+        if !inflight.insert(name.clone()) {
+            return Err("Silero VAD is already downloading".to_string());
+        }
+    }
+    if let Ok(mut cancels) = model_download_cancels().lock() {
+        cancels.remove(&name);
+    }
+
+    let app_dl = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        download_whisper_model_blocking(
+            &app_dl,
+            SILERO_VAD_MODEL_NAME,
+            SILERO_VAD_MODEL_URL,
+            SILERO_VAD_SIZE_HINT,
+            &dir,
+            &dest,
+        )
+    })
+    .await
+    .map_err(|e| format!("download task failed: {e}"))?;
+
+    if let Ok(mut inflight) = model_downloads_inflight().lock() {
+        inflight.remove(SILERO_VAD_MODEL_NAME);
+    }
+    if let Ok(mut cancels) = model_download_cancels().lock() {
+        cancels.remove(SILERO_VAD_MODEL_NAME);
+    }
+    result
+}
+
+#[tauri::command]
+pub fn meeting_delete_silero_vad_model() -> Result<(), String> {
+    let path = meeting_whisper_models_dir().join(SILERO_VAD_MODEL_NAME);
+    if !path.is_file() {
+        return Err("Silero VAD model is not installed".to_string());
+    }
+    fs::remove_file(&path).map_err(|e| format!("couldn't delete Silero VAD model: {e}"))?;
+    Ok(())
+}
+
+fn is_usable_silero_vad_model(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|m| m.is_file() && m.len() >= MIN_SILERO_VAD_BYTES)
+        .unwrap_or(false)
+}
+
+/// Resolve Silero VAD model for whisper.cpp (env, data dir, bundle).
+pub fn resolve_silero_vad_model_path() -> Option<PathBuf> {
+    env_path("AIRNOTE_MEETING_VAD_MODEL")
+        .or_else(|| env_path("AIRNOTE_WHISPER_VAD_MODEL"))
+        .filter(|path| is_usable_silero_vad_model(path))
+        .or_else(|| {
+            selected_whisper_model_path()
+                .and_then(|model| model.parent().and_then(find_silero_vad_model))
+        })
+        .or_else(|| find_silero_vad_model(&meeting_whisper_models_dir()))
+        .or_else(|| {
+            bundled_models_dirs()
+                .iter()
+                .find_map(|d| find_silero_vad_model(d))
+        })
+}
+
+fn dictation_whisper_language(pref_language: &str) -> String {
+    match pref_language.trim().to_ascii_lowercase().as_str() {
+        "en" | "english" => "en".to_string(),
+        "hi" | "hindi" | "hinglish" | "" => DEFAULT_WHISPER_LANGUAGE.to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn dictation_whisper_timeout(duration_ms: u64) -> Duration {
+    let secs = (duration_ms / 1000).saturating_mul(8).max(30).min(300);
+    Duration::from_secs(secs)
+}
+
+fn dictation_whisper_live_timeout(duration_ms: u64) -> Duration {
+    let secs = (duration_ms / 1000).saturating_mul(4).max(15).min(120);
+    Duration::from_secs(secs)
+}
+
+fn transcribe_dictation_summary(
+    summary: &MicCaptureSummary,
+    pref_language: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    if summary.samples_written == 0 {
+        return Err("recording audio is empty".to_string());
+    }
+    let mut config = resolve_whisper_cpp_config()?;
+    config.language = dictation_whisper_language(pref_language);
+    let paths = transcript_paths_for_wav(&summary.path);
+    let done = transcribe_with_whisper_cpp_for(
+        summary,
+        &paths,
+        &config,
+        MeetingAudioTrack::Mic,
+        timeout,
+        None,
+    )?;
+    Ok(done.transcript)
+}
+
+/// Live/batch dictation STT from 16 kHz mono PCM (used by the live whisper bridge).
+pub fn transcribe_dictation_pcm_i16(
+    samples: &[i16],
+    pref_language: &str,
+) -> Result<String, String> {
+    if samples.is_empty() {
+        return Err("recording audio is empty".to_string());
+    }
+    let work_dir =
+        std::env::temp_dir().join(format!("airnote-dictation-live-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&work_dir)
+        .map_err(|e| format!("failed to create dictation temp dir: {e}"))?;
+    let wav_path = work_dir.join("dictation.wav");
+    let cleanup = || {
+        let _ = fs::remove_dir_all(&work_dir);
+    };
+    let summary = match write_pcm_window_wav(&wav_path, samples.to_vec()) {
+        Ok(summary) => summary,
+        Err(e) => {
+            cleanup();
+            return Err(e);
+        }
+    };
+    if !has_transcribable_audio(&summary) {
+        cleanup();
+        return Err("recording audio is empty".to_string());
+    }
+    let timeout = dictation_whisper_live_timeout(summary.duration_ms);
+    let result = transcribe_dictation_summary(&summary, pref_language, timeout);
+    cleanup();
+    result
+}
+
+/// Offline dictation STT via whisper.cpp using the shared Turbo Q5 model.
+pub fn transcribe_dictation_wav_bytes(
+    wav_bytes: &[u8],
+    pref_language: &str,
+) -> Result<String, String> {
+    if wav_bytes.len() <= 44 {
+        return Err("recording audio is empty".to_string());
+    }
+    let work_dir = std::env::temp_dir().join(format!("airnote-dictation-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&work_dir)
+        .map_err(|e| format!("failed to create dictation temp dir: {e}"))?;
+    let wav_path = work_dir.join("dictation.wav");
+    let cleanup = || {
+        let _ = fs::remove_dir_all(&work_dir);
+    };
+    fs::write(&wav_path, wav_bytes).map_err(|e| format!("failed to write dictation wav: {e}"))?;
+    if let Err(e) = repair_wav_header_sizes(&wav_path) {
+        cleanup();
+        return Err(format!("failed to repair dictation WAV header: {e}"));
+    }
+    let summary = match capture_summary_from_wav(&wav_path) {
+        Some(summary) => summary,
+        None => {
+            cleanup();
+            return Err("failed to read dictation WAV".to_string());
+        }
+    };
+    let timeout = dictation_whisper_timeout(summary.duration_ms);
+    let result = transcribe_dictation_summary(&summary, pref_language, timeout);
+    cleanup();
+    result
 }
 
 fn cleanup_legacy_whisper_models_in_dir(dir: &Path) -> Result<WhisperModelCleanupResult, String> {
@@ -12781,18 +13021,7 @@ fn resolve_whisper_cpp_config() -> Result<WhisperCppConfig, String> {
 
     // VAD on by default; model from env or found beside the whisper model.
     let vad_model = if env_bool("AIRNOTE_MEETING_VAD", true) {
-        env_path("AIRNOTE_MEETING_VAD_MODEL")
-            .or_else(|| model.parent().and_then(find_silero_vad_model))
-            // The whisper model may resolve to the dev repo (tools/stt-bench),
-            // whose folder has no Silero model, so also check the app's data
-            // models dir where the VAD model is downloaded.
-            .or_else(|| find_silero_vad_model(&said_core::paths::data_dir().join("models")))
-            // Bundled with the shipped .app (Contents/MacOS or Contents/Resources/models).
-            .or_else(|| {
-                bundled_models_dirs()
-                    .iter()
-                    .find_map(|d| find_silero_vad_model(d))
-            })
+        resolve_silero_vad_model_path()
     } else {
         None
     };
@@ -12910,7 +13139,8 @@ fn find_silero_vad_model(dir: &Path) -> Option<PathBuf> {
         let name = name.to_string_lossy();
         if name.starts_with("ggml-silero") && name.ends_with(".bin") {
             let path = entry.path();
-            if best.as_ref().map(|b| path > *b).unwrap_or(true) {
+            if is_usable_silero_vad_model(&path) && best.as_ref().map(|b| path > *b).unwrap_or(true)
+            {
                 best = Some(path);
             }
         }

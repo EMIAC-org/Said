@@ -119,6 +119,9 @@ pub async fn confirm_term(
     Json(body): Json<ConfirmBody>,
 ) -> (StatusCode, Json<ConfirmResponse>) {
     let user_id = state.default_user_id.as_str();
+    let learning_enabled = get_prefs(&state.pool, user_id)
+        .map(|p| p.learning_enabled)
+        .unwrap_or(true);
 
     if body.action == "learn" {
         let server_confirm = ConfirmBatchBody {
@@ -137,6 +140,20 @@ pub async fn confirm_term(
                 StatusCode::OK,
                 Json(ConfirmResponse {
                     confirmed: server_response.learned_count > 0,
+                    term: body.term,
+                }),
+            );
+        }
+
+        if crate::legacy_learning::audit_only_legacy_mutations() {
+            info!(
+                "[confirm] local learn blocked — legacy learning frozen for {:?}",
+                body.term
+            );
+            return (
+                StatusCode::OK,
+                Json(ConfirmResponse {
+                    confirmed: false,
                     term: body.term,
                 }),
             );
@@ -337,6 +354,13 @@ pub async fn block_correction(
     Json(body): Json<BlockBody>,
 ) -> (StatusCode, Json<BlockResponse>) {
     let user_id = state.default_user_id.as_str();
+    let learning_enabled = get_prefs(&state.pool, user_id)
+        .map(|p| p.learning_enabled)
+        .unwrap_or(true);
+    if crate::legacy_learning::audit_only_legacy_mutations() {
+        info!("[confirm] block_correction skipped — legacy learning frozen");
+        return (StatusCode::OK, Json(BlockResponse { blocked: false }));
+    }
     let variant_norm = tier2_edit_policy::normalize_token(&body.variant);
     let replacement_norm = tier2_edit_policy::normalize_token(&body.wrong_replacement);
 
@@ -529,6 +553,19 @@ pub async fn confirm_batch(
 
     let user_id = state.default_user_id.as_str();
     let prefs = get_prefs(&state.pool, user_id);
+    let learning_enabled = prefs.as_ref().map(|p| p.learning_enabled).unwrap_or(true);
+    if crate::legacy_learning::audit_only_legacy_mutations() {
+        info!("[confirm-batch] local learn blocked — legacy learning frozen");
+        return (
+            StatusCode::OK,
+            Json(ConfirmBatchResponse {
+                blocked_count: body.items.len(),
+                learned_count: 0,
+                learned_terms: vec![],
+                server_owned: false,
+            }),
+        );
+    }
     let language = prefs
         .as_ref()
         .map(|p| p.output_language.clone())

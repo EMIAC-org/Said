@@ -5,6 +5,13 @@
 set -e
 cd "$(dirname "$0")"
 
+if [ -f ".env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ".env"
+  set +a
+fi
+
 # Codex/Electron-launched shells can inherit their host app's CoreFoundation
 # bundle id. Force AirNote's identity for any helper process we spawn here.
 export __CFBundleIdentifier=com.emiac.airnote.desktop

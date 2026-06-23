@@ -173,27 +173,20 @@ pub async fn sync_settings(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn normalize_runtime_selected_model(selected_model: String) -> String {
-    let model = selected_model.trim().to_ascii_lowercase();
-    if model == "smart" || model.contains("maverick") || model.contains("scout") {
-        "smart".to_string()
-    } else if model == "deepseek"
-        || model == "fast"
-        || model.contains("8b")
-        || model.contains("instant")
-    {
-        "fast".to_string()
-    } else {
-        "fast".to_string()
-    }
+    said_core::polish::model::validate_polish_model_key(&selected_model)
+}
+
+fn validate_runtime_selected_model(selected_model: &str) -> bool {
+    said_core::polish::model::catalog_spec(selected_model).is_some()
 }
 
 fn validate_patch(req: &PatchSettingsRequest) -> Result<(), (StatusCode, Json<Value>)> {
     if let Some(m) = &req.selected_model {
         let m = normalize_runtime_selected_model(m.clone());
-        if !["fast", "smart"].contains(&m.as_str()) {
+        if !validate_runtime_selected_model(&m) {
             return Err(json_err(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                "selected_model must be 'fast' or 'smart'",
+                "selected_model must be a known polish catalog key",
             ));
         }
     }
@@ -461,18 +454,31 @@ mod tests {
     use super::normalize_runtime_selected_model;
 
     #[test]
-    fn normalizes_smart_model_aliases_to_smart() {
-        assert_eq!(normalize_runtime_selected_model("smart".into()), "smart");
-        assert_eq!(normalize_runtime_selected_model("maverick".into()), "smart");
+    fn normalizes_smart_model_aliases_to_cerebras_gpt_oss() {
+        assert_eq!(normalize_runtime_selected_model("smart".into()), "cerebras-gpt-oss");
+        assert_eq!(normalize_runtime_selected_model("maverick".into()), "cerebras-gpt-oss");
         assert_eq!(
             normalize_runtime_selected_model(
                 "meta-llama/llama-4-maverick-17b-128e-instruct".into()
             ),
-            "smart"
+            "cerebras-gpt-oss"
         );
         assert_eq!(
             normalize_runtime_selected_model("meta-llama/llama-4-scout-17b-16e-instruct".into()),
-            "smart"
+            "groq-scout"
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_beta_catalog_keys() {
+        assert_eq!(normalize_runtime_selected_model("phi4".into()), "phi4");
+        assert_eq!(
+            normalize_runtime_selected_model("groq-70b".into()),
+            "groq-70b"
+        );
+        assert_eq!(
+            normalize_runtime_selected_model("cerebras-gpt-oss".into()),
+            "cerebras-gpt-oss"
         );
     }
 

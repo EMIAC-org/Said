@@ -8,6 +8,7 @@
 //! Everything here is pure (no rusqlite, no sqlx, no AppState) so the
 //! workspace-excluded control-plane crate can depend on it freely.
 
+pub mod model;
 pub mod prompt;
 pub mod script;
 pub mod types;

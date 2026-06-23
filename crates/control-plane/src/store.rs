@@ -31,6 +31,15 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/017_telemetry.sql"),
     include_str!("../migrations/018_telemetry_stt.sql"),
     include_str!("../migrations/019_memory_hygiene.sql"),
+    include_str!("../migrations/020_polish_model_deepseek.sql"),
+    include_str!("../migrations/021_remove_deepseek_polish_model.sql"),
+    include_str!("../migrations/022_runtime_beta_providers.sql"),
+    include_str!("../migrations/023_runtime_user_profiles.sql"),
+    include_str!("../migrations/024_profile_learn_jobs.sql"),
+    include_str!("../migrations/025_default_gpt_oss_20b.sql"),
+    include_str!("../migrations/026_default_cerebras_gpt_oss_120b.sql"),
+    include_str!("../migrations/027_lock_cerebras_polish_defaults.sql"),
+    include_str!("../migrations/028_profile_hitl_review.sql"),
 ];
 
 /// Connect to Postgres and apply the schema.
@@ -45,10 +54,13 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
     sqlx::query("SELECT pg_advisory_lock(hashtext('said_control_plane_migrations'))")
         .execute(&mut *conn)
         .await?;
-    // Run each migration file sequentially; split on statement boundaries
+    // Run each migration file sequentially; split on statement boundaries.
+    // Strip full-line comments first because this lightweight runner splits on
+    // semicolons and comments can contain prose punctuation.
     let migration_result = async {
         for migration in MIGRATIONS {
-            for stmt in migration.split(';') {
+            let sql = strip_full_line_sql_comments(migration);
+            for stmt in sql.split(';') {
                 let trimmed = stmt.trim();
                 if !trimmed.is_empty() {
                     sqlx::query(trimmed).execute(&mut *conn).await?;
@@ -67,4 +79,20 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
     info!("[store] schema OK");
 
     Ok(pool)
+}
+
+fn strip_full_line_sql_comments(sql: &str) -> String {
+    sql.lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn strips_full_line_comment_semicolons_before_split() {
+        let sql = super::strip_full_line_sql_comments("-- comment; prose\nSELECT 1;");
+        assert_eq!(sql, "SELECT 1;");
+    }
 }

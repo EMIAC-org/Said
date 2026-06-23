@@ -32,9 +32,9 @@ const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 /// Groq gives 4K RPM + sub-200ms latency — production-grade for voice polish.
 pub const GROQ_MODEL_DEFAULT: &str = "llama-3.1-8b-instant";
 /// Fast model — same as default on Groq (8B is already the fastest).
-pub const GROQ_MODEL_FAST: &str = "llama-3.1-8b-instant";
-/// Smart model — Llama 4 Scout 17B on Groq. Better quality for normal dictation.
-pub const GROQ_MODEL_SMART: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
+pub const GROQ_MODEL_FAST: &str = said_core::polish::model::GROQ_POLISH_MODEL_FAST;
+/// Smart model — resolved at runtime via [`said_core::polish::model`].
+pub const GROQ_MODEL_SMART: &str = said_core::polish::model::GROQ_POLISH_MODEL_SMART_DEFAULT;
 /// High quality fallback for Option+N selected-text transforms.
 pub const GROQ_MODEL_70B: &str = "llama-3.3-70b-versatile";
 
@@ -151,13 +151,9 @@ pub async fn stream_polish(
     // happens when the model slips out of cleaner-mode into responder-mode.
     // ~4 chars/token; user_message includes the transcript + reminder + fence.
     let estimated_input_tokens = user_message.len() / 4;
-    let max_tokens = (estimated_input_tokens * 2 + 256).min(8192) as u32;
-
-    // Stop sequences serve as a server-side defense against fence echo:
-    // if the model ever starts to repeat the transcript fence (a known
-    // leak shape), generation stops before tokens reach the client filter.
-    // Capped at 4 (Groq API limit).
-    let body = json!({
+    // GPT OSS is a reasoning model — reserve headroom so content isn't all reasoning tokens.
+    let mut max_tokens = (estimated_input_tokens * 2 + 256).min(8192) as u32;
+    let mut body = json!({
         "model":       model,
         "stream":      true,
         "temperature": 0.0,
@@ -174,6 +170,11 @@ pub async fn stream_polish(
             { "role": "user",   "content": user_message  },
         ]
     });
+    if model.contains("gpt-oss") {
+        max_tokens = max_tokens.max(4096);
+        body["max_tokens"] = json!(max_tokens);
+        body["reasoning_effort"] = json!("low");
+    }
 
     info!("[groq] POST {GROQ_ENDPOINT} model={model}");
 

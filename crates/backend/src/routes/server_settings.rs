@@ -170,7 +170,7 @@ fn prefs_update_from_server_settings(body: &Value) -> Option<PrefsUpdate> {
     let mut changed = false;
 
     if let Some(v) = body.get("selected_model").and_then(Value::as_str) {
-        update.selected_model = Some(crate::store::prefs::normalize_selected_model(v));
+        update.selected_model = Some(crate::store::prefs::validate_polish_model_key(v));
         changed = true;
     }
     if let Some(v) = body.get("output_language").and_then(Value::as_str) {
@@ -306,7 +306,7 @@ mod tests {
         });
 
         let update = prefs_update_from_server_settings(&body).expect("update");
-        assert_eq!(update.selected_model.as_deref(), Some("smart"));
+        assert_eq!(update.selected_model.as_deref(), Some("cerebras-gpt-oss"));
         assert_eq!(update.output_language.as_deref(), Some("english"));
         assert_eq!(update.tone_preset.as_deref(), Some("professional"));
         assert_eq!(update.custom_prompt, Some(Some("keep it short".into())));

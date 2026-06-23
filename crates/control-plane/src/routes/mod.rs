@@ -15,6 +15,7 @@ pub mod openai;
 pub mod orgs;
 pub mod runtime;
 pub mod runtime_history;
+pub mod runtime_profile;
 pub mod runtime_settings;
 pub mod telemetry;
 pub mod vocab;

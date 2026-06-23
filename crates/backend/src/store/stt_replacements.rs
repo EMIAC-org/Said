@@ -202,6 +202,14 @@ fn upsert_inner(
     bump: f64,
     language: Option<&str>,
 ) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "upsert",
+            "stt_replacements::upsert_inner",
+        );
+        return false;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return false,
@@ -487,6 +495,14 @@ pub fn demote(
     correct_form: &str,
     penalty: f64,
 ) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "demote",
+            "stt_replacements::demote",
+        );
+        return false;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return false,
@@ -565,6 +581,14 @@ pub fn delete_alias_pair(
     transcript_form: &str,
     correct_form: &str,
 ) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "delete_alias_pair",
+            "stt_replacements::delete_alias_pair",
+        );
+        return 0;
+    }
     let Ok(conn) = pool.get() else {
         return 0;
     };
@@ -717,6 +741,14 @@ pub fn update_export_metadata(
     review_reason: Option<&str>,
     language: &str,
 ) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "update_export_metadata",
+            "stt_replacements::update_export_metadata",
+        );
+        return false;
+    }
     let Ok(conn) = pool.get() else {
         return false;
     };
@@ -751,6 +783,14 @@ pub fn update_export_metadata(
 /// during the classify flow — no need to wait for the 15-min background
 /// review.
 pub fn approve_aliases_for_term(pool: &DbPool, user_id: &str, correct_form: &str) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "approve_aliases_for_term",
+            "stt_replacements::approve_aliases_for_term",
+        );
+        return 0;
+    }
     let Ok(conn) = pool.get() else {
         return 0;
     };
@@ -773,6 +813,14 @@ pub fn note_negative_signal(
     correct_form: &str,
     penalty: i64,
 ) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "note_negative_signal",
+            "stt_replacements::note_negative_signal",
+        );
+        return 0;
+    }
     let Ok(conn) = pool.get() else {
         return 0;
     };
@@ -1176,6 +1224,14 @@ pub fn generate_proactive_distortions(
     observed_transcript: &str,
     language: &str,
 ) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "generate_proactive_distortions",
+            "stt_replacements::generate_proactive_distortions",
+        );
+        return 0;
+    }
     use std::collections::HashSet;
 
     let base = correct_form.trim().to_ascii_lowercase();

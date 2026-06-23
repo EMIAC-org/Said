@@ -107,6 +107,7 @@ pub fn render_voice_system_prompt_template(
         rag_examples,
         &to_core_corrections(corrections),
         vocabulary_entries,
+        None,
         is_common,
     )
 }

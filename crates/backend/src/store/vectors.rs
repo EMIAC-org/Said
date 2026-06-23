@@ -65,6 +65,14 @@ pub struct LearningMeta {
 
 /// Insert (or replace) a preference vector for an edit event.
 pub fn upsert_vector(pool: &DbPool, user_id: &str, edit_event_id: &str, embedding: &[f32]) {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "preference_vectors",
+            "upsert_vector",
+            "vectors::upsert_vector",
+        );
+        return;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {

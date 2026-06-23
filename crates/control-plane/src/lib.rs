@@ -5,21 +5,27 @@
 
 pub mod ai_worker;
 pub mod auth;
+pub mod cerebras;
 pub mod codex_client;
+pub mod deepinfra;
 pub mod format_recover;
 pub mod lark_client;
 pub mod lark_sync;
+pub mod legacy_personal_memory;
 pub mod meeting_hub;
 pub mod memory_hygiene;
 pub mod memory_hygiene_worker;
 pub mod notification_hub;
 pub mod notification_worker;
 pub mod number_format;
+pub mod openai_compat_polish;
 pub mod org_quota;
+pub mod profile;
 pub mod routes;
 pub mod store;
 pub mod stt;
 pub mod tenant;
+pub mod ttl_cache;
 pub mod vocab_worker;
 pub mod voice_polish_standalone;
 
@@ -76,6 +82,10 @@ pub struct AppState {
     /// OpenAI audio transcription model for message-polish audio.
     pub openai_transcribe_model: String,
     pub groq_api_key: String,
+    /// Cerebras API key for server-runtime beta polish (CEREBRAS_API_KEY).
+    pub cerebras_api_key: String,
+    /// DeepInfra API key for server-runtime beta polish (DEEPINFRA_API_KEY).
+    pub deepinfra_api_key: String,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
     /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
     pub divo_base_url: String,
@@ -89,6 +99,33 @@ pub struct AppState {
     pub deepseek_api_key: String,
     pub deepseek_base_url: String,
     pub deepseek_message_polish_model: String,
+    /// In-memory per-account caches that collapse the per-dictation setup
+    /// round-trips (active-org/role resolution and runtime learning memory).
+    /// ~200 accounts → a plain map with a short TTL + invalidate-on-write is
+    /// plenty; no Redis. See `ttl_cache`.
+    pub tenant_cache: Arc<ttl_cache::TtlCache<uuid::Uuid, tenant::TenantContext>>,
+    pub runtime_memory_cache: Arc<ttl_cache::TtlCache<uuid::Uuid, routes::runtime::RuntimeMemory>>,
+    pub profile_cache:
+        Arc<ttl_cache::TtlCache<profile::ProfileCacheKey, profile::CachedRuntimeProfile>>,
+}
+
+/// TTL for the per-account setup caches. Short enough that org/role and learned
+/// vocab changes self-heal within seconds even without explicit invalidation;
+/// long enough that a burst of dictations all hit warm.
+pub const SETUP_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// Construct the in-memory setup caches (one place so every `AppState` builder
+/// stays in sync).
+pub fn new_setup_caches() -> (
+    Arc<ttl_cache::TtlCache<uuid::Uuid, tenant::TenantContext>>,
+    Arc<ttl_cache::TtlCache<uuid::Uuid, routes::runtime::RuntimeMemory>>,
+    Arc<ttl_cache::TtlCache<profile::ProfileCacheKey, profile::CachedRuntimeProfile>>,
+) {
+    (
+        Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+        Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+        Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+    )
 }
 
 // ── Router constructor ───────────────────────────────────────────────────────
@@ -227,6 +264,30 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/runtime/settings/sync",
             post(routes::runtime_settings::sync_settings),
+        )
+        .route(
+            "/v1/runtime/profile",
+            get(routes::runtime_profile::get_profile).patch(routes::runtime_profile::patch_profile),
+        )
+        .route(
+            "/v1/runtime/profile/memory",
+            get(routes::runtime_profile::get_profile_memory),
+        )
+        .route(
+            "/v1/runtime/profile/rebuild",
+            post(routes::runtime_profile::rebuild_profile),
+        )
+        .route(
+            "/v1/runtime/profile/learn-from-edit",
+            post(routes::runtime_profile::learn_from_edit),
+        )
+        .route(
+            "/v1/runtime/profile/proposals/:id/approve",
+            post(routes::runtime_profile::approve_profile_proposal),
+        )
+        .route(
+            "/v1/runtime/profile/proposals/:id/dismiss",
+            post(routes::runtime_profile::dismiss_profile_proposal),
         )
         .route("/v1/license/check", get(routes::license::check))
         .route("/v1/metering/report", post(routes::metering::report))
