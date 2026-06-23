@@ -158,7 +158,7 @@ pub fn build_system_prompt_with_vocab(
 
 pub const VOICE_PROMPT_KIND: &str = "voice_system";
 pub const VOICE_PROMPT_TITLE: &str = "Voice cleaning system prompt";
-pub const VOICE_PROMPT_BASE_VERSION: &str = "2026-06-20.light-touch-v3";
+pub const VOICE_PROMPT_BASE_VERSION: &str = "2026-06-07.literal-fidelity-v2";
 
 /// Holds format preferences learned from user edits (e.g. "time: 8:00 AM").
 /// These are surfaced in the polish prompt so the LLM can apply them.
@@ -184,26 +184,36 @@ struct VoicePromptBlocks {
 /// through the `{{...}}` placeholders so the user can edit the stable prompt
 /// text in Settings without losing language/vocab/corrections injection.
 pub fn default_voice_prompt_template() -> String {
-    // Light-touch design (2026-06-20). Replaces the old 12-rule numbered list,
-    // which—combined with greedy decoding—drove Llama-4-Scout into repetition
-    // meltdowns on long Hinglish input. Research-backed shape: short prose (no
-    // numbered rule-list), role + minimal-edit + pass-through default, phonetic
-    // glossary use, hard no-translate, single-output reminder last. Sources:
-    // arXiv:2405.15216, 2506.13148 (minimal-edit/pass-through), 2310.13013
-    // (code-switch no-translate), and the Groq anti-degeneration guidance
-    // (short prompt + temperature 0.2). All injection placeholders are kept so
-    // language rule, vocab glossary, corrections, RAG, and account tone/persona
-    // still flow in unchanged.
-    r#"You are an expert at cleaning up Hinglish (Hindi-English) voice dictation. Speech-to-text often mishears names and verb endings, so you fix those — but you never rewrite what the speaker already said correctly, you never change their tone, and you never translate between Hindi and English. Keep the speaker's exact Hindi-English mix, their casual words (bhai, yaar, toh), and every digit and number as spoken. If a sentence already makes sense, leave it unchanged. This is light cleanup, not "Polish My Message" mode: do not make the text formal, do not summarize, and do not add or drop ideas.
+    r#"You are a literal dictation normalizer, not a writer.
+Clean this Hinglish voice transcript with minimal copy-editing only. Preserve the speaker's words, language mix, order, tone, and intent. Output cleaned text only.
 
 {{language_rule}}
 
-{{vocab_block}}{{corrections_block}}{{format_prefs_block}}{{prefs_block}}Make the smallest change that fixes a clear mishearing or a broken subject/verb agreement — for example "tum ... de raha hoon" should read "tum ... de rahe ho". When a word clearly sounds like one of the known terms above and fits the context, replace it with that exact term; otherwise leave the word alone. Do not translate ordinary spoken words: keep "hello", "time", and "kaam" exactly as the speaker said them.
+{{vocab_block}}{{corrections_block}}{{format_prefs_block}}{{prefs_block}}
+
+RULES:
+1. Treat the transcript as ground truth. If a word or phrase is understandable, keep it even when the grammar is rough.
+2. Do not rewrite style, improve tone, summarize, add missing context, or make the text professional. That is only for Polish My Message mode.
+3. Do not translate or synonym-replace normal spoken words. Preserve lexical choices: "hello" stays "hello", not "Namaste"; "time" stays "time", not "samay"; "kaam" stays "kaam", not "work"; "bhai" stays "bhai".
+4. Fix only obvious mechanical dictation artifacts: light punctuation, basic casing, sentence breaks, repeated identical stutters, and clear filler words.
+5. Remove fillers only when they add no meaning: um, uh, aaa, hmm, like (filler), basically, you know, I mean.
+6. Remove exact stutters only: "I I I want" = "I want", "the the" = "the". Keep non-identical retries or uncertain alternatives.
+7. Use VOCAB only for exact or near STT garbles with strong local evidence. Do not guess a company, brand, name, or technical term from context alone.
+8. Keep real English words that STT got right: hello, hi, hey, time, work, mac, agent, cursor, docker, cloud, react, slack, notion, stripe, sentry, cache, queue.
+9. Keep Hindi/Hinglish words as spoken: kaafi, maine, main, mein, abhi, dekho, nahi, haan, theek, accha, badhiya, bahut, yaar, bhai, kaam, samay.
+10. Preserve digits, numbers, currency, symbols exactly as given.
+11. Keep polite words: please, kindly, thanks, zara, yaar, bhi, toh, thoda, ek baar.
+12. Keep Hindi repetitions: "baar baar", "thoda thoda", "alag alag", "jaldi jaldi".
+
+BAD SUBSTITUTIONS:
+- "hello bhai kaise ho" must not become "Namaste bhai kaise ho".
+- "itna time kyun lag raha hai" must not become "itna samay kyun lag raha hai".
+- "kaam ho gaya" must not become "work ho gaya".
 
 {{persona}}
 {{tone}}
 
-Output the cleaned text once, in the same Hindi-English mix the speaker used. No preamble, no explanation, no quotes, and never repeat a word or line."#
+Output only the cleaned text. One time. No preamble, no explanation, no quotes."#
         .to_string()
 }
 
@@ -232,14 +242,7 @@ fn voice_prompt_blocks(
         if entries.is_empty() {
             String::new()
         } else {
-            // Phonetic-matching framing: a weak model only reliably corrects a
-            // misheard proper noun when told to match by *sound* and to do so
-            // conditionally (arXiv:2505.17410, 2506.07510). When an entry
-            // carries STT aliases, format_vocab_entry renders them as the
-            // "sounds-like" hints after the arrow.
-            format!(
-                "Known correct terms — replace a transcript word with one of these ONLY if it clearly sounds like it AND fits the context; otherwise leave the word alone:\n{entries}\n\n"
-            )
+            format!("VOCAB:\n{entries}\n\n")
         }
     };
 
@@ -793,7 +796,7 @@ mod tests {
         ];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
         assert!(
-            prompt.contains("Known correct terms"),
+            prompt.contains("VOCAB:"),
             "vocab glossary block should be emitted"
         );
         assert!(prompt.contains("n8n"));
@@ -824,7 +827,9 @@ mod tests {
 
         let prompt = build_system_prompt_with_vocab(&p, &[], &[], &[], no_common);
         assert!(
-            prompt.contains("casual words (bhai, yaar, toh)"),
+            prompt.contains(
+                "Keep polite words: please, kindly, thanks, zara, yaar, bhi, toh, thoda, ek baar"
+            ),
             "voice prompt must protect the speaker's casual/politeness markers"
         );
     }
@@ -835,12 +840,16 @@ mod tests {
         let prompt = build_system_prompt_with_vocab(&p, &[], &[], &[], no_common);
         let user = build_user_message("meac ke office mein maine naya mac liya hai", "hinglish");
 
-        assert!(prompt.contains("expert at cleaning up Hinglish"));
-        assert!(prompt.contains("If a sentence already makes sense, leave it unchanged"));
-        assert!(prompt.contains("never rewrite what the speaker already said correctly"));
+        assert!(prompt.contains("literal dictation normalizer"));
+        assert!(prompt.contains("minimal copy-editing only"));
+        assert!(prompt.contains("Treat the transcript as ground truth"));
         assert!(prompt.contains("Polish My Message"));
-        assert!(prompt.contains("leave the word alone"));
-        assert!(prompt.contains("Make the smallest change"));
+        assert!(prompt.contains("Use VOCAB only for exact or near STT garbles"));
+        assert!(
+            prompt.contains(
+                "Do not guess a company, brand, name, or technical term from context alone"
+            )
+        );
         assert!(!prompt.contains("Adjacent retries: keep only the clearer version"));
 
         assert!(
@@ -858,9 +867,10 @@ mod tests {
         let p = prefs();
         let prompt = build_system_prompt_with_vocab(&p, &[], &[], &[], no_common);
 
-        assert!(prompt.contains("never translate between Hindi and English"));
-        assert!(prompt.contains("Do not translate ordinary spoken words"));
-        assert!(prompt.contains("keep \"hello\", \"time\", and \"kaam\""));
+        assert!(prompt.contains("Do not translate or synonym-replace normal spoken words"));
+        assert!(prompt.contains("\"hello\" stays \"hello\""));
+        assert!(prompt.contains("\"time\" stays \"time\""));
+        assert!(prompt.contains("\"kaam\" stays \"kaam\""));
     }
 
     #[test]
@@ -901,7 +911,7 @@ mod tests {
             stt_aliases: vec![],
         }];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
-        assert!(prompt.contains("Known correct terms"));
+        assert!(prompt.contains("VOCAB:"));
         assert!(prompt.contains("MACOBS (acronym)"));
     }
 
@@ -909,8 +919,8 @@ mod tests {
     fn candidate_terms_are_excluded_from_prompt() {
         let p = prefs();
         let entries = vec![VocabEntry {
-            term: "n8n".into(),
-            context: Some("I run n8n for automations".into()),
+            term: "CandidateOnlyXYZ".into(),
+            context: Some("I run CandidateOnlyXYZ for automations".into()),
             resolution: VocabResolution::Candidate,
             term_type: Some("code_identifier".into()),
             meaning: Some("Workflow automation tool.".into()),
@@ -918,7 +928,7 @@ mod tests {
         }];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
         assert!(
-            !prompt.contains("n8n"),
+            !prompt.contains("CandidateOnlyXYZ"),
             "candidate terms must not appear in the prompt"
         );
         assert!(!prompt.contains("PERSONAL VOCABULARY"));
@@ -948,10 +958,7 @@ mod tests {
             "over-specific dot-com arrow rule must not be present"
         );
 
-        assert!(
-            prompt.contains("cleaning up Hinglish"),
-            "voice prompt directive must be present"
-        );
+        assert!(prompt.contains("literal dictation normalizer"));
     }
 
     #[test]
@@ -967,12 +974,12 @@ mod tests {
         let prompt = build_system_prompt_with_vocab(&p, &[], &[], &[], no_common);
 
         assert!(
-            prompt.contains("Output the cleaned text once"),
+            prompt.contains("Output only the cleaned text. One time."),
             "output-only rule must be present"
         );
         assert!(
-            prompt.contains("never repeat a word or line"),
-            "single-output rule must explicitly forbid repeated output"
+            prompt.contains("No preamble, no explanation, no quotes"),
+            "single-output rule must explicitly forbid commentary"
         );
     }
 
@@ -987,16 +994,18 @@ mod tests {
         let prompt = build_system_prompt_with_vocab(&p, &[], &[], &[], no_common);
 
         assert!(
-            prompt.contains("Make the smallest change"),
+            prompt.contains("minimal copy-editing only"),
             "voice prompt must keep the minimal-edit instruction"
         );
         assert!(
-            prompt.contains("leave the word alone"),
+            prompt.contains(
+                "If a word or phrase is understandable, keep it even when the grammar is rough"
+            ),
             "voice prompt must keep the conditional/pass-through default"
         );
         assert!(
-            prompt.contains("never repeat a word or line"),
-            "voice prompt must keep the anti-repetition (meltdown) guard"
+            prompt.contains("Remove exact stutters only"),
+            "voice prompt must keep the exact-stutter-only rule"
         );
     }
 

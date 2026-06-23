@@ -104,7 +104,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
   const selectProvider = async (next: "deepgram" | "swift_local") => {
     if (next === provider) return;
     if (next === "swift_local" && !modelInstalled && !deleting) {
-      setError("Download the Swift model below, then select Local.");
+      setError("Download the Beta model below, then enable Beta Mode.");
       return;
     }
     setBusy(true);
@@ -210,7 +210,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
       <div className="px-5 py-4 border-b" style={{ borderColor: "hsl(var(--surface-3))" }}>
         <p className="text-[13px] font-medium text-foreground">Speech recognition</p>
         <p className="text-[12px] text-muted-foreground mt-0.5">
-          Choose cloud Deepgram or local Swift Hinglish STT for Caps Lock dictation.
+          Choose cloud Deepgram (default) or the local Beta model for Caps Lock dictation.
         </p>
       </div>
 
@@ -254,7 +254,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
           >
             <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
               <Cpu size={14} />
-              Local — Swift Hinglish
+              Beta Mode
               {!isMac && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-4 text-muted-foreground ml-1">
                   macOS only
@@ -374,7 +374,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
             )}
             {modelInstalled && !swiftSelected && !deleting && (
               <p className="text-[10px] text-muted-foreground mt-2">
-                Model installed — select Local above to use it.
+                Model installed — enable Beta Mode above to use it.
               </p>
             )}
           </div>

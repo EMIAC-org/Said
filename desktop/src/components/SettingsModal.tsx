@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   X, RefreshCw, CloudCheck,
   Wand2, ShieldCheck, Key, Info, Bug, Palette, Link, Bell, Brain, Keyboard, Video,
@@ -105,28 +106,16 @@ export function SettingsModal({
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{
-        background: "hsl(var(--foreground) / 0.22)",
-        backdropFilter: "blur(8px)",
-        WebkitBackdropFilter: "blur(8px)",
-        animation: "fadeIn 0.18s ease-out",
-      }}
+      className="settings-modal-backdrop fixed inset-0 z-50 flex items-center justify-center"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div
         ref={dialogRef}
-        className="rounded-[20px] overflow-hidden flex"
-        style={{
-          background: "hsl(var(--surface-2))",
-          width:  "min(1000px, 94vw)",
-          height: "min(680px, 92vh)",
-          boxShadow: "var(--shadow-pop)",
-        }}
+        className="settings-modal-dialog overflow-hidden flex"
       >
 
         {/* ─────────── LEFT NAV ─────────── */}
@@ -296,6 +285,7 @@ export function SettingsModal({
           </div>
         </main>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -251,6 +251,7 @@ class LiveSession:
         self.decode_task: asyncio.Task | None = None
         self.decode_lock = asyncio.Lock()
         self.closed = False
+        self.finalizing = False
         self.prompt_ids = None
 
     def set_vocab(self, terms) -> None:
@@ -274,7 +275,7 @@ class LiveSession:
         self._maybe_schedule_decode()
 
     def _maybe_schedule_decode(self) -> None:
-        if self.closed:
+        if self.closed or self.finalizing:
             return
         buf = self._decode_buffer()
         if len(buf) < MIN_BUFFER_BYTES:
@@ -311,6 +312,13 @@ class LiveSession:
                 return
             if text and text != self.latest_text:
                 self.latest_text = text
+                if self.finalizing or self.closed:
+                    logging.info(
+                        "Swift live decode finished during finalize; cached latest text chars=%d words=%d",
+                        len(self.latest_text),
+                        len(self.latest_text.split()),
+                    )
+                    return
                 try:
                     await self.websocket.send(
                         json.dumps({"type": "partial", "text": self.latest_text})
@@ -318,35 +326,82 @@ class LiveSession:
                 except Exception:
                     self.closed = True
 
-    async def finalize(self) -> str:
+    async def finalize(self) -> tuple[str, str]:
         # Always decode the full captured session on release. Live partials are
         # useful while holding the hotkey, but the final text must include audio
         # that arrived after the last partial decode.
+        self.finalizing = True
+        started = time.monotonic()
         buf = bytes(self.session_pcm)
+        latest_before = self.latest_text
         final_text = ""
+        source = "none"
+        rms = _pcm_rms(buf)
+        logging.info(
+            "Swift finalize start bytes=%d speech_bytes=%d latest_chars=%d latest_words=%d rms=%.1f decode_inflight=%s",
+            len(buf),
+            len(self.speech_pcm),
+            len(latest_before),
+            len(latest_before.split()),
+            rms,
+            bool(self.decode_task and not self.decode_task.done()),
+        )
         if len(buf) >= BYTES_PER_FRAME:
             # Skip near-silent sessions — decoding silence makes Whisper
             # hallucinate fluent text (the "see shit happened" phantom on a pause).
-            if _pcm_rms(buf) < SILENCE_RMS_THRESHOLD:
-                logging.info("Swift finalize skipped — near-silence")
+            if rms < SILENCE_RMS_THRESHOLD:
+                text = latest_before.strip()
+                source = "latest_after_near_silence" if text else "near_silence"
                 self.closed = True
-                return ""
+                logging.info(
+                    "Swift finalize skipped source=%s total_ms=%d chars=%d words=%d",
+                    source,
+                    int((time.monotonic() - started) * 1000),
+                    len(text),
+                    len(text.split()),
+                )
+                return text, source
             # Pad trailing silence so the final word isn't clipped when the
             # stream closes right after the last syllable.
             padded = buf + (b"\x00" * FINAL_TAIL_PAD_BYTES)
+            lock_wait_started = time.monotonic()
             async with self.decode_lock:
+                lock_wait_ms = int((time.monotonic() - lock_wait_started) * 1000)
+                decode_started = time.monotonic()
                 try:
                     final_text = await asyncio.to_thread(
                         self.engine.transcribe_pcm, padded, self.prompt_ids
                     )
                     if final_text:
                         self.latest_text = final_text
+                        source = "final_decode"
+                    elif self.latest_text.strip():
+                        final_text = self.latest_text.strip()
+                        source = "latest_after_empty_final"
+                    else:
+                        source = "empty_final"
                 except Exception as exc:
                     logging.exception("Swift finalize decode failed")
                     await self._send_error(f"finalize decode failed: {exc}")
-                    return ""
+                    final_text = self.latest_text.strip()
+                    source = "latest_after_decode_error" if final_text else "decode_error"
+                logging.info(
+                    "Swift finalize decode done source=%s lock_wait_ms=%d decode_ms=%d chars=%d words=%d",
+                    source,
+                    lock_wait_ms,
+                    int((time.monotonic() - decode_started) * 1000),
+                    len(final_text),
+                    len(final_text.split()),
+                )
         self.closed = True
-        return final_text
+        logging.info(
+            "Swift finalize done source=%s total_ms=%d chars=%d words=%d",
+            source,
+            int((time.monotonic() - started) * 1000),
+            len(final_text),
+            len(final_text.split()),
+        )
+        return final_text, source
 
     async def close(self) -> None:
         self.closed = True
@@ -382,12 +437,15 @@ async def handle_client(websocket, engine: SwiftEngine):
                         session.set_vocab([str(t) for t in terms])
                     continue
                 if payload.get("type") == "finalize":
-                    text = await session.finalize()
-                    await websocket.send(json.dumps({"type": "final", "text": text}))
+                    text, source = await session.finalize()
+                    await websocket.send(
+                        json.dumps({"type": "final", "text": text, "source": source})
+                    )
                     session.session_pcm.clear()
                     session.speech_pcm.clear()
                     session.latest_text = ""
                     session.closed = False
+                    session.finalizing = False
                     session.last_decode_at = 0.0
                     continue
                 continue

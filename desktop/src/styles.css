@@ -349,6 +349,41 @@
     box-shadow: none;
     border: 1px solid hsl(var(--border));
   }
+  /* Main content mat (App.tsx) — elevated surface behind routed views */
+  .content-mat {
+    background: hsl(var(--surface-3));
+    border: 1px solid hsl(var(--glass-stroke-strong));
+    border-radius: 16px;
+    /* Inset highlight only — outer shadow is clipped by the app shell */
+    box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.055);
+  }
+  [data-theme="light"] .content-mat {
+    border: 1px solid hsl(var(--border));
+    /* No outer drop shadow — parent overflow clips it into a harsh dark edge */
+    box-shadow: none;
+  }
+
+  /* Settings modal — portaled to body so shadow isn't clipped by app shell */
+  .settings-modal-backdrop {
+    background: hsl(var(--foreground) / 0.22);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    animation: fadeIn 0.18s ease-out;
+  }
+  .settings-modal-dialog {
+    width: min(1000px, 94vw);
+    height: min(680px, 92vh);
+    background: hsl(var(--surface-2));
+    border-radius: 20px;
+    box-shadow: var(--shadow-pop);
+    border: 1px solid hsl(var(--glass-stroke));
+  }
+  [data-theme="light"] .settings-modal-dialog {
+    border: 1px solid hsl(var(--border));
+    box-shadow:
+      0 0 0 1px hsl(0 0% 100% / 0.65) inset,
+      0 24px 64px hsl(220 16% 50% / 0.14);
+  }
   /* Dark mode override — drop the visible border, restore inset highlight */
   :root:not([data-theme="light"]) .panel,
   [data-theme="dark"] .panel {

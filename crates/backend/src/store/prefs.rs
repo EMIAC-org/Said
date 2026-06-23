@@ -92,7 +92,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
     conn.query_row(
         "SELECT user_id, selected_model, tone_preset, custom_prompt, language,
                 output_language, auto_paste, edit_capture, polish_text_hotkey, record_hotkey,
-                learning_enabled, server_runtime_enabled, server_audio_runtime_enabled, updated_at,
+                learning_enabled, server_runtime_enabled, 0 AS server_audio_runtime_enabled, updated_at,
                 gateway_api_key, deepgram_api_key, gemini_api_key, llm_provider,
                 groq_api_key, cerebras_api_key, stt_provider
          FROM preferences WHERE user_id = ?1",
@@ -225,11 +225,9 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
         .ok()?;
     }
     if let Some(v) = update.server_audio_runtime_enabled {
-        conn.execute(
-            "UPDATE preferences SET server_audio_runtime_enabled = ?1, updated_at = ?2 WHERE user_id = ?3",
-            params![v as i64, now, user_id],
-        )
-        .ok()?;
+        // Legacy field kept in API structs for old desktop builds. The SQLite
+        // column was removed, and local server-audio runtime must stay disabled.
+        let _ = v;
     }
     if let Some(v) = update.gateway_api_key {
         conn.execute(

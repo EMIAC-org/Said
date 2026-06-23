@@ -674,9 +674,6 @@ export default function App() {
       }
     : null;
 
-  // ── Live status / token overlay for DashboardView ─────────────────────────
-  // We pass these as extra props; DashboardView can render a streaming preview.
-  const liveText = statusPhase === "polishing" ? tokenBuf : "";
   const corePermissionsReady =
     !!snapshot?.microphone_granted &&
     !!snapshot?.accessibility_granted &&
@@ -748,16 +745,8 @@ export default function App() {
             />
 
             {/* ── The "mat" — solid elevated content surface ─────── */}
-            <main className="flex-1 overflow-hidden p-3 pt-2">
-              <div
-                className="h-full rounded-2xl overflow-hidden"
-                style={{
-                  background: "hsl(var(--surface-3))",
-                  border: "1px solid hsl(var(--glass-stroke-strong))",
-                  boxShadow:
-                    "inset 0 1px 0 hsl(0 0% 100% / 0.055), 0 18px 54px hsl(0 0% 0% / 0.46)",
-                }}
-              >
+            <main className="flex-1 min-h-0 p-3 pt-2">
+              <div className="content-mat h-full overflow-hidden">
                 {activeView === "dashboard" && (
                   <DashboardView
                     snapshot={snapshotWithHistory}
@@ -765,8 +754,6 @@ export default function App() {
                     onToggle={handleToggle}
                     onAccessibility={handleAccessibility}
                     onNavigate={handleViewChange}
-                    statusPhase={statusPhase}
-                    liveText={liveText}
                     pendingEdits={pendingEdits}
                     onDownloadSuccess={handleDownloadSuccess}
                     refreshKey={historyRefreshKey}

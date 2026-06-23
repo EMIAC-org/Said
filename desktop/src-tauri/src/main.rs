@@ -70,6 +70,7 @@ const MEETING_PAUSE_MS: u64 = 900;
 const MEETING_MIN_CHUNK_MS: u64 = 700;
 const MEETING_MAX_CHUNK_MS: u64 = 30_000;
 const AUTOSTART_ARG: &str = "--airnote-autostart";
+const SWIFT_FINAL_HANDOFF_WAIT_MS: u64 = 8_500;
 
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
@@ -883,10 +884,168 @@ struct StreamingState(
     Mutex<Option<tokio::sync::oneshot::Receiver<Option<dg_stream::StreamingTranscript>>>>,
 );
 
+#[derive(Clone)]
+struct SwiftLivePartialSnapshot {
+    recording_id: String,
+    transcript: String,
+}
+
+struct SwiftLivePartialState(Mutex<Option<SwiftLivePartialSnapshot>>);
+
+fn swift_live_partial_to_transcript(text: String) -> dg_stream::StreamingTranscript {
+    let word_count = text.split_whitespace().count();
+    dg_stream::StreamingTranscript {
+        transcript: text.clone(),
+        meta: said_core::deepgram::TranscriptMeta {
+            enriched_transcript: text,
+            confidence: 1.0,
+            mean_word_confidence: 1.0,
+            low_confidence_count: 0,
+            word_count,
+            languages: vec!["hi".to_string()],
+            stt_mode: "swift_local_live_partial".to_string(),
+        },
+    }
+}
+
+fn swift_live_partial_for_recording(
+    app: &tauri::AppHandle,
+    recording_id: Option<&str>,
+) -> Option<dg_stream::StreamingTranscript> {
+    let snapshot = app
+        .try_state::<SwiftLivePartialState>()?
+        .0
+        .lock()
+        .ok()?
+        .clone()?;
+    if recording_id.is_some_and(|id| id != snapshot.recording_id) {
+        tracing::warn!(
+            "[swift_live] ignoring partial for stale recording id={} expected={:?}",
+            snapshot.recording_id,
+            recording_id
+        );
+        return None;
+    }
+    let text = snapshot.transcript.trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+    Some(swift_live_partial_to_transcript(text))
+}
+
 struct DeepgramSessionState(dg_stream::SessionSender);
 
 #[cfg(target_os = "macos")]
 struct SwiftSessionState(swift_stream::SessionSender);
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct SwiftBridgeStopInner {
+    handle: Option<swift_stream::AudioBridgeStopHandle>,
+    pending_stop: Option<(String, String)>,
+}
+
+#[cfg(target_os = "macos")]
+struct SwiftBridgeStopState(Mutex<SwiftBridgeStopInner>);
+
+#[cfg(target_os = "macos")]
+fn store_swift_bridge_stop_handle(
+    app: &tauri::AppHandle,
+    handle: swift_stream::AudioBridgeStopHandle,
+) {
+    let recording_id = handle.recording_id().to_string();
+    let Some(state) = app.try_state::<SwiftBridgeStopState>() else {
+        tracing::warn!("[swift_session] missing bridge stop state id={recording_id}");
+        return;
+    };
+    match state.0.lock() {
+        Ok(mut current) => {
+            if let Some((pending_id, pending_reason)) = current.pending_stop.take() {
+                if pending_id == recording_id {
+                    tracing::info!(
+                        "[swift_session] applying pending bridge stop id={recording_id} reason={pending_reason}"
+                    );
+                    handle.request_stop(&pending_reason);
+                } else {
+                    tracing::warn!(
+                        "[swift_session] dropping stale pending bridge stop pending_id={} new_id={recording_id}",
+                        pending_id
+                    );
+                }
+            }
+            if let Some(previous) = current.handle.replace(handle) {
+                tracing::warn!(
+                    "[swift_session] replaced stale bridge stop handle previous_id={} new_id={recording_id}",
+                    previous.recording_id()
+                );
+            } else {
+                tracing::info!("[swift_session] bridge stop handle stored id={recording_id}");
+            }
+        }
+        Err(_) => {
+            tracing::warn!("[swift_session] bridge stop state poisoned id={recording_id}");
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn request_swift_bridge_stop(app: &tauri::AppHandle, recording_id: Option<&str>, reason: &str) {
+    let Some(state) = app.try_state::<SwiftBridgeStopState>() else {
+        return;
+    };
+    let (handle, queued_pending) = match state.0.lock() {
+        Ok(mut current) => {
+            let matches = current
+                .handle
+                .as_ref()
+                .is_some_and(|handle| recording_id.map_or(true, |id| id == handle.recording_id()));
+            if matches {
+                (current.handle.take(), false)
+            } else {
+                let mut queued_pending = false;
+                if let Some(handle) = current.handle.as_ref() {
+                    tracing::warn!(
+                        "[swift_session] dropping stale bridge stop handle current_id={} expected={:?} reason={reason}",
+                        handle.recording_id(),
+                        recording_id
+                    );
+                    current.handle = None;
+                } else if let Some(id) = recording_id {
+                    current.pending_stop = Some((id.to_string(), reason.to_string()));
+                    tracing::warn!(
+                        "[swift_session] bridge stop handle not ready; queued pending stop id={id} reason={reason}"
+                    );
+                    queued_pending = true;
+                }
+                if current.handle.is_none() && !queued_pending {
+                    if let Some(id) = recording_id {
+                        current.pending_stop = Some((id.to_string(), reason.to_string()));
+                        tracing::warn!(
+                            "[swift_session] bridge stop handle not ready after stale drop; queued pending stop id={id} reason={reason}"
+                        );
+                        queued_pending = true;
+                    }
+                }
+                (None, queued_pending)
+            }
+        }
+        Err(_) => {
+            tracing::warn!(
+                "[swift_session] bridge stop state poisoned expected={:?} reason={reason}",
+                recording_id
+            );
+            (None, false)
+        }
+    };
+    if let Some(handle) = handle {
+        handle.request_stop(reason);
+    } else if !queued_pending {
+        tracing::warn!(
+            "[swift_session] bridge stop handle unavailable expected={:?} reason={reason}",
+            recording_id
+        );
+    }
+}
 
 /// Stores the most-recently polished text. Populated after every voice/text polish;
 /// cleared after it's pasted via the global paste-latest hotkey or command.
@@ -3296,6 +3455,8 @@ static LAST_FINISH_MS: AtomicU64 = AtomicU64::new(0);
 const MIN_CYCLE_GAP_MS: u64 = 300;
 const QUEUED_FINISH_TIMEOUT_MS: u64 = 2_500;
 const QUEUED_FINISH_POLL_MS: u64 = 25;
+const RELEASE_MIC_CLEANUP_DELAY_MS: u64 = 850;
+const RELEASE_MIC_CLEANUP_RECHECK_MS: u64 = 1_800;
 
 fn now_ms_desktop() -> u64 {
     std::time::SystemTime::now()
@@ -3546,6 +3707,105 @@ fn request_queued_finish(
             }
 
             std::thread::sleep(std::time::Duration::from_millis(QUEUED_FINISH_POLL_MS));
+        }
+    });
+}
+
+fn schedule_release_mic_cleanup(
+    shared: Arc<Mutex<DesktopApp>>,
+    app: tauri::AppHandle,
+    back: Arc<Mutex<Option<BackendEndpoint>>>,
+    reason: &'static str,
+) {
+    std::thread::spawn(move || {
+        for (attempt, delay_ms) in [
+            (1usize, RELEASE_MIC_CLEANUP_DELAY_MS),
+            (2usize, RELEASE_MIC_CLEANUP_RECHECK_MS),
+        ] {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+
+            if app
+                .try_state::<LongDictationState>()
+                .map(|s| s.locked.load(Ordering::SeqCst))
+                .unwrap_or(false)
+            {
+                tracing::debug!(
+                    "[mic-cleanup] skipped after release — long dictation is intentionally locked"
+                );
+                return;
+            }
+
+            let state_and_mic = shared
+                .try_lock()
+                .ok()
+                .map(|d| (d.state, d.mic_stream_held()));
+            let Some((state, mic_held)) = state_and_mic else {
+                tracing::debug!(
+                    "[mic-cleanup] shared app lock busy after release attempt={attempt} reason={reason}"
+                );
+                continue;
+            };
+
+            match state {
+                desktop::AppState::Recording => {
+                    let route = app
+                        .try_state::<RecordingRouteState>()
+                        .and_then(|route| route.0.lock().ok().and_then(|g| *g));
+                    if route == Some(RecordingRoute::Meeting) {
+                        tracing::debug!(
+                            "[mic-cleanup] skipped after release — meeting capture owns recording"
+                        );
+                        return;
+                    }
+
+                    tracing::warn!(
+                        "[mic-cleanup] release left recorder in recording state — finishing now attempt={attempt} reason={reason}"
+                    );
+                    diag::breadcrumb(format!("mic_cleanup:finish:{reason}:{attempt}"));
+                    said_core::reporter::report_event(
+                        "mic_cleanup.finish_after_release",
+                        said_core::reporter::Severity::Warning,
+                        serde_json::json!({
+                            "attempt": attempt,
+                            "reason": reason,
+                            "trail": diag::breadcrumbs(20),
+                        }),
+                    );
+                    do_finish_recording(shared, app, back);
+                    return;
+                }
+                desktop::AppState::Processing | desktop::AppState::Idle if mic_held => {
+                    let stop_rx = {
+                        let mut d = match shared.lock() {
+                            Ok(g) => g,
+                            Err(p) => p.into_inner(),
+                        };
+                        d.release_mic_stream()
+                    };
+                    if let Some(stop_rx) = stop_rx {
+                        tracing::warn!(
+                            "[mic-cleanup] forced stale mic stream release state={} attempt={} reason={}",
+                            state.as_str(),
+                            attempt,
+                            reason
+                        );
+                        diag::breadcrumb(format!("mic_cleanup:force_release:{reason}:{attempt}"));
+                        std::thread::spawn(move || {
+                            let _ = stop_rx.recv_timeout(std::time::Duration::from_secs(3));
+                        });
+                    }
+                    return;
+                }
+                _ => {
+                    if attempt == 2 {
+                        tracing::debug!(
+                            "[mic-cleanup] release cleanup clean state={} mic_held={} reason={reason}",
+                            state.as_str(),
+                            mic_held
+                        );
+                    }
+                }
+            }
         }
     });
 }
@@ -3958,17 +4218,44 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 tauri::async_runtime::spawn(async move {
                     let (live_partial_tx, mut live_partial_rx) =
                         tokio::sync::mpsc::unbounded_channel::<String>();
+                    if let Some(state) = app_for_partials.try_state::<SwiftLivePartialState>() {
+                        if let Ok(mut latest) = state.0.lock() {
+                            *latest = None;
+                        }
+                    }
                     let app_emit = app_for_partials.clone();
+                    let recording_id_for_live = recording_id.clone();
                     tauri::async_runtime::spawn(async move {
+                        let mut last_logged = String::new();
                         while let Some(text) = live_partial_rx.recv().await {
-                            if text.trim().is_empty() {
+                            let transcript = text.trim().to_string();
+                            if transcript.is_empty() {
                                 continue;
+                            }
+                            if let Some(state) = app_emit.try_state::<SwiftLivePartialState>() {
+                                if let Ok(mut latest) = state.0.lock() {
+                                    *latest = Some(SwiftLivePartialSnapshot {
+                                        recording_id: recording_id_for_live.clone(),
+                                        transcript: transcript.clone(),
+                                    });
+                                }
+                            }
+                            if transcript != last_logged {
+                                let words = transcript.split_whitespace().count();
+                                tracing::info!(
+                                    "[swift_live] partial id={} chars={} words={} text={:?}",
+                                    recording_id_for_live,
+                                    transcript.len(),
+                                    words,
+                                    transcript.chars().take(160).collect::<String>()
+                                );
+                                last_logged = transcript.clone();
                             }
                             let _ = app_emit.emit(
                                 "voice-status",
                                 serde_json::json!({
                                     "phase": "live_stt",
-                                    "transcript": text,
+                                    "transcript": transcript,
                                 }),
                             );
                         }
@@ -4004,13 +4291,14 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                             screen_context_for_server_runtime,
                         )
                     });
-                    swift_stream::spawn_audio_bridge_with_echo_gate(
+                    let bridge_stop_handle = swift_stream::spawn_audio_bridge_with_echo_gate(
                         recording_id,
                         chunk_recv,
                         session_tx,
                         echo_gate,
                         server_runtime_mirror,
                     );
+                    store_swift_bridge_stop_handle(&app_for_partials, bridge_stop_handle);
                 });
             }
         } else {
@@ -4070,6 +4358,11 @@ fn do_cancel_recording(
         *route = None;
     }
 
+    #[cfg(target_os = "macos")]
+    let cancel_run_id = app
+        .try_state::<RecordingSessionState>()
+        .and_then(|session| session.current().map(|(_, id)| id));
+
     let _ = app
         .state::<StreamingState>()
         .0
@@ -4086,7 +4379,13 @@ fn do_cancel_recording(
             return;
         }
         let stop_rx = match d.begin_stop() {
-            Ok((stop_rx, _)) => Some(stop_rx),
+            Ok((stop_rx, _)) => {
+                #[cfg(target_os = "macos")]
+                if use_swift_local_stt(&app) {
+                    request_swift_bridge_stop(&app, cancel_run_id.as_deref(), reason);
+                }
+                Some(stop_rx)
+            }
             Err(e) => {
                 tracing::warn!("[meeting_mode] cancel failed ({reason}): {e}");
                 None
@@ -4180,6 +4479,10 @@ fn do_finish_recording(
 
     let (stop_rx, was_too_short) = match begin_stop {
         Ok((stop_rx, was_too_short, snap)) => {
+            #[cfg(target_os = "macos")]
+            if use_swift_local_stt(&app) {
+                request_swift_bridge_stop(&app, client_run_id.as_deref(), "finish_begin_stop");
+            }
             sync_tray(&app, &snap);
             let _ = app.emit("app-state", &snap);
             (stop_rx, was_too_short)
@@ -4295,11 +4598,58 @@ fn do_finish_recording(
         } else if let Some(rx) = transcript_rx {
             let wait_start = tokio::time::Instant::now();
             let swift_local = said_core::stt::is_swift_local(&stt_provider);
+            let swift_live_at_finish = swift_local
+                && swift_live_partial_for_recording(&app2, client_run_id.as_deref()).is_some();
             let wait_ms = if swift_local {
-                // Swift finalize is instant when partials exist; keep a short safety margin.
-                ((wav_duration_s * 500.0) + 2000.0).clamp(4_000.0, 15_000.0) as u64
+                SWIFT_FINAL_HANDOFF_WAIT_MS
             } else {
                 2_500
+            };
+            if swift_local {
+                tracing::info!(
+                    "[finish] Swift final handoff wait={}ms live_partial_at_start={} audio={:.1}s",
+                    wait_ms,
+                    swift_live_at_finish,
+                    wav_duration_s
+                );
+            }
+            let try_swift_live_fallback = |reason: &str| -> Option<dg_stream::StreamingTranscript> {
+                if !swift_local {
+                    return None;
+                }
+                let Some(t) = swift_live_partial_for_recording(&app2, client_run_id.as_deref())
+                else {
+                    tracing::warn!(
+                        "[finish] Swift live partial fallback unavailable after {}ms reason={reason} run_id={:?}",
+                        wait_start.elapsed().as_millis(),
+                        client_run_id.as_deref()
+                    );
+                    return None;
+                };
+                let word_count = if t.meta.word_count > 0 {
+                    t.meta.word_count
+                } else {
+                    t.transcript.split_whitespace().count()
+                };
+                if let Some(reject_reason) =
+                    reject_pre_transcript_reason(&t.transcript, word_count, wav_duration_s)
+                {
+                    tracing::warn!(
+                        "[finish] Swift live partial fallback rejected after {}ms reason={reason} reject={reject_reason} transcript={:?}",
+                        wait_start.elapsed().as_millis(),
+                        t.transcript
+                    );
+                    return None;
+                }
+                tracing::info!(
+                    "[finish] ✓ Swift live partial fallback ready after {}ms reason={reason} ({} chars, {} words, {:.1}s audio): \"{}\"",
+                    wait_start.elapsed().as_millis(),
+                    t.transcript.len(),
+                    word_count,
+                    wav_duration_s,
+                    t.transcript
+                );
+                Some(t)
             };
             match tokio::time::timeout(std::time::Duration::from_millis(wait_ms), rx).await {
                 Ok(Ok(Some(t))) if !t.transcript.is_empty() => {
@@ -4343,31 +4693,31 @@ fn do_finish_recording(
                 }
                 Ok(Ok(Some(_))) => {
                     tracing::info!(
-                        "[finish] WS transcript empty after {}ms — falling back to HTTP STT",
+                        "[finish] WS transcript empty after {}ms — checking Swift live fallback",
                         wait_start.elapsed().as_millis()
                     );
-                    None
+                    try_swift_live_fallback("empty_ws_transcript")
                 }
                 Ok(Ok(None)) => {
                     tracing::info!(
-                        "[finish] WS unavailable after {}ms — falling back to HTTP STT",
+                        "[finish] WS unavailable after {}ms — checking Swift live fallback",
                         wait_start.elapsed().as_millis()
                     );
-                    None
+                    try_swift_live_fallback("ws_unavailable")
                 }
                 Ok(Err(_)) => {
                     tracing::info!(
-                        "[finish] WS transcript sender dropped after {}ms — falling back to HTTP STT",
+                        "[finish] WS transcript sender dropped after {}ms — checking Swift live fallback",
                         wait_start.elapsed().as_millis()
                     );
-                    None
+                    try_swift_live_fallback("sender_dropped")
                 }
                 Err(_) => {
                     tracing::warn!(
-                        "[finish] WS transcript timed out after {}ms — falling back to HTTP STT",
+                        "[finish] WS transcript timed out after {}ms — checking Swift live fallback",
                         wait_start.elapsed().as_millis()
                     );
-                    None
+                    try_swift_live_fallback("ws_timeout")
                 }
             }
         } else {
@@ -8646,6 +8996,12 @@ fn main() {
                                 // Normal AirNote route. This also applies while the
                                 // meeting view is open but meeting capture is muted.
                                 let back = Arc::clone(&back_hold_release);
+                                schedule_release_mic_cleanup(
+                                    Arc::clone(&shared),
+                                    app_h.clone(),
+                                    Arc::clone(&back),
+                                    "record_hotkey_release",
+                                );
                                 std::thread::spawn(move || {
                                     let current = hotkey_current_state(&shared, "finish");
                                     if current == Some(desktop::AppState::Recording) {
@@ -8736,6 +9092,12 @@ fn main() {
                                 let shared = Arc::clone(&shared_dr);
                                 let app_h = app_dr.clone();
                                 let back = Arc::clone(&back_dr);
+                                schedule_release_mic_cleanup(
+                                    Arc::clone(&shared),
+                                    app_h.clone(),
+                                    Arc::clone(&back),
+                                    "divo_hotkey_release",
+                                );
                                 std::thread::spawn(move || {
                                     guard_panics("divo.finish", move || {
                                         // Capture the Ctrl+N intent now, before the async
@@ -8917,6 +9279,7 @@ fn main() {
         .manage(EditTargetState(Mutex::new(None)))
         .manage(ScreenContextState(Mutex::new(None)))
         .manage(StreamingState(Mutex::new(None)))
+        .manage(SwiftLivePartialState(Mutex::new(None)))
         .manage(RecordingRouteState(Mutex::new(None)))
         .manage(divo::DivoState::new())
         .manage(DeepgramSessionState(dg_stream::DeepgramSession::spawn()))
@@ -8938,6 +9301,10 @@ fn main() {
         .manage(LongDictationState::new());
     #[cfg(target_os = "macos")]
     let builder = builder.manage(SwiftSessionState(swift_stream::SwiftSession::spawn()));
+    #[cfg(target_os = "macos")]
+    let builder = builder.manage(SwiftBridgeStopState(Mutex::new(
+        SwiftBridgeStopInner::default(),
+    )));
     let app_result = builder
         .invoke_handler(tauri::generate_handler![
             bootstrap,
