@@ -47,7 +47,9 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.LightMode
@@ -63,6 +65,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -1364,31 +1369,36 @@ private fun HomeScreen(
     var vocabDraft by rememberSaveable { mutableStateOf("") }
     var vocabMessage by rememberSaveable { mutableStateOf("Safe vocab terms are sent as existing server hints.") }
     var diagnosticsMessage by rememberSaveable { mutableStateOf("Redacted diagnostics include no audio or dictated text.") }
+    var selectedTabRaw by rememberSaveable { mutableStateOf(AndroidMainTab.Home.name) }
+    val selectedTab = AndroidMainTab.fromName(selectedTabRaw)
 
     AirNoteBackground {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 16.dp)
-                .padding(top = 18.dp, bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            AppHeader(
-                label = if (BuildConfig.USE_MOCK_GATEWAY) "Preview" else "Live",
-                trailing = {
-                Text(
-                    text = "Replay setup",
-                    color = AirNotePalette.Muted,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clickable(onClick = onReplaySetup),
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp)
+                    .padding(top = 18.dp, bottom = 104.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                AppHeader(
+                    label = if (BuildConfig.USE_MOCK_GATEWAY) "Preview" else "Live",
+                    trailing = {
+                        Text(
+                            text = "Replay setup",
+                            color = AirNotePalette.Muted,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable(onClick = onReplaySetup),
+                        )
+                    },
                 )
-            })
 
-            AirNoteCard(padding = 18.dp) {
+                when (selectedTab) {
+                    AndroidMainTab.Home -> {
+                        AirNoteCard(padding = 18.dp) {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(verticalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.weight(1f)) {
@@ -1509,6 +1519,8 @@ private fun HomeScreen(
                 }
             }
 
+                    }
+                    AndroidMainTab.Words -> {
             AirNoteCard(padding = 14.dp) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1549,7 +1561,7 @@ private fun HomeScreen(
                         Text("Add vocabulary hint", fontWeight = FontWeight.SemiBold)
                     }
                     if (polishPrefs.safeVocabTerms.isEmpty()) {
-                        SetupRow(Icons.Rounded.Language, "No local Android hints", "Server vocabulary still applies through the existing account memory.", "Empty")
+                        SetupRow(Icons.Rounded.Language, "No local Android hints", "Server account memory still applies.", "Empty")
                     } else {
                         polishPrefs.safeVocabTerms.forEach { term ->
                             VocabTermRow(term = term, onRemove = { onRemoveSafeVocabTerm(term) })
@@ -1558,6 +1570,8 @@ private fun HomeScreen(
                 }
             }
 
+                    }
+                    AndroidMainTab.Settings -> {
             AirNoteCard(padding = 14.dp) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1613,6 +1627,8 @@ private fun HomeScreen(
                 }
             }
 
+                    }
+                    AndroidMainTab.History -> {
             AirNoteCard(padding = 14.dp) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1697,6 +1713,8 @@ private fun HomeScreen(
                 }
             }
 
+                    }
+                    AndroidMainTab.Insights -> {
             AirNoteCard(padding = 14.dp) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1774,6 +1792,72 @@ private fun HomeScreen(
             ToolRow(Icons.Rounded.History, "History", "Copy, retry, and recover")
             ToolRow(Icons.Rounded.Language, "Vocabulary", "Names, aliases, and terms")
             ToolRow(Icons.Rounded.Settings, "Settings", "Privacy, Gateway, diagnostics")
+                    }
+                }
+            }
+            AndroidMainNavigationBar(
+                selected = selectedTab,
+                onSelected = { selectedTabRaw = it.name },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
+        }
+    }
+}
+
+private enum class AndroidMainTab(
+    val label: String,
+    val icon: ImageVector,
+) {
+    Home("Home", Icons.Rounded.Home),
+    History("History", Icons.Rounded.History),
+    Words("Words", Icons.Rounded.Language),
+    Insights("Insights", Icons.Rounded.BarChart),
+    Settings("Settings", Icons.Rounded.Settings);
+
+    companion object {
+        fun fromName(name: String): AndroidMainTab =
+            entries.firstOrNull { it.name == name } ?: Home
+    }
+}
+
+@Composable
+private fun AndroidMainNavigationBar(
+    selected: AndroidMainTab,
+    onSelected: (AndroidMainTab) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    NavigationBar(
+        modifier = modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .border(1.dp, AirNotePalette.BorderStrong, RoundedCornerShape(22.dp)),
+        containerColor = AirNotePalette.Surface.copy(alpha = 0.96f),
+        tonalElevation = 0.dp,
+    ) {
+        AndroidMainTab.entries.forEach { tab ->
+            NavigationBarItem(
+                selected = selected == tab,
+                onClick = { onSelected(tab) },
+                icon = { Icon(tab.icon, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                label = {
+                    Text(
+                        tab.label,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = AirNotePalette.Accent,
+                    selectedTextColor = AirNotePalette.Accent,
+                    unselectedIconColor = AirNotePalette.Muted,
+                    unselectedTextColor = AirNotePalette.Muted,
+                    indicatorColor = AirNotePalette.SurfaceRaised,
+                ),
+            )
         }
     }
 }

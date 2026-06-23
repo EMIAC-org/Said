@@ -39,6 +39,7 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
     private lateinit var settingsStore: AndroidSettingsStore
     private lateinit var diagnosticsStore: AndroidDiagnosticsStore
     private var phase = BubblePhase.Idle
+    private var lastForegroundPackage: String? = null
     private var lastResult: RuntimeVoiceResult? = null
     private var lastRewriteTarget: AndroidRewriteTarget? = null
     private var lastRewriteOutput: String? = null
@@ -53,9 +54,8 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val isTextFocus = event?.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED ||
-            event?.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        bubbleView?.visibility = if (isTextFocus) View.VISIBLE else View.VISIBLE
+        event?.packageName?.toString()?.let { lastForegroundPackage = it }
+        updateBubbleVisibility()
         if (phase == BubblePhase.Complete) {
             renderBubble()
         }
@@ -83,9 +83,9 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             android.graphics.PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
+            gravity = Gravity.BOTTOM or Gravity.START
             x = 40
-            y = 420
+            y = defaultKeyboardCompanionOffset()
         }
 
         val bubble = LinearLayout(this)
@@ -93,6 +93,7 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
         bubbleView = bubble
         layoutParams = params
         renderBubble()
+        updateBubbleVisibility()
     }
 
     private fun renderBubble() {
@@ -166,6 +167,7 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
                 bubble.addView(actionChip("Open app") { openMainApp() })
             }
         }
+        updateBubbleVisibility()
     }
 
     private fun hideBubble() {
@@ -174,6 +176,22 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
         bubbleView = null
         layoutParams = null
     }
+
+    private fun updateBubbleVisibility() {
+        val bubble = bubbleView ?: return
+        bubble.visibility = if (shouldShowBubble()) View.VISIBLE else View.GONE
+    }
+
+    private fun shouldShowBubble(): Boolean {
+        if (phase != BubblePhase.Idle) return true
+        if (lastForegroundPackage == packageName) return false
+        val node = focusedInputNode() ?: return false
+        if (!node.isEditable) return false
+        return !isSecureField(node)
+    }
+
+    private fun defaultKeyboardCompanionOffset(): Int =
+        (resources.displayMetrics.heightPixels * KEYBOARD_COMPANION_OFFSET_FRACTION).roundToInt()
 
     private fun startDictation() {
         if (!BuildConfig.USE_MOCK_GATEWAY && sessionStore.read()?.token.isNullOrBlank()) {
@@ -610,5 +628,6 @@ class AirNoteBubbleAccessibilityService : AccessibilityService() {
     private companion object {
         const val DRAG_SLOP = 8f
         const val WAV_HEADER_SIZE = 44
+        const val KEYBOARD_COMPANION_OFFSET_FRACTION = 0.40f
     }
 }
