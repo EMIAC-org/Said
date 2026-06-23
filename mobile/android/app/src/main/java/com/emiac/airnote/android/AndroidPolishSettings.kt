@@ -32,6 +32,22 @@ enum class AndroidPolishModel(
     }
 }
 
+enum class AndroidPolishTone(
+    val wireValue: String,
+    val label: String,
+    val detail: String,
+) {
+    Professional("professional", "Professional", "Clear and polished"),
+    Casual("casual", "Casual", "Warm and natural"),
+    Concise("concise", "Concise", "Shorter and direct"),
+    Neutral("neutral", "Neutral", "Minimal rewrite");
+
+    companion object {
+        fun fromWire(value: String?): AndroidPolishTone =
+            entries.firstOrNull { it.wireValue == value } ?: Professional
+    }
+}
+
 enum class AndroidGatewayPreset(
     val label: String,
     val url: String,
@@ -49,6 +65,8 @@ data class AndroidPolishPreferences(
     val gatewayBaseUrl: String,
     val outputLanguage: AndroidOutputLanguage,
     val selectedModel: AndroidPolishModel,
+    val tonePreset: AndroidPolishTone,
+    val messagePolishMode: Boolean,
     val learningEnabled: Boolean,
     val safeVocabTerms: List<String>,
 ) {
@@ -75,6 +93,8 @@ class AndroidSettingsStore(context: Context) {
             ),
             outputLanguage = AndroidOutputLanguage.fromWire(prefs.getString(KEY_OUTPUT_LANGUAGE, null)),
             selectedModel = AndroidPolishModel.fromWire(prefs.getString(KEY_SELECTED_MODEL, null)),
+            tonePreset = AndroidPolishTone.fromWire(prefs.getString(KEY_TONE_PRESET, null)),
+            messagePolishMode = prefs.getBoolean(KEY_MESSAGE_POLISH_MODE, false),
             learningEnabled = prefs.getBoolean(KEY_LEARNING_ENABLED, true),
             safeVocabTerms = readSafeVocabTerms(),
         )
@@ -91,6 +111,14 @@ class AndroidSettingsStore(context: Context) {
         prefs.edit().putString(KEY_SELECTED_MODEL, model.wireValue).apply()
     }
 
+    fun setTonePreset(tone: AndroidPolishTone) {
+        prefs.edit().putString(KEY_TONE_PRESET, tone.wireValue).apply()
+    }
+
+    fun setMessagePolishMode(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_MESSAGE_POLISH_MODE, enabled).apply()
+    }
+
     fun setLearningEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_LEARNING_ENABLED, enabled).apply()
     }
@@ -99,6 +127,8 @@ class AndroidSettingsStore(context: Context) {
         prefs.edit()
             .putString(KEY_OUTPUT_LANGUAGE, AndroidOutputLanguage.fromWire(settings.outputLanguage).wireValue)
             .putString(KEY_SELECTED_MODEL, AndroidPolishModel.fromWire(settings.selectedModel).wireValue)
+            .putString(KEY_TONE_PRESET, AndroidPolishTone.fromWire(settings.tonePreset).wireValue)
+            .putBoolean(KEY_MESSAGE_POLISH_MODE, settings.messagePolishMode)
             .putBoolean(KEY_LEARNING_ENABLED, settings.learningEnabled)
             .apply()
     }
@@ -132,6 +162,13 @@ class AndroidSettingsStore(context: Context) {
         return next
     }
 
+    fun cycleTonePreset(): AndroidPolishTone {
+        val current = readPolishPreferences().tonePreset
+        val next = AndroidPolishTone.entries[(current.ordinal + 1) % AndroidPolishTone.entries.size]
+        setTonePreset(next)
+        return next
+    }
+
     private fun readSafeVocabTerms(): List<String> =
         prefs.getString(KEY_SAFE_VOCAB_TERMS, "")
             .orEmpty()
@@ -155,6 +192,8 @@ class AndroidSettingsStore(context: Context) {
         const val KEY_GATEWAY_BASE_URL = "gateway_base_url"
         const val KEY_OUTPUT_LANGUAGE = "output_language"
         const val KEY_SELECTED_MODEL = "selected_model"
+        const val KEY_TONE_PRESET = "tone_preset"
+        const val KEY_MESSAGE_POLISH_MODE = "message_polish_mode"
         const val KEY_LEARNING_ENABLED = "learning_enabled"
         const val KEY_SAFE_VOCAB_TERMS = "safe_vocab_terms"
         const val MAX_SAFE_VOCAB_TERMS = 50

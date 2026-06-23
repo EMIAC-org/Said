@@ -133,10 +133,36 @@ object AndroidAudioRoute {
 
 fun isAirNoteAccessibilityEnabled(context: Context): Boolean {
     val expected = ComponentName(context, AirNoteBubbleAccessibilityService::class.java)
-        .flattenToString()
+    val expectedPackage = expected.packageName
+    val expectedClass = expected.className
     val enabled = Settings.Secure.getString(
         context.contentResolver,
         Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
     ).orEmpty()
-    return enabled.split(':').any { it.equals(expected, ignoreCase = true) }
+    return isAirNoteAccessibilityServiceListed(enabled, expectedPackage, expectedClass)
+}
+
+internal fun isAirNoteAccessibilityServiceListed(
+    enabledServices: String,
+    expectedPackage: String,
+    expectedClass: String,
+): Boolean =
+    enabledServices.split(':').any { raw ->
+        val component = parseAccessibilityComponent(raw.trim()) ?: return@any false
+        component.first.equals(expectedPackage, ignoreCase = true) &&
+            component.second.equals(expectedClass, ignoreCase = true)
+    }
+
+private fun parseAccessibilityComponent(raw: String): Pair<String, String>? {
+    val separatorIndex = raw.indexOf('/')
+    if (separatorIndex <= 0 || separatorIndex == raw.lastIndex) return null
+    val packageName = raw.substring(0, separatorIndex)
+    val className = raw.substring(separatorIndex + 1).let { name ->
+        when {
+            name.startsWith('.') -> packageName + name
+            '.' in name -> name
+            else -> "$packageName.$name"
+        }
+    }
+    return packageName to className
 }

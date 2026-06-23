@@ -83,6 +83,7 @@ class SetupModelTest {
             outputLanguage = "hinglish",
             selectedModel = "smart",
             safeVocabTerms = listOf("N8N", "  EMIAC  ", "N8N"),
+            mode = "message-polish",
         )
 
         assertEquals("hinglish", payload.outputLanguage)
@@ -90,6 +91,27 @@ class SetupModelTest {
         assertEquals("android-test-run", payload.clientRunId)
         assertEquals("android", payload.platform)
         assertEquals(listOf("N8N", "EMIAC"), payload.safeVocabTerms)
+        assertEquals("message_polish", payload.mode)
+    }
+
+    @Test
+    fun runtimeTextPolishPayloadMatchesIosRewriteContract() {
+        val payload = runtimeTextPolishPayloadFields(
+            text = "  make this sharper  ",
+            clientRunId = "android-rewrite-run",
+            outputLanguage = "english",
+            tonePreset = "work",
+            screenContext = "x".repeat(700),
+            safeVocabTerms = listOf("  N8N  ", "N8N", "EMIAC"),
+        )
+
+        assertEquals("make this sharper", payload.transcript)
+        assertEquals("english", payload.outputLanguage)
+        assertEquals("smart", payload.selectedModel)
+        assertEquals("professional", payload.tonePreset)
+        assertEquals(500, payload.screenContext?.length)
+        assertEquals(listOf("N8N", "EMIAC"), payload.safeVocabTerms)
+        assertEquals("android-rewrite-run", payload.clientRunId)
     }
 
     @Test
@@ -128,6 +150,34 @@ class SetupModelTest {
     }
 
     @Test
+    fun accessibilityServiceDetectionAcceptsAndroidShortAndFullComponentNames() {
+        val expectedPackage = "com.emiac.airnote.android"
+        val expectedClass = "com.emiac.airnote.android.AirNoteBubbleAccessibilityService"
+
+        assertTrue(
+            isAirNoteAccessibilityServiceListed(
+                "com.emiac.airnote.android/.AirNoteBubbleAccessibilityService",
+                expectedPackage,
+                expectedClass,
+            ),
+        )
+        assertTrue(
+            isAirNoteAccessibilityServiceListed(
+                "com.other/.Service:com.emiac.airnote.android/com.emiac.airnote.android.AirNoteBubbleAccessibilityService",
+                expectedPackage,
+                expectedClass,
+            ),
+        )
+        assertFalse(
+            isAirNoteAccessibilityServiceListed(
+                "com.emiac.airnote.android/.OtherService",
+                expectedPackage,
+                expectedClass,
+            ),
+        )
+    }
+
+    @Test
     fun fieldSafetyBlocksPasswordAndOtpLikeFields() {
         assertTrue(
             AndroidFieldSafety.isSensitiveField(
@@ -156,6 +206,42 @@ class SetupModelTest {
                 className = "android.widget.EditText",
             ),
         )
+    }
+
+    @Test
+    fun androidRewriteTargetPrefersSelectionThenCursorSentence() {
+        val text = "First sentence. Polish this one please. Last bit"
+        val selectedText = "Polish this one please"
+        val selected = resolveAndroidRewriteTarget(
+            fullText = text,
+            selectionStart = text.indexOf(selectedText),
+            selectionEnd = text.indexOf(selectedText) + selectedText.length,
+        )
+
+        assertEquals(AndroidRewriteScope.Selection, selected?.scope)
+        assertEquals("Polish this one please", selected?.text)
+
+        val cursorText = "First sentence. Polish this one please"
+        val cursor = resolveAndroidRewriteTarget(
+            fullText = cursorText,
+            selectionStart = cursorText.length,
+            selectionEnd = cursorText.length,
+        )
+
+        assertEquals(AndroidRewriteScope.CursorSentence, cursor?.scope)
+        assertEquals("Polish this one please", cursor?.text)
+    }
+
+    @Test
+    fun androidRewriteReplacementRequiresExactTarget() {
+        val target = resolveAndroidRewriteTarget(
+            fullText = "Before. rewrite me",
+            selectionStart = 18,
+            selectionEnd = 18,
+        ) ?: error("expected target")
+
+        assertEquals("Before. Rewritten.", replaceAndroidRewriteTarget(target, "Rewritten."))
+        assertNull(replaceAndroidRewriteTarget(target.copy(fullText = "Before. edited"), "Rewritten."))
     }
 
     private fun runtimeStatus(activeCredentials: Int, memoryReady: Boolean): RuntimeStatus =

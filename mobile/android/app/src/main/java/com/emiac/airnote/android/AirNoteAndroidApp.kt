@@ -240,6 +240,10 @@ fun AirNoteAndroidApp(
     var voiceMessage by rememberSaveable { mutableStateOf("Tap to record a short dictation.") }
     var voiceLevel by rememberSaveable { mutableStateOf(0f) }
     var voiceResult by rememberSaveable { mutableStateOf<String?>(null) }
+    var rewriteDraft by rememberSaveable { mutableStateOf("") }
+    var rewritePhase by rememberSaveable { mutableStateOf(AndroidRewritePhase.Idle) }
+    var rewriteMessage by rememberSaveable { mutableStateOf("Paste or type a message to polish.") }
+    var rewriteResult by rememberSaveable { mutableStateOf<String?>(null) }
     var diagnosticsSnapshot by remember {
         mutableStateOf(
             diagnosticsStore.snapshot(
@@ -497,6 +501,7 @@ fun AirNoteAndroidApp(
                     outputLanguage = polishPrefs.outputLanguage.wireValue,
                     selectedModel = polishPrefs.selectedModel.wireValue,
                     safeVocabTerms = polishPrefs.safeVocabTerms,
+                    mode = if (polishPrefs.messagePolishMode) "message_polish" else "normal_voice",
                 )
             }
             result.fold(
@@ -518,6 +523,71 @@ fun AirNoteAndroidApp(
                 },
             )
         }
+    }
+
+    fun runTextRewrite() {
+        val target = rewriteDraft.trim()
+        if (target.isBlank()) {
+            rewritePhase = AndroidRewritePhase.Error
+            rewriteMessage = "Add text to polish first."
+            rewriteResult = null
+            return
+        }
+        if (!BuildConfig.USE_MOCK_GATEWAY && gatewaySession?.token == null) {
+            rewritePhase = AndroidRewritePhase.Error
+            rewriteMessage = "Sign in before polishing text."
+            rewriteResult = null
+            refreshDiagnostics()
+            return
+        }
+        scope.launch {
+            rewritePhase = AndroidRewritePhase.Polishing
+            rewriteMessage = "Polishing with ${polishPrefs.tonePreset.label.lowercase()} tone."
+            val clientRunId = "android-rewrite-${UUID.randomUUID()}"
+            diagnosticsStore.recordRequestStarted(clientRunId)
+            refreshDiagnostics()
+            val result = runCatching {
+                gateway.rewriteText(
+                    text = target,
+                    clientRunId = clientRunId,
+                    outputLanguage = polishPrefs.outputLanguage.wireValue,
+                    tonePreset = polishPrefs.tonePreset.wireValue,
+                    screenContext = "platform=android\nsurface=main_app_text_polish",
+                    safeVocabTerms = polishPrefs.safeVocabTerms,
+                )
+            }
+            result.fold(
+                onSuccess = { response ->
+                    rewriteResult = response.output.ifBlank { target }
+                    rewritePhase = AndroidRewritePhase.Ready
+                    rewriteMessage = "Text polished with ${polishPrefs.tonePreset.label.lowercase()} tone."
+                    diagnosticsStore.recordVoiceSuccess(clientRunId, 0)
+                    refreshDiagnostics()
+                },
+                onFailure = { error ->
+                    rewriteResult = null
+                    rewritePhase = AndroidRewritePhase.Error
+                    rewriteMessage = error.message ?: "Could not polish this text."
+                    diagnosticsStore.recordFailure(rewriteMessage)
+                    refreshDiagnostics()
+                },
+            )
+        }
+    }
+
+    fun copyRewriteResult() {
+        val text = rewriteResult?.takeIf { it.isNotBlank() } ?: return
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+        clipboard?.setPrimaryClip(ClipData.newPlainText("AirNote", text))
+        rewriteMessage = "Copied polished text."
+    }
+
+    fun useRewriteAsDraft() {
+        val text = rewriteResult?.takeIf { it.isNotBlank() } ?: return
+        rewriteDraft = text
+        rewriteResult = null
+        rewritePhase = AndroidRewritePhase.Idle
+        rewriteMessage = "Polished text is ready to edit again."
     }
 
     fun cancelVoiceRecording() {
@@ -568,6 +638,10 @@ fun AirNoteAndroidApp(
                 voiceMessage = voiceMessage,
                 voiceLevel = voiceLevel,
                 voiceResult = voiceResult,
+                rewriteDraft = rewriteDraft,
+                rewritePhase = rewritePhase,
+                rewriteMessage = rewriteMessage,
+                rewriteResult = rewriteResult,
                 polishPrefs = polishPrefs,
                 diagnosticsSnapshot = diagnosticsSnapshot,
                 appearanceMode = appearanceMode,
@@ -585,6 +659,14 @@ fun AirNoteAndroidApp(
                     settingsStore.setSelectedModel(model)
                     reloadPolishPrefs()
                 },
+                onTonePresetChange = { tone ->
+                    settingsStore.setTonePreset(tone)
+                    reloadPolishPrefs()
+                },
+                onMessagePolishModeChange = { enabled ->
+                    settingsStore.setMessagePolishMode(enabled)
+                    reloadPolishPrefs()
+                },
                 onLearningEnabledChange = { enabled ->
                     settingsStore.setLearningEnabled(enabled)
                     reloadPolishPrefs()
@@ -600,6 +682,15 @@ fun AirNoteAndroidApp(
                 },
                 onVoiceAction = ::handleVoiceAction,
                 onCancelVoice = ::cancelVoiceRecording,
+                onRewriteDraftChange = {
+                    rewriteDraft = it
+                    rewritePhase = AndroidRewritePhase.Idle
+                    rewriteMessage = "Ready to polish selected text."
+                    rewriteResult = null
+                },
+                onRewriteAction = ::runTextRewrite,
+                onCopyRewrite = ::copyRewriteResult,
+                onUseRewriteAsDraft = ::useRewriteAsDraft,
                 onRefreshHistory = ::refreshHistory,
                 onDeleteHistory = ::deleteHistory,
                 learningItem = learningItem,
@@ -1233,6 +1324,10 @@ private fun HomeScreen(
     voiceMessage: String,
     voiceLevel: Float,
     voiceResult: String?,
+    rewriteDraft: String,
+    rewritePhase: AndroidRewritePhase,
+    rewriteMessage: String,
+    rewriteResult: String?,
     polishPrefs: AndroidPolishPreferences,
     diagnosticsSnapshot: AndroidDiagnosticsSnapshot,
     appearanceMode: AndroidAppearanceMode,
@@ -1240,11 +1335,17 @@ private fun HomeScreen(
     onGatewayPresetChange: (AndroidGatewayPreset) -> Unit,
     onOutputLanguageChange: (AndroidOutputLanguage) -> Unit,
     onSelectedModelChange: (AndroidPolishModel) -> Unit,
+    onTonePresetChange: (AndroidPolishTone) -> Unit,
+    onMessagePolishModeChange: (Boolean) -> Unit,
     onLearningEnabledChange: (Boolean) -> Unit,
     onAddSafeVocabTerm: (String) -> Boolean,
     onRemoveSafeVocabTerm: (String) -> Unit,
     onVoiceAction: () -> Unit,
     onCancelVoice: () -> Unit,
+    onRewriteDraftChange: (String) -> Unit,
+    onRewriteAction: () -> Unit,
+    onCopyRewrite: () -> Unit,
+    onUseRewriteAsDraft: () -> Unit,
     onRefreshHistory: () -> Unit,
     onDeleteHistory: (RuntimeHistoryItem) -> Unit,
     learningItem: RuntimeHistoryItem?,
@@ -1386,11 +1487,24 @@ private fun HomeScreen(
                         selected = polishPrefs.selectedModel,
                         onSelected = onSelectedModelChange,
                     )
-                    SetupRow(
-                        Icons.Rounded.Tune,
-                        "Tone and rewrite",
-                        "The WAV endpoint uses the account's server-default tone. Shorter/formal rewrite stays disabled until this endpoint supports it.",
-                        "Server",
+                    TonePresetControl(
+                        selected = polishPrefs.tonePreset,
+                        onSelected = onTonePresetChange,
+                    )
+                    ToggleRow(
+                        label = "Message polish voice mode",
+                        checked = polishPrefs.messagePolishMode,
+                        onCheckedChange = onMessagePolishModeChange,
+                    )
+                    TextRewritePanel(
+                        draft = rewriteDraft,
+                        phase = rewritePhase,
+                        message = rewriteMessage,
+                        result = rewriteResult,
+                        onDraftChange = onRewriteDraftChange,
+                        onRewrite = onRewriteAction,
+                        onCopy = onCopyRewrite,
+                        onUseAsDraft = onUseRewriteAsDraft,
                     )
                 }
             }
@@ -1693,6 +1807,132 @@ private fun PolishModelControl(
         onSelected = onSelected,
     )
 }
+
+@Composable
+private fun TonePresetControl(
+    selected: AndroidPolishTone,
+    onSelected: (AndroidPolishTone) -> Unit,
+) {
+    PreferenceSegmentedControl(
+        title = "Tone",
+        items = AndroidPolishTone.entries,
+        selected = selected,
+        label = { it.label },
+        detail = { it.detail },
+        onSelected = onSelected,
+    )
+}
+
+@Composable
+private fun TextRewritePanel(
+    draft: String,
+    phase: AndroidRewritePhase,
+    message: String,
+    result: String?,
+    onDraftChange: (String) -> Unit,
+    onRewrite: () -> Unit,
+    onCopy: () -> Unit,
+    onUseAsDraft: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(AirNotePalette.SurfaceRaised.copy(alpha = 0.52f), RoundedCornerShape(10.dp))
+            .border(1.dp, AirNotePalette.Border, RoundedCornerShape(10.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusPill(Icons.Rounded.Tune, phase.label, rewriteStatusColor(phase))
+            Spacer(Modifier.weight(1f))
+            Text("Selected text", color = AirNotePalette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+        OutlinedTextField(
+            value = draft,
+            onValueChange = onDraftChange,
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 3,
+            maxLines = 6,
+            label = { Text("Text to polish") },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+        )
+        Text(
+            text = message,
+            color = if (phase == AndroidRewritePhase.Error) AirNotePalette.Danger else AirNotePalette.Muted,
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
+        )
+        if (!result.isNullOrBlank()) {
+            Text(
+                text = result,
+                color = AirNotePalette.ForegroundFixed,
+                fontSize = 15.sp,
+                lineHeight = 21.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(AirNotePalette.Surface, RoundedCornerShape(10.dp))
+                    .border(1.dp, AirNotePalette.Border, RoundedCornerShape(10.dp))
+                    .padding(10.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = onCopy,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp),
+                    shape = RoundedCornerShape(9.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.ForegroundFixed),
+                    border = BorderStroke(1.dp, AirNotePalette.BorderStrong),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                ) {
+                    Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Copy", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+                OutlinedButton(
+                    onClick = onUseAsDraft,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp),
+                    shape = RoundedCornerShape(9.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = AirNotePalette.Accent),
+                    border = BorderStroke(1.dp, AirNotePalette.Accent.copy(alpha = 0.35f)),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                ) {
+                    Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Use", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        Button(
+            onClick = onRewrite,
+            enabled = phase != AndroidRewritePhase.Polishing && draft.isNotBlank(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(40.dp),
+            shape = RoundedCornerShape(10.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = AirNotePalette.PrimaryButtonFill,
+                contentColor = AirNotePalette.PrimaryButtonContent,
+            ),
+        ) {
+            Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(if (phase == AndroidRewritePhase.Polishing) "Polishing" else "Polish text", fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun rewriteStatusColor(phase: AndroidRewritePhase): Color =
+    when (phase) {
+        AndroidRewritePhase.Polishing -> AirNotePalette.Accent
+        AndroidRewritePhase.Ready -> AirNotePalette.Success
+        AndroidRewritePhase.Error -> AirNotePalette.Danger
+        AndroidRewritePhase.Idle -> AirNotePalette.Accent
+    }
 
 @Composable
 private fun GatewayPresetControl(
