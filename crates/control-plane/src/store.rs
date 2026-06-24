@@ -40,6 +40,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/026_default_cerebras_gpt_oss_120b.sql"),
     include_str!("../migrations/027_lock_cerebras_polish_defaults.sql"),
     include_str!("../migrations/028_profile_hitl_review.sql"),
+    include_str!("../migrations/029_runtime_alias_learn_events.sql"),
 ];
 
 /// Connect to Postgres and apply the schema.

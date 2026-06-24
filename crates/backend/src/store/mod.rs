@@ -80,6 +80,7 @@ const MIGRATION_047: &str = include_str!("migrations/047_default_gpt_oss_20b.sql
 const MIGRATION_048: &str = include_str!("migrations/048_default_cerebras_gpt_oss_120b.sql");
 const MIGRATION_049: &str = include_str!("migrations/049_lock_cerebras_polish_defaults.sql");
 const MIGRATION_050: &str = include_str!("migrations/050_local_profile_summary.sql");
+const MIGRATION_051: &str = include_str!("migrations/051_observability_outbox.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -534,6 +535,14 @@ fn run_migrations(pool: &DbPool) {
             .expect("migration 050 failed");
         conn.execute_batch("PRAGMA user_version = 50")
             .expect("failed to set user_version to 50");
+    }
+
+    if version < 51 {
+        info!("running migration 051_observability_outbox");
+        conn.execute_batch(MIGRATION_051)
+            .expect("migration 051 failed");
+        conn.execute_batch("PRAGMA user_version = 51")
+            .expect("failed to set user_version to 51");
     }
 }
 

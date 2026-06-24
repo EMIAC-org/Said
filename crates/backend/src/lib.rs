@@ -20,6 +20,7 @@ pub mod formatting;
 pub mod legacy_learning;
 pub mod llm;
 pub mod number_format;
+pub mod observability;
 pub mod routes;
 pub mod store;
 pub mod stt;

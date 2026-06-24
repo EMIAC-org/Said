@@ -23,7 +23,7 @@ use base64::{Engine as _, engine::general_purpose};
 use futures::{SinkExt, StreamExt};
 use said_core::deepgram::{BiasPackage, TranscriptMeta};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::convert::Infallible;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -49,6 +49,109 @@ const LIVE_TOKEN_MIN_FLUSH_INTERVAL: Duration = Duration::from_millis(28);
 const LIVE_TOKEN_MIN_CHARS: usize = 18;
 const LIVE_TOKEN_MAX_CHARS: usize = 64;
 const LIVE_TOKEN_HARD_MAX_CHARS: usize = 96;
+const SERVER_RUNTIME_VOICE_WAV_JSON_LIMIT_BYTES: usize = 24 * 1024 * 1024;
+const SERVER_RUNTIME_VOICE_WAV_JSON_OVERHEAD_BYTES: usize = 4 * 1024;
+
+fn base64_encoded_len(bytes: usize) -> usize {
+    bytes.div_ceil(3) * 4
+}
+
+fn estimated_runtime_voice_wav_json_bytes(wav_bytes: usize) -> usize {
+    base64_encoded_len(wav_bytes).saturating_add(SERVER_RUNTIME_VOICE_WAV_JSON_OVERHEAD_BYTES)
+}
+
+fn voice_error_code_for(message: &str, explicit: Option<&str>) -> String {
+    if let Some(code) = explicit.filter(|s| !s.trim().is_empty()) {
+        return code.to_string();
+    }
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("payload too large")
+        || lower.contains("length limit exceeded")
+        || lower.contains("request too large")
+        || lower.contains("audio too large")
+    {
+        "audio_payload_too_large".to_string()
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        "runtime_timeout".to_string()
+    } else if lower.contains("network")
+        || lower.contains("dns")
+        || lower.contains("failed to connect")
+        || lower.contains("connection")
+    {
+        "runtime_network_error".to_string()
+    } else if lower.contains("server audio runtime")
+        || lower.contains("server runtime")
+        || lower.contains("service unavailable")
+        || lower.contains("internal error")
+    {
+        "server_runtime_failed".to_string()
+    } else if lower.contains("no speech") || lower.contains("empty transcript") {
+        "no_speech_detected".to_string()
+    } else {
+        "voice_pipeline_failed".to_string()
+    }
+}
+
+fn voice_error_retryable(code: &str) -> bool {
+    matches!(
+        code,
+        "audio_payload_too_large"
+            | "runtime_timeout"
+            | "runtime_network_error"
+            | "server_runtime_failed"
+            | "voice_pipeline_failed"
+            | "local_stt_no_transcript"
+            | "no_speech_detected"
+    )
+}
+
+fn voice_error_owned_by_airnote(code: &str, message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    matches!(
+        code,
+        "audio_payload_too_large"
+            | "runtime_timeout"
+            | "runtime_network_error"
+            | "server_runtime_failed"
+            | "voice_pipeline_failed"
+    ) || lower.contains("server audio runtime")
+        || lower.contains("sse stream ended")
+}
+
+fn voice_error_payload(
+    message: impl Into<String>,
+    audio_id: Option<&str>,
+    explicit_code: Option<&str>,
+) -> Value {
+    let message = message.into();
+    let error_code = voice_error_code_for(&message, explicit_code);
+    let retryable = audio_id.is_some() && voice_error_retryable(&error_code);
+    let owned_by_airnote = voice_error_owned_by_airnote(&error_code, &message);
+    let diagnostic = format!(
+        "AirNote voice pipeline failure; code={}; retryable={}; saved_audio={}",
+        error_code,
+        retryable,
+        audio_id.unwrap_or("none")
+    );
+    json!({
+        "message": message,
+        "audio_id": audio_id,
+        "error_code": error_code,
+        "retryable": retryable,
+        "owned_by_airnote": owned_by_airnote,
+        "diagnostic": diagnostic,
+    })
+}
+
+fn voice_error_event(
+    message: impl Into<String>,
+    audio_id: Option<&str>,
+    explicit_code: Option<&str>,
+) -> Event {
+    Event::default()
+        .event("error")
+        .data(voice_error_payload(message, audio_id, explicit_code).to_string())
+}
 
 struct LiveTokenCoalescer {
     buffer: String,
@@ -515,8 +618,11 @@ pub async fn repair_transcript(
         let prefs = match prefs_opt {
             Some(p) => p,
             None => {
-                yield Ok::<Event, Infallible>(Event::default().event("error")
-                    .data(json!({"message": "preferences not found", "audio_id": req.audio_id}).to_string()));
+                yield Ok::<Event, Infallible>(voice_error_event(
+                    "preferences not found",
+                    req.audio_id.as_deref(),
+                    Some("preferences_not_found"),
+                ));
                 return;
             }
         };
@@ -607,15 +713,15 @@ pub async fn repair_transcript(
                     e.clone()
                 };
                 warn!("[voice-repair] LLM error: {e}");
-                yield Ok(Event::default().event("error").data(
-                    json!({"message": message, "audio_id": req.audio_id}).to_string()
-                ));
+                yield Ok(voice_error_event(message, req.audio_id.as_deref(), None));
                 return;
             }
             Err(e) => {
                 warn!("[voice-repair] LLM task panicked: {e}");
-                yield Ok(Event::default().event("error").data(
-                    json!({"message": "internal error", "audio_id": req.audio_id}).to_string()
+                yield Ok(voice_error_event(
+                    "internal error",
+                    req.audio_id.as_deref(),
+                    Some("internal_error"),
                 ));
                 return;
             }
@@ -680,7 +786,7 @@ pub async fn repair_transcript(
             let p_ms = llm_result.polish_ms as i64;
             let enr2 = req.enriched_transcript.clone();
             tokio::spawn(async move {
-                insert_recording(&pool2, InsertRecording {
+                let rec = InsertRecording {
                     id: &id2, user_id: &uid2,
                     transcript: &t2, polished: &p2,
                     word_count, recording_seconds: estimated_secs(word_count),
@@ -696,7 +802,14 @@ pub async fn repair_transcript(
                     raw_transcript: Some(&t2),
                     local_corrected_transcript: Some(&t2),
                     polished_output: Some(&p2),
-                });
+                };
+                crate::observability::after_recording_insert(
+                    &pool2,
+                    &uid2,
+                    &rec,
+                    crate::observability::observability_extras(None),
+                );
+                insert_recording(&pool2, rec);
             });
         }
 
@@ -1129,6 +1242,25 @@ async fn run_server_runtime_voice_wav_probe(
         .unwrap_or("https://airnote.emiactech.com")
         .to_string();
 
+    let encoded_len = base64_encoded_len(wav_data.len());
+    let estimated_json_bytes = estimated_runtime_voice_wav_json_bytes(wav_data.len());
+    info!(
+        "[voice] server audio runtime payload mode={} wav_bytes={} wav_b64_bytes={} estimated_json_bytes={} limit_bytes={}",
+        mode,
+        wav_data.len(),
+        encoded_len,
+        estimated_json_bytes,
+        SERVER_RUNTIME_VOICE_WAV_JSON_LIMIT_BYTES,
+    );
+    if estimated_json_bytes > SERVER_RUNTIME_VOICE_WAV_JSON_LIMIT_BYTES {
+        return Err(format!(
+            "server audio runtime request too large: wav_bytes={} estimated_json_bytes={} limit_bytes={}",
+            wav_data.len(),
+            estimated_json_bytes,
+            SERVER_RUNTIME_VOICE_WAV_JSON_LIMIT_BYTES
+        ));
+    }
+
     let req = ServerRuntimeVoiceWavRequest {
         wav_b64: general_purpose::STANDARD.encode(wav_data),
         mode: if mode.trim().is_empty() || mode == "normal_voice" {
@@ -1167,11 +1299,25 @@ async fn run_server_runtime_voice_wav_probe(
     )
     .send()
     .await
-    .map_err(|e| format!("server audio runtime request failed: {e}"))?;
+    .map_err(|e| {
+        format!(
+            "server audio runtime request failed: {e}; wav_bytes={} estimated_json_bytes={}",
+            wav_data.len(),
+            estimated_json_bytes
+        )
+    })?;
 
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
+        warn!(
+            "[voice] server audio runtime non-success mode={} status={} wav_bytes={} estimated_json_bytes={} body={}",
+            mode,
+            status,
+            wav_data.len(),
+            estimated_json_bytes,
+            said_core::text::truncate_utf8(&body, 240),
+        );
         return Err(format!(
             "server audio runtime returned {status}: {}",
             said_core::text::truncate_utf8(&body, 240)
@@ -1683,9 +1829,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             Some(p) => p,
             None => {
                 yield Ok::<Event, Infallible>(
-                    Event::default().event("error").data(
-                        json!({"message": "preferences not found", "audio_id": aid}).to_string()
-                    )
+                    voice_error_event("preferences not found", aid, Some("preferences_not_found"))
                 );
                 return;
             }
@@ -1758,8 +1902,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
 
         if message_polish_mode {
             if wav_data.is_empty() {
-                yield Ok(Event::default().event("error").data(
-                    json!({"message": "no audio captured for message polish mode", "audio_id": aid}).to_string()
+                yield Ok(voice_error_event(
+                    "no audio captured for message polish mode",
+                    aid,
+                    Some("no_audio_captured"),
                 ));
                 return;
             }
@@ -1799,8 +1945,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     let ta2 = target_app.clone();
                     let model2 = server_model.clone();
                     let aid2 = saved_audio_id.clone();
+                    let crid2 = client_run_id.clone();
                     tokio::task::spawn_blocking(move || {
-                        insert_recording(&pool2, InsertRecording {
+                        let rec = InsertRecording {
                             id: &id2,
                             user_id: &uid2,
                             transcript: &t2,
@@ -1819,7 +1966,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             raw_transcript: Some(&t2),
                             local_corrected_transcript: None,
                             polished_output: Some(&p2),
-                        });
+                        };
+                        crate::observability::after_recording_insert(
+                            &pool2,
+                            &uid2,
+                            &rec,
+                            crate::observability::observability_extras(crid2.as_deref()),
+                        );
+                        insert_recording(&pool2, rec);
                     });
 
                     yield Ok(Event::default().event("done").data(
@@ -1848,10 +2002,16 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 }
                 Err(e) => {
                     warn!("[voice] server message-polish audio failed: {e}");
+                    let lower = e.to_ascii_lowercase();
+                    if lower.contains("request too large")
+                        || lower.contains("payload too large")
+                        || lower.contains("length limit exceeded")
+                    {
+                        yield Ok(voice_error_event(e, aid, Some("audio_payload_too_large")));
+                        return;
+                    }
                     if !crate::routes::key_guard::missing_message_polish_voice_keys(&prefs).is_empty() {
-                        yield Ok(Event::default().event("error").data(
-                            json!({"message": e, "audio_id": aid}).to_string()
-                        ));
+                        yield Ok(voice_error_event(e, aid, None));
                         return;
                     }
                     warn!("[voice] falling back to local STT + server message polish");
@@ -1882,16 +2042,16 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 }
                 Err(e) => {
                     warn!("[voice] message-polish batch STT error: {e}");
-                    yield Ok(Event::default().event("error").data(
-                        json!({"message": e, "audio_id": aid}).to_string()
-                    ));
+                    yield Ok(voice_error_event(e, aid, None));
                     return;
                 }
             };
 
             if stt_transcript_raw.trim().is_empty() {
-                yield Ok(Event::default().event("error").data(
-                    json!({"message": "no speech detected — try speaking again", "audio_id": aid}).to_string()
+                yield Ok(voice_error_event(
+                    "no speech detected — try speaking again",
+                    aid,
+                    Some("no_speech_detected"),
                 ));
                 return;
             }
@@ -1921,8 +2081,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     let model2 = model_used.clone();
                     let p_ms = llm_result.polish_ms as i64;
                     let aid2 = saved_audio_id.clone();
+                    let crid2 = client_run_id.clone();
                     tokio::task::spawn_blocking(move || {
-                        insert_recording(&pool2, InsertRecording {
+                        let rec = InsertRecording {
                             id: &id2,
                             user_id: &uid2,
                             transcript: &t2,
@@ -1941,7 +2102,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             raw_transcript: Some(&t2),
                             local_corrected_transcript: None,
                             polished_output: Some(&p2),
-                        });
+                        };
+                        crate::observability::after_recording_insert(
+                            &pool2,
+                            &uid2,
+                            &rec,
+                            crate::observability::observability_extras(crid2.as_deref()),
+                        );
+                        insert_recording(&pool2, rec);
                     });
 
                     yield Ok(Event::default().event("done").data(
@@ -1968,9 +2136,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 }
                 Err(e) => {
                     warn!("[voice] server message polish failed: {e}");
-                    yield Ok(Event::default().event("error").data(
-                        json!({"message": e, "audio_id": aid}).to_string()
-                    ));
+                    yield Ok(voice_error_event(e, aid, None));
                 }
             }
             return;
@@ -2090,8 +2256,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     let pool_store = pool.clone();
                     let user_id_store = user_id.clone();
                     let word_count = polished_for_store.split_whitespace().count() as i64;
+                    let crid_store = client_run_id.clone();
                     tokio::spawn(async move {
-                        insert_recording(&pool_store, InsertRecording {
+                        let rec = InsertRecording {
                             id: &recording_id_for_store,
                             user_id: &user_id_store,
                             transcript: &transcript_for_store,
@@ -2110,7 +2277,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             raw_transcript: Some(&transcript_for_store),
                             local_corrected_transcript: Some(&transcript_for_store),
                             polished_output: Some(&polished_for_store),
-                        });
+                        };
+                        crate::observability::after_recording_insert(
+                            &pool_store,
+                            &user_id_store,
+                            &rec,
+                            crate::observability::observability_extras(crid_store.as_deref()),
+                        );
+                        insert_recording(&pool_store, rec);
                     });
 
                     yield Ok(Event::default().event("done").data(
@@ -2204,9 +2378,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 Ok(v) => v,
                 Err(e) => {
                     warn!("[voice] STT error: {e}");
-                    yield Ok(Event::default().event("error").data(
-                        json!({"message": e, "audio_id": aid}).to_string()
-                    ));
+                    yield Ok(voice_error_event(e, aid, None));
                     return;
                 }
             };
@@ -2256,12 +2428,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     wav_data.len(),
                     audio_seconds,
                 );
-                yield Ok(Event::default().event("error").data(
-                    json!({
-                        "error_code": "local_stt_no_transcript",
-                        "message": message,
-                        "audio_id": aid,
-                    }).to_string()
+                yield Ok(voice_error_event(
+                    message,
+                    aid,
+                    Some("local_stt_no_transcript"),
                 ));
                 return;
             } else if stt_provider == "groq_whisper" {
@@ -2289,9 +2459,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     }
                     Err(e) => {
                         warn!("[voice] groq whisper STT error: {e}");
-                        yield Ok(Event::default().event("error").data(
-                            json!({"message": e, "audio_id": aid}).to_string()
-                        ));
+                        yield Ok(voice_error_event(e, aid, None));
                         return;
                     }
                 }
@@ -2321,16 +2489,12 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         }
                         Ok(Err(e)) => {
                             warn!("[voice] whisper STT error: {e}");
-                            yield Ok(Event::default().event("error").data(
-                                json!({"message": e, "audio_id": aid}).to_string()
-                            ));
+                            yield Ok(voice_error_event(e, aid, None));
                             return;
                         }
                         Err(e) => {
                             warn!("[voice] whisper task panicked: {e}");
-                            yield Ok(Event::default().event("error").data(
-                                json!({"message": format!("{e}"), "audio_id": aid}).to_string()
-                            ));
+                            yield Ok(voice_error_event(format!("{e}"), aid, None));
                             return;
                         }
                     }
@@ -2367,9 +2531,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     }
                     Err(e) => {
                         warn!("[voice] STT error: {e}");
-                        yield Ok(Event::default().event("error").data(
-                            json!({"message": e, "audio_id": aid}).to_string()
-                        ));
+                        yield Ok(voice_error_event(e, aid, None));
                         return;
                     }
                 }
@@ -2788,9 +2950,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                                 )
                             };
                             warn!("[voice] server runtime fallback failed: {local_e}");
-                            yield Ok(Event::default().event("error").data(
-                                json!({"message": message, "audio_id": aid}).to_string()
-                            ));
+                            yield Ok(voice_error_event(message, aid, None));
                             return;
                         }
                     }
@@ -2845,9 +3005,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                                 )
                             };
                             warn!("[voice] server runtime fallback failed: {local_e}");
-                            yield Ok(Event::default().event("error").data(
-                                json!({"message": message, "audio_id": aid}).to_string()
-                            ));
+                            yield Ok(voice_error_event(message, aid, None));
                             return;
                         }
                     }
@@ -3014,17 +3172,13 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             .to_string()
                         ));
                     } else {
-                        yield Ok(Event::default().event("error").data(
-                            json!({"message": message, "audio_id": aid}).to_string()
-                        ));
+                        yield Ok(voice_error_event(message, aid, None));
                     }
                     return;
                 }
                 Err(e) => {
                     warn!("[voice] LLM task panicked: {e}");
-                    yield Ok(Event::default().event("error").data(
-                        json!({"message": "internal error", "audio_id": aid}).to_string()
-                    ));
+                    yield Ok(voice_error_event("internal error", aid, Some("internal_error")));
                     return;
                 }
             };
@@ -3188,8 +3342,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let enr2    = enriched_raw.clone();
             let raw2    = stt_transcript_raw.clone();
             let local2  = llm_result.polished.clone();
+            let crid2   = client_run_id.clone();
             let inserted = tokio::task::spawn_blocking(move || {
-                insert_recording(&pool2, InsertRecording {
+                let rec = InsertRecording {
                     id: &id2, user_id: &uid2,
                     transcript: &t2, polished: &p2,
                     word_count, recording_seconds: if audio_secs > 0.0 { audio_secs } else { estimated_secs(word_count) },
@@ -3205,7 +3360,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     raw_transcript: Some(&raw2),
                     local_corrected_transcript: Some(&local2),
                     polished_output: Some(&p2),
-                }).is_some()
+                };
+                crate::observability::after_recording_insert(
+                    &pool2,
+                    &uid2,
+                    &rec,
+                    crate::observability::observability_extras(crid2.as_deref()),
+                );
+                insert_recording(&pool2, rec).is_some()
             }).await.unwrap_or(false);
             if !inserted {
                 warn!("[voice] failed to insert recording history row");

@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use axum::{
     Router,
-    extract::Path,
+    extract::{DefaultBodyLimit, Path},
     http::{Method, StatusCode, Uri, header},
     response::{Html, IntoResponse, Redirect},
     routing::{delete, get, patch, post},
@@ -116,6 +116,7 @@ pub struct AppState {
 /// vocab changes self-heal within seconds even without explicit invalidation;
 /// long enough that a burst of dictations all hit warm.
 pub const SETUP_CACHE_TTL: Duration = Duration::from_secs(60);
+const RUNTIME_VOICE_WAV_BODY_LIMIT_BYTES: usize = 24 * 1024 * 1024;
 
 /// Construct the in-memory setup caches (one place so every `AppState` builder
 /// stays in sync).
@@ -195,7 +196,11 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/runtime/message-polish",
             post(routes::runtime::message_polish),
         )
-        .route("/v1/runtime/voice/wav", post(routes::runtime::voice_wav))
+        .route(
+            "/v1/runtime/voice/wav",
+            post(routes::runtime::voice_wav)
+                .layer(DefaultBodyLimit::max(RUNTIME_VOICE_WAV_BODY_LIMIT_BYTES)),
+        )
         .route("/v1/runtime/status", get(routes::runtime::status))
         .route("/v1/runtime/runs", get(routes::runtime::list_runs))
         .route("/v1/runtime/runs/:id", get(routes::runtime::run_detail))
@@ -293,6 +298,34 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/orgs/:org_id/telemetry/users/:account_id/memory",
             get(routes::telemetry::user_memory),
+        )
+        .route(
+            "/v1/orgs/:org_id/observability/summary",
+            get(routes::observability::org_observability_summary),
+        )
+        .route(
+            "/v1/orgs/:org_id/observability/dictation",
+            get(routes::observability::list_org_dictation),
+        )
+        .route(
+            "/v1/orgs/:org_id/observability/dictation/:recording_id",
+            get(routes::observability::get_org_dictation_detail),
+        )
+        .route(
+            "/v1/orgs/:org_id/observability/users/:account_id/aliases",
+            get(routes::observability::list_user_alias_events),
+        )
+        .route(
+            "/v1/runtime/observability/dictation",
+            post(routes::observability::ingest_dictation),
+        )
+        .route(
+            "/v1/runtime/observability/dictation/:recording_id",
+            patch(routes::observability::patch_dictation),
+        )
+        .route(
+            "/v1/runtime/observability/aliases",
+            post(routes::observability::ingest_aliases),
         )
         // Enterprise — Desktop clients
         .route("/v1/clients/register", post(routes::clients::register))

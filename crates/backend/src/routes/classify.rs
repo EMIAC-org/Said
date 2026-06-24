@@ -1036,6 +1036,23 @@ async fn classify_inner(
         review_candidates.clear();
     }
 
+    let review_json: Vec<serde_json::Value> = review_candidates
+        .iter()
+        .filter_map(|r| serde_json::to_value(r).ok())
+        .collect();
+    crate::observability::schedule_classify_observability(
+        &state,
+        crate::observability::ClassifyObservabilityInput {
+            recording_id: &body.recording_id,
+            user_kept: &body.user_kept,
+            capture_method: &body.capture_method,
+            overall_class: &analyzer_output.overall_class,
+            changes: &analyzer_output.changes,
+            review_candidates: &review_json,
+            promoted_terms: &promoted_terms,
+        },
+    );
+
     (
         StatusCode::OK,
         Json(ClassifyResponse {

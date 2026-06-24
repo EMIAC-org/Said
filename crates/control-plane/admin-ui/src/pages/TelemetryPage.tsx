@@ -8,6 +8,8 @@ import { TelemetryStatCard } from '../components/telemetry/TelemetryStatCard'
 import { pct, ms } from '../components/telemetry/format'
 import { ErrorBox, Loading } from '../components/States'
 
+import type { ObservabilitySummary } from '../types'
+
 interface TelemetryAnalytics {
   window_days: number
   usage: {
@@ -44,6 +46,7 @@ export function TelemetryPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const days = Number(searchParams.get('days') || '30')
   const [data, setData] = useState<TelemetryAnalytics | null>(null)
+  const [observability, setObservability] = useState<ObservabilitySummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -54,8 +57,16 @@ export function TelemetryPage() {
       return
     }
     setLoading(true)
-    apiJson<TelemetryAnalytics>(`/v1/orgs/${orgId}/telemetry?days=${days}`)
-      .then(setData)
+    Promise.all([
+      apiJson<TelemetryAnalytics>(`/v1/orgs/${orgId}/telemetry?days=${days}`),
+      apiJson<ObservabilitySummary>(`/v1/orgs/${orgId}/observability/summary?days=${days}`).catch(
+        () => null,
+      ),
+    ])
+      .then(([telemetry, obs]) => {
+        setData(telemetry)
+        setObservability(obs)
+      })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
   }, [org, days])
@@ -74,7 +85,7 @@ export function TelemetryPage() {
         <div>
           <h1 className="text-[15px] font-semibold text-fg">Desktop Telemetry</h1>
           <p className="text-[12px] text-fg-4 mt-1">
-            Privacy-safe per-run analytics from signed-in desktops. No transcript text is stored.
+            Per-run analytics plus org dictation observability (admin plaintext inspector).
           </p>
         </div>
         <select
@@ -134,6 +145,31 @@ export function TelemetryPage() {
               sub="Clipboard or HTTP STT fallback"
             />
           </div>
+
+          {observability ? (
+            <div className="grid grid-cols-4 gap-3 mb-4">
+              <TelemetryStatCard
+                label="Dictations synced"
+                value={observability.dictation_count.toLocaleString()}
+                sub="runtime_history_items"
+              />
+              <TelemetryStatCard
+                label="Edits with feedback"
+                value={observability.edits_detected.toLocaleString()}
+                sub="classify payload"
+              />
+              <TelemetryStatCard
+                label="Aliases learned"
+                value={observability.aliases_learned.toLocaleString()}
+                sub="audit events"
+              />
+              <TelemetryStatCard
+                label="STT-error edit rate"
+                value={pct(observability.classify_stt_error_rate * 100)}
+                sub={`${observability.stt_error_edits} edits`}
+              />
+            </div>
+          ) : null}
 
           <div className="grid grid-cols-2 gap-4">
             <div className="card p-4">

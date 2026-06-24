@@ -505,6 +505,7 @@ pub async fn confirm_batch(
     let mut learned_terms = Vec::new();
     let mut server_memory_terms: Vec<serde_json::Value> = Vec::new();
     let mut server_memory_aliases: Vec<serde_json::Value> = Vec::new();
+    let mut observability_aliases: Vec<crate::observability::AliasLearnItem> = Vec::new();
 
     for item in &body.items {
         let corrected = item.corrected.trim();
@@ -579,6 +580,14 @@ pub async fn confirm_batch(
 
             // Auto-approve (user explicitly confirmed via batch)
             stt_replacements::approve_aliases_for_term(&state.pool, user_id, corrected);
+
+            observability_aliases.push(crate::observability::AliasLearnItem {
+                heard: original.to_string(),
+                correct: corrected.to_string(),
+                source: "confirm_batch".into(),
+                safety: None,
+                recording_id: body.recording_id.clone(),
+            });
         } else if !original.is_empty() {
             info!(
                 "[confirm-batch] alias safety blocked {:?} -> {:?}",
@@ -654,6 +663,26 @@ pub async fn confirm_batch(
         "[confirm-batch] learned {learned_count}/{} terms (local fallback)",
         body.items.len(),
     );
+
+    if !observability_aliases.is_empty() {
+        let pool = state.pool.clone();
+        let user_id_owned = user_id.to_string();
+        let http = state.http_client.clone();
+        let batch = crate::observability::AliasBatchPayload {
+            items: observability_aliases,
+        };
+        tokio::spawn(async move {
+            if let Err(e) = crate::observability::enqueue_alias_batch(&pool, &user_id_owned, batch)
+            {
+                tracing::warn!("[observability] confirm-batch alias enqueue failed: {e}");
+            }
+            crate::observability::uploader::maybe_upload_after_enqueue(
+                &pool,
+                &user_id_owned,
+                &http,
+            );
+        });
+    }
 
     (
         StatusCode::OK,

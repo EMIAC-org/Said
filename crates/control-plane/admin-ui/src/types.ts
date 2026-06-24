@@ -404,3 +404,57 @@ export interface TelemetryUserMemory {
     model?: string | null
   }[]
 }
+
+export interface ObservabilitySummary {
+  window_days: number
+  dictation_count: number
+  aliases_learned: number
+  edits_detected: number
+  stt_error_edits: number
+  classify_stt_error_rate: number
+}
+
+export interface DictationListItem {
+  id: string
+  account_id: string
+  recording_id?: string | null
+  client_run_id?: string | null
+  target_app?: string | null
+  word_count?: number | null
+  recording_seconds?: number | null
+  model_used?: string | null
+  source: string
+  created_at: string
+  edit_bucket?: string | null
+  edit_detected?: boolean | null
+  total_ms?: number | null
+  has_edit_feedback: boolean
+}
+
+export interface DictationDetailItem {
+  id: string
+  account_id: string
+  recording_id?: string | null
+  raw_transcript?: string | null
+  transcript?: string | null
+  local_corrected_transcript?: string | null
+  polished_output?: string | null
+  final_text?: string | null
+  target_app?: string | null
+  model_used?: string | null
+  word_count?: number | null
+  edit_feedback_json?: Record<string, unknown>
+  created_at: string
+  edit_bucket?: string | null
+  total_ms?: number | null
+}
+
+export interface AliasLearnEvent {
+  id: string
+  heard: string
+  correct: string
+  source: string
+  safety?: string | null
+  created_at: string
+  recording_id?: string | null
+}

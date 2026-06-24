@@ -11,6 +11,7 @@ pub mod lark_sync;
 pub mod license;
 pub mod meetings;
 pub mod metering;
+pub mod observability;
 pub mod openai;
 pub mod orgs;
 pub mod runtime;
