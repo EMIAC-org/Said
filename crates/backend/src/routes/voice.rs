@@ -216,7 +216,8 @@ use crate::{
             VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE, VocabEntry,
             build_user_message_with_hints, build_voice_repair_system_prompt,
             build_voice_repair_user_message, default_voice_prompt_template,
-            render_voice_system_prompt_template, resolved_vocab_terms_to_entries_with_aliases,
+            render_voice_system_prompt_template_with_profile,
+            resolved_vocab_terms_to_entries_with_aliases,
         },
         script,
         stream_safety::{
@@ -267,6 +268,8 @@ struct ServerRuntimeVoiceRequest {
     selected_model: String,
     screen_context: Option<String>,
     safe_vocab_terms: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_profile_markdown: Option<String>,
     client_run_id: Option<String>,
 }
 
@@ -736,6 +739,7 @@ async fn run_server_runtime_voice_probe(
     selected_model: &str,
     screen_context: Option<&str>,
     vocab_entries: &[VocabEntry],
+    client_profile_markdown: Option<&str>,
 ) -> Result<(crate::llm::PolishResult, String), String> {
     let setup_start = Instant::now();
     let Some(user) = crate::store::users::get_user(pool, user_id) else {
@@ -766,6 +770,7 @@ async fn run_server_runtime_voice_probe(
         selected_model: selected_model.to_string(),
         screen_context: screen_context.map(|s| s.chars().take(500).collect()),
         safe_vocab_terms,
+        client_profile_markdown: client_profile_markdown.map(str::to_string),
         client_run_id: client_run_id
             .filter(|s| !s.trim().is_empty())
             .map(str::to_string)
@@ -775,7 +780,7 @@ async fn run_server_runtime_voice_probe(
     let url = format!("{}/v1/runtime/voice/polish", base_url.trim_end_matches('/'));
     let start = Instant::now();
     info!(
-        "[voice] server runtime request start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} screen_context_chars={} setup_ms={}",
+        "[voice] server runtime request start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} profile_chars={} screen_context_chars={} setup_ms={}",
         req.client_run_id.as_deref().unwrap_or("none"),
         url,
         transcript.chars().count(),
@@ -783,6 +788,10 @@ async fn run_server_runtime_voice_probe(
         selected_model,
         output_language,
         req.safe_vocab_terms.len(),
+        req.client_profile_markdown
+            .as_ref()
+            .map(|s| s.chars().count())
+            .unwrap_or(0),
         req.screen_context
             .as_ref()
             .map(|s| s.chars().count())
@@ -848,6 +857,7 @@ async fn run_server_runtime_voice_stream(
     selected_model: String,
     screen_context: Option<String>,
     vocab_entries: Vec<VocabEntry>,
+    client_profile_markdown: Option<String>,
     token_tx: mpsc::Sender<String>,
 ) -> Result<(crate::llm::PolishResult, String), String> {
     let setup_start = Instant::now();
@@ -879,6 +889,7 @@ async fn run_server_runtime_voice_stream(
         selected_model,
         screen_context: screen_context.map(|s| s.chars().take(500).collect()),
         safe_vocab_terms,
+        client_profile_markdown,
         client_run_id: client_run_id
             .filter(|s| !s.trim().is_empty())
             .or_else(|| Some(Uuid::new_v4().to_string())),
@@ -890,7 +901,7 @@ async fn run_server_runtime_voice_stream(
     );
     let start = Instant::now();
     info!(
-        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} screen_context_chars={} setup_ms={}",
+        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} profile_chars={} screen_context_chars={} setup_ms={}",
         req.client_run_id.as_deref().unwrap_or("none"),
         url,
         req.transcript.chars().count(),
@@ -898,6 +909,10 @@ async fn run_server_runtime_voice_stream(
         req.selected_model,
         req.output_language,
         req.safe_vocab_terms.len(),
+        req.client_profile_markdown
+            .as_ref()
+            .map(|s| s.chars().count())
+            .unwrap_or(0),
         req.screen_context
             .as_ref()
             .map(|s| s.chars().count())
@@ -2481,6 +2496,29 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 (resolved.transcript, entries)
             }
         };
+        let client_profile_summary = {
+            let pool_profile = pool.clone();
+            let uid_profile = user_id.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::store::profile_summary::ensure_current(&pool_profile, &uid_profile)
+            })
+            .await
+            .unwrap_or(None)
+        };
+        let client_profile_markdown = client_profile_summary
+            .as_ref()
+            .map(|summary| summary.profile_markdown.as_str());
+        info!(
+            "[profile-summary] voice prompt profile version={} chars={} injected={}",
+            client_profile_summary
+                .as_ref()
+                .map(|summary| summary.version)
+                .unwrap_or(0),
+            client_profile_markdown
+                .map(|profile| profile.chars().count())
+                .unwrap_or(0),
+            client_profile_markdown.is_some(),
+        );
         let low_conf = keep_low_confidence_markers(&enriched_for_hints, 80.0);
         let low_conf_ref = if low_conf != resolved_transcript {
             Some(low_conf.as_str())
@@ -2516,12 +2554,13 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let relevant_corrections = crate::store::corrections::filter_relevant(
             &word_corrections, &resolved_transcript, 2, 10,
         );
-        let mut base_system_prompt = render_voice_system_prompt_template(
+        let mut base_system_prompt = render_voice_system_prompt_template_with_profile(
             &prompt_body,
             &prefs,
             &rag_examples,
             &relevant_corrections,
             &vocab_entries,
+            client_profile_markdown,
         );
 
         // Inject dynamic few-shot correction examples from user's history.
@@ -2623,6 +2662,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 prefs.selected_model.clone(),
                 screen_context.clone(),
                 vocab_entries.clone(),
+                client_profile_markdown.map(str::to_string),
                 token_tx,
             ));
 

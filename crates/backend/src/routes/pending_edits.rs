@@ -37,10 +37,10 @@ pub async fn create(
     Json(body): Json<CreateBody>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if crate::legacy_learning::audit_only_legacy_mutations() {
-        info!("[pending-edits] create blocked — legacy learning frozen");
+        info!("[pending-edits] create blocked — user learning disabled");
         return (
             StatusCode::CONFLICT,
-            Json(serde_json::json!({ "error": "legacy_learning_frozen" })),
+            Json(serde_json::json!({ "error": "learning_disabled" })),
         );
     }
     match pending_edits::insert(

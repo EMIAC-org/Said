@@ -4,6 +4,7 @@ pub mod analyzer;
 pub mod cerebras;
 pub mod classifier;
 pub mod deepinfra;
+pub mod deepseek;
 pub mod devanagari_recovery;
 pub mod edit_diff;
 pub mod format_pass;

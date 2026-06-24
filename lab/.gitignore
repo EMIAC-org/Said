@@ -14,3 +14,8 @@ user_profiles/*
 !user_profiles/.gitkeep
 __pycache__/
 *.pyc
+
+# server bench
+server_runs/*
+!server_runs/.gitkeep
+.session_token

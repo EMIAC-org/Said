@@ -8,9 +8,9 @@
 //!   2. **Branch** — no-edit (reward active vocab), full deletion, or stale
 //!   3. **Demotion** — unconditional negative signal for removed terms
 //!   4. **Deterministic classifier** — classify hunks from diff without LLM
-//!   5. **Complex edit interpreter** — Groq may propose spans, but only real
+//!   5. **Complex edit interpreter** — DeepSeek may propose spans, but only real
 //!      transcript/output/kept spans survive verification
-//!   6. **Meaning generation** — Groq call ONLY for new STT correction terms
+//!   6. **Meaning generation** — background call ONLY for new STT correction terms
 //!   7. **Save** — persist learnable changes by reason type
 
 use axum::{Json, extract::State, http::StatusCode};
@@ -25,10 +25,9 @@ use crate::{
         analyzer::{self, AnalyzedChange, ChangeReason},
         edit_diff, promotion_gate,
     },
-    profile_learn_handoff::{self, ProfileLearnHandoff},
     store::{
-        corrections, email_memory, history, pending_promotions, prefs::get_prefs, stt_replacements,
-        tier2_edit_policy, users, vectors, vocab_embeddings, vocab_fts, vocabulary,
+        corrections, email_memory, history, prefs::get_prefs, stt_replacements, tier2_edit_policy,
+        users, vectors, vocabulary,
     },
 };
 
@@ -98,45 +97,6 @@ fn post_runtime_memory_dirty(state: AppState) {
     });
 }
 
-fn queue_profile_learn_handoff(
-    state: AppState,
-    edit_event_id: &Option<String>,
-    body: &ClassifyBody,
-    rec: &history::Recording,
-    transcript: &str,
-    output_language: &str,
-) {
-    let Some(edit_event_id) = edit_event_id.clone() else {
-        return;
-    };
-    profile_learn_handoff::post_profile_learn_from_edit(
-        state,
-        ProfileLearnHandoff {
-            edit_event_id,
-            recording_id: body.recording_id.clone(),
-            raw_transcript: rec
-                .raw_transcript
-                .clone()
-                .filter(|t| !t.trim().is_empty())
-                .or_else(|| Some(transcript.to_string())),
-            ai_output: body.ai_output.clone(),
-            user_kept: body.user_kept.clone(),
-            target_app: rec.target_app.clone(),
-            output_language: Some(output_language.to_string()),
-            model_used: Some(rec.model_used.clone()),
-            capture_confidence: Some(
-                profile_learn_handoff::capture_confidence_label(&body.capture_method).to_string(),
-            ),
-            client_run_id: body
-                .client_run_id
-                .as_ref()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .map(str::to_string),
-        },
-    );
-}
-
 fn post_runtime_client_event(
     state: AppState,
     event_type: &'static str,
@@ -194,213 +154,10 @@ fn post_runtime_client_event(
     });
 }
 
-async fn refine_review_candidates_with_server(
-    state: &AppState,
-    recording_id: &str,
-    transcript: &str,
-    ai_output: &str,
-    user_kept: &str,
-    candidates: Vec<ReviewCandidate>,
-) -> Vec<ReviewCandidate> {
-    if candidates.is_empty() {
-        return candidates;
-    }
-    let fallback = candidates.clone();
-    let Some(user) = users::get_user(&state.pool, &state.default_user_id) else {
-        return fallback;
-    };
-    let Some(token) = user.cloud_token.filter(|t| !t.trim().is_empty()) else {
-        return fallback;
-    };
-    let base_url = user
-        .enterprise_server_url
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
-    let url = format!(
-        "{}/v1/runtime/learning/analyze-edit",
-        base_url.trim_end_matches('/')
-    );
-    let body = serde_json::json!({
-        "recording_id": recording_id,
-        "transcript": transcript,
-        "ai_output": ai_output,
-        "user_kept": user_kept,
-        "candidates": candidates,
-    });
-    match state
-        .http_client
-        .post(url)
-        .bearer_auth(token)
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
-            Ok(value) => serde_json::from_value::<Vec<ReviewCandidate>>(
-                value
-                    .get("candidates")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!([])),
-            )
-            .unwrap_or(fallback),
-            Err(e) => {
-                warn!("[classify] server review analyzer parse failed: {e}");
-                fallback
-            }
-        },
-        Ok(resp) => {
-            warn!(
-                "[classify] server review analyzer failed: {}",
-                resp.status()
-            );
-            fallback
-        }
-        Err(e) => {
-            warn!("[classify] server review analyzer failed: {e}");
-            fallback
-        }
-    }
-}
-
-async fn server_review_candidates_from_raw(
-    state: &AppState,
-    recording_id: &str,
-    transcript: &str,
-    ai_output: &str,
-    user_kept: &str,
-) -> Option<Vec<ReviewCandidate>> {
-    let user = users::get_user(&state.pool, &state.default_user_id)?;
-    let token = user.cloud_token.filter(|t| !t.trim().is_empty())?;
-    let base_url = user
-        .enterprise_server_url
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
-    let url = format!(
-        "{}/v1/runtime/learning/analyze-edit",
-        base_url.trim_end_matches('/')
-    );
-    let body = serde_json::json!({
-        "recording_id": recording_id,
-        "transcript": transcript,
-        "ai_output": ai_output,
-        "user_kept": user_kept,
-        "candidates": [],
-    });
-    match state
-        .http_client
-        .post(url)
-        .bearer_auth(token)
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(8))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
-            Ok(value) => {
-                let candidates = value
-                    .get("candidates")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!([]));
-                match serde_json::from_value::<Vec<ReviewCandidate>>(candidates) {
-                    Ok(candidates) => Some(candidates),
-                    Err(e) => {
-                        warn!("[classify] server raw learning judge parse failed: {e}");
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("[classify] server raw learning judge response parse failed: {e}");
-                None
-            }
-        },
-        Ok(resp) => {
-            warn!(
-                "[classify] server raw learning judge failed: {}",
-                resp.status()
-            );
-            None
-        }
-        Err(e) => {
-            warn!("[classify] server raw learning judge failed: {e}");
-            None
-        }
-    }
-}
-
-async fn server_validate_direct_candidate(
-    state: &AppState,
-    recording_id: &str,
-    transcript: &str,
-    ai_output: &str,
-    user_kept: &str,
-    candidate: ReviewCandidate,
-) -> Option<ReviewCandidate> {
-    let user = users::get_user(&state.pool, &state.default_user_id)?;
-    let token = user.cloud_token.filter(|t| !t.trim().is_empty())?;
-    let base_url = user
-        .enterprise_server_url
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
-    let url = format!(
-        "{}/v1/runtime/learning/analyze-edit",
-        base_url.trim_end_matches('/')
-    );
-    let body = serde_json::json!({
-        "recording_id": recording_id,
-        "transcript": transcript,
-        "ai_output": ai_output,
-        "user_kept": user_kept,
-        "candidates": [candidate],
-    });
-    match state
-        .http_client
-        .post(url)
-        .bearer_auth(token)
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(8))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
-            Ok(value) => {
-                let candidates = value
-                    .get("candidates")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!([]));
-                serde_json::from_value::<Vec<ReviewCandidate>>(candidates)
-                    .ok()
-                    .and_then(|candidates| {
-                        candidates.into_iter().find(|candidate| candidate.learnable)
-                    })
-            }
-            Err(e) => {
-                warn!("[classify] server direct learning validation parse failed: {e}");
-                None
-            }
-        },
-        Ok(resp) => {
-            warn!(
-                "[classify] server direct learning validation failed: {}",
-                resp.status()
-            );
-            None
-        }
-        Err(e) => {
-            warn!("[classify] server direct learning validation failed: {e}");
-            None
-        }
-    }
-}
-
 /// Maximum elapsed-since-paste before we treat the edit as unrelated to
 /// our paste.  Desktop edit-watch can observe for up to ~45 seconds on slow
 /// edits, so the backend gate must be slightly wider than the watcher.
 const CAPTURE_STALE_MS: u64 = 60_000;
-
-const COMPLEX_EDIT_INTERPRETER_MODEL: &str = "llama-3.1-8b-instant";
-const GROQ_CHAT_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 
 /// Stricter subset: captures whose source is an *atomic* read of a specific
 /// text element. An AX read returning a value means it came from the targeted
@@ -484,7 +241,7 @@ pub async fn classify(
 async fn classify_inner(
     state: AppState,
     body: ClassifyBody,
-    learning_enabled: bool,
+    _learning_enabled: bool,
 ) -> (StatusCode, Json<ClassifyResponse>) {
     let audit_only = crate::legacy_learning::audit_only_legacy_mutations();
     // ── Step 1: Look up recording + preferences ──────────────────────────────
@@ -506,9 +263,8 @@ async fn classify_inner(
     let prefs = get_prefs(&state.pool, &state.default_user_id);
     if audit_only {
         info!(
-            "[classify] legacy learning frozen — audit-only for {} (debug old writes: {}=1)",
+            "[classify] learning disabled — audit-only for {}",
             body.recording_id,
-            crate::legacy_learning::DEBUG_LEGACY_WRITES_ENV,
         );
     }
     let output_language = prefs
@@ -521,6 +277,7 @@ async fn classify_inner(
         .or_else(|| std::env::var("GROQ_API_KEY").ok())
         .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
         .unwrap_or_default();
+    let deepseek_key = crate::llm::deepseek::learning_api_key();
 
     // ── Capture-error gate ───────────────────────────────────────────────────
     // Reject obviously bad signals before spending LLM budget.
@@ -675,7 +432,7 @@ async fn classify_inner(
             correction_count: 1,
         });
     }
-    let mut policy_touched = policy_feedback.marked_kept > 0 || policy_feedback.penalized > 0;
+    let policy_touched = policy_feedback.marked_kept > 0 || policy_feedback.penalized > 0;
     if policy_touched {
         info!(
             "[classify] tier2 edit-policy feedback: kept_marked={} penalized={} for {}",
@@ -719,7 +476,7 @@ async fn classify_inner(
     if needs_complex_edit_interpreter(&edit_hunks, &analyzer_changes) {
         let llm_changes = interpret_complex_edit_with_llm(
             &state.http_client,
-            &groq_key,
+            &deepseek_key,
             &transcript,
             &body.ai_output,
             &body.user_kept,
@@ -817,120 +574,9 @@ async fn classify_inner(
         &output_language,
     );
 
-    if let Some(mut server_candidates) = server_review_candidates_from_raw(
-        &state,
-        &body.recording_id,
-        &transcript,
-        &body.ai_output,
-        &body.user_kept,
-    )
-    .await
-    {
-        server_candidates =
-            sanitize_review_candidates(server_candidates, &body.user_kept, &output_language);
-        let local_added =
-            merge_review_candidates(&mut server_candidates, local_review_candidates.clone());
-        if local_added > 0 {
-            info!(
-                "[classify] preserved {local_added} local deterministic review candidate(s) missing from server raw judge"
-            );
-        }
-        let learnable_count = server_candidates.iter().filter(|c| c.learnable).count();
-        if learnable_count > 0 {
-            let change_count = analyzer_output.changes.len();
-            let local_learnable_stt_count = analyzer_output
-                .changes
-                .iter()
-                .filter(|c| matches!(c.reason, ChangeReason::SttError) && c.should_learn)
-                .count();
-            let can_use_existing_single_change_path = server_candidates.len() == 1
-                && learnable_count == 1
-                && local_learnable_stt_count == 1;
-            if can_use_existing_single_change_path {
-                info!(
-                    "[classify] server raw learning judge returned one learnable candidate — continuing through local single-change validation path"
-                );
-            } else {
-                info!(
-                    "[classify] server raw learning judge returned {} candidate(s), learnable={} — local alias learning bypassed",
-                    server_candidates.len(),
-                    learnable_count
-                );
-                if !audit_only {
-                    post_runtime_client_event(
-                        state.clone(),
-                        "classify_edit_result",
-                        body.recording_id.clone(),
-                        analyzer_output.overall_class.clone(),
-                        hash_text(&body.ai_output),
-                        hash_text(&body.user_kept),
-                        serde_json::json!({
-                            "learned": false,
-                            "notify": false,
-                            "promoted_count": 0,
-                            "promoted_term_count": 0,
-                            "learned_email_count": learned_emails.len(),
-                            "queued_term_count": 0,
-                            "negative_count": negative_terms.len(),
-                            "review_candidate_count": server_candidates.len(),
-                            "change_count": change_count,
-                            "capture_method": body.capture_method,
-                            "source": "server_raw_learning_judge",
-                            "memory": {
-                                "accepted_terms": [],
-                                "accepted_aliases": [],
-                            },
-                        }),
-                    );
-                }
-                queue_profile_learn_handoff(
-                    state.clone(),
-                    &edit_event_id,
-                    &body,
-                    &rec,
-                    &transcript,
-                    &output_language,
-                );
-                return (
-                    StatusCode::OK,
-                    Json(ClassifyResponse {
-                        class: analyzer_output.overall_class,
-                        reason: format!(
-                            "server learning judge identified {} review candidate(s)",
-                            server_candidates.len()
-                        ),
-                        pending_id: None,
-                        learned: false,
-                        notify: false,
-                        promoted_count: 0,
-                        is_repeat: false,
-                        promoted_terms: vec![],
-                        learned_emails,
-                        queued_terms: vec![],
-                        changes: analyzer_output.changes,
-                        ambiguous_terms,
-                        negative_terms,
-                        review_candidates: server_candidates,
-                    }),
-                );
-            }
-        }
-    }
-
-    // ── Codex token — only needed for embedding/meaning refresh, not classification
-    let codex_token = {
-        let pool_tok = state.pool.clone();
-        let uid_tok = state.default_user_id.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::store::openai_oauth::get_token(&pool_tok, &uid_tok)
-        })
-        .await
-        .unwrap_or(None)
-        .map(|t| t.access_token)
-    };
-
-    // ── Step 5: Save learnable changes ───────────────────────────────────────
-    // Pre-count STT changes to decide: auto-learn vs review card.
+    // ── Step 5: Prepare learnable candidates ────────────────────────────────
+    // STT learning is human-in-the-loop: classify proposes candidates, and
+    // `/v1/confirm-batch` is the only path that writes approved aliases/terms.
     let stt_change_count = analyzer_output
         .changes
         .iter()
@@ -940,20 +586,11 @@ async fn classify_inner(
     let mut promoted_count = 0_usize;
     let mut promoted_terms: Vec<String> = Vec::new();
     let mut queued_terms: Vec<QueuedTerm> = Vec::new();
-    let mut review_candidates: Vec<ReviewCandidate> = Vec::new();
+    let mut review_candidates: Vec<ReviewCandidate> = local_review_candidates;
     let mut has_repeat = false;
     let mut learned = false;
-    let mut server_memory_terms: Vec<serde_json::Value> = Vec::new();
-    let mut server_memory_aliases: Vec<serde_json::Value> = Vec::new();
-
-    // Whether cloud/server-owned learning is active (the device has a cloud
-    // token). Used so that, when the server declines a single-change auto-learn,
-    // we surface a manual review card in server mode but keep the prior silent
-    // drop in pure-local mode (no token) — leaving local-only behavior unchanged.
-    let server_learning_on = users::get_user(&state.pool, &state.default_user_id)
-        .and_then(|u| u.cloud_token)
-        .map(|t| !t.trim().is_empty())
-        .unwrap_or(false);
+    let server_memory_terms: Vec<serde_json::Value> = Vec::new();
+    let server_memory_aliases: Vec<serde_json::Value> = Vec::new();
 
     for change in &analyzer_output.changes {
         // Build edit pair directly from the deterministic change (which already
@@ -1192,336 +829,30 @@ async fn classify_inner(
                     continue;
                 }
 
-                // ── Route decision: auto-learn vs review card ───────────
-                //
-                // When 2+ STT changes exist, ALL go to the review card —
-                // the user picks which to learn. Nothing auto-fires.
-                //
-                // Only a single unambiguous K=1 change with no other STT
-                // changes bypasses the review card.
-                if stt_change_count >= 2 {
-                    let tag = if existing_term.is_some() {
-                        "stt"
-                    } else {
-                        "stt"
-                    };
-                    review_candidates.push(ReviewCandidate {
+                let tag = if existing_term.is_some() {
+                    has_repeat = true;
+                    "existing_term_alias"
+                } else {
+                    "stt"
+                };
+                push_unique_review_candidate(
+                    &mut review_candidates,
+                    ReviewCandidate {
                         original: original.to_string(),
-                        corrected: corrected.to_string(),
+                        corrected: canonical_for_policy.to_string(),
                         term_type: term_type.to_string(),
                         learnable: true,
                         tag: tag.to_string(),
-                    });
-                    info!(
-                        "[classify] review candidate ({} total): {:?} → {:?} (type={term_type}, in_vocab={})",
-                        stt_change_count,
-                        original,
-                        corrected,
-                        existing_term.is_some(),
-                    );
-                    continue;
-                }
-
-                let proposed_direct_candidate = ReviewCandidate {
-                    original: original.to_string(),
-                    corrected: canonical_for_policy.to_string(),
-                    term_type: term_type.to_string(),
-                    learnable: true,
-                    tag: "local_direct_candidate".to_string(),
-                };
-                let local_review_fallback = local_review_candidate_from_change(
-                    change,
-                    &state.pool,
-                    &state.default_user_id,
-                    &body.user_kept,
-                    &output_language,
+                    },
                 );
-                let server_validated_candidate = match server_validate_direct_candidate(
-                    &state,
-                    &body.recording_id,
-                    &transcript,
-                    &body.ai_output,
-                    &body.user_kept,
-                    proposed_direct_candidate,
-                )
-                .await
-                {
-                    Some(candidate) => candidate,
-                    None => {
-                        // The server's auto-learn judge declined (or was
-                        // unreachable). This change already passed every strict
-                        // local gate to reach here, so in server mode surface it
-                        // as a manual review card instead of dropping it silently.
-                        // Tagged "local_fallback" so the post-loop server refine
-                        // does NOT re-judge and re-drop it.
-                        if server_learning_on {
-                            let mut candidate =
-                                local_review_fallback.unwrap_or_else(|| ReviewCandidate {
-                                    original: original.to_string(),
-                                    corrected: corrected.to_string(),
-                                    term_type: term_type.to_string(),
-                                    learnable: true,
-                                    tag: "local_fallback".to_string(),
-                                });
-                            candidate.tag = "local_fallback".to_string();
-                            info!(
-                                "[classify] STT_ERROR not server-validated {:?} -> {:?} — routing to manual review card",
-                                candidate.original, candidate.corrected
-                            );
-                            push_unique_review_candidate(&mut review_candidates, candidate);
-                        } else if local_review_fallback.is_some() || name_like_span(corrected) {
-                            // ── Add-on: local-mode parity ───────────────────
-                            // Pure-local (no cloud token): mirror the server-mode
-                            // card above. This change already passed every strict
-                            // local gate AND the source-safety checks, so offer a
-                            // Learn / Skip choice instead of dropping it silently.
-                            let mut candidate =
-                                local_review_fallback.unwrap_or_else(|| ReviewCandidate {
-                                    original: original.to_string(),
-                                    corrected: corrected.to_string(),
-                                    term_type: term_type.to_string(),
-                                    learnable: true,
-                                    tag: "local_ask".to_string(),
-                                });
-                            candidate.tag = "local_ask".to_string();
-                            info!(
-                                "[classify] pure-local Learn/Skip offer {:?} -> {:?}",
-                                candidate.original, candidate.corrected
-                            );
-                            push_unique_review_candidate(&mut review_candidates, candidate);
-                        } else {
-                            info!(
-                                "[classify] STT_ERROR direct learn dropped (no server learning) {:?} -> {:?}",
-                                original, canonical_for_policy
-                            );
-                        }
-                        continue;
-                    }
-                };
                 info!(
-                    "[classify] STT_ERROR direct learn server-validated: {:?} -> {:?} tag={}",
-                    server_validated_candidate.original,
-                    server_validated_candidate.corrected,
-                    server_validated_candidate.tag
+                    "[classify] HITL review candidate: {:?} -> {:?} (type={term_type}, tag={tag}, total_stt_changes={}, in_vocab={})",
+                    original,
+                    canonical_for_policy,
+                    stt_change_count,
+                    existing_term.is_some(),
                 );
-
-                // Single change path — decide auto-learn vs review
-                if existing_term.is_some() {
-                    // Self-upgrade: capture new distortion for existing term
-                    has_repeat = true;
-                    if !original.is_empty() {
-                        stt_replacements::upsert_aliases_for_language(
-                            &state.pool,
-                            &state.default_user_id,
-                            original,
-                            original,
-                            canonical_for_policy,
-                            1.0,
-                            &output_language,
-                        );
-                        info!(
-                            "[classify] self-upgrade: new distortion {:?} for known term {:?}",
-                            original, canonical_for_policy,
-                        );
-                    }
-                } else if matches!(term_type, "brand" | "acronym" | "code_identifier")
-                    && !promotion_gate::is_common_word(original)
-                    && !crate::tier2::is_in_dictionary(original)
-                {
-                    info!(
-                        "[classify] auto-learn K=1: {:?} → {:?} (type={term_type})",
-                        original, corrected,
-                    );
-                } else {
-                    // Single change but not K=1 unambiguous — show review card
-                    review_candidates.push(ReviewCandidate {
-                        original: original.to_string(),
-                        corrected: corrected.to_string(),
-                        term_type: term_type.to_string(),
-                        learnable: true,
-                        tag: "stt".to_string(),
-                    });
-                    info!(
-                        "[classify] review candidate (single): {:?} → {:?} (type={term_type})",
-                        original, corrected,
-                    );
-                    continue;
-                }
-
-                let should_promote_now = true;
-
-                if !should_promote_now {
-                    continue;
-                }
-
-                let (canonical_term, weight_bump) = if let Some(existing) = existing_term {
-                    (existing.term.clone(), 0.5)
-                } else {
-                    (corrected.to_string(), 1.0)
-                };
-
-                // Record edit-policy rule only after this change is accepted
-                // for learning. Review-bound/blocked candidates must not
-                // create active or candidate rewrite rules.
-                if let Some(pair) = deterministic_pair.as_ref() {
-                    if tier2_edit_policy::record_explicit_edit(
-                        &state.pool,
-                        &state.default_user_id,
-                        &pair.variant_form,
-                        &canonical_term,
-                        pair.edit_type.as_str(),
-                        &pair.left_context,
-                        &pair.right_context,
-                        Some(&body.recording_id),
-                    ) {
-                        policy_touched = true;
-                        info!(
-                            "[classify] recorded tier2 edit-policy {} rule: {:?} -> {:?}",
-                            pair.edit_type, pair.variant_form, canonical_term
-                        );
-                    }
-                }
-
-                let ctx = change
-                    .context_example
-                    .clone()
-                    .or_else(|| surrounding_sentence(&body.user_kept, &canonical_term));
-
-                if vocabulary::upsert_for_language_with_context(
-                    &state.pool,
-                    &state.default_user_id,
-                    &canonical_term,
-                    weight_bump,
-                    "auto",
-                    &output_language,
-                    ctx.as_deref(),
-                ) {
-                    learned = true;
-                    promoted_count += 1;
-                    promoted_terms.push(canonical_term.clone());
-
-                    // Sync FTS index
-                    vocab_fts::upsert(
-                        &state.pool,
-                        &state.default_user_id,
-                        &canonical_term,
-                        ctx.as_deref(),
-                    );
-
-                    // Fire-and-forget: embed + meaning refresh
-                    spawn_vocab_embedding(
-                        state.clone(),
-                        canonical_term.clone(),
-                        ctx.clone(),
-                        codex_token.clone(),
-                    );
-
-                    // Auto-activate ALL candidate edit-policy rules for this term.
-                    // The term is now confirmed (3 sightings) — no reason to keep
-                    // rules as candidates. Each Deepgram distortion is different,
-                    // so individual rules rarely reach 2 positives on their own.
-                    let activated = tier2_edit_policy::activate_all_for_term(
-                        &state.pool,
-                        &state.default_user_id,
-                        &canonical_term,
-                    );
-                    if activated > 0 {
-                        policy_touched = true;
-                        info!(
-                            "[classify] auto-activated {activated} edit-policy rule(s) for promoted term {canonical_term:?}"
-                        );
-                    }
-                }
-
-                server_memory_terms.push(serde_json::json!({
-                    "term": canonical_term,
-                    "term_type": term_type,
-                    "weight": weight_bump,
-                    "source": "local_classify_accepted",
-                }));
-
-                // ── Update meaning if provided ───────────────────────────
-                if let Some(ref meaning) = change.meaning {
-                    if !meaning.trim().is_empty() {
-                        vocabulary::update_meaning(
-                            &state.pool,
-                            &state.default_user_id,
-                            &canonical_term,
-                            meaning,
-                        );
-                    }
-                }
-
-                if !original.trim().is_empty() {
-                    // ── STT replacement aliases ──────────────────────────
-                    let aliases_written = stt_replacements::upsert_aliases_for_language(
-                        &state.pool,
-                        &state.default_user_id,
-                        original,
-                        original,
-                        &canonical_term,
-                        1.0,
-                        &output_language,
-                    );
-                    if aliases_written > 0 {
-                        promoted_count += aliases_written;
-                    }
-                    // Approve immediately — this alias passed all safety gates
-                    // (dictionary, plausibility, judge_alias_source LLM, term type).
-                    // No need to wait 15min for background review.
-                    let approved = stt_replacements::approve_aliases_for_term(
-                        &state.pool,
-                        &state.default_user_id,
-                        &canonical_term,
-                    );
-                    if approved > 0 {
-                        info!(
-                            "[classify] auto-approved {approved} alias(es) for {canonical_term:?}"
-                        );
-                    }
-
-                    // ── Proactive distortion seeding ────────────────────
-                    // Pre-generate 8-12 likely Deepgram distortions as aliases
-                    // so the system handles novel mis-hearings immediately.
-                    let proactive = stt_replacements::generate_proactive_distortions(
-                        &state.pool,
-                        &state.default_user_id,
-                        &canonical_term,
-                        original,
-                        &output_language,
-                    );
-                    if proactive > 0 {
-                        info!(
-                            "[classify] seeded {proactive} proactive distortion(s) for {canonical_term:?}"
-                        );
-                    }
-                    server_memory_aliases.push(serde_json::json!({
-                        "transcript_form": original,
-                        "correct_form": canonical_term,
-                        "edit_type": deterministic_pair
-                            .as_ref()
-                            .map(|pair| pair.edit_type.as_str())
-                            .unwrap_or("replace"),
-                        "term_type": term_type,
-                        "source": "local_classify_accepted",
-                    }));
-                } else {
-                    info!(
-                        "[classify] learned skipped protected term {canonical_term:?} without creating an empty alias"
-                    );
-                }
-
-                // ── Auto-classify term type ──────────────────────────────
-                // classify_term_type is already called inside upsert, but
-                // we call it here for any term that already existed without
-                // a type classification.
-                let _ = vocabulary::classify_term_type(corrected);
-                pending_promotions::delete(
-                    &state.pool,
-                    &state.default_user_id,
-                    &canonical_term,
-                    &output_language,
-                );
+                continue;
             }
 
             ChangeReason::PolishError => {
@@ -1616,32 +947,10 @@ async fn classify_inner(
     let has_negatives = !negative_terms.is_empty();
     if !review_candidates.is_empty() {
         let local_count = review_candidates.len();
-        // Candidates the server's auto-learn judge already declined ("local_fallback")
-        // or that we locally chose to offer as a manual choice ("local_ask") must NOT
-        // be re-sent to that judge — it would just re-drop them and the review card
-        // would vanish in logged-in mode. Refine only the rest, then re-append these
-        // verbatim.
-        let (local_only, to_refine): (Vec<ReviewCandidate>, Vec<ReviewCandidate>) =
-            review_candidates.into_iter().partition(|candidate| {
-                candidate.tag == "local_fallback" || candidate.tag == "local_ask"
-            });
-        let mut refined = if to_refine.is_empty() {
-            to_refine
-        } else {
-            refine_review_candidates_with_server(
-                &state,
-                &body.recording_id,
-                &transcript,
-                &body.ai_output,
-                &body.user_kept,
-                to_refine,
-            )
-            .await
-        };
-        refined.extend(local_only);
-        review_candidates = sanitize_review_candidates(refined, &body.user_kept, &output_language);
+        review_candidates =
+            sanitize_review_candidates(review_candidates, &body.user_kept, &output_language);
         info!(
-            "[classify] server-refined review candidates: {local_count} -> {}",
+            "[classify] local review candidates: {local_count} -> {}",
             review_candidates.len()
         );
     }
@@ -1721,16 +1030,10 @@ async fn classify_inner(
         promoted_terms.clear();
         learned_emails.clear();
         queued_terms.clear();
+        ambiguous_terms.clear();
+        negative_terms.clear();
+        review_candidates.clear();
     }
-
-    queue_profile_learn_handoff(
-        state.clone(),
-        &edit_event_id,
-        &body,
-        &rec,
-        &transcript,
-        &output_language,
-    );
 
     (
         StatusCode::OK,
@@ -2013,170 +1316,6 @@ fn schedule_onnx_retrain(state: crate::AppState) {
     });
 }
 
-/// Fire-and-forget: embed a newly learned vocab term (with its context)
-/// and persist the vector so polish-time relevance retrieval can find it.
-fn spawn_vocab_embedding(
-    state: AppState,
-    term: String,
-    example_context: Option<String>,
-    codex_token_for_meaning: Option<String>,
-) {
-    tokio::spawn(async move {
-        let _guard = crate::bg_task_guard();
-        if state.watchdog.is_shedding() {
-            tracing::debug!("[bg] embed for {term:?} skipped — watchdog shedding load");
-            return;
-        }
-        info!(
-            "[bg] embed for {term:?} started (active={})",
-            crate::BG_TASK_COUNT.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        let bg_start = std::time::Instant::now();
-        let Some(prefs) = get_prefs(&state.pool, &state.default_user_id) else {
-            return;
-        };
-        if !prefs.learning_enabled {
-            return;
-        }
-        let key = prefs
-            .gemini_api_key
-            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
-            .unwrap_or_default();
-        if key.is_empty() {
-            return;
-        }
-        let text = match &example_context {
-            Some(ctx) if !ctx.trim().is_empty() => format!("{term}. {ctx}"),
-            _ => term.clone(),
-        };
-        let Some(embedding) =
-            crate::embedder::gemini::embed(&state.http_client, &state.pool, &text, &key).await
-        else {
-            return;
-        };
-        let pool = state.pool.clone();
-        let uid = state.default_user_id.clone();
-        let term2 = term.clone();
-        let example = text.clone();
-        let blocking = tokio::task::spawn_blocking(move || {
-            vocab_embeddings::record_example_and_recentre(
-                &pool, &uid, &term2, &embedding, &example,
-            );
-            vocabulary::bump_examples_since_meaning(&pool, &uid, &term2);
-            let spread = vocab_embeddings::cluster_spread(&pool, &uid, &term2);
-            if spread > 0.5 {
-                tracing::info!(
-                    "[vocab-emb] high cluster spread for {term2:?}: {:.2} — bimodal usage",
-                    spread,
-                );
-            }
-        });
-        let _ = blocking.await;
-        info!(
-            "[bg] embed for {term:?} done in {}ms",
-            bg_start.elapsed().as_millis()
-        );
-        spawn_meaning_refresh(
-            state,
-            term,
-            example_context.unwrap_or_default(),
-            codex_token_for_meaning.clone(),
-        );
-    });
-}
-
-/// Fire-and-forget: refresh a term's distilled meaning when needed.
-fn spawn_meaning_refresh(
-    state: AppState,
-    term: String,
-    latest_example: String,
-    codex_token: Option<String>,
-) {
-    tokio::spawn(async move {
-        let _guard = crate::bg_task_guard();
-        if state.watchdog.is_shedding() {
-            tracing::debug!("[bg] meaning for {term:?} skipped — watchdog shedding load");
-            return;
-        }
-        let uid = state.default_user_id.clone();
-        let pool = state.pool.clone();
-
-        if !vocabulary::meaning_needs_refresh(&pool, &uid, &term) {
-            return;
-        }
-        info!(
-            "[bg] meaning for {term:?} started (active={})",
-            crate::BG_TASK_COUNT.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        let bg_start = std::time::Instant::now();
-
-        let prefs = get_prefs(&pool, &uid);
-        let groq_key = prefs
-            .as_ref()
-            .and_then(|p| p.groq_api_key.clone())
-            .or_else(|| std::env::var("GROQ_API_KEY").ok())
-            .unwrap_or_default();
-        let openai_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
-        if groq_key.is_empty() && openai_key.is_empty() {
-            warn!(
-                "[meaning] no Groq key AND no OPENAI_API_KEY — meaning will stay NULL for {term:?}"
-            );
-            return;
-        }
-
-        let current = vocabulary::get_meaning(&pool, &uid, &term);
-        let result = match &current {
-            None => {
-                let example = if latest_example.trim().is_empty() {
-                    term.clone()
-                } else {
-                    latest_example.clone()
-                };
-                crate::llm::meaning::generate_initial(
-                    &state.http_client,
-                    &groq_key,
-                    &openai_key,
-                    codex_token.as_deref(),
-                    &term,
-                    &example,
-                )
-                .await
-            }
-            Some(prev) => {
-                let examples = vocab_embeddings::support_example_texts(&pool, &uid, &term, 4);
-                if examples.is_empty() {
-                    None
-                } else {
-                    crate::llm::meaning::refine(
-                        &state.http_client,
-                        &groq_key,
-                        &openai_key,
-                        codex_token.as_deref(),
-                        &term,
-                        prev,
-                        &examples,
-                    )
-                    .await
-                }
-            }
-        };
-
-        if let Some(new_meaning) = result {
-            let pool2 = pool.clone();
-            let uid2 = uid.clone();
-            let term2 = term.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                vocabulary::update_meaning(&pool2, &uid2, &term2, &new_meaning);
-            })
-            .await;
-        }
-        info!(
-            "[bg] meaning for {term:?} done in {}ms",
-            bg_start.elapsed().as_millis()
-        );
-    });
-}
-
 /// Find the sentence inside `text` that contains `term`, returning it
 /// trimmed. Sentence boundaries: '.', '!', '?', '\n'.
 fn surrounding_sentence(text: &str, term: &str) -> Option<String> {
@@ -2227,21 +1366,6 @@ struct LlmEditCandidate {
     confidence: f64,
 }
 
-#[derive(Debug, Deserialize)]
-struct GroqChatResponse {
-    choices: Vec<GroqChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GroqChoice {
-    message: GroqMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct GroqMessage {
-    content: String,
-}
-
 fn needs_complex_edit_interpreter(
     hunks: &[edit_diff::Hunk],
     deterministic_changes: &[AnalyzedChange],
@@ -2279,7 +1403,7 @@ fn needs_complex_edit_interpreter(
 
 async fn interpret_complex_edit_with_llm(
     http: &reqwest::Client,
-    groq_key: &str,
+    deepseek_key: &str,
     transcript: &str,
     polished: &str,
     user_kept: &str,
@@ -2287,72 +1411,36 @@ async fn interpret_complex_edit_with_llm(
     pool: &crate::store::DbPool,
     user_id: &str,
 ) -> Vec<AnalyzedChange> {
-    use serde_json::json;
-
-    if groq_key.trim().is_empty() {
-        info!("[classify-llm] skipped complex edit interpreter — no Groq key");
+    if deepseek_key.trim().is_empty() {
+        info!("[classify-llm] skipped complex edit interpreter — no DEEPSEEK_API_KEY");
         return Vec::new();
     }
 
     let prompt = build_complex_edit_prompt(transcript, polished, user_kept, hunks);
-    let body = json!({
-        "model": COMPLEX_EDIT_INTERPRETER_MODEL,
-        "temperature": 0,
-        "max_tokens": 650,
-        "response_format": { "type": "json_object" },
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a conservative edit interpreter for a speech dictation learning pipeline. You only identify concrete spans that the user explicitly changed. Return strict JSON only."
-            },
-            { "role": "user", "content": prompt }
-        ]
-    });
-
-    let resp = match http
-        .post(GROQ_CHAT_ENDPOINT)
-        .header("Authorization", format!("Bearer {groq_key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(7))
-        .send()
+    let system_prompt = "You are a conservative edit interpreter for a speech dictation learning pipeline. \
+You only identify concrete spans that the user explicitly changed. \
+Return strict JSON only. Do not learn ordinary Hinglish/English/Hindi words. \
+For aliases, prefer exact corrected domain terms, brands, acronyms, product names, and code identifiers.";
+    let (payload, latency_ms, model) =
+        match crate::llm::deepseek::chat_json::<LlmEditInterpreterResponse>(
+            http,
+            deepseek_key,
+            system_prompt,
+            &prompt,
+            700,
+            std::time::Duration::from_secs(8),
+            "complex-edit-interpreter",
+        )
         .await
-    {
-        Ok(resp) => resp,
-        Err(err) => {
-            warn!("[classify-llm] complex edit interpreter request failed: {err}");
-            return Vec::new();
-        }
-    };
+        {
+            Ok(result) => result,
+            Err(err) => {
+                crate::llm::deepseek::log_fail_closed("complex-edit-interpreter", &err);
+                return Vec::new();
+            }
+        };
 
-    if !resp.status().is_success() {
-        warn!(
-            "[classify-llm] complex edit interpreter returned status {}",
-            resp.status()
-        );
-        return Vec::new();
-    }
-
-    let response: GroqChatResponse = match resp.json().await {
-        Ok(response) => response,
-        Err(err) => {
-            warn!("[classify-llm] failed to parse Groq chat response: {err}");
-            return Vec::new();
-        }
-    };
-    let Some(content) = response
-        .choices
-        .first()
-        .map(|choice| choice.message.content.trim())
-    else {
-        return Vec::new();
-    };
-    let Some(payload) = parse_complex_edit_payload(content) else {
-        warn!("[classify-llm] complex edit interpreter returned invalid JSON");
-        return Vec::new();
-    };
-
-    payload
+    let verified = payload
         .edits
         .iter()
         .filter_map(|candidate| {
@@ -2360,7 +1448,15 @@ async fn interpret_complex_edit_with_llm(
                 candidate, transcript, polished, user_kept, hunks, pool, user_id,
             )
         })
-        .collect()
+        .collect::<Vec<_>>();
+    info!(
+        "[classify-llm] deepseek complex edit model={} latency_ms={} raw_candidates={} verified_candidates={}",
+        model,
+        latency_ms,
+        payload.edits.len(),
+        verified.len(),
+    );
+    verified
 }
 
 fn build_complex_edit_prompt(
@@ -2393,18 +1489,6 @@ fn build_complex_edit_prompt(
          - Do not learn common Hindi/Hinglish/English words like kaisa, laga, main, mein, hai, time, can, go.\n\
          - If uncertain, return {{\"edits\":[]}}."
     )
-}
-
-fn parse_complex_edit_payload(raw: &str) -> Option<LlmEditInterpreterResponse> {
-    serde_json::from_str(raw)
-        .ok()
-        .or_else(|| extract_json_object(raw).and_then(|json| serde_json::from_str(json).ok()))
-}
-
-fn extract_json_object(raw: &str) -> Option<&str> {
-    let start = raw.find('{')?;
-    let end = raw.rfind('}')?;
-    (start <= end).then_some(&raw[start..=end])
 }
 
 fn verified_llm_candidate_to_change(

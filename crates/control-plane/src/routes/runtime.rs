@@ -39,10 +39,6 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::Message as DgMessage};
 use uuid::Uuid;
 
 use crate::notification_hub::DesktopNotification;
-use crate::profile;
-use crate::routes::runtime_profile::{
-    load_profile_for_polish, log_profile_shadow, profile_markdown_for_prompt,
-};
 use crate::stt::{self, runtime_stt_credential_provider};
 use crate::voice_polish_standalone::{
     build_rewrite_system_prompt, build_rewrite_user_message, build_voice_system_prompt,
@@ -252,6 +248,8 @@ pub struct VoicePolishRequest {
     pub safe_vocab_terms: Vec<String>,
     #[serde(default)]
     pub client_run_id: Option<String>,
+    #[serde(default)]
+    pub client_profile_markdown: Option<String>,
     /// Optional per-request tone override (e.g. the iOS keyboard "rewrite selection"
     /// picks a tone per tap). When present it wins over the account's saved tone_preset;
     /// when absent — every existing caller — behavior is byte-for-byte unchanged.
@@ -2297,17 +2295,7 @@ async fn polish_runtime_transcript(
     }
 
     let (tone_preset, custom_prompt) = account_polish_persona(state, account_id).await;
-    let active_org_id = primary_org_id(state, account_id).await?;
-    let org_scope = profile::resolve_org_scope(&tenant::TenantContext {
-        account_id,
-        active_org_id,
-        org_role: None,
-        personal_mode: active_org_id.is_none(),
-    });
-    let (cached_profile, profile_cache_hit) =
-        load_profile_for_polish(state, account_id, org_scope).await;
-    log_profile_shadow(cached_profile.as_ref(), profile_cache_hit);
-    let profile_md = profile_markdown_for_prompt(cached_profile.as_ref());
+    let profile_md: Option<&str> = None;
 
     let prompt_start = Instant::now();
     let system_prompt = build_voice_system_prompt(
@@ -2345,12 +2333,9 @@ async fn polish_runtime_transcript(
         output_language,
         tone_preset: &tone_preset,
         prompt_kind: "voice_polish",
-        profile_version: cached_profile.as_ref().map(|p| p.version),
-        profile_status: cached_profile
-            .as_ref()
-            .map(|p| p.status.as_str())
-            .unwrap_or("missing"),
-        profile_cache_hit,
+        profile_version: None,
+        profile_status: "missing",
+        profile_cache_hit: false,
         profile_chars: profile_md.map(|p| p.chars().count()).unwrap_or(0),
         profile_injected: profile_md.is_some(),
         transcript_chars: transcript.chars().count(),
@@ -3448,11 +3433,11 @@ async fn execute_voice_polish(
 
     // Build the prompt now that the persona has resolved (pure CPU).
     let build_start = Instant::now();
-    let org_scope = profile::resolve_org_scope(&tenant_ctx);
-    let (cached_profile, profile_cache_hit) =
-        load_profile_for_polish(&state, user.account_id, org_scope).await;
-    log_profile_shadow(cached_profile.as_ref(), profile_cache_hit);
-    let profile_md = profile_markdown_for_prompt(cached_profile.as_ref());
+    let profile_md = req
+        .client_profile_markdown
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
     let (system_prompt, user_message) = if is_rewrite {
         (
@@ -3504,12 +3489,13 @@ async fn execute_voice_polish(
         } else {
             "voice_polish"
         },
-        profile_version: cached_profile.as_ref().map(|p| p.version),
-        profile_status: cached_profile
-            .as_ref()
-            .map(|p| p.status.as_str())
-            .unwrap_or("missing"),
-        profile_cache_hit,
+        profile_version: None,
+        profile_status: if profile_md.is_some() {
+            "client_local"
+        } else {
+            "missing"
+        },
+        profile_cache_hit: false,
         profile_chars: profile_md.map(|p| p.chars().count()).unwrap_or(0),
         profile_injected: !is_rewrite && profile_md.is_some(),
         transcript_chars: transcript.chars().count(),

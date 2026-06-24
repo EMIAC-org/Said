@@ -270,8 +270,20 @@ impl AudioRecorder {
             println!("[rec] opened input '{device_name}' at {native_rate}Hz {sample_format:?}");
 
             if let Ok(RecCmd::Stop(reply)) = cmd_rx.recv() {
+                let teardown_started = std::time::Instant::now();
+                // Pause before drop so CoreAudio is asked to stop IO explicitly.
+                // On macOS this is more reliable than relying on Drop alone,
+                // especially when Bluetooth devices are connected and CoreAudio
+                // device routing is being reconfigured.
+                if let Err(e) = stream.pause() {
+                    eprintln!("[rec] failed to pause input stream before drop: {e}");
+                }
                 // `stream` drops here → chunk_tx_cb drops → all senders gone → chunk_rx sees close
                 drop(stream);
+                let teardown_ms = teardown_started.elapsed().as_millis();
+                if teardown_ms >= 100 {
+                    eprintln!("[rec] input stream teardown took {teardown_ms}ms");
+                }
                 let data = match frames_for_reply.lock() {
                     Ok(frames) => frames.clone(),
                     Err(poison) => {

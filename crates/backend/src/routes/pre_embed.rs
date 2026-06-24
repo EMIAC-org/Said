@@ -32,8 +32,8 @@ pub async fn handler(State(state): State<AppState>, Json(body): Json<PreEmbedBod
     .await
     .map(|p| p.learning_enabled)
     .unwrap_or(true);
-    if crate::legacy_learning::audit_only_legacy_mutations() {
-        debug!("[pre-embed] skipped — legacy learning frozen");
+    if !learning_enabled || crate::legacy_learning::audit_only_legacy_mutations() {
+        debug!("[pre-embed] skipped — user learning disabled");
         return StatusCode::ACCEPTED;
     }
 

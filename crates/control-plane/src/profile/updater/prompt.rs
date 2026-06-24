@@ -50,6 +50,7 @@ Hard rules:
 10. Patch incrementally; preserve useful unrelated profile sections, but rewrite the markdown body when the profile needs to become more coherent.
 11. style_preference → style_updates only, no alias proposals.
 12. user_rewrite or ambiguous edits → no_learning with empty patch.
+13. Profile terms are high-confidence hints only. Do not create profile text or aliases that would cause unrelated company/person/product names to be over-corrected into developer terms.
 
 Profile markdown goal:
 - Build a lightweight personalized recognition profile, similar to a human brief for the STT/polish model.
@@ -78,7 +79,8 @@ Bad profile_markdown_patch examples:
 - Only "Terms: Docker, SQLite"
 - Copying the full transcript
 - Adding unsupported claims like exact company title or private facts not in evidence
-- Telling the model "you must always write Kafka" without transcript support"#;
+- Telling the model "you must always write Kafka" without transcript support
+- Broad aliases that could turn unrelated company names into Kafka, ZooKeeper, Sentry, crash, or other developer terms"#;
 
 pub const PROFILE_ALIAS_EXPANSION_SYSTEM_PROMPT: &str = r#"You are a SAFE STT alias generator for AirNote profile memory.
 The user already approved the memory proposal. Your only job is to propose deterministic speech-recognition aliases for the approved protected terms.
@@ -102,5 +104,7 @@ Hard rules:
 2. NEVER alias common Hinglish/Hindi/English words by themselves: kaam, main, mein, kya, time, hello, bhai, app, call, message, meeting, detail, issue, etc.
 3. Multi-word non-common heard forms are allowed when evidence supports them, e.g. "n 10" -> "n8n", "deep gram" -> "Deepgram".
 4. Do not create aliases for grammar, tone, translation, style, or normal wording.
-5. If unsure, return an empty alias_proposals array.
-6. Every proposal must be supported by ai_output, user_kept, raw_transcript, edit_spans, or approved_terms in the request."#;
+5. Require high confidence and same-phrase evidence. Do not propose an alias merely because the approved term is in the user's profile.
+6. Do not create broad aliases that could turn unrelated company/person/product names into developer terms like Kafka, ZooKeeper, Sentry, crash, Docker, SQLite, etc.
+7. If unsure, return an empty alias_proposals array.
+8. Every proposal must be supported by ai_output, user_kept, raw_transcript, edit_spans, or approved_terms in the request."#;

@@ -1,10 +1,9 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   BookOpen,
   Sparkles,
   Star,
   Trash2,
-  Plus,
   Search,
   X,
   AlertCircle,
@@ -12,16 +11,13 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   listVocabulary,
-  addVocabularyTerm,
   deleteVocabularyTerm,
   resetAllVocabulary,
   starVocabularyTerm,
   patchVocabularyTerm,
-  getProfileMemory,
   onVocabularyChanged,
   requestNotifications,
   type VocabRow,
-  type ProfileMemoryResponse,
 } from "@/lib/invoke";
 
 // ── Source-icon helper ───────────────────────────────────────────────────────
@@ -288,71 +284,6 @@ function VocabDetailModal({
   );
 }
 
-// ── Add-term input row ───────────────────────────────────────────────────────
-
-function AddTermRow({ onAdd }: { onAdd: (term: string) => Promise<void> }) {
-  const [value, setValue] = useState("");
-  const [busy,  setBusy]  = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const term = value.trim();
-    if (term.length === 0) return;
-    if (term.length > 64) {
-      setError("Max 64 characters");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await onAdd(term);
-      setValue("");
-      inputRef.current?.focus();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add term");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form
-      onSubmit={handleSubmit}
-      className="tile flex items-center gap-2 px-3 py-2.5 mb-5"
-    >
-      <Plus size={14} className="text-muted-foreground flex-shrink-0 ml-1" />
-      <input
-        ref={inputRef}
-        type="text"
-        value={value}
-        onChange={(e) => { setValue(e.target.value); setError(null); }}
-        placeholder="Add a name or word AirNote often gets wrong, like n8n or Vipassana"
-        maxLength={64}
-        disabled={busy}
-        className="flex-1 bg-transparent outline-none text-[13.5px] text-foreground placeholder:text-muted-foreground/70"
-      />
-      {error && (
-        <span
-          className="text-[11px] flex items-center gap-1"
-          style={{ color: "hsl(0 75% 62%)" }}
-        >
-          <AlertCircle size={11} />
-          {error}
-        </span>
-      )}
-      <button
-        type="submit"
-        disabled={busy || value.trim().length === 0}
-        className="btn-primary !py-1.5 !px-3 !text-[12px] disabled:opacity-50"
-      >
-        {busy ? "Adding…" : "Add"}
-      </button>
-    </form>
-  );
-}
-
 // ── Search bar ───────────────────────────────────────────────────────────────
 
 function SearchBar({
@@ -391,75 +322,6 @@ function SearchBar({
   );
 }
 
-function ProfileMemoryPanel({
-  memory,
-  loading,
-}: {
-  memory: ProfileMemoryResponse | null;
-  loading: boolean;
-}) {
-  const terms = memory?.stable_terms ?? [];
-  const aliases = memory?.aliases ?? [];
-  const domains = memory?.domains ?? [];
-  const hasMemory = terms.length > 0 || aliases.length > 0 || domains.length > 0;
-
-  if (loading && !memory) {
-    return (
-      <div className="tile p-4 mb-6">
-        <p className="text-[12px] text-muted-foreground">Loading profile memory…</p>
-      </div>
-    );
-  }
-
-  if (!hasMemory) {
-    return (
-      <div className="tile p-4 mb-6">
-        <div className="flex items-center gap-2">
-          <Sparkles size={14} style={{ color: "hsl(var(--chip-mint-fg))" }} />
-          <p className="text-[12px] text-muted-foreground">
-            Profile memory is ready. Approved terms and aliases will appear here after review.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="mb-6">
-      {(terms.length > 0 || aliases.length > 0 || domains.length > 0) && (
-        <div className="tile p-5">
-          <div className="flex items-center justify-between mb-3">
-            <span className="section-label">Profile memory</span>
-            <span className="text-[10px] text-muted-foreground tabular-nums">
-              v{memory?.profile.version ?? 0} · {memory?.profile.status ?? "ready"}
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {domains.map((d) => (
-              <span key={`active-domain-${d.name}`} className="text-[10px] px-1.5 py-0.5 rounded"
-                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}>
-                {d.name}
-              </span>
-            ))}
-            {terms.map((t) => (
-              <span key={`active-term-${t.term}`} className="text-[10px] px-1.5 py-0.5 rounded"
-                style={{ background: "hsl(var(--chip-blue-bg))", color: "hsl(var(--chip-blue-fg))" }}>
-                {t.term}
-              </span>
-            ))}
-            {aliases.map((a) => (
-              <span key={`active-alias-${a.source_phrase}-${a.canonical_phrase}`} className="text-[10px] px-1.5 py-0.5 rounded"
-                style={{ background: "hsl(var(--chip-amber-bg))", color: "hsl(var(--chip-amber-fg))" }}>
-                {a.source_phrase} → {a.canonical_phrase}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Main view ────────────────────────────────────────────────────────────────
 
 export function VocabularyView() {
@@ -467,22 +329,15 @@ export function VocabularyView() {
   const [filter,  setFilter]  = useState("");
   const [loading, setLoading] = useState(true);
   const [detailRow, setDetailRow] = useState<VocabRow | null>(null);
-  const [profileMemory, setProfileMemory] = useState<ProfileMemoryResponse | null>(null);
-  const [profileLoading, setProfileLoading] = useState(true);
 
   // Note: confirmation toasts (add / star / delete) are emitted by the
   // backend as `vocab-toast` events and handled by the global toast in
   // App.tsx — no inline toast state needed here.
 
   async function refresh() {
-    const [resp, memory] = await Promise.all([
-      listVocabulary(),
-      getProfileMemory(),
-    ]);
+    const resp = await listVocabulary();
     setRows(resp.terms);
-    setProfileMemory(memory);
     setLoading(false);
-    setProfileLoading(false);
   }
 
   useEffect(() => {
@@ -492,11 +347,6 @@ export function VocabularyView() {
     requestNotifications().catch(() => {});
     return () => unsub();
   }, []);
-
-  async function handleAdd(term: string) {
-    await addVocabularyTerm(term);
-    await refresh();
-  }
 
   async function handleStar(term: string) {
     await starVocabularyTerm(term);
@@ -596,14 +446,6 @@ export function VocabularyView() {
             </div>
           </div>
         )}
-
-        {/* ── Add term ──────────────────────────────────────── */}
-        <AddTermRow onAdd={handleAdd} />
-
-        <ProfileMemoryPanel
-          memory={profileMemory}
-          loading={profileLoading}
-        />
 
         {/* ── Empty state ───────────────────────────────────── */}
         {empty ? (

@@ -197,8 +197,6 @@ async fn main() {
         profile_cache,
     };
 
-    said_control_plane::profile::updater::worker::start_profile_updater_worker(state.clone());
-
     let app = build_router(state);
 
     let shutdown = async {

@@ -1527,39 +1527,6 @@ pub struct VocabListResponse {
     pub total: i64,
 }
 
-pub async fn get_profile_memory(ep: &BackendEndpoint) -> Result<Value, String> {
-    let url = format!("{}/v1/profile-memory", ep.url);
-    let resp = Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("profile memory failed: {e}"))?;
-    json_or_error(resp, "profile memory").await
-}
-
-pub async fn approve_profile_proposal(ep: &BackendEndpoint, job_id: &str) -> Result<Value, String> {
-    let url = format!("{}/v1/profile-memory/proposals/{job_id}/approve", ep.url);
-    let resp = Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("approve profile proposal failed: {e}"))?;
-    json_or_error(resp, "approve profile proposal").await
-}
-
-pub async fn dismiss_profile_proposal(ep: &BackendEndpoint, job_id: &str) -> Result<Value, String> {
-    let url = format!("{}/v1/profile-memory/proposals/{job_id}/dismiss", ep.url);
-    let resp = Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("dismiss profile proposal failed: {e}"))?;
-    json_or_error(resp, "dismiss profile proposal").await
-}
-
 async fn json_or_error(resp: reqwest::Response, label: &str) -> Result<Value, String> {
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();

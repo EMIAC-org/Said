@@ -98,6 +98,18 @@ fn post_runtime_client_event(
     });
 }
 
+fn refresh_local_profile_summary(state: &AppState, source: &str) {
+    match crate::store::profile_summary::rebuild(&state.pool, state.default_user_id.as_str()) {
+        Some(summary) => info!(
+            "[profile-summary] refreshed source={source} version={} chars={} counts={}",
+            summary.version,
+            summary.profile_markdown.chars().count(),
+            summary.source_counts_json,
+        ),
+        None => warn!("[profile-summary] refresh failed source={source}"),
+    }
+}
+
 // ── POST /v1/confirm-term ────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -124,30 +136,19 @@ pub async fn confirm_term(
         .unwrap_or(true);
 
     if body.action == "learn" {
-        let server_confirm = ConfirmBatchBody {
-            items: vec![ConfirmBatchItem {
-                original: body.original.clone(),
-                corrected: body.term.clone(),
-            }],
-            recording_id: body.recording_id.clone(),
-        };
-        if let Some(server_response) = confirm_batch_with_server(&state, &server_confirm).await {
-            info!(
-                "[confirm] server-owned confirm learned {}/1 term(s) for {:?}",
-                server_response.learned_count, body.term,
-            );
+        if !learning_enabled {
+            info!("[confirm] local learn blocked — user learning disabled");
             return (
                 StatusCode::OK,
                 Json(ConfirmResponse {
-                    confirmed: server_response.learned_count > 0,
+                    confirmed: false,
                     term: body.term,
                 }),
             );
         }
-
         if crate::legacy_learning::audit_only_legacy_mutations() {
             info!(
-                "[confirm] local learn blocked — legacy learning frozen for {:?}",
+                "[confirm] local learn blocked — learning disabled for {:?}",
                 body.term
             );
             return (
@@ -264,6 +265,7 @@ pub async fn confirm_term(
 
         // ── Invalidate lexicon cache ─────────────────────────────────────────
         crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
+        refresh_local_profile_summary(&state, "confirm_term");
 
         // ── Trigger retrain ─────────────────────────────────────────────────
         crate::routes::classify::schedule_retrain_public(state.clone());
@@ -357,8 +359,8 @@ pub async fn block_correction(
     let learning_enabled = get_prefs(&state.pool, user_id)
         .map(|p| p.learning_enabled)
         .unwrap_or(true);
-    if crate::legacy_learning::audit_only_legacy_mutations() {
-        info!("[confirm] block_correction skipped — legacy learning frozen");
+    if !learning_enabled || crate::legacy_learning::audit_only_legacy_mutations() {
+        info!("[confirm] block_correction skipped — user learning disabled");
         return (StatusCode::OK, Json(BlockResponse { blocked: false }));
     }
     let variant_norm = tier2_edit_policy::normalize_token(&body.variant);
@@ -457,105 +459,27 @@ pub struct ConfirmBatchResponse {
     pub server_owned: bool,
 }
 
-pub(crate) async fn confirm_batch_with_server(
-    state: &AppState,
-    body: &ConfirmBatchBody,
-) -> Option<ConfirmBatchResponse> {
-    let user = users::get_user(&state.pool, &state.default_user_id)?;
-    let token = user.cloud_token.filter(|t| !t.trim().is_empty())?;
-    let base_url = user
-        .enterprise_server_url
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
-    let url = format!(
-        "{}/v1/runtime/learning/confirm-batch",
-        base_url.trim_end_matches('/')
-    );
-    let items = body
-        .items
-        .iter()
-        .map(|item| {
-            serde_json::json!({
-                "original": item.original.as_str(),
-                "corrected": item.corrected.as_str(),
-            })
-        })
-        .collect::<Vec<_>>();
-    let req = serde_json::json!({
-        "recording_id": body.recording_id.as_deref(),
-        "items": items,
-    });
-    match state
-        .http_client
-        .post(url)
-        .bearer_auth(token)
-        .json(&req)
-        .timeout(std::time::Duration::from_secs(8))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
-            Ok(value) => {
-                let learned_count = value
-                    .get("learned_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as usize;
-                let learned_terms = value
-                    .get("learned_terms")
-                    .and_then(|v| v.as_array())
-                    .map(|terms| {
-                        terms
-                            .iter()
-                            .filter_map(|term| term.as_str().map(str::to_string))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let blocked_count = value
-                    .get("blocked_count")
-                    .and_then(|v| v.as_u64())
-                    .map(|count| count as usize)
-                    .unwrap_or_else(|| body.items.len().saturating_sub(learned_count));
-                Some(ConfirmBatchResponse {
-                    blocked_count,
-                    learned_count,
-                    learned_terms,
-                    server_owned: true,
-                })
-            }
-            Err(e) => {
-                warn!("[confirm-batch] server confirm parse failed: {e}");
-                None
-            }
-        },
-        Ok(resp) => {
-            warn!("[confirm-batch] server confirm failed: {}", resp.status());
-            None
-        }
-        Err(e) => {
-            warn!("[confirm-batch] server confirm failed: {e}");
-            None
-        }
-    }
-}
-
 pub async fn confirm_batch(
     State(state): State<AppState>,
     Json(body): Json<ConfirmBatchBody>,
 ) -> (StatusCode, Json<ConfirmBatchResponse>) {
-    if let Some(server_response) = confirm_batch_with_server(&state, &body).await {
-        info!(
-            "[confirm-batch] server-owned confirm learned {}/{} terms",
-            server_response.learned_count,
-            body.items.len()
-        );
-        return (StatusCode::OK, Json(server_response));
-    }
-
     let user_id = state.default_user_id.as_str();
     let prefs = get_prefs(&state.pool, user_id);
     let learning_enabled = prefs.as_ref().map(|p| p.learning_enabled).unwrap_or(true);
+    if !learning_enabled {
+        info!("[confirm-batch] local learn blocked — user learning disabled");
+        return (
+            StatusCode::OK,
+            Json(ConfirmBatchResponse {
+                blocked_count: body.items.len(),
+                learned_count: 0,
+                learned_terms: vec![],
+                server_owned: false,
+            }),
+        );
+    }
     if crate::legacy_learning::audit_only_legacy_mutations() {
-        info!("[confirm-batch] local learn blocked — legacy learning frozen");
+        info!("[confirm-batch] local learn blocked — learning disabled");
         return (
             StatusCode::OK,
             Json(ConfirmBatchResponse {
@@ -694,6 +618,7 @@ pub async fn confirm_batch(
 
     if learned_count > 0 {
         crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
+        refresh_local_profile_summary(&state, "confirm_batch");
         crate::routes::classify::schedule_retrain_public(state.clone());
         post_runtime_client_event(
             state.clone(),

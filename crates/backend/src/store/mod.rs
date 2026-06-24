@@ -13,6 +13,7 @@ pub mod openai_oauth;
 pub mod pending_edits;
 pub mod pending_promotions;
 pub mod prefs;
+pub mod profile_summary;
 pub mod prompt_templates;
 pub mod server_migration;
 pub mod server_settings;
@@ -78,6 +79,7 @@ const MIGRATION_046: &str = include_str!("migrations/046_force_server_runtime.sq
 const MIGRATION_047: &str = include_str!("migrations/047_default_gpt_oss_20b.sql");
 const MIGRATION_048: &str = include_str!("migrations/048_default_cerebras_gpt_oss_120b.sql");
 const MIGRATION_049: &str = include_str!("migrations/049_lock_cerebras_polish_defaults.sql");
+const MIGRATION_050: &str = include_str!("migrations/050_local_profile_summary.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -524,6 +526,14 @@ fn run_migrations(pool: &DbPool) {
             .expect("migration 049 failed");
         conn.execute_batch("PRAGMA user_version = 49")
             .expect("failed to set user_version to 49");
+    }
+
+    if version < 50 {
+        info!("running migration 050_local_profile_summary");
+        conn.execute_batch(MIGRATION_050)
+            .expect("migration 050 failed");
+        conn.execute_batch("PRAGMA user_version = 50")
+            .expect("failed to set user_version to 50");
     }
 }
 

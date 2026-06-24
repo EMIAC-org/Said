@@ -14,7 +14,6 @@ pub mod pending_edits;
 pub mod polish_models;
 pub mod pre_embed;
 pub mod prefs;
-pub mod profile_memory;
 pub mod prompts;
 pub mod runtime_credentials;
 pub mod runtime_live;

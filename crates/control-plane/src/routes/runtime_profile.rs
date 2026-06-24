@@ -1051,18 +1051,25 @@ async fn list_pending_proposals(
     account_id: Uuid,
     org_scope: Uuid,
 ) -> Result<Vec<ProfileLearningProposal>, (StatusCode, Json<Value>)> {
+    let current_version = store::get_profile(&state.db, account_id, org_scope)
+        .await
+        .map_err(internal_error)?
+        .map(|row| row.version)
+        .unwrap_or(0);
     let rows = sqlx::query_as::<_, ProfileJobReviewRow>(
         "SELECT id, edit_event_id, status, request_json, response_json, from_version,
                 to_version, error, created_at, updated_at
            FROM runtime_profile_learn_jobs
           WHERE account_id = $1
             AND org_scope = $2
+            AND from_version = $3
             AND status = 'pending_review'
           ORDER BY updated_at DESC
           LIMIT 20",
     )
     .bind(account_id)
     .bind(org_scope)
+    .bind(current_version)
     .fetch_all(&state.db)
     .await
     .map_err(internal_error)?;

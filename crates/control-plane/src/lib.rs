@@ -265,30 +265,6 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/runtime/settings/sync",
             post(routes::runtime_settings::sync_settings),
         )
-        .route(
-            "/v1/runtime/profile",
-            get(routes::runtime_profile::get_profile).patch(routes::runtime_profile::patch_profile),
-        )
-        .route(
-            "/v1/runtime/profile/memory",
-            get(routes::runtime_profile::get_profile_memory),
-        )
-        .route(
-            "/v1/runtime/profile/rebuild",
-            post(routes::runtime_profile::rebuild_profile),
-        )
-        .route(
-            "/v1/runtime/profile/learn-from-edit",
-            post(routes::runtime_profile::learn_from_edit),
-        )
-        .route(
-            "/v1/runtime/profile/proposals/:id/approve",
-            post(routes::runtime_profile::approve_profile_proposal),
-        )
-        .route(
-            "/v1/runtime/profile/proposals/:id/dismiss",
-            post(routes::runtime_profile::dismiss_profile_proposal),
-        )
         .route("/v1/license/check", get(routes::license::check))
         .route("/v1/metering/report", post(routes::metering::report))
         .route(

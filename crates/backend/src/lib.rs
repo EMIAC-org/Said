@@ -20,7 +20,6 @@ pub mod formatting;
 pub mod legacy_learning;
 pub mod llm;
 pub mod number_format;
-pub mod profile_learn_handoff;
 pub mod routes;
 pub mod store;
 pub mod stt;
@@ -355,15 +354,6 @@ pub fn router_with_state(state: AppState) -> Router {
             post(routes::pending_edits::dismiss),
         )
         .route("/v1/vocabulary/terms", get(routes::vocabulary::list_terms))
-        .route("/v1/profile-memory", get(routes::profile_memory::memory))
-        .route(
-            "/v1/profile-memory/proposals/:id/approve",
-            post(routes::profile_memory::approve),
-        )
-        .route(
-            "/v1/profile-memory/proposals/:id/dismiss",
-            post(routes::profile_memory::dismiss),
-        )
         .route(
             "/v1/vocabulary/all",
             axum::routing::delete(routes::vocabulary::delete_all),

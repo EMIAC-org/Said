@@ -27,7 +27,7 @@ use crate::{
 
 pub fn spawn_prompt_artifact_repair(state: AppState) {
     if crate::legacy_learning::legacy_table_writes_frozen() {
-        info!("[legacy-learning] skipped prompt artifact repair — writes frozen");
+        info!("[learning] skipped prompt artifact repair — user learning disabled");
         return;
     }
     tokio::spawn(async move {
@@ -199,7 +199,7 @@ pub async fn create(
         info!("[vocab] manual add blocked — legacy learning frozen");
         return (
             StatusCode::CONFLICT,
-            Json(serde_json::json!({ "error": "legacy_learning_frozen" })),
+            Json(serde_json::json!({ "error": "learning_disabled" })),
         );
     }
     let trimmed = body.term.trim();

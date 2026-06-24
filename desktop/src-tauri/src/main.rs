@@ -27,10 +27,9 @@ mod swift_stt_engine;
 mod swift_stt_guard;
 mod telemetry;
 
-use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{SinkExt, StreamExt};
@@ -74,8 +73,6 @@ const MEETING_MIN_CHUNK_MS: u64 = 700;
 const MEETING_MAX_CHUNK_MS: u64 = 30_000;
 const AUTOSTART_ARG: &str = "--airnote-autostart";
 const SWIFT_FINAL_HANDOFF_WAIT_MS: u64 = 8_500;
-static EMITTED_PROFILE_REVIEW_JOBS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
 }
@@ -3990,6 +3987,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     let level_recv = level_recv;
     if let Some(level_recv) = level_recv {
         let app_levels = app.clone();
+        let shared_for_levels = Arc::clone(shared);
         let meeting_pause = app.try_state::<MeetingModeState>().and_then(|meeting| {
             if !meeting.capture_enabled() {
                 return None;
@@ -4014,7 +4012,45 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             let mut heard_speech = false;
             let mut last_voice_at = started_at;
             let mut finish_for_pause = false;
-            while let Ok(level) = level_recv.rx.recv() {
+            loop {
+                let level = match level_recv
+                    .rx
+                    .recv_timeout(std::time::Duration::from_millis(250))
+                {
+                    Ok(level) => level,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        let still_recording = match shared_for_levels.try_lock() {
+                            Ok(d) => d.state == desktop::AppState::Recording,
+                            Err(std::sync::TryLockError::WouldBlock) => true,
+                            Err(std::sync::TryLockError::Poisoned(poison)) => {
+                                poison.into_inner().state == desktop::AppState::Recording
+                            }
+                        };
+                        if !still_recording {
+                            tracing::warn!(
+                                "[record] level stream still open after recording ended — stopping visualizer"
+                            );
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+
+                let still_recording = match shared_for_levels.try_lock() {
+                    Ok(d) => d.state == desktop::AppState::Recording,
+                    Err(std::sync::TryLockError::WouldBlock) => true,
+                    Err(std::sync::TryLockError::Poisoned(poison)) => {
+                        poison.into_inner().state == desktop::AppState::Recording
+                    }
+                };
+                if !still_recording {
+                    tracing::warn!(
+                        "[record] received mic level after recording ended — stopping visualizer"
+                    );
+                    break;
+                }
+
                 smoothed = smoothed.mul_add(0.68, level * 0.32);
                 if last_emit.elapsed() >= std::time::Duration::from_millis(33) {
                     let _ = app_levels.emit(
@@ -6260,166 +6296,6 @@ async fn list_vocabulary(
 }
 
 #[tauri::command]
-async fn get_profile_memory(backend: State<'_, BackendState>) -> Result<serde_json::Value, String> {
-    let ep = get_endpoint(&backend)?;
-    api::get_profile_memory(&ep).await
-}
-
-fn profile_review_jobs() -> &'static Mutex<HashSet<String>> {
-    EMITTED_PROFILE_REVIEW_JOBS.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-fn profile_review_candidate_values(proposal: &serde_json::Value) -> Vec<serde_json::Value> {
-    let mut out = Vec::new();
-    for term in proposal
-        .get("stable_terms")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-    {
-        let corrected = term
-            .get("term")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
-        if corrected.is_empty() {
-            continue;
-        }
-        out.push(serde_json::json!({
-            "original": "",
-            "corrected": corrected,
-            "term_type": term.get("term_type").and_then(|v| v.as_str()).unwrap_or("profile_term"),
-            "learnable": true,
-            "tag": "profile term",
-        }));
-    }
-    for alias in proposal
-        .get("aliases")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-    {
-        let original = alias
-            .get("source_phrase")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
-        let corrected = alias
-            .get("canonical_phrase")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
-        if corrected.is_empty() {
-            continue;
-        }
-        out.push(serde_json::json!({
-            "original": original,
-            "corrected": corrected,
-            "term_type": alias.get("term_type").and_then(|v| v.as_str()).unwrap_or("profile_alias"),
-            "learnable": true,
-            "tag": "profile memory",
-        }));
-    }
-    out
-}
-
-fn emit_profile_review_if_needed(app: &tauri::AppHandle, memory: &serde_json::Value) -> bool {
-    let Some(proposals) = memory.get("pending_proposals").and_then(|v| v.as_array()) else {
-        return false;
-    };
-    for proposal in proposals {
-        let Some(job_id) = proposal.get("job_id").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let already_emitted = {
-            let Ok(mut seen) = profile_review_jobs().lock() else {
-                continue;
-            };
-            !seen.insert(job_id.to_string())
-        };
-        if already_emitted {
-            continue;
-        }
-        let candidates = profile_review_candidate_values(proposal);
-        if candidates.is_empty() {
-            continue;
-        }
-        let _ = present_status_bar_native(app, "vocab-review", false);
-        let _ = app.emit(
-            "vocab-review",
-            serde_json::json!({
-                "candidates": candidates,
-                "recording_id": format!("profile:{job_id}"),
-                "source": "profile_memory",
-                "reason": proposal.get("reason").and_then(|v| v.as_str()).unwrap_or("Profile memory proposal"),
-            }),
-        );
-        tracing::info!(
-            "[profile-memory] emitted review card job={} candidates={}",
-            job_id,
-            candidates.len()
-        );
-        return true;
-    }
-    false
-}
-
-fn poll_profile_memory_review(app: tauri::AppHandle, ep: BackendEndpoint) {
-    tauri::async_runtime::spawn(async move {
-        for delay in [
-            Duration::from_secs(4),
-            Duration::from_secs(8),
-            Duration::from_secs(12),
-            Duration::from_secs(18),
-            Duration::from_secs(26),
-        ] {
-            tokio::time::sleep(delay).await;
-            match api::get_profile_memory(&ep).await {
-                Ok(memory) => {
-                    let pending = memory
-                        .get("pending_proposals")
-                        .and_then(|v| v.as_array())
-                        .map(Vec::len)
-                        .unwrap_or(0);
-                    tracing::info!("[profile-memory] poll pending={pending}");
-                    if emit_profile_review_if_needed(&app, &memory) {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("[profile-memory] poll failed: {e}");
-                    break;
-                }
-            }
-        }
-    });
-}
-
-#[tauri::command]
-async fn approve_profile_proposal(
-    app: tauri::AppHandle,
-    backend: State<'_, BackendState>,
-    job_id: String,
-) -> Result<serde_json::Value, String> {
-    let ep = get_endpoint(&backend)?;
-    let result = api::approve_profile_proposal(&ep, &job_id).await?;
-    let _ = app.emit("vocabulary-changed", ());
-    Ok(result)
-}
-
-#[tauri::command]
-async fn dismiss_profile_proposal(
-    app: tauri::AppHandle,
-    backend: State<'_, BackendState>,
-    job_id: String,
-) -> Result<serde_json::Value, String> {
-    let ep = get_endpoint(&backend)?;
-    let result = api::dismiss_profile_proposal(&ep, &job_id).await?;
-    let _ = app.emit("vocabulary-changed", ());
-    Ok(result)
-}
-
-#[tauri::command]
 async fn add_vocabulary_term(
     app: tauri::AppHandle,
     backend: State<'_, BackendState>,
@@ -7257,51 +7133,6 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
             }
         }
 
-        // approve a server-owned profile memory proposal
-        "profile_approve" => {
-            let endpoint = notch_endpoint(app);
-            if let Some(ep) = endpoint {
-                let job_id = notch_str(&action, "recording_id")
-                    .strip_prefix("profile:")
-                    .unwrap_or("")
-                    .to_string();
-                if !job_id.is_empty() {
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if api::approve_profile_proposal(&ep, &job_id).await.is_ok() {
-                            let _ = app.emit("vocabulary-changed", ());
-                            let _ = app.emit(
-                                "vocab-learned",
-                                serde_json::json!({
-                                    "term": "Profile memory",
-                                    "message": "Saved profile memory",
-                                }),
-                            );
-                        }
-                    });
-                }
-            }
-        }
-
-        // dismiss a server-owned profile memory proposal
-        "profile_dismiss" => {
-            let endpoint = notch_endpoint(app);
-            if let Some(ep) = endpoint {
-                let job_id = notch_str(&action, "recording_id")
-                    .strip_prefix("profile:")
-                    .unwrap_or("")
-                    .to_string();
-                if !job_id.is_empty() {
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if api::dismiss_profile_proposal(&ep, &job_id).await.is_ok() {
-                            let _ = app.emit("vocabulary-changed", ());
-                        }
-                    });
-                }
-            }
-        }
-
         // batch-learn reviewed corrections → api::confirm_batch
         "confirm_batch" => {
             let endpoint = notch_endpoint(app);
@@ -7310,37 +7141,6 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
                     .get("recording_id")
                     .and_then(|x| x.as_str())
                     .map(|s| s.to_string());
-                if let Some(job_id) = recording_id
-                    .as_deref()
-                    .and_then(|id| id.strip_prefix("profile:"))
-                    .filter(|id| !id.is_empty())
-                    .map(str::to_string)
-                {
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        match api::approve_profile_proposal(&ep, &job_id).await {
-                            Ok(_) => {
-                                let _ = app.emit("vocabulary-changed", ());
-                                let _ = app.emit(
-                                    "vocab-learned",
-                                    serde_json::json!({
-                                        "term": "Profile memory",
-                                        "message": "Saved profile memory",
-                                    }),
-                                );
-                                tracing::info!(
-                                    "[profile-memory] approved profile proposal from notch confirm_batch job={job_id}"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "[profile-memory] approve from notch confirm_batch failed job={job_id}: {e}"
-                                );
-                            }
-                        }
-                    });
-                    return;
-                }
                 let pairs: Vec<(String, String)> = action
                     .get("items")
                     .and_then(|i| i.as_array())
@@ -7551,26 +7351,34 @@ const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(50);
 const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Faster settle for single high-jargon word replacements.
-/// If the user replaced exactly one word and it has brand/acronym
-/// characteristics, fire classify after just 1.5 seconds of stability.
-const EDIT_QUICK_SETTLE_MS: u64 = 1500;
-
 /// Compute edit-watch timeouts scaled by sentence length.
-/// Short sentences (≤15 words) = 15s max, 6s idle, 3s settle.
-/// Long sentences (50+ words) = 45s max, 12s idle, 8s settle.
-/// Users need more time to read and find errors in longer text.
-fn edit_watch_timeouts(word_count: usize) -> (Duration, Duration, u64) {
+///
+/// There are two different idle windows:
+/// - before an edit, keep the watcher cheap and finish quickly if the user
+///   accepts the paste unchanged;
+/// - after the first edit, wait much longer after the *last* field change so
+///   a user can read the whole sentence and make several corrections before a
+///   single classify/review-card pass fires.
+fn edit_watch_timeouts(word_count: usize) -> (Duration, Duration, Duration) {
     let words = word_count.max(5).min(80) as f64;
-    // Linear scale: 15s base + 0.6s per word above 15
-    let max_secs = 15.0 + (words - 15.0).max(0.0) * 0.6;
-    let max_duration = Duration::from_secs_f64(max_secs.min(45.0));
-    // Idle timeout: 6s base + 0.15s per word above 15
-    let idle_secs = 6.0 + (words - 15.0).max(0.0) * 0.15;
-    let idle_timeout = Duration::from_secs_f64(idle_secs.min(15.0));
-    // Settle: 3s base + 0.1s per word above 15
-    let settle_secs = (3.0 + (words - 15.0).max(0.0) * 0.1).min(10.0);
-    (max_duration, idle_timeout, settle_secs as u64)
+    // No-edit idle: enough time to notice a quick correction, but not so long
+    // that an accepted dictation leaves a background watcher around.
+    let no_edit_idle_secs = (6.0 + (words - 15.0).max(0.0) * 0.12).min(12.0);
+
+    // Post-edit idle: users often correct the first visible error, pause to
+    // read the rest, then fix more terms. Keep this comfortably in the 10-15s
+    // range even for short sentences, and slightly longer for long paragraphs.
+    let post_edit_idle_secs = (14.0 + (words - 15.0).max(0.0) * 0.08).min(20.0);
+
+    // Hard guard only. After an edit we still prefer the post-edit idle window
+    // over an early max-duration cut, so the loop uses a longer hard cap.
+    let max_secs = (30.0 + (words - 15.0).max(0.0) * 0.7).min(90.0);
+
+    (
+        Duration::from_secs_f64(max_secs),
+        Duration::from_secs_f64(no_edit_idle_secs),
+        Duration::from_secs_f64(post_edit_idle_secs),
+    )
 }
 
 async fn blocking_ax_option<T, F>(label: &'static str, f: F) -> Option<T>
@@ -7758,14 +7566,15 @@ async fn watch_for_edit(
 
     // Scale timeouts by sentence length — long sentences need more reading time
     let word_count = polished.split_whitespace().count();
-    let (max_duration, idle_timeout, stable_settle_secs) = edit_watch_timeouts(word_count);
+    let (max_duration, no_edit_idle_timeout, post_edit_idle_timeout) =
+        edit_watch_timeouts(word_count);
     tracing::info!(
-        "[edit-watch] word_count={word_count} max={}s idle={}s settle={stable_settle_secs}s",
+        "[edit-watch] word_count={word_count} max={}s no_edit_idle={}s post_edit_idle={}s",
         max_duration.as_secs(),
-        idle_timeout.as_secs(),
+        no_edit_idle_timeout.as_secs(),
+        post_edit_idle_timeout.as_secs(),
     );
-    let mut edit_stable_since: Option<Instant> = None;
-    let mut last_edit_snapshot: Option<String> = None;
+    let mut saw_user_edit = false;
     // Capture-error metadata, hoisted so we can ship it to the backend's
     // CAPTURE_ERROR pre-filter alongside the edit text.
     let mut app_switched_during_capture: bool = false;
@@ -7862,36 +7671,55 @@ async fn watch_for_edit(
             idle_at = Instant::now();
             last_change_at = Instant::now();
             current_interval = EDIT_WATCH_FAST_INTERVAL;
+            if now_val != post_paste {
+                if !saw_user_edit {
+                    tracing::info!(
+                        "[edit-watch] first edit observed for {recording_id}; waiting {}s after the last change before classify",
+                        post_edit_idle_timeout.as_secs()
+                    );
+                }
+                saw_user_edit = true;
+            }
             // Only promote to best_candidate if the value still shares words
             // with the polished text (guards against Send-cleared placeholders).
             if shares_word_overlap(&now_val, &polished) {
                 best_candidate = now_val.clone();
             }
-            last_edit_snapshot = Some(now_val.clone());
-            edit_stable_since = None; // edit is active, not stable yet
             last_val = now_val;
         } else if last_change_at.elapsed() > Duration::from_secs(2) {
             current_interval = EDIT_WATCH_SLOW_INTERVAL;
-            // Track stable-edit: field stopped changing after an edit was seen
-            if last_edit_snapshot.is_some() && edit_stable_since.is_none() {
-                edit_stable_since = Some(Instant::now());
-            }
         }
 
-        // NEW: stable edit detection — fire early if edit region stopped changing
-        if let Some(stable_since) = edit_stable_since {
-            if stable_since.elapsed().as_secs() >= stable_settle_secs {
-                tracing::info!(
-                    "[edit-watch] edit stabilised for {stable_settle_secs}s — firing classify (total {}ms, words={word_count})",
-                    started.elapsed().as_millis(),
-                );
-                break;
-            }
-        }
-
-        let done = idle_at.elapsed() > idle_timeout || started.elapsed() > max_duration;
+        let active_idle_timeout = if saw_user_edit {
+            post_edit_idle_timeout
+        } else {
+            no_edit_idle_timeout
+        };
+        let hard_timeout = if saw_user_edit {
+            Duration::from_secs(120)
+        } else {
+            max_duration
+        };
+        let done_by_idle = idle_at.elapsed() > active_idle_timeout;
+        let done_by_hard_timeout = started.elapsed() > hard_timeout;
+        let done = done_by_idle || done_by_hard_timeout;
 
         if done {
+            tracing::info!(
+                "[edit-watch] finishing watch for {recording_id}; reason={} total={}ms idle={}ms edited={}",
+                if done_by_idle {
+                    if saw_user_edit {
+                        "post_edit_idle"
+                    } else {
+                        "no_edit_idle"
+                    }
+                } else {
+                    "hard_timeout"
+                },
+                started.elapsed().as_millis(),
+                idle_at.elapsed().as_millis(),
+                saw_user_edit,
+            );
             break;
         }
     }
@@ -9902,9 +9730,6 @@ fn main() {
             dismiss_pending_edit,
             // Vocabulary management
             list_vocabulary,
-            get_profile_memory,
-            approve_profile_proposal,
-            dismiss_profile_proposal,
             add_vocabulary_term,
             delete_vocabulary_term,
             confirm_term,
@@ -10145,5 +9970,31 @@ mod live_typing_guard_tests {
             LiveTypingDecision::PreviewOnly
         );
         assert_eq!(guard.on_token("final"), LiveTypingDecision::TypeToken);
+    }
+}
+
+#[cfg(test)]
+mod edit_watch_timeout_tests {
+    use super::edit_watch_timeouts;
+
+    #[test]
+    fn waits_longer_after_first_edit_than_no_edit_acceptance() {
+        let (_max, no_edit_idle, post_edit_idle) = edit_watch_timeouts(12);
+        assert!(
+            no_edit_idle.as_secs() <= 7,
+            "accepted short dictations should not keep the watcher around too long"
+        );
+        assert!(
+            post_edit_idle.as_secs() >= 14,
+            "after a user edit, wait long enough for reading and more corrections"
+        );
+    }
+
+    #[test]
+    fn long_text_gets_more_time_to_collect_multiple_edits() {
+        let (max, no_edit_idle, post_edit_idle) = edit_watch_timeouts(70);
+        assert!(max.as_secs() >= 60);
+        assert!(no_edit_idle.as_secs() >= 10);
+        assert!(post_edit_idle.as_secs() >= 18);
     }
 }

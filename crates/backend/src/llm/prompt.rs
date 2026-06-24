@@ -112,6 +112,25 @@ pub fn render_voice_system_prompt_template(
     )
 }
 
+pub fn render_voice_system_prompt_template_with_profile(
+    template: &str,
+    prefs: &Preferences,
+    rag_examples: &[RagExample],
+    corrections: &[Correction],
+    vocabulary_entries: &[VocabEntry],
+    profile_markdown: Option<&str>,
+) -> String {
+    said_core::polish::prompt::render_voice_system_prompt_template(
+        template,
+        &to_polish_prefs(prefs),
+        rag_examples,
+        &to_core_corrections(corrections),
+        vocabulary_entries,
+        profile_markdown,
+        is_common,
+    )
+}
+
 pub fn build_tray_format_system_prompt(
     vocab_entries: &[VocabEntry],
     corrections: &[Correction],
