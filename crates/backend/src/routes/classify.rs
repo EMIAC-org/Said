@@ -155,9 +155,10 @@ fn post_runtime_client_event(
 }
 
 /// Maximum elapsed-since-paste before we treat the edit as unrelated to
-/// our paste.  Desktop edit-watch can observe for up to ~45 seconds on slow
-/// edits, so the backend gate must be slightly wider than the watcher.
-const CAPTURE_STALE_MS: u64 = 60_000;
+/// our paste. Desktop edit-watch intentionally gives users a generous reading
+/// window before the first edit and a second quiet window after the last edit,
+/// so this must stay wider than the desktop watcher's hard cap.
+const CAPTURE_STALE_MS: u64 = 180_000;
 
 /// Stricter subset: captures whose source is an *atomic* read of a specific
 /// text element. An AX read returning a value means it came from the targeted

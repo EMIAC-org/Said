@@ -7361,14 +7361,15 @@ const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
 ///   single classify/review-card pass fires.
 fn edit_watch_timeouts(word_count: usize) -> (Duration, Duration, Duration) {
     let words = word_count.max(5).min(80) as f64;
-    // No-edit idle: enough time to notice a quick correction, but not so long
-    // that an accepted dictation leaves a background watcher around.
-    let no_edit_idle_secs = (6.0 + (words - 15.0).max(0.0) * 0.12).min(12.0);
+    // No-edit idle: this is the user's reading window before they make the
+    // first correction. Short 6-12s windows miss the normal flow where someone
+    // reads the whole sentence, spots terms to fix, then starts editing.
+    let no_edit_idle_secs = (20.0 + (words - 15.0).max(0.0) * 0.20).min(45.0);
 
     // Post-edit idle: users often correct the first visible error, pause to
     // read the rest, then fix more terms. Keep this comfortably in the 10-15s
     // range even for short sentences, and slightly longer for long paragraphs.
-    let post_edit_idle_secs = (14.0 + (words - 15.0).max(0.0) * 0.08).min(20.0);
+    let post_edit_idle_secs = (18.0 + (words - 15.0).max(0.0) * 0.14).min(35.0);
 
     // Hard guard only. After an edit we still prefer the post-edit idle window
     // over an early max-duration cut, so the loop uses a longer hard cap.
@@ -9978,14 +9979,14 @@ mod edit_watch_timeout_tests {
     use super::edit_watch_timeouts;
 
     #[test]
-    fn waits_longer_after_first_edit_than_no_edit_acceptance() {
+    fn gives_user_time_to_read_before_first_edit() {
         let (_max, no_edit_idle, post_edit_idle) = edit_watch_timeouts(12);
         assert!(
-            no_edit_idle.as_secs() <= 7,
-            "accepted short dictations should not keep the watcher around too long"
+            no_edit_idle.as_secs() >= 20,
+            "user needs time to read the pasted sentence before the first correction"
         );
         assert!(
-            post_edit_idle.as_secs() >= 14,
+            post_edit_idle.as_secs() >= 18,
             "after a user edit, wait long enough for reading and more corrections"
         );
     }
@@ -9994,7 +9995,7 @@ mod edit_watch_timeout_tests {
     fn long_text_gets_more_time_to_collect_multiple_edits() {
         let (max, no_edit_idle, post_edit_idle) = edit_watch_timeouts(70);
         assert!(max.as_secs() >= 60);
-        assert!(no_edit_idle.as_secs() >= 10);
-        assert!(post_edit_idle.as_secs() >= 18);
+        assert!(no_edit_idle.as_secs() >= 25);
+        assert!(post_edit_idle.as_secs() >= 25);
     }
 }
