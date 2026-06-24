@@ -9,6 +9,7 @@ use tracing::{info, warn};
 
 use crate::{
     AppState,
+    llm::{alias_safety, promotion_gate},
     store::{prefs::get_prefs, stt_replacements, tier2_edit_policy, users, vocab_fts, vocabulary},
 };
 
@@ -16,6 +17,84 @@ fn hash_text(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+fn protected_term_type(term_type: &str) -> bool {
+    matches!(
+        term_type,
+        "brand" | "acronym" | "proper_noun" | "code_identifier"
+    )
+}
+
+fn protected_phrase(term: &str) -> bool {
+    let tokens: Vec<&str> = term.split_whitespace().collect();
+    tokens.len() > 1
+        && tokens
+            .iter()
+            .any(|token| protected_term_type(vocabulary::classify_term_type(token.trim())))
+}
+
+fn source_contains_different_protected_term(
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    source: &str,
+    corrected: &str,
+) -> bool {
+    let corrected_norm = tier2_edit_policy::normalize_token(corrected);
+    source
+        .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
+        .filter(|part| !part.trim().is_empty())
+        .any(|part| {
+            vocabulary::find_by_term_ci(pool, user_id, part.trim()).is_some_and(|existing| {
+                tier2_edit_policy::normalize_token(&existing.term) != corrected_norm
+                    && existing
+                        .term_type
+                        .as_deref()
+                        .is_some_and(protected_term_type)
+            })
+        })
+}
+
+fn deterministic_confirm_alias_allowed(
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    original: &str,
+    corrected: &str,
+    inferred_term_type: &str,
+) -> bool {
+    let original = original.trim();
+    let corrected = corrected.trim();
+    if original.is_empty()
+        || corrected.is_empty()
+        || tier2_edit_policy::normalize_token(original)
+            == tier2_edit_policy::normalize_token(corrected)
+    {
+        return false;
+    }
+    if alias_safety::is_common_alias_source(original)
+        || promotion_gate::is_common_word(original)
+        || crate::tier2::is_in_dictionary(&alias_safety::normalize_source(original))
+    {
+        return false;
+    }
+    if source_contains_different_protected_term(pool, user_id, original, corrected) {
+        return false;
+    }
+
+    let existing_target = vocabulary::find_by_term_ci(pool, user_id, corrected);
+    let target_type = existing_target
+        .as_ref()
+        .and_then(|term| term.term_type.as_deref())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(inferred_term_type);
+
+    protected_term_type(target_type)
+        || (target_type == "phrase" && protected_phrase(corrected))
+        || existing_target.is_some_and(|term| {
+            term.term_type.as_deref().is_some_and(|kind| {
+                protected_term_type(kind) || (kind == "phrase" && protected_phrase(&term.term))
+            })
+        })
 }
 
 fn post_runtime_memory_dirty(state: AppState) {
@@ -221,6 +300,14 @@ pub async fn confirm_term(
                 &body.original,
                 &body.term,
                 1.0,
+                &language,
+            );
+            stt_replacements::mark_confirmed_aliases_for_language(
+                &state.pool,
+                user_id,
+                &body.original,
+                &body.original,
+                &body.term,
                 &language,
             );
 
@@ -513,6 +600,63 @@ pub async fn confirm_batch(
         if corrected.is_empty() {
             continue;
         }
+        if !original.is_empty()
+            && tier2_edit_policy::normalize_token(original)
+                == tier2_edit_policy::normalize_token(corrected)
+        {
+            info!(
+                "[confirm-batch] skipped no-op candidate {:?} -> {:?}",
+                original, corrected
+            );
+            continue;
+        }
+
+        let term_type = vocabulary::classify_term_type(corrected).to_string();
+        let alias_safe = if original.is_empty() {
+            false
+        } else if deterministic_confirm_alias_allowed(
+            &state.pool,
+            user_id,
+            original,
+            corrected,
+            &term_type,
+        ) {
+            info!(
+                "[confirm-batch] alias safety accepted by deterministic HITL gate {:?} -> {:?}",
+                original, corrected
+            );
+            true
+        } else {
+            let safety = alias_safety::judge_alias_source(
+                &state.http_client,
+                &state.pool,
+                user_id,
+                &groq_key,
+                original,
+                corrected,
+                None,
+            )
+            .await;
+            info!(
+                "[confirm-batch] alias safety judge verdict={} provider={} model={} conf={:.2} {:?} -> {:?}: {}",
+                safety.verdict.as_str(),
+                safety.provider,
+                safety.model,
+                safety.confidence,
+                original,
+                corrected,
+                safety.reason
+            );
+            safety.allows_learning()
+        };
+
+        if !original.is_empty() && !alias_safe {
+            info!(
+                "[confirm-batch] alias safety blocked {:?} -> {:?} — not storing vocab-only surrogate",
+                original, corrected
+            );
+            continue;
+        }
 
         // Promote or refresh vocabulary. Alias learning must still run when
         // the term already exists; review cards are commonly used to teach a
@@ -528,22 +672,6 @@ pub async fn confirm_batch(
         );
 
         vocab_fts::upsert(&state.pool, user_id, corrected, None);
-
-        let alias_safe = if original.is_empty() {
-            false
-        } else {
-            crate::llm::alias_safety::judge_alias_source(
-                &state.http_client,
-                &state.pool,
-                user_id,
-                &groq_key,
-                original,
-                corrected,
-                None,
-            )
-            .await
-            .allows_learning()
-        };
 
         if alias_safe {
             // Record edit-policy rule
@@ -568,6 +696,14 @@ pub async fn confirm_batch(
                 1.0,
                 &language,
             );
+            stt_replacements::mark_confirmed_aliases_for_language(
+                &state.pool,
+                user_id,
+                original,
+                original,
+                corrected,
+                &language,
+            );
 
             // Proactive distortions
             stt_replacements::generate_proactive_distortions(
@@ -588,14 +724,8 @@ pub async fn confirm_batch(
                 safety: None,
                 recording_id: body.recording_id.clone(),
             });
-        } else if !original.is_empty() {
-            info!(
-                "[confirm-batch] alias safety blocked {:?} -> {:?}",
-                original, corrected
-            );
         }
 
-        let term_type = vocabulary::classify_term_type(corrected).to_string();
         server_memory_terms.push(serde_json::json!({
             "term": corrected,
             "term_type": term_type,

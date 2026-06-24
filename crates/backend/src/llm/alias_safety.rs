@@ -374,6 +374,7 @@ static COMMON_WORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "does",
         "doing",
         "done",
+        "draw",
         "for",
         "from",
         "go",
@@ -742,7 +743,8 @@ mod tests {
 
     #[test]
     fn common_phrases_are_blocked() {
-        for phrase in ["ye kaisa laga", "यह कैसा लगा", "kaisi lagi"] {
+        for phrase in ["ye kaisa laga", "यह कैसा लगा", "kaisi lagi", "a draw and"]
+        {
             assert!(is_common_alias_source(phrase), "{phrase} should be blocked");
         }
     }

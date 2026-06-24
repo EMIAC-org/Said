@@ -5,13 +5,14 @@ use tracing::{info, warn};
 
 use super::{
     DbPool, now_ms,
-    stt_replacements::{self, ReviewStatus},
+    stt_replacements::{self, ExportTier, ReviewStatus, SttReplacement},
     vocabulary,
 };
 
-const MAX_PROFILE_CHARS: usize = 4_000;
+const MAX_PROFILE_CHARS: usize = 10_000;
 const MAX_TERMS: usize = 50;
-const MAX_ALIASES: usize = 80;
+const MAX_ALIASES: usize = 240;
+const MAX_RENDERED_ALIASES: usize = 160;
 const MAX_RECENT_TEXTS: usize = 8;
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,10 @@ struct AliasSnapshot {
     heard: String,
     correct: String,
     status: String,
+    export_tier: String,
+    weight: f64,
+    use_count: i64,
+    last_used: i64,
 }
 
 pub fn get_cached(pool: &DbPool, user_id: &str) -> Option<CachedProfileSummary> {
@@ -161,14 +166,22 @@ fn build_snapshot(pool: &DbPool, user_id: &str) -> SourceSnapshot {
             context: term.example_context,
         })
         .collect::<Vec<_>>();
-    let aliases = stt_replacements::load_all(pool, user_id)
+    let mut alias_rows = stt_replacements::load_all(pool, user_id)
         .into_iter()
         .filter(|alias| alias.review_status != ReviewStatus::Blocked)
+        .collect::<Vec<_>>();
+    sort_aliases_for_profile(&mut alias_rows);
+    let aliases = alias_rows
+        .into_iter()
         .take(MAX_ALIASES)
         .map(|alias| AliasSnapshot {
             heard: alias.transcript_form,
             correct: alias.correct_form,
             status: alias.review_status.as_str().to_string(),
+            export_tier: alias.export_tier.as_str().to_string(),
+            weight: alias.weight,
+            use_count: alias.use_count,
+            last_used: alias.last_used,
         })
         .collect::<Vec<_>>();
     SourceSnapshot {
@@ -220,11 +233,11 @@ fn render_profile_markdown(snapshot: &SourceSnapshot) -> String {
     let aliases = snapshot
         .aliases
         .iter()
-        .take(40)
+        .take(MAX_RENDERED_ALIASES)
         .map(|alias| {
             format!(
-                "- {:?} -> {} ({})",
-                alias.heard, alias.correct, alias.status
+                "- {:?} -> {} ({}, {})",
+                alias.heard, alias.correct, alias.status, alias.export_tier
             )
         })
         .collect::<Vec<_>>()
@@ -257,6 +270,40 @@ fn render_profile_markdown(snapshot: &SourceSnapshot) -> String {
         empty_block(&recent),
     );
     truncate(&markdown, MAX_PROFILE_CHARS)
+}
+
+fn sort_aliases_for_profile(aliases: &mut [SttReplacement]) {
+    aliases.sort_by(|a, b| {
+        alias_profile_rank(b)
+            .cmp(&alias_profile_rank(a))
+            .then_with(|| {
+                b.weight
+                    .partial_cmp(&a.weight)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| b.transcript_form.len().cmp(&a.transcript_form.len()))
+            .then_with(|| a.transcript_form.cmp(&b.transcript_form))
+    });
+}
+
+fn alias_profile_rank(alias: &SttReplacement) -> (i64, i64, i64, i64, i64) {
+    let tier = match alias.export_tier {
+        ExportTier::ExportReplaceReady => 3,
+        ExportTier::ExportKeytermSupport => 2,
+        ExportTier::LocalOnly => 1,
+        ExportTier::Blocked => 0,
+    };
+    let status = match alias.review_status {
+        ReviewStatus::Approved => 2,
+        ReviewStatus::Pending => 1,
+        ReviewStatus::Skipped | ReviewStatus::Blocked => 0,
+    };
+    let phrase = if alias.transcript_form.contains(char::is_whitespace) {
+        1
+    } else {
+        0
+    };
+    (tier, status, alias.last_used, phrase, alias.use_count)
 }
 
 fn infer_domains(snapshot: &SourceSnapshot) -> String {
@@ -368,6 +415,10 @@ mod tests {
                 heard: "kaafka".to_string(),
                 correct: "Kafka".to_string(),
                 status: "approved".to_string(),
+                export_tier: "export_replace_ready".to_string(),
+                weight: 1.0,
+                use_count: 1,
+                last_used: 1,
             }],
             recent_outputs: vec!["Kafka aur ZooKeeper issue debug karna hai.".to_string()],
         };

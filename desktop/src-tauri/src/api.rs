@@ -198,6 +198,9 @@ pub enum PolishEvent {
         message: String,
         audio_id: Option<String>,
         error_code: Option<String>,
+        retryable: Option<bool>,
+        owned_by_airnote: Option<bool>,
+        diagnostic: Option<String>,
     },
 }
 
@@ -375,6 +378,9 @@ where
             message: message.clone(),
             audio_id: None,
             error_code,
+            retryable: None,
+            owned_by_airnote: None,
+            diagnostic: Some(body),
         });
         return Err(message);
     }
@@ -418,6 +424,9 @@ where
             message: message.clone(),
             audio_id: None,
             error_code,
+            retryable: None,
+            owned_by_airnote: None,
+            diagnostic: Some(body),
         });
         return Err(message);
     }
@@ -522,6 +531,7 @@ where
 {
     let mut buf = String::new();
     let mut done_event: Option<PolishDone> = None;
+    let mut last_error: Option<String> = None;
     // Track the most recently seen `event:` line so we can dispatch correctly
     let mut event_name = String::new();
 
@@ -552,11 +562,19 @@ where
                 continue;
             }
 
-            parse_and_dispatch(data, &event_name, &mut on_event, &mut done_event);
+            parse_and_dispatch(
+                data,
+                &event_name,
+                &mut on_event,
+                &mut done_event,
+                &mut last_error,
+            );
         }
     }
 
-    done_event.ok_or_else(|| "SSE stream ended without a `done` event".into())
+    done_event.ok_or_else(|| {
+        last_error.unwrap_or_else(|| "SSE stream ended without a `done` event".into())
+    })
 }
 
 fn parse_and_dispatch(
@@ -564,6 +582,7 @@ fn parse_and_dispatch(
     event_name: &str,
     on_event: &mut impl FnMut(PolishEvent),
     done_event: &mut Option<PolishDone>,
+    last_error: &mut Option<String>,
 ) {
     let Ok(val) = serde_json::from_str::<Value>(data) else {
         warn!("[api] unparseable SSE data: {data:?}");
@@ -600,18 +619,8 @@ fn parse_and_dispatch(
         }
         "error" => {
             if let Some(msg) = val.get("message").and_then(Value::as_str) {
-                let audio_id = val
-                    .get("audio_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                on_event(PolishEvent::Error {
-                    message: msg.to_string(),
-                    audio_id,
-                    error_code: val
-                        .get("error_code")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                });
+                *last_error = Some(msg.to_string());
+                on_event(parse_error_event(&val, msg));
             }
         }
         // Key-sniff fallback (handles backends that omit the `event:` line)
@@ -635,20 +644,30 @@ fn parse_and_dispatch(
                     *done_event = Some(done);
                 }
             } else if let Some(msg) = val.get("message").and_then(Value::as_str) {
-                let audio_id = val
-                    .get("audio_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                on_event(PolishEvent::Error {
-                    message: msg.to_string(),
-                    audio_id,
-                    error_code: val
-                        .get("error_code")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                });
+                *last_error = Some(msg.to_string());
+                on_event(parse_error_event(&val, msg));
             }
         }
+    }
+}
+
+fn parse_error_event(val: &Value, msg: &str) -> PolishEvent {
+    PolishEvent::Error {
+        message: msg.to_string(),
+        audio_id: val
+            .get("audio_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        error_code: val
+            .get("error_code")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        retryable: val.get("retryable").and_then(Value::as_bool),
+        owned_by_airnote: val.get("owned_by_airnote").and_then(Value::as_bool),
+        diagnostic: val
+            .get("diagnostic")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }
 }
 

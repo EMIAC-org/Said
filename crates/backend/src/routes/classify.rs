@@ -21,7 +21,7 @@ use tracing::{info, warn};
 use crate::{
     AppState,
     llm::{
-        alias_safety::{self, AliasSafetyVerdict},
+        alias_safety,
         analyzer::{self, AnalyzedChange, ChangeReason},
         edit_diff, promotion_gate,
     },
@@ -567,14 +567,6 @@ async fn classify_inner(
         changes: analyzer_changes,
         overall_class,
     };
-    let local_review_candidates = local_review_candidates_from_analyzer(
-        &analyzer_output.changes,
-        &state.pool,
-        &state.default_user_id,
-        &body.user_kept,
-        &output_language,
-    );
-
     // ── Step 5: Prepare learnable candidates ────────────────────────────────
     // STT learning is human-in-the-loop: classify proposes candidates, and
     // `/v1/confirm-batch` is the only path that writes approved aliases/terms.
@@ -587,7 +579,9 @@ async fn classify_inner(
     let mut promoted_count = 0_usize;
     let mut promoted_terms: Vec<String> = Vec::new();
     let mut queued_terms: Vec<QueuedTerm> = Vec::new();
-    let mut review_candidates: Vec<ReviewCandidate> = local_review_candidates;
+    let mut review_candidates: Vec<ReviewCandidate> = Vec::new();
+    let mut safety_blocked_aliases: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
     let mut has_repeat = false;
     let mut learned = false;
     let server_memory_terms: Vec<serde_json::Value> = Vec::new();
@@ -761,7 +755,52 @@ async fn classify_inner(
                                 original,
                             )
                             .is_none());
-                    if looks_offerable && source_safe {
+                    let alias_offer_safe = if !original.trim().is_empty()
+                        && deterministic_hitl_alias_safe(
+                            &state.pool,
+                            &state.default_user_id,
+                            original,
+                            corrected,
+                            term_type,
+                        ) {
+                        info!(
+                            "[classify] local_ask accepted by deterministic HITL gate: {:?} -> {:?}",
+                            original, corrected
+                        );
+                        true
+                    } else if !original.trim().is_empty() {
+                        let safety = alias_safety::judge_alias_source(
+                            &state.http_client,
+                            &state.pool,
+                            &state.default_user_id,
+                            &groq_key,
+                            original,
+                            corrected,
+                            Some(&body.user_kept),
+                        )
+                        .await;
+                        if !safety.allows_learning() {
+                            let original_norm = tier2_edit_policy::normalize_token(original);
+                            let corrected_norm = tier2_edit_policy::normalize_token(corrected);
+                            if !original_norm.is_empty() && !corrected_norm.is_empty() {
+                                safety_blocked_aliases.insert((original_norm, corrected_norm));
+                            }
+                            info!(
+                                "[classify] local_ask suppressed by safety gate: {:?} -> {:?} verdict={} reason={}",
+                                original,
+                                corrected,
+                                safety.verdict.as_str(),
+                                safety.reason
+                            );
+                            false
+                        } else {
+                            true
+                        }
+                    } else {
+                        true
+                    };
+
+                    if looks_offerable && source_safe && alias_offer_safe {
                         review_candidates.push(ReviewCandidate {
                             original: original.to_string(),
                             corrected: corrected.to_string(),
@@ -779,7 +818,20 @@ async fn classify_inner(
                     }
                     continue;
                 }
-                if !original.trim().is_empty() {
+                if !original.trim().is_empty()
+                    && deterministic_hitl_alias_safe(
+                        &state.pool,
+                        &state.default_user_id,
+                        original,
+                        canonical_for_policy,
+                        term_type,
+                    )
+                {
+                    info!(
+                        "[classify] STT_ERROR alias accepted by deterministic HITL gate: {:?} -> {:?}",
+                        original, canonical_for_policy
+                    );
+                } else if !original.trim().is_empty() {
                     let safety = alias_safety::judge_alias_source(
                         &state.http_client,
                         &state.pool,
@@ -791,35 +843,19 @@ async fn classify_inner(
                     )
                     .await;
                     if !safety.allows_learning() {
+                        let original_norm = tier2_edit_policy::normalize_token(original);
+                        let corrected_norm =
+                            tier2_edit_policy::normalize_token(canonical_for_policy);
+                        if !original_norm.is_empty() && !corrected_norm.is_empty() {
+                            safety_blocked_aliases.insert((original_norm, corrected_norm));
+                        }
                         info!(
-                            "[classify] STT_ERROR alias blocked by safety gate: {:?} -> {:?} verdict={} reason={}",
+                            "[classify] STT_ERROR alias suppressed by safety gate: {:?} -> {:?} verdict={} reason={} — not offering review candidate",
                             original,
                             canonical_for_policy,
                             safety.verdict.as_str(),
                             safety.reason
                         );
-                        let local_fallback = local_review_candidate_from_change(
-                            change,
-                            &state.pool,
-                            &state.default_user_id,
-                            &body.user_kept,
-                            &output_language,
-                        );
-                        if safety.verdict != AliasSafetyVerdict::CommonBlock
-                            || local_fallback.is_some()
-                        {
-                            let mut candidate = local_fallback.unwrap_or_else(|| ReviewCandidate {
-                                original: original.to_string(),
-                                corrected: corrected.to_string(),
-                                term_type: term_type.to_string(),
-                                learnable: true,
-                                tag: "alias_safety".to_string(),
-                            });
-                            if safety.verdict == AliasSafetyVerdict::CommonBlock {
-                                candidate.tag = "local_alias_review".to_string();
-                            }
-                            push_unique_review_candidate(&mut review_candidates, candidate);
-                        }
                         continue;
                     }
                 }
@@ -919,6 +955,46 @@ async fn classify_inner(
                 // Not learnable — intentional no-op.
             }
         }
+    }
+
+    let local_review_candidates = local_review_candidates_from_analyzer(
+        &analyzer_output.changes,
+        &state.pool,
+        &state.default_user_id,
+        &body.user_kept,
+        &output_language,
+    );
+    let local_before = review_candidates.len();
+    for candidate in local_review_candidates {
+        let pair = (
+            tier2_edit_policy::normalize_token(&candidate.original),
+            tier2_edit_policy::normalize_token(&candidate.corrected),
+        );
+        let safety_blocked =
+            safety_blocked_aliases
+                .iter()
+                .any(|(blocked_original, blocked_corrected)| {
+                    pair.1 == *blocked_corrected
+                        && !pair.0.is_empty()
+                        && !blocked_original.is_empty()
+                        && (pair.0 == *blocked_original
+                            || pair.0.contains(blocked_original)
+                            || blocked_original.contains(&pair.0))
+                });
+        if safety_blocked {
+            info!(
+                "[classify] local review candidate suppressed by prior safety block: {:?} -> {:?}",
+                candidate.original, candidate.corrected
+            );
+            continue;
+        }
+        push_unique_review_candidate(&mut review_candidates, candidate);
+    }
+    if review_candidates.len() != local_before {
+        info!(
+            "[classify] local review fallback added {} candidate(s)",
+            review_candidates.len().saturating_sub(local_before)
+        );
     }
 
     // ── Add-on: de-dup + cap the new "Ask to learn" cards ───────────────────
@@ -1618,6 +1694,37 @@ fn is_strong_insert_target(pool: &crate::store::DbPool, user_id: &str, corrected
     )
 }
 
+fn protected_term_type(term_type: &str) -> bool {
+    matches!(
+        term_type,
+        "brand" | "acronym" | "proper_noun" | "code_identifier"
+    )
+}
+
+fn deterministic_hitl_alias_safe(
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    original: &str,
+    corrected: &str,
+    term_type: &str,
+) -> bool {
+    let original = original.trim();
+    let corrected = corrected.trim();
+    if original.is_empty()
+        || corrected.is_empty()
+        || tier2_edit_policy::normalize_token(original)
+            == tier2_edit_policy::normalize_token(corrected)
+    {
+        return false;
+    }
+    if unsafe_stt_source_reason(pool, user_id, original).is_some() {
+        return false;
+    }
+    protected_vocab_lookup(pool, user_id, corrected).is_some()
+        || canonical_developer_term(corrected).is_some()
+        || protected_term_type(term_type)
+}
+
 fn local_review_candidates_from_analyzer(
     changes: &[AnalyzedChange],
     pool: &crate::store::DbPool,
@@ -1695,7 +1802,7 @@ fn local_review_candidate_from_change(
     let is_single_common_source = source_tokens.len() == 1
         && (promotion_gate::is_common_word(&original)
             || alias_safety::is_common_alias_source(&original)
-            || crate::tier2::is_in_dictionary(&original));
+            || crate::tier2::is_in_dictionary(&alias_safety::normalize_source(&original)));
     if is_single_common_source {
         return None;
     }
@@ -1728,6 +1835,7 @@ fn push_unique_review_candidate(candidates: &mut Vec<ReviewCandidate>, candidate
     let original_norm = tier2_edit_policy::normalize_token(&candidate.original);
     let corrected_norm = tier2_edit_policy::normalize_token(&candidate.corrected);
     if corrected_norm.is_empty()
+        || (!original_norm.is_empty() && original_norm == corrected_norm)
         || candidates.iter().any(|existing| {
             tier2_edit_policy::normalize_token(&existing.original) == original_norm
                 && tier2_edit_policy::normalize_token(&existing.corrected) == corrected_norm
@@ -1843,7 +1951,88 @@ fn sanitize_review_candidates(
         }
         push_unique_review_candidate(&mut sanitized, candidate);
     }
-    sanitized
+    remove_covered_weak_partial_candidates(sanitized)
+}
+
+fn remove_covered_weak_partial_candidates(
+    candidates: Vec<ReviewCandidate>,
+) -> Vec<ReviewCandidate> {
+    candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, candidate)| {
+            if covered_by_stronger_same_target(idx, candidate, &candidates) {
+                info!(
+                    "[classify] review candidate suppressed — weak partial source {:?} covered by full-span alias for {:?}",
+                    candidate.original, candidate.corrected
+                );
+                None
+            } else {
+                Some(candidate.clone())
+            }
+        })
+        .collect()
+}
+
+fn covered_by_stronger_same_target(
+    idx: usize,
+    candidate: &ReviewCandidate,
+    candidates: &[ReviewCandidate],
+) -> bool {
+    let corrected_norm = review_candidate_span_norm(&candidate.corrected);
+    let original_norm = review_candidate_span_norm(&candidate.original);
+    let original_tokens: Vec<&str> = original_norm.split_whitespace().collect();
+    if corrected_norm.is_empty()
+        || original_tokens.len() != 1
+        || !weak_single_token_alias_source(&candidate.original)
+    {
+        return false;
+    }
+
+    candidates.iter().enumerate().any(|(other_idx, other)| {
+        if other_idx == idx {
+            return false;
+        }
+        if review_candidate_span_norm(&other.corrected) != corrected_norm {
+            return false;
+        }
+        let other_norm = review_candidate_span_norm(&other.original);
+        let other_tokens: Vec<&str> = other_norm.split_whitespace().collect();
+        other_tokens.len() > 1
+            && (contains_token_sequence(&other_tokens, &original_tokens)
+                || other_tokens.join("").contains(&original_tokens.join("")))
+    })
+}
+
+fn weak_single_token_alias_source(source: &str) -> bool {
+    let source_norm = alias_safety::normalize_source(source);
+    let tokens: Vec<&str> = source_norm.split_whitespace().collect();
+    if tokens.len() != 1 {
+        return false;
+    }
+    let token = tokens[0];
+    alias_safety::is_common_alias_source(source)
+        || promotion_gate::is_common_word(source)
+        || crate::tier2::is_in_dictionary(token)
+        || lowercase_plain_fragment(source, token)
+}
+
+fn lowercase_plain_fragment(raw: &str, norm_token: &str) -> bool {
+    if norm_token.len() < 3 || norm_token.chars().any(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let raw_trimmed = raw.trim();
+    !raw_trimmed.chars().any(|c| c.is_ascii_uppercase())
+        && !raw_trimmed.contains('_')
+        && !raw_trimmed.contains('-')
+}
+
+fn contains_token_sequence(haystack: &[&str], needle: &[&str]) -> bool {
+    !needle.is_empty()
+        && needle.len() <= haystack.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 fn protected_insert_changes_from_hunks(
@@ -2808,6 +2997,10 @@ fn unsafe_stt_source_reason(
     if alias_safety::is_common_alias_source(source) || promotion_gate::is_common_word(source) {
         return Some("source is a common word".to_string());
     }
+    let source_norm = alias_safety::normalize_source(source);
+    if crate::tier2::is_in_dictionary(&source_norm) {
+        return Some("source is a dictionary word".to_string());
+    }
     existing_protected_term_in_text(pool, user_id, source)
         .map(|term| format!("source already contains protected term {term:?}"))
 }
@@ -3138,6 +3331,70 @@ mod tests {
         assert_eq!(candidates[0].corrected, "Kafka");
         assert_eq!(candidates[0].term_type, "proper_noun");
         assert!(candidates[0].tag.contains("trimmed"));
+    }
+
+    #[test]
+    fn sanitize_drops_weak_partial_when_full_phrase_exists() {
+        let candidates = sanitize_review_candidates(
+            vec![
+                ReviewCandidate {
+                    original: "grass".to_string(),
+                    corrected: "Postgres".to_string(),
+                    term_type: "proper_noun".to_string(),
+                    learnable: true,
+                    tag: "server_llm".to_string(),
+                },
+                ReviewCandidate {
+                    original: "Post grass".to_string(),
+                    corrected: "Postgres".to_string(),
+                    term_type: "proper_noun".to_string(),
+                    learnable: true,
+                    tag: "local_token_collapse".to_string(),
+                },
+            ],
+            "Postgres migration check karo",
+            "english",
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].original, "Post grass");
+        assert_eq!(candidates[0].corrected, "Postgres");
+    }
+
+    #[test]
+    fn sanitize_keeps_capitalized_partial_alias() {
+        let candidates = sanitize_review_candidates(
+            vec![
+                ReviewCandidate {
+                    original: "Zuki".to_string(),
+                    corrected: "ZooKeeper".to_string(),
+                    term_type: "brand".to_string(),
+                    learnable: true,
+                    tag: "local_deterministic".to_string(),
+                },
+                ReviewCandidate {
+                    original: "Zuki par".to_string(),
+                    corrected: "ZooKeeper".to_string(),
+                    term_type: "brand".to_string(),
+                    learnable: true,
+                    tag: "local_token_collapse".to_string(),
+                },
+            ],
+            "ZooKeeper status check karo",
+            "english",
+        );
+
+        assert_eq!(candidates.len(), 2);
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.original == "Zuki")
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.original == "Zuki par")
+        );
     }
 
     fn llm_candidate(

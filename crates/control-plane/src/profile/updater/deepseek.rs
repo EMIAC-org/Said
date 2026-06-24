@@ -124,7 +124,11 @@ pub async fn call_deepseek_profile_update(
                     parsed.profile_patch.add_recent_context.len(),
                     parsed.profile_patch.add_stable_terms.len(),
                     parsed.alias_proposals.len(),
-                    parsed.profile_markdown_patch.mode.as_deref().unwrap_or("null"),
+                    parsed
+                        .profile_markdown_patch
+                        .mode
+                        .as_deref()
+                        .unwrap_or("null"),
                     parsed.review_required,
                     said_core::text::truncate_utf8(&parsed.reason, 180),
                 );
@@ -133,7 +137,10 @@ pub async fn call_deepseek_profile_update(
             Ok(r) => {
                 let status = r.status();
                 let preview = r.text().await.unwrap_or_default();
-                last_err = format!("DeepSeek HTTP {status}: {}", preview.chars().take(200).collect::<String>());
+                last_err = format!(
+                    "DeepSeek HTTP {status}: {}",
+                    preview.chars().take(200).collect::<String>()
+                );
                 warn!("[profile-updater] {last_err}");
             }
             Err(e) => {

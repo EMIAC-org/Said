@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
-import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, ListChecks, Mic, Pencil, Plus, RotateCcw, Send, Sparkles, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, Download, ListChecks, Mic, Pencil, Plus, RotateCcw, Send, Sparkles, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
 import {
   APPLY_UPDATE_FAILED_EVENT,
@@ -92,7 +92,7 @@ type BarState =
   | { kind: "done" }
   | { kind: "pasted" }
   | { kind: "manual_paste"; message?: string }
-  | { kind: "error"; message: string; audioId?: string }
+  | { kind: "error"; message: string; audioId?: string; rawError?: string; errorCode?: string; diagnostic?: string }
   | { kind: "learned"; term: string; message: string }
   | { kind: "email_saved"; email: string; message: string }
   | { kind: "confirming"; term: string; original: string; context: string; recordingId: string }
@@ -155,6 +155,8 @@ type VoiceErrorPayload = {
   message: string;
   audio_id?: string;
   error_code?: string;
+  raw_error?: string;
+  diagnostic?: string;
   auto_hide_ms?: number;
 };
 
@@ -842,14 +844,20 @@ export default function StatusBar() {
     }).catch((err) => console.warn("[status-bar] message-polish-mode subscribe failed", err));
 
     // ── Error: show message + optional retry ──────────────────────────────
-    listen<VoiceErrorPayload & { raw_error?: string }>("voice-error", (e) => {
-      const { message, audio_id, auto_hide_ms, raw_error } = e.payload;
-      console.error("[status-bar] voice-error event", { message, raw_error, hasAudioId: Boolean(audio_id) });
+    listen<VoiceErrorPayload>("voice-error", (e) => {
+      const { message, audio_id, auto_hide_ms, raw_error, error_code, diagnostic } = e.payload;
+      console.error("[status-bar] voice-error event", {
+        message,
+        raw_error,
+        error_code,
+        diagnostic,
+        hasAudioId: Boolean(audio_id),
+      });
       if (doneTimer.current) clearTimeout(doneTimer.current);
       if (!notifEnabled("error")) return;
       presentStatusBar("voice-error");
       playSound("lowThud");
-      setBar({ kind: "error", message, audioId: audio_id });
+      setBar({ kind: "error", message, audioId: audio_id, rawError: raw_error, errorCode: error_code, diagnostic });
       if (typeof auto_hide_ms === "number" && auto_hide_ms > 0) {
         doneTimer.current = setTimeout(
           () => returnToIdleOrPinned("auto-update-ready-after-error", false),
@@ -2023,6 +2031,40 @@ export default function StatusBar() {
                   }}
                 >
                   <RotateCcw size={12} />
+                </button>
+              )}
+              <button
+                className="sb-survey-icon-btn"
+                title="Copy error details"
+                aria-label="Copy error details"
+                onClick={() => {
+                  const details = [
+                    bar.message,
+                    bar.errorCode ? `code=${bar.errorCode}` : "",
+                    bar.audioId ? `audio_id=${bar.audioId}` : "",
+                    bar.diagnostic || bar.rawError || "",
+                  ].filter(Boolean).join("\n");
+                  navigator.clipboard.writeText(details).catch((err) => {
+                    console.warn("[status-bar] copy error details failed", err);
+                  });
+                }}
+              >
+                <Copy size={12} />
+              </button>
+              {bar.audioId && (
+                <button
+                  className="sb-survey-icon-btn"
+                  title="Show saved audio"
+                  aria-label="Show saved audio"
+                  onClick={async () => {
+                    try {
+                      await invoke("reveal_saved_audio", { audioId: bar.audioId });
+                    } catch (e) {
+                      console.warn("[status-bar] reveal saved audio failed", e);
+                    }
+                  }}
+                >
+                  <Download size={12} />
                 </button>
               )}
               <button

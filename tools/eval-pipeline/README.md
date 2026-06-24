@@ -117,7 +117,56 @@ python3 tools/eval-pipeline/download_transcripts.py
 
 # Run mutation tests (proves test quality, ~2 minutes)
 bash tools/eval-pipeline/mutation_test.sh
+
+# Run the grand intake + HITL learning simulation against real local AirNote history
+./tools/eval-pipeline/run-learning-intake-grand.sh
 ```
+
+## Grand intake + HITL learning simulation
+
+`run-learning-intake-grand.sh` is the end-to-end stress test for the learning
+intake loop:
+
+```
+real local edit history
+  -> /v1/classify-edit
+  -> approve the review candidates in /v1/confirm-batch
+  -> inspect vocabulary + stt_replacements
+  -> run second-pass alias probes through apply_exact_safe()
+```
+
+It reads the current app DB in read-only mode:
+
+```
+~/Library/Application Support/VoicePolish/db.sqlite
+```
+
+and writes only to an isolated temporary eval DB under:
+
+```
+.context/learning-intake-grand/
+```
+
+The generated reports are:
+
+```
+.context/learning-intake-grand/latest.json
+.context/learning-intake-grand/latest.md
+```
+
+Useful options:
+
+```bash
+./tools/eval-pipeline/run-learning-intake-grand.sh --max-history-cases 30
+./tools/eval-pipeline/run-learning-intake-grand.sh --keep-db
+./tools/eval-pipeline/run-learning-intake-grand.sh --fail-fast
+./tools/eval-pipeline/run-learning-intake-grand.sh --source-db /path/to/db.sqlite
+```
+
+This eval is intentionally API-backed for classification/alias safety. Set the
+same learning keys the app uses, especially `DEEPSEEK_API_KEY`, before running
+it. If DeepSeek is unavailable, alias safety fails closed and the report will
+show blocked aliases instead of silently passing.
 
 ### Expected output
 

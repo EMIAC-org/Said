@@ -2546,6 +2546,14 @@ pub async fn voice_wav(
     } else {
         "runtime_wav_probe"
     };
+    tracing::info!(
+        "[runtime] voice_wav accepted account={} mode={} wav_bytes={} wav_b64_bytes={} safe_vocab_terms={}",
+        user.account_id,
+        session_mode,
+        wav_data.len(),
+        req.wav_b64.len(),
+        req.safe_vocab_terms.len(),
+    );
 
     let server_memory = load_runtime_memory_cached(&state, user.account_id)
         .await
@@ -4239,7 +4247,11 @@ fn runtime_stt_error_class(error: &str) -> &'static str {
         "rate_limit"
     } else if e.contains(" 500") || e.contains(" 502") || e.contains(" 503") || e.contains(" 504") {
         "server"
-    } else if e.contains(" 400") || e.contains(" 404") || e.contains("empty transcript") || e.contains("parse") {
+    } else if e.contains(" 400")
+        || e.contains(" 404")
+        || e.contains("empty transcript")
+        || e.contains("parse")
+    {
         "non_retryable"
     } else {
         "unknown"

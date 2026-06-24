@@ -455,8 +455,14 @@ mod tests {
 
     #[test]
     fn normalizes_smart_model_aliases_to_cerebras_gpt_oss() {
-        assert_eq!(normalize_runtime_selected_model("smart".into()), "cerebras-gpt-oss");
-        assert_eq!(normalize_runtime_selected_model("maverick".into()), "cerebras-gpt-oss");
+        assert_eq!(
+            normalize_runtime_selected_model("smart".into()),
+            "cerebras-gpt-oss"
+        );
+        assert_eq!(
+            normalize_runtime_selected_model("maverick".into()),
+            "cerebras-gpt-oss"
+        );
         assert_eq!(
             normalize_runtime_selected_model(
                 "meta-llama/llama-4-maverick-17b-128e-instruct".into()

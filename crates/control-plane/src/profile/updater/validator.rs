@@ -14,8 +14,13 @@ use crate::profile::updater::types::{
 
 const RECENT_CONTEXT_MAX: usize = 5;
 const RECENT_CONTEXT_ENTRY_MAX: usize = 200;
-const ALLOWED_ALIAS_TERM_TYPES: &[&str] =
-    &["brand", "acronym", "code_identifier", "proper_noun", "phrase"];
+const ALLOWED_ALIAS_TERM_TYPES: &[&str] = &[
+    "brand",
+    "acronym",
+    "code_identifier",
+    "proper_noun",
+    "phrase",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidatorDecision {
@@ -89,21 +94,21 @@ pub fn validate_and_merge(input: ValidatorInput) -> ValidatorOutput {
     let mut aliases_updated = 0usize;
     let mut profile_sections_updated = 0usize;
 
-    profile_sections_updated += merge_user_background(&mut merged, &ds.profile_patch.user_background);
+    profile_sections_updated +=
+        merge_user_background(&mut merged, &ds.profile_patch.user_background);
     profile_sections_updated += merge_focus_areas(&mut merged, &ds.profile_patch.add_focus_areas);
-    profile_sections_updated += merge_speech_patterns(&mut merged, &ds.profile_patch.add_speech_patterns);
-    profile_sections_updated += merge_recent_context_notes(&mut merged, &ds.profile_patch.add_recent_context);
+    profile_sections_updated +=
+        merge_speech_patterns(&mut merged, &ds.profile_patch.add_speech_patterns);
+    profile_sections_updated +=
+        merge_recent_context_notes(&mut merged, &ds.profile_patch.add_recent_context);
     merge_domains(&mut merged, &ds.profile_patch.add_domains);
     terms_added += merge_stable_terms(&mut merged, &ds.profile_patch.add_stable_terms);
     merge_stt_confusions(&mut merged, &ds.profile_patch.add_stt_confusions);
     merge_negative_rules(&mut merged, &ds.profile_patch.add_negative_rules);
     merge_style_updates(&mut merged, &ds.profile_patch.style_updates);
 
-    let (alias_changes, alias_count) = merge_alias_proposals(
-        &mut merged,
-        &ds.alias_proposals,
-        input.current_version + 1,
-    );
+    let (alias_changes, alias_count) =
+        merge_alias_proposals(&mut merged, &ds.alias_proposals, input.current_version + 1);
     aliases_updated += alias_count;
 
     if terms_added > 0 || aliases_updated > 0 || profile_sections_updated > 0 {
@@ -183,8 +188,9 @@ pub fn validate_and_merge(input: ValidatorInput) -> ValidatorOutput {
         profile_json_delta_summary: Some(delta_summary.clone()),
         deepseek_request_id: Some(input.request_id),
         latency_ms: Some(input.latency_ms),
-        shadow_would_apply: Some(decision == ValidatorDecision::Applied
-            || decision == ValidatorDecision::Shadow),
+        shadow_would_apply: Some(
+            decision == ValidatorDecision::Applied || decision == ValidatorDecision::Shadow,
+        ),
     };
 
     ValidatorOutput {
@@ -206,7 +212,9 @@ fn rejected_output(input: ValidatorInput, reasons: Vec<String>) -> ValidatorOutp
         client_run_id: input.client_run_id.clone(),
         run_id: input.run_id,
         job_id: None,
-        deepseek_classification: Some(format!("{:?}", input.deepseek.classification).to_ascii_lowercase()),
+        deepseek_classification: Some(
+            format!("{:?}", input.deepseek.classification).to_ascii_lowercase(),
+        ),
         deepseek_confidence: Some(input.deepseek.confidence),
         deepseek_reason: Some(input.deepseek.reason.clone()),
         validator_decision: Some("rejected".to_string()),
@@ -527,15 +535,16 @@ fn append_recent_context(profile: &mut Value, reason: &str) {
     if trimmed.is_empty() {
         return;
     }
-    let entry = trimmed.chars().take(RECENT_CONTEXT_ENTRY_MAX).collect::<String>();
-    let arr = profile
-        .as_object_mut()
-        .and_then(|o| {
-            if !o.contains_key("recent_context") {
-                o.insert("recent_context".into(), json!([]));
-            }
-            o.get_mut("recent_context").and_then(|v| v.as_array_mut())
-        });
+    let entry = trimmed
+        .chars()
+        .take(RECENT_CONTEXT_ENTRY_MAX)
+        .collect::<String>();
+    let arr = profile.as_object_mut().and_then(|o| {
+        if !o.contains_key("recent_context") {
+            o.insert("recent_context".into(), json!([]));
+        }
+        o.get_mut("recent_context").and_then(|v| v.as_array_mut())
+    });
     let Some(arr) = arr else {
         return;
     };
@@ -585,14 +594,12 @@ fn merge_alias_proposals(
             continue;
         }
 
-        let aliases_arr = profile
-            .as_object_mut()
-            .and_then(|o| {
-                if !o.contains_key("aliases") {
-                    o.insert("aliases".into(), json!([]));
-                }
-                o.get_mut("aliases").and_then(|v| v.as_array_mut())
-            });
+        let aliases_arr = profile.as_object_mut().and_then(|o| {
+            if !o.contains_key("aliases") {
+                o.insert("aliases".into(), json!([]));
+            }
+            o.get_mut("aliases").and_then(|v| v.as_array_mut())
+        });
         let Some(aliases_arr) = aliases_arr else {
             continue;
         };
@@ -1018,9 +1025,10 @@ mod tests {
         assert!(out.merged_markdown.contains("Focus areas:"));
         assert!(out.merged_markdown.contains("Speech style:"));
         assert!(out.merged_markdown.contains("Stable vocabulary: Docker"));
-        assert!(out
-            .merged_markdown
-            .contains("doctor rebuild → Docker rebuild"));
+        assert!(
+            out.merged_markdown
+                .contains("doctor rebuild → Docker rebuild")
+        );
         assert!(!out.merged_markdown.contains("USER PROFILE CONTEXT"));
     }
 }

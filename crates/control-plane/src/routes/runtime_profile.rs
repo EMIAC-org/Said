@@ -23,7 +23,7 @@ use crate::{
             DeepSeekProfileUpdateResponse, LearnAuditPayload, LearnFromEditRequest,
             LearnFromEditResponse, ProfileUpdateEdit,
         },
-        validator::{ValidatorInput, ValidatorDecision, validate_and_merge},
+        validator::{ValidatorDecision, ValidatorInput, validate_and_merge},
     },
     profile::{
         self, CachedRuntimeProfile, ProfileCacheKey, invalidate_profile_cache, resolve_org_scope,
@@ -188,10 +188,7 @@ fn internal_error<E: std::fmt::Display>(e: E) -> (StatusCode, Json<Value>) {
 }
 
 fn conflict(message: impl Into<String>) -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::CONFLICT,
-        Json(json!({"error": message.into()})),
-    )
+    (StatusCode::CONFLICT, Json(json!({"error": message.into()})))
 }
 
 pub async fn get_profile(
@@ -1097,7 +1094,12 @@ async fn get_review_job(
     .fetch_optional(&state.db)
     .await
     .map_err(internal_error)?
-    .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({"error": "proposal not found"}))))
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "proposal not found"})),
+        )
+    })
 }
 
 async fn mark_review_job(
@@ -1132,7 +1134,10 @@ fn proposal_from_job(job: ProfileJobReviewRow) -> ProfileLearningProposal {
         .cloned()
         .unwrap_or_else(|| json!({}));
     let response = job.response_json.unwrap_or_else(|| json!({}));
-    let deepseek = response.get("deepseek").cloned().unwrap_or_else(|| json!({}));
+    let deepseek = response
+        .get("deepseek")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     let patch = deepseek
         .get("profile_patch")
         .cloned()

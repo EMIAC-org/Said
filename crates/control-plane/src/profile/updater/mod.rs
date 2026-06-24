@@ -15,7 +15,5 @@ pub mod types;
 pub mod validator;
 pub mod worker;
 
-pub use types::{
-    LearnFromEditRequest, LearnFromEditResponse, ProfileUpdateRequest,
-};
+pub use types::{LearnFromEditRequest, LearnFromEditResponse, ProfileUpdateRequest};
 pub use validator::{ValidatorDecision, validate_and_merge};

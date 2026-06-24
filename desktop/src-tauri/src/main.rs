@@ -73,6 +73,7 @@ const MEETING_MIN_CHUNK_MS: u64 = 700;
 const MEETING_MAX_CHUNK_MS: u64 = 30_000;
 const AUTOSTART_ARG: &str = "--airnote-autostart";
 const SWIFT_FINAL_HANDOFF_WAIT_MS: u64 = 8_500;
+const VOICE_ERROR_ALREADY_EMITTED_PREFIX: &str = "__airnote_voice_error_already_emitted__:";
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
 }
@@ -652,6 +653,7 @@ fn emit_voice_error_quiet(app: &tauri::AppHandle, raw: &str) {
 }
 
 fn humanize_error(raw: &str) -> String {
+    let raw = strip_voice_error_already_emitted(raw);
     let lower = raw.to_lowercase();
 
     if lower.contains("empty transcript") || lower.contains("nothing spoken") {
@@ -707,6 +709,19 @@ fn humanize_error(raw: &str) -> String {
 
     let short: String = raw.chars().take(30).collect();
     format!("Failed: {short}")
+}
+
+fn mark_voice_error_already_emitted(raw: &str) -> String {
+    format!("{VOICE_ERROR_ALREADY_EMITTED_PREFIX}{raw}")
+}
+
+fn is_voice_error_already_emitted(raw: &str) -> bool {
+    raw.starts_with(VOICE_ERROR_ALREADY_EMITTED_PREFIX)
+}
+
+fn strip_voice_error_already_emitted(raw: &str) -> &str {
+    raw.strip_prefix(VOICE_ERROR_ALREADY_EMITTED_PREFIX)
+        .unwrap_or(raw)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1184,6 +1199,17 @@ struct LastVoiceAction {
 }
 
 #[derive(Clone, Debug)]
+struct LastFailedVoiceAction {
+    audio_id: String,
+    raw_error: String,
+    error_code: Option<String>,
+    target_app: Option<String>,
+    client_run_id: Option<String>,
+    message_polish_mode: bool,
+    failed_at_ms: i64,
+}
+
+#[derive(Clone, Debug)]
 struct LastTextTransformAction {
     source_text: String,
     polished: String,
@@ -1198,6 +1224,7 @@ enum LastAction {
 }
 
 struct LastActionState(Mutex<Option<LastAction>>);
+struct LastFailedVoiceActionState(Mutex<Option<LastFailedVoiceAction>>);
 
 struct PerformanceState(Mutex<sysinfo::System>);
 
@@ -1532,6 +1559,44 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
+fn voice_audio_dir() -> std::path::PathBuf {
+    let base = dirs::data_local_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    base.join("VoicePolish").join("audio")
+}
+
+fn saved_voice_audio_path(audio_id: &str) -> Result<std::path::PathBuf, String> {
+    uuid::Uuid::parse_str(audio_id).map_err(|_| "invalid saved audio id".to_string())?;
+    Ok(voice_audio_dir().join(format!("{audio_id}.wav")))
+}
+
+fn saved_voice_audio_exists(audio_id: &str) -> bool {
+    saved_voice_audio_path(audio_id)
+        .map(|path| path.is_file())
+        .unwrap_or(false)
+}
+
+fn latest_saved_voice_audio_id() -> Option<String> {
+    let entries = std::fs::read_dir(voice_audio_dir()).ok()?;
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("wav") {
+                return None;
+            }
+            let stem = path.file_stem()?.to_str()?.to_string();
+            if uuid::Uuid::parse_str(&stem).is_err() {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, stem))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, audio_id)| audio_id)
+}
+
 fn parse_record_hotkey(raw: &str) -> hotkey::RecordHotkey {
     match raw {
         "right_option" => hotkey::RecordHotkey::RightOption,
@@ -1567,6 +1632,56 @@ fn cache_last_voice_action(
     if let Ok(mut guard) = app.state::<LastActionState>().0.lock() {
         *guard = Some(action);
     }
+    if let Some(state) = app.try_state::<LastFailedVoiceActionState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            *guard = None;
+        }
+    }
+}
+
+fn cache_last_failed_voice_action(
+    app: &tauri::AppHandle,
+    audio_id: Option<String>,
+    raw_error: &str,
+    error_code: Option<String>,
+    target_app: Option<String>,
+    client_run_id: Option<String>,
+    message_polish_mode: bool,
+) {
+    let Some(audio_id) = audio_id.filter(|id| saved_voice_audio_exists(id)) else {
+        tracing::warn!(
+            "[retry] failed voice action not cached — no saved audio for error_code={}",
+            error_code.as_deref().unwrap_or("none")
+        );
+        return;
+    };
+    let action = LastFailedVoiceAction {
+        audio_id,
+        raw_error: raw_error.to_string(),
+        error_code,
+        target_app,
+        client_run_id,
+        message_polish_mode,
+        failed_at_ms: now_ms(),
+    };
+    tracing::info!(
+        "[retry] cached failed voice action audio_id={} message_polish={} client_run_id={} error_code={} target_app={}",
+        action.audio_id,
+        action.message_polish_mode,
+        action.client_run_id.as_deref().unwrap_or("none"),
+        action.error_code.as_deref().unwrap_or("none"),
+        action.target_app.as_deref().unwrap_or("none"),
+    );
+    if let Ok(mut guard) = app.state::<LastFailedVoiceActionState>().0.lock() {
+        *guard = Some(action);
+    }
+}
+
+fn failed_voice_mode_for_audio(app: &tauri::AppHandle, audio_id: &str) -> Option<bool> {
+    app.try_state::<LastFailedVoiceActionState>()
+        .and_then(|state| state.0.lock().ok()?.clone())
+        .filter(|action| action.audio_id == audio_id)
+        .map(|action| action.message_polish_mode)
 }
 
 fn cache_last_text_transform(
@@ -2531,6 +2646,28 @@ fn smart_repair_last(app: &tauri::AppHandle) {
 /// this ALWAYS does the full reprocess from the recorded voice, so the user gets a
 /// proper attempt even if the first transcript or polish failed — never a degraded one.
 fn retry_last_from_audio(app: &tauri::AppHandle) {
+    if let Some(failed) = app
+        .try_state::<LastFailedVoiceActionState>()
+        .and_then(|state| state.0.lock().ok()?.clone())
+        .filter(|action| saved_voice_audio_exists(&action.audio_id))
+    {
+        tracing::info!(
+            "[retry] full reprocess from last failed audio audio_id={} message_polish={} age_ms={} error_code={} raw_error={}",
+            failed.audio_id,
+            failed.message_polish_mode,
+            now_ms().saturating_sub(failed.failed_at_ms),
+            failed.error_code.as_deref().unwrap_or("none"),
+            failed.raw_error,
+        );
+        retry_recording_internal_with_mode(
+            app.clone(),
+            failed.audio_id,
+            Some(failed.message_polish_mode),
+            "last_failed",
+        );
+        return;
+    }
+
     let last_action = app
         .state::<LastActionState>()
         .0
@@ -2540,8 +2677,10 @@ fn retry_last_from_audio(app: &tauri::AppHandle) {
     match last_action {
         Some(LastAction::Voice(action)) => match action.audio_id.clone() {
             Some(audio_id) => {
-                tracing::info!("[retry] full reprocess from saved audio {audio_id}");
-                retry_recording_internal(app.clone(), audio_id);
+                tracing::info!(
+                    "[retry] full reprocess from last successful saved audio {audio_id}"
+                );
+                retry_recording_internal_with_mode(app.clone(), audio_id, None, "last_success");
             }
             None => {
                 let _ = app.emit(
@@ -2554,13 +2693,20 @@ fn retry_last_from_audio(app: &tauri::AppHandle) {
             }
         },
         _ => {
-            let _ = app.emit(
-                "voice-error",
-                serde_json::json!({
-                    "message": "Nothing recent to retry yet.",
-                    "audio_id": null,
-                }),
-            );
+            if let Some(audio_id) = latest_saved_voice_audio_id() {
+                tracing::info!(
+                    "[retry] no cached action; falling back to newest saved audio {audio_id}"
+                );
+                retry_recording_internal_with_mode(app.clone(), audio_id, None, "newest_wav");
+            } else {
+                let _ = app.emit(
+                    "voice-error",
+                    serde_json::json!({
+                        "message": "Nothing recent to retry yet.",
+                        "audio_id": null,
+                    }),
+                );
+            }
         }
     }
 }
@@ -4800,6 +4946,7 @@ fn do_finish_recording(
             pre_transcript,
             None,
             screen_context,
+            None,
             &app2,
             is_meeting,
             is_divo,
@@ -4835,7 +4982,11 @@ fn do_finish_recording(
                             None,
                         )
                     }
-                    Err(ref e) => (d.finish_err(e.clone()), None, Some(e.clone())),
+                    Err(ref e) => (
+                        d.finish_err(strip_voice_error_already_emitted(e).to_string()),
+                        None,
+                        Some(e.clone()),
+                    ),
                 }
             };
             sync_tray(&app2, &snap);
@@ -4871,11 +5022,17 @@ fn do_finish_recording(
                     // bother Divo, and keep the HUD quiet.
                     tracing::info!("[divo] empty instruction — not sending to Divo");
                 }
-                (None, Some(e)) => {
+                (None, Some(e)) if !is_voice_error_already_emitted(&e) => {
                     tracing::warn!("[divo] transcription failed before send: {e}");
                     let _ = app2.emit(
                         "divo-error",
                         serde_json::json!({ "message": humanize_error(&e) }),
+                    );
+                }
+                (None, Some(e)) => {
+                    tracing::debug!(
+                        "[divo] transcription failure already reported through voice-error: {}",
+                        strip_voice_error_already_emitted(&e)
                     );
                 }
                 _ => {}
@@ -4935,10 +5092,13 @@ fn do_finish_recording(
                         }),
                         None,
                     ),
-                    Err(ref e) => (d.finish_err(e.clone()), Some(e.clone())),
+                    Err(ref e) => (
+                        d.finish_err(strip_voice_error_already_emitted(e).to_string()),
+                        Some(e.clone()),
+                    ),
                 }
             };
-            if let Some(e) = err_msg {
+            if let Some(e) = err_msg.filter(|e| !is_voice_error_already_emitted(e)) {
                 emit_voice_error_quiet(&app2, &e);
             }
             sync_tray(&app2, &snap);
@@ -5004,10 +5164,13 @@ fn do_finish_recording(
                         }),
                         None,
                     ),
-                    Err(ref e) => (d.finish_err(e.clone()), Some(e.clone())),
+                    Err(ref e) => (
+                        d.finish_err(strip_voice_error_already_emitted(e).to_string()),
+                        Some(e.clone()),
+                    ),
                 }
             };
-            if let Some(e) = err_msg {
+            if let Some(e) = err_msg.filter(|e| !is_voice_error_already_emitted(e)) {
                 emit_voice_error_quiet(&app2, &e);
             }
             sync_tray(&app2, &snap);
@@ -5107,6 +5270,7 @@ async fn run_voice_polish_sse(
     pre_transcript: Option<dg_stream::StreamingTranscript>,
     repair_mode: Option<String>,
     screen_context: Option<String>,
+    message_polish_override: Option<bool>,
     app: &tauri::AppHandle,
     #[allow(unused_variables)] is_meeting: bool,
     is_divo: bool,
@@ -5120,7 +5284,8 @@ async fn run_voice_polish_sse(
     // typing, no paste, no focused-field read) — they only need the polished text.
     let suppress_local = is_meeting || is_divo;
     let app_clone = app.clone();
-    let message_polish_mode = !suppress_local && said_core::prefs::load().message_polish_mode;
+    let message_polish_mode = !suppress_local
+        && message_polish_override.unwrap_or_else(|| said_core::prefs::load().message_polish_mode);
     if message_polish_mode {
         tracing::info!(
             "[pipeline] message polish mode enabled — suppressing live target typing until final output"
@@ -5146,6 +5311,10 @@ async fn run_voice_polish_sse(
     } else {
         paster::read_focused_value_fast()
     };
+    let error_target_app = target_app.clone();
+    let error_client_run_id = client_run_id.clone();
+    let error_already_emitted = Arc::new(AtomicBool::new(false));
+    let error_already_emitted_for_events = Arc::clone(&error_already_emitted);
 
     let pre_transcript_chars = pre_transcript
         .as_ref()
@@ -5292,8 +5461,21 @@ async fn run_voice_polish_sse(
                 message,
                 audio_id,
                 error_code,
+                retryable,
+                owned_by_airnote,
+                diagnostic,
             } => {
+                error_already_emitted_for_events.store(true, Ordering::Relaxed);
                 tracing::error!("[pipeline] backend error: {message}");
+                cache_last_failed_voice_action(
+                    &app_clone,
+                    audio_id.clone(),
+                    diagnostic.as_deref().unwrap_or(message),
+                    error_code.clone(),
+                    error_target_app.clone(),
+                    error_client_run_id.clone(),
+                    message_polish_mode,
+                );
                 let human = humanize_error(&message);
                 let _ = app_clone.emit(
                     "voice-error",
@@ -5302,6 +5484,9 @@ async fn run_voice_polish_sse(
                         "raw_error": message,
                         "audio_id": audio_id,
                         "error_code": error_code,
+                        "retryable": retryable,
+                        "owned_by_airnote": owned_by_airnote,
+                        "diagnostic": diagnostic,
                         "auto_hide_ms": 4000,
                     }),
                 );
@@ -5349,6 +5534,9 @@ async fn run_voice_polish_sse(
         Err(e) => {
             if let Some(run_id) = client_run_id.as_deref() {
                 telemetry::on_pipeline_error(&ep, run_id, None);
+            }
+            if error_already_emitted.load(Ordering::Relaxed) {
+                return Err(mark_voice_error_already_emitted(&e));
             }
             return Err(e);
         }
@@ -5578,6 +5766,7 @@ async fn run_voice_repair_sse(
             message,
             audio_id,
             error_code,
+            ..
         } => {
             let human = humanize_error(message);
             let _ = app_clone.emit(
@@ -5645,6 +5834,7 @@ async fn run_text_refine_sse(
             message,
             audio_id,
             error_code,
+            ..
         } => {
             let _ = app_clone.emit(
                 "voice-error",
@@ -5795,7 +5985,7 @@ fn run_fast_voice_repair(app: tauri::AppHandle, action: LastVoiceAction) {
                     transcribe_ms: done.latency_ms.transcribe as u64,
                     polish_ms: done.latency_ms.polish as u64,
                 }),
-                Err(e) => d.finish_err(e),
+                Err(e) => d.finish_err(strip_voice_error_already_emitted(&e).to_string()),
             }
         };
         sync_tray(&app2, &snap);
@@ -6035,6 +6225,20 @@ fn reveal_downloaded_file(path: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn reveal_saved_audio(audio_id: String) -> Result<(), String> {
+    let path = saved_voice_audio_path(&audio_id)?;
+    if !path.is_file() {
+        return Err("saved audio file no longer exists".to_string());
+    }
+    tracing::info!(
+        "[retry] revealing saved audio audio_id={} path={}",
+        audio_id,
+        path.display(),
+    );
+    reveal_downloaded_file(path.display().to_string())
+}
+
 /// Retry a failed recording by re-submitting its saved WAV file.
 /// `audio_id` is the UUID that the backend included in the `voice-error` event.
 #[tauri::command]
@@ -6044,7 +6248,15 @@ fn retry_recording(
     backend: State<'_, BackendState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    retry_recording_spawn(audio_id, Arc::clone(&state.0), Arc::clone(&backend.0), app)
+    let message_polish_mode = failed_voice_mode_for_audio(&app, &audio_id);
+    retry_recording_spawn(
+        audio_id,
+        Arc::clone(&state.0),
+        Arc::clone(&backend.0),
+        app,
+        message_polish_mode,
+        "explicit",
+    )
 }
 
 /// Re-transcribe a saved recording on-device when "Beta Mode" (Swift local) is
@@ -6119,9 +6331,18 @@ fn wav_to_pcm16(wav: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn retry_recording_internal(app: tauri::AppHandle, audio_id: String) {
+    retry_recording_internal_with_mode(app, audio_id, None, "internal");
+}
+
+fn retry_recording_internal_with_mode(
+    app: tauri::AppHandle,
+    audio_id: String,
+    message_polish_mode: Option<bool>,
+    source: &'static str,
+) {
     let shared = Arc::clone(&app.state::<SharedApp>().0);
     let backend = Arc::clone(&app.state::<BackendState>().0);
-    let _ = retry_recording_spawn(audio_id, shared, backend, app);
+    let _ = retry_recording_spawn(audio_id, shared, backend, app, message_polish_mode, source);
 }
 
 fn retry_recording_spawn(
@@ -6129,16 +6350,20 @@ fn retry_recording_spawn(
     shared: Arc<Mutex<DesktopApp>>,
     backend: Arc<Mutex<Option<BackendEndpoint>>>,
     app: tauri::AppHandle,
+    message_polish_mode: Option<bool>,
+    source: &'static str,
 ) -> Result<(), String> {
     // Read WAV from the saved file
-    let audio_dir = {
-        let base = dirs::data_local_dir()
-            .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-        base.join("VoicePolish").join("audio")
-    };
-    let wav_path = audio_dir.join(format!("{audio_id}.wav"));
+    let wav_path = saved_voice_audio_path(&audio_id)?;
     let wav = std::fs::read(&wav_path).map_err(|e| format!("saved audio not found: {e}"))?;
+    tracing::info!(
+        "[retry] starting saved-audio retry source={} audio_id={} wav_bytes={} message_polish_override={:?} path={}",
+        source,
+        audio_id,
+        wav.len(),
+        message_polish_mode,
+        wav_path.display(),
+    );
 
     // Mark as processing so the UI shows a spinner
     {
@@ -6177,6 +6402,7 @@ fn retry_recording_spawn(
             pre_transcript,
             Some("preserve_recall".into()),
             None, // no screen context for re-polish
+            message_polish_mode,
             &app2,
             false,
             false, // not a Divo turn
@@ -9637,6 +9863,7 @@ fn main() {
         .manage(TrayCache(Mutex::new(TrayCacheInner::default())))
         .manage(LatestResult(std::sync::Arc::new(Mutex::new(None))))
         .manage(LastActionState(Mutex::new(None)))
+        .manage(LastFailedVoiceActionState(Mutex::new(None)))
         .manage(HotPathCache(Arc::new(tokio::sync::RwLock::new(HotPathCacheInner::default()))))
         .manage(StatusBarHideGen(Arc::new(AtomicU64::new(0))))
         .manage(RecordingSessionState::default())
@@ -9724,6 +9951,7 @@ fn main() {
             get_recording_audio_bytes,
             download_recording_audio,
             reveal_downloaded_file,
+            reveal_saved_audio,
             download_meeting_audio,
             // Pending-edit review
             get_pending_edits,

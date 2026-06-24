@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::profile::{
-    store::{self, ProfileRow, PROFILE_JSON_MAX_BYTES, PROFILE_MARKDOWN_MAX_BYTES},
+    store::{self, PROFILE_JSON_MAX_BYTES, PROFILE_MARKDOWN_MAX_BYTES, ProfileRow},
     updater::{
         deepseek,
         types::{
