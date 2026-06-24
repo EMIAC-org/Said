@@ -89,6 +89,7 @@ jobs:
           test -n "${{ secrets.DEPLOY_USER }}" || (echo "DEPLOY_USER is missing" && exit 1)
           test -n "${{ secrets.DEPLOY_SSH_KEY }}" || (echo "DEPLOY_SSH_KEY is missing" && exit 1)
           test -n "${{ secrets.CEREBRAS_API_KEY }}" || (echo "CEREBRAS_API_KEY is missing" && exit 1)
+          test -n "${{ secrets.DEEPGRAM_API_KEY_1 }}" || (echo "DEEPGRAM_API_KEY_1 is missing" && exit 1)
 
       - name: Configure SSH
         shell: bash
@@ -102,11 +103,17 @@ jobs:
         shell: bash
         env:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          DEEPGRAM_API_KEY_1: ${{ secrets.DEEPGRAM_API_KEY_1 }}
+          DEEPGRAM_API_KEY_2: ${{ secrets.DEEPGRAM_API_KEY_2 }}
+          DEEPGRAM_API_KEY_3: ${{ secrets.DEEPGRAM_API_KEY_3 }}
         run: |
           tar -C deploy/control-plane -czf /tmp/airnote-control-plane-dev-deploy.tgz \
             docker-compose.yml docker-compose.dev.yml Caddyfile README.md .env.example
           {
             printf 'CEREBRAS_API_KEY=%s\n' "$CEREBRAS_API_KEY"
+            printf 'DEEPGRAM_API_KEY_1=%s\n' "$DEEPGRAM_API_KEY_1"
+            printf 'DEEPGRAM_API_KEY_2=%s\n' "$DEEPGRAM_API_KEY_2"
+            printf 'DEEPGRAM_API_KEY_3=%s\n' "$DEEPGRAM_API_KEY_3"
           } > /tmp/airnote-control-plane-dev-secrets.env
           chmod 600 /tmp/airnote-control-plane-dev-secrets.env
           ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
@@ -194,6 +201,9 @@ jobs:
           docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -q "^CEREBRAS_API_KEY=." \
             || (echo "CEREBRAS_API_KEY was not propagated into the dev control-plane container" && exit 1)
+          docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -q "^DEEPGRAM_API_KEY_1=." \
+            || (echo "DEEPGRAM_API_KEY_1 was not propagated into the dev control-plane container" && exit 1)
 
           for i in $(seq 1 60); do
             if curl -fsS "http://127.0.0.1:${CONTROL_PLANE_PORT}/v1/health" >/dev/null; then

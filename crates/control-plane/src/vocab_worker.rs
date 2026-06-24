@@ -42,6 +42,7 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                         hub: crate::meeting_hub::MeetingHub::new(db.clone()),
                         notifications: crate::notification_hub::NotificationHub::new(),
                         deepgram_api_key: String::new(),
+                        deepgram_api_keys: Vec::new(),
                         stt_provider: "deepgram".to_string(),
                         openai_api_key: String::new(),
                         openai_transcribe_model: "whisper-1".to_string(),

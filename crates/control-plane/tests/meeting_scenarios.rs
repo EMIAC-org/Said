@@ -49,6 +49,7 @@ impl TestServer {
             hub,
             notifications: said_control_plane::notification_hub::NotificationHub::new(),
             deepgram_api_key: String::new(),
+            deepgram_api_keys: Vec::new(),
             stt_provider: "deepgram".to_string(),
             openai_api_key: String::new(),
             openai_transcribe_model: "whisper-1".to_string(),

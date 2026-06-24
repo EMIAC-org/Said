@@ -1593,15 +1593,16 @@ async fn handle_voice_ws(
                         };
                         let credential_provider =
                             runtime_stt_credential_provider(&stt_provider);
-                        let stt_credential = match runtime_provider_secret(
+                        let stt_credential = match runtime_stt_provider_secrets(
                             &state,
                             account_id,
                             ws_org_id,
                             credential_provider,
+                            run_id,
                         )
                         .await
                         {
-                            Ok(secret) => secret,
+                            Ok(mut secrets) => secrets.remove(0),
                             Err((status, body)) => {
                                 let err_kind = format!("{credential_provider}_credential_missing");
                                 let _ = mark_runtime_session(
@@ -2638,57 +2639,103 @@ pub async fn voice_wav(
             .map(said_core::stt::resolve_provider_from_pref)
             .unwrap_or_else(|| state.stt_provider.clone());
         let credential_provider = runtime_stt_credential_provider(&stt_provider);
-        let stt_credential = runtime_provider_secret(
+        let stt_credentials = runtime_stt_provider_secrets(
             &state,
             user.account_id,
             tenant_ctx.active_org_id,
             credential_provider,
+            run_id,
         )
         .await?;
         let stt_model = "nova-3".to_string();
-        let transcript = match stt::call_batch_stt(
-            &stt_provider,
-            &stt_credential.secret,
-            wav_data,
-            session_source,
-        )
-        .await
-        {
-            Ok(transcript) => transcript,
-            Err(e) => {
-                let stt_ms = stt_start.elapsed().as_millis() as i64;
-                let batch_err = format!("{credential_provider}_batch_failed");
-                let _ = insert_provider_usage(
-                    &state,
-                    run_id,
-                    &stt_credential,
-                    credential_provider,
-                    Some(&stt_model),
-                    Some(stt_ms),
-                    "error",
-                    Some(&batch_err),
-                )
-                .await;
-                let _ = insert_stage_event(
-                    &state,
-                    run_id,
-                    "stt_batch_complete",
-                    "error",
-                    Some(stt_ms),
-                    Some(&batch_err),
-                    json!({
-                        "provider": credential_provider,
-                        "model": stt_model,
-                        "error": e.chars().take(240).collect::<String>()
-                    }),
-                )
-                .await;
-                let _ = mark_runtime_session(&state, run_id, "failed", Some(&batch_err)).await;
-                return Err(json_error(
-                    StatusCode::BAD_GATEWAY,
-                    &format!("{credential_provider} batch STT failed: {e}"),
-                ));
+        let mut last_error = String::new();
+        let mut selected_credential: Option<RuntimeProviderSecret> = None;
+        let mut transcript = String::new();
+        let total_attempts = stt_credentials.len();
+        for (idx, credential) in stt_credentials.into_iter().enumerate() {
+            let attempt = idx + 1;
+            let credential_source = if credential.scope.starts_with("airnote_env") {
+                "managed_pool"
+            } else {
+                "user_key"
+            };
+            tracing::info!(
+                "[runtime] STT batch attempt provider={} source={} attempt={}/{} key_scope={}",
+                credential_provider,
+                credential_source,
+                attempt,
+                total_attempts,
+                credential.scope,
+            );
+            match stt::call_batch_stt(
+                &stt_provider,
+                &credential.secret,
+                wav_data.clone(),
+                session_source,
+            )
+            .await
+            {
+                Ok(value) => {
+                    transcript = value;
+                    selected_credential = Some(credential);
+                    break;
+                }
+                Err(e) => {
+                    let class = runtime_stt_error_class(&e);
+                    let retry = runtime_stt_error_retryable(&e) && attempt < total_attempts;
+                    let stt_ms = stt_start.elapsed().as_millis() as i64;
+                    let batch_err = format!("{credential_provider}_batch_failed");
+                    tracing::warn!(
+                        "[runtime] STT batch attempt failed provider={} source={} attempt={}/{} key_scope={} class={} retry={}",
+                        credential_provider,
+                        credential_source,
+                        attempt,
+                        total_attempts,
+                        credential.scope,
+                        class,
+                        retry,
+                    );
+                    let _ = insert_provider_usage(
+                        &state,
+                        run_id,
+                        &credential,
+                        credential_provider,
+                        Some(&stt_model),
+                        Some(stt_ms),
+                        "error",
+                        Some(&batch_err),
+                    )
+                    .await;
+                    last_error = e;
+                    if !retry {
+                        break;
+                    }
+                }
             }
+        }
+        let Some(stt_credential) = selected_credential else {
+            let stt_ms = stt_start.elapsed().as_millis() as i64;
+            let batch_err = format!("{credential_provider}_batch_failed");
+            let _ = insert_stage_event(
+                &state,
+                run_id,
+                "stt_batch_complete",
+                "error",
+                Some(stt_ms),
+                Some(&batch_err),
+                json!({
+                    "provider": credential_provider,
+                    "model": stt_model,
+                    "error_class": runtime_stt_error_class(&last_error),
+                    "error": last_error.chars().take(240).collect::<String>()
+                }),
+            )
+            .await;
+            let _ = mark_runtime_session(&state, run_id, "failed", Some(&batch_err)).await;
+            return Err(json_error(
+                StatusCode::BAD_GATEWAY,
+                &format!("{credential_provider} batch STT failed: {last_error}"),
+            ));
         };
         (
             transcript,
@@ -4143,6 +4190,69 @@ struct RuntimeProviderSecret {
     secret: String,
 }
 
+fn managed_deepgram_secrets(state: &AppState, run_id: Uuid) -> Vec<RuntimeProviderSecret> {
+    let len = state.deepgram_api_keys.len();
+    if len == 0 || !tenant::allow_platform_credential_fallback() {
+        return Vec::new();
+    }
+    let start = (run_id.as_u128() as usize) % len;
+    (0..len)
+        .map(|offset| (start + offset) % len)
+        .map(|idx| RuntimeProviderSecret {
+            credential_id: None,
+            scope: format!("airnote_env:key_{}", idx + 1),
+            secret: state.deepgram_api_keys[idx].clone(),
+        })
+        .collect()
+}
+
+async fn runtime_stt_provider_secrets(
+    state: &AppState,
+    account_id: Uuid,
+    active_org_id: Option<Uuid>,
+    provider: &str,
+    run_id: Uuid,
+) -> Result<Vec<RuntimeProviderSecret>, (StatusCode, Json<Value>)> {
+    if provider == "deepgram" {
+        let managed = managed_deepgram_secrets(state, run_id);
+        if !managed.is_empty() {
+            tracing::info!(
+                "[runtime] credential resolved provider=deepgram account_id={} source=managed_pool key_count={}",
+                account_id,
+                managed.len(),
+            );
+            return Ok(managed);
+        }
+    }
+    runtime_provider_secret(state, account_id, active_org_id, provider)
+        .await
+        .map(|secret| vec![secret])
+}
+
+fn runtime_stt_error_class(error: &str) -> &'static str {
+    let e = error.to_ascii_lowercase();
+    if e.contains("request failed") || e.contains("timed out") || e.contains("connection") {
+        "network"
+    } else if e.contains(" 401") || e.contains(" 403") || e.contains("unauthorized") {
+        "auth"
+    } else if e.contains(" 429") || e.contains("rate") {
+        "rate_limit"
+    } else if e.contains(" 500") || e.contains(" 502") || e.contains(" 503") || e.contains(" 504") {
+        "server"
+    } else if e.contains(" 400") || e.contains(" 404") || e.contains("empty transcript") || e.contains("parse") {
+        "non_retryable"
+    } else {
+        "unknown"
+    }
+}
+
+fn runtime_stt_error_retryable(error: &str) -> bool {
+    matches!(
+        runtime_stt_error_class(error),
+        "network" | "auth" | "rate_limit" | "server"
+    )
+}
+
 async fn runtime_provider_secret(
     state: &AppState,
     account_id: Uuid,
@@ -4203,7 +4313,7 @@ async fn runtime_provider_secret(
     };
 
     let env_fallback_present = match provider {
-        "deepgram" => !state.deepgram_api_key.trim().is_empty(),
+        "deepgram" => !state.deepgram_api_keys.is_empty(),
         "openai" => !state.openai_api_key.trim().is_empty(),
         "groq" => !state.groq_api_key.trim().is_empty(),
         "cerebras" => !state.cerebras_api_key.trim().is_empty(),
@@ -7980,5 +8090,35 @@ mod tests {
         assert_eq!(output, "cops ka data lao");
         assert_eq!(applied, 0);
         assert_eq!(skipped, 1);
+    }
+
+    #[test]
+    fn runtime_stt_retry_policy_retries_only_provider_failures() {
+        assert_eq!(
+            runtime_stt_error_class("voice: Deepgram returned 401 Unauthorized"),
+            "auth"
+        );
+        assert_eq!(
+            runtime_stt_error_class("voice: Deepgram returned 429 Too Many Requests"),
+            "rate_limit"
+        );
+        assert_eq!(
+            runtime_stt_error_class("voice: Deepgram request failed: timed out"),
+            "network"
+        );
+        assert!(runtime_stt_error_retryable(
+            "voice: Deepgram returned 503 Service Unavailable"
+        ));
+
+        assert_eq!(
+            runtime_stt_error_class("voice: Deepgram returned 400 bad audio"),
+            "non_retryable"
+        );
+        assert!(!runtime_stt_error_retryable(
+            "voice: failed to parse Deepgram response"
+        ));
+        assert!(!runtime_stt_error_retryable(
+            "voice: Deepgram returned empty transcript"
+        ));
     }
 }

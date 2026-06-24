@@ -75,6 +75,9 @@ pub struct AppState {
     pub hub: Arc<meeting_hub::MeetingHub>,
     pub notifications: Arc<notification_hub::NotificationHub>,
     pub deepgram_api_key: String,
+    /// Managed Deepgram STT key pool. Values come from DEEPGRAM_API_KEY_1..3,
+    /// with legacy DEEPGRAM_API_KEY as key-1 fallback. Never log values.
+    pub deepgram_api_keys: Vec<String>,
     /// Active STT vendor for server runtime (always "deepgram").
     pub stt_provider: String,
     /// OpenAI API key for message-polish audio transcription.

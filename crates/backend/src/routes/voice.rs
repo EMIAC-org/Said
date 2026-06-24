@@ -1638,13 +1638,24 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
     let Some(prefs_for_guard) = prefs_opt.as_ref() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let require_stt_key = !message_polish_mode && pre_transcript.is_none();
+    let stt_provider_for_guard = crate::routes::key_guard::effective_stt_provider(prefs_for_guard);
+    let can_use_server_managed_deepgram = !message_polish_mode
+        && pre_transcript.is_none()
+        && said_core::stt::is_deepgram(&stt_provider_for_guard)
+        && prefs_for_guard.server_runtime_enabled;
+    let local_stt_selected = said_core::stt::is_swift_local(&stt_provider_for_guard)
+        || said_core::stt::is_whisper_local(&stt_provider_for_guard);
+    let require_stt_key = !message_polish_mode
+        && pre_transcript.is_none()
+        && !local_stt_selected
+        && !can_use_server_managed_deepgram;
     info!(
-        "[voice] key guard require_stt_key={} pre_transcript_present={} message_polish={} prefs_stt_provider={}",
+        "[voice] key guard require_stt_key={} pre_transcript_present={} message_polish={} prefs_stt_provider={} server_managed_deepgram={}",
         require_stt_key,
         pre_transcript.is_some(),
         message_polish_mode,
         prefs_for_guard.stt_provider,
+        can_use_server_managed_deepgram,
     );
     let missing = if message_polish_mode {
         Vec::new()
@@ -1965,8 +1976,11 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             return;
         }
 
-        if prefs.server_audio_runtime_enabled
-            && server_stt_probe_enabled()
+        let server_audio_stt_provider = crate::routes::key_guard::effective_stt_provider(&prefs);
+        let auto_server_managed_deepgram =
+            pre_transcript.is_none() && said_core::stt::is_deepgram(&server_audio_stt_provider);
+        if ((prefs.server_audio_runtime_enabled && server_stt_probe_enabled())
+            || auto_server_managed_deepgram)
             && !wav_data.is_empty()
             && !message_polish_mode
             && repair_mode.is_none()
@@ -2019,7 +2033,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     .filter(|term| !term.is_empty())
                     .take(30)
                     .collect::<Vec<_>>();
-                let stt_provider = crate::routes::key_guard::effective_stt_provider(&prefs);
                 if server_audio_transport == "ws" {
                     run_server_runtime_voice_ws_probe(
                         &pool,
@@ -2029,7 +2042,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         &prefs.selected_model,
                         screen_context.as_deref(),
                         safe_vocab_terms,
-                        &stt_provider,
+                        &server_audio_stt_provider,
                     )
                     .await
                 } else {
@@ -2042,7 +2055,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         &prefs.selected_model,
                         screen_context.as_deref(),
                         safe_vocab_terms,
-                        &stt_provider,
+                        &server_audio_stt_provider,
                         Some(&recording_id),
                         "normal_voice",
                         client_run_id.as_deref(),
@@ -2235,7 +2248,23 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             #[cfg(not(feature = "local-stt"))]
             let use_whisper = false;
 
-            if stt_provider == "groq_whisper" {
+            if said_core::stt::is_swift_local(&stt_provider) {
+                let message = "Swift local STT did not produce a transcript; not falling back to Deepgram because local STT is selected";
+                warn!(
+                    "[voice] local STT missing transcript provider={} wav_bytes={} audio_seconds={:.2} — cloud STT fallback disabled",
+                    stt_provider,
+                    wav_data.len(),
+                    audio_seconds,
+                );
+                yield Ok(Event::default().event("error").data(
+                    json!({
+                        "error_code": "local_stt_no_transcript",
+                        "message": message,
+                        "audio_id": aid,
+                    }).to_string()
+                ));
+                return;
+            } else if stt_provider == "groq_whisper" {
                 match crate::stt::groq_whisper::transcribe(
                     &http_client,
                     &groq_key,
