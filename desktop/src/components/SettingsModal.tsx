@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   X, RefreshCw, CloudCheck,
-  Wand2, ShieldCheck, Key, Info, Bug, Palette, Link, Bell, Brain, Keyboard, Video,
+  Wand2, ShieldCheck, Info, Bug, Palette, Link, Bell, Brain, Keyboard, Video,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -26,7 +26,6 @@ const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
   "meeting":       <Video        size={14} />,
   "notifications": <Bell         size={14} />,
   "permissions":   <ShieldCheck  size={14} />,
-  "api-keys":    <Key          size={14} />,
   "enterprise":  <Link         size={14} />,
   "debug":       <Bug          size={14} />,
   "about":       <Info         size={14} />,
@@ -40,7 +39,6 @@ const SECTION_TITLES: Record<SettingsSection, string> = {
   "meeting":       "Meeting",
   "notifications": "Notifications",
   "permissions":   "Permissions",
-  "api-keys":    "API keys",
   "enterprise":  "Enterprise",
   "debug":       "Debug",
   "about":       "About",
@@ -54,7 +52,6 @@ const SECTION_SUBTITLES: Record<SettingsSection, string> = {
   "meeting":       "Meeting transcription language and Whisper model.",
   "notifications": "Control which status bar alerts you see.",
   "permissions":   "Accessibility, input monitoring, notifications.",
-  "api-keys":    "Groq and Deepgram keys (stored locally).",
   "enterprise":  "Connect to your organization's AirNote Enterprise server.",
   "debug":       "Recent app and backend logs.",
   "about":       "Version and credits.",

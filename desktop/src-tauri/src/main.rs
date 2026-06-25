@@ -3412,7 +3412,9 @@ async fn patch_preferences(
             let mut hot = hot_cache.0.write().await;
             hot.language = p.language.clone();
             hot.stt_provider = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
-            hot.deepgram_key = p.deepgram_api_key.clone().unwrap_or_default();
+            hot.deepgram_key =
+                said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref())
+                    .unwrap_or_default();
             // Let meeting AI use the Groq key saved in Settings → API keys.
             meeting_engine::set_runtime_groq_api_key(p.groq_api_key.clone());
             #[cfg(target_os = "macos")]
@@ -3662,17 +3664,35 @@ fn now_ms_desktop() -> u64 {
         .as_millis() as u64
 }
 
+// Poll cadence and total budget for reading the shared app state from a
+// hotkey-spawned thread. A press/release is handled on its own detached thread
+// (the CGEventTap callback has already returned), so waiting here is safe — and
+// dropping a genuine keypress is far worse than blocking briefly. The budget
+// must comfortably exceed how long `start_recording` holds the shared lock while
+// CoreAudio opens the input stream: `recorder.start()` blocks on the stream
+// build + `play()` (a syscall that routinely takes a few hundred ms, more when
+// Bluetooth routing is reconfigured) all while the mutex is held. At 200ms the
+// release/finish state read was timing out mid-open, returning `None` and
+// forcing the lossy queued-finish fallback even though the user held the key
+// properly. The cap stays bounded (not an infinite block) so a genuinely wedged
+// lock still escapes to the `None` recovery path.
+const HOTKEY_STATE_LOCK_POLL_MS: u64 = 20;
+const HOTKEY_STATE_LOCK_BUDGET_MS: u64 = 2_000;
+
 fn hotkey_current_state(shared: &Arc<Mutex<DesktopApp>>, label: &str) -> Option<desktop::AppState> {
-    for attempt in 0..10 {
+    let attempts = HOTKEY_STATE_LOCK_BUDGET_MS / HOTKEY_STATE_LOCK_POLL_MS;
+    for attempt in 0..attempts {
         if let Ok(d) = shared.try_lock() {
             return Some(d.state);
         }
         if attempt == 0 {
             tracing::debug!("[hotkey] {label} waiting for shared app lock");
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(HOTKEY_STATE_LOCK_POLL_MS));
     }
-    tracing::warn!("[hotkey] {label} skipped — shared app lock busy for 200ms");
+    tracing::warn!(
+        "[hotkey] {label} skipped — shared app lock busy for {HOTKEY_STATE_LOCK_BUDGET_MS}ms"
+    );
     diag::breadcrumb(format!("lock_busy:{label}"));
     None
 }
@@ -9324,11 +9344,13 @@ fn main() {
                                 .ok()
                                 .map(|p| p.language.clone())
                                 .unwrap_or_default();
-                            let deepgram_key = prefs_res
-                                .as_ref()
-                                .ok()
-                                .and_then(|p| p.deepgram_api_key.clone())
-                                .unwrap_or_default();
+                            let deepgram_key = said_core::stt::resolve_deepgram_api_key(
+                                prefs_res
+                                    .as_ref()
+                                    .ok()
+                                    .and_then(|p| p.deepgram_api_key.as_deref()),
+                            )
+                            .unwrap_or_default();
                             // Seed meeting AI's Groq key from Settings → API keys.
                             meeting_engine::set_runtime_groq_api_key(
                                 prefs_res.as_ref().ok().and_then(|p| p.groq_api_key.clone()),

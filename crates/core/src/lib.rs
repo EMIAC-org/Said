@@ -54,8 +54,23 @@ pub fn resolve_model(key_or_model: &str) -> String {
     polish::model::resolve_polish_route(key_or_model).label()
 }
 
+/// Gateway/LLM key baked into the build at compile time (set `GATEWAY_API_KEY`
+/// in the build environment; `build-dmg.sh` exports it from `.env`). The shipped
+/// app ships with a working key so end users never enter one. Captured at
+/// compile time, never written to a tracked file — never committed to git.
+const BUNDLED_GATEWAY_API_KEY: Option<&str> = option_env!("GATEWAY_API_KEY");
+
+/// Gateway/LLM key: runtime env (dev/server) → build-time bundled key (shipped app).
 pub fn api_key() -> String {
-    std::env::var("GATEWAY_API_KEY").unwrap_or_default()
+    std::env::var("GATEWAY_API_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            BUNDLED_GATEWAY_API_KEY
+                .map(str::to_string)
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_default()
 }
 
 pub fn validate_api_key() {

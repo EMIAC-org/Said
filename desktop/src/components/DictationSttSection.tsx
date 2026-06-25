@@ -395,6 +395,13 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
             {swiftInstalled && runtime?.swift_ready && !deletingSwift && (
               <p className="text-[10px] text-emerald-600 mt-2">Local inference engine ready</p>
             )}
+            {swiftInstalled && swiftSelected && !runtime?.swift_ready && !deletingSwift && (
+              <p className="text-[10px] mt-2" style={{ color: "hsl(38 92% 60%)" }}>
+                Model installed, but the local engine isn’t running yet. It starts on your first
+                dictation — if speech recognition fails, install the Swift sidecar’s Python
+                requirements (see swift-stt-sidecar README).
+              </p>
+            )}
             {swiftInstalled && !swiftSelected && !deletingSwift && (
               <p className="text-[10px] text-muted-foreground mt-2">
                 Model installed — select Local Swift above to use it.

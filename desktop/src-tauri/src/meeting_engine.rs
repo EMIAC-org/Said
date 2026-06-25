@@ -5085,8 +5085,8 @@ fn drain_live_ready_windows(
                     // "whisper.cpp returned no confident speech transcript"
                     // mid-meeting while the other track transcribed fine. Only
                     // real failures (missing binary, crash, OOM) set the error.
-                    let benign = e.contains("no confident speech")
-                        || is_cancelled_subprocess_error(&e);
+                    let benign =
+                        e.contains("no confident speech") || is_cancelled_subprocess_error(&e);
                     if benign {
                         tracing::debug!(error = %e, "[meeting_engine] live window had no confident speech — skipping");
                     } else {

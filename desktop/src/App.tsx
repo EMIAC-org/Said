@@ -77,7 +77,6 @@ type SettingsSectionId =
   | "meeting"
   | "notifications"
   | "permissions"
-  | "api-keys"
   | "enterprise"
   | "debug"
   | "about";
@@ -497,10 +496,13 @@ export default function App() {
       setStatusPhase("");
       setTokenBuf("");
       if (errorCode === "missing_api_keys") {
+        // Keys are bundled into the build now, so this only fires if the app
+        // was built without them — a packaging issue, not something the user
+        // can fix in Settings (there's no key UI anymore).
         setRetryToast(null);
-        setErrorBanner("API keys required — open Settings to add them.");
-        setSettingsSection("api-keys");
-        setSettingsOpen(true);
+        setErrorBanner(
+          "Speech/polish service keys are missing from this build. Please reinstall the latest AirNote.",
+        );
       }
     });
 

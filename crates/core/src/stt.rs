@@ -75,28 +75,28 @@ pub fn swift_local_platform_supported() -> bool {
     cfg!(target_os = "macos")
 }
 
-/// Resolve the dictation STT provider at runtime, falling back to Deepgram when
-/// the selected local path is unavailable (wrong platform or model not installed).
+/// Resolve the dictation STT provider at runtime. Two providers only:
+/// `swift_local` (on-device, macOS) and `deepgram` (cloud, build-bundled key).
+///
+/// Swift on a non-macOS build falls back to Deepgram (platform limitation).
+/// Swift when the model isn't installed STILL resolves to `swift_local` — the
+/// recording path surfaces an explicit "install the model / engine not ready"
+/// error rather than silently using the cloud. Local stays local. Any legacy
+/// provider id (`whisper_local`, `groq_whisper`) collapses to Deepgram.
+///
+/// The `_swift_model_installed` / `_whisper_model_installed` params are retained
+/// for call-site stability but no longer change the result — readiness is
+/// reported separately (see desktop `get_stt_runtime`) and enforced at record time.
 pub fn effective_dictation_provider(
     pref: &str,
-    swift_model_installed: bool,
-    whisper_model_installed: bool,
+    _swift_model_installed: bool,
+    _whisper_model_installed: bool,
 ) -> String {
     let resolved = resolve_provider_from_pref(pref);
-    if is_swift_local(&resolved) {
-        if swift_local_platform_supported() && swift_model_installed {
-            "swift_local".to_string()
-        } else {
-            "deepgram".to_string()
-        }
-    } else if is_whisper_local(&resolved) {
-        if whisper_model_installed {
-            "whisper_local".to_string()
-        } else {
-            "deepgram".to_string()
-        }
+    if is_swift_local(&resolved) && swift_local_platform_supported() {
+        "swift_local".to_string()
     } else {
-        resolved
+        "deepgram".to_string()
     }
 }
 
@@ -130,13 +130,26 @@ pub const DEEPGRAM_ENV_KEY_CANDIDATES: &[&str] = &[
     "DEEPGRAM_API_KEY_3",
 ];
 
-/// Deepgram key from SQLite prefs with env fallback.
+/// Deepgram STT key baked into the build at compile time. Mirrors the bundled
+/// DeepSeek/Resend keys: set `DEEPGRAM_API_KEY` in the build environment
+/// (`build-dmg.sh` exports it from `.env`) and it is baked into the binary so
+/// the shipped app ships with a working key — end users never enter one. The
+/// value is captured at compile time and never written to a tracked file, so it
+/// is never committed to git. `None` in dev builds where it wasn't baked, so the
+/// caller falls back to a runtime env var.
+pub const BUNDLED_DEEPGRAM_API_KEY: Option<&str> = option_env!("DEEPGRAM_API_KEY");
+
+/// Resolve the Deepgram key: runtime env (dev/server) → build-time bundled key
+/// (shipped app). `pref_key` is accepted for call-site stability, but users no
+/// longer supply a Deepgram key — it is always provided by the build/env.
 pub fn resolve_deepgram_api_key(pref_key: Option<&str>) -> Option<String> {
-    non_empty_opt(pref_key).or_else(|| {
-        DEEPGRAM_ENV_KEY_CANDIDATES
-            .iter()
-            .find_map(|key| non_empty_opt(std::env::var(key).ok().as_deref()))
-    })
+    non_empty_opt(pref_key)
+        .or_else(|| {
+            DEEPGRAM_ENV_KEY_CANDIDATES
+                .iter()
+                .find_map(|key| non_empty_opt(std::env::var(key).ok().as_deref()))
+        })
+        .or_else(|| non_empty_opt(BUNDLED_DEEPGRAM_API_KEY))
 }
 
 /// How audio reached STT for this run (`ws_prewarm`, `http_batch`).
@@ -171,26 +184,30 @@ mod tests {
     }
 
     #[test]
-    fn effective_dictation_falls_back_without_model() {
+    fn effective_dictation_two_providers_only() {
+        // Swift stays local even when the model isn't installed — the recording
+        // path surfaces an explicit error rather than silently using the cloud.
+        let swift_expected = if swift_local_platform_supported() {
+            "swift_local"
+        } else {
+            "deepgram"
+        };
         assert_eq!(
             effective_dictation_provider("swift_local", false, false),
-            "deepgram"
+            swift_expected
         );
         assert_eq!(
             effective_dictation_provider("swift_local", true, false),
-            if swift_local_platform_supported() {
-                "swift_local"
-            } else {
-                "deepgram"
-            }
+            swift_expected
         );
+        // Legacy whisper_local is no longer a dictation option → Deepgram.
         assert_eq!(
-            effective_dictation_provider("whisper_local", false, false),
+            effective_dictation_provider("whisper_local", false, true),
             "deepgram"
         );
         assert_eq!(
-            effective_dictation_provider("whisper_local", false, true),
-            "whisper_local"
+            effective_dictation_provider("deepgram", false, false),
+            "deepgram"
         );
     }
 
