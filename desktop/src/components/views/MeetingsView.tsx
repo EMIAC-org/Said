@@ -64,6 +64,19 @@ interface MeetingOverview {
   lark_doc_url?: string | null;
 }
 
+// Reject if `promise` doesn't settle within `ms`. Used to bound Tauri invokes
+// that can be orphaned by a webview reload and otherwise never resolve. The
+// underlying promise is left to dangle (harmless) — we just stop awaiting it.
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
 // Local meeting list entry from `meeting_engine_list_meetings` — meetings are a
 // single-device, on-device feature now (no control-plane list).
 interface LocalMeetingSummary {
@@ -999,7 +1012,14 @@ function processingStepLabel(step: { key: string; label: string }, status: Meeti
 }
 
 function isDismissibleProcessingStatus(status: MeetingProcessingStatus): boolean {
-  return !status.running && (status.can_retry || status.summary_failed || Boolean(status.error) || status.phase === "cancelled");
+  // Only a terminal state is dismissible — a still-processing meeting keeps its
+  // live banner (don't let a transient can_retry/error make it dismissible).
+  return (
+    !status.running &&
+    (status.phase === "failed" ||
+      status.phase === "cancelled" ||
+      status.summary_failed)
+  );
 }
 
 /** Post-meeting progress banner: a live stage stepper while a background job
@@ -1021,7 +1041,12 @@ function ProcessingBanner({
 }) {
   const summaryFailed = !status.running && status.summary_failed;
   const cancelled = !status.running && status.phase === "cancelled";
-  const failed = !status.running && (status.can_retry || summaryFailed || Boolean(status.error));
+  // "Processing failed" ONLY for a genuine terminal failure — NOT a transient
+  // `can_retry`/`error` while the meeting is still recording/transcribing/
+  // summarizing (those are processing, not failed). This was the bug: ending a
+  // meeting flashed "Processing failed" while the job ran in the background.
+  const failed =
+    !status.running && (status.phase === "failed" || summaryFailed);
   const onRetry = summaryFailed ? onRetrySummary : onRetryTranscribe;
   const effectiveStage = effectiveProcessingStage(status);
   const activeIdx = processingStepIndex(effectiveStage);
@@ -1150,6 +1175,11 @@ export function MeetingsView({
 }: MeetingsViewProps) {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
+  // True once the list has loaded successfully at least once. After that we never
+  // show the full-screen "Loading…" spinner again — refreshes happen in the
+  // background and the last-known list stays visible — so a slow/orphaned poll
+  // can never wedge the view on the spinner.
+  const hasLoadedRef = useRef(false);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -1190,21 +1220,37 @@ export function MeetingsView({
   const [audioRate, setAudioRate] = useState(1);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  const fetchMeetings = useCallback(async () => {
-    setLoading(true);
+  const fetchMeetings = useCallback(async (opts?: { background?: boolean }) => {
+    // Background refreshes (interval polls) never toggle the spinner — they
+    // update the list in place so the view never flashes "Loading…" after the
+    // first successful load.
+    const background = opts?.background ?? false;
+    if (!background) setLoading(true);
     setError("");
     try {
       // Meetings are local-only: the list is the set of meeting folders on this
       // device, enumerated by the engine (no control-plane).
-      const local = await invoke<LocalMeetingSummary[]>("meeting_engine_list_meetings");
+      //
+      // Robustness: a Tauri `invoke` promise can occasionally never settle — e.g.
+      // if the webview reloads while the command's response is in flight, the
+      // callback is orphaned ("Couldn't find callback id"). Without a bound, that
+      // wedges the list on "Loading meetings…" forever. Race the call against a
+      // timeout so the spinner always clears; the regular 15s poll then retries,
+      // and any already-loaded meetings stay on screen (we only replace on success).
+      const local = await withTimeout(
+        invoke<LocalMeetingSummary[]>("meeting_engine_list_meetings"),
+        8000,
+        "list_meetings timed out",
+      );
       setMeetings(local.map(localToMeeting));
       const map: Record<string, MeetingOverview> = {};
       for (const m of local) map[m.id] = localToOverview(m);
       setOverviews(map);
+      hasLoadedRef.current = true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load meetings");
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, []);
 
@@ -1223,13 +1269,16 @@ export function MeetingsView({
 
   useEffect(() => {
     void fetchMeetings();
-    const interval = setInterval(fetchMeetings, 15_000);
+    const interval = setInterval(() => void fetchMeetings({ background: true }), 15_000);
     return () => clearInterval(interval);
   }, [fetchMeetings]);
 
   // A meeting can't be transcribed without an installed model. Poll the installed
   // model list (null = still checking) so we can block starting + prompt to
-  // download. Re-checks every 5s so the banner clears soon after a download.
+  // download. 30s (was 5s): this fires TWO ipc:// invokes per tick and the model
+  // set only changes on a download — at 5s it was a needless, steady drain on the
+  // ~6-connection WebView2 pool (each invoke also costs a CORS preflight). The
+  // download flow refreshes this explicitly, so 30s is plenty to clear the banner.
   const [hasModel, setHasModel] = useState<boolean | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -1244,7 +1293,7 @@ export function MeetingsView({
       }
     };
     void check();
-    const id = setInterval(check, 5_000);
+    const id = setInterval(check, 30_000);
     return () => {
       cancelled = true;
       clearInterval(id);
@@ -1867,6 +1916,12 @@ export function MeetingsView({
   // a background job finishes. Polls every 2s only while a job is active, so an
   // idle/finished meeting costs a single call.
   const procWasRunningRef = useRef(false);
+  // Grace-window state so the poll keeps refreshing for a bit AFTER a job stops
+  // running — the worker finalizes the auto-summary a beat later, and a transient
+  // post-transcription status must not latch "Processing failed" until the user
+  // switches tabs (which remounts + re-fetches the now-correct state).
+  const procSettleTicksRef = useRef(0);
+  const procReloadedDoneRef = useRef(false);
   useEffect(() => {
     const id = selectedMeeting?.id;
     if (!id) {
@@ -1874,6 +1929,8 @@ export function MeetingsView({
       procWasRunningRef.current = false;
       return;
     }
+    procSettleTicksRef.current = 0;
+    procReloadedDoneRef.current = false;
     let cancelled = false;
     let timer: number | undefined;
     const tick = async () => {
@@ -1900,9 +1957,20 @@ export function MeetingsView({
       } else {
         setProcStatus(status);
       }
-      // running → finished: reload the freshly-written transcript AND summary
-      // (the worker now auto-generates the summary as the final stage).
-      if (procWasRunningRef.current && !running) {
+      const wasRunning = procWasRunningRef.current;
+      procWasRunningRef.current = running;
+
+      // The auto-summary finalizes a beat after the job goes not-running, so a
+      // single reload on the running→false edge misses it. Reload on that edge
+      // AND again the moment the summary actually lands.
+      const reachedSummary =
+        !!status &&
+        !running &&
+        (status.has_intelligence === true || status.phase === "summarized");
+      const shouldReload =
+        (wasRunning && !running) || (reachedSummary && !procReloadedDoneRef.current);
+      if (shouldReload) {
+        if (reachedSummary) procReloadedDoneRef.current = true;
         try {
           const fresh = await invoke<MeetingCachedArtifacts | null>(
             "meeting_engine_get_cached_artifacts",
@@ -1927,8 +1995,40 @@ export function MeetingsView({
         void refreshOverviews();
         void fetchMeetings();
       }
-      procWasRunningRef.current = running;
-      if (running && !cancelled) {
+
+      // Keep polling while running, and for a bounded grace window after it stops,
+      // until the meeting truly settles — a finished summary, or a stable terminal
+      // phase. This is what prevents a transient post-transcription status from
+      // showing "Processing failed" until a tab switch forces a remount.
+      // Keep polling while a job runs, while the meeting is in ANY active /
+      // processing phase (recording → transcribing → cleaning → summarizing, so
+      // the banner tracks the whole post-End pipeline and the poll never stops
+      // mid-flight), and briefly after to catch the final summary. Stop only at a
+      // terminal state (summarized / failed / cancelled). This is what prevents a
+      // stale "Processing failed" from showing after End until you switch meetings.
+      const phase = status?.phase ?? "";
+      const terminal =
+        phase === "summarized" || phase === "failed" || phase === "cancelled";
+      const activePhase =
+        running ||
+        [
+          "recording",
+          "transcribing",
+          "cleaning",
+          "summarizing",
+          "queued",
+          "diarizing",
+          "final_diarizing",
+        ].includes(phase);
+      if (activePhase) {
+        procSettleTicksRef.current = 0;
+      } else if (!terminal) {
+        // "transcribed" awaiting summary, or the brief post-End enqueue gap.
+        procSettleTicksRef.current += 1;
+      }
+      const keepPolling =
+        activePhase || (!terminal && procSettleTicksRef.current <= 10);
+      if (keepPolling && !cancelled) {
         timer = window.setTimeout(() => void tick(), 2000);
       }
     };
@@ -2330,7 +2430,7 @@ export function MeetingsView({
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 pb-4">
-          {loading && meetings.length === 0 ? (
+          {loading && meetings.length === 0 && !hasLoadedRef.current ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 opacity-60">
               <Loader2 size={20} className="animate-spin text-muted-foreground" />
               <p className="text-[12px] text-muted-foreground">Loading meetings...</p>

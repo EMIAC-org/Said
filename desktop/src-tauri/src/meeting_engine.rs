@@ -31,12 +31,34 @@ impl<T> LockRecoverExt<T> for Mutex<T> {
 const STATUS_EVENT: &str = "meeting-engine-state";
 const LIVE_TRANSCRIPT_EVENT: &str = "meeting-engine-live-transcript";
 const PHASE: &str = "system_audio_capture";
+
+/// Emit an event from ANY thread without taking the WebView2 webview lock off the
+/// UI thread. On Windows, calling `app.emit()` directly from a worker thread (the
+/// meeting capture / live-transcript threads) locks the webview cross-thread and
+/// can contend with the main thread's IPC handling; marshalling the emit onto the
+/// main thread via the event loop avoids that. (Defensive hardening — the primary
+/// End-meeting deadlock was the floating pill creating a webview from an IPC
+/// handler, wry #583, now disabled on Windows in LiveMeetingView.)
+fn emit_main<S>(app: &AppHandle, event: &'static str, payload: S)
+where
+    S: serde::Serialize + Clone + Send + 'static,
+{
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let _ = app2.emit(event, payload);
+    });
+}
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPTURE_WRITER_STOP_POLL: Duration = Duration::from_millis(100);
 const AUDIO_QUEUE_DEPTH: usize = 512;
 const LIVE_AUDIO_QUEUE_DEPTH: usize = 4096;
-const LIVE_TRANSCRIPT_STOP_TIMEOUT: Duration = Duration::from_secs(1);
+// On End Meeting the live worker abandons pending windows promptly (see
+// `run_live_transcript_worker`), so it exits within ~one in-flight window. Wait
+// long enough to JOIN it cleanly (and release the shared whisper process lock)
+// before the authoritative full-file transcription runs — rather than detaching
+// a worker that keeps hogging the lock.
+const LIVE_TRANSCRIPT_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_LIVE_WHISPER_MAX_CONTEXT_TOKENS: i32 = 224;
 const DEFAULT_LIVE_TRANSCRIPT_CONTEXT_SECS: u64 = 30;
 const DEFAULT_LIVE_TRANSCRIPT_STEP_SECS: u64 = 30;
@@ -384,6 +406,9 @@ struct LiveTranscriptHandle {
     stop_tx: mpsc::Sender<()>,
     done_rx: mpsc::Receiver<()>,
     join: Option<JoinHandle<()>>,
+    // Set on End Meeting so the worker abandons pending live windows immediately
+    // (mid-drain) and releases the shared whisper process lock for the final pass.
+    stop_flag: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug)]
@@ -1222,6 +1247,15 @@ pub struct MeetingEngineState {
     // starting + ending meeting B safe: B is queued, not dropped. Also owns the
     // retry/backoff policy and the dedup guard for regenerate requests.
     jobs: Arc<MeetingJobQueue>,
+    // Serializes End. The End flow fires a request-stop EVENT *and* a stop INVOKE
+    // (belt-and-suspenders on Windows), so stop() can run 2-3x concurrently.
+    // Without this, concurrent calls race stop_{system,mic}_capture and split the
+    // two track summaries across separate calls — producing a mic-only plan that
+    // orphans the captured system track (the meeting then fails with "no
+    // confident speech" even though system.wav holds good audio). With the lock,
+    // exactly one call captures both tracks + builds the plan; the rest run after
+    // it, find nothing left, and no-op.
+    stop_lock: Mutex<()>,
 }
 
 impl Default for MeetingEngineState {
@@ -1248,6 +1282,7 @@ impl MeetingEngineState {
             last_error: Mutex::new(None),
             system_error: Mutex::new(None),
             jobs: Arc::new(MeetingJobQueue::new()),
+            stop_lock: Mutex::new(()),
         }
     }
 
@@ -1347,6 +1382,11 @@ impl MeetingEngineState {
     }
 
     fn stop(&self) -> MeetingEngineStatus {
+        // Serialize concurrent End calls so one stop captures BOTH track summaries
+        // and builds the plan atomically (see `stop_lock`). Subsequent calls run
+        // after this returns, find mic/system/session already taken, and no-op —
+        // instead of racing and orphaning the system track into a mic-only plan.
+        let _stop_guard = self.stop_lock.lock_recover();
         let session = self.session.lock_recover().clone();
         let system_summary = self.stop_system_capture();
         let mic_summary = self.stop_mic_capture();
@@ -1587,6 +1627,11 @@ impl MeetingEngineState {
             return;
         };
 
+        // Signal stop two ways: the flag is checked mid-drain (abandons pending
+        // windows instantly), and dropping audio_tx wakes the worker from its
+        // recv. Together the worker exits within ~one in-flight window, releasing
+        // the whisper lock before the authoritative full-file pass runs.
+        handle.stop_flag.store(true, Ordering::Relaxed);
         let _ = handle.stop_tx.send(());
         drop(handle.audio_tx);
         match handle.done_rx.recv_timeout(LIVE_TRANSCRIPT_STOP_TIMEOUT) {
@@ -2008,7 +2053,7 @@ impl MeetingEngineState {
 
     fn emit_status(&self, app: &AppHandle) -> MeetingEngineStatus {
         let status = self.status();
-        let _ = app.emit(STATUS_EVENT, status.clone());
+        emit_main(app, STATUS_EVENT, status.clone());
         status
     }
 
@@ -2946,7 +2991,7 @@ pub fn meeting_engine_start_session(
 ) -> MeetingEngineStatus {
     tracing::info!(meeting_id = ?meeting_id, "[meeting_engine] start session");
     let status = state.start(meeting_id, Some(app.clone()));
-    let _ = app.emit(STATUS_EVENT, status.clone());
+    emit_main(&app, STATUS_EVENT, status.clone());
     status
 }
 
@@ -2977,10 +3022,24 @@ pub async fn meeting_engine_stop_session(
     app: AppHandle,
     state: State<'_, MeetingEngineState>,
 ) -> Result<MeetingEngineStatus, String> {
-    tracing::info!("[meeting_engine] stop session");
+    tracing::info!("[meeting_engine] stop session (invoke)");
     let status = state.stop();
-    let _ = app.emit(STATUS_EVENT, status.clone());
+    emit_main(&app, STATUS_EVENT, status.clone());
     Ok(status)
+}
+
+/// Stop the active meeting and broadcast the new status. Idempotent (no-ops when
+/// nothing is recording). This is the backend-authoritative End path: it is
+/// driven by the `meeting/request-stop` EVENT (see main.rs setup), NOT an invoke,
+/// so on Windows it can never be orphaned by the LiveMeetingView unmounting in the
+/// same tick the End is fired (a Tauri `invoke` callback is torn down with the
+/// view, leaving the meeting recording forever — "Couldn't find callback id").
+/// An event has no per-call JS callback, so delivery is independent of the view.
+pub fn request_stop(app: &AppHandle, state: &MeetingEngineState) -> MeetingEngineStatus {
+    tracing::info!("[meeting_engine] request_stop (event)");
+    let status = state.stop();
+    emit_main(app, STATUS_EVENT, status.clone());
+    status
 }
 
 #[tauri::command]
@@ -2990,7 +3049,7 @@ pub fn meeting_engine_toggle_mute(
 ) -> MeetingEngineStatus {
     tracing::info!("[meeting_engine] toggle mute");
     let status = state.toggle_mute();
-    let _ = app.emit(STATUS_EVENT, status.clone());
+    emit_main(&app, STATUS_EVENT, status.clone());
     status
 }
 
@@ -3037,6 +3096,9 @@ pub async fn meeting_engine_generate_intelligence(
         .map_err(|e| format!("meeting intelligence task failed: {e}"))?
 }
 
+// Async (off the main thread) for the same reason as get_processing_status —
+// these read per-meeting artifacts and must not block IPC dispatch when opened
+// against a still-recording meeting.
 #[tauri::command]
 pub fn meeting_engine_get_cached_intelligence(
     state: State<'_, MeetingEngineState>,
@@ -3295,6 +3357,15 @@ pub fn meeting_engine_new_local_meeting() -> String {
 
 /// List every meeting stored locally on this device — the source of truth for
 /// the meetings list (replaces the cloud `GET /v1/meetings`).
+///
+/// Async (off the main thread): this iterates EVERY meeting dir and parses each
+/// (word counts, intelligence, overrides), so it can take meaningful time once
+/// many meetings accumulate — and it gets slower right after a meeting ends
+/// while the final transcription job is writing. As a sync command it ran on the
+/// main thread, blocking all ipc://localhost dispatch for its full duration;
+/// combined with the list page's poll loop that exhausted the ~6-connection pool
+/// and wedged the page on "Loading meetings…" forever. Running on the tokio
+/// runtime keeps the main thread free to service other invokes.
 #[tauri::command]
 pub fn meeting_engine_list_meetings(
     state: State<'_, MeetingEngineState>,
@@ -3783,7 +3854,7 @@ pub fn meeting_engine_retranscribe(
     let plan = build_retranscribe_plan(&dir)?;
     state.start_transcription_job(plan);
     let status = state.status();
-    let _ = app.emit(STATUS_EVENT, status.clone());
+    emit_main(&app, STATUS_EVENT, status.clone());
     Ok(status)
 }
 
@@ -4005,7 +4076,11 @@ pub async fn meeting_engine_chat(
             summary.as_deref(),
             notes.as_deref(),
             |delta| {
-                let _ = app.emit(
+                // Token-by-token from a spawn_blocking thread — marshal onto the
+                // main thread so the cross-thread emit can't contend with the
+                // WebView2 IPC on Windows (see emit_main).
+                emit_main(
+                    &app,
                     MEETING_CHAT_DELTA_EVENT,
                     MeetingChatDelta {
                         request_id: request_id.clone(),
@@ -4859,10 +4934,21 @@ fn start_live_transcript_worker(
     let (audio_tx, audio_rx) = mpsc::sync_channel::<LiveAudioChunk>(LIVE_AUDIO_QUEUE_DEPTH);
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let (done_tx, done_rx) = mpsc::channel::<()>();
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let worker_stop_flag = Arc::clone(&stop_flag);
     let join = thread::Builder::new()
         .name("meeting-live-transcript".to_string())
         .spawn(move || {
-            run_live_transcript_worker(session, config, live_dir, snapshot, app, audio_rx, stop_rx);
+            run_live_transcript_worker(
+                session,
+                config,
+                live_dir,
+                snapshot,
+                app,
+                audio_rx,
+                stop_rx,
+                worker_stop_flag,
+            );
             let _ = done_tx.send(());
         })
         .map_err(|e| format!("failed to spawn live transcript worker: {e}"))?;
@@ -4872,6 +4958,7 @@ fn start_live_transcript_worker(
         stop_tx,
         done_rx,
         join: Some(join),
+        stop_flag,
     })
 }
 
@@ -4883,6 +4970,7 @@ fn run_live_transcript_worker(
     app: Option<AppHandle>,
     audio_rx: mpsc::Receiver<LiveAudioChunk>,
     stop_rx: mpsc::Receiver<()>,
+    stop_flag: Arc<AtomicBool>,
 ) {
     let mut mic = LiveTrackBuffer::new(LiveAudioSource::Mic);
     let mut system = LiveTrackBuffer::new(LiveAudioSource::System);
@@ -4902,8 +4990,20 @@ fn run_live_transcript_worker(
             push_live_audio_chunk(&mut mic, &mut system, chunk);
         }
 
-        if stop_rx.try_recv().is_ok() {
+        if stop_rx.try_recv().is_ok() || stop_flag.load(Ordering::Relaxed) {
             stop_requested = true;
+        }
+
+        // On End Meeting, abandon any pending live windows immediately. The
+        // authoritative full-file transcription (`run_transcription_job`) re-
+        // transcribes the complete WAVs, so draining here is redundant — and
+        // continuing would hold the shared whisper process lock for tens of
+        // seconds and STARVE that final pass. That was the bug: a meeting
+        // finalized off the sparse live transcript (e.g. mic-only "7 words")
+        // and needed a manual re-transcribe to recover the real system/video
+        // content. Stop now and let the full-file pass run unobstructed.
+        if stop_requested {
+            break;
         }
 
         drain_live_ready_windows(
@@ -4915,26 +5015,13 @@ fn run_live_transcript_worker(
             &mut mic,
             &mut system,
             &mut chunk_index,
+            &stop_flag,
             false,
         );
     }
 
-    while let Ok(chunk) = audio_rx.try_recv() {
-        push_live_audio_chunk(&mut mic, &mut system, chunk);
-    }
-
-    drain_live_ready_windows(
-        &session,
-        &config,
-        &live_dir,
-        &snapshot,
-        app.as_ref(),
-        &mut mic,
-        &mut system,
-        &mut chunk_index,
-        true,
-    );
-
+    // NOTE: intentionally NO forced final drain — see above. Draining at stop
+    // only races the authoritative full-file transcription for the whisper lock.
     let mut live = snapshot.lock_recover();
     live.running = false;
     if live.status == "running" {
@@ -4952,10 +5039,16 @@ fn drain_live_ready_windows(
     mic: &mut LiveTrackBuffer,
     system: &mut LiveTrackBuffer,
     chunk_index: &mut u64,
+    stop: &AtomicBool,
     force: bool,
 ) {
     for track in [mic, system] {
         loop {
+            // Bail the moment End Meeting is requested — abandon remaining
+            // windows so we release the shared whisper lock for the final pass.
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
             let Some(window) = track.take_ready_window(
                 config.context_samples,
                 config.step_samples,
@@ -4966,17 +5059,43 @@ fn drain_live_ready_windows(
             };
             match transcribe_live_window(session, config, live_dir, window, *chunk_index) {
                 Ok(chunks) => {
-                    for chunk in chunks {
-                        *chunk_index = chunk_index.saturating_add(1);
-                        append_live_transcript_chunk(snapshot, app, &session.session_id, chunk);
+                    if !chunks.is_empty() {
+                        for chunk in chunks {
+                            *chunk_index = chunk_index.saturating_add(1);
+                            append_live_transcript_chunk(snapshot, chunk);
+                        }
+                        // Coalesced delivery: emit ONE event carrying the full
+                        // snapshot after a window's chunks are appended — not one
+                        // event per chunk. Events ride the JS-eval channel (not the
+                        // connection-limited `ipc://` invoke pool), and one event
+                        // per ~window (vs N per window) prevents the per-chunk
+                        // render flood that saturated the WebView UI thread on
+                        // Windows and starved control invokes like End.
+                        if let Some(app) = app {
+                            let payload = snapshot.lock_recover().payload();
+                            emit_main(app, LIVE_TRANSCRIPT_EVENT, payload);
+                        }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "[meeting_engine] live transcript window failed");
-                    let mut live = snapshot.lock_recover();
-                    live.error = Some(e);
-                    if live.status == "running" {
-                        live.status = "running_with_errors".to_string();
+                    // "No confident speech" (a silent window, or a track that just
+                    // isn't speaking this moment) and a cancelled subprocess are
+                    // NORMAL — not errors. Surfacing them flipped the live status
+                    // to "running_with_errors" and showed users
+                    // "whisper.cpp returned no confident speech transcript"
+                    // mid-meeting while the other track transcribed fine. Only
+                    // real failures (missing binary, crash, OOM) set the error.
+                    let benign = e.contains("no confident speech")
+                        || is_cancelled_subprocess_error(&e);
+                    if benign {
+                        tracing::debug!(error = %e, "[meeting_engine] live window had no confident speech — skipping");
+                    } else {
+                        tracing::warn!(error = %e, "[meeting_engine] live transcript window failed");
+                        let mut live = snapshot.lock_recover();
+                        live.error = Some(e);
+                        if live.status == "running" {
+                            live.status = "running_with_errors".to_string();
+                        }
                     }
                 }
             }
@@ -4997,25 +5116,14 @@ fn push_live_audio_chunk(
 
 fn append_live_transcript_chunk(
     snapshot: &Arc<Mutex<LiveTranscriptSnapshot>>,
-    app: Option<&AppHandle>,
-    session_id: &str,
     chunk: MeetingLiveTranscriptChunk,
 ) {
-    {
-        let mut live = snapshot.lock_recover();
-        live.chunks.push(chunk.clone());
-        live.status = "running".to_string();
-        live.error = None;
-    }
-    if let Some(app) = app {
-        let _ = app.emit(
-            LIVE_TRANSCRIPT_EVENT,
-            MeetingLiveTranscriptEvent {
-                session_id: session_id.to_string(),
-                chunk,
-            },
-        );
-    }
+    // Store only — the coalesced per-window emit in `drain_live_ready_windows`
+    // pushes the snapshot to the frontend. (See the comment there.)
+    let mut live = snapshot.lock_recover();
+    live.chunks.push(chunk);
+    live.status = "running".to_string();
+    live.error = None;
 }
 
 fn transcribe_live_window(
@@ -5669,6 +5777,13 @@ pub struct MeetingProcessingStatusPayload {
     pub updated_at_ms: u64,
 }
 
+// Async (off the main thread): meeting_processing_status locks state.jobs and
+// state.transcription — mutexes the live recorder/transcription threads hold for
+// long stretches. As a SYNC command this ran on the main thread, so when the
+// Meetings list opened a still-recording meeting it blocked the main thread on
+// those locks → IPC dispatch stalled → "End" (stop_session) could never dispatch
+// → the meeting never stopped → the lock never freed → permanent deadlock. Off
+// the main thread, dispatch stays free so End always lands.
 #[tauri::command]
 pub fn meeting_engine_get_processing_status(
     state: State<'_, MeetingEngineState>,
@@ -6305,6 +6420,91 @@ fn whisper_translate_for_track(track: MeetingAudioTrack) -> bool {
     }
 }
 
+/// Parse whisper.cpp's `--detect-language` output into an en-or-hi decision.
+/// Whisper's raw auto-detect mislabels Hindi as Urdu/Indonesian/Korean on short
+/// audio, so we trust ONLY a confident English detection; everything else falls
+/// back to Hindi (the Hinglish-first default). Validated on real recordings.
+fn route_detected_meeting_language(detect_output: &str) -> String {
+    let needle = "auto-detected language:";
+    if let Some(idx) = detect_output.find(needle) {
+        let rest = &detect_output[idx + needle.len()..];
+        let lang = rest
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let prob = rest
+            .split("p =")
+            .nth(1)
+            .map(|s| {
+                s.trim()
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit() || *c == '.')
+                    .collect::<String>()
+            })
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.0);
+        if lang == "en" && prob >= 0.5 {
+            return "en".to_string();
+        }
+    }
+    DEFAULT_WHISPER_LANGUAGE.to_string()
+}
+
+/// Detect a single meeting track's language via a fast whisper.cpp `-dl` pass.
+fn detect_meeting_track_language(config: &WhisperCppConfig, audio_path: &Path) -> String {
+    let mut cmd = Command::new(&config.binary);
+    // NOTE: do NOT pass -np here — it suppresses whisper.cpp's
+    // "auto-detected language: xx (p=…)" line that we parse, which would make
+    // detection silently always fall back to Hindi.
+    cmd.arg("-m")
+        .arg(&config.model)
+        .arg("-f")
+        .arg(audio_path)
+        .arg("-dl")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_meeting_child_console(&mut cmd);
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            tracing::warn!(error = %e, "[meeting_engine] track language detect spawn failed; using default");
+            return config.language.clone();
+        }
+    };
+    match wait_with_timeout(child, Duration::from_secs(45), None) {
+        Ok(output) => {
+            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            route_detected_meeting_language(&text)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "[meeting_engine] track language detect failed; using default");
+            config.language.clone()
+        }
+    }
+}
+
+/// Build a per-track whisper config whose language is auto-detected (en-or-hi).
+/// This stops the mic track (and any English participant/share) from being forced
+/// into Hindi — which produced Devanagari garbage that the gates rejected as
+/// "no confident speech". Set AIRNOTE_MEETING_LANG_AUTODETECT=0 to force the
+/// default language for every track.
+fn meeting_track_config(config: &WhisperCppConfig, audio_path: &Path) -> WhisperCppConfig {
+    if !env_bool("AIRNOTE_MEETING_LANG_AUTODETECT", true) {
+        return config.clone();
+    }
+    let mut per_track = config.clone();
+    per_track.language = detect_meeting_track_language(config, audio_path);
+    tracing::info!(
+        track = %audio_path.display(),
+        language = %per_track.language,
+        "[meeting_engine] per-track language routed"
+    );
+    per_track
+}
+
 fn transcribe_meeting_plan(
     plan: &MeetingTranscriptionPlan,
     config: &WhisperCppConfig,
@@ -6353,10 +6553,11 @@ fn transcribe_meeting_plan(
                 plan.mic.peak
             ));
         }
+        let mic_config = meeting_track_config(config, &plan.mic.path);
         let mic_done = transcribe_with_whisper_cpp(
             &plan.mic,
             &mic_paths,
-            config,
+            &mic_config,
             MeetingAudioTrack::Mic,
             cancel_check,
             Some(&report_chunk_progress),
@@ -6378,10 +6579,11 @@ fn transcribe_meeting_plan(
     };
 
     let mic_result = if has_transcribable_audio(&plan.mic) {
+        let mic_config = meeting_track_config(config, &plan.mic.path);
         Some(transcribe_with_whisper_cpp(
             &plan.mic,
             &mic_paths,
-            config,
+            &mic_config,
             MeetingAudioTrack::Mic,
             cancel_check,
             Some(&report_chunk_progress),
@@ -6399,10 +6601,11 @@ fn transcribe_meeting_plan(
     }
     let system_paths = transcript_paths_for_wav(&system_summary.path);
     let system_result = if has_transcribable_audio(system_summary) {
+        let system_config = meeting_track_config(config, &system_summary.path);
         Some(transcribe_with_whisper_cpp(
             system_summary,
             &system_paths,
-            config,
+            &system_config,
             MeetingAudioTrack::System,
             cancel_check,
             Some(&report_chunk_progress),
@@ -7411,8 +7614,14 @@ fn transcribe_with_whisper_cpp_for(
         .arg("-of")
         .arg(&paths.whisper_out_base)
         .arg("-np")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        // Discard whisper's stdout/stderr instead of piping it. The transcript is
+        // read from the -otxt/-ojf files (whisper_out_base), NOT stdout. Piping but
+        // only draining at exit (wait_with_output) let whisper.cpp's stderr
+        // (model-load/system_info, printed even with -np) fill the ~64KB OS pipe
+        // buffer on long transcripts → whisper blocks on write → the job stalls
+        // until WHISPER_TIMEOUT. Fires per ~30s live window too. null = no buffer.
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     if config.suppress_non_speech {
         cmd.arg("-sns");
     }
@@ -7871,6 +8080,29 @@ fn spawn_timeout_watchdog(pid: u32, timeout: Duration, label: String) -> Arc<Ato
         });
     }
 
+    // Windows backstop: the in-loop terminate_timed_out_child only fires if the
+    // poll loop keeps making progress. If the loop ever wedges, a runaway
+    // whisper-cli.exe (~2GB RSS) would never be reaped. This independent thread
+    // kills the process tree after timeout + grace regardless of the loop.
+    #[cfg(windows)]
+    {
+        let done_for_thread = Arc::clone(&done);
+        thread::spawn(move || {
+            let watchdog_delay = timeout.saturating_add(Duration::from_secs(2));
+            thread::sleep(watchdog_delay);
+            if done_for_thread.load(Ordering::SeqCst) {
+                return;
+            }
+            tracing::warn!(
+                pid,
+                label = %label,
+                timeout_secs = timeout.as_secs(),
+                "[meeting_engine] watchdog killing timed-out subprocess tree (windows)"
+            );
+            terminate_windows_process_tree(pid, true);
+        });
+    }
+
     done
 }
 
@@ -7919,11 +8151,13 @@ fn terminate_child_process(child: &mut std::process::Child, label: &str, reason:
 
 #[cfg(windows)]
 fn terminate_windows_process_tree(pid: u32, force: bool) {
-    let _ = Command::new("taskkill")
-        .args(windows_taskkill_args(pid, force))
+    let mut cmd = Command::new("taskkill");
+    cmd.args(windows_taskkill_args(pid, force))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::null());
+    // Suppress the brief console window taskkill would otherwise flash.
+    hide_meeting_child_console(&mut cmd);
+    let _ = cmd.status();
 }
 
 #[cfg(any(windows, test))]
@@ -10587,7 +10821,8 @@ pub async fn meeting_engine_digest_chat(
     }
     tauri::async_runtime::spawn_blocking(move || {
         run_digest_chat(refs, &question, digest_summary.as_deref(), |delta| {
-            let _ = app.emit(
+            emit_main(
+                &app,
                 MEETING_CHAT_DELTA_EVENT,
                 MeetingChatDelta {
                     request_id: request_id.clone(),
@@ -12097,11 +12332,37 @@ const MODEL_DOWNLOAD_EVENT: &str = "meeting-model-download";
 /// Downloadable meeting whisper.cpp models (name, source URL, approx size for a
 /// progress estimate before Content-Length is known). Keep Settings intentionally
 /// simple: one Q5 Turbo model for both live and after-meeting transcription.
-const WHISPER_MODEL_CATALOG: &[(&str, &str, u64)] = &[(
-    "ggml-large-v3-turbo-q5_0.bin",
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
-    573_000_000,
-)];
+// All selectable whisper.cpp models (meetings + LOCAL Windows dictation). Multiple
+// sizes so dictation can be tested across the speed/accuracy range; dictation uses
+// whichever is the ACTIVE model (AIRNOTE_WHISPER_CPP_MODEL). All multilingual
+// (no *.en) to preserve Hindi/Hinglish. Sizes are HF download-size hints.
+const WHISPER_MODEL_CATALOG: &[(&str, &str, u64)] = &[
+    (
+        "ggml-large-v3-turbo-q5_0.bin",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+        573_000_000,
+    ),
+    (
+        "ggml-medium.bin",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
+        1_530_000_000,
+    ),
+    (
+        "ggml-small.bin",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+        488_000_000,
+    ),
+    (
+        "ggml-base.bin",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+        148_000_000,
+    ),
+    (
+        "ggml-tiny.bin",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
+        78_000_000,
+    ),
+];
 
 /// Silero VAD ggml model for whisper.cpp `--vad` (speech-only segments).
 pub const SILERO_VAD_MODEL_NAME: &str = "ggml-silero-v5.1.2.bin";
@@ -12392,7 +12653,8 @@ fn emit_light_diarization_download(
     status: &str,
     error: Option<String>,
 ) {
-    let _ = app.emit(
+    emit_main(
+        app,
         LIGHT_DIARIZATION_EVENT,
         LightDiarizationDownloadProgress {
             received,
@@ -12479,7 +12741,8 @@ fn download_whisper_model_blocking(
     let part = dir.join(format!("{name}.part"));
 
     let emit = |received: u64, total: u64, status: &str, error: Option<String>| {
-        let _ = app.emit(
+        emit_main(
+            app,
             MODEL_DOWNLOAD_EVENT,
             ModelDownloadProgress {
                 name: name.to_string(),
@@ -12546,13 +12809,17 @@ fn download_whisper_model_blocking(
     file.flush().ok();
     let _ = file.sync_all();
     drop(file);
-    // Sanity: a truncated download (server hiccup) shouldn't masquerade as a model.
-    if total > 0 && received < total / 2 {
+    // Sanity: a truncated download (server hiccup / clean stop mid-stream) must NOT
+    // masquerade as a complete model. When the server gave a Content-Length, require
+    // the FULL byte count — the old `received < total/2` check let a 400MB-of-573MB
+    // file pass, get renamed, pass is_usable_whisper_model, then fail opaquely inside
+    // whisper-cli at meeting time. (Range/resume + SHA256 are a future enhancement.)
+    if total > 0 && received < total {
         return Err(fail(
             &part,
             received,
             total,
-            "download ended early (incomplete file)".to_string(),
+            format!("download ended early ({received}/{total} bytes) — please retry"),
         ));
     }
     fs::rename(&part, dest).map_err(|e| fail(&part, received, total, format!("finalize: {e}")))?;
@@ -12586,7 +12853,7 @@ pub fn meeting_delete_whisper_model(name: String) -> Result<(), String> {
         }
     }
     // Re-point the active selection to a remaining model (or clear it).
-    meeting_ensure_active_model();
+    ensure_active_model_sync();
     Ok(())
 }
 
@@ -12597,7 +12864,7 @@ pub fn meeting_cleanup_legacy_whisper_models() -> Result<WhisperModelCleanupResu
     let result = cleanup_legacy_whisper_models_in_dir(&meeting_whisper_models_dir())?;
     // If a stale unsupported model had been selected, this re-points to Q5 or
     // clears the setting. It never selects a removed file.
-    meeting_ensure_active_model();
+    ensure_active_model_sync();
     Ok(result)
 }
 
@@ -12880,8 +13147,19 @@ fn is_legacy_meeting_whisper_model_file(name: &str) -> bool {
 /// recommended model and persists it (so a single installed model is always
 /// active). Clears the setting if no usable model remains. Returns the active
 /// model's file name, or None when none is installed.
+// Async (off the main thread): polled every 5s by the Meetings list. See the
+// note on get_snapshot — sync commands on Windows block IPC dispatch and starve
+// the ~6-connection ipc://localhost pool, which is what wedges End-meeting and
+// the "Loading meetings…" spinner after a meeting ends. Delegates to the sync
+// core so in-process callers (model delete/cleanup, startup) can still invoke it
+// directly without an async context.
 #[tauri::command]
 pub fn meeting_ensure_active_model() -> Option<String> {
+    ensure_active_model_sync()
+}
+
+/// Sync core for [`meeting_ensure_active_model`]. Callable from non-async code.
+pub fn ensure_active_model_sync() -> Option<String> {
     let name_of = |path: &Path| -> Option<String> {
         path.file_name()
             .and_then(|n| n.to_str())

@@ -39,7 +39,7 @@ pub fn log_dir() -> PathBuf {
 /// retention-managed audio snippets). Created on first write by callers.
 ///
 /// - macOS: `~/Library/Application Support/VoicePolish`
-/// - Windows: `%APPDATA%\VoicePolish`
+/// - Windows: `%LOCALAPPDATA%\VoicePolish` (uses `data_local_dir`, NOT `%APPDATA%`)
 /// - Linux: `$XDG_DATA_HOME/VoicePolish` (or `~/.local/share/VoicePolish`)
 pub fn data_dir() -> PathBuf {
     dirs::data_local_dir()

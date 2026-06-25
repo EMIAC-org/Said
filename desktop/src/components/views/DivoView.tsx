@@ -9,6 +9,7 @@ import {
   type DivoThreadSummary,
   type DivoThreadDetail,
 } from "@/lib/invoke";
+import { formatKeycap, type Platform } from "@/lib/hotkeys";
 
 // Relative time for the chat list ("now", "2m", "3h", "Yesterday", "Mon 2").
 function relTime(iso?: string | null): string {
@@ -38,7 +39,11 @@ function Kbd({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function DivoView() {
+export function DivoView({ platform }: { platform?: string }) {
+  // Default to macOS glyphs when platform is unknown (preserves prior behavior).
+  const plat = (platform ?? "macos") as Platform;
+  const ctrl = formatKeycap("ctrl", plat); // "⌃" on macOS, "Ctrl" on Windows
+  const ctrlN = formatKeycap("ctrl+n", plat); // "⌃N" / "Ctrl+N"
   const [threads, setThreads] = useState<DivoThreadSummary[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -112,8 +117,8 @@ export function DivoView() {
         </div>
         <div className="ml-auto flex items-center gap-3 flex-shrink-0">
           <span className="hidden md:flex items-center gap-2 text-[11px] text-muted-foreground">
-            <span className="flex items-center gap-1"><Kbd>⌃</Kbd> same chat</span>
-            <span className="flex items-center gap-1"><Kbd>⌃N</Kbd> new chat</span>
+            <span className="flex items-center gap-1"><Kbd>{ctrl}</Kbd> same chat</span>
+            <span className="flex items-center gap-1"><Kbd>{ctrlN}</Kbd> new chat</span>
           </span>
           <span
             className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-lg"
@@ -170,7 +175,7 @@ export function DivoView() {
               ) : filtered.length === 0 ? (
                 <div className="px-3 py-8 text-center text-[12px] text-muted-foreground leading-relaxed">
                   {threads.length === 0
-                    ? "No chats yet.\nHold ⌃ and speak to start one."
+                    ? `No chats yet.\nHold ${ctrl} and speak to start one.`
                     : "No chats match your search."}
                 </div>
               ) : (
@@ -230,7 +235,7 @@ export function DivoView() {
                     {activeId ? "No messages yet" : "Start a new chat"}
                   </p>
                   <p className="text-[12px] leading-relaxed">
-                    Hold <Kbd>⌃</Kbd> and speak to {activeId ? "continue this chat" : "begin"}.
+                    Hold <Kbd>{ctrl}</Kbd> and speak to {activeId ? "continue this chat" : "begin"}.
                   </p>
                 </div>
               ) : (
@@ -275,7 +280,7 @@ export function DivoView() {
             style={{ background: "hsl(var(--surface-3))", borderTop: "1px solid hsl(var(--border))" }}
           >
             <Mic size={13} className="flex-shrink-0" />
-            Hold <Kbd>⌃</Kbd> to continue this chat&nbsp;·&nbsp;<Kbd>⌃N</Kbd> to start a new one
+            Hold <Kbd>{ctrl}</Kbd> to continue this chat&nbsp;·&nbsp;<Kbd>{ctrlN}</Kbd> to start a new one
           </div>
         </div>
       </div>
