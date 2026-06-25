@@ -182,6 +182,46 @@ pub struct PolishLatency {
     pub total: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProblemTranscribeResponse {
+    pub transcript: String,
+    pub source: String,
+    pub confidence: f64,
+    pub word_count: usize,
+    pub latency_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProblemSolveRequest {
+    pub transcript: String,
+    pub context_mode: String,
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+    pub project_context: Option<String>,
+    pub screen_context: Option<String>,
+    pub client_run_id: Option<String>,
+    pub platform: Option<String>,
+    pub app_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProblemSolveResponse {
+    pub run_id: String,
+    pub output: String,
+    pub model_used: String,
+    pub prompt_version: String,
+    pub latency_ms: ProblemSolveLatency,
+    pub context_mode: String,
+    pub project_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProblemSolveLatency {
+    pub prompt: i64,
+    pub model: i64,
+    pub total: i64,
+}
+
 // ── SSE event enum ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -403,6 +443,86 @@ where
     }
 
     consume_sse(resp.bytes_stream(), on_event).await
+}
+
+pub async fn transcribe_problem_audio(
+    ep: &BackendEndpoint,
+    wav_data: Vec<u8>,
+    client_run_id: Option<String>,
+    pre_transcript: Option<String>,
+    pre_transcript_meta: Option<TranscriptMeta>,
+) -> Result<ProblemTranscribeResponse, String> {
+    let url = format!("{}/v1/problem/transcribe", ep.url);
+    let client = Client::new();
+    let mut form = reqwest::multipart::Form::new();
+    if !wav_data.is_empty() {
+        form = form.part(
+            "audio",
+            reqwest::multipart::Part::bytes(wav_data)
+                .file_name("problem-recording.wav")
+                .mime_str("audio/wav")
+                .map_err(|e| format!("mime error: {e}"))?,
+        );
+    }
+    if let Some(run_id) = client_run_id {
+        form = form.text("client_run_id", run_id);
+    }
+    if let Some(transcript) = pre_transcript {
+        form = form.text("pre_transcript", transcript);
+    }
+    if let Some(meta) = pre_transcript_meta {
+        form = form.text(
+            "pre_transcript_meta",
+            serde_json::to_string(&meta).map_err(|e| format!("encode transcript meta: {e}"))?,
+        );
+    }
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .multipart(form)
+        .timeout(std::time::Duration::from_secs(90))
+        .send()
+        .await
+        .map_err(|e| format!("problem transcribe request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let (message, _error_code) = http_error_event("problem/transcribe", status, &body);
+        return Err(message);
+    }
+
+    resp.json::<ProblemTranscribeResponse>()
+        .await
+        .map_err(|e| format!("problem transcribe response parse failed: {e}"))
+}
+
+pub async fn solve_problem(
+    ep: &BackendEndpoint,
+    req: ProblemSolveRequest,
+) -> Result<ProblemSolveResponse, String> {
+    let url = format!("{}/v1/problem/solve", ep.url);
+    let client = Client::new();
+    let resp = client
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&req)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| format!("problem solve request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let (message, _error_code) = http_error_event("problem/solve", status, &body);
+        return Err(message);
+    }
+
+    resp.json::<ProblemSolveResponse>()
+        .await
+        .map_err(|e| format!("problem solve response parse failed: {e}"))
 }
 
 pub async fn stream_text_polish<F>(

@@ -5,6 +5,7 @@ mod backend;
 mod backend_guard;
 mod chaos; // env-gated fault injection for torture-testing the resilience paths
 mod desktop;
+mod developer_context;
 mod dg_stream; // P5: Deepgram WebSocket live streaming
 mod diag; // lock-holder + breadcrumb instrumentation for stuck-state diagnostics
 mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plane)
@@ -1259,9 +1260,23 @@ enum RecordingRoute {
     Meeting,
     /// Ctrl hold-to-talk: transcribe + polish, then send to Divo instead of pasting.
     Divo,
+    /// Developer Problem Command: transcribe, resolve local project context, solve, final-paste only.
+    Problem,
 }
 
 struct RecordingRouteState(Mutex<Option<RecordingRoute>>);
+
+#[derive(Clone)]
+struct PendingProblemCommand {
+    transcript: String,
+    screen_context: Option<String>,
+    client_run_id: Option<String>,
+    edit_target_pid: Option<i32>,
+    candidates: Vec<developer_context::DeveloperMatchedProject>,
+    created_at_ms: i64,
+}
+
+struct PendingProblemState(Mutex<Option<PendingProblemCommand>>);
 
 struct LongDictationState {
     locked: Arc<AtomicBool>,
@@ -3629,6 +3644,101 @@ fn divo_followup_end(
     Ok(())
 }
 
+#[tauri::command]
+fn developer_problem_begin(
+    state: State<'_, SharedApp>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let settings = developer_context::load_settings();
+    if !settings.enabled {
+        return Err("Developer Problem Command is disabled in Settings → Developer".to_string());
+    }
+    let current = state.0.lock().map_err(|_| "lock failed")?.state;
+    if current == desktop::AppState::Idle {
+        PROBLEM_START_PENDING.store(true, Ordering::SeqCst);
+        do_start_recording(&state.0, &app);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn developer_problem_end(
+    state: State<'_, SharedApp>,
+    backend: State<'_, BackendState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let current = state.0.lock().map_err(|_| "lock failed")?.state;
+    if current == desktop::AppState::Recording {
+        do_finish_recording(Arc::clone(&state.0), app.clone(), Arc::clone(&backend.0));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn developer_problem_dismiss(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(pending) = app.try_state::<PendingProblemState>() {
+        if let Ok(mut slot) = pending.0.lock() {
+            *slot = None;
+        }
+    }
+    let _ = app.emit(
+        "voice-output",
+        serde_json::json!({"status": "manual_paste", "message": "Problem command cancelled"}),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn developer_problem_choose_project(
+    project_id: String,
+    backend: State<'_, BackendState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let pending = app
+        .try_state::<PendingProblemState>()
+        .ok_or_else(|| "no pending problem command".to_string())?;
+    let command = {
+        let mut slot = pending
+            .0
+            .lock()
+            .map_err(|_| "pending problem lock failed")?;
+        let Some(command) = slot.take() else {
+            return Err("no pending problem command".to_string());
+        };
+        if now_ms_desktop().saturating_sub(command.created_at_ms as u64) > 5 * 60 * 1000 {
+            return Err("pending problem command expired — please record again".to_string());
+        }
+        command
+    };
+    let Some(project) = command
+        .candidates
+        .iter()
+        .find(|candidate| candidate.id == project_id)
+        .cloned()
+    else {
+        return Err("project is not a pending candidate".to_string());
+    };
+
+    let back_arc = Arc::clone(&backend.0);
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = solve_problem_with_project(
+            &back_arc,
+            &app_clone,
+            command.transcript,
+            command.screen_context,
+            command.client_run_id,
+            command.edit_target_pid,
+            Some(project),
+        )
+        .await;
+        if let Err(err) = result {
+            emit_voice_error_quiet(&app_clone, &err);
+        }
+    });
+    Ok(())
+}
+
 // ── Recording flow ────────────────────────────────────────────────────────────
 
 /// Guards against overlapping start-start or start-cancel-start races.
@@ -3641,6 +3751,9 @@ static HOTKEY_FINISH_RETRY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// Set by the Ctrl press (or the panel follow-up command) right before
 /// `do_start_recording`, consumed there to route the turn to Divo.
 static DIVO_START_PENDING: AtomicBool = AtomicBool::new(false);
+/// Set by the Developer Command trigger right before `do_start_recording`,
+/// consumed there to route the turn to the isolated Problem flow.
+static PROBLEM_START_PENDING: AtomicBool = AtomicBool::new(false);
 /// Distinguishes a spoken follow-up (continue the current thread) from a fresh
 /// Ctrl press (new task). Consumed in `do_finish_recording`'s Divo branch.
 static DIVO_FOLLOWUP_PENDING: AtomicBool = AtomicBool::new(false);
@@ -4061,6 +4174,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     if RECORDING_STARTING.swap(true, Ordering::SeqCst) {
         tracing::info!("[record] start skipped — another start already in progress");
         DIVO_START_PENDING.store(false, Ordering::SeqCst);
+        PROBLEM_START_PENDING.store(false, Ordering::SeqCst);
         return;
     }
 
@@ -4076,6 +4190,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
         FINISH_AFTER_START.store(false, Ordering::SeqCst);
         RECORDING_STARTING.store(false, Ordering::SeqCst);
         DIVO_START_PENDING.store(false, Ordering::SeqCst);
+        PROBLEM_START_PENDING.store(false, Ordering::SeqCst);
         return;
     }
 
@@ -4153,6 +4268,8 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             let (_session_gen, run_id) = app.state::<RecordingSessionState>().begin();
             let route = if DIVO_START_PENDING.swap(false, Ordering::SeqCst) {
                 RecordingRoute::Divo
+            } else if PROBLEM_START_PENDING.swap(false, Ordering::SeqCst) {
+                RecordingRoute::Problem
             } else {
                 app.try_state::<MeetingModeState>()
                     .map(|s| {
@@ -4169,6 +4286,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             }
             let mode = match route {
                 RecordingRoute::Divo => "divo",
+                RecordingRoute::Problem => "developer_problem",
                 RecordingRoute::Meeting => "meeting",
                 RecordingRoute::Normal if said_core::prefs::load().message_polish_mode => {
                     "message_polish"
@@ -4622,6 +4740,7 @@ fn do_cancel_recording(
     reset_long_dictation_lock(&app);
     restore_speaker_suppression(&app, reason);
     recovery::clear();
+    PROBLEM_START_PENDING.store(false, Ordering::SeqCst);
 
     if let Ok(mut route) = app.state::<RecordingRouteState>().0.lock() {
         *route = None;
@@ -4787,6 +4906,7 @@ fn do_finish_recording(
         .unwrap_or(RecordingRoute::Normal);
     let is_meeting = recording_route == RecordingRoute::Meeting;
     let is_divo = recording_route == RecordingRoute::Divo;
+    let is_problem = recording_route == RecordingRoute::Problem;
     let meeting_generation_at_stop = if is_meeting {
         app.try_state::<MeetingModeState>()
             .map(|s| s.generation.load(Ordering::SeqCst))
@@ -4855,7 +4975,7 @@ fn do_finish_recording(
         // 16kHz × 16-bit × mono = 32,000 bytes/sec, plus 44 byte WAV header
         let wav_duration_s = (wav.len().saturating_sub(44)) as f64 / 32_000.0;
 
-        let message_polish_mode = said_core::prefs::load().message_polish_mode;
+        let message_polish_mode = !is_problem && said_core::prefs::load().message_polish_mode;
         let stt_provider = hot_cache_effective_stt_provider(&app2);
         let stt_language = app2
             .try_state::<HotPathCache>()
@@ -5033,6 +5153,62 @@ fn do_finish_recording(
         let screen_context = app2
             .try_state::<ScreenContextState>()
             .and_then(|s| s.0.lock().ok()?.clone());
+
+        if is_problem {
+            let result = run_problem_command(
+                &back_arc2,
+                wav,
+                client_run_id.clone(),
+                pre_transcript,
+                screen_context,
+                &app2,
+                edit_target_pid,
+            )
+            .await;
+
+            let (snap, err_msg) = {
+                let mut d = match shared2.lock() {
+                    Ok(g) => g,
+                    Err(_) => {
+                        emit_voice_error_quiet(&app2, "Recording interrupted");
+                        recovery::clear();
+                        return;
+                    }
+                };
+                match result {
+                    Ok(ProblemCommandOutcome::Completed(done)) => (
+                        d.finish_ok(ProcessSummary {
+                            transcript: done.transcript,
+                            polished: done.response.output,
+                            model: done.response.model_used,
+                            confidence: if done.pasted { 1.0 } else { 0.0 },
+                            transcribe_ms: done.transcribe_ms.max(0) as u64,
+                            polish_ms: done.response.latency_ms.total.max(0) as u64,
+                        }),
+                        None,
+                    ),
+                    Ok(ProblemCommandOutcome::Ambiguous { transcript }) => {
+                        tracing::info!(
+                            "[problem] ambiguous project match — stopped before solve transcript_chars={}",
+                            transcript.chars().count()
+                        );
+                        (d.finish_cancelled(), None)
+                    }
+                    Err(ref e) => (
+                        d.finish_err(strip_voice_error_already_emitted(e).to_string()),
+                        Some(e.clone()),
+                    ),
+                }
+            };
+            if let Some(e) = err_msg.filter(|e| !is_voice_error_already_emitted(e)) {
+                emit_voice_error_quiet(&app2, &e);
+            }
+            sync_tray(&app2, &snap);
+            let _ = app2.emit("app-state", &snap);
+            emit_meeting_stt_status(&app2);
+            recovery::clear();
+            return;
+        }
 
         let result = run_voice_polish_sse(
             &back_arc2,
@@ -5409,6 +5585,243 @@ async fn recover_transcribe(ep: &BackendEndpoint, wav: Vec<u8>) -> Result<api::P
         |_event: api::PolishEvent| {},
     )
     .await
+}
+
+struct ProblemCommandCompleted {
+    transcript: String,
+    response: api::ProblemSolveResponse,
+    pasted: bool,
+    transcribe_ms: i64,
+}
+
+enum ProblemCommandOutcome {
+    Completed(ProblemCommandCompleted),
+    Ambiguous { transcript: String },
+}
+
+async fn run_problem_command(
+    back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
+    wav: Vec<u8>,
+    client_run_id: Option<String>,
+    pre_transcript: Option<dg_stream::StreamingTranscript>,
+    screen_context: Option<String>,
+    app: &tauri::AppHandle,
+    edit_target_pid: Option<i32>,
+) -> Result<ProblemCommandOutcome, String> {
+    let ep = {
+        let lock = back_arc.lock().map_err(|_| "backend lock failed")?;
+        lock.clone().ok_or("backend not started")?
+    };
+
+    let _ = app.emit(
+        "voice-status",
+        serde_json::json!({"phase": "problem_transcribing"}),
+    );
+    let pre_text = pre_transcript.as_ref().map(|t| t.transcript.clone());
+    let pre_meta = pre_transcript.as_ref().map(|t| t.meta.clone());
+    let transcribed =
+        api::transcribe_problem_audio(&ep, wav, client_run_id.clone(), pre_text, pre_meta).await?;
+    let transcript = transcribed.transcript.trim().to_string();
+    if transcript.is_empty() {
+        return Err("No speech detected — try speaking again".to_string());
+    }
+
+    let settings = developer_context::load_settings();
+    let context_match = if settings.enabled {
+        developer_context::match_transcript(&transcript, &settings)
+    } else {
+        developer_context::DeveloperContextMatch {
+            outcome: "none".to_string(),
+            label: "No Project Context".to_string(),
+            project: None,
+            candidates: Vec::new(),
+        }
+    };
+    emit_problem_context_event(app, &context_match);
+
+    match context_match.outcome.as_str() {
+        "ambiguous" => {
+            if let Some(pending) = app.try_state::<PendingProblemState>() {
+                if let Ok(mut slot) = pending.0.lock() {
+                    *slot = Some(PendingProblemCommand {
+                        transcript: transcript.clone(),
+                        screen_context,
+                        client_run_id,
+                        edit_target_pid,
+                        candidates: context_match.candidates,
+                        created_at_ms: now_ms_desktop() as i64,
+                    });
+                }
+            }
+            let _ = app.emit(
+                "voice-output",
+                serde_json::json!({
+                    "status": "manual_paste",
+                    "message": "Ambiguous Project Match",
+                }),
+            );
+            Ok(ProblemCommandOutcome::Ambiguous { transcript })
+        }
+        "project" => {
+            let (response, pasted) = solve_problem_with_project(
+                back_arc,
+                app,
+                transcript.clone(),
+                screen_context,
+                client_run_id,
+                edit_target_pid,
+                context_match.project,
+            )
+            .await?;
+            Ok(ProblemCommandOutcome::Completed(ProblemCommandCompleted {
+                transcript,
+                response,
+                pasted,
+                transcribe_ms: transcribed.latency_ms,
+            }))
+        }
+        _ => {
+            let (response, pasted) = solve_problem_with_project(
+                back_arc,
+                app,
+                transcript.clone(),
+                screen_context,
+                client_run_id,
+                edit_target_pid,
+                None,
+            )
+            .await?;
+            Ok(ProblemCommandOutcome::Completed(ProblemCommandCompleted {
+                transcript,
+                response,
+                pasted,
+                transcribe_ms: transcribed.latency_ms,
+            }))
+        }
+    }
+}
+
+async fn solve_problem_with_project(
+    back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
+    app: &tauri::AppHandle,
+    transcript: String,
+    screen_context: Option<String>,
+    client_run_id: Option<String>,
+    edit_target_pid: Option<i32>,
+    project: Option<developer_context::DeveloperMatchedProject>,
+) -> Result<(api::ProblemSolveResponse, bool), String> {
+    let ep = {
+        let lock = back_arc.lock().map_err(|_| "backend lock failed")?;
+        lock.clone().ok_or("backend not started")?
+    };
+
+    let _ = app.emit(
+        "voice-status",
+        serde_json::json!({"phase": "problem_solving", "transcript": &transcript}),
+    );
+
+    let context_mode = if project.is_some() {
+        "project".to_string()
+    } else {
+        "generic".to_string()
+    };
+    let req = api::ProblemSolveRequest {
+        transcript,
+        context_mode,
+        project_id: project.as_ref().map(|p| p.id.clone()),
+        project_name: project.as_ref().map(|p| p.name.clone()),
+        project_context: project.as_ref().map(|p| p.context.clone()),
+        screen_context,
+        client_run_id,
+        platform: Some(std::env::consts::OS.to_string()),
+        app_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
+    };
+
+    let response = api::solve_problem(&ep, req).await?;
+    let pasted = paste_problem_output(app, &response.output, edit_target_pid).await;
+    let _ = app.emit(
+        "voice-output",
+        serde_json::json!({
+            "status": if pasted { "pasted" } else { "manual_paste" },
+            "message": if pasted { "Pasted" } else { "Ready to Paste" },
+        }),
+    );
+    Ok((response, pasted))
+}
+
+async fn paste_problem_output(
+    app: &tauri::AppHandle,
+    output: &str,
+    edit_target_pid: Option<i32>,
+) -> bool {
+    if output.trim().is_empty() {
+        return false;
+    }
+
+    if let Some(expected_pid) = edit_target_pid {
+        let current_pid = blocking_ax_option("problem focused_pid", paster::focused_pid).await;
+        if current_pid != Some(expected_pid) {
+            tracing::warn!(
+                "[problem] paste deferred — focus changed expected_pid={:?} current_pid={:?}",
+                edit_target_pid,
+                current_pid,
+            );
+            let _ = app.emit(
+                "problem-command-ready-to-paste",
+                serde_json::json!({"chars": output.chars().count()}),
+            );
+            return false;
+        }
+    }
+
+    let (insert_res, used_clipboard) = insert_text_prefer_direct("problem_final_insert", output);
+    match insert_res {
+        Ok(()) => {
+            tracing::info!(
+                "[problem] final output inserted chars={} clipboard_fallback={}",
+                output.chars().count(),
+                used_clipboard,
+            );
+            true
+        }
+        Err(err) => {
+            tracing::warn!("[problem] final insert failed: {err}");
+            false
+        }
+    }
+}
+
+fn emit_problem_context_event(
+    app: &tauri::AppHandle,
+    context_match: &developer_context::DeveloperContextMatch,
+) {
+    let candidate_json = context_match
+        .candidates
+        .iter()
+        .map(|candidate| {
+            serde_json::json!({
+                "id": candidate.id,
+                "name": candidate.name,
+                "matched_alias": candidate.matched_alias,
+            })
+        })
+        .collect::<Vec<_>>();
+    let project_json = context_match.project.as_ref().map(|project| {
+        serde_json::json!({
+            "id": project.id,
+            "name": project.name,
+            "matched_alias": project.matched_alias,
+        })
+    });
+    let _ = app.emit(
+        "problem-command-context",
+        serde_json::json!({
+            "outcome": context_match.outcome,
+            "label": context_match.label,
+            "project": project_json,
+            "candidates": candidate_json,
+        }),
+    );
 }
 
 /// Async SSE consumer: streams tokens from backend, types them word-by-word,
@@ -10205,6 +10618,7 @@ fn main() {
         .manage(StreamingState(Mutex::new(None)))
         .manage(SwiftLivePartialState(Mutex::new(None)))
         .manage(RecordingRouteState(Mutex::new(None)))
+        .manage(PendingProblemState(Mutex::new(None)))
         .manage(divo::DivoState::new())
         .manage(DeepgramSessionState(dg_stream::DeepgramSession::spawn()))
         .manage(PerformanceState(Mutex::new(sysinfo::System::new_all())))
@@ -10241,6 +10655,13 @@ fn main() {
             divo::divo_set_active_thread,
             divo_followup_begin,
             divo_followup_end,
+            developer_context::developer_get_settings,
+            developer_context::developer_save_settings,
+            developer_context::developer_match_context,
+            developer_problem_begin,
+            developer_problem_end,
+            developer_problem_choose_project,
+            developer_problem_dismiss,
             present_status_bar,
             set_status_bar_persistent,
             dismiss_status_bar,

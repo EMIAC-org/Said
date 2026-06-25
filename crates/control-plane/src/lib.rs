@@ -197,6 +197,10 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::runtime::message_polish),
         )
         .route(
+            "/v1/runtime/problem/solve",
+            post(routes::runtime::problem_solve),
+        )
+        .route(
             "/v1/runtime/voice/wav",
             post(routes::runtime::voice_wav)
                 .layer(DefaultBodyLimit::max(RUNTIME_VOICE_WAV_BODY_LIMIT_BYTES)),

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import {
   X, RefreshCw, CloudCheck,
   Wand2, ShieldCheck, Info, Bug, Palette, Link, Bell, Brain, Keyboard, Video,
+  Code2,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -24,6 +25,7 @@ const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
   "hotkeys":       <Keyboard     size={14} />,
   "models":        <Brain        size={14} />,
   "meeting":       <Video        size={14} />,
+  "developer":     <Code2        size={14} />,
   "notifications": <Bell         size={14} />,
   "permissions":   <ShieldCheck  size={14} />,
   "enterprise":  <Link         size={14} />,
@@ -37,6 +39,7 @@ const SECTION_TITLES: Record<SettingsSection, string> = {
   "hotkeys":       "Hotkeys",
   "models":        "Models",
   "meeting":       "Meeting",
+  "developer":     "Developer",
   "notifications": "Notifications",
   "permissions":   "Permissions",
   "enterprise":  "Enterprise",
@@ -50,6 +53,7 @@ const SECTION_SUBTITLES: Record<SettingsSection, string> = {
   "hotkeys":       "Choose the key AirNote listens for while you speak.",
   "models":        "Dictation speed, quality, and ChatGPT connection.",
   "meeting":       "Meeting transcription language and Whisper model.",
+  "developer":     "Project context for the optional Problem Command.",
   "notifications": "Control which status bar alerts you see.",
   "permissions":   "Accessibility, input monitoring, notifications.",
   "enterprise":  "Connect to your organization's AirNote Enterprise server.",
