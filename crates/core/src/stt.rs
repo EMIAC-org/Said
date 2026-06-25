@@ -50,7 +50,8 @@ pub fn normalize_toggle_stt_provider(raw: &str) -> String {
         "whisper_local" | "whisper" | "whisper-local" | "turbo_q5" | "q5_turbo" => {
             "whisper_local".to_string()
         }
-        "" => "deepgram".to_string(),
+        // Default to the native, Python-free on-device whisper.cpp path.
+        "" => "whisper_local".to_string(),
         other => other.to_string(),
     }
 }
@@ -92,11 +93,25 @@ pub fn effective_dictation_provider(
     _swift_model_installed: bool,
     _whisper_model_installed: bool,
 ) -> String {
+    // Dev/testing override: force a specific dictation STT provider regardless of
+    // prefs (e.g. AIRNOTE_FORCE_STT_PROVIDER=whisper_local to exercise the local
+    // whisper.cpp path). Honors any normalized id, including whisper_local.
+    if let Ok(forced) = std::env::var("AIRNOTE_FORCE_STT_PROVIDER") {
+        let norm = normalize_toggle_stt_provider(&forced);
+        if !norm.is_empty() {
+            return norm;
+        }
+    }
     let resolved = resolve_provider_from_pref(pref);
-    if is_swift_local(&resolved) && swift_local_platform_supported() {
+    if is_deepgram(&resolved) {
+        // Explicit cloud opt-in.
+        "deepgram".to_string()
+    } else if is_swift_local(&resolved) && swift_local_platform_supported() {
+        // Legacy Python-sidecar path, only if explicitly chosen on macOS.
         "swift_local".to_string()
     } else {
-        "deepgram".to_string()
+        // Default + `whisper_local`: native, Python-free on-device whisper.cpp.
+        "whisper_local".to_string()
     }
 }
 

@@ -2402,6 +2402,54 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     Some("local_stt_no_transcript"),
                 ));
                 return;
+            } else if cfg!(feature = "local-stt") && said_core::stt::is_whisper_local(&stt_provider) {
+                // On-device whisper.cpp (Oriserve Hinglish fp16 GGML). Loaded at
+                // startup from paths::whisper_model_path(). Local stays local.
+                #[cfg(feature = "local-stt")]
+                {
+                    let wav = wav_data.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        crate::stt::whisper::transcribe_wav(&wav, "hi")
+                    })
+                    .await
+                    {
+                        Ok(Ok(r)) => {
+                            let ms = total_start.elapsed().as_millis() as i64;
+                            info!(
+                                "[timing] STT={}ms (whisper_local on-device, {} words, conf={:.2})",
+                                ms, r.word_count, r.confidence
+                            );
+                            (r.transcript.clone(), r.enriched_transcript, r.confidence, ms)
+                        }
+                        Ok(Err(e)) => {
+                            warn!("[voice] whisper_local STT error: {e}");
+                            yield Ok(voice_run_failed_event(
+                                &pool,
+                                &voice_run_id,
+                                e,
+                                aid,
+                                Some("local_stt_no_transcript"),
+                            ));
+                            return;
+                        }
+                        Err(e) => {
+                            let m = format!("whisper_local task failed: {e}");
+                            warn!("[voice] {m}");
+                            yield Ok(voice_run_failed_event(
+                                &pool,
+                                &voice_run_id,
+                                m,
+                                aid,
+                                Some("local_stt_no_transcript"),
+                            ));
+                            return;
+                        }
+                    }
+                }
+                #[cfg(not(feature = "local-stt"))]
+                {
+                    unreachable!("guarded by cfg!(feature = \"local-stt\")")
+                }
             } else {
                 // Cloud Deepgram (the only non-local provider). Key is bundled
                 // into the build, so this always has credentials.

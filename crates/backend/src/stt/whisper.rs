@@ -9,7 +9,9 @@ use std::sync::Mutex;
 
 use once_cell::sync::OnceCell;
 use tracing::{debug, info, warn};
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperVadParams,
+};
 
 use super::deepgram::{LOW_CONFIDENCE_THRESHOLD, TranscriptResult};
 
@@ -46,7 +48,15 @@ pub fn transcribe_pcm(audio_f32: &[f32], language: &str) -> Result<TranscriptRes
         .create_state()
         .map_err(|e| format!("failed to create whisper state: {e}"))?;
 
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    // Beam search + temperature fallback matches the accuracy of the PyTorch /
+    // transformers reference decoder (greedy best_of=1 is the weakest config and
+    // noticeably worse on hard audio). beam_size=5 is whisper.cpp's own default;
+    // temperature_inc enables OpenAI-style fallback when a window decodes with
+    // low confidence / high repetition. See whisper.cpp #1035.
+    let mut params = FullParams::new(SamplingStrategy::BeamSearch {
+        beam_size: 5,
+        patience: -1.0,
+    });
 
     let lang = match language {
         "en" => Some("en"),
@@ -58,15 +68,36 @@ pub fn transcribe_pcm(audio_f32: &[f32], language: &str) -> Result<TranscriptRes
     params.set_no_timestamps(true);
     params.set_suppress_blank(true);
     params.set_suppress_nst(false);
-    params.set_single_segment(true);
+    // Allow multi-segment decoding so utterances longer than a 30s window aren't
+    // truncated to a single segment.
+    params.set_single_segment(false);
     params.set_no_context(true);
     params.set_temperature(0.0);
-    params.set_temperature_inc(0.0);
+    // Fallback ladder (0.0 → 0.2 → 0.4 …) when entropy/logprob thresholds trip.
+    params.set_temperature_inc(0.2);
+    params.set_entropy_thold(2.4);
+    params.set_logprob_thold(-1.0);
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_print_special(false);
     params.set_n_threads(4);
+
+    // Silero VAD gate: when the model is present, whisper.cpp runs voice-activity
+    // detection first and only transcribes detected speech. This kills the
+    // silence/noise hallucination seen on longer dictations (the "phantom"
+    // fluent text on pauses). Best-effort — skipped if the model isn't installed.
+    let vad_path = said_core::paths::silero_vad_model_path();
+    if vad_path.is_file() {
+        if let Some(p) = vad_path.to_str() {
+            params.set_vad_model_path(Some(p));
+            params.set_vad_params(WhisperVadParams::new());
+            params.enable_vad(true);
+            debug!("[whisper] Silero VAD enabled ({p})");
+        }
+    } else {
+        debug!("[whisper] Silero VAD model absent — running without VAD gate");
+    }
 
     let t0 = std::time::Instant::now();
     state

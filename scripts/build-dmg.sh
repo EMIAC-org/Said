@@ -85,8 +85,8 @@ step "Build airnote-backend (release, $TARGET)"
 cd "$REPO_ROOT"
 # Bust the Cargo fingerprint cache for the binary entry point.
 touch crates/backend/src/main.rs
-cargo build -p said-backend --release --target "$TARGET"
-ok "airnote-backend built"
+cargo build -p said-backend --release --target "$TARGET" --features local-stt,metal
+ok "airnote-backend built (local-stt + metal)"
 
 step "Sync sidecar to Tauri externalBin slot"
 mkdir -p "$TAURI_DIR/binaries"

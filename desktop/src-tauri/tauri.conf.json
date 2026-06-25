@@ -73,8 +73,6 @@
       "binaries/whisper-cli"
     ],
     "resources": [
-      "resources/swift-stt-sidecar/server.py",
-      "resources/swift-stt-sidecar/requirements.txt",
       "resources/models/ggml-silero-v5.1.2.bin"
     ],
     "macOS": {

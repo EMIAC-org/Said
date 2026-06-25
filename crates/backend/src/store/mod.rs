@@ -83,6 +83,7 @@ const MIGRATION_049: &str = include_str!("migrations/049_lock_cerebras_polish_de
 const MIGRATION_050: &str = include_str!("migrations/050_local_profile_summary.sql");
 const MIGRATION_051: &str = include_str!("migrations/051_observability_outbox.sql");
 const MIGRATION_052: &str = include_str!("migrations/052_voice_runs.sql");
+const MIGRATION_053: &str = include_str!("migrations/053_retire_swift_local_stt.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -553,6 +554,14 @@ fn run_migrations(pool: &DbPool) {
             .expect("migration 052 failed");
         conn.execute_batch("PRAGMA user_version = 52")
             .expect("failed to set user_version to 52");
+    }
+
+    if version < 53 {
+        info!("running migration 053_retire_swift_local_stt");
+        conn.execute_batch(MIGRATION_053)
+            .expect("migration 053 failed");
+        conn.execute_batch("PRAGMA user_version = 53")
+            .expect("failed to set user_version to 53");
     }
 }
 
