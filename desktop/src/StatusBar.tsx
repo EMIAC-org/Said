@@ -92,7 +92,7 @@ type BarState =
   | { kind: "done" }
   | { kind: "pasted" }
   | { kind: "manual_paste"; message?: string }
-  | { kind: "error"; message: string; audioId?: string; rawError?: string; errorCode?: string; diagnostic?: string }
+  | { kind: "error"; message: string; runId?: string; audioId?: string; rawError?: string; errorCode?: string; diagnostic?: string }
   | { kind: "learned"; term: string; message: string }
   | { kind: "email_saved"; email: string; message: string }
   | { kind: "confirming"; term: string; original: string; context: string; recordingId: string }
@@ -153,6 +153,7 @@ type ReviewCandidate = {
 
 type VoiceErrorPayload = {
   message: string;
+  run_id?: string;
   audio_id?: string;
   error_code?: string;
   raw_error?: string;
@@ -221,6 +222,7 @@ function pillSize(
   label = "",
   candidateCount = 0,
   reviewExpanded = true,
+  actionCount = 0,
 ): { width: number; height: number } {
   if (hasTranscript) return { width: VOICE_INNER_WIDTH, height: VOICE_INNER_HEIGHT };
   if (kind === "divo_stage") return { width: 520, height: 58 };
@@ -231,6 +233,17 @@ function pillSize(
   if (kind === "divo_ready") return { width: 168, height: 46 };
   if (kind === "divo_pending") return { width: 300, height: 104 };
   if (kind === "divo_error") return { width: 300, height: 96 };
+  if (kind === "error") {
+    const actionWidth = actionCount > 0
+      ? (actionCount * 22) + ((actionCount - 1) * 6) + 8
+      : 0;
+    const content = Math.min(textWidth(label), 300) + actionWidth + 42;
+    return { width: Math.max(240, Math.min(Math.ceil(content), 460)), height: 40 };
+  }
+  if (kind === "update_ready") {
+    const content = Math.min(textWidth(label), 190) + 148;
+    return { width: Math.max(320, Math.min(Math.ceil(content), 390)), height: 136 };
+  }
   if (kind === "confirming") return { width: 280, height: 142 };
   if (kind === "negative_confirm") return { width: 280, height: 142 };
   if (kind === "reviewing") {
@@ -402,7 +415,15 @@ export default function StatusBar() {
   })();
 
   const candidateCount = bar.kind === "reviewing" ? bar.candidates.length : 0;
-  const innerSize = pillSize(bar.kind, hasTranscript, pillLabel, candidateCount, reviewExpanded);
+  const compactActionCount = bar.kind === "error" ? 2 + (bar.audioId ? 2 : 0) : 0;
+  const innerSize = pillSize(
+    bar.kind,
+    hasTranscript,
+    pillLabel,
+    candidateCount,
+    reviewExpanded,
+    compactActionCount,
+  );
 
   useEffect(() => {
     barKindRef.current = bar.kind;
@@ -845,7 +866,7 @@ export default function StatusBar() {
 
     // ── Error: show message + optional retry ──────────────────────────────
     listen<VoiceErrorPayload>("voice-error", (e) => {
-      const { message, audio_id, auto_hide_ms, raw_error, error_code, diagnostic } = e.payload;
+      const { message, run_id, audio_id, auto_hide_ms, raw_error, error_code, diagnostic } = e.payload;
       console.error("[status-bar] voice-error event", {
         message,
         raw_error,
@@ -857,7 +878,7 @@ export default function StatusBar() {
       if (!notifEnabled("error")) return;
       presentStatusBar("voice-error");
       playSound("lowThud");
-      setBar({ kind: "error", message, audioId: audio_id, rawError: raw_error, errorCode: error_code, diagnostic });
+      setBar({ kind: "error", message, runId: run_id, audioId: audio_id, rawError: raw_error, errorCode: error_code, diagnostic });
       if (typeof auto_hide_ms === "number" && auto_hide_ms > 0) {
         doneTimer.current = setTimeout(
           () => returnToIdleOrPinned("auto-update-ready-after-error", false),
@@ -1825,7 +1846,7 @@ export default function StatusBar() {
       <CardHost>
         <div
           className="sb-survey sb-survey--panel sb-survey--interactive"
-          style={{ width: 300, height: 122 }}
+          style={{ width: innerSize.width, height: innerSize.height }}
           aria-label="AirNote update ready"
         >
           <div className="sb-survey-kicker-row">
@@ -1935,7 +1956,7 @@ export default function StatusBar() {
           </div>
         )}
 
-        <div className="sb-survey-controlbar">
+        <div className={`sb-survey-controlbar${bar.kind === "error" ? " sb-survey-controlbar--actions" : ""}`}>
           {bar.kind === "processing" ? (
             <div className="sb-survey-processing">
               <span>{processingLabel(bar.phase)}</span>
@@ -2041,6 +2062,7 @@ export default function StatusBar() {
                   const details = [
                     bar.message,
                     bar.errorCode ? `code=${bar.errorCode}` : "",
+                    bar.runId ? `run_id=${bar.runId}` : "",
                     bar.audioId ? `audio_id=${bar.audioId}` : "",
                     bar.diagnostic || bar.rawError || "",
                   ].filter(Boolean).join("\n");

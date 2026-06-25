@@ -139,8 +139,16 @@ struct NotchView: View {
             ReviewCard(candidates: cands, recordingId: recordingId, send: send).id(recordingId)
 
         // ── system ──
-        case .error(let message, let audioId):
-            ErrorCard(message: message, audioId: audioId, send: send)
+        case .error(let message, let runId, let audioId, let errorCode, let rawError, let diagnostic):
+            ErrorCard(
+                message: message,
+                runId: runId,
+                audioId: audioId,
+                errorCode: errorCode,
+                rawError: rawError,
+                diagnostic: diagnostic,
+                send: send
+            )
         case .updateReady(let version, let message):
             UpdateCard(version: version, message: message, send: send)
         case .recents(let items):

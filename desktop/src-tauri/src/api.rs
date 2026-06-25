@@ -196,6 +196,7 @@ pub enum PolishEvent {
     Done(PolishDone),
     Error {
         message: String,
+        run_id: Option<String>,
         audio_id: Option<String>,
         error_code: Option<String>,
         retryable: Option<bool>,
@@ -374,12 +375,28 @@ where
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         let (message, error_code) = http_error_event("voice/polish", status, &body);
+        let parsed = serde_json::from_str::<Value>(&body).ok();
         on_event(PolishEvent::Error {
             message: message.clone(),
-            audio_id: None,
+            run_id: parsed
+                .as_ref()
+                .and_then(|v| v.get("run_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            audio_id: parsed
+                .as_ref()
+                .and_then(|v| v.get("audio_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
             error_code,
-            retryable: None,
-            owned_by_airnote: None,
+            retryable: parsed
+                .as_ref()
+                .and_then(|v| v.get("retryable"))
+                .and_then(Value::as_bool),
+            owned_by_airnote: parsed
+                .as_ref()
+                .and_then(|v| v.get("owned_by_airnote"))
+                .and_then(Value::as_bool),
             diagnostic: Some(body),
         });
         return Err(message);
@@ -422,6 +439,7 @@ where
         let (message, error_code) = http_error_event("text/polish", status, &body);
         on_event(PolishEvent::Error {
             message: message.clone(),
+            run_id: None,
             audio_id: None,
             error_code,
             retryable: None,
@@ -654,6 +672,10 @@ fn parse_and_dispatch(
 fn parse_error_event(val: &Value, msg: &str) -> PolishEvent {
     PolishEvent::Error {
         message: msg.to_string(),
+        run_id: val
+            .get("run_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         audio_id: val
             .get("audio_id")
             .and_then(Value::as_str)
@@ -894,6 +916,92 @@ pub async fn get_history(ep: &BackendEndpoint, limit: i64) -> Result<Vec<Recordi
         .json::<Vec<Recording>>()
         .await
         .map_err(|e| format!("parse history failed: {e}"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceRun {
+    pub run_id: String,
+    pub audio_id: Option<String>,
+    pub mode: String,
+    pub target_app: Option<String>,
+    pub status: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub retryable: bool,
+    pub owned_by_airnote: bool,
+    pub attempt_count: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LatestFailedVoiceRunResponse {
+    run: Option<VoiceRun>,
+}
+
+pub async fn latest_failed_voice_run(ep: &BackendEndpoint) -> Result<Option<VoiceRun>, String> {
+    let url = format!("{}/v1/voice-runs/latest-failed", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("latest failed voice run failed: {e}"))?
+        .json::<LatestFailedVoiceRunResponse>()
+        .await
+        .map(|res| res.run)
+        .map_err(|e| format!("parse latest failed voice run failed: {e}"))
+}
+
+pub async fn mark_voice_run_failed(
+    ep: &BackendEndpoint,
+    run_id: &str,
+    error_code: &str,
+    message: &str,
+    retryable: bool,
+    owned_by_airnote: bool,
+) -> Result<Option<VoiceRun>, String> {
+    let url = format!("{}/v1/voice-runs/{run_id}/failed", ep.url);
+    let resp = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::json!({
+            "error_code": error_code,
+            "message": message,
+            "retryable": retryable,
+            "owned_by_airnote": owned_by_airnote,
+            "diagnostic": {
+                "error_code": error_code,
+                "message": message,
+                "owned_by_airnote": owned_by_airnote,
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("mark voice run failed request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    latest_failed_voice_run(ep).await
+}
+
+pub async fn mark_voice_run_paste(
+    ep: &BackendEndpoint,
+    run_id: &str,
+    paste_success: bool,
+) -> Result<(), String> {
+    let url = format!("{}/v1/voice-runs/{run_id}/paste", ep.url);
+    let resp = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::json!({ "paste_success": paste_success }))
+        .send()
+        .await
+        .map_err(|e| format!("mark voice paste request failed: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("mark voice paste failed: {}", resp.status()))
+    }
 }
 
 // ── Cloud auth (calls the cloud control plane directly) ───────────────────────

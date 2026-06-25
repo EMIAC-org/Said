@@ -82,7 +82,9 @@ final class NotchController: NSObject, NSApplicationDelegate {
                     setState(.polishing(phase: m.phase ?? "polishing"))
                 }
             case "idle":
-                setState(.idle)
+                if !model.state.keepsOverIdle {
+                    setState(.idle)
+                }
             default: break
             }
 
@@ -114,7 +116,14 @@ final class NotchController: NSObject, NSApplicationDelegate {
             }
 
         case "error":
-            setState(.error(message: m.message ?? "Something went wrong", audioId: m.audioId))
+            setState(.error(
+                message: m.message ?? "Something went wrong",
+                runId: m.runId,
+                audioId: m.audioId,
+                errorCode: m.errorCode,
+                rawError: m.rawError,
+                diagnostic: m.diagnostic
+            ))
             if let ms = m.autoHideMs { scheduleHide(after: ms / 1000.0) }
 
         case "learned":
@@ -247,7 +256,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
         case .confirming:                             return sz(330, 116)
         case .negativeConfirm:                        return sz(344, 126)
         case .reviewing(let c, _):                    return sz(388, CGFloat(60 + min(c.count, 5) * 44 + 28))
-        case .error:                                  return sz(344, 80)
+        case .error:                                  return sz(360, 122)
         case .updateReady:                            return sz(330, 96)
         case .recents(let items):                     return sz(440, CGFloat(16 + min(items.count, 5) * 34 + 8))
         case .placement:                              return sz(260, 34)

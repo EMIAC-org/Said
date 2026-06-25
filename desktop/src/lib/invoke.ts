@@ -659,13 +659,24 @@ export function onVoiceDone(
 }
 
 /** Listen for error events. `audioId` is the saved WAV id for retrying. */
+export type VoiceErrorPayload = {
+  message: string;
+  run_id?: string;
+  audio_id?: string;
+  error_code?: string;
+  retryable?: boolean;
+  owned_by_airnote?: boolean;
+  diagnostic?: string;
+  raw_error?: string;
+};
+
 export function onVoiceError(
-  handler: (message: string, audioId?: string, errorCode?: string) => void
+  handler: (message: string, audioId?: string, errorCode?: string, payload?: VoiceErrorPayload) => void
 ): Unsubscribe {
   if (!isTauriRuntime()) return () => {};
   let unsub: Unsubscribe = () => {};
-  listen<{ message: string; audio_id?: string; error_code?: string }>("voice-error", (e) =>
-    handler(e.payload.message, e.payload.audio_id, e.payload.error_code)
+  listen<VoiceErrorPayload>("voice-error", (e) =>
+    handler(e.payload.message, e.payload.audio_id, e.payload.error_code, e.payload)
   ).then((fn) => { unsub = fn; });
   return () => unsub();
 }

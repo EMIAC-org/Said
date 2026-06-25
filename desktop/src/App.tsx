@@ -491,8 +491,12 @@ export default function App() {
     });
 
     // Voice error → show retry toast
-    const unsubError = onVoiceError((msg, audioId, errorCode) => {
-      setRetryToast({ message: msg, audioId: audioId ?? "" });
+    const unsubError = onVoiceError((msg, audioId, errorCode, payload) => {
+      const retryMessage =
+        payload?.owned_by_airnote && audioId
+          ? "Audio saved. Processing failed."
+          : msg;
+      setRetryToast({ message: retryMessage, audioId: audioId ?? "" });
       setBusy(false);
       setSnapshot((p) => (p ? { ...p, state: "idle" } : p));
       setStatusPhase("");

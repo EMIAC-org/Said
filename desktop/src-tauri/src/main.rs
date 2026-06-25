@@ -27,7 +27,7 @@ mod swift_stt_engine;
 mod swift_stt_guard;
 mod telemetry;
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -2646,6 +2646,51 @@ fn smart_repair_last(app: &tauri::AppHandle) {
 /// this ALWAYS does the full reprocess from the recorded voice, so the user gets a
 /// proper attempt even if the first transcript or polish failed — never a degraded one.
 fn retry_last_from_audio(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let endpoint = app
+            .try_state::<BackendState>()
+            .and_then(|state| state.0.lock().ok()?.clone());
+        if let Some(ep) = endpoint {
+            match api::latest_failed_voice_run(&ep).await {
+                Ok(Some(run)) => {
+                    if let Some(audio_id) = run
+                        .audio_id
+                        .clone()
+                        .filter(|id| saved_voice_audio_exists(id))
+                    {
+                        let message_polish = run.mode == "message_polish";
+                        tracing::info!(
+                            "[retry] DB-first latest failed run run_id={} audio_id={} mode={} attempts={} error_code={}",
+                            run.run_id,
+                            audio_id,
+                            run.mode,
+                            run.attempt_count,
+                            run.error_code.as_deref().unwrap_or("none"),
+                        );
+                        retry_recording_internal_with_mode(
+                            app.clone(),
+                            audio_id,
+                            Some(message_polish),
+                            "latest_failed_db",
+                        );
+                        return;
+                    }
+                    tracing::warn!(
+                        "[retry] DB latest failed run has no available audio run_id={} audio_id={}",
+                        run.run_id,
+                        run.audio_id.as_deref().unwrap_or("none"),
+                    );
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!("[retry] latest failed run lookup failed: {e}"),
+            }
+        }
+        retry_last_from_audio_fallback(&app);
+    });
+}
+
+fn retry_last_from_audio_fallback(app: &tauri::AppHandle) {
     if let Some(failed) = app
         .try_state::<LastFailedVoiceActionState>()
         .and_then(|state| state.0.lock().ok()?.clone())
@@ -2930,6 +2975,7 @@ fn is_status_bar_notification_event(event_name: &str) -> bool {
             | "vocab-wrong-fixed"
             | "retrain-status"
             | "auto-update-ready"
+            | "voice-error"
             | "message-polish-mode"
             | "learning_saved"
     )
@@ -5459,6 +5505,7 @@ async fn run_voice_polish_sse(
             }
             api::PolishEvent::Error {
                 message,
+                run_id,
                 audio_id,
                 error_code,
                 retryable,
@@ -5473,7 +5520,7 @@ async fn run_voice_polish_sse(
                     diagnostic.as_deref().unwrap_or(message),
                     error_code.clone(),
                     error_target_app.clone(),
-                    error_client_run_id.clone(),
+                    run_id.clone().or_else(|| error_client_run_id.clone()),
                     message_polish_mode,
                 );
                 let human = humanize_error(&message);
@@ -5482,6 +5529,7 @@ async fn run_voice_polish_sse(
                     serde_json::json!({
                         "message":  human,
                         "raw_error": message,
+                        "run_id": run_id,
                         "audio_id": audio_id,
                         "error_code": error_code,
                         "retryable": retryable,
@@ -5538,7 +5586,59 @@ async fn run_voice_polish_sse(
             if error_already_emitted.load(Ordering::Relaxed) {
                 return Err(mark_voice_error_already_emitted(&e));
             }
-            return Err(e);
+            let mut retry_audio_id: Option<String> = None;
+            if let Some(run_id) = client_run_id.as_deref() {
+                match api::mark_voice_run_failed(&ep, run_id, "sse_missing_done", &e, true, true)
+                    .await
+                {
+                    Ok(Some(run)) => {
+                        retry_audio_id = run.audio_id.clone();
+                        tracing::warn!(
+                            "[retry] marked voice run failed after missing done run_id={} audio_id={} status={} attempts={}",
+                            run.run_id,
+                            run.audio_id.as_deref().unwrap_or("none"),
+                            run.status,
+                            run.attempt_count,
+                        );
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            "[retry] missing-done failure could not be linked to run_id={run_id}"
+                        );
+                    }
+                    Err(mark_err) => {
+                        tracing::warn!(
+                            "[retry] failed to mark missing-done run_id={run_id}: {mark_err}"
+                        );
+                    }
+                }
+            }
+            cache_last_failed_voice_action(
+                &app,
+                retry_audio_id.clone(),
+                &e,
+                Some("sse_missing_done".to_string()),
+                target_app_for_telemetry.clone(),
+                client_run_id.clone(),
+                message_polish_mode,
+            );
+            let _ = app.emit(
+                "voice-error",
+                serde_json::json!({
+                    "message": "Audio saved. Processing failed.",
+                    "raw_error": e,
+                    "run_id": client_run_id,
+                    "audio_id": retry_audio_id,
+                    "error_code": "sse_missing_done",
+                    "retryable": true,
+                    "owned_by_airnote": true,
+                    "diagnostic": "SSE stream ended without a done event after audio capture",
+                    "auto_hide_ms": 4000,
+                }),
+            );
+            return Err(mark_voice_error_already_emitted(
+                "SSE stream ended without a `done` event",
+            ));
         }
     };
 
@@ -5685,6 +5785,15 @@ async fn run_voice_polish_sse(
     }
 
     if let Some(run_id) = client_run_id.as_deref() {
+        if let Err(e) = api::mark_voice_run_paste(&ep, run_id, output_pasted).await {
+            tracing::warn!("[voice-run] paste status update failed run_id={run_id}: {e}");
+        } else {
+            tracing::info!(
+                "[voice-run] paste status updated run_id={} paste_success={}",
+                run_id,
+                output_pasted,
+            );
+        }
         let mode = if is_divo {
             "divo"
         } else if is_meeting {
@@ -6237,6 +6346,53 @@ fn reveal_saved_audio(audio_id: String) -> Result<(), String> {
         path.display(),
     );
     reveal_downloaded_file(path.display().to_string())
+}
+
+fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("pbcopy failed to start: {e}"))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| format!("pbcopy write failed: {e}"))?;
+        }
+        let status = child
+            .wait()
+            .map_err(|e| format!("pbcopy wait failed: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("pbcopy exited with {status}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "clip"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("clip failed to start: {e}"))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| format!("clip write failed: {e}"))?;
+        }
+        let status = child.wait().map_err(|e| format!("clip wait failed: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("clip exited with {status}"));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = text;
+        Err("clipboard copy is not supported on this platform".to_string())
+    }
 }
 
 /// Retry a failed recording by re-submitting its saved WAV file.
@@ -7272,17 +7428,6 @@ fn wire_notch_events(app: &tauri::AppHandle, sidecar: &notch_sidecar::NotchSidec
         });
     }
 
-    // voice-level uses `level`; the HUD protocol uses `value`.
-    {
-        let sc = sidecar.clone();
-        app.listen("voice-level", move |e| {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(e.payload()) {
-                let level = v.get("level").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                sc.send(&serde_json::json!({ "type": "level", "value": level }));
-            }
-        });
-    }
-
     // Pass-through events: forward the payload verbatim with a `type` tag.
     let passthrough: [(&str, &str); 13] = [
         ("voice-status", "status"),
@@ -7427,6 +7572,24 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
                 let state = app.state::<SharedApp>();
                 let backend = app.state::<BackendState>();
                 let _ = retry_recording(audio_id, state, backend, app.clone());
+            }
+        }
+
+        "open_audio" => {
+            let audio_id = notch_str(&action, "audio_id");
+            if !audio_id.is_empty() {
+                if let Err(e) = reveal_saved_audio(audio_id.clone()) {
+                    tracing::warn!("[notch] reveal saved audio failed audio_id={audio_id}: {e}");
+                }
+            }
+        }
+
+        "copy_details" => {
+            let text = notch_str(&action, "text");
+            if !text.is_empty() {
+                if let Err(e) = copy_text_to_clipboard(&text) {
+                    tracing::warn!("[notch] copy details failed: {e}");
+                }
             }
         }
 
@@ -9295,14 +9458,14 @@ fn main() {
                     });
                 }
 
-                // ── HUD surface: native notch sidecar (first-class) or the pill ─
-                // The notch sidecar is the primary HUD by default. Opt out with
-                // AIRNOTE_NOTCH_SIDECAR=0 to use the legacy status-bar pill; we
-                // also fall back to the pill if the notch binary is missing.
+                // ── HUD surface: status-bar pill by default; native notch opt-in ─
+                // Keep the notch sidecar code staged for later launch, but do not
+                // connect it in normal builds. Explicitly opt in with
+                // AIRNOTE_NOTCH_SIDECAR=1 while developing the notch surface.
                 {
                     let notch_enabled = std::env::var("AIRNOTE_NOTCH_SIDECAR")
-                        .map(|v| v != "0")
-                        .unwrap_or(true);
+                        .map(|v| v == "1")
+                        .unwrap_or(false);
                     let mut notch_active = false;
                     if notch_enabled {
                         let action_handle = app.handle().clone();
@@ -9313,7 +9476,9 @@ fn main() {
                             app.manage(sidecar);
                             NOTCH_FIRST_CLASS.store(true, Ordering::SeqCst);
                             notch_active = true;
-                            tracing::info!("[notch] sidecar first-class — status-bar pill suppressed");
+                            tracing::info!(
+                                "[notch] sidecar opt-in active — status-bar pill suppressed"
+                            );
                         } else {
                             tracing::warn!("[notch] sidecar binary not found — using status-bar pill");
                         }

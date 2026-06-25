@@ -132,17 +132,37 @@ struct NegativeCard: View {
 
 struct ErrorCard: View {
     let message: String
+    let runId: String?
     let audioId: String?
+    let errorCode: String?
+    let rawError: String?
+    let diagnostic: String?
     let send: (OutboundAction) -> Void
+
+    private var details: String {
+        [
+            message,
+            errorCode.map { "code=\($0)" },
+            runId.map { "run_id=\($0)" },
+            audioId.map { "audio_id=\($0)" },
+            diagnostic,
+            rawError,
+        ]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n")
+    }
 
     var body: some View {
         CardShell(dot: Theme.err, kicker: "Couldn’t polish") {
             Text(message).foregroundColor(Theme.ink)
         } footer: {
-            CardButton(title: "Dismiss", kind: .ghost) { send(OutboundAction(type: "dismiss")) }
             if let audioId {
                 CardButton(title: "Retry", kind: .primary) { send(OutboundAction(type: "retry", audioId: audioId)) }
+                CardButton(title: "Audio", kind: .ghost) { send(OutboundAction(type: "open_audio", audioId: audioId)) }
             }
+            CardButton(title: "Copy", kind: .ghost) { send(OutboundAction(type: "copy_details", text: details)) }
+            CardButton(title: "Dismiss", kind: .ghost) { send(OutboundAction(type: "dismiss")) }
         }
     }
 }

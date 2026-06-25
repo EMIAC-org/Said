@@ -33,9 +33,11 @@ Rust (main.rs)  ──app.listen(...) taps──▶  stdin  ──▶  AirNoteNo
 ```
 
 - **Rust → Swift:** `desktop/src-tauri/src/notch_sidecar.rs` spawns the binary;
-  `wire_notch_events()` in `main.rs` registers `app.listen` taps for every
-  status event (`app-state`, `voice-level`, `voice-status`, `voice-*`,
-  `vocab-*`, `auto-update-ready`, …) and forwards them as JSON lines.
+  `wire_notch_events()` in `main.rs` registers `app.listen` taps for status
+  events (`app-state`, `voice-status`, `voice-*`, `vocab-*`,
+  `auto-update-ready`, …) and forwards them as JSON lines. High-frequency
+  `voice-level` meter events are intentionally not forwarded because the notch
+  UI does not render them.
 - **Swift → Rust:** the sidecar writes action JSON lines on stdout;
   `handle_notch_action()` routes them to the same backend endpoints the React
   status bar uses (`/v1/confirm-term`, `confirm_batch`, `/v1/block-correction`,
@@ -65,11 +67,13 @@ current status bar behaves exactly as before.
 `output` (`status`,`message`), `error` (`message`,`audio_id`,`auto_hide_ms`),
 `learned`, `email_saved`, `queued`, `wrong_fixed`, `confirm`, `negative_confirm`,
 `review` (`candidates[]`), `retraining`, `retrain_done`, `update_ready`,
-`placement`, `recents`, `present`, `dismiss`.
+`placement`, `recents`, `present`, `dismiss`. `level` remains accepted by the
+Swift protocol for compatibility but is not sent by Rust today.
 
 **Outbound** `{"type": ...}`: `ready`, `confirm` (`decision`), `confirm_batch`
-(`items[]`), `block`, `retry` (`audio_id`), `dismiss`, plus stubs `undo`,
-`apply_update`, `snooze_update`, `copy_recent`, `reposition`.
+(`items[]`), `block`, `retry` (`audio_id`), `open_audio` (`audio_id`),
+`copy_details` (`text`), `dismiss`, plus stubs `undo`, `apply_update`,
+`snooze_update`, `copy_recent`, `reposition`.
 
 ## Source map
 

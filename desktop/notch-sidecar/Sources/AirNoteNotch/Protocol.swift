@@ -37,7 +37,11 @@ struct InboundMessage: Decodable {
     let status: String?          // "pasted" | "manual_paste"
     let message: String?
     // error
+    let runId: String?
     let audioId: String?
+    let errorCode: String?
+    let rawError: String?
+    let diagnostic: String?
     let autoHideMs: Double?
     // vocab / learning
     let term: String?

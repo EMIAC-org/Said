@@ -140,6 +140,7 @@ pub struct AliasLearnEvent {
     pub created_at: DateTime<Utc>,
 }
 
+
 pub async fn list_org_dictation(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -165,7 +166,7 @@ pub async fn list_org_dictation(
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)::bigint
            FROM runtime_history_items h
-          WHERE h.org_id = $1
+          WHERE (h.org_id = $1 OR h.org_id IS NULL)
             AND h.deleted_at IS NULL
             AND h.created_at >= $2
             AND ($3::uuid IS NULL OR h.account_id = $3)",
@@ -195,11 +196,13 @@ pub async fn list_org_dictation(
             (h.edit_feedback_json IS NOT NULL AND h.edit_feedback_json != '{}'::jsonb) AS has_edit_feedback
          FROM runtime_history_items h
          LEFT JOIN runtime_telemetry_runs r
-           ON r.org_id = h.org_id
-          AND r.account_id = h.account_id
-          AND r.recording_id IS NOT NULL
-          AND r.recording_id = h.recording_id
-         WHERE h.org_id = $1
+           ON r.account_id = h.account_id
+          AND (h.org_id IS NULL OR r.org_id = h.org_id)
+          AND (
+            (h.recording_id IS NOT NULL AND r.recording_id = h.recording_id)
+            OR (h.client_run_id IS NOT NULL AND r.run_id = h.client_run_id)
+          )
+         WHERE (h.org_id = $1 OR h.org_id IS NULL)
            AND h.deleted_at IS NULL
            AND h.created_at >= $2
            AND ($3::uuid IS NULL OR h.account_id = $3)
@@ -229,13 +232,18 @@ pub async fn get_org_dictation_detail(
     State(state): State<AppState>,
     headers: HeaderMap,
     user: AuthUser,
-    Path((org_id, recording_id)): Path<(Uuid, String)>,
+    Path((org_id, lookup_key)): Path<(Uuid, String)>,
     Query(q): Query<DictationListQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
         .await
         .map_err(|_| json_err(StatusCode::FORBIDDEN, "forbidden"))?;
     require_org_admin(&role).map_err(|_| json_err(StatusCode::FORBIDDEN, "admin required"))?;
+
+    let lookup_key = lookup_key.trim();
+    if lookup_key.is_empty() {
+        return Err(json_err(StatusCode::BAD_REQUEST, "lookup key required"));
+    }
 
     let row: DictationDetailItem = sqlx::query_as(
         "SELECT
@@ -269,23 +277,38 @@ pub async fn get_org_dictation_detail(
             r.total_ms
          FROM runtime_history_items h
          LEFT JOIN runtime_telemetry_runs r
-           ON r.org_id = h.org_id
-          AND r.account_id = h.account_id
-          AND r.recording_id IS NOT NULL
-          AND r.recording_id = h.recording_id
-         WHERE h.org_id = $1
-           AND h.recording_id = $2
+           ON r.account_id = h.account_id
+          AND (h.org_id IS NULL OR r.org_id = h.org_id)
+          AND (
+            (h.recording_id IS NOT NULL AND r.recording_id = h.recording_id)
+            OR (h.client_run_id IS NOT NULL AND r.run_id = h.client_run_id)
+          )
+         WHERE (h.org_id = $1 OR h.org_id IS NULL)
            AND h.deleted_at IS NULL
            AND ($3::uuid IS NULL OR h.account_id = $3)
+           AND (
+             h.id::text = $2
+             OR h.recording_id = $2
+             OR h.client_run_id = $2
+           )
          LIMIT 1",
     )
     .bind(org_id)
-    .bind(&recording_id)
+    .bind(lookup_key)
     .bind(q.account_id)
     .fetch_optional(&state.db)
     .await
-    .map_err(|_| herr("database error"))?
-    .ok_or_else(|| json_err(StatusCode::NOT_FOUND, "dictation not found"))?;
+    .map_err(|e| {
+        tracing::warn!("[observability] detail lookup failed key={lookup_key}: {e}");
+        herr("database error")
+    })?
+    .ok_or_else(|| {
+        tracing::warn!(
+            "[observability] dictation not found org={org_id} key={lookup_key} account_id={:?}",
+            q.account_id
+        );
+        json_err(StatusCode::NOT_FOUND, "dictation not found")
+    })?;
 
     if let Some(account_id) = q.account_id {
         ensure_org_account_member(&state.db, org_id, account_id)
@@ -296,18 +319,22 @@ pub async fn get_org_dictation_detail(
         }
     }
 
-    let aliases: Vec<AliasLearnEvent> = sqlx::query_as(
-        "SELECT id, account_id, recording_id, heard, correct, source, safety, created_at
-           FROM runtime_alias_learn_events
-          WHERE org_id = $1 AND recording_id = $2 AND account_id = $3
-          ORDER BY created_at ASC",
-    )
-    .bind(org_id)
-    .bind(&recording_id)
-    .bind(row.account_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let aliases: Vec<AliasLearnEvent> = if let Some(rec_id) = row.recording_id.as_deref().filter(|s| !s.is_empty()) {
+        sqlx::query_as(
+            "SELECT id, account_id, recording_id, heard, correct, source, safety, created_at
+               FROM runtime_alias_learn_events
+              WHERE org_id = $1 AND account_id = $2 AND recording_id = $3
+              ORDER BY created_at ASC",
+        )
+        .bind(org_id)
+        .bind(row.account_id)
+        .bind(rec_id)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default()
+    } else {
+        vec![]
+    };
 
     Ok(Json(json!({
         "item": row,

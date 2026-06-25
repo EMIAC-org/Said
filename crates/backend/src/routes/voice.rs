@@ -45,6 +45,20 @@ fn server_stt_probe_enabled() -> bool {
     )
 }
 
+fn chaos_voice_fail_after_save_enabled() -> bool {
+    let enabled = |key: &str| {
+        matches!(
+            std::env::var(key)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    };
+    enabled("AIRNOTE_CHAOS") && enabled("AIRNOTE_CHAOS_VOICE_FAIL_AFTER_SAVE")
+}
+
 const LIVE_TOKEN_MIN_FLUSH_INTERVAL: Duration = Duration::from_millis(28);
 const LIVE_TOKEN_MIN_CHARS: usize = 18;
 const LIVE_TOKEN_MAX_CHARS: usize = 64;
@@ -120,6 +134,7 @@ fn voice_error_owned_by_airnote(code: &str, message: &str) -> bool {
 
 fn voice_error_payload(
     message: impl Into<String>,
+    run_id: Option<&str>,
     audio_id: Option<&str>,
     explicit_code: Option<&str>,
 ) -> Value {
@@ -135,6 +150,7 @@ fn voice_error_payload(
     );
     json!({
         "message": message,
+        "run_id": run_id,
         "audio_id": audio_id,
         "error_code": error_code,
         "retryable": retryable,
@@ -150,7 +166,31 @@ fn voice_error_event(
 ) -> Event {
     Event::default()
         .event("error")
-        .data(voice_error_payload(message, audio_id, explicit_code).to_string())
+        .data(voice_error_payload(message, None, audio_id, explicit_code).to_string())
+}
+
+fn voice_run_failed_event(
+    pool: &crate::store::DbPool,
+    run_id: &str,
+    message: impl Into<String>,
+    audio_id: Option<&str>,
+    explicit_code: Option<&str>,
+) -> Event {
+    let message = message.into();
+    let error_code = voice_error_code_for(&message, explicit_code);
+    let retryable = audio_id.is_some() && voice_error_retryable(&error_code);
+    let owned_by_airnote = voice_error_owned_by_airnote(&error_code, &message);
+    let payload = voice_error_payload(&message, Some(run_id), audio_id, Some(&error_code));
+    let _ = crate::store::voice_runs::mark_voice_run_failed(
+        pool,
+        run_id,
+        &error_code,
+        &message,
+        retryable,
+        owned_by_airnote,
+        Some(&payload),
+    );
+    Event::default().event("error").data(payload.to_string())
 }
 
 struct LiveTokenCoalescer {
@@ -288,9 +328,16 @@ fn save_audio(id: &str, data: &[u8]) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
-/// Delete WAV files older than 24 hours. Called from the cleanup task.
-pub fn cleanup_old_audio() {
+/// Delete ordinary WAV files older than 24 hours. Retryable failed runs keep
+/// their WAVs for 7 days so users can reprocess captured speech.
+pub fn cleanup_old_audio(pool: &crate::store::DbPool) {
     let dir = audio_dir();
+    let now_ms = crate::store::now_ms();
+    let protected_cutoff_ms = now_ms - 7 * 86_400_000i64;
+    let protected: std::collections::HashSet<String> =
+        crate::store::voice_runs::retryable_failed_audio_ids(pool, protected_cutoff_ms)
+            .into_iter()
+            .collect();
     let cutoff = std::time::SystemTime::now()
         .checked_sub(std::time::Duration::from_secs(86_400))
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
@@ -304,6 +351,19 @@ pub fn cleanup_old_audio() {
             continue;
         };
         if modified < cutoff {
+            let audio_id = entry
+                .path()
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if protected.contains(&audio_id) {
+                debug!(
+                    "[voice] keeping retryable failed audio {}",
+                    entry.path().display()
+                );
+                continue;
+            }
             let _ = std::fs::remove_file(entry.path());
             debug!("[voice] deleted old audio {}", entry.path().display());
         }
@@ -1729,9 +1789,44 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
     );
 
     let audio_secs = wav_duration_secs(&wav_data);
+    let voice_run_id = client_run_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let voice_run_mode = if message_polish_mode {
+        "message_polish"
+    } else if repair_mode.is_some() {
+        "repair"
+    } else {
+        "normal"
+    };
 
     let user_id = state.default_user_id.as_str().to_string();
     let pool = state.pool.clone();
+    let voice_run_created = crate::store::voice_runs::create_voice_run_captured(
+        &pool,
+        crate::store::voice_runs::CapturedVoiceRun {
+            run_id: &voice_run_id,
+            user_id: &user_id,
+            audio_id: saved_audio_id.as_deref(),
+            mode: voice_run_mode,
+            target_app: target_app.as_deref(),
+            wav_bytes: wav_data.len() as i64,
+            duration_ms: (audio_secs * 1000.0).round() as i64,
+            pre_transcript: pre_transcript.as_deref(),
+        },
+    )
+    .is_some();
+    info!(
+        "[voice-run] captured run_id={} created={} mode={} audio_id={} wav_bytes={} duration_ms={} pre_transcript_present={}",
+        voice_run_id,
+        voice_run_created,
+        voice_run_mode,
+        saved_audio_id.as_deref().unwrap_or("none"),
+        wav_data.len(),
+        (audio_secs * 1000.0).round() as i64,
+        pre_transcript.is_some(),
+    );
 
     let http_client = state.http_client.clone();
 
@@ -1814,7 +1909,36 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         )
     };
     if !missing.is_empty() {
-        return crate::routes::key_guard::missing_api_keys_response(missing);
+        let message = "API keys required";
+        let payload = voice_error_payload(
+            message,
+            Some(&voice_run_id),
+            saved_audio_id.as_deref(),
+            Some("missing_api_keys"),
+        );
+        let _ = crate::store::voice_runs::mark_voice_run_failed(
+            &pool,
+            &voice_run_id,
+            "missing_api_keys",
+            message,
+            saved_audio_id.is_some(),
+            false,
+            Some(&payload),
+        );
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({
+                "error_code": "missing_api_keys",
+                "message": message,
+                "missing": missing,
+                "run_id": voice_run_id,
+                "audio_id": saved_audio_id,
+                "retryable": saved_audio_id.is_some(),
+                "owned_by_airnote": false,
+                "diagnostic": payload.get("diagnostic").and_then(Value::as_str).unwrap_or(""),
+            })),
+        )
+            .into_response();
     }
     // The polish-prompt vocab slice is computed below, AFTER the transcript
     // embedding lands, so we can do relevance retrieval.
@@ -1824,12 +1948,35 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
     let stream = async_stream::stream! {
         let total_start = Instant::now();
         let aid = audio_id_ref.as_deref();
+        let voice_run_id = voice_run_id.clone();
+        let processing_attempt = crate::store::voice_runs::mark_voice_run_processing(&pool, &voice_run_id);
+        info!(
+            "[voice-run] processing run_id={} attempt={} audio_id={}",
+            voice_run_id,
+            processing_attempt.unwrap_or(0),
+            aid.unwrap_or("none"),
+        );
+        if chaos_voice_fail_after_save_enabled() {
+            warn!(
+                "[chaos] voice fail-after-save triggered run_id={} audio_id={}",
+                voice_run_id,
+                aid.unwrap_or("none"),
+            );
+            yield Ok(voice_run_failed_event(
+                &pool,
+                &voice_run_id,
+                "chaos: failed after audio save",
+                aid,
+                Some("chaos_after_audio_save"),
+            ));
+            return;
+        }
 
         let prefs = match prefs_opt {
             Some(p) => p,
             None => {
                 yield Ok::<Event, Infallible>(
-                    voice_error_event("preferences not found", aid, Some("preferences_not_found"))
+                    voice_run_failed_event(&pool, &voice_run_id, "preferences not found", aid, Some("preferences_not_found"))
                 );
                 return;
             }
@@ -1902,7 +2049,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
 
         if message_polish_mode {
             if wav_data.is_empty() {
-                yield Ok(voice_error_event(
+                yield Ok(voice_run_failed_event(
+                    &pool,
+                    &voice_run_id,
                     "no audio captured for message polish mode",
                     aid,
                     Some("no_audio_captured"),
@@ -1946,6 +2095,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     let model2 = server_model.clone();
                     let aid2 = saved_audio_id.clone();
                     let crid2 = client_run_id.clone();
+                    let run_id2 = voice_run_id.clone();
                     tokio::task::spawn_blocking(move || {
                         let rec = InsertRecording {
                             id: &id2,
@@ -1973,7 +2123,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             &rec,
                             crate::observability::observability_extras(crid2.as_deref()),
                         );
-                        insert_recording(&pool2, rec);
+                        if insert_recording(&pool2, rec).is_some() {
+                            let _ = crate::store::voice_runs::mark_voice_run_completed(
+                                &pool2,
+                                &run_id2,
+                                &id2,
+                                None,
+                            );
+                        }
                     });
 
                     yield Ok(Event::default().event("done").data(
@@ -2007,11 +2164,11 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         || lower.contains("payload too large")
                         || lower.contains("length limit exceeded")
                     {
-                        yield Ok(voice_error_event(e, aid, Some("audio_payload_too_large")));
+                        yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, Some("audio_payload_too_large")));
                         return;
                     }
                     if !crate::routes::key_guard::missing_message_polish_voice_keys(&prefs).is_empty() {
-                        yield Ok(voice_error_event(e, aid, None));
+                        yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
                         return;
                     }
                     warn!("[voice] falling back to local STT + server message polish");
@@ -2042,13 +2199,15 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 }
                 Err(e) => {
                     warn!("[voice] message-polish batch STT error: {e}");
-                    yield Ok(voice_error_event(e, aid, None));
+                    yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
                     return;
                 }
             };
 
             if stt_transcript_raw.trim().is_empty() {
-                yield Ok(voice_error_event(
+                yield Ok(voice_run_failed_event(
+                    &pool,
+                    &voice_run_id,
                     "no speech detected — try speaking again",
                     aid,
                     Some("no_speech_detected"),
@@ -2082,6 +2241,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     let p_ms = llm_result.polish_ms as i64;
                     let aid2 = saved_audio_id.clone();
                     let crid2 = client_run_id.clone();
+                    let run_id2 = voice_run_id.clone();
                     tokio::task::spawn_blocking(move || {
                         let rec = InsertRecording {
                             id: &id2,
@@ -2109,7 +2269,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             &rec,
                             crate::observability::observability_extras(crid2.as_deref()),
                         );
-                        insert_recording(&pool2, rec);
+                        if insert_recording(&pool2, rec).is_some() {
+                            let _ = crate::store::voice_runs::mark_voice_run_completed(
+                                &pool2,
+                                &run_id2,
+                                &id2,
+                                None,
+                            );
+                        }
                     });
 
                     yield Ok(Event::default().event("done").data(
@@ -2136,7 +2303,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 }
                 Err(e) => {
                     warn!("[voice] server message polish failed: {e}");
-                    yield Ok(voice_error_event(e, aid, None));
+                    yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
                 }
             }
             return;
@@ -2257,6 +2424,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     let user_id_store = user_id.clone();
                     let word_count = polished_for_store.split_whitespace().count() as i64;
                     let crid_store = client_run_id.clone();
+                    let run_id_store = voice_run_id.clone();
                     tokio::spawn(async move {
                         let rec = InsertRecording {
                             id: &recording_id_for_store,
@@ -2284,7 +2452,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             &rec,
                             crate::observability::observability_extras(crid_store.as_deref()),
                         );
-                        insert_recording(&pool_store, rec);
+                        if insert_recording(&pool_store, rec).is_some() {
+                            let _ = crate::store::voice_runs::mark_voice_run_completed(
+                                &pool_store,
+                                &run_id_store,
+                                &recording_id_for_store,
+                                None,
+                            );
+                        }
                     });
 
                     yield Ok(Event::default().event("done").data(
@@ -2378,7 +2553,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 Ok(v) => v,
                 Err(e) => {
                     warn!("[voice] STT error: {e}");
-                    yield Ok(voice_error_event(e, aid, None));
+                    yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
                     return;
                 }
             };
@@ -2428,7 +2603,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     wav_data.len(),
                     audio_seconds,
                 );
-                yield Ok(voice_error_event(
+                yield Ok(voice_run_failed_event(
+                    &pool,
+                    &voice_run_id,
                     message,
                     aid,
                     Some("local_stt_no_transcript"),
@@ -2459,7 +2636,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     }
                     Err(e) => {
                         warn!("[voice] groq whisper STT error: {e}");
-                        yield Ok(voice_error_event(e, aid, None));
+                        yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
                         return;
                     }
                 }
@@ -2489,12 +2666,12 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         }
                         Ok(Err(e)) => {
                             warn!("[voice] whisper STT error: {e}");
-                            yield Ok(voice_error_event(e, aid, None));
+                            yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
                             return;
                         }
                         Err(e) => {
                             warn!("[voice] whisper task panicked: {e}");
-                            yield Ok(voice_error_event(format!("{e}"), aid, None));
+                            yield Ok(voice_run_failed_event(&pool, &voice_run_id, format!("{e}"), aid, None));
                             return;
                         }
                     }
@@ -2531,7 +2708,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     }
                     Err(e) => {
                         warn!("[voice] STT error: {e}");
-                        yield Ok(voice_error_event(e, aid, None));
+                        yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
                         return;
                     }
                 }
@@ -2950,7 +3127,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                                 )
                             };
                             warn!("[voice] server runtime fallback failed: {local_e}");
-                            yield Ok(voice_error_event(message, aid, None));
+                            yield Ok(voice_run_failed_event(&pool, &voice_run_id, message, aid, None));
                             return;
                         }
                     }
@@ -3005,7 +3182,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                                 )
                             };
                             warn!("[voice] server runtime fallback failed: {local_e}");
-                            yield Ok(voice_error_event(message, aid, None));
+                            yield Ok(voice_run_failed_event(&pool, &voice_run_id, message, aid, None));
                             return;
                         }
                     }
@@ -3148,6 +3325,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     if transient && !fallback_text.trim().is_empty() {
                         warn!("[voice] transient polish failure — pasting raw transcript as fallback");
                         let total_ms = total_start.elapsed().as_millis() as i64;
+                        let _ = crate::store::voice_runs::mark_voice_run_completed_unlinked(
+                            &pool,
+                            &voice_run_id,
+                        );
                         yield Ok(Event::default().event("done").data(
                             json!({
                                 "recording_id": Uuid::new_v4().to_string(),
@@ -3172,13 +3353,13 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             .to_string()
                         ));
                     } else {
-                        yield Ok(voice_error_event(message, aid, None));
+                        yield Ok(voice_run_failed_event(&pool, &voice_run_id, message, aid, None));
                     }
                     return;
                 }
                 Err(e) => {
                     warn!("[voice] LLM task panicked: {e}");
-                    yield Ok(voice_error_event("internal error", aid, Some("internal_error")));
+                    yield Ok(voice_run_failed_event(&pool, &voice_run_id, "internal error", aid, Some("internal_error")));
                     return;
                 }
             };
@@ -3371,6 +3552,13 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             }).await.unwrap_or(false);
             if !inserted {
                 warn!("[voice] failed to insert recording history row");
+            } else {
+                let _ = crate::store::voice_runs::mark_voice_run_completed(
+                    &pool,
+                    &voice_run_id,
+                    &recording_id,
+                    None,
+                );
             }
             if inserted && !alias_result.traces.is_empty() {
                 let pool_policy = pool.clone();

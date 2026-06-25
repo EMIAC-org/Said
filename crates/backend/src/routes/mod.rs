@@ -25,3 +25,4 @@ pub mod text;
 pub mod tier2;
 pub mod vocabulary;
 pub mod voice;
+pub mod voice_runs;

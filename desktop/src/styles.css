@@ -2062,11 +2062,24 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   gap: 6px;
 }
 
+.sb-survey-controlbar--actions {
+  justify-content: flex-start;
+}
+
 .sb-survey-controlbar .sb-survey-label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 240px;
+  min-width: 0;
+  max-width: none;
+}
+
+.sb-survey-controlbar--actions .sb-survey-label {
+  flex: 1 1 auto;
+}
+
+.sb-survey-controlbar .sb-survey-icon-btn {
+  flex: 0 0 22px;
 }
 
 .sb-survey-transcript {
@@ -2167,7 +2180,14 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   font-size: 12px;
   font-weight: 500;
   color: hsl(var(--muted-foreground));
+  min-width: 0;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sb-survey-label > span:last-child {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
