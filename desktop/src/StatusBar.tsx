@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, Download, ListChecks, Mic, Pencil, Plus, RotateCcw, Send, Sparkles, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
+import { formatKeycap } from "./lib/hotkeys";
 import {
   APPLY_UPDATE_FAILED_EVENT,
   getPendingReadyUpdateReminder,
@@ -1346,7 +1347,9 @@ export default function StatusBar() {
             </button>
           </div>
           <div className="divo-stage-foot">
-            <span className="divo-route-hint">⌘↵ to send</span>
+            <span className="divo-route-hint">
+              {formatKeycap("cmd+enter", /Win/i.test(navigator.userAgent) ? "windows" : "macos")} to send
+            </span>
             <button type="button" className="sb-survey-skip" onClick={() => setBar({ kind: "divo_stage" })}>
               Cancel
             </button>

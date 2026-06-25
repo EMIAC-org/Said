@@ -78,10 +78,27 @@ mod imp {
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
+    // Windows desktop apps (unpackaged Win32) have NO reliable pre-flight mic-
+    // permission query — the WinRT AppCapability model is for packaged/UWP apps.
+    // Denial is enforced at capture time (silence / access-denied), so we can't
+    // truly detect grant state here. We report "granted" and rely on the
+    // capture-time error (now platform-correctly worded in the recorder crate) to
+    // tell the user what to do, and `request_microphone` opens the right settings.
     pub fn microphone_granted() -> bool {
         true
     }
     pub fn request_microphone() -> bool {
+        // Deep-link straight to the Windows microphone privacy page so the user
+        // can flip access on. CREATE_NO_WINDOW avoids a console flash.
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", "", "ms-settings:privacy-microphone"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+        }
         true
     }
 }

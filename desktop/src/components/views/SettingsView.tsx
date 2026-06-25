@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { formatKeycap, type Platform } from "@/lib/hotkeys";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap,
@@ -872,10 +873,13 @@ export function SettingsView({
   // VK_RMENU (Right Alt) on Windows. The Fn / Globe key has no PC analog,
   // so it's hidden from the picker on Windows entirely.
   const isWindows = snapshot?.platform === "windows";
+  const platform = (snapshot?.platform ?? "macos") as Platform;
   const recordHotkeyLabel =
     recordHotkey === "right_option" ? (isWindows ? "Right Alt" : "Right Option") :
-    recordHotkey === "fn" ? "Fn" :
+    recordHotkey === "fn" ? (isWindows ? "Caps Lock" : "Fn") :
     "Caps Lock";
+  // Polish chord shown per-platform (cmd+shift+p → Ctrl+Shift+P on Windows).
+  const polishHotkeyLabel = formatKeycap(prefs?.polish_text_hotkey ?? "cmd+shift+p", platform);
 
   function syncApiKeyInputs(nextPrefs: Preferences) {
     setDeepgramKey(nextPrefs.deepgram_api_key ?? "");
@@ -1272,7 +1276,7 @@ export function SettingsView({
               })}
             </div>
             <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
-              Current: {recordHotkeyLabel}. macOS requires Input Monitoring for global hotkeys.
+              Current: {recordHotkeyLabel}.{!isWindows ? " macOS requires Input Monitoring for global hotkeys." : ""}
             </p>
             {saveError && (
               <p className="text-[11px] mt-2" style={{ color: "hsl(var(--destructive))" }}>
@@ -1818,7 +1822,7 @@ export function SettingsView({
               <div className="min-w-0 flex-1">
                 <p className="text-[13px] font-medium text-foreground">GPT OSS 120B (Cerebras)</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5">
-                  Caps Lock polish always runs on airnote.emiactech.com using Cerebras GPT OSS 120B.
+                  {polishHotkeyLabel} polish always runs on airnote.emiactech.com using Cerebras GPT OSS 120B.
                   {prefs?.stt_provider === "swift_local"
                     ? " Speech recognition stays on this Mac (Swift)."
                     : " Speech recognition uses Deepgram in the cloud."}

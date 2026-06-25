@@ -4,7 +4,15 @@
 <dict>
     <key>com.apple.security.device.audio-input</key>
     <true/>
-    <key>com.apple.security.accessibility</key>
+    <!-- The Swift-STT sidecar spawns python3 which loads native dylibs (MLX/torch).
+         Under hardened runtime (release.yml signs with --options runtime) these are
+         required or macOS kills the process. (Removed com.apple.security.accessibility:
+         accessibility is TCC-gated, not an entitlement, so it was a no-op.) -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
 </dict>
 </plist>

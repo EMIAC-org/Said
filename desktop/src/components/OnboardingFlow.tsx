@@ -949,6 +949,8 @@ export function OnboardingFlow({
       ? [{ key: "fn", glyph: "fn", label: "Fn / Globe", desc: "The world key on MacBooks." }]
       : []),
   ];
+  // Reflect the actually-selected hold-key (not a hardcoded "Caps Lock").
+  const selectedHotkeyLabel = options.find((o) => o.key === currentHotkey)?.label ?? "Caps Lock";
 
   return (
     <OnboardingShell
@@ -961,7 +963,7 @@ export function OnboardingFlow({
       brandKicker="Pro tip"
       brandQuote="Most users settle on Caps Lock — it’s already a hold-key for nothing useful."
       topRight={<span>{stepLabel(step)}</span>}
-      bottomNote={<span>Press Caps Lock anywhere to dictate, once setup is done</span>}
+      bottomNote={<span>Press {selectedHotkeyLabel} anywhere to dictate, once setup is done</span>}
       onBack={goBack}
       {...navProps}
     >
