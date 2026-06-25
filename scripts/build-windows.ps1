@@ -176,6 +176,36 @@ if ($Clean) {
   }
 }
 
+# ---- Bundle build-time keys (option_env!) -----------------------------------
+# said-core bakes DEEPGRAM_API_KEY + GATEWAY_API_KEY and said-desktop bakes
+# DEEPSEEK_API_KEY via option_env!, so the shipped app works without users
+# entering any API key (the key-entry UI was removed in the STT simplification).
+# These must be set BEFORE the backend build (said-core compiles there) and stay
+# set through the tauri build; the crates' build.rs rerun-if-env-changed
+# directives re-bake on change. Loaded from repo-root .env, then unset after the
+# build so they do not leak into the caller's session.
+Step "Bundle build-time keys (option_env!)"
+$EnvFile = Join-Path $RepoRoot '.env'
+$ScriptSetKeys = @()
+$BundledKeys = @(
+  @{ name = 'DEEPSEEK_API_KEY'; purpose = 'meeting summaries' },
+  @{ name = 'DEEPGRAM_API_KEY'; purpose = 'Cloud dictation (the only Windows dictation provider)' },
+  @{ name = 'GATEWAY_API_KEY';  purpose = 'note polish' }
+)
+foreach ($k in $BundledKeys) {
+  $n = $k.name
+  if (-not [Environment]::GetEnvironmentVariable($n)) {
+    $v = Get-EnvValue $n $EnvFile
+    if ($v) { [Environment]::SetEnvironmentVariable($n, $v); $ScriptSetKeys += $n }
+  }
+  $cur = [Environment]::GetEnvironmentVariable($n)
+  if ($cur) { OK "$n will be bundled (length $($cur.Length); value not shown)" }
+  else { Warn "$n not set (env or .env) - $($k.purpose) will FAIL in the build until it is added to .env." }
+}
+# Belt-and-suspenders re-bake of the said-desktop (DeepSeek) option_env! site;
+# said-core's keys re-bake via crates/core/build.rs rerun-if-env-changed.
+Touch $MeetingRs
+
 # ---- Build the Rust sidecar (release) ---------------------------------------
 if ($SkipBackend) {
   Step "Skip airnote-backend build (-SkipBackend)"
@@ -267,20 +297,6 @@ if ((Test-Path $SileroSrc) -and ((Get-Item $SileroSrc).Length -ge $MinSileroByte
   }
 }
 
-# ---- Bundle the DeepSeek meeting-summary key (option_env!) -------------------
-Step "Bundle DeepSeek meeting-summary key (option_env!)"
-$ScriptSetDeepseek = $false   # only clean up the key WE loaded from .env, not the user's ambient one
-if (-not $env:DEEPSEEK_API_KEY) {
-  $fromEnv = Get-EnvValue 'DEEPSEEK_API_KEY' (Join-Path $RepoRoot '.env')
-  if ($fromEnv) { $env:DEEPSEEK_API_KEY = $fromEnv; $ScriptSetDeepseek = $true }
-}
-if ($env:DEEPSEEK_API_KEY) {
-  Touch $MeetingRs   # re-bake: option_env! is captured at compile time
-  OK "DeepSeek summary key WILL be bundled (key length $($env:DEEPSEEK_API_KEY.Length); value not shown)"
-} else {
-  Warn "DEEPSEEK_API_KEY not set (env or .env) - meeting summaries will FAIL until a key is bundled."
-}
-
 # ---- Updater artifact signing ----------------------------------------------
 # tauri.conf has an updater pubkey + createUpdaterArtifacts=true, so tauri tries
 # to sign the updater bundle with TAURI_SIGNING_PRIVATE_KEY. If that key is
@@ -329,10 +345,11 @@ try {
   OK "tauri build finished"
 } finally {
   Set-Location $cwd
-  # Keys were needed only to bake into the said-desktop compile during this build.
-  # Don't leak them into the caller's session or later child processes; only unset
-  # what we loaded from .env ourselves (leave any ambient ones the user set).
-  if ($ScriptSetDeepseek) { Remove-Item Env:DEEPSEEK_API_KEY -ErrorAction SilentlyContinue }
+  # Keys were needed only to bake into the said-core/said-desktop compiles during
+  # this build. Don't leak them into the caller's session or later child
+  # processes; only unset what we loaded from .env ourselves (leave any ambient
+  # ones the user set).
+  foreach ($n in $ScriptSetKeys) { [Environment]::SetEnvironmentVariable($n, $null) }
   if ($ScriptSetSignKey)  { Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue }
   if ($ScriptSetSignPwd)  { Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue }
   if ($NoUpdaterCfg -and (Test-Path $NoUpdaterCfg)) { Remove-Item -LiteralPath $NoUpdaterCfg -Force -ErrorAction SilentlyContinue }
