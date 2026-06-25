@@ -54,6 +54,8 @@ models/*.bin
 
 # Local STT benchmark HF weights (ephemeral; purged after compare)
 tools/stt-compare/.hf-cache/
+tools/stt-compare/.last_compare.json
+tools/stt-compare/.local_stt_benchmark.json
 
 # Reference repo (read-only design reference; not part of the build)
 /boring.notch/

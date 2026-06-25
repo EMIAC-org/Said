@@ -136,7 +136,7 @@ export function permissionsReady(snapshot: AppSnapshot | null): boolean {
 }
 
 export function keysReady(prefs: Preferences | null): boolean {
-  return !!(prefs?.groq_api_key?.trim() && prefs?.deepgram_api_key?.trim());
+  return !!prefs?.groq_api_key?.trim();
 }
 
 /** Reconcile stored progress with live prefs/session on resume. */

@@ -1,0 +1,58 @@
+{
+  "last_updated": "2026-06-11",
+  "benchmark_audio": "/Users/abhishekverma/Downloads/6109386237469007631.ogg",
+  "polish_model": "meta-llama/llama-4-scout-17b-16e-instruct",
+  "overall_winner": {
+    "key": "swift",
+    "id": "Oriserve/Whisper-Hindi2Hinglish-Swift",
+    "label": "Oriserve Swift",
+    "score": 4,
+    "stt_s": 42.66919866600074
+  },
+  "ranking": [
+    {
+      "key": "swift",
+      "id": "Oriserve/Whisper-Hindi2Hinglish-Swift",
+      "label": "Oriserve Swift",
+      "score": 4,
+      "stt_s": 42.66919866600074
+    },
+    {
+      "key": "apex",
+      "id": "Oriserve/Whisper-Hindi2Hinglish-Apex",
+      "label": "Oriserve Apex",
+      "score": 4,
+      "stt_s": 178.01271874999657
+    },
+    {
+      "key": "zero",
+      "id": "shunyalabs/zero-stt-hinglish",
+      "label": "Zero STT Hinglish",
+      "score": 0,
+      "stt_s": 88.49652495800183
+    }
+  ],
+  "models": {
+    "zero": {
+      "id": "shunyalabs/zero-stt-hinglish",
+      "label": "Zero STT Hinglish",
+      "stt_s": 88.49652495800183,
+      "raw_chars": 749,
+      "polished_preview": "एक बन्ते ने टाइम सेम इंडिया से डील करीया है विक्पुल का बाई ना निक्पुण उसनो तो उसने उसे जो रेट अपने को मिलता है उससे भी कम में उसने डील निकाली है अब उसने इसले डील निकाली है उसके टाइम सेम इंडिया में पुर..."
+    },
+    "apex": {
+      "id": "Oriserve/Whisper-Hindi2Hinglish-Apex",
+      "label": "Oriserve Apex",
+      "stt_s": 178.01271874999657,
+      "raw_chars": 874,
+      "polished_preview": "Ek bande ne time se mahine se deal kari hai, Vipul ka bhai na Nipun, usne. To usne usse matlab jo rate apne ko milta hai usse bhi kam mein usne deal nikaali hai. Ab vah usne isliye deal nikaali hai, u..."
+    },
+    "swift": {
+      "id": "Oriserve/Whisper-Hindi2Hinglish-Swift",
+      "label": "Oriserve Swift",
+      "stt_s": 42.66919866600074,
+      "raw_chars": 862,
+      "polished_preview": "Ek bande ne time se mahine se deal kari hai, Vipul ka bhai, Nipun. Usne Usne. usne use matlab jo rate apne ko milta hai, usse bhi kam mein usne deal nikaali hai. Ab vah usne isliye deal nikaali hai. U..."
+    }
+  }
+}

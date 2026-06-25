@@ -73,6 +73,8 @@ const MEETING_MIN_CHUNK_MS: u64 = 700;
 const MEETING_MAX_CHUNK_MS: u64 = 30_000;
 const AUTOSTART_ARG: &str = "--airnote-autostart";
 const SWIFT_FINAL_HANDOFF_WAIT_MS: u64 = 8_500;
+const DICTATION_NO_SPEECH_PEAK: f64 = 0.0035;
+const DICTATION_NO_SPEECH_RMS: f64 = 0.0008;
 const VOICE_ERROR_ALREADY_EMITTED_PREFIX: &str = "__airnote_voice_error_already_emitted__:";
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
@@ -2059,7 +2061,15 @@ fn create_status_bar(app: &tauri::AppHandle) {
     let idle_h = STATUS_BAR_HEIGHT;
     let (x, y) = status_bar_target_origin(app, idle_w, idle_h);
 
-    let url = "index.html?view=statusbar#statusbar";
+    let recovery_preview_enabled = std::env::var("AIRNOTE_RECOVERY_PREVIEW")
+        .or_else(|_| std::env::var("VITE_AIRNOTE_RECOVERY_PREVIEW"))
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    let url = if recovery_preview_enabled {
+        "index.html?view=statusbar&recoveryPreview=1#statusbar"
+    } else {
+        "index.html?view=statusbar#statusbar"
+    };
     tracing::info!(
         "[status-bar] creating window url={url} x={x:.0} y={y:.0} size={idle_w:.0}x{idle_h:.0} visible=false"
     );
@@ -4832,8 +4842,22 @@ fn do_finish_recording(
             .and_then(|hot| hot.0.try_read().ok().map(|guard| guard.language.clone()))
             .filter(|lang| !lang.is_empty())
             .unwrap_or_else(|| "hi".to_string());
+        let swift_local_provider = said_core::stt::is_swift_local(&stt_provider);
+        let no_speech_levels = if !message_polish_mode && swift_local_provider {
+            dictation_wav_is_no_speech(&wav)
+        } else {
+            None
+        };
         let pre_transcript: Option<dg_stream::StreamingTranscript> = if message_polish_mode {
             tracing::info!("[finish] message polish mode — skipping STT pre-transcript");
+            None
+        } else if let Some(levels) = no_speech_levels {
+            tracing::warn!(
+                "[finish] no speech energy detected for Swift local run — suppressing STT transcript (peak={:.5}, rms={:.5}, samples={})",
+                levels.peak,
+                levels.rms,
+                levels.samples,
+            );
             None
         } else if said_core::stt::is_whisper_local(&stt_provider) {
             if let Some(t) = whisper_local_pre_transcript(&wav, &stt_language).await {
@@ -5290,6 +5314,62 @@ fn reject_pre_transcript_reason(
         return Some("implausible word rate".to_string());
     }
     None
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DictationAudioLevels {
+    peak: f64,
+    rms: f64,
+    samples: usize,
+}
+
+fn dictation_pcm16_levels(wav: &[u8]) -> Option<DictationAudioLevels> {
+    if wav.len() < 44 || &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut offset = 12usize;
+    while offset + 8 <= wav.len() {
+        let chunk_id = &wav[offset..offset + 4];
+        let chunk_len = u32::from_le_bytes([
+            wav[offset + 4],
+            wav[offset + 5],
+            wav[offset + 6],
+            wav[offset + 7],
+        ]) as usize;
+        offset += 8;
+        if offset + chunk_len > wav.len() {
+            return None;
+        }
+        if chunk_id == b"data" {
+            let data = &wav[offset..offset + chunk_len];
+            let mut samples = 0usize;
+            let mut peak = 0f64;
+            let mut sum_sq = 0f64;
+            for bytes in data.chunks_exact(2) {
+                let sample = i16::from_le_bytes([bytes[0], bytes[1]]) as f64 / i16::MAX as f64;
+                let amp = sample.abs();
+                peak = peak.max(amp);
+                sum_sq += sample * sample;
+                samples += 1;
+            }
+            if samples == 0 {
+                return None;
+            }
+            return Some(DictationAudioLevels {
+                peak,
+                rms: (sum_sq / samples as f64).sqrt(),
+                samples,
+            });
+        }
+        offset += chunk_len + (chunk_len % 2);
+    }
+    None
+}
+
+fn dictation_wav_is_no_speech(wav: &[u8]) -> Option<DictationAudioLevels> {
+    let levels = dictation_pcm16_levels(wav)?;
+    (levels.peak < DICTATION_NO_SPEECH_PEAK && levels.rms < DICTATION_NO_SPEECH_RMS)
+        .then_some(levels)
 }
 
 /// Re-transcribe a recovered orphan recording. Uses a no-op event handler so the
@@ -8284,6 +8364,7 @@ async fn watch_for_edit(
             capture_method,
             capture_meta,
             client_run_id.as_deref(),
+            pre_paste_text.as_deref(),
         )
         .await
         {
@@ -10444,6 +10525,49 @@ mod live_typing_guard_tests {
             LiveTypingDecision::PreviewOnly
         );
         assert_eq!(guard.on_token("final"), LiveTypingDecision::TypeToken);
+    }
+}
+
+#[cfg(test)]
+mod dictation_audio_level_tests {
+    use super::{dictation_pcm16_levels, dictation_wav_is_no_speech};
+
+    fn wav_from_samples(samples: &[i16]) -> Vec<u8> {
+        let data_len = samples.len() * 2;
+        let mut wav = Vec::with_capacity(44 + data_len);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&16_000u32.to_le_bytes());
+        wav.extend_from_slice(&32_000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        wav
+    }
+
+    #[test]
+    fn detects_no_speech_energy_in_quiet_wav() {
+        let wav = wav_from_samples(&[0, 1, -1, 2, -2, 0, 1, -1]);
+        let levels = dictation_wav_is_no_speech(&wav).expect("quiet wav should be no speech");
+        assert!(levels.peak < 0.0035);
+        assert!(levels.rms < 0.0008);
+    }
+
+    #[test]
+    fn keeps_speech_like_wav() {
+        let wav = wav_from_samples(&[0, 900, -900, 1200, -1200, 600, -600, 0]);
+        let levels = dictation_pcm16_levels(&wav).expect("valid wav levels");
+        assert!(levels.peak > 0.0035);
+        assert!(dictation_wav_is_no_speech(&wav).is_none());
     }
 }
 

@@ -31,7 +31,6 @@ import {
   requestMicrophone,
   submitEditFeedback,
   onVocabToast,
-  onDictationRecovered,
   divoSetCredentials,
   deleteVocabularyTerm,
   checkNotificationPermission,
@@ -228,10 +227,6 @@ export default function App() {
 
   // ── Download success toast ────────────────────────────────────────────────
   const [downloadToast, setDownloadToast] = useState<{ path: string } | null>(null);
-
-  // ── Crash-recovered dictation (re-transcribed on launch) ──────────────────
-  const [recoveredText, setRecoveredText] = useState<string | null>(null);
-  const [recoveredCopied, setRecoveredCopied] = useState(false);
 
   // ── Pending edits ─────────────────────────────────────────────────────────
   const [pendingEdits, setPendingEdits] = useState<PendingEdit[]>([]);
@@ -549,12 +544,6 @@ export default function App() {
     // manual add via the Vocabulary panel, and star toggles.
     const unsubVocabToast = onVocabToast(setVocabToast);
 
-    // Crash recovery — a dictation lost to a previous crash was re-transcribed.
-    const unsubRecovered = onDictationRecovered((text) => {
-      setRecoveredCopied(false);
-      setRecoveredText(text);
-    });
-
     // Tray menu → navigate to Settings
     const unsubNav = onNavSettings(() => {
       setSettingsSection("models");
@@ -571,7 +560,6 @@ export default function App() {
       unsubEdit();
       unsubPending();
       unsubVocabToast();
-      unsubRecovered();
     };
   }, [refreshHistory]);
 
@@ -937,69 +925,6 @@ export default function App() {
           >
             <X size={14} />
           </button>
-        </div>
-      )}
-
-      {/* ── Recovered dictation (after a crash) ───────── */}
-      {recoveredText && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center p-6"
-          style={{ background: "hsl(0 0% 0% / 0.55)" }}
-        >
-          <div
-            className="w-full max-w-lg rounded-2xl p-5 flex flex-col gap-4"
-            style={{
-              background: "hsl(240 10% 8% / 0.98)",
-              border: "1px solid hsl(240 8% 24%)",
-              boxShadow: "0 24px 64px hsl(0 0% 0% / 0.5)",
-            }}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-[15px] font-semibold" style={{ color: "hsl(240 10% 96%)" }}>
-                  Recovered your last dictation
-                </h2>
-                <p className="text-[12px] mt-1" style={{ color: "hsl(240 6% 64%)" }}>
-                  AirNote closed unexpectedly while you were speaking. Here's what you said:
-                </p>
-              </div>
-              <button
-                onClick={() => setRecoveredText(null)}
-                className="flex-shrink-0 transition-colors opacity-60 hover:opacity-100"
-                style={{ color: "hsl(240 10% 96%)" }}
-                aria-label="Dismiss"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <div
-              className="rounded-xl px-4 py-3 text-[13px] leading-relaxed max-h-64 overflow-y-auto whitespace-pre-wrap"
-              style={{ background: "hsl(240 10% 12%)", color: "hsl(240 10% 92%)" }}
-            >
-              {recoveredText}
-            </div>
-            <div className="flex items-center justify-end gap-2">
-              <button
-                onClick={() => setRecoveredText(null)}
-                className="rounded-lg px-3 py-2 text-[13px] no-drag transition-colors"
-                style={{ color: "hsl(240 6% 70%)" }}
-              >
-                Dismiss
-              </button>
-              <button
-                onClick={() => {
-                  navigator.clipboard
-                    .writeText(recoveredText)
-                    .then(() => setRecoveredCopied(true))
-                    .catch((err) => setErrorBanner(err instanceof Error ? err.message : String(err)));
-                }}
-                className="rounded-lg px-4 py-2 text-[13px] font-medium no-drag transition-colors"
-                style={{ background: "hsl(255 80% 62%)", color: "white" }}
-              >
-                {recoveredCopied ? "Copied ✓" : "Copy text"}
-              </button>
-            </div>
-          </div>
         </div>
       )}
 

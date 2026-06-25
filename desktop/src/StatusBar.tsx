@@ -77,6 +77,10 @@ const sounds = {
   tick:      () => { osc(1200, "sine", 0.06, 0.06); },
 } as const;
 
+const RECOVERY_PREVIEW_ENABLED =
+  import.meta.env.VITE_AIRNOTE_RECOVERY_PREVIEW === "1" ||
+  new URLSearchParams(window.location.search).get("recoveryPreview") === "1";
+
 type SoundName = keyof typeof sounds;
 
 function playSound(name: SoundName | null) {
@@ -94,6 +98,7 @@ type BarState =
   | { kind: "pasted" }
   | { kind: "manual_paste"; message?: string }
   | { kind: "error"; message: string; runId?: string; audioId?: string; rawError?: string; errorCode?: string; diagnostic?: string }
+  | { kind: "recovered"; text: string; copied: boolean }
   | { kind: "learned"; term: string; message: string }
   | { kind: "email_saved"; email: string; message: string }
   | { kind: "confirming"; term: string; original: string; context: string; recordingId: string }
@@ -175,6 +180,7 @@ function keepsHudOverIdle(kind: PillKind): boolean {
     || kind === "pasted"
     || kind === "manual_paste"
     || kind === "update_ready"
+    || kind === "recovered"
     || kind.startsWith("divo");
 }
 
@@ -241,6 +247,7 @@ function pillSize(
     const content = Math.min(textWidth(label), 300) + actionWidth + 42;
     return { width: Math.max(240, Math.min(Math.ceil(content), 460)), height: 40 };
   }
+  if (kind === "recovered") return { width: 380, height: 196 };
   if (kind === "update_ready") {
     const content = Math.min(textWidth(label), 190) + 148;
     return { width: Math.max(320, Math.min(Math.ceil(content), 390)), height: 136 };
@@ -381,6 +388,7 @@ export default function StatusBar() {
     || bar.kind === "error"
     || bar.kind === "learned"
     || bar.kind === "update_ready"
+    || bar.kind === "recovered"
     || bar.kind === "placement"
     // Divo: the working HUD stays VISIBLE (persistent hold) but click-through —
     // it floats over the user's app, so making it interactive would swallow every
@@ -402,6 +410,7 @@ export default function StatusBar() {
       case "pasted": return "Pasted";
       case "manual_paste": return bar.message || "Paste latest";
       case "error": return bar.message;
+      case "recovered": return "Recovered dictation";
       case "learned": return bar.message;
       case "email_saved": return bar.message;
       case "queued": return `"${bar.term}" — ${bar.remaining === 1 ? "1 more edit to learn" : `${bar.remaining} more edits to learn`}`;
@@ -735,6 +744,16 @@ export default function StatusBar() {
   }, []);
 
   useEffect(() => {
+    if (!RECOVERY_PREVIEW_ENABLED) return;
+    const text = [
+      "This is a recovered dictation preview from AirNote.",
+      "The card should stay in the status bar, follow light and dark theme colors, and keep the main app clean.",
+    ].join(" ");
+    presentStatusBar("dictation-recovered-preview");
+    setBar({ kind: "recovered", text, copied: false });
+  }, []);
+
+  useEffect(() => {
     const subs: Array<() => void> = [];
 
     listen<{ reason?: string; state?: string }>("status-bar-resync", (e) => {
@@ -890,6 +909,19 @@ export default function StatusBar() {
       console.info("[status-bar] subscribed voice-error");
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] voice-error subscribe failed", err));
+
+    listen<{ text: string }>("dictation-recovered", (e) => {
+      const text = e.payload?.text?.trim() || "";
+      if (!text) return;
+      console.info("[status-bar] dictation-recovered event", { chars: text.length });
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      presentStatusBar("dictation-recovered");
+      playSound("ding");
+      setBar({ kind: "recovered", text, copied: false });
+    }).then((fn) => {
+      console.info("[status-bar] subscribed dictation-recovered");
+      subs.push(fn);
+    }).catch((err) => console.warn("[status-bar] dictation-recovered subscribe failed", err));
 
     listen("long-dictation-locked", () => {
       console.info("[status-bar] long-dictation-locked event");
@@ -1893,6 +1925,55 @@ export default function StatusBar() {
             >
               Restart
               <RotateCcw size={14} strokeWidth={2} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </CardHost>
+    );
+  }
+
+  if (bar.kind === "recovered") {
+    return (
+      <CardHost>
+        <div
+          className="sb-survey sb-survey--panel sb-survey--interactive"
+          style={{ width: innerSize.width, height: innerSize.height }}
+          aria-label="AirNote recovered dictation"
+        >
+          <div className="sb-survey-kicker-row">
+            <span className="sb-status-dot sb-status-dot--info" />
+            <span className="sb-survey-kicker">Recovered your last dictation</span>
+          </div>
+          <div className="sb-survey-body sb-recovered-body">
+            AirNote recovered audio from the previous run.
+          </div>
+          <div className="sb-recovered-text">
+            {bar.text}
+          </div>
+          <div className="sb-survey-footer">
+            <button
+              type="button"
+              className="sb-survey-skip"
+              onClick={() => {
+                setBar({ kind: "idle" });
+                invoke("dismiss_status_bar").catch(() => {});
+              }}
+            >
+              Dismiss
+            </button>
+            <button
+              type="button"
+              className="sb-survey-next"
+              onClick={() => {
+                navigator.clipboard.writeText(bar.text)
+                  .then(() => {
+                    setBar((prev) => prev.kind === "recovered" ? { ...prev, copied: true } : prev);
+                  })
+                  .catch((err) => console.warn("[status-bar] copy recovered dictation failed", err));
+              }}
+            >
+              {bar.copied ? "Copied" : "Copy"}
+              <Copy size={14} strokeWidth={2} aria-hidden="true" />
             </button>
           </div>
         </div>

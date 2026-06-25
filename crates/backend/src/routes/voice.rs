@@ -2487,7 +2487,27 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     return;
                 }
                 Err(e) => {
-                    warn!("[voice] server audio runtime failed; falling back to local pipeline: {e}");
+                    warn!("[voice] server audio runtime failed: {e}");
+                    let local_deepgram_key_available = said_core::stt::resolve_deepgram_api_key(
+                        prefs.deepgram_api_key.as_deref(),
+                    )
+                    .is_some();
+                    if said_core::stt::is_deepgram(&server_audio_stt_provider)
+                        && !local_deepgram_key_available
+                    {
+                        let message = format!(
+                            "server-managed Deepgram failed and no local Deepgram key is available: {e}"
+                        );
+                        yield Ok(voice_run_failed_event(
+                            &pool,
+                            &voice_run_id,
+                            message,
+                            aid,
+                            Some("server_managed_deepgram_failed"),
+                        ));
+                        return;
+                    }
+                    warn!("[voice] server audio runtime failed; using local STT fallback");
                     yield Ok(Event::default().event("status")
                         .data(json!({"phase": "server_audio_fallback"}).to_string()));
                 }

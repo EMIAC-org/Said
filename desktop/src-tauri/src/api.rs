@@ -1566,6 +1566,7 @@ pub async fn classify_edit(
     capture_method: &str,
     capture_meta: CaptureMeta,
     client_run_id: Option<&str>,
+    prior_text: Option<&str>,
 ) -> Result<ClassifyEditResponse, String> {
     let url = format!("{}/v1/classify-edit", ep.url);
     let mut body = serde_json::json!({
@@ -1579,6 +1580,12 @@ pub async fn classify_edit(
     });
     if let Some(run_id) = client_run_id.map(str::trim).filter(|s| !s.is_empty()) {
         body["client_run_id"] = serde_json::Value::String(run_id.to_string());
+    }
+    // The pre-dictation field baseline. When the user dictated into a field that
+    // already had text, this lets the backend scope the edit-diff to OUR output
+    // and ignore the surrounding context. Empty/None → field was empty.
+    if let Some(prior) = prior_text.filter(|s| !s.is_empty()) {
+        body["prior_text"] = serde_json::Value::String(prior.to_string());
     }
     Client::new()
         .post(&url)

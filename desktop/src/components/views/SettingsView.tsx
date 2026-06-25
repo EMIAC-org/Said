@@ -756,6 +756,11 @@ export function SettingsView({
   const [keySaving,     setKeySaving]     = useState(false);
   const [keySaved,      setKeySaved]      = useState(false);
   const keySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sttProvider = prefs?.stt_provider ?? "deepgram";
+  const usesLocalSwift = sttProvider === "swift_local";
+  const managedDeepgramAvailable = !!vaultStatus?.signed_in;
+  const deepgramReady = usesLocalSwift || !!prefs?.deepgram_api_key || managedDeepgramAvailable;
+  const voiceKeysReady = !!prefs?.groq_api_key && deepgramReady;
 
   // ── Debug logs state ───────────────────────────────────────────────────────
   const [debugLogs,    setDebugLogs]    = useState<DebugLogs | null>(null);
@@ -2086,11 +2091,11 @@ export function SettingsView({
 
             <SettingsDisclosure
               title="Required for dictation"
-              description="Groq polishes text. Deepgram transcribes audio."
+              description="Groq polishes text. AirNote uses local Swift or managed Deepgram for transcription."
               icon={<Zap size={15} />}
               defaultOpen
               status={
-                prefs?.groq_api_key && prefs?.deepgram_api_key ? (
+                voiceKeysReady ? (
                   <span className="status-pill--ready">Ready</span>
                 ) : (
                   <span className="status-pill--warn">Missing</span>
@@ -2110,7 +2115,13 @@ export function SettingsView({
               <SecretInput
                 icon={<Cpu size={12} style={{ color: "hsl(var(--primary))" }} />}
                 label="Deepgram API Key"
-                helper="Speech-to-text for dictation."
+                helper={
+                  usesLocalSwift
+                    ? "Optional fallback. Local Swift is selected for dictation."
+                    : managedDeepgramAvailable
+                      ? "Optional fallback. AirNote can use managed server Deepgram when your key is empty."
+                      : "Optional if your AirNote account is signed in to a managed server; otherwise used for Deepgram dictation."
+                }
                 placeholder="Token ..."
                 value={deepgramKey}
                 visible={showDeepgram}

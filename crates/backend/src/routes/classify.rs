@@ -62,6 +62,44 @@ pub struct ClassifyBody {
     /// Desktop runtime session id for correlating with control-plane `runtime_sessions`.
     #[serde(default)]
     pub client_run_id: Option<String>,
+    /// The text already in the focused field BEFORE our paste (the pre-dictation
+    /// baseline). When the user dictated into a field that already had content,
+    /// the desktop reads the WHOLE field as `user_kept`; this lets the classifier
+    /// strip the pre-existing prefix/suffix and diff only OUR output + the user's
+    /// edits to it. Empty/None → field was empty, `user_kept` is used as-is.
+    #[serde(default)]
+    pub prior_text: Option<String>,
+}
+
+/// Strip the pre-existing field text so the edit diff sees only our output.
+///
+/// The field after the user's edit is `prior_prefix + edited_output + prior_suffix`
+/// where `prior_prefix + prior_suffix == prior_text` (the caret split the baseline
+/// when we pasted). We recover `edited_output` by matching the baseline's prefix and
+/// suffix against `user_kept`. If the baseline can't be cleanly located (e.g. the
+/// user also edited the surrounding text), we fall back to the full field — never
+/// worse than today's behaviour.
+fn scope_to_our_output(user_kept: &str, prior_text: Option<&str>) -> String {
+    let prior = match prior_text {
+        Some(p) if !p.is_empty() => p,
+        _ => return user_kept.to_string(),
+    };
+    let kept: Vec<char> = user_kept.chars().collect();
+    let prior_c: Vec<char> = prior.chars().collect();
+
+    // A = common prefix of (prior, kept) — the pre-existing text before our paste.
+    let mut a = 0usize;
+    while a < prior_c.len() && a < kept.len() && prior_c[a] == kept[a] {
+        a += 1;
+    }
+    // B = the rest of the baseline; the field must still end with it.
+    let b_chars = &prior_c[a..];
+    let b = b_chars.len();
+    if a + b <= kept.len() && kept[kept.len() - b..] == *b_chars {
+        return kept[a..kept.len() - b].iter().collect();
+    }
+    // Baseline not cleanly present (surrounding text was also edited) — keep full.
+    user_kept.to_string()
 }
 
 fn default_capture_method() -> String {
@@ -241,7 +279,7 @@ pub async fn classify(
 
 async fn classify_inner(
     state: AppState,
-    body: ClassifyBody,
+    mut body: ClassifyBody,
     _learning_enabled: bool,
 ) -> (StatusCode, Json<ClassifyResponse>) {
     let audit_only = crate::legacy_learning::audit_only_legacy_mutations();
@@ -321,6 +359,24 @@ async fn classify_inner(
             StatusCode::OK,
             Json(empty_response("stale", "edit arrived > 30 s after paste")),
         );
+    }
+
+    // ── Scope to OUR output ──────────────────────────────────────────────────
+    // When the field already had text, the desktop reads the whole field. Strip
+    // the pre-existing prefix/suffix so every downstream step (no-edit check,
+    // diff, alias revert, email memory) only sees what we typed + the user's
+    // edits to it — never the surrounding context that was already there.
+    {
+        let scoped = scope_to_our_output(&body.user_kept, body.prior_text.as_deref());
+        if scoped != body.user_kept {
+            info!(
+                "[classify] scoped user_kept to our output region for {}: {} -> {} chars",
+                body.recording_id,
+                body.user_kept.chars().count(),
+                scoped.chars().count(),
+            );
+            body.user_kept = scoped;
+        }
     }
 
     // Full deletion: user cleared everything
@@ -494,6 +550,12 @@ async fn classify_inner(
             merge_llm_changes(&mut analyzer_changes, llm_changes);
         }
     }
+
+    // Collapse empty-original duplicates: when a substitution (e.g. max→EMIAC)
+    // and a bare protected-insert of the same corrected (""→EMIAC) both fire,
+    // keep only the substitution. The bare insert is what made the card show
+    // "EMIAC — was —" next to the real swap.
+    dedup_empty_original_by_corrected(&mut analyzer_changes);
 
     // No synchronous meaning LLM call — meaning is generated iteratively in the
     // background by spawn_vocab_embedding → spawn_meaning_refresh (GPT-5.4-mini).
@@ -2114,6 +2176,30 @@ fn normalized_phrase_tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Drop empty-original changes whose `corrected` is already covered by a change
+/// that DOES carry a real original. A substitution (`max → EMIAC`) is strictly
+/// more informative than the bare insert (`"" → EMIAC`) the protected-term
+/// extractor emits for the same term, and emitting both makes the review card
+/// show a phantom `was "—"` swap. Pure inserts (no same-corrected substitution)
+/// are left untouched.
+fn dedup_empty_original_by_corrected(changes: &mut Vec<AnalyzedChange>) {
+    use std::collections::HashSet;
+    // `corrected` surfaces that already have a change carrying a real original.
+    let with_original: HashSet<String> = changes
+        .iter()
+        .filter(|c| !c.original.trim().is_empty())
+        .map(|c| tier2_edit_policy::normalize_token(&c.corrected))
+        .filter(|s| !s.is_empty())
+        .collect();
+    changes.retain(|c| {
+        if !c.original.trim().is_empty() {
+            return true;
+        }
+        let corrected = tier2_edit_policy::normalize_token(&c.corrected);
+        !(!corrected.is_empty() && with_original.contains(&corrected))
+    });
+}
+
 fn merge_llm_changes(changes: &mut Vec<AnalyzedChange>, llm_changes: Vec<AnalyzedChange>) {
     for llm_change in llm_changes {
         let duplicate_idx = changes.iter().position(|existing| {
@@ -3300,6 +3386,36 @@ mod tests {
         );
 
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn scope_to_our_output_strips_pre_existing_text() {
+        // Prefix only.
+        assert_eq!(
+            scope_to_our_output("Hello team. Isko EMIAC kar do.", Some("Hello team. ")),
+            "Isko EMIAC kar do."
+        );
+        // Suffix only.
+        assert_eq!(
+            scope_to_our_output("Isko EMIAC kar do. Thanks.", Some(" Thanks.")),
+            "Isko EMIAC kar do."
+        );
+        // Both sides (caret split the baseline "A. " + " B.").
+        assert_eq!(
+            scope_to_our_output("A. our text here B.", Some("A.  B.")),
+            "our text here"
+        );
+        // Empty / None baseline → unchanged.
+        assert_eq!(
+            scope_to_our_output("just our text", Some("")),
+            "just our text"
+        );
+        assert_eq!(scope_to_our_output("just our text", None), "just our text");
+        // Baseline not cleanly present (surrounding text also edited) → full field.
+        assert_eq!(
+            scope_to_our_output("totally different", Some("nope prefix")),
+            "totally different"
+        );
     }
 
     #[test]
