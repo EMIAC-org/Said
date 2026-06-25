@@ -1832,10 +1832,12 @@ fn merge_review_candidates(
 }
 
 fn push_unique_review_candidate(candidates: &mut Vec<ReviewCandidate>, candidate: ReviewCandidate) {
+    let original_surface_norm = review_candidate_span_norm(&candidate.original);
+    let corrected_surface_norm = review_candidate_span_norm(&candidate.corrected);
     let original_norm = tier2_edit_policy::normalize_token(&candidate.original);
     let corrected_norm = tier2_edit_policy::normalize_token(&candidate.corrected);
-    if corrected_norm.is_empty()
-        || (!original_norm.is_empty() && original_norm == corrected_norm)
+    if corrected_surface_norm.is_empty()
+        || (!original_surface_norm.is_empty() && original_surface_norm == corrected_surface_norm)
         || candidates.iter().any(|existing| {
             tier2_edit_policy::normalize_token(&existing.original) == original_norm
                 && tier2_edit_policy::normalize_token(&existing.corrected) == corrected_norm

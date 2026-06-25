@@ -7646,6 +7646,39 @@ fn edit_watch_timeouts(word_count: usize) -> (Duration, Duration, Duration) {
     )
 }
 
+#[cfg(test)]
+fn edit_watch_finish_reason(
+    saw_user_edit: bool,
+    idle_elapsed: Duration,
+    total_elapsed: Duration,
+    max_duration: Duration,
+    no_edit_idle_timeout: Duration,
+    post_edit_idle_timeout: Duration,
+) -> Option<&'static str> {
+    let active_idle_timeout = if saw_user_edit {
+        post_edit_idle_timeout
+    } else {
+        no_edit_idle_timeout
+    };
+    let hard_timeout = if saw_user_edit {
+        Duration::from_secs(120)
+    } else {
+        max_duration
+    };
+
+    if idle_elapsed > active_idle_timeout {
+        Some(if saw_user_edit {
+            "post_edit_idle"
+        } else {
+            "no_edit_idle"
+        })
+    } else if total_elapsed > hard_timeout {
+        Some("hard_timeout")
+    } else {
+        None
+    }
+}
+
 async fn blocking_ax_option<T, F>(label: &'static str, f: F) -> Option<T>
 where
     T: Send + 'static,
@@ -10212,57 +10245,57 @@ mod meaningful_edit_tests {
 }
 
 #[cfg(test)]
-mod edit_watch_timeout_tests {
+mod edit_watch_finish_reason_tests {
     use std::time::Duration;
 
     use super::{edit_watch_finish_reason, edit_watch_timeouts};
 
     #[test]
     fn short_edits_wait_at_least_eight_seconds_after_last_change() {
-        let (_no_edit, quiet, _hard) = edit_watch_timeouts(5);
-        assert!(quiet >= Duration::from_secs(8));
+        let (_max, _no_edit_idle, post_edit_idle) = edit_watch_timeouts(5);
+        assert!(post_edit_idle >= Duration::from_secs(8));
     }
 
     #[test]
     fn delayed_second_edit_resets_quiet_window() {
-        let (no_edit, quiet, hard) = edit_watch_timeouts(5);
+        let (max, no_edit_idle, post_edit_idle) = edit_watch_timeouts(5);
         assert_eq!(
             edit_watch_finish_reason(
                 true,
-                quiet - Duration::from_millis(1),
+                post_edit_idle - Duration::from_millis(1),
                 Duration::from_secs(14),
-                no_edit,
-                quiet,
-                hard,
+                max,
+                no_edit_idle,
+                post_edit_idle,
             ),
             None
         );
         assert_eq!(
             edit_watch_finish_reason(
                 true,
-                quiet + Duration::from_millis(1),
+                post_edit_idle + Duration::from_millis(1),
                 Duration::from_secs(18),
-                no_edit,
-                quiet,
-                hard,
+                max,
+                no_edit_idle,
+                post_edit_idle,
             ),
-            Some("quiet_after_edit")
+            Some("post_edit_idle")
         );
     }
 
     #[test]
-    fn no_edit_uses_original_max_window() {
-        let (no_edit, quiet, hard) = edit_watch_timeouts(5);
+    fn no_edit_uses_idle_window() {
+        let (max, no_edit_idle, post_edit_idle) = edit_watch_timeouts(5);
         assert_eq!(
             edit_watch_finish_reason(
                 false,
-                Duration::from_secs(0),
-                no_edit + Duration::from_millis(1),
-                no_edit,
-                quiet,
-                hard,
+                no_edit_idle + Duration::from_millis(1),
+                no_edit_idle + Duration::from_millis(1),
+                max,
+                no_edit_idle,
+                post_edit_idle,
             ),
-            Some("no_edit_timeout")
+            Some("no_edit_idle")
         );
     }
 }
