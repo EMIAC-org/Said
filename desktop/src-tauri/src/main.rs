@@ -1163,30 +1163,6 @@ fn request_swift_bridge_stop(app: &tauri::AppHandle, recording_id: Option<&str>,
 /// cleared after it's pasted via the global paste-latest hotkey or command.
 struct LatestResult(std::sync::Arc<Mutex<Option<String>>>);
 
-const RETRY_REPROCESS_WINDOW_MS: i64 = 5_000;
-
-#[derive(Clone, Debug)]
-struct RetryShortcutPress {
-    recording_id: String,
-    pressed_at_ms: i64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RetryShortcutDecision {
-    PasteFirst,
-    FullReprocess,
-}
-
-struct RetryShortcutState(Mutex<Option<RetryShortcutPress>>);
-
-#[derive(Clone, Debug)]
-struct LastVoiceAudio {
-    recording_id: String,
-    wav: Vec<u8>,
-}
-
-struct LastVoiceAudioState(Mutex<Option<LastVoiceAudio>>);
-
 fn paste_latest_hotkey_label() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -1199,36 +1175,6 @@ fn paste_latest_hotkey_label() -> &'static str {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         "Paste latest"
-    }
-}
-
-fn retry_hotkey_label() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        "Cmd+Option+R"
-    }
-    #[cfg(target_os = "windows")]
-    {
-        "Ctrl+Left Alt+R"
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        "Retry last"
-    }
-}
-
-fn decide_retry_shortcut(
-    previous: Option<&RetryShortcutPress>,
-    recording_id: &str,
-    now_ms: i64,
-) -> RetryShortcutDecision {
-    if previous.is_some_and(|prev| {
-        prev.recording_id == recording_id
-            && now_ms.saturating_sub(prev.pressed_at_ms) <= RETRY_REPROCESS_WINDOW_MS
-    }) {
-        RetryShortcutDecision::FullReprocess
-    } else {
-        RetryShortcutDecision::PasteFirst
     }
 }
 
@@ -1736,65 +1682,6 @@ fn failed_voice_mode_for_audio(app: &tauri::AppHandle, audio_id: &str) -> Option
         .and_then(|state| state.0.lock().ok()?.clone())
         .filter(|action| action.audio_id == audio_id)
         .map(|action| action.message_polish_mode)
-}
-
-fn cache_last_voice_audio(app: &tauri::AppHandle, recording_id: &str, wav: Vec<u8>) {
-    if wav.is_empty() {
-        return;
-    }
-    let byte_count = wav.len();
-    let state = app.state::<LastVoiceAudioState>();
-    if let Ok(mut guard) = state.0.lock() {
-        *guard = Some(LastVoiceAudio {
-            recording_id: recording_id.to_string(),
-            wav,
-        });
-    }
-    tracing::debug!(
-        "[retry] cached latest voice audio in RAM recording_id={} bytes={}",
-        recording_id,
-        byte_count
-    );
-}
-
-fn retry_shortcut_decision(app: &tauri::AppHandle, recording_id: &str) -> RetryShortcutDecision {
-    let now = now_ms();
-    let state = app.state::<RetryShortcutState>();
-    let Ok(mut guard) = state.0.lock() else {
-        tracing::warn!("[retry] retry shortcut state lock failed; using paste-first behavior");
-        return RetryShortcutDecision::PasteFirst;
-    };
-    let decision = decide_retry_shortcut(guard.as_ref(), recording_id, now);
-    match decision {
-        RetryShortcutDecision::PasteFirst => {
-            *guard = Some(RetryShortcutPress {
-                recording_id: recording_id.to_string(),
-                pressed_at_ms: now,
-            });
-        }
-        RetryShortcutDecision::FullReprocess => {
-            *guard = None;
-        }
-    }
-    decision
-}
-
-fn retry_cached_audio(app: &tauri::AppHandle, recording_id: &str) -> Option<Vec<u8>> {
-    let state = app.state::<LastVoiceAudioState>();
-    let guard = state.0.lock().ok()?;
-    let cached = guard.as_ref()?;
-    (cached.recording_id == recording_id).then(|| cached.wav.clone())
-}
-
-fn emit_retry_notice(app: &tauri::AppHandle, message: &str) {
-    let _ = present_status_bar_native(app, "retry-last", false);
-    let _ = app.emit(
-        "voice-output",
-        serde_json::json!({
-            "status": "manual_paste",
-            "message": message,
-        }),
-    );
 }
 
 fn cache_last_text_transform(
@@ -2753,8 +2640,8 @@ fn smart_repair_last(app: &tauri::AppHandle) {
     }
 }
 
-/// Retry shortcut: first press instantly re-pastes the last voice output; a second
-/// quick press escalates to a full STT + polish reprocess when audio is available.
+/// Ctrl+Option+R (macOS) / Ctrl+Left-Alt+R (Windows): re-run the LAST dictation
+/// as a fresh, full-quality attempt from saved audio.
 fn retry_last_from_audio(app: &tauri::AppHandle) {
     if let Some(failed) = app
         .try_state::<LastFailedVoiceActionState>()
@@ -2785,91 +2672,23 @@ fn retry_last_from_audio(app: &tauri::AppHandle) {
         .ok()
         .and_then(|g| g.clone());
     match last_action {
-        Some(LastAction::Voice(action)) => {
-            match retry_shortcut_decision(app, &action.recording_id) {
-                RetryShortcutDecision::PasteFirst => {
-                    if action.polished.trim().is_empty() {
-                        let _ = app.emit(
-                            "voice-error",
-                            serde_json::json!({
-                                "message": "Nothing recent to paste yet.",
-                                "audio_id": null,
-                            }),
-                        );
-                        return;
-                    }
-                    tracing::info!(
-                        "[retry] {} first press → re-paste recording_id={} chars={}",
-                        retry_hotkey_label(),
-                        action.recording_id,
-                        action.polished.chars().count()
-                    );
-                    match paster::paste(&action.polished) {
-                        Ok(()) => emit_retry_notice(app, "Re-pasted last output"),
-                        Err(e) => {
-                            tracing::warn!("[retry] re-paste failed: {e}");
-                            let _ = app.emit(
-                                "voice-error",
-                                serde_json::json!({
-                                    "message": format!("Could not paste last output: {e}"),
-                                    "audio_id": null,
-                                }),
-                            );
-                        }
-                    }
-                }
-                RetryShortcutDecision::FullReprocess => {
-                    tracing::info!(
-                        "[retry] {} second press → full reprocess recording_id={}",
-                        retry_hotkey_label(),
-                        action.recording_id
-                    );
-                    emit_retry_notice(app, "Reprocessing last recording");
-                    if let Some(wav) = retry_cached_audio(app, &action.recording_id) {
-                        let shared = Arc::clone(&app.state::<SharedApp>().0);
-                        let backend = Arc::clone(&app.state::<BackendState>().0);
-                        if let Err(e) =
-                            retry_recording_wav_spawn(wav, shared, backend, app.clone(), None)
-                        {
-                            let _ = app.emit(
-                                "voice-error",
-                                serde_json::json!({
-                                    "message": e,
-                                    "audio_id": null,
-                                }),
-                            );
-                        }
-                    } else if let Some(audio_id) = action.audio_id.clone() {
-                        let shared = Arc::clone(&app.state::<SharedApp>().0);
-                        let backend = Arc::clone(&app.state::<BackendState>().0);
-                        if let Err(e) = retry_recording_spawn(
-                            audio_id,
-                            shared,
-                            backend,
-                            app.clone(),
-                            None,
-                            "last_success",
-                        ) {
-                            let _ = app.emit(
-                                "voice-error",
-                                serde_json::json!({
-                                    "message": e,
-                                    "audio_id": null,
-                                }),
-                            );
-                        }
-                    } else {
-                        let _ = app.emit(
-                            "voice-error",
-                            serde_json::json!({
-                                "message": "Audio unavailable for full reprocess. Press the record hotkey to try again.",
-                                "audio_id": null,
-                            }),
-                        );
-                    }
-                }
+        Some(LastAction::Voice(action)) => match action.audio_id.clone() {
+            Some(audio_id) => {
+                tracing::info!(
+                    "[retry] full reprocess from last successful saved audio {audio_id}"
+                );
+                retry_recording_internal_with_mode(app.clone(), audio_id, None, "last_success");
             }
-        }
+            None => {
+                let _ = app.emit(
+                    "voice-error",
+                    serde_json::json!({
+                        "message": "Saved audio is no longer available to retry.",
+                        "audio_id": null,
+                    }),
+                );
+            }
+        },
         _ => {
             if let Some(audio_id) = latest_saved_voice_audio_id() {
                 tracing::info!(
@@ -5522,12 +5341,6 @@ async fn run_voice_polish_sse(
     let error_already_emitted = Arc::new(AtomicBool::new(false));
     let error_already_emitted_for_events = Arc::clone(&error_already_emitted);
 
-    let retry_wav = if !suppress_local && !wav.is_empty() {
-        Some(wav.clone())
-    } else {
-        None
-    };
-
     let pre_transcript_chars = pre_transcript
         .as_ref()
         .map(|t| t.transcript.chars().count())
@@ -5851,9 +5664,6 @@ async fn run_voice_polish_sse(
     if !is_divo && !done.polished.is_empty() {
         if let Ok(mut g) = app.state::<LatestResult>().0.lock() {
             *g = Some(done.polished.clone());
-        }
-        if let Some(wav_bytes) = retry_wav {
-            cache_last_voice_audio(app, &done.recording_id, wav_bytes);
         }
         cache_last_voice_action(app, &done, LastRepairStage::None);
         tracing::debug!(
@@ -10006,7 +9816,7 @@ fn main() {
                             }
                             hotkey::HudShortcutAction::RetryLastFromAudio => {
                                 tracing::info!(
-                                    "[hotkey] ⌘⌥R / Ctrl+Left-Alt+R → retry last dictation"
+                                    "[hotkey] ⌃⌥R / Ctrl+Left-Alt+R → retry last dictation"
                                 );
                                 retry_last_from_audio(&app_h);
                             }
@@ -10090,8 +9900,6 @@ fn main() {
         .manage(PerformanceState(Mutex::new(sysinfo::System::new_all())))
         .manage(TrayCache(Mutex::new(TrayCacheInner::default())))
         .manage(LatestResult(std::sync::Arc::new(Mutex::new(None))))
-        .manage(RetryShortcutState(Mutex::new(None)))
-        .manage(LastVoiceAudioState(Mutex::new(None)))
         .manage(LastActionState(Mutex::new(None)))
         .manage(LastFailedVoiceActionState(Mutex::new(None)))
         .manage(HotPathCache(Arc::new(tokio::sync::RwLock::new(HotPathCacheInner::default()))))
@@ -10400,49 +10208,6 @@ mod meaningful_edit_tests {
     #[test]
     fn rejects_zero_alphanumeric_word_changes() {
         assert!(!is_meaningful_edit("hello world", "hello   world"));
-    }
-}
-
-#[cfg(test)]
-mod retry_shortcut_tests {
-    use super::{
-        RETRY_REPROCESS_WINDOW_MS, RetryShortcutDecision, RetryShortcutPress, decide_retry_shortcut,
-    };
-
-    #[test]
-    fn first_press_pastes() {
-        assert_eq!(
-            decide_retry_shortcut(None, "rec-1", 10_000),
-            RetryShortcutDecision::PasteFirst
-        );
-    }
-
-    #[test]
-    fn quick_second_press_reprocesses_same_recording() {
-        let previous = RetryShortcutPress {
-            recording_id: "rec-1".to_string(),
-            pressed_at_ms: 10_000,
-        };
-        assert_eq!(
-            decide_retry_shortcut(Some(&previous), "rec-1", 10_000 + RETRY_REPROCESS_WINDOW_MS),
-            RetryShortcutDecision::FullReprocess
-        );
-    }
-
-    #[test]
-    fn late_or_different_second_press_pastes() {
-        let previous = RetryShortcutPress {
-            recording_id: "rec-1".to_string(),
-            pressed_at_ms: 10_000,
-        };
-        assert_eq!(
-            decide_retry_shortcut(Some(&previous), "rec-1", 10_001 + RETRY_REPROCESS_WINDOW_MS),
-            RetryShortcutDecision::PasteFirst
-        );
-        assert_eq!(
-            decide_retry_shortcut(Some(&previous), "rec-2", 10_100),
-            RetryShortcutDecision::PasteFirst
-        );
     }
 }
 

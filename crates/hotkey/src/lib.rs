@@ -27,8 +27,8 @@ pub enum HudShortcutAction {
     ResetPosition,
     /// ⇧⌘Space — toggle message-polish mode for normal dictation.
     ToggleMessagePolishMode,
-    /// ⌘⌥R (macOS) / Ctrl+Left-Alt+R (Windows) — retry the last dictation.
-    /// Desktop handles paste-first, then full STT + polish on a quick second press.
+    /// ⌃⌥R (macOS) / Ctrl+Left-Alt+R (Windows) — re-run the last dictation from its
+    /// saved audio (full STT + polish) and paste the result.
     RetryLastFromAudio,
 }
 
@@ -260,10 +260,11 @@ mod imp {
         let alt = (flags & ffi::K_CG_FLAG_ALT) != 0;
         let ctrl = (flags & ffi::K_CG_FLAG_CONTROL) != 0;
 
-        // Retry-last uses Command+Option+R. It avoids Ctrl+Option so Divo's
-        // Control hold-to-talk path stays reserved for Divo.
-        if cmd && alt && !ctrl && !shift && keycode == ffi::KC_R {
-            tracing::info!("[hotkey] ⌘⌥R → retry last dictation");
+        // Retry-last-from-audio uses Ctrl+Option+R (NOT Cmd+Shift) so it never
+        // collides with browser hard-reload / Safari Reader (⇧⌘R). Same callback
+        // as the HUD shortcuts, just a different chord.
+        if ctrl && alt && !cmd && !shift && keycode == ffi::KC_R {
+            tracing::info!("[hotkey] ⌃⌥R → retry last dictation from audio");
             if let Some(cb) = HUD_SHORTCUT_CB.get() {
                 cb(HudShortcutAction::RetryLastFromAudio);
             }
