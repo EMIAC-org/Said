@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getConnection } from "@/lib/enterprise";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
@@ -129,11 +129,6 @@ interface MeetingLiveTranscriptPayload {
   chunks: MeetingLiveTranscriptChunk[];
   error?: string | null;
   dropped_audio_chunks?: number;
-}
-
-interface MeetingLiveTranscriptEvent {
-  session_id: string;
-  chunk: MeetingLiveTranscriptChunk;
 }
 
 interface MeetingAiActionItem {
@@ -367,8 +362,14 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
 
   // While a meeting is live, show a floating always-on-top pill whenever the app
   // is not in the foreground — switched to another window OR minimized — and hide
-  // it when the app regains focus or the meeting is left. Event-driven (no
-  // polling) via the window focus change.
+  // it when the app regains focus or the meeting is left. Event-driven via the
+  // window focus change.
+  //
+  // IMPORTANT (Windows): `show_meeting_pill` must only ever SHOW an already-created
+  // window — the pill is pre-created (hidden) at startup in Rust setup(). Creating
+  // a WebView2 window from inside this focus-change IPC command is what deadlocked
+  // Windows IPC (wry #583) and made End-meeting hang / record forever. As long as
+  // show/hide only toggle visibility (never create), the pill is safe on Windows.
   useEffect(() => {
     if (ended) return;
     const appWindow = getCurrentWindow();
@@ -500,20 +501,14 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
       );
     };
 
-    const unlistenPromise = listen<MeetingLiveTranscriptEvent>(
+    // Coalesced live transcript: the backend now emits ONE event per window
+    // carrying the full snapshot (MeetingLiveTranscriptPayload), not one event
+    // per chunk. mergeTranscriptChunks dedups, so applying the whole snapshot is
+    // idempotent. This is the event channel (not a polling invoke), so it never
+    // consumes the limited ipc:// connection pool that control commands need.
+    const unlistenPromise = listen<MeetingLiveTranscriptPayload>(
       "meeting-engine-live-transcript",
-      (event) => {
-        if (cancelled) return;
-        if (
-          engineSessionIdRef.current
-          && event.payload.session_id !== engineSessionIdRef.current
-        ) {
-          return;
-        }
-        setChunks((prev) =>
-          mergeTranscriptChunks(prev, [liveChunkToTranscriptChunk(event.payload.chunk)])
-        );
-      },
+      (event) => mergeLivePayload(event.payload),
     );
 
     invoke<MeetingLiveTranscriptPayload>("meeting_engine_get_live_transcript")
@@ -535,11 +530,15 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
       || transcriptionStatus.startsWith("skipped_");
     if (!cleanupRunning && terminalTranscription) return;
 
+    // Fallback poll only — real-time updates arrive via the `meeting-engine-state`
+    // event (listened above). 3s (was 1s): get_status locks ~13 mutexes and each
+    // call uses an ipc:// connection; 1s during post-meeting processing was steady
+    // pressure on the ~6-connection Windows pool for little benefit.
     const id = setInterval(() => {
       invoke<MeetingEngineStatus>("meeting_engine_get_status")
         .then(applyMeetingStatus)
         .catch(() => {});
-    }, 1000);
+    }, 3000);
 
     return () => clearInterval(id);
   }, [
@@ -569,32 +568,19 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
     if (controlBusy) return;
     setControlBusy(true);
     setControlError(null);
-    try {
-      // Cap the wait so a slow/blocked backend command can never permanently
-      // wedge the UI (button stuck disabled). The stop is idempotent and the
-      // recording self-heals via startup recovery, so retrying is always safe.
-      const status = await Promise.race([
-        invoke<MeetingEngineStatus>("meeting_engine_stop_session"),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () =>
-              reject(
-                new Error(
-                  "Ending is taking longer than expected — your recording is safe and will be processed. Please try again.",
-                ),
-              ),
-            12000,
-          ),
-        ),
-      ]);
-      applyMeetingStatus(status);
-      setEnded(true);
-    } catch (e) {
-      setControlError(e instanceof Error ? e.message : String(e));
-    } finally {
-      // ALWAYS clear busy — even on throw/timeout — so the button re-enables.
-      setControlBusy(false);
-    }
+    // Optimistic End: transition the UI immediately and stop the engine without
+    // blocking on the round-trip. We fire BOTH the `meeting/request-stop` event
+    // (handled by a global Rust listener) and the `stop_session` invoke; stop() is
+    // idempotent so the double-stop is harmless, and App.onEnded fires one more
+    // deferred stop after navigation as a final backstop. (The Windows pill
+    // deadlock that previously prevented any of these from reaching Rust is fixed
+    // by disabling the floating pill on Windows — see the pill effect above.)
+    emit("meeting/request-stop").catch(() => {});
+    invoke<MeetingEngineStatus>("meeting_engine_stop_session")
+      .then((status) => applyMeetingStatus(status))
+      .catch(() => {});
+    setEnded(true);
+    setControlBusy(false);
   }, [applyMeetingStatus, controlBusy]);
 
   const handleEndMeeting = useCallback(async () => {

@@ -138,6 +138,15 @@ fn run_on_main_guarded(
 }
 
 fn record_hotkey_label(raw: &str) -> &'static str {
+    // Platform-aware: the same pref maps to different physical keys. On Windows
+    // `right_option` binds to Right Alt (VK_RMENU) and `fn` degrades to Caps Lock.
+    #[cfg(target_os = "windows")]
+    match raw {
+        "right_option" => "Right Alt",
+        "fn" => "Caps Lock",
+        _ => "Caps Lock",
+    }
+    #[cfg(not(target_os = "windows"))]
     match raw {
         "right_option" => "Right Option",
         "fn" => "Fn",
@@ -508,7 +517,21 @@ fn present_status_bar_native(
     resync: bool,
 ) -> Result<(), String> {
     if app.get_webview_window("status-bar").is_none() {
+        // The status-bar window is pre-created at startup. If it is somehow missing,
+        // do NOT create it here on Windows: this fn is reachable from the
+        // present_status_bar / set_status_bar_persistent IPC commands, and creating
+        // a WebView2 window from inside an IPC handler deadlocks Windows IPC
+        // (wry #583 — the same class that wedged End-meeting). macOS's NSPanel path
+        // is safe.
+        #[cfg(target_os = "macos")]
         create_status_bar(app);
+        #[cfg(not(target_os = "macos"))]
+        {
+            tracing::warn!(
+                "[status-bar] window missing — not recreating from an IPC path on Windows"
+            );
+            return Err("status-bar window not available".to_string());
+        }
     }
     let win = app
         .get_webview_window("status-bar")
@@ -1600,7 +1623,14 @@ fn latest_saved_voice_audio_id() -> Option<String> {
 fn parse_record_hotkey(raw: &str) -> hotkey::RecordHotkey {
     match raw {
         "right_option" => hotkey::RecordHotkey::RightOption,
+        // Fn/Globe is macOS-only; on Windows the win_hotkey backend has no VK for
+        // it (target_vk(Function)=None) so hold-to-record would be silently dead.
+        // A "fn" pref can still arrive via account sync from a Mac profile — degrade
+        // gracefully to Caps Lock on non-macOS instead of leaving recording broken.
+        #[cfg(target_os = "macos")]
         "fn" => hotkey::RecordHotkey::Function,
+        #[cfg(not(target_os = "macos"))]
+        "fn" => hotkey::RecordHotkey::CapsLock,
         _ => hotkey::RecordHotkey::CapsLock,
     }
 }
@@ -2150,6 +2180,9 @@ fn show_main_window(app: &tauri::AppHandle) {
 // screen Spaces. macOS uses a true NSPanel (the only way to float over another
 // app's full-screen Space); other platforms use an always-on-top window.
 
+// The capsule fills the window exactly. No drop shadow/glow (those clipped into
+// grey "corners" on the transparent window) — the window's corners outside the
+// pill's rounded ends are fully transparent.
 const MEETING_PILL_W: f64 = 200.0;
 const MEETING_PILL_H: f64 = 52.0;
 
@@ -2190,11 +2223,11 @@ fn meeting_pill_position(app: &tauri::AppHandle) -> (f64, f64) {
 
 #[tauri::command]
 fn show_meeting_pill(app: tauri::AppHandle) {
-    let url = "index.html?view=meeting-pill#meeting-pill";
     let (x, y) = meeting_pill_position(&app);
 
     #[cfg(target_os = "macos")]
     {
+        let url = "index.html?view=meeting-pill#meeting-pill";
         let app_for_main = app.clone();
         if let Err(e) = run_on_main_guarded(&app, "meeting_pill.show", move || {
             if let Ok(panel) = app_for_main.get_webview_panel("meeting-pill") {
@@ -2254,34 +2287,16 @@ fn show_meeting_pill(app: tauri::AppHandle) {
 
     #[cfg(not(target_os = "macos"))]
     {
+        // The pill window is pre-created (hidden) at startup — see setup(). NEVER
+        // create it here: building a WebView2 window from inside this in-flight IPC
+        // command deadlocks Windows IPC (wry #583) and wedges End-meeting. We only
+        // reposition + show the existing window.
         if let Some(w) = app.get_webview_window("meeting-pill") {
+            let _ = w.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
             let _ = w.show();
             let _ = w.set_always_on_top(true);
-            return;
-        }
-        match tauri::WebviewWindowBuilder::new(
-            &app,
-            "meeting-pill",
-            tauri::WebviewUrl::App(url.into()),
-        )
-        .title("AirNote Meeting")
-        .inner_size(MEETING_PILL_W, MEETING_PILL_H)
-        .position(x, y)
-        .decorations(false)
-        .always_on_top(true)
-        .visible_on_all_workspaces(true)
-        .skip_taskbar(true)
-        .focused(false)
-        .resizable(false)
-        .shadow(false)
-        .transparent(true)
-        .build()
-        {
-            Ok(win) => {
-                let _ = win.set_always_on_top(true);
-                tracing::info!("[meeting-pill] created");
-            }
-            Err(e) => tracing::warn!("[meeting-pill] create failed: {e}"),
+        } else {
+            tracing::warn!("[meeting-pill] window not pre-created; skipping show");
         }
     }
 }
@@ -2773,6 +2788,12 @@ fn bootstrap(state: State<'_, SharedApp>, app: tauri::AppHandle) -> Result<AppSn
     Ok(snap)
 }
 
+// SYNC (deliberately): a sync Tauri command returns its response synchronously in
+// the ipc:// protocol handler, so the request completes immediately and frees its
+// WebView2 connection. An `async` version defers the response, and on Windows that
+// deferred delivery piled up Pending — hundreds of un-drained `get_snapshot`
+// requests saturated the ~6-connection pool so NO new invoke (incl. End-meeting's
+// stop_session) could dispatch. Keep this sync; it's a quick mutex read.
 #[tauri::command]
 fn get_snapshot(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
     Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
@@ -2980,22 +3001,19 @@ fn origin_from_bottom_anchor(center_x: f64, bottom_y: f64, width: f64, height: f
 
 #[tauri::command]
 fn resize_status_bar(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let app_c = app.clone();
-        if let Err(e) = run_on_main_guarded(&app, "status_bar.resize", move || {
-            if let Err(e) = resize_status_bar_on_main(&app_c, width, height) {
-                tracing::warn!("[status-bar] resize failed: {e}");
-            }
-        }) {
-            return Err(format!("schedule resize failed: {e}"));
+    // Always marshal window ops onto the main thread (was macOS-only). Doing
+    // set_size/set_position inline inside this IPC handler on Windows can stall the
+    // webview (tao #381 — window ops from a command freeze on Windows), and the
+    // status-bar fires resize on every pill size/state change.
+    let app_c = app.clone();
+    if let Err(e) = run_on_main_guarded(&app, "status_bar.resize", move || {
+        if let Err(e) = resize_status_bar_on_main(&app_c, width, height) {
+            tracing::warn!("[status-bar] resize failed: {e}");
         }
-        return Ok(());
+    }) {
+        return Err(format!("schedule resize failed: {e}"));
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        resize_status_bar_on_main(&app, width, height)
-    }
+    Ok(())
 }
 
 fn resize_status_bar_on_main(
@@ -3036,22 +3054,16 @@ fn get_status_bar_position(app: tauri::AppHandle) -> Result<Option<serde_json::V
 
 #[tauri::command]
 fn set_status_bar_position(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let app_c = app.clone();
-        if let Err(e) = run_on_main_guarded(&app, "status_bar.set_position", move || {
-            if let Err(e) = set_status_bar_position_on_main(&app_c, x, y) {
-                tracing::warn!("[status-bar] set position failed: {e}");
-            }
-        }) {
-            return Err(format!("schedule set position failed: {e}"));
+    // Marshal onto the main thread on every platform (see resize_status_bar).
+    let app_c = app.clone();
+    if let Err(e) = run_on_main_guarded(&app, "status_bar.set_position", move || {
+        if let Err(e) = set_status_bar_position_on_main(&app_c, x, y) {
+            tracing::warn!("[status-bar] set position failed: {e}");
         }
-        return Ok(());
+    }) {
+        return Err(format!("schedule set position failed: {e}"));
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        set_status_bar_position_on_main(&app, x, y)
-    }
+    Ok(())
 }
 
 fn set_status_bar_position_on_main(app: &tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
@@ -3074,22 +3086,16 @@ fn set_status_bar_position_on_main(app: &tauri::AppHandle, x: f64, y: f64) -> Re
 
 #[tauri::command]
 fn reset_status_bar_position(app: tauri::AppHandle) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let app_c = app.clone();
-        if let Err(e) = run_on_main_guarded(&app, "status_bar.reset_position", move || {
-            if let Err(e) = reset_status_bar_position_on_main(&app_c) {
-                tracing::warn!("[status-bar] reset position failed: {e}");
-            }
-        }) {
-            return Err(format!("schedule reset position failed: {e}"));
+    // Marshal onto the main thread on every platform (see resize_status_bar).
+    let app_c = app.clone();
+    if let Err(e) = run_on_main_guarded(&app, "status_bar.reset_position", move || {
+        if let Err(e) = reset_status_bar_position_on_main(&app_c) {
+            tracing::warn!("[status-bar] reset position failed: {e}");
         }
-        return Ok(());
+    }) {
+        return Err(format!("schedule reset position failed: {e}"));
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        reset_status_bar_position_on_main(&app)
-    }
+    Ok(())
 }
 
 fn reset_status_bar_position_on_main(app: &tauri::AppHandle) -> Result<(), String> {
@@ -7521,21 +7527,30 @@ fn get_performance_snapshot(
     backend_handle: State<'_, BackendHandleState>,
 ) -> Result<PerformanceSnapshot, String> {
     let mut sys = perf.0.lock().map_err(|_| "performance lock failed")?;
-    sys.refresh_memory();
-    sys.refresh_cpu_all();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
     let desktop_pid = sysinfo::Pid::from_u32(std::process::id());
-    let desktop = sys
-        .process(desktop_pid)
-        .map(|process| process_perf(desktop_pid, process));
-
     let owned_backend_pid = backend_handle
         .0
         .lock()
         .ok()
         .and_then(|handle| handle.as_ref().and_then(|h| h.pid()))
         .map(sysinfo::Pid::from_u32);
+
+    sys.refresh_memory();
+    sys.refresh_cpu_all();
+    // Refresh only our two processes when the backend PID is known (the steady
+    // state) instead of scanning the ENTIRE OS process table every 1.5s — that
+    // full scan was a needless main-thread cost while the perf monitor is open.
+    // Fall back to a full scan only when we must name-match the backend.
+    if let Some(bp) = owned_backend_pid {
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[desktop_pid, bp]), true);
+    } else {
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    }
+
+    let desktop = sys
+        .process(desktop_pid)
+        .map(|process| process_perf(desktop_pid, process));
 
     let backend_pid = owned_backend_pid.or_else(|| {
         sys.processes()
@@ -8882,7 +8897,7 @@ fn main() {
                             // captured nothing (invisible in the UI otherwise).
                             meeting_engine::gc_orphan_meeting_dirs();
                             // Ensure a model is selected if any is installed.
-                            meeting_engine::meeting_ensure_active_model();
+                            meeting_engine::ensure_active_model_sync();
                             recovery_handle
                                 .state::<meeting_engine::MeetingEngineState>()
                                 .requeue_interrupted_meetings();
@@ -9230,8 +9245,16 @@ fn main() {
                     ])?,
                 };
 
+                // macOS uses a monochrome template glyph (auto-tinted by the OS);
+                // on Windows that white-on-transparent glyph is near-invisible in
+                // the tray, so ship the full-color app icon there.
+                #[cfg(target_os = "macos")]
                 let tray_icon = tauri::image::Image::from_bytes(
                     include_bytes!("../icons/tray@2x.png")
+                ).ok();
+                #[cfg(not(target_os = "macos"))]
+                let tray_icon = tauri::image::Image::from_bytes(
+                    include_bytes!("../icons/32x32.png")
                 ).ok();
 
                 let mut tray_builder = TrayIconBuilder::with_id("said")
@@ -9240,7 +9263,12 @@ fn main() {
                     .show_menu_on_left_click(true);
 
                 if let Some(icon) = tray_icon {
-                    tray_builder = tray_builder.icon(icon).icon_as_template(true);
+                    tray_builder = tray_builder.icon(icon);
+                    // Template = monochrome auto-tint; macOS only.
+                    #[cfg(target_os = "macos")]
+                    {
+                        tray_builder = tray_builder.icon_as_template(true);
+                    }
                 }
 
                 tray_builder
@@ -9334,6 +9362,58 @@ fn main() {
                         tracing::debug!("[status-bar] frontend-ready received — resyncing state");
                         emit_status_bar_resync(&app_fh, "frontend-ready");
                     });
+                }
+
+                // ── Backend-authoritative "End meeting" (redundant backstop) ───
+                // LiveMeetingView also invokes stop_session directly; this event
+                // listener is a belt-and-suspenders path that stops the meeting
+                // without a per-call JS callback. stop() can block (worker-thread
+                // joins up to a timeout), so run it on the blocking pool.
+                {
+                    use tauri::Listener as _;
+                    let app_stop = app.handle().clone();
+                    app.listen("meeting/request-stop", move |_| {
+                        let app = app_stop.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            let state = app.state::<meeting_engine::MeetingEngineState>();
+                            let _ = meeting_engine::request_stop(&app, state.inner());
+                        });
+                    });
+                }
+
+                // ── Pre-create the floating meeting pill (Windows/Linux) ───────
+                // The pill is created ONCE here, hidden, at startup — then only
+                // shown/hidden during meetings. Creating a WebView2 window from
+                // inside the focus-change IPC command (the old behavior) deadlocks
+                // Windows IPC (wry #583) and wedged End-meeting; creating during
+                // setup — never inside an in-flight invoke — is safe. macOS builds
+                // its NSPanel lazily and is unaffected.
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let h = app.handle().clone();
+                    if h.get_webview_window("meeting-pill").is_none() {
+                        match tauri::WebviewWindowBuilder::new(
+                            &h,
+                            "meeting-pill",
+                            tauri::WebviewUrl::App("index.html?view=meeting-pill#meeting-pill".into()),
+                        )
+                        .title("AirNote Meeting")
+                        .inner_size(MEETING_PILL_W, MEETING_PILL_H)
+                        .decorations(false)
+                        .always_on_top(true)
+                        .visible_on_all_workspaces(true)
+                        .skip_taskbar(true)
+                        .focused(false)
+                        .resizable(false)
+                        .shadow(false)
+                        .transparent(true)
+                        .visible(false)
+                        .build()
+                        {
+                            Ok(_) => tracing::info!("[meeting-pill] pre-created (hidden)"),
+                            Err(e) => tracing::warn!("[meeting-pill] pre-create failed: {e}"),
+                        }
+                    }
                 }
 
                 // ── State self-heal watchdog ───────────────────────────────────

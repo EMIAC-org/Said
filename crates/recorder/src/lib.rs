@@ -377,7 +377,10 @@ impl AudioRecorder {
 
         if max_amp < 0.0001 {
             eprintln!("[rec] audio is silence — microphone permission not granted?");
+            #[cfg(target_os = "macos")]
             eprintln!("[rec]   System Settings → Privacy & Security → Microphone");
+            #[cfg(target_os = "windows")]
+            eprintln!("[rec]   Settings → Privacy & security → Microphone (allow desktop apps)");
             return Err("audio is silence".to_string());
         }
 

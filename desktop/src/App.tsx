@@ -572,7 +572,12 @@ export default function App() {
   }, [refreshHistory]);
 
   // ── Periodic snapshot poll — picks up Accessibility/Input Monitoring grants ──
-  // 5 s is fast enough — permission changes require a user trip to System Settings.
+  // 60 s (was 5 s): live state already arrives via the `app-state` push event and
+  // a window-focus refresh (below), so this only needs to catch OS-permission
+  // changes — which require a manual System Settings trip and are rare. At 5 s
+  // each get_snapshot is an ipc:// request (+ a CORS preflight = 2 WebView2
+  // connections); if responses ever lag they accumulate Pending and saturate the
+  // ~6-connection pool, which is what wedged End-meeting. 60 s keeps the pool clear.
   useEffect(() => {
     const interval = setInterval(async () => {
       if (busy) return;
@@ -581,7 +586,7 @@ export default function App() {
       } catch {
         // silently ignore
       }
-    }, 5000);
+    }, 60000);
     return () => clearInterval(interval);
   }, [busy, refreshSnapshot]);
 
@@ -747,9 +752,11 @@ export default function App() {
             meetingId={liveMeetingId}
             onBack={() => setActiveView("meetings")}
             onEnded={(id) => {
-              // Hand the just-ended meeting to the Meetings page and switch
-              // to it. Processing continues in the background; the Meetings
-              // detail polls and renders the live stage progress.
+              // Just hand the just-ended meeting to the Meetings page and switch to
+              // it. The actual stop is fired by LiveMeetingView.handleLeave (the
+              // `meeting/request-stop` event + the stop_session invoke, both of which
+              // reach Rust now that the pill IPC deadlock is fixed). No deferred stop
+              // needed here — that was a debugging backstop for the old deadlock.
               setFocusMeetingId(id);
               setActiveView("meetings");
             }}
@@ -817,7 +824,7 @@ export default function App() {
                     }}
                   />
                 )}
-                {activeView === "divo" && <DivoView />}
+                {activeView === "divo" && <DivoView platform={snapshot?.platform} />}
                 {/* Settings is now a modal — opened via setSettingsOpen */}
               </div>
             </main>

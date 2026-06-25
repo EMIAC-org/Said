@@ -74,7 +74,8 @@
     ],
     "resources": [
       "resources/swift-stt-sidecar/server.py",
-      "resources/swift-stt-sidecar/requirements.txt"
+      "resources/swift-stt-sidecar/requirements.txt",
+      "resources/models/ggml-silero-v5.1.2.bin"
     ],
     "macOS": {
       "minimumSystemVersion": "13.0",
@@ -84,6 +85,7 @@
     "windows": {
       "digestAlgorithm": "sha256",
       "timestampUrl": "http://timestamp.digicert.com",
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "installMode": "currentUser",

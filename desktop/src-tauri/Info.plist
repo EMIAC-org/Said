@@ -11,6 +11,9 @@
     <key>NSMicrophoneUsageDescription</key>
     <string>AirNote records your voice to transcribe and polish your text.</string>
 
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>AirNote captures system audio during meetings so it can transcribe what other participants say.</string>
+
     <key>NSAppleEventsUsageDescription</key>
     <string>AirNote uses Apple Events to paste text into other apps.</string>
 
