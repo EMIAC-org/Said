@@ -8,7 +8,6 @@ use tracing::warn;
 use crate::{
     AppState,
     llm::{
-        gateway, gemini_direct, groq, openai_codex,
         prompt::{
             VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE, build_user_message,
             default_voice_prompt_template, render_voice_system_prompt_template,
@@ -217,20 +216,8 @@ async fn run_prompt_test(
     user_message: String,
 ) -> Result<TestPromptResponse, String> {
     let llm_provider = prefs.llm_provider.clone();
-    let model = if llm_provider == "openai_codex" {
-        openai_codex::MODEL_MINI.to_string()
-    } else if llm_provider == "gemini_direct" {
-        gemini_direct::GEMINI_DIRECT_MODEL.to_string()
-    } else if llm_provider == "groq" {
-        if prefs.selected_model == "smart" {
-            groq::GROQ_MODEL_SMART
-        } else {
-            groq::GROQ_MODEL_FAST
-        }
-        .to_string()
-    } else {
-        said_core::resolve_model(&prefs.selected_model).to_string()
-    };
+    let route = crate::llm::polish_dispatch::voice_polish_route(&prefs.selected_model);
+    let model = route.label();
 
     let gateway_key = non_empty(prefs.gateway_api_key.clone())
         .or_else(|| non_empty(std::env::var("GATEWAY_API_KEY").ok()))
@@ -249,6 +236,12 @@ async fn run_prompt_test(
     let groq_key = non_empty(prefs.groq_api_key.clone())
         .or_else(|| non_empty(std::env::var("GROQ_API_KEY").ok()))
         .unwrap_or_default();
+    let cerebras_key = non_empty(prefs.cerebras_api_key.clone())
+        .or_else(|| non_empty(std::env::var("CEREBRAS_API_KEY").ok()))
+        .unwrap_or_default();
+    let deepinfra_key = non_empty(prefs.deepinfra_api_key.clone())
+        .or_else(|| non_empty(std::env::var("DEEPINFRA_API_KEY").ok()))
+        .unwrap_or_default();
     let openai_token = if llm_provider == "openai_codex" {
         openai_oauth::get_token(pool, user_id).map(|t| t.access_token)
     } else {
@@ -259,56 +252,24 @@ async fn run_prompt_test(
     let client_c = client.clone();
     let groq_key_for_recovery = groq_key.clone();
     let provider = llm_provider.clone();
-    let model_c = model.clone();
+    let route_c = route.clone();
     let started = Instant::now();
     let task = tokio::spawn(async move {
-        if provider == "openai_codex" {
-            let access_token = openai_token.as_deref().unwrap_or("");
-            if access_token.is_empty() {
-                return Err(
-                    "OpenAI not connected — go to Settings to connect your account".to_string(),
-                );
-            }
-            openai_codex::stream_polish(
-                &client_c,
-                access_token,
-                &model_c,
-                &system_prompt,
-                &user_message,
-                token_tx,
-            )
-            .await
-        } else if provider == "gemini_direct" {
-            gemini_direct::stream_polish(
-                &client_c,
-                &gemini_key,
-                &model_c,
-                &system_prompt,
-                &user_message,
-                token_tx,
-            )
-            .await
-        } else if provider == "groq" {
-            groq::stream_polish(
-                &client_c,
-                &groq_key,
-                &model_c,
-                &system_prompt,
-                &user_message,
-                token_tx,
-            )
-            .await
-        } else {
-            gateway::stream_polish(
-                &client_c,
-                &gateway_key,
-                &model_c,
-                &system_prompt,
-                &user_message,
-                token_tx,
-            )
-            .await
-        }
+        crate::llm::polish_dispatch::stream_polish_routed(
+            &client_c,
+            &route_c,
+            &groq_key,
+            &gateway_key,
+            &gemini_key,
+            &cerebras_key,
+            &deepinfra_key,
+            openai_token.as_deref(),
+            &provider,
+            &system_prompt,
+            &user_message,
+            token_tx,
+        )
+        .await
     });
 
     while token_rx.recv().await.is_some() {}

@@ -9,6 +9,7 @@ use tracing::{info, warn};
 
 use crate::{
     AppState,
+    llm::{alias_safety, promotion_gate},
     store::{prefs::get_prefs, stt_replacements, tier2_edit_policy, users, vocab_fts, vocabulary},
 };
 
@@ -16,6 +17,84 @@ fn hash_text(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+fn protected_term_type(term_type: &str) -> bool {
+    matches!(
+        term_type,
+        "brand" | "acronym" | "proper_noun" | "code_identifier"
+    )
+}
+
+fn protected_phrase(term: &str) -> bool {
+    let tokens: Vec<&str> = term.split_whitespace().collect();
+    tokens.len() > 1
+        && tokens
+            .iter()
+            .any(|token| protected_term_type(vocabulary::classify_term_type(token.trim())))
+}
+
+fn source_contains_different_protected_term(
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    source: &str,
+    corrected: &str,
+) -> bool {
+    let corrected_norm = tier2_edit_policy::normalize_token(corrected);
+    source
+        .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
+        .filter(|part| !part.trim().is_empty())
+        .any(|part| {
+            vocabulary::find_by_term_ci(pool, user_id, part.trim()).is_some_and(|existing| {
+                tier2_edit_policy::normalize_token(&existing.term) != corrected_norm
+                    && existing
+                        .term_type
+                        .as_deref()
+                        .is_some_and(protected_term_type)
+            })
+        })
+}
+
+fn deterministic_confirm_alias_allowed(
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    original: &str,
+    corrected: &str,
+    inferred_term_type: &str,
+) -> bool {
+    let original = original.trim();
+    let corrected = corrected.trim();
+    if original.is_empty()
+        || corrected.is_empty()
+        || tier2_edit_policy::normalize_token(original)
+            == tier2_edit_policy::normalize_token(corrected)
+    {
+        return false;
+    }
+    if alias_safety::is_common_alias_source(original)
+        || promotion_gate::is_common_word(original)
+        || crate::tier2::is_in_dictionary(&alias_safety::normalize_source(original))
+    {
+        return false;
+    }
+    if source_contains_different_protected_term(pool, user_id, original, corrected) {
+        return false;
+    }
+
+    let existing_target = vocabulary::find_by_term_ci(pool, user_id, corrected);
+    let target_type = existing_target
+        .as_ref()
+        .and_then(|term| term.term_type.as_deref())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(inferred_term_type);
+
+    protected_term_type(target_type)
+        || (target_type == "phrase" && protected_phrase(corrected))
+        || existing_target.is_some_and(|term| {
+            term.term_type.as_deref().is_some_and(|kind| {
+                protected_term_type(kind) || (kind == "phrase" && protected_phrase(&term.term))
+            })
+        })
 }
 
 fn post_runtime_memory_dirty(state: AppState) {
@@ -98,6 +177,18 @@ fn post_runtime_client_event(
     });
 }
 
+fn refresh_local_profile_summary(state: &AppState, source: &str) {
+    match crate::store::profile_summary::rebuild(&state.pool, state.default_user_id.as_str()) {
+        Some(summary) => info!(
+            "[profile-summary] refreshed source={source} version={} chars={} counts={}",
+            summary.version,
+            summary.profile_markdown.chars().count(),
+            summary.source_counts_json,
+        ),
+        None => warn!("[profile-summary] refresh failed source={source}"),
+    }
+}
+
 // ── POST /v1/confirm-term ────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -119,24 +210,30 @@ pub async fn confirm_term(
     Json(body): Json<ConfirmBody>,
 ) -> (StatusCode, Json<ConfirmResponse>) {
     let user_id = state.default_user_id.as_str();
+    let learning_enabled = get_prefs(&state.pool, user_id)
+        .map(|p| p.learning_enabled)
+        .unwrap_or(true);
 
     if body.action == "learn" {
-        let server_confirm = ConfirmBatchBody {
-            items: vec![ConfirmBatchItem {
-                original: body.original.clone(),
-                corrected: body.term.clone(),
-            }],
-            recording_id: body.recording_id.clone(),
-        };
-        if let Some(server_response) = confirm_batch_with_server(&state, &server_confirm).await {
+        if !learning_enabled {
+            info!("[confirm] local learn blocked — user learning disabled");
+            return (
+                StatusCode::OK,
+                Json(ConfirmResponse {
+                    confirmed: false,
+                    term: body.term,
+                }),
+            );
+        }
+        if crate::legacy_learning::audit_only_legacy_mutations() {
             info!(
-                "[confirm] server-owned confirm learned {}/1 term(s) for {:?}",
-                server_response.learned_count, body.term,
+                "[confirm] local learn blocked — learning disabled for {:?}",
+                body.term
             );
             return (
                 StatusCode::OK,
                 Json(ConfirmResponse {
-                    confirmed: server_response.learned_count > 0,
+                    confirmed: false,
                     term: body.term,
                 }),
             );
@@ -205,6 +302,14 @@ pub async fn confirm_term(
                 1.0,
                 &language,
             );
+            stt_replacements::mark_confirmed_aliases_for_language(
+                &state.pool,
+                user_id,
+                &body.original,
+                &body.original,
+                &body.term,
+                &language,
+            );
 
             // ── Proactive distortion seeding ────────────────────────────────
             let proactive = stt_replacements::generate_proactive_distortions(
@@ -247,6 +352,7 @@ pub async fn confirm_term(
 
         // ── Invalidate lexicon cache ─────────────────────────────────────────
         crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
+        refresh_local_profile_summary(&state, "confirm_term");
 
         // ── Trigger retrain ─────────────────────────────────────────────────
         crate::routes::classify::schedule_retrain_public(state.clone());
@@ -337,6 +443,13 @@ pub async fn block_correction(
     Json(body): Json<BlockBody>,
 ) -> (StatusCode, Json<BlockResponse>) {
     let user_id = state.default_user_id.as_str();
+    let learning_enabled = get_prefs(&state.pool, user_id)
+        .map(|p| p.learning_enabled)
+        .unwrap_or(true);
+    if !learning_enabled || crate::legacy_learning::audit_only_legacy_mutations() {
+        info!("[confirm] block_correction skipped — user learning disabled");
+        return (StatusCode::OK, Json(BlockResponse { blocked: false }));
+    }
     let variant_norm = tier2_edit_policy::normalize_token(&body.variant);
     let replacement_norm = tier2_edit_policy::normalize_token(&body.wrong_replacement);
 
@@ -433,102 +546,37 @@ pub struct ConfirmBatchResponse {
     pub server_owned: bool,
 }
 
-pub(crate) async fn confirm_batch_with_server(
-    state: &AppState,
-    body: &ConfirmBatchBody,
-) -> Option<ConfirmBatchResponse> {
-    let user = users::get_user(&state.pool, &state.default_user_id)?;
-    let token = user.cloud_token.filter(|t| !t.trim().is_empty())?;
-    let base_url = user
-        .enterprise_server_url
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
-    let url = format!(
-        "{}/v1/runtime/learning/confirm-batch",
-        base_url.trim_end_matches('/')
-    );
-    let items = body
-        .items
-        .iter()
-        .map(|item| {
-            serde_json::json!({
-                "original": item.original.as_str(),
-                "corrected": item.corrected.as_str(),
-            })
-        })
-        .collect::<Vec<_>>();
-    let req = serde_json::json!({
-        "recording_id": body.recording_id.as_deref(),
-        "items": items,
-    });
-    match state
-        .http_client
-        .post(url)
-        .bearer_auth(token)
-        .json(&req)
-        .timeout(std::time::Duration::from_secs(8))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
-            Ok(value) => {
-                let learned_count = value
-                    .get("learned_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as usize;
-                let learned_terms = value
-                    .get("learned_terms")
-                    .and_then(|v| v.as_array())
-                    .map(|terms| {
-                        terms
-                            .iter()
-                            .filter_map(|term| term.as_str().map(str::to_string))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let blocked_count = value
-                    .get("blocked_count")
-                    .and_then(|v| v.as_u64())
-                    .map(|count| count as usize)
-                    .unwrap_or_else(|| body.items.len().saturating_sub(learned_count));
-                Some(ConfirmBatchResponse {
-                    blocked_count,
-                    learned_count,
-                    learned_terms,
-                    server_owned: true,
-                })
-            }
-            Err(e) => {
-                warn!("[confirm-batch] server confirm parse failed: {e}");
-                None
-            }
-        },
-        Ok(resp) => {
-            warn!("[confirm-batch] server confirm failed: {}", resp.status());
-            None
-        }
-        Err(e) => {
-            warn!("[confirm-batch] server confirm failed: {e}");
-            None
-        }
-    }
-}
-
 pub async fn confirm_batch(
     State(state): State<AppState>,
     Json(body): Json<ConfirmBatchBody>,
 ) -> (StatusCode, Json<ConfirmBatchResponse>) {
-    if let Some(server_response) = confirm_batch_with_server(&state, &body).await {
-        info!(
-            "[confirm-batch] server-owned confirm learned {}/{} terms",
-            server_response.learned_count,
-            body.items.len()
-        );
-        return (StatusCode::OK, Json(server_response));
-    }
-
     let user_id = state.default_user_id.as_str();
     let prefs = get_prefs(&state.pool, user_id);
+    let learning_enabled = prefs.as_ref().map(|p| p.learning_enabled).unwrap_or(true);
+    if !learning_enabled {
+        info!("[confirm-batch] local learn blocked — user learning disabled");
+        return (
+            StatusCode::OK,
+            Json(ConfirmBatchResponse {
+                blocked_count: body.items.len(),
+                learned_count: 0,
+                learned_terms: vec![],
+                server_owned: false,
+            }),
+        );
+    }
+    if crate::legacy_learning::audit_only_legacy_mutations() {
+        info!("[confirm-batch] local learn blocked — learning disabled");
+        return (
+            StatusCode::OK,
+            Json(ConfirmBatchResponse {
+                blocked_count: body.items.len(),
+                learned_count: 0,
+                learned_terms: vec![],
+                server_owned: false,
+            }),
+        );
+    }
     let language = prefs
         .as_ref()
         .map(|p| p.output_language.clone())
@@ -544,11 +592,69 @@ pub async fn confirm_batch(
     let mut learned_terms = Vec::new();
     let mut server_memory_terms: Vec<serde_json::Value> = Vec::new();
     let mut server_memory_aliases: Vec<serde_json::Value> = Vec::new();
+    let mut observability_aliases: Vec<crate::observability::AliasLearnItem> = Vec::new();
 
     for item in &body.items {
         let corrected = item.corrected.trim();
         let original = item.original.trim();
         if corrected.is_empty() {
+            continue;
+        }
+        if !original.is_empty()
+            && tier2_edit_policy::normalize_token(original)
+                == tier2_edit_policy::normalize_token(corrected)
+        {
+            info!(
+                "[confirm-batch] skipped no-op candidate {:?} -> {:?}",
+                original, corrected
+            );
+            continue;
+        }
+
+        let term_type = vocabulary::classify_term_type(corrected).to_string();
+        let alias_safe = if original.is_empty() {
+            false
+        } else if deterministic_confirm_alias_allowed(
+            &state.pool,
+            user_id,
+            original,
+            corrected,
+            &term_type,
+        ) {
+            info!(
+                "[confirm-batch] alias safety accepted by deterministic HITL gate {:?} -> {:?}",
+                original, corrected
+            );
+            true
+        } else {
+            let safety = alias_safety::judge_alias_source(
+                &state.http_client,
+                &state.pool,
+                user_id,
+                &groq_key,
+                original,
+                corrected,
+                None,
+            )
+            .await;
+            info!(
+                "[confirm-batch] alias safety judge verdict={} provider={} model={} conf={:.2} {:?} -> {:?}: {}",
+                safety.verdict.as_str(),
+                safety.provider,
+                safety.model,
+                safety.confidence,
+                original,
+                corrected,
+                safety.reason
+            );
+            safety.allows_learning()
+        };
+
+        if !original.is_empty() && !alias_safe {
+            info!(
+                "[confirm-batch] alias safety blocked {:?} -> {:?} — not storing vocab-only surrogate",
+                original, corrected
+            );
             continue;
         }
 
@@ -566,22 +672,6 @@ pub async fn confirm_batch(
         );
 
         vocab_fts::upsert(&state.pool, user_id, corrected, None);
-
-        let alias_safe = if original.is_empty() {
-            false
-        } else {
-            crate::llm::alias_safety::judge_alias_source(
-                &state.http_client,
-                &state.pool,
-                user_id,
-                &groq_key,
-                original,
-                corrected,
-                None,
-            )
-            .await
-            .allows_learning()
-        };
 
         if alias_safe {
             // Record edit-policy rule
@@ -606,6 +696,14 @@ pub async fn confirm_batch(
                 1.0,
                 &language,
             );
+            stt_replacements::mark_confirmed_aliases_for_language(
+                &state.pool,
+                user_id,
+                original,
+                original,
+                corrected,
+                &language,
+            );
 
             // Proactive distortions
             stt_replacements::generate_proactive_distortions(
@@ -618,14 +716,16 @@ pub async fn confirm_batch(
 
             // Auto-approve (user explicitly confirmed via batch)
             stt_replacements::approve_aliases_for_term(&state.pool, user_id, corrected);
-        } else if !original.is_empty() {
-            info!(
-                "[confirm-batch] alias safety blocked {:?} -> {:?}",
-                original, corrected
-            );
+
+            observability_aliases.push(crate::observability::AliasLearnItem {
+                heard: original.to_string(),
+                correct: corrected.to_string(),
+                source: "confirm_batch".into(),
+                safety: None,
+                recording_id: body.recording_id.clone(),
+            });
         }
 
-        let term_type = vocabulary::classify_term_type(corrected).to_string();
         server_memory_terms.push(serde_json::json!({
             "term": corrected,
             "term_type": term_type,
@@ -657,6 +757,7 @@ pub async fn confirm_batch(
 
     if learned_count > 0 {
         crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
+        refresh_local_profile_summary(&state, "confirm_batch");
         crate::routes::classify::schedule_retrain_public(state.clone());
         post_runtime_client_event(
             state.clone(),
@@ -692,6 +793,26 @@ pub async fn confirm_batch(
         "[confirm-batch] learned {learned_count}/{} terms (local fallback)",
         body.items.len(),
     );
+
+    if !observability_aliases.is_empty() {
+        let pool = state.pool.clone();
+        let user_id_owned = user_id.to_string();
+        let http = state.http_client.clone();
+        let batch = crate::observability::AliasBatchPayload {
+            items: observability_aliases,
+        };
+        tokio::spawn(async move {
+            if let Err(e) = crate::observability::enqueue_alias_batch(&pool, &user_id_owned, batch)
+            {
+                tracing::warn!("[observability] confirm-batch alias enqueue failed: {e}");
+            }
+            crate::observability::uploader::maybe_upload_after_enqueue(
+                &pool,
+                &user_id_owned,
+                &http,
+            );
+        });
+    }
 
     (
         StatusCode::OK,

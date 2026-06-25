@@ -25,6 +25,12 @@ const COMMAND_BUFFER_CHUNKS: usize = AUDIO_BRIDGE_BUFFER_CHUNKS + 16;
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const FINALIZE_TIMEOUT: Duration = Duration::from_secs(8);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Per-frame PCM size when replaying a saved recording through the sidecar for a
+/// one-shot decode (retry path). Well under the sidecar's 8 MB WS frame cap.
+const WS_ONESHOT_FRAME_BYTES: usize = 256_000;
+/// Hard cap on a one-shot retry decode before we give up and let the caller fall
+/// back to backend STT.
+const ONESHOT_DECODE_TIMEOUT: Duration = Duration::from_secs(12);
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 // Post-release drain budget. Mic audio is streamed to the sidecar in real time
 // while the key is held, so by the moment of release the sidecar already holds
@@ -509,6 +515,104 @@ async fn connect_ws(vocab: &[String]) -> Result<WsConnection, String> {
         }
     });
     Ok(WsConnection { write, partial_rx })
+}
+
+/// One-shot transcription of a finished recording through the Swift sidecar.
+///
+/// Used by the retry path (⌃⌥R) so retry honors the Settings "Beta Mode" (local)
+/// selection instead of always deferring to the backend's Deepgram STT. `pcm16`
+/// is 16 kHz mono linear16 little-endian audio (the saved WAV with its header
+/// stripped). Opens its own short-lived WS so it never disturbs the live session
+/// actor, replays the audio, finalizes, and returns the decoded transcript.
+/// Returns `None` on any failure so the caller can fall back to backend STT —
+/// this must never error the retry.
+pub async fn transcribe_pcm_oneshot(
+    pcm16: Vec<u8>,
+    vocab: Vec<String>,
+) -> Option<StreamingTranscript> {
+    if pcm16.len() < 2 {
+        return None;
+    }
+    let audio_secs = pcm16.len() as f64 / 32_000.0;
+    let started = tokio::time::Instant::now();
+    let mut conn = match connect_ws(&vocab).await {
+        Ok(conn) => conn,
+        Err(e) => {
+            warn!("[swift_oneshot] connect failed: {e}");
+            return None;
+        }
+    };
+    for frame in pcm16.chunks(WS_ONESHOT_FRAME_BYTES) {
+        if conn
+            .write
+            .send(Message::Binary(frame.to_vec()))
+            .await
+            .is_err()
+        {
+            warn!("[swift_oneshot] audio send failed");
+            let _ = conn.write.close().await;
+            return None;
+        }
+    }
+    if conn
+        .write
+        .send(Message::Text(r#"{"type":"finalize"}"#.to_string().into()))
+        .await
+        .is_err()
+    {
+        warn!("[swift_oneshot] finalize send failed");
+        let _ = conn.write.close().await;
+        return None;
+    }
+    let deadline = started + ONESHOT_DECODE_TIMEOUT;
+    let mut latest_partial = String::new();
+    let final_text = loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            warn!("[swift_oneshot] decode timed out after {ONESHOT_DECODE_TIMEOUT:?}");
+            break latest_partial.clone();
+        }
+        match tokio::time::timeout(remaining, conn.partial_rx.recv()).await {
+            Ok(Some(TranscriptEvent::Final(final_transcript))) => {
+                let cleaned = clean_swift_transcript(&final_transcript.text).unwrap_or_default();
+                break if cleaned.trim().is_empty() {
+                    latest_partial.clone()
+                } else {
+                    cleaned
+                };
+            }
+            Ok(Some(TranscriptEvent::Partial(text))) => {
+                if let Some(cleaned) = clean_swift_transcript(&text) {
+                    latest_partial = cleaned;
+                }
+            }
+            Ok(None) | Err(_) => break latest_partial.clone(),
+        }
+    };
+    let _ = conn.write.close().await;
+
+    let transcript = final_text.trim().to_string();
+    if transcript.is_empty() {
+        return None;
+    }
+    let word_count = transcript.split_whitespace().count();
+    info!(
+        "[swift_oneshot] decoded {:.1}s audio in {}ms chars={} words={}",
+        audio_secs,
+        started.elapsed().as_millis(),
+        transcript.len(),
+        word_count
+    );
+    let meta = TranscriptMeta {
+        enriched_transcript: transcript.clone(),
+        confidence: 1.0,
+        mean_word_confidence: 1.0,
+        low_confidence_count: 0,
+        word_count,
+        languages: vec!["hi".to_string()],
+        stt_mode: "swift_local".to_string(),
+    };
+    Some(StreamingTranscript { transcript, meta })
 }
 
 async fn drain_partial_rx(

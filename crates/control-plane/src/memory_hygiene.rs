@@ -30,6 +30,15 @@ pub struct HygieneAction {
 }
 
 pub async fn mark_memory_dirty(db: &PgPool, account_id: Uuid) -> Result<(), sqlx::Error> {
+    if crate::legacy_personal_memory::audit_only_personal_mutations() {
+        crate::legacy_personal_memory::skip_legacy_personal_write(
+            "mark_memory_dirty",
+            "schedule_hygiene",
+            account_id,
+            0,
+        );
+        return Ok(());
+    }
     sqlx::query(
         "INSERT INTO personal_memory_hygiene_state (account_id, memory_dirty_at, updated_at)
          VALUES ($1, now(), now())
@@ -244,6 +253,15 @@ pub async fn apply_hygiene_action(
     model: &str,
     action: &HygieneAction,
 ) -> Result<(), sqlx::Error> {
+    if crate::legacy_personal_memory::audit_only_personal_mutations() {
+        crate::legacy_personal_memory::skip_legacy_personal_write(
+            "apply_hygiene_action",
+            &format!("{:?}", action.action),
+            account_id,
+            1,
+        );
+        return Ok(());
+    }
     let verdict = format!("{:?}", action.action);
     match action.action {
         HygieneActionKind::CommonBlock => {
@@ -419,6 +437,18 @@ pub async fn clear_dirty_flag(db: &PgPool, account_id: Uuid) -> Result<(), sqlx:
 }
 
 pub async fn process_account_hygiene(db: &PgPool, account_id: Uuid) -> Result<usize, String> {
+    if crate::legacy_personal_memory::audit_only_personal_mutations() {
+        crate::legacy_personal_memory::skip_legacy_personal_write(
+            "process_account_hygiene",
+            "memory_hygiene_worker",
+            account_id,
+            0,
+        );
+        clear_dirty_flag(db, account_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(0);
+    }
     let org_id: Option<Uuid> = sqlx::query_scalar(
         "SELECT org_id FROM org_members WHERE account_id = $1 ORDER BY joined_at ASC LIMIT 1",
     )

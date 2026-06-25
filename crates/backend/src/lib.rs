@@ -17,8 +17,10 @@ pub mod auth;
 pub mod cp_client;
 pub mod embedder;
 pub mod formatting;
+pub mod legacy_learning;
 pub mod llm;
 pub mod number_format;
+pub mod observability;
 pub mod routes;
 pub mod store;
 pub mod stt;
@@ -34,6 +36,8 @@ pub use said_core::paths;
 mod alpha_test_suite;
 #[cfg(test)]
 mod learning_flow_tests;
+#[cfg(test)]
+mod legacy_learning_tests;
 
 // ── Preferences hot-cache (Gap 3) ─────────────────────────────────────────────
 //
@@ -376,6 +380,7 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/preferences", get(routes::prefs::get_prefs))
         .route("/v1/preferences", patch(routes::prefs::patch_prefs))
+        .route("/v1/polish/models", get(routes::polish_models::list_models))
         .route("/v1/prompts/voice", get(routes::prompts::get_voice_prompt))
         .route(
             "/v1/prompts/voice/draft",

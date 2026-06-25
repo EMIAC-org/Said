@@ -1,12 +1,7 @@
-//! Cerebras LLM client.
-//!
-//! Cerebras exposes an OpenAI-compatible Chat Completions endpoint running on
-//! Cerebras wafer-scale hardware — ~2,600 tok/s on Llama 4 Scout, 4.4x faster
-//! than Groq. Free tier: 30 RPM, 1M tokens/day, 8K context.
+//! Cerebras LLM client — OpenAI-compatible chat completions.
 //!
 //! API reference: https://inference-docs.cerebras.ai/
 //! Endpoint: https://api.cerebras.ai/v1/chat/completions
-//! Auth: Authorization: Bearer {cerebras_api_key}
 
 use futures::StreamExt;
 use reqwest::Client;
@@ -20,7 +15,7 @@ pub use super::PolishResult;
 
 const CEREBRAS_ENDPOINT: &str = "https://api.cerebras.ai/v1/chat/completions";
 
-pub const CEREBRAS_MODEL_DEFAULT: &str = "llama3.1-8b";
+pub const CEREBRAS_MODEL_DEFAULT: &str = "gpt-oss-120b";
 
 #[derive(Deserialize)]
 struct StreamChunk {
@@ -45,7 +40,9 @@ pub async fn stream_polish(
     token_tx: mpsc::Sender<String>,
 ) -> Result<PolishResult, String> {
     if cerebras_api_key.is_empty() {
-        return Err("Cerebras API key not set — add it in Settings → API Keys".to_string());
+        return Err(
+            "Cerebras API key not set — configure CEREBRAS_API_KEY on the server".to_string(),
+        );
     }
 
     let model = if model.is_empty() {
@@ -56,9 +53,8 @@ pub async fn stream_polish(
     let start = Instant::now();
 
     let estimated_input_tokens = user_message.len() / 4;
-    let max_tokens = (estimated_input_tokens * 2 + 256).min(4096) as u32;
-
-    let body = json!({
+    let mut max_tokens = (estimated_input_tokens * 2 + 256).min(8192) as u32;
+    let mut body = json!({
         "model":       model,
         "stream":      true,
         "temperature": 0.0,
@@ -75,6 +71,11 @@ pub async fn stream_polish(
             { "role": "user",   "content": user_message  },
         ]
     });
+    if model.contains("gpt-oss") {
+        max_tokens = max_tokens.max(4096);
+        body["max_tokens"] = json!(max_tokens);
+        body["reasoning_effort"] = json!("low");
+    }
 
     info!("[cerebras] POST {CEREBRAS_ENDPOINT} model={model}");
 
@@ -101,7 +102,6 @@ pub async fn stream_polish(
     let mut stream = resp.bytes_stream();
     let mut polished = String::new();
     let mut buf = String::new();
-    let mut ttft_ms: Option<u64> = None;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("Cerebras stream read error: {e}"))?;
@@ -124,9 +124,8 @@ pub async fn stream_polish(
                 for choice in chunk.choices {
                     if let Some(token) = choice.delta.content {
                         if !token.is_empty() {
-                            if ttft_ms.is_none() {
-                                let ms = start.elapsed().as_millis() as u64;
-                                ttft_ms = Some(ms);
+                            if polished.is_empty() {
+                                let ms = start.elapsed().as_millis();
                                 info!("[cerebras] first token in {ms}ms");
                             }
                             polished.push_str(&token);

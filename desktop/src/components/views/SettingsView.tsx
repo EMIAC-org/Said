@@ -3,7 +3,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { getVersion } from "@tauri-apps/api/app";
 import {
-  Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap, Cloud,
+  Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap,
   Languages, MessageSquareText, Loader2, RefreshCw,
   Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, Download, Activity,
   RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown, Power, BookOpen, AlertCircle,
@@ -29,7 +29,6 @@ import {
   requestNotifications, checkNotificationPermission,
   getDesktopPrefs, setDesktopPrefs,
   readBackendLog, backendLogLocation, openLogFolder,
-  openaiConnect, openaiStatus, openaiDisconnect,
   openExternal,
   getServerSettingsStatus,
   getCredentialVaultStatus,
@@ -38,7 +37,6 @@ import {
   type DebugLogs,
   type NotifPermission,
   type DesktopPrefs,
-  type OpenAIStatus,
   type ServerSettingsStatus,
 } from "@/lib/invoke";
 
@@ -258,94 +256,6 @@ function SettingsDisclosure({
         </div>
       )}
     </div>
-  );
-}
-
-// ── ChatGPT Connection Section ────────────────────────────────────────────────
-
-function ChatGPTSection() {
-  const [status, setStatus] = useState<OpenAIStatus | null>(null);
-  const [connecting, setConnecting] = useState(false);
-
-  const refresh = useCallback(async () => {
-    const s = await openaiStatus();
-    setStatus(s);
-  }, []);
-
-  useEffect(() => { void refresh(); }, [refresh]);
-
-  // Poll for connection after initiating OAuth (browser flow)
-  useEffect(() => {
-    if (!connecting) return;
-    const interval = setInterval(async () => {
-      const s = await openaiStatus();
-      if (s?.connected) {
-        setStatus(s);
-        setConnecting(false);
-      }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [connecting]);
-
-  const handleConnect = async () => {
-    setConnecting(true);
-    await openaiConnect();
-  };
-
-  const handleDisconnect = async () => {
-    await openaiDisconnect();
-    setStatus({ connected: false, expires_at: null, connected_at: null });
-  };
-
-  const isConnected = status?.connected === true;
-  const expiresDate = status?.expires_at
-    ? new Date(status.expires_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
-    : null;
-
-  return (
-    <Section title="ChatGPT">
-      <Row
-        icon={<Sparkles size={16} />}
-        label={isConnected ? "ChatGPT Connected" : "Connect ChatGPT"}
-        description={
-          isConnected
-            ? `Used for shortcut transforms and repair/refine${expiresDate ? ` · expires ${expiresDate}` : ""}`
-            : connecting
-            ? "Waiting for browser sign-in..."
-            : "Optional. AirNote falls back to Groq when ChatGPT is not connected."
-        }
-        action={
-          <div className="flex items-center gap-2">
-            {isConnected && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded"
-                    style={{ background: "hsl(145 60% 15%)", color: "hsl(145 70% 65%)" }}>
-                Connected
-              </span>
-            )}
-            {connecting && (
-              <Loader2 size={14} className="animate-spin" style={{ color: "hsl(var(--muted-foreground))" }} />
-            )}
-            {isConnected ? (
-              <button
-                onClick={() => void handleDisconnect()}
-                className="px-3 py-1 rounded-md text-[11px] font-medium transition-all border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
-              >
-                Disconnect
-              </button>
-            ) : (
-              <button
-                onClick={() => void handleConnect()}
-                disabled={connecting}
-                className="px-3 py-1 rounded-md text-[11px] font-medium transition-all border border-transparent"
-                style={{ background: "hsl(var(--accent-violet))", color: "#fff", opacity: connecting ? 0.6 : 1 }}
-              >
-                {connecting ? "Connecting..." : "Connect"}
-              </button>
-            )}
-          </div>
-        }
-      />
-    </Section>
   );
 }
 
@@ -840,10 +750,8 @@ export function SettingsView({
   // ── API key state ────────────────────────────────────────────────────────────
   const [deepgramKey,   setDeepgramKey]   = useState("");
   const [groqKey,       setGroqKey]       = useState("");
-  const [cerebrasKey,   setCerebrasKey]   = useState("");
   const [showDeepgram,  setShowDeepgram]  = useState(false);
   const [showGroq,      setShowGroq]      = useState(false);
-  const [, setShowCerebras]  = useState(false);
   const [keySaving,     setKeySaving]     = useState(false);
   const [keySaved,      setKeySaved]      = useState(false);
   const keySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -861,6 +769,7 @@ export function SettingsView({
     update_channel: "stable",
     message_polish_mode: false,
     launch_at_login: false,
+    beta_mode: false,
   });
   useEffect(() => {
     void getDesktopPrefs().then(setDesktopPrefsState).catch(() => {});
@@ -971,11 +880,10 @@ export function SettingsView({
   function syncApiKeyInputs(nextPrefs: Preferences) {
     setDeepgramKey(nextPrefs.deepgram_api_key ?? "");
     setGroqKey(nextPrefs.groq_api_key ?? "");
-    setCerebrasKey(nextPrefs.cerebras_api_key ?? "");
     setShowDeepgram(false);
     setShowGroq(false);
-    setShowCerebras(false);
   }
+
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion("?"));
@@ -1072,14 +980,11 @@ export function SettingsView({
       const update: Partial<Preferences> = {};
       const currentDeepgram = prefs.deepgram_api_key ?? "";
       const currentGroq = prefs.groq_api_key ?? "";
-      const currentCerebras = prefs.cerebras_api_key ?? "";
       const nextDeepgram = deepgramKey.trim();
       const nextGroq = groqKey.trim();
-      const nextCerebras = cerebrasKey.trim();
 
       if (nextDeepgram !== currentDeepgram) update.deepgram_api_key = nextDeepgram || null;
       if (nextGroq !== currentGroq) update.groq_api_key = nextGroq || null;
-      if (nextCerebras !== currentCerebras) update.cerebras_api_key = nextCerebras || null;
 
       if (Object.keys(update).length === 0) {
         setKeySaved(true);
@@ -1101,8 +1006,7 @@ export function SettingsView({
         // knows which one to fix (Abhishek's server-side validation returns
         // a per-provider error; surface it instead of a generic failure).
         const labels: Record<string, string> = {
-          groq: "Groq", deepgram: "Deepgram", cerebras: "Cerebras",
-          gemini: "Gemini", openai: "ChatGPT",
+          groq: "Groq", deepgram: "Deepgram", gemini: "Gemini", openai: "ChatGPT",
         };
         const bad = (vault.results ?? []).filter((r) => r.error);
         const names = bad.map((r) => labels[r.provider] ?? r.provider).join(", ");
@@ -1125,12 +1029,19 @@ export function SettingsView({
 
   async function patch(update: Partial<Preferences>) {
     if (!prefs) return;
+    const prev = prefs;
     setSaving(true);
     setSaveError("");
     try {
       const updated = await patchPreferences(update);
-      if (updated) setPrefs(updated);
+      if (!updated) {
+        setPrefs(prev);
+        setSaveError("Failed to save — is the backend running?");
+        return;
+      }
+      setPrefs(updated);
     } catch (err) {
+      setPrefs(prev);
       console.error("[patch] error:", err);
       setSaveError("Failed to save — is the backend running?");
     } finally {
@@ -1895,7 +1806,7 @@ export function SettingsView({
           onPrefsUpdated={setPrefs}
           platform={snapshot?.platform ?? "macos"}
         />
-        <Section title="Dictation Model" extra={<SyncBadge state={serverSyncState} />}>
+        <Section title="Dictation polish" extra={<SyncBadge state={serverSyncState} />}>
           <div className="px-5 py-4">
             <div className="flex items-center gap-4">
               <div
@@ -1905,60 +1816,18 @@ export function SettingsView({
                 <Sparkles size={16} />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium text-foreground">Normal voice polish</p>
+                <p className="text-[13px] font-medium text-foreground">GPT OSS 120B (Cerebras)</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5">
-                  Groq Llama 4 Scout polishes your hotkey dictation — tuned for Hinglish and complex sentences.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
-
-          <div className="px-5 py-4">
-            <div className="flex items-center gap-4">
-              <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
-                style={{ background: "hsl(var(--surface-4))" }}
-              >
-                <Cloud size={16} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium text-foreground">Server polish runtime</p>
-                <p className="text-[12px] text-muted-foreground mt-0.5">
+                  Caps Lock polish always runs on airnote.emiactech.com using Cerebras GPT OSS 120B.
                   {prefs?.stt_provider === "swift_local"
-                    ? "Keeps local Swift on this Mac, then sends the finished transcript to airnote.emiactech.com for polish."
-                    : "Keeps Deepgram on this Mac, then sends the finished transcript to airnote.emiactech.com for polish."}
+                    ? " Speech recognition stays on this Mac (Swift)."
+                    : " Speech recognition uses Deepgram in the cloud."}
                 </p>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={!!prefs?.server_runtime_enabled}
-                onClick={() => void patch({ server_runtime_enabled: !prefs?.server_runtime_enabled })}
-                className="relative w-11 h-6 rounded-full transition-colors shrink-0"
-                style={{
-                  background: prefs?.server_runtime_enabled
-                    ? "hsl(var(--primary))"
-                    : "hsl(var(--surface-4))",
-                }}
-              >
-                <span
-                  className="absolute top-1 w-4 h-4 rounded-full transition-transform"
-                  style={{
-                    left: 4,
-                    transform: prefs?.server_runtime_enabled
-                      ? "translateX(20px)"
-                      : "translateX(0)",
-                    background: "hsl(var(--foreground))",
-                  }}
-                />
-              </button>
             </div>
           </div>
         </Section>
 
-        <ChatGPTSection />
         </Show>
 
         {/* ── Notifications ─────────────────────────────── */}

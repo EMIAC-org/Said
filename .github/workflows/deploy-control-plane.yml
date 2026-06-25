@@ -87,6 +87,8 @@ jobs:
           test -n "${{ secrets.LARK_REDIRECT_URI }}" || (echo "LARK_REDIRECT_URI is missing" && exit 1)
           test -n "${{ secrets.RUNTIME_CREDENTIALS_KEY }}" || (echo "RUNTIME_CREDENTIALS_KEY is missing" && exit 1)
           test -n "${{ secrets.DEEPSEEK_API_KEY }}" || (echo "DEEPSEEK_API_KEY is missing" && exit 1)
+          test -n "${{ secrets.CEREBRAS_API_KEY }}" || (echo "CEREBRAS_API_KEY is missing" && exit 1)
+          test -n "${{ secrets.DEEPGRAM_API_KEY_1 }}" || (echo "DEEPGRAM_API_KEY_1 is missing" && exit 1)
 
       - name: Configure SSH
         shell: bash
@@ -104,6 +106,10 @@ jobs:
           LARK_REDIRECT_URI: ${{ secrets.LARK_REDIRECT_URI }}
           RUNTIME_CREDENTIALS_KEY: ${{ secrets.RUNTIME_CREDENTIALS_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          DEEPGRAM_API_KEY_1: ${{ secrets.DEEPGRAM_API_KEY_1 }}
+          DEEPGRAM_API_KEY_2: ${{ secrets.DEEPGRAM_API_KEY_2 }}
+          DEEPGRAM_API_KEY_3: ${{ secrets.DEEPGRAM_API_KEY_3 }}
         run: |
           tar -C deploy/control-plane -czf /tmp/airnote-control-plane-deploy.tgz \
             docker-compose.yml Caddyfile README.md .env.example
@@ -113,6 +119,10 @@ jobs:
             printf 'LARK_REDIRECT_URI=%s\n' "$LARK_REDIRECT_URI"
             printf 'RUNTIME_CREDENTIALS_KEY=%s\n' "$RUNTIME_CREDENTIALS_KEY"
             printf 'DEEPSEEK_API_KEY=%s\n' "$DEEPSEEK_API_KEY"
+            printf 'CEREBRAS_API_KEY=%s\n' "$CEREBRAS_API_KEY"
+            printf 'DEEPGRAM_API_KEY_1=%s\n' "$DEEPGRAM_API_KEY_1"
+            printf 'DEEPGRAM_API_KEY_2=%s\n' "$DEEPGRAM_API_KEY_2"
+            printf 'DEEPGRAM_API_KEY_3=%s\n' "$DEEPGRAM_API_KEY_3"
           } > /tmp/airnote-control-plane-secrets.env
           chmod 600 /tmp/airnote-control-plane-secrets.env
           ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
@@ -183,7 +193,7 @@ jobs:
           docker compose pull control-plane
           docker compose up -d --force-recreate control-plane
           CID=$(docker compose ps -q control-plane)
-          for key in LARK_APP_ID LARK_APP_SECRET LARK_REDIRECT_URI RUNTIME_CREDENTIALS_KEY DEEPSEEK_API_KEY; do
+          for key in LARK_APP_ID LARK_APP_SECRET LARK_REDIRECT_URI RUNTIME_CREDENTIALS_KEY DEEPSEEK_API_KEY CEREBRAS_API_KEY DEEPGRAM_API_KEY_1; do
             docker inspect "$CID" --format '{{range .Config.Env}}{{println .}}{{end}}' \
               | grep -q "^${key}=." || (echo "$key was not propagated into the control-plane container" && exit 1)
           done

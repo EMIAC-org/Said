@@ -41,7 +41,8 @@ pub async fn patch_prefs(
         || update.deepgram_api_key.is_some()
         || update.gemini_api_key.is_some()
         || update.groq_api_key.is_some()
-        || update.cerebras_api_key.is_some();
+        || update.cerebras_api_key.is_some()
+        || update.deepinfra_api_key.is_some();
     let cross_device_updated = update.selected_model.is_some()
         || update.output_language.is_some()
         || update.tone_preset.is_some()

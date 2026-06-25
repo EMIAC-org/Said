@@ -27,6 +27,18 @@ pub struct FeedbackBody {
 
 pub async fn submit(State(state): State<AppState>, Json(body): Json<FeedbackBody>) -> StatusCode {
     let pool = state.pool.clone();
+    let learning_enabled = get_prefs(&pool, &state.default_user_id)
+        .map(|p| p.learning_enabled)
+        .unwrap_or(true);
+
+    crate::legacy_learning::with_legacy_write_scope(learning_enabled, async {
+        submit_feedback_inner(state, body).await
+    })
+    .await
+}
+
+async fn submit_feedback_inner(state: AppState, body: FeedbackBody) -> StatusCode {
+    let pool = state.pool.clone();
 
     // ── Load recording ────────────────────────────────────────────────────────
     let rec = match history::get_recording(&pool, &body.recording_id) {

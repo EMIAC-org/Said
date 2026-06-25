@@ -22,6 +22,21 @@ dev-admin:
 dev-backend:
     ./dev-backend.sh
 
+# ── Notch HUD sidecar (native Swift, experimental, macOS only) ───────────────
+
+# Build the native Swift notch-HUD sidecar (release) and stage it as a Tauri
+# sidecar binary. `cargo tauri dev` finds the .build output directly; the staged
+# copy is for bundling. Enable at runtime with AIRNOTE_NOTCH_SIDECAR=1.
+notch-build:
+    cd desktop/notch-sidecar && swift build -c release
+    cp desktop/notch-sidecar/.build/release/AirNoteNotch desktop/src-tauri/binaries/airnote-notch-aarch64-apple-darwin
+    @echo "✓ staged airnote-notch — run the app with AIRNOTE_NOTCH_SIDECAR=1"
+
+# Watch the real native notch HUD cycle through every state (no Tauri needed).
+notch-demo:
+    cd desktop/notch-sidecar && swift build -c release
+    ./desktop/notch-sidecar/demo.sh | ./desktop/notch-sidecar/.build/release/AirNoteNotch
+
 # Pretty-print the workspace + control-plane.
 fmt:
     cargo fmt --all
@@ -80,6 +95,11 @@ release VERSION:
     git push origin main --tags
 
 # ── Maintenance ──────────────────────────────────────────────────────────────
+
+# Reset local macOS onboarding/setup state for demo recording.
+# Keeps local recordings, meetings, vocabulary, audio, and downloaded STT models.
+reset-onboarding:
+    ./scripts/reset-local-onboarding.sh
 
 # Wipe build outputs.
 clean:

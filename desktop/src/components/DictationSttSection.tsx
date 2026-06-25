@@ -5,6 +5,8 @@ import { Check, Cloud, Cpu, Download, Loader2, Trash2, X } from "lucide-react";
 import type { Preferences, SttRuntimeInfo } from "../types";
 import { getSttRuntime, patchPreferences } from "../lib/invoke";
 
+type SttProviderChoice = "deepgram" | "swift_local";
+
 interface SwiftModelStatus {
   installed: boolean;
   size_bytes: number;
@@ -36,18 +38,20 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
   const isMac = platform === "macos";
   const [runtime, setRuntime] = useState<SttRuntimeInfo | null>(null);
   const [model, setModel] = useState<SwiftModelStatus | null>(null);
-  const [download, setDownload] = useState<SwiftDownloadProgress | null>(null);
+  const [swiftDownload, setSwiftDownload] = useState<SwiftDownloadProgress | null>(null);
   const [busy, setBusy] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deletingSwift, setDeletingSwift] = useState(false);
+  const [confirmDeleteSwift, setConfirmDeleteSwift] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const mounted = useRef(true);
   const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const provider = prefs?.stt_provider ?? "deepgram";
+  const rawProvider = prefs?.stt_provider ?? "deepgram";
+  const provider: SttProviderChoice =
+    rawProvider === "swift_local" && isMac ? "swift_local" : "deepgram";
   const swiftSelected = provider === "swift_local";
-  const modelInstalled = deleting ? false : (model?.installed ?? false);
+  const swiftInstalled = deletingSwift ? false : (model?.installed ?? false);
 
   const showSuccess = useCallback((msg: string) => {
     if (successTimer.current) clearTimeout(successTimer.current);
@@ -61,7 +65,9 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
     try {
       const [rt, status] = await Promise.all([
         getSttRuntime(),
-        invoke<SwiftModelStatus>("swift_stt_model_status").catch(() => null),
+        isMac
+          ? invoke<SwiftModelStatus>("swift_stt_model_status").catch(() => null)
+          : Promise.resolve(null),
       ]);
       if (!mounted.current) return;
       setRuntime(rt);
@@ -69,7 +75,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
     } catch (e) {
       if (mounted.current) setError(e instanceof Error ? e.message : String(e));
     }
-  }, []);
+  }, [isMac]);
 
   useEffect(() => {
     mounted.current = true;
@@ -81,17 +87,25 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
   }, [refresh]);
 
   useEffect(() => {
+    if (rawProvider === "whisper_local" && prefs) {
+      void patchPreferences({ stt_provider: "deepgram" }).then((updated) => {
+        if (updated) onPrefsUpdated(updated);
+      });
+    }
+  }, [rawProvider, prefs, onPrefsUpdated]);
+
+  useEffect(() => {
     const unlistenP = listen<SwiftDownloadProgress>("swift-model-download", (event) => {
       const p = event.payload;
       if (p.status === "downloading") {
-        setDownload(p);
+        setSwiftDownload(p);
         setError(null);
         setSuccessMsg(null);
       } else {
-        setDownload(null);
+        setSwiftDownload(null);
       }
       if (p.status === "done") {
-        showSuccess("Model downloaded");
+        showSuccess("Swift model downloaded");
         void refresh();
       }
       if (p.status === "error" && p.error) setError(p.error);
@@ -101,10 +115,10 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
     };
   }, [refresh, showSuccess]);
 
-  const selectProvider = async (next: "deepgram" | "swift_local") => {
+  const selectProvider = async (next: SttProviderChoice) => {
     if (next === provider) return;
-    if (next === "swift_local" && !modelInstalled && !deleting) {
-      setError("Download the Beta model below, then enable Beta Mode.");
+    if (next === "swift_local" && !swiftInstalled && !deletingSwift) {
+      setError("Download the Swift model below, then select Local Swift.");
       return;
     }
     setBusy(true);
@@ -133,7 +147,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
     }
   };
 
-  const startDownload = async () => {
+  const startSwiftDownload = async () => {
     setBusy(true);
     setError(null);
     setSuccessMsg(null);
@@ -147,14 +161,14 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
     }
   };
 
-  const cancelDownload = async () => {
+  const cancelSwiftDownload = async () => {
     await invoke("swift_stt_cancel_download").catch(() => {});
-    setDownload(null);
+    setSwiftDownload(null);
   };
 
-  const deleteModel = async () => {
-    setConfirmDelete(false);
-    setDeleting(true);
+  const deleteSwiftModel = async () => {
+    setConfirmDeleteSwift(false);
+    setDeletingSwift(true);
     setError(null);
     setSuccessMsg(null);
 
@@ -170,7 +184,12 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
     });
     setRuntime((prev) =>
       prev
-        ? { ...prev, swift_installed: false, swift_ready: false, effective_provider: swiftSelected ? "deepgram" : prev.effective_provider }
+        ? {
+            ...prev,
+            swift_installed: false,
+            swift_ready: false,
+            effective_provider: swiftSelected ? "deepgram" : prev.effective_provider,
+          }
         : prev,
     );
     if (swiftSelected && prefs) {
@@ -196,13 +215,13 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
       setError(e instanceof Error ? e.message : String(e));
       await refresh();
     } finally {
-      setDeleting(false);
+      setDeletingSwift(false);
     }
   };
 
-  const downloadPct =
-    download && download.total > 0
-      ? Math.min(100, Math.round((download.received / download.total) * 100))
+  const swiftDownloadPct =
+    swiftDownload && swiftDownload.total > 0
+      ? Math.min(100, Math.round((swiftDownload.received / swiftDownload.total) * 100))
       : null;
 
   return (
@@ -210,17 +229,17 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
       <div className="px-5 py-4 border-b" style={{ borderColor: "hsl(var(--surface-3))" }}>
         <p className="text-[13px] font-medium text-foreground">Speech recognition</p>
         <p className="text-[12px] text-muted-foreground mt-0.5">
-          Choose cloud Deepgram (default) or the local Beta model for Caps Lock dictation.
+          Cloud Deepgram or local Swift on macOS for Caps Lock dictation. Turbo Q5 is available in Meetings only.
         </p>
       </div>
 
       <div className="px-5 py-4 flex flex-col gap-3">
-        <div className="flex gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <button
             type="button"
-            disabled={busy || deleting || !!download}
+            disabled={busy || deletingSwift || !!swiftDownload}
             onClick={() => void selectProvider("deepgram")}
-            className="flex-1 rounded-xl px-3 py-2.5 text-left border transition-colors"
+            className="rounded-xl px-3 py-2.5 text-left border transition-colors"
             style={{
               borderColor:
                 provider === "deepgram" ? "hsl(var(--primary))" : "hsl(var(--surface-3))",
@@ -230,21 +249,21 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
           >
             <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
               <Cloud size={14} />
-              Cloud — Deepgram
+              Cloud
               {provider === "deepgram" && <Check size={14} className="ml-auto text-primary" />}
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
               {runtime?.deepgram_configured
-                ? "API key configured"
-                : "Add a Deepgram key in API Keys"}
+                ? "Deepgram · API key configured"
+                : "Deepgram · add API key below"}
             </p>
           </button>
 
           <button
             type="button"
-            disabled={busy || deleting || !isMac || !!download}
+            disabled={busy || deletingSwift || !isMac || !!swiftDownload}
             onClick={() => void selectProvider("swift_local")}
-            className="flex-1 rounded-xl px-3 py-2.5 text-left border transition-colors disabled:opacity-50"
+            className="rounded-xl px-3 py-2.5 text-left border transition-colors disabled:opacity-50"
             style={{
               borderColor:
                 provider === "swift_local" ? "hsl(var(--primary))" : "hsl(var(--surface-3))",
@@ -254,16 +273,20 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
           >
             <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
               <Cpu size={14} />
-              Beta Mode
+              Local Swift
               {!isMac && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-4 text-muted-foreground ml-1">
-                  macOS only
+                  macOS
                 </span>
               )}
               {provider === "swift_local" && <Check size={14} className="ml-auto text-primary" />}
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
-              {modelInstalled ? "Model ready on this Mac" : deleting ? "Removing model…" : "Requires ~290 MB download"}
+              {swiftInstalled
+                ? "Swift · live streaming"
+                : deletingSwift
+                  ? "Removing…"
+                  : "Swift · ~290 MB"}
             </p>
           </button>
         </div>
@@ -277,25 +300,25 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
               <div className="min-w-0">
                 <p className="text-[12px] font-medium text-foreground">Oriserve Swift</p>
                 <p className="text-[11px] text-muted-foreground">
-                  {deleting
+                  {deletingSwift
                     ? "Deleting model files…"
-                    : modelInstalled
+                    : swiftInstalled
                       ? `Installed · ${formatSize(model?.size_bytes ?? 0)}`
                       : "Whisper-Hindi2Hinglish-Swift · ~290 MB"}
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                {deleting ? (
+                {deletingSwift ? (
                   <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                     <Loader2 size={12} className="animate-spin" />
                     Deleting…
                   </span>
-                ) : modelInstalled ? (
-                  confirmDelete ? (
+                ) : swiftInstalled ? (
+                  confirmDeleteSwift ? (
                     <span className="flex items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => void deleteModel()}
+                        onClick={() => void deleteSwiftModel()}
                         className="text-[11px] px-2 py-1 rounded-lg font-semibold"
                         style={{ background: "hsl(354 70% 30%)", color: "hsl(354 90% 90%)" }}
                       >
@@ -303,7 +326,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
                       </button>
                       <button
                         type="button"
-                        onClick={() => setConfirmDelete(false)}
+                        onClick={() => setConfirmDeleteSwift(false)}
                         title="Cancel"
                         className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground"
                       >
@@ -315,9 +338,9 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
                       <span className="text-[10px] text-emerald-600 font-medium">Ready</span>
                       <button
                         type="button"
-                        disabled={busy || !!download}
+                        disabled={busy || !!swiftDownload}
                         onClick={() => {
-                          setConfirmDelete(true);
+                          setConfirmDeleteSwift(true);
                           setError(null);
                           setSuccessMsg(null);
                         }}
@@ -330,10 +353,10 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
                       </button>
                     </>
                   )
-                ) : download ? (
+                ) : swiftDownload ? (
                   <button
                     type="button"
-                    onClick={() => void cancelDownload()}
+                    onClick={() => void cancelSwiftDownload()}
                     className="text-[11px] px-2.5 py-1.5 rounded-lg border"
                     style={{ borderColor: "hsl(var(--surface-3))" }}
                   >
@@ -343,7 +366,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => void startDownload()}
+                    onClick={() => void startSwiftDownload()}
                     className="flex items-center gap-1.5 text-[11px] px-2.5 py-1.5 rounded-lg font-medium"
                     style={{
                       background: "hsl(var(--primary))",
@@ -356,25 +379,25 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
                 )}
               </div>
             </div>
-            {download && downloadPct !== null && (
+            {swiftDownload && swiftDownloadPct !== null && (
               <div className="mt-3">
                 <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "hsl(var(--surface-4))" }}>
                   <div
                     className="h-full transition-all"
-                    style={{ width: `${downloadPct}%`, background: "hsl(var(--primary))" }}
+                    style={{ width: `${swiftDownloadPct}%`, background: "hsl(var(--primary))" }}
                   />
                 </div>
                 <p className="text-[10px] text-muted-foreground mt-1">
-                  Downloading {downloadPct}% · {formatSize(download.received)} / {formatSize(download.total)}
+                  Downloading {swiftDownloadPct}% · {formatSize(swiftDownload.received)} / {formatSize(swiftDownload.total)}
                 </p>
               </div>
             )}
-            {modelInstalled && runtime?.swift_ready && !deleting && (
+            {swiftInstalled && runtime?.swift_ready && !deletingSwift && (
               <p className="text-[10px] text-emerald-600 mt-2">Local inference engine ready</p>
             )}
-            {modelInstalled && !swiftSelected && !deleting && (
+            {swiftInstalled && !swiftSelected && !deletingSwift && (
               <p className="text-[10px] text-muted-foreground mt-2">
-                Model installed — enable Beta Mode above to use it.
+                Model installed — select Local Swift above to use it.
               </p>
             )}
           </div>

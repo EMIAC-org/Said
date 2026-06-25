@@ -1,0 +1,13 @@
+Read this aloud in one take — natural Hinglish pace, like a standup update to your team.
+Aim for ~60 words. Dev terms should sound spoken, not spelled letter-by-letter.
+
+---
+
+Okay suno zara — humne Caps Lock dictation release kiya hai, par Swift local STT slow lag raha hai aur polish latency around sixteen hundred milliseconds aa rahi hai. Server runtime on hai, DeepInfra Maverick test karna hai. Docker rebuild karo, SQLite migration check karo, webhook retry fix karo, aur Sentry mein run id daalo. Phir PR merge karo.
+
+---
+
+Tips
+- Mix Hindi and English the way you normally talk at work.
+- Don't over-enunciate brand names — say them how STT will hear them.
+- Save as 16 kHz mono WAV if possible (AirNote records at 16 kHz).

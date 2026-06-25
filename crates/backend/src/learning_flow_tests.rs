@@ -21,6 +21,7 @@ use crate::store::{DbPool, stt_replacements, vocabulary};
 use r2d2_sqlite::SqliteConnectionManager;
 
 fn pool() -> DbPool {
+    crate::legacy_learning::enable_debug_legacy_writes_for_tests();
     let mgr = SqliteConnectionManager::memory();
     let pool = r2d2::Pool::builder().max_size(2).build(mgr).unwrap();
     let conn = pool.get().unwrap();

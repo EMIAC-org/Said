@@ -61,6 +61,9 @@ export interface SttRuntimeInfo {
   deepgram_configured: boolean;
   swift_installed: boolean;
   swift_ready: boolean;
+  whisper_installed: boolean;
+  whisper_ready: boolean;
+  whisper_vad_installed: boolean;
 }
 
 export interface Preferences {
@@ -83,9 +86,10 @@ export interface Preferences {
   gemini_api_key:     string | null;
   groq_api_key:       string | null;
   cerebras_api_key:   string | null;
-  /** LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex" */
+  deepinfra_api_key:  string | null;
+  /** LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex" */
   llm_provider:       string;
-  /** STT routing: "deepgram" */
+  /** STT routing: "deepgram" | "swift_local" | "whisper_local" */
   stt_provider:       string;
 }
 
@@ -108,10 +112,25 @@ export interface PrefsUpdate {
   gemini_api_key?:     string | null;
   groq_api_key?:       string | null;
   cerebras_api_key?:   string | null;
-  /** LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex" */
+  deepinfra_api_key?:  string | null;
+  /** LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex" */
   llm_provider?:       string;
-  /** STT routing: "deepgram" */
+  /** STT routing: "deepgram" | "swift_local" | "whisper_local" */
   stt_provider?:       string;
+}
+
+export interface PolishModelEntry {
+  key: string;
+  label: string;
+  provider: string;
+  model_id: string;
+  beta_only: boolean;
+  available: boolean;
+}
+
+export interface ListPolishModelsResponse {
+  models: PolishModelEntry[];
+  selected_model: string;
 }
 
 export interface PromptTemplateResponse {

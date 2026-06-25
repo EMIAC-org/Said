@@ -47,6 +47,9 @@ pub fn normalize_toggle_stt_provider(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "deepgram" => "deepgram".to_string(),
         "swift_local" | "swift" | "swift-local" => "swift_local".to_string(),
+        "whisper_local" | "whisper" | "whisper-local" | "turbo_q5" | "q5_turbo" => {
+            "whisper_local".to_string()
+        }
         "" => "deepgram".to_string(),
         other => other.to_string(),
     }
@@ -60,18 +63,35 @@ pub fn is_swift_local(provider: &str) -> bool {
     provider.eq_ignore_ascii_case("swift_local")
 }
 
+pub fn is_whisper_local(provider: &str) -> bool {
+    provider.eq_ignore_ascii_case("whisper_local")
+}
+
+/// whisper.cpp Turbo Q5 model filename (shared with Meetings).
+pub const WHISPER_TURBO_Q5_MODEL: &str = "ggml-large-v3-turbo-q5_0.bin";
+
 /// Whether the Swift local STT option is supported on this platform build.
 pub fn swift_local_platform_supported() -> bool {
     cfg!(target_os = "macos")
 }
 
 /// Resolve the dictation STT provider at runtime, falling back to Deepgram when
-/// Swift is selected but unavailable (wrong platform or model not installed).
-pub fn effective_dictation_provider(pref: &str, swift_model_installed: bool) -> String {
+/// the selected local path is unavailable (wrong platform or model not installed).
+pub fn effective_dictation_provider(
+    pref: &str,
+    swift_model_installed: bool,
+    whisper_model_installed: bool,
+) -> String {
     let resolved = resolve_provider_from_pref(pref);
     if is_swift_local(&resolved) {
         if swift_local_platform_supported() && swift_model_installed {
             "swift_local".to_string()
+        } else {
+            "deepgram".to_string()
+        }
+    } else if is_whisper_local(&resolved) {
+        if whisper_model_installed {
+            "whisper_local".to_string()
         } else {
             "deepgram".to_string()
         }
@@ -89,6 +109,8 @@ pub fn use_batch_stt_only(provider: &str) -> bool {
 pub fn telemetry_stt_model(provider: &str) -> &'static str {
     if is_swift_local(provider) {
         "Oriserve/Whisper-Hindi2Hinglish-Swift"
+    } else if is_whisper_local(provider) {
+        WHISPER_TURBO_Q5_MODEL
     } else {
         crate::deepgram::DEEPGRAM_MODEL
     }
@@ -141,17 +163,36 @@ mod tests {
     #[test]
     fn effective_dictation_falls_back_without_model() {
         assert_eq!(
-            effective_dictation_provider("swift_local", false),
+            effective_dictation_provider("swift_local", false, false),
             "deepgram"
         );
         assert_eq!(
-            effective_dictation_provider("swift_local", true),
+            effective_dictation_provider("swift_local", true, false),
             if swift_local_platform_supported() {
                 "swift_local"
             } else {
                 "deepgram"
             }
         );
+        assert_eq!(
+            effective_dictation_provider("whisper_local", false, false),
+            "deepgram"
+        );
+        assert_eq!(
+            effective_dictation_provider("whisper_local", false, true),
+            "whisper_local"
+        );
+    }
+
+    #[test]
+    fn whisper_local_is_batch_only() {
+        assert!(use_batch_stt_only("whisper_local"));
+    }
+
+    #[test]
+    fn normalize_whisper_aliases() {
+        assert_eq!(normalize_toggle_stt_provider("turbo_q5"), "whisper_local");
+        assert_eq!(normalize_toggle_stt_provider("Q5_Turbo"), "whisper_local");
     }
 
     #[test]

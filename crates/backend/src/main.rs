@@ -248,6 +248,15 @@ async fn main() {
         );
     }
 
+    // ── Observability outbox uploader (dictation plaintext, best-effort) ────────
+    {
+        said_backend::observability::uploader::spawn_uploader(
+            pool.clone(),
+            user_id.clone(),
+            state.http_client.clone(),
+        );
+    }
+
     // ── Background alias review lane ────────────────────────────────────────
     {
         let state2 = state.clone();

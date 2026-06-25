@@ -9,14 +9,12 @@ use std::{collections::HashSet, time::Duration};
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::json;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::store::{DbPool, alias_safety as cache};
 
-const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
-pub const JUDGE_MODEL: &str = "llama-3.1-8b-instant";
+pub const JUDGE_MODEL: &str = super::deepseek::DEFAULT_DEEPSEEK_LEARNING_MODEL;
 const MIN_CALL_SPACING_MS: u64 = 350;
 
 static JUDGE_RATE_LIMIT: Lazy<Mutex<Option<std::time::Instant>>> = Lazy::new(|| Mutex::new(None));
@@ -67,21 +65,6 @@ impl AliasSafetyOutcome {
     pub fn allows_learning(&self) -> bool {
         self.verdict.allows_learning()
     }
-}
-
-#[derive(Deserialize)]
-struct ChatResponse {
-    choices: Vec<Choice>,
-}
-
-#[derive(Deserialize)]
-struct Choice {
-    message: Message,
-}
-
-#[derive(Deserialize)]
-struct Message {
-    content: String,
 }
 
 #[derive(Deserialize)]
@@ -150,7 +133,7 @@ pub async fn judge_alias_source(
     client: &Client,
     pool: &DbPool,
     user_id: &str,
-    groq_key: &str,
+    _legacy_key: &str,
     source: &str,
     target: &str,
     context: Option<&str>,
@@ -190,7 +173,8 @@ pub async fn judge_alias_source(
             reason: cached.reason,
         };
     }
-    if groq_key.trim().is_empty() {
+    let deepseek_key = super::deepseek::learning_api_key();
+    if deepseek_key.trim().is_empty() {
         return cache_and_return(
             pool,
             user_id,
@@ -199,7 +183,7 @@ pub async fn judge_alias_source(
             0.0,
             "local",
             "",
-            "Groq key unavailable for alias safety judge",
+            "DEEPSEEK_API_KEY unavailable for alias safety judge",
         );
     }
 
@@ -207,7 +191,7 @@ pub async fn judge_alias_source(
         "SOURCE_ALIAS: {source}\nSOURCE_NORMALIZED: {source_norm}\nTARGET_CANONICAL: {target}\nCONTEXT: {}\n\nClassify SOURCE_ALIAS only. Do not invent mappings.",
         context.unwrap_or("- none").trim()
     );
-    match call_judge(client, groq_key, &prompt).await {
+    match call_judge(client, &deepseek_key, &prompt).await {
         Some(payload) => {
             let mut verdict = AliasSafetyVerdict::parse(&payload.verdict);
             if verdict == AliasSafetyVerdict::SafeJargon
@@ -225,7 +209,7 @@ pub async fn judge_alias_source(
                 source_norm,
                 verdict,
                 confidence,
-                "groq",
+                "deepseek",
                 JUDGE_MODEL,
                 &reason,
             )
@@ -236,9 +220,9 @@ pub async fn judge_alias_source(
             source_norm,
             AliasSafetyVerdict::LlmFailedBlock,
             0.0,
-            "groq",
+            "deepseek",
             JUDGE_MODEL,
-            "LLM judge failed; blocking auto-learning",
+            "DeepSeek judge failed; blocking auto-learning",
         ),
     }
 }
@@ -273,65 +257,43 @@ fn cache_and_return(
     }
 }
 
-async fn call_judge(client: &Client, groq_key: &str, user_prompt: &str) -> Option<JudgePayload> {
+async fn call_judge(
+    client: &Client,
+    deepseek_key: &str,
+    user_prompt: &str,
+) -> Option<JudgePayload> {
     for attempt in 0..3 {
         wait_for_rate_limit().await;
-        let body = json!({
-            "model": JUDGE_MODEL,
-            "temperature": 0,
-            "max_tokens": 120,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ]
-        });
-        let resp = client
-            .post(GROQ_ENDPOINT)
-            .header("Authorization", format!("Bearer {groq_key}"))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await;
-        let Ok(resp) = resp else {
-            warn!(
-                "[alias-safety] judge request failed on attempt {}",
-                attempt + 1
-            );
-            backoff(attempt).await;
-            continue;
-        };
-        if resp.status().is_success() {
-            let parsed: ChatResponse = resp.json().await.ok()?;
-            let content = parsed.choices.into_iter().next()?.message.content;
-            match serde_json::from_str::<JudgePayload>(content.trim()) {
-                Ok(payload) => {
-                    info!(
-                        "[alias-safety] LLM verdict={} confidence={:.2}",
-                        payload.verdict,
-                        payload.confidence.unwrap_or(0.0)
-                    );
-                    return Some(payload);
-                }
-                Err(e) => {
-                    warn!("[alias-safety] judge JSON parse failed: {e}");
-                    return None;
-                }
+        match super::deepseek::chat_json::<JudgePayload>(
+            client,
+            deepseek_key,
+            SYSTEM_PROMPT,
+            user_prompt,
+            160,
+            Duration::from_secs(7),
+            "alias-safety",
+        )
+        .await
+        {
+            Ok((payload, latency_ms, model)) => {
+                info!(
+                    "[alias-safety] deepseek verdict={} confidence={:.2} model={} latency_ms={}",
+                    payload.verdict,
+                    payload.confidence.unwrap_or(0.0),
+                    model,
+                    latency_ms,
+                );
+                return Some(payload);
+            }
+            Err(e) => {
+                warn!(
+                    "[alias-safety] judge failed on attempt {}: {e}",
+                    attempt + 1
+                );
+                backoff(attempt).await;
+                continue;
             }
         }
-        let status = resp.status();
-        if status.as_u16() == 429 || status.is_server_error() {
-            warn!("[alias-safety] judge returned {status}, retrying");
-            backoff(attempt).await;
-            continue;
-        }
-        let preview = resp.text().await.unwrap_or_default();
-        warn!(
-            "[alias-safety] judge returned {status}: {}",
-            said_core::text::truncate_utf8(&preview, 200)
-        );
-        return None;
     }
     None
 }
@@ -412,6 +374,7 @@ static COMMON_WORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "does",
         "doing",
         "done",
+        "draw",
         "for",
         "from",
         "go",
@@ -780,7 +743,8 @@ mod tests {
 
     #[test]
     fn common_phrases_are_blocked() {
-        for phrase in ["ye kaisa laga", "यह कैसा लगा", "kaisi lagi"] {
+        for phrase in ["ye kaisa laga", "यह कैसा लगा", "kaisi lagi", "a draw and"]
+        {
             assert!(is_common_alias_source(phrase), "{phrase} should be blocked");
         }
     }

@@ -44,7 +44,9 @@ pub struct Preferences {
     pub groq_api_key: Option<String>,
     #[serde(default)]
     pub cerebras_api_key: Option<String>,
-    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
+    #[serde(default)]
+    pub deepinfra_api_key: Option<String>,
+    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     #[serde(default = "default_llm_provider")]
     pub llm_provider: String,
     /// STT routing: "deepgram"
@@ -101,7 +103,9 @@ pub struct PrefsUpdate {
     pub groq_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cerebras_api_key: Option<Option<String>>,
-    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deepinfra_api_key: Option<Option<String>>,
+    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_provider: Option<String>,
     /// STT routing: "deepgram"
@@ -194,6 +198,9 @@ pub enum PolishEvent {
         message: String,
         audio_id: Option<String>,
         error_code: Option<String>,
+        retryable: Option<bool>,
+        owned_by_airnote: Option<bool>,
+        diagnostic: Option<String>,
     },
 }
 
@@ -235,6 +242,8 @@ fn redact_pref_key_fields(raw: &str) -> String {
         "deepgram_api_key",
         "gemini_api_key",
         "groq_api_key",
+        "cerebras_api_key",
+        "deepinfra_api_key",
     ] {
         if let Some(slot) = value.get_mut(field) {
             *slot = match slot {
@@ -375,6 +384,9 @@ where
             message: message.clone(),
             audio_id: None,
             error_code,
+            retryable: None,
+            owned_by_airnote: None,
+            diagnostic: Some(body),
         });
         return Err(message);
     }
@@ -418,6 +430,9 @@ where
             message: message.clone(),
             audio_id: None,
             error_code,
+            retryable: None,
+            owned_by_airnote: None,
+            diagnostic: Some(body),
         });
         return Err(message);
     }
@@ -522,6 +537,7 @@ where
 {
     let mut buf = String::new();
     let mut done_event: Option<PolishDone> = None;
+    let mut last_error: Option<String> = None;
     // Track the most recently seen `event:` line so we can dispatch correctly
     let mut event_name = String::new();
 
@@ -552,11 +568,19 @@ where
                 continue;
             }
 
-            parse_and_dispatch(data, &event_name, &mut on_event, &mut done_event);
+            parse_and_dispatch(
+                data,
+                &event_name,
+                &mut on_event,
+                &mut done_event,
+                &mut last_error,
+            );
         }
     }
 
-    done_event.ok_or_else(|| "SSE stream ended without a `done` event".into())
+    done_event.ok_or_else(|| {
+        last_error.unwrap_or_else(|| "SSE stream ended without a `done` event".into())
+    })
 }
 
 fn parse_and_dispatch(
@@ -564,6 +588,7 @@ fn parse_and_dispatch(
     event_name: &str,
     on_event: &mut impl FnMut(PolishEvent),
     done_event: &mut Option<PolishDone>,
+    last_error: &mut Option<String>,
 ) {
     let Ok(val) = serde_json::from_str::<Value>(data) else {
         warn!("[api] unparseable SSE data: {data:?}");
@@ -600,18 +625,8 @@ fn parse_and_dispatch(
         }
         "error" => {
             if let Some(msg) = val.get("message").and_then(Value::as_str) {
-                let audio_id = val
-                    .get("audio_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                on_event(PolishEvent::Error {
-                    message: msg.to_string(),
-                    audio_id,
-                    error_code: val
-                        .get("error_code")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                });
+                *last_error = Some(msg.to_string());
+                on_event(parse_error_event(&val, msg));
             }
         }
         // Key-sniff fallback (handles backends that omit the `event:` line)
@@ -635,20 +650,30 @@ fn parse_and_dispatch(
                     *done_event = Some(done);
                 }
             } else if let Some(msg) = val.get("message").and_then(Value::as_str) {
-                let audio_id = val
-                    .get("audio_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                on_event(PolishEvent::Error {
-                    message: msg.to_string(),
-                    audio_id,
-                    error_code: val
-                        .get("error_code")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                });
+                *last_error = Some(msg.to_string());
+                on_event(parse_error_event(&val, msg));
             }
         }
+    }
+}
+
+fn parse_error_event(val: &Value, msg: &str) -> PolishEvent {
+    PolishEvent::Error {
+        message: msg.to_string(),
+        audio_id: val
+            .get("audio_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        error_code: val
+            .get("error_code")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        retryable: val.get("retryable").and_then(Value::as_bool),
+        owned_by_airnote: val.get("owned_by_airnote").and_then(Value::as_bool),
+        diagnostic: val
+            .get("diagnostic")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }
 }
 
@@ -741,6 +766,38 @@ pub async fn patch_preferences(
             said_core::text::truncate_utf8(&text, 200)
         )
     })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolishModelEntry {
+    pub key: String,
+    pub label: String,
+    pub provider: String,
+    pub model_id: String,
+    pub beta_only: bool,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListPolishModelsResponse {
+    pub models: Vec<PolishModelEntry>,
+    pub selected_model: String,
+}
+
+pub async fn list_polish_models(
+    ep: &BackendEndpoint,
+    beta: bool,
+) -> Result<ListPolishModelsResponse, String> {
+    let url = format!("{}/v1/polish/models?beta={}", ep.url, beta);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("list polish models failed: {e}"))?
+        .json::<ListPolishModelsResponse>()
+        .await
+        .map_err(|e| format!("parse polish models failed: {e}"))
 }
 
 pub async fn get_voice_prompt(ep: &BackendEndpoint) -> Result<PromptTemplateResponse, String> {
@@ -1406,9 +1463,10 @@ pub async fn classify_edit(
     user_kept: &str,
     capture_method: &str,
     capture_meta: CaptureMeta,
+    client_run_id: Option<&str>,
 ) -> Result<ClassifyEditResponse, String> {
     let url = format!("{}/v1/classify-edit", ep.url);
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "recording_id":        recording_id,
         "ai_output":           ai_output,
         "user_kept":           user_kept,
@@ -1417,6 +1475,9 @@ pub async fn classify_edit(
         "app_switched":        capture_meta.app_switched,
         "matches_clipboard":   capture_meta.matches_clipboard,
     });
+    if let Some(run_id) = client_run_id.map(str::trim).filter(|s| !s.is_empty()) {
+        body["client_run_id"] = serde_json::Value::String(run_id.to_string());
+    }
     Client::new()
         .post(&url)
         .header("Authorization", ep.bearer())
@@ -1489,6 +1550,20 @@ pub struct VocabRow {
 pub struct VocabListResponse {
     pub terms: Vec<VocabRow>,
     pub total: i64,
+}
+
+async fn json_or_error(resp: reqwest::Response, label: &str) -> Result<Value, String> {
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("{label} error {status}: {}", extract_error(&text)));
+    }
+    serde_json::from_str::<Value>(&text).map_err(|e| {
+        format!(
+            "parse {label} failed: {e} — raw: {}",
+            said_core::text::truncate_utf8(&text, 240)
+        )
+    })
 }
 
 /// Full vocab list with metadata, for the management view.

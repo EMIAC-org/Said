@@ -6,6 +6,7 @@ import type {
   CloudAuthResponse,
   CloudStatus,
   HistoryItem,
+  ListPolishModelsResponse,
   PendingEditsResponse,
   PerformanceSnapshot,
   PolishDone,
@@ -272,6 +273,19 @@ export async function getSttRuntime(): Promise<SttRuntimeInfo | null> {
   if (!isTauriRuntime()) return null;
   try {
     return await tauriInvoke<SttRuntimeInfo>("get_stt_runtime");
+  } catch {
+    return null;
+  }
+}
+
+export async function listPolishModels(
+  beta = true
+): Promise<ListPolishModelsResponse | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<ListPolishModelsResponse>("list_polish_models", {
+      beta,
+    });
   } catch {
     return null;
   }
@@ -977,6 +991,7 @@ export interface DesktopPrefs {
   update_channel: "stable" | "beta";
   message_polish_mode: boolean;
   launch_at_login: boolean;
+  beta_mode: boolean;
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
@@ -986,6 +1001,7 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
       update_channel: "stable",
       message_polish_mode: false,
       launch_at_login: false,
+      beta_mode: false,
     };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");

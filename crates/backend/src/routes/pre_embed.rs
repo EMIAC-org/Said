@@ -24,6 +24,19 @@ pub async fn handler(State(state): State<AppState>, Json(body): Json<PreEmbedBod
         return StatusCode::BAD_REQUEST;
     }
 
+    let learning_enabled = crate::get_prefs_cached(
+        &state.prefs_cache,
+        &state.pool,
+        state.default_user_id.as_str(),
+    )
+    .await
+    .map(|p| p.learning_enabled)
+    .unwrap_or(true);
+    if !learning_enabled || crate::legacy_learning::audit_only_legacy_mutations() {
+        debug!("[pre-embed] skipped — user learning disabled");
+        return StatusCode::ACCEPTED;
+    }
+
     debug!(
         "[pre-embed] received {} chars — spawning background embed",
         text.len()

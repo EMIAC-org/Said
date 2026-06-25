@@ -7,8 +7,6 @@ use crate::format_recover;
 use crate::number_format;
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL_FAST: &str = "llama-3.1-8b-instant";
-const GROQ_MODEL_SMART: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
 
 /// Full server-runtime polish path: number_format pre → Groq → literal restore → number_format post → email recover.
 pub async fn polish_transcript(
@@ -26,6 +24,7 @@ pub async fn polish_transcript(
         None,
         screen_context,
         safe_vocab_terms,
+        None,
     );
     polish_transcript_with_prompt(
         transcript,
@@ -56,15 +55,11 @@ pub async fn polish_transcript_with_prompt(
     // Test-harness only: `POLISH_CHAT_MODEL` overrides the model so the
     // persona lab can A/B on whatever provider has a local key (the live
     // server polishes through `routes/runtime.rs`, never this path).
-    let default_model = if selected_model == "smart" {
-        GROQ_MODEL_SMART
-    } else {
-        GROQ_MODEL_FAST
-    };
+    let route = said_core::polish::model::resolve_polish_route(selected_model);
     let model = std::env::var("POLISH_CHAT_MODEL")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| default_model.to_string());
+        .unwrap_or_else(|| route.model.clone());
 
     let output = call_groq(groq_api_key, &model, system_prompt, &user_message).await?;
     // Defensive guard: weak models occasionally echo the polish prompt's
@@ -86,7 +81,7 @@ async fn call_groq(
     user_message: &str,
 ) -> Result<String, String> {
     let estimated_input_tokens = user_message.len() / 4;
-    let max_tokens = (estimated_input_tokens * 2 + 256).min(4096);
+    let mut max_tokens = (estimated_input_tokens * 2 + 256).min(8192) as u32;
     // Test-harness only: `POLISH_TEMPERATURE` lets the persona lab try the
     // research-backed anti-degeneration setting (≈0.2 instead of greedy 0.0,
     // which Groq clamps to 1e-8 and is the repetition-loop trigger). Defaults
@@ -95,7 +90,7 @@ async fn call_groq(
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0.0);
-    let body = json!({
+    let mut body = json!({
         "model": model,
         "temperature": temperature,
         "top_p": 0.9,
@@ -112,6 +107,11 @@ async fn call_groq(
             { "role": "user", "content": user_message }
         ]
     });
+    if model.contains("gpt-oss") {
+        max_tokens = max_tokens.max(4096);
+        body["max_tokens"] = json!(max_tokens);
+        body["reasoning_effort"] = json!("low");
+    }
 
     // dev's pooled keep-alive client (avoids a fresh DNS+TCP+TLS handshake per
     // call); anugra's 429-retry loop below drives the actual request.
@@ -256,9 +256,10 @@ pub fn build_voice_system_prompt(
     custom_prompt: Option<&str>,
     screen_context: Option<&str>,
     safe_vocab_terms: &[String],
+    profile_markdown: Option<&str>,
 ) -> String {
     use said_core::polish::prompt::{
-        VocabEntry, VocabResolution, build_system_prompt_with_vocab_entries,
+        VocabEntry, VocabResolution, build_system_prompt_with_profile,
     };
     use said_core::polish::types::PolishPrefs;
 
@@ -291,15 +292,21 @@ pub fn build_voice_system_prompt(
         })
         .collect();
 
-    let mut prompt =
-        build_system_prompt_with_vocab_entries(&prefs, &[], &[], &vocab_entries, |_| false);
+    let mut prompt = build_system_prompt_with_profile(
+        &prefs,
+        &[],
+        &[],
+        &vocab_entries,
+        profile_markdown,
+        |_| false,
+    );
 
     if let Some(ctx) = screen_context {
         let trimmed = ctx.trim();
         if !trimmed.is_empty() {
             let clipped: String = trimmed.chars().take(400).collect();
             prompt.push_str(&format!(
-                "\n\nSCREEN CONTEXT: \"{clipped}\"\nUse only as a tiebreaker for names or terms. Transcript words come first."
+                "\n\nSCREEN CONTEXT: \"{clipped}\"\nUse only as a tiebreaker for names or terms. Transcript words come first. Never use screen context to omit, shorten, or replace transcript clauses."
             ));
         }
     }

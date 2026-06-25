@@ -202,6 +202,14 @@ fn upsert_inner(
     bump: f64,
     language: Option<&str>,
 ) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "upsert",
+            "stt_replacements::upsert_inner",
+        );
+        return false;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return false,
@@ -219,7 +227,7 @@ fn upsert_inner(
         tracing::info!("[stt-replace] rejected common alias source: {from:?} → {to:?}");
         return false;
     }
-    if !is_plausible_alias(&from, &to) {
+    if !is_plausible_alias_or_compact(&from, &to) {
         tracing::info!("[stt-replace] rejected implausible alias: {from:?} → {to:?}");
         return false;
     }
@@ -309,6 +317,28 @@ pub fn is_plausible_alias(transcript_form: &str, correct_form: &str) -> bool {
     true
 }
 
+fn is_plausible_alias_or_compact(transcript_form: &str, correct_form: &str) -> bool {
+    if is_plausible_alias(transcript_form, correct_form) {
+        return true;
+    }
+    let from = transcript_form.trim();
+    if !from.contains(char::is_whitespace) {
+        return false;
+    }
+    if crate::llm::alias_safety::is_common_alias_source(from) {
+        return false;
+    }
+    let has_garbled_token = ascii_alias_tokens(from).iter().any(|token| {
+        !crate::tier2::is_in_dictionary(token)
+            && !crate::llm::alias_safety::is_common_alias_source(token)
+    });
+    if !has_garbled_token {
+        return false;
+    }
+    let collapsed: String = from.split_whitespace().collect();
+    collapsed != from && is_plausible_alias(&collapsed, correct_form)
+}
+
 fn ascii_alias_tokens(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|token| !token.is_empty())
@@ -375,7 +405,7 @@ fn is_alias_glue_word(token: &str) -> bool {
     )
 }
 
-const MAX_ALIASES_PER_TERM: usize = 15;
+const MAX_ALIASES_PER_TERM: usize = 40;
 
 fn enforce_alias_cap(pool: &DbPool, user_id: &str, correct_form: &str) {
     let Ok(conn) = pool.get() else { return };
@@ -465,16 +495,127 @@ pub fn upsert_aliases_for_language(
     } else {
         Some(language)
     };
-    if !polish_window.trim().is_empty()
-        && upsert_inner(pool, user_id, polish_window, correct_form, bump, lang)
-    {
-        written += 1;
+    written += upsert_alias_span_with_collapsed_variant(
+        pool,
+        user_id,
+        polish_window,
+        correct_form,
+        bump,
+        lang,
+    );
+    if !transcript_window.trim().is_empty() && transcript_window.trim() != polish_window.trim() {
+        written += upsert_alias_span_with_collapsed_variant(
+            pool,
+            user_id,
+            transcript_window,
+            correct_form,
+            bump,
+            lang,
+        );
     }
-    if !transcript_window.trim().is_empty()
-        && transcript_window.trim() != polish_window.trim()
-        && upsert_inner(pool, user_id, transcript_window, correct_form, bump, lang)
-    {
+    written
+}
+
+pub fn mark_confirmed_aliases_for_language(
+    pool: &DbPool,
+    user_id: &str,
+    transcript_window: &str,
+    polish_window: &str,
+    correct_form: &str,
+    language: &str,
+) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "mark_confirmed_aliases_for_language",
+            "stt_replacements::mark_confirmed_aliases_for_language",
+        );
+        return 0;
+    }
+
+    let mut forms = std::collections::BTreeSet::new();
+    for raw in [transcript_window, polish_window] {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        forms.insert(trimmed.to_ascii_lowercase());
+        let collapsed = trimmed.split_whitespace().collect::<String>();
+        if collapsed != trimmed && !collapsed.trim().is_empty() {
+            forms.insert(collapsed.to_ascii_lowercase());
+        }
+    }
+    if forms.is_empty() {
+        return 0;
+    }
+
+    let Ok(conn) = pool.get() else {
+        return 0;
+    };
+    let now = now_ms();
+    let mut updated = 0usize;
+    for form in forms {
+        updated += conn
+            .execute(
+                "UPDATE stt_replacements
+                    SET export_tier = 'export_replace_ready',
+                        review_status = CASE
+                            WHEN review_status = 'blocked' THEN 'blocked'
+                            ELSE 'approved'
+                        END,
+                        review_reason = CASE
+                            WHEN review_status = 'blocked' THEN review_reason
+                            ELSE 'user_confirmed_alias'
+                        END,
+                        last_reviewed_at = ?5
+                  WHERE user_id = ?1
+                    AND lower(transcript_form) = lower(?2)
+                    AND lower(correct_form) = lower(?3)
+                    AND (language = ?4 OR (?4 = '' AND language IS NULL) OR (?4 != '' AND language IS NULL))
+                    AND review_status != 'blocked'",
+                params![
+                    user_id,
+                    form,
+                    correct_form.trim(),
+                    language,
+                    now
+                ],
+            )
+            .unwrap_or(0) as usize;
+    }
+    if updated > 0 {
+        info!(
+            "[stt-repl] marked {updated} user-confirmed alias(es) for {:?}",
+            correct_form.trim()
+        );
+    }
+    updated
+}
+
+fn upsert_alias_span_with_collapsed_variant(
+    pool: &DbPool,
+    user_id: &str,
+    transcript_form: &str,
+    correct_form: &str,
+    bump: f64,
+    language: Option<&str>,
+) -> usize {
+    let trimmed = transcript_form.trim();
+    if trimmed.is_empty() {
+        return 0;
+    }
+
+    let mut written = 0;
+    if upsert_inner(pool, user_id, trimmed, correct_form, bump, language) {
         written += 1;
+
+        let collapsed: String = trimmed.split_whitespace().collect();
+        if collapsed != trimmed
+            && collapsed.to_ascii_lowercase() != trimmed.to_ascii_lowercase()
+            && upsert_inner(pool, user_id, &collapsed, correct_form, bump, language)
+        {
+            written += 1;
+        }
     }
     written
 }
@@ -487,6 +628,14 @@ pub fn demote(
     correct_form: &str,
     penalty: f64,
 ) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "demote",
+            "stt_replacements::demote",
+        );
+        return false;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return false,
@@ -565,6 +714,14 @@ pub fn delete_alias_pair(
     transcript_form: &str,
     correct_form: &str,
 ) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "delete_alias_pair",
+            "stt_replacements::delete_alias_pair",
+        );
+        return 0;
+    }
     let Ok(conn) = pool.get() else {
         return 0;
     };
@@ -607,14 +764,22 @@ pub fn load_for_language(pool: &DbPool, user_id: &str, language: &str) -> Vec<St
                 language, export_tier, contradiction_count, review_status, review_reason, last_reviewed_at
            FROM stt_replacements
           WHERE user_id = ?1
-          ORDER BY weight DESC"
+          ORDER BY
+            CASE review_status WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+            weight DESC,
+            use_count DESC,
+            last_used DESC"
     } else {
         "SELECT transcript_form, correct_form, phonetic_key, weight, use_count, last_used,
                 language, export_tier, contradiction_count, review_status, review_reason, last_reviewed_at
            FROM stt_replacements
           WHERE user_id = ?1
             AND (language = ?2 OR language IS NULL)
-          ORDER BY weight DESC"
+          ORDER BY
+            CASE review_status WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+            weight DESC,
+            use_count DESC,
+            last_used DESC"
     };
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
@@ -717,6 +882,14 @@ pub fn update_export_metadata(
     review_reason: Option<&str>,
     language: &str,
 ) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "update_export_metadata",
+            "stt_replacements::update_export_metadata",
+        );
+        return false;
+    }
     let Ok(conn) = pool.get() else {
         return false;
     };
@@ -751,6 +924,14 @@ pub fn update_export_metadata(
 /// during the classify flow — no need to wait for the 15-min background
 /// review.
 pub fn approve_aliases_for_term(pool: &DbPool, user_id: &str, correct_form: &str) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "approve_aliases_for_term",
+            "stt_replacements::approve_aliases_for_term",
+        );
+        return 0;
+    }
     let Ok(conn) = pool.get() else {
         return 0;
     };
@@ -773,6 +954,14 @@ pub fn note_negative_signal(
     correct_form: &str,
     penalty: i64,
 ) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "note_negative_signal",
+            "stt_replacements::note_negative_signal",
+        );
+        return 0;
+    }
     let Ok(conn) = pool.get() else {
         return 0;
     };
@@ -920,7 +1109,7 @@ pub fn apply_exact_safe(transcript: &str, rules: &[SttReplacement]) -> ApplyResu
             if r.review_status != ReviewStatus::Approved {
                 return false;
             }
-            if !is_plausible_alias(&r.transcript_form, &r.correct_form) {
+            if !is_plausible_alias_or_compact(&r.transcript_form, &r.correct_form) {
                 return false;
             }
             true
@@ -1176,6 +1365,14 @@ pub fn generate_proactive_distortions(
     observed_transcript: &str,
     language: &str,
 ) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "stt_replacements",
+            "generate_proactive_distortions",
+            "stt_replacements::generate_proactive_distortions",
+        );
+        return 0;
+    }
     use std::collections::HashSet;
 
     let base = correct_form.trim().to_ascii_lowercase();
@@ -1529,6 +1726,31 @@ mod tests {
     }
 
     #[test]
+    fn upsert_aliases_stores_collapsed_multiword_variant() {
+        let pool = mem_pool();
+        let n = super::upsert_aliases(
+            &pool,
+            "u1",
+            /* transcript_window */ "Suri Brothers",
+            /* polish_window     */ "Suri Brothers",
+            /* correct_form      */ "Cerebras",
+            1.0,
+        );
+        assert_eq!(n, 2, "expected spaced and collapsed aliases stored");
+        assert_eq!(super::approve_aliases_for_term(&pool, "u1", "Cerebras"), 2);
+
+        let rules = super::load_all(&pool, "u1");
+        assert!(rules.iter().any(|r| r.transcript_form == "suri brothers"));
+        assert!(rules.iter().any(|r| r.transcript_form == "suribrothers"));
+
+        let spaced = super::apply_exact_safe("Testing Suri Brothers latency.", &rules);
+        assert_eq!(spaced.text, "Testing Cerebras latency.");
+
+        let collapsed = super::apply_exact_safe("Testing SuriBrothers latency.", &rules);
+        assert_eq!(collapsed.text, "Testing Cerebras latency.");
+    }
+
+    #[test]
     fn upsert_aliases_skips_empty_transcript_window() {
         // Diff couldn't positionally align — transcript_window is empty.
         // We still store the polish span as an alias.
@@ -1767,6 +1989,33 @@ mod tests {
         let result =
             super::apply_exact_safe("Urban Aura ka data bhejo", &[rule("urban aura", "Macobs")]);
         assert_eq!(result.text, "Urban Aura ka data bhejo");
+        assert!(result.matches.is_empty());
+    }
+
+    #[test]
+    fn exact_safe_accepts_spaced_alias_when_compact_form_is_plausible() {
+        let mut spaced = rule("shahri bhrasht", "Cerebras");
+        spaced.review_status = ReviewStatus::Approved;
+        let mut compact = rule("shahribhrasht", "Cerebras");
+        compact.review_status = ReviewStatus::Approved;
+
+        let result = super::apply_exact_safe(
+            "shahri bhrasht benchmark aur shahribhrasht fallback dono check karo",
+            &[spaced, compact],
+        );
+        assert_eq!(
+            result.text,
+            "Cerebras benchmark aur Cerebras fallback dono check karo"
+        );
+        assert_eq!(result.matches.len(), 2);
+    }
+
+    #[test]
+    fn common_phrase_alias_is_not_plausible_via_collapsed_form() {
+        let mut common = rule("a draw and", "groqand");
+        common.review_status = ReviewStatus::Approved;
+        let result = super::apply_exact_safe("a draw and bol diya", &[common]);
+        assert_eq!(result.text, "a draw and bol diya");
         assert!(result.matches.is_empty());
     }
 

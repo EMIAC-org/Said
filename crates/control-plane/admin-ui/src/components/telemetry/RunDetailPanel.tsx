@@ -31,7 +31,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-export function RunDetailPanel({ run }: { run: TelemetryRun }) {
+export function RunDetailPanel({
+  run,
+  onOpenDictation,
+}: {
+  run: TelemetryRun
+  onOpenDictation?: (recordingId: string) => void
+}) {
   const flags = run.content_flags
   return (
     <div className="bg-surface-2 border-t border-border-light px-5 py-4">
@@ -39,6 +45,17 @@ export function RunDetailPanel({ run }: { run: TelemetryRun }) {
         <FieldGrid>
           <Field k="run_id" v={run.run_id} mono />
           <Field k="recording_id" v={run.recording_id || '—'} mono />
+          {run.recording_id && onOpenDictation ? (
+            <div className="col-span-3">
+              <button
+                type="button"
+                onClick={() => onOpenDictation(run.recording_id!)}
+                className="text-[11px] text-accent hover:underline bg-transparent border-0 cursor-pointer p-0"
+              >
+                Open dictation inspector →
+              </button>
+            </div>
+          ) : null}
           <Field k="device_id" v={run.device_id || '—'} mono />
         </FieldGrid>
       </Section>

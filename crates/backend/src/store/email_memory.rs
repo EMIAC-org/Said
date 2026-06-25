@@ -35,6 +35,14 @@ pub fn compact_email_norm(email: &str) -> Option<String> {
 }
 
 pub fn upsert(pool: &DbPool, user_id: &str, email: &str, source_hint: Option<&str>) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "email_memories",
+            "upsert",
+            "email_memory::upsert",
+        );
+        return false;
+    }
     let Some(email) = normalize_email(email) else {
         return false;
     };
@@ -157,6 +165,7 @@ mod tests {
     use r2d2_sqlite::SqliteConnectionManager;
 
     fn mem_pool() -> DbPool {
+        crate::legacy_learning::enable_debug_legacy_writes_for_tests();
         let manager = SqliteConnectionManager::memory();
         let pool = Pool::builder().max_size(1).build(manager).unwrap();
         let conn = pool.get().unwrap();

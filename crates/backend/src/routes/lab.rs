@@ -305,6 +305,16 @@ pub async fn trace(
         .clone()
         .or_else(|| std::env::var("GROQ_API_KEY").ok())
         .unwrap_or_default();
+    let cerebras_key = prefs
+        .cerebras_api_key
+        .clone()
+        .or_else(|| std::env::var("CEREBRAS_API_KEY").ok())
+        .unwrap_or_default();
+    let deepinfra_key = prefs
+        .deepinfra_api_key
+        .clone()
+        .or_else(|| std::env::var("DEEPINFRA_API_KEY").ok())
+        .unwrap_or_default();
     let gemini_key = prefs
         .gemini_api_key
         .clone()
@@ -584,10 +594,9 @@ pub async fn trace(
 
     // ── STAGE 5: LLM Polish ────────────────────────────────────────────────────
     let llm_start = Instant::now();
-    let model = said_core::resolve_model(&prefs.selected_model).to_string();
+    let route = crate::llm::polish_dispatch::voice_polish_route(&prefs.selected_model);
     let llm_provider = prefs.llm_provider.clone();
-
-    let (model_for_llm, openai_token_opt) = if llm_provider == "openai_codex" {
+    let openai_token_opt = if llm_provider == "openai_codex" {
         let pool_tok = pool.clone();
         let uid_tok = user_id.clone();
         let tok = tokio::task::spawn_blocking(move || {
@@ -595,85 +604,33 @@ pub async fn trace(
         })
         .await
         .unwrap_or(None);
-        (
-            crate::llm::openai_codex::MODEL_MINI.to_string(),
-            tok.map(|t| t.access_token),
-        )
-    } else if llm_provider == "gemini_direct" {
-        (
-            crate::llm::gemini_direct::GEMINI_DIRECT_MODEL.to_string(),
-            None,
-        )
-    } else if llm_provider == "groq" {
-        (
-            if prefs.selected_model == "smart" {
-                crate::llm::groq::GROQ_MODEL_SMART
-            } else {
-                crate::llm::groq::GROQ_MODEL_FAST
-            }
-            .to_string(),
-            None,
-        )
+        tok.map(|t| t.access_token)
     } else {
-        (model.clone(), None)
+        None
     };
-
     let (token_tx, mut token_rx) = tokio::sync::mpsc::channel::<String>(64);
     let sys_p = system_prompt.clone();
     let usr_m = user_message.clone();
     let client_c = http_client.clone();
-    let llm_provider_for_task = llm_provider.clone();
-    let gk = gateway_key.clone();
-    let gk_gemini = gemini_key.clone();
-    let gk_groq = groq_key.clone();
-    let model_for_llm_c = model_for_llm.clone();
+    let route_c = route.clone();
+    let groq_key_c = groq_key.clone();
 
     let llm_task = tokio::spawn(async move {
-        if llm_provider_for_task == "openai_codex" {
-            let access_token = openai_token_opt.as_deref().unwrap_or("");
-            if access_token.is_empty() {
-                return Err("OpenAI not connected".to_string());
-            }
-            crate::llm::openai_codex::stream_polish(
-                &client_c,
-                access_token,
-                &model_for_llm_c,
-                &sys_p,
-                &usr_m,
-                token_tx,
-            )
-            .await
-        } else if llm_provider_for_task == "gemini_direct" {
-            crate::llm::gemini_direct::stream_polish(
-                &client_c,
-                &gk_gemini,
-                &model_for_llm_c,
-                &sys_p,
-                &usr_m,
-                token_tx,
-            )
-            .await
-        } else if llm_provider_for_task == "groq" {
-            crate::llm::groq::stream_polish(
-                &client_c,
-                &gk_groq,
-                &model_for_llm_c,
-                &sys_p,
-                &usr_m,
-                token_tx,
-            )
-            .await
-        } else {
-            crate::llm::gateway::stream_polish(
-                &client_c,
-                &gk,
-                &model_for_llm_c,
-                &sys_p,
-                &usr_m,
-                token_tx,
-            )
-            .await
-        }
+        crate::llm::polish_dispatch::stream_polish_routed(
+            &client_c,
+            &route_c,
+            &groq_key_c,
+            &gateway_key,
+            &gemini_key,
+            &cerebras_key,
+            &deepinfra_key,
+            openai_token_opt.as_deref(),
+            &llm_provider,
+            &sys_p,
+            &usr_m,
+            token_tx,
+        )
+        .await
     });
 
     // Drain token channel (we don't stream in lab mode, just collect)
@@ -754,7 +711,7 @@ pub async fn trace(
         system_prompt_length,
         rag_examples_used: rag_examples.len(),
         polished: polished_raw,
-        llm_model: model_for_llm,
+        llm_model: route.label(),
         llm_ms,
         devanagari_detected,
         format_recovered,
