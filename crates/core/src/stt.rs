@@ -123,10 +123,20 @@ fn non_empty_opt(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+pub const DEEPGRAM_ENV_KEY_CANDIDATES: &[&str] = &[
+    "DEEPGRAM_API_KEY_1",
+    "DEEPGRAM_API_KEY",
+    "DEEPGRAM_API_KEY_2",
+    "DEEPGRAM_API_KEY_3",
+];
+
 /// Deepgram key from SQLite prefs with env fallback.
 pub fn resolve_deepgram_api_key(pref_key: Option<&str>) -> Option<String> {
-    non_empty_opt(pref_key)
-        .or_else(|| non_empty_opt(std::env::var("DEEPGRAM_API_KEY").ok().as_deref()))
+    non_empty_opt(pref_key).or_else(|| {
+        DEEPGRAM_ENV_KEY_CANDIDATES
+            .iter()
+            .find_map(|key| non_empty_opt(std::env::var(key).ok().as_deref()))
+    })
 }
 
 /// How audio reached STT for this run (`ws_prewarm`, `http_batch`).

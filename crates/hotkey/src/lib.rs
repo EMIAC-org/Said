@@ -436,6 +436,7 @@ mod imp {
     static DIVO_PRESS_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
     static DIVO_RELEASE_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
     static DIVO_CANCEL_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+    const DIVO_HOTKEY_ACTIVE: bool = false;
     static DIVO_ENABLED: AtomicBool = AtomicBool::new(false);
     static DIVO_IS_DOWN: AtomicBool = AtomicBool::new(false);
     static DIVO_TAINTED: AtomicBool = AtomicBool::new(false);
@@ -464,22 +465,33 @@ mod imp {
         let _ = DIVO_PRESS_CB.set(on_press);
         let _ = DIVO_RELEASE_CB.set(on_release);
         let _ = DIVO_CANCEL_CB.set(on_cancel);
-        DIVO_ENABLED.store(true, Ordering::Relaxed);
-        tracing::info!("[hotkey] Divo Ctrl hold-to-talk registered");
+        DIVO_ENABLED.store(false, Ordering::Relaxed);
+        tracing::info!("[hotkey] Divo Ctrl hold-to-talk registered but disabled");
     }
 
     /// Enable/disable the Ctrl hold-to-talk Divo hotkey at runtime (e.g. when the
     /// signed-in user is not connected to an org that has Divo).
     pub fn set_divo_hotkey_enabled(enabled: bool) {
-        DIVO_ENABLED.store(enabled, Ordering::Relaxed);
-        tracing::info!("[hotkey] Divo Ctrl hotkey enabled={enabled}");
+        let active = DIVO_HOTKEY_ACTIVE && enabled;
+        DIVO_ENABLED.store(active, Ordering::Relaxed);
+        if !active {
+            DIVO_IS_DOWN.store(false, Ordering::SeqCst);
+            DIVO_TAINTED.store(false, Ordering::SeqCst);
+            DIVO_STARTED.store(false, Ordering::SeqCst);
+            DIVO_NEW_CHAT.store(false, Ordering::SeqCst);
+            DIVO_GEN.fetch_add(1, Ordering::SeqCst);
+        }
+        tracing::info!(
+            "[hotkey] Divo Ctrl hotkey enabled={active} requested={enabled} plugged_out={}",
+            !DIVO_HOTKEY_ACTIVE
+        );
     }
 
     /// Take (and clear) the "new chat" intent from the just-finished Ctrl hold.
     /// Returns true when the user pressed **N** while holding Control (Ctrl+N),
     /// meaning this turn should open a fresh Divo chat. Read once on release.
     pub fn divo_take_new_chat() -> bool {
-        DIVO_NEW_CHAT.swap(false, Ordering::SeqCst)
+        DIVO_HOTKEY_ACTIVE && DIVO_NEW_CHAT.swap(false, Ordering::SeqCst)
     }
 
     fn divo_is_control_keycode(kc: i64) -> bool {

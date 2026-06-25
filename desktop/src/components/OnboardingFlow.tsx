@@ -258,10 +258,10 @@ export function OnboardingFlow({
   const swiftInstalled = isMac ? (swiftModel?.installed ?? false) : true;
   const hasKeys = isMac
     ? !!(prefs?.groq_api_key?.trim() && swiftInstalled && prefs.stt_provider === "swift_local")
-    : !!(prefs?.groq_api_key?.trim() && prefs?.deepgram_api_key?.trim());
+    : !!prefs?.groq_api_key?.trim();
   const canSaveVoiceEngine = isMac
     ? !!groqKey.trim() && swiftInstalled
-    : !!groqKey.trim() && !!deepgramKey.trim();
+    : !!groqKey.trim();
   const permsReady = micGranted && (isWindows || (accGranted && imGranted));
   const stepIndex = onboardingStepIndex(step);
 
@@ -456,16 +456,12 @@ export function OnboardingFlow({
       setKeyError("Download the local Swift model before continuing.");
       return;
     }
-    if (!isMac && !deepgramKey.trim()) {
-      setKeyError("Deepgram key is required on this platform.");
-      return;
-    }
     setKeySaving(true);
     setKeyError("");
     try {
       const updated = await patchPreferences({
         groq_api_key: groqKey.trim(),
-        ...(isMac ? {} : { deepgram_api_key: deepgramKey.trim() }),
+        ...(isMac || !deepgramKey.trim() ? {} : { deepgram_api_key: deepgramKey.trim() }),
         llm_provider: "groq",
         stt_provider: isMac ? "swift_local" : "deepgram",
       });
@@ -914,7 +910,7 @@ export function OnboardingFlow({
               letter="D"
               name="Deepgram"
               href="https://console.deepgram.com/signup"
-              placeholder="Paste your Deepgram key"
+              placeholder="Optional fallback key"
               value={deepgramKey}
               onChange={setDeepgramKey}
               connected={!!prefs?.deepgram_api_key}

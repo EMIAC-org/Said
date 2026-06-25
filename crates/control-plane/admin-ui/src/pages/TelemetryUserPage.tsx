@@ -54,6 +54,17 @@ function CountGrid({ items }: { items: [string, number][] }) {
   )
 }
 
+function dictationRowKey(row: DictationListItem): string {
+  // Always use the Postgres history row id — guaranteed to match list + detail.
+  return row.id
+}
+
+function dictationRowLabel(row: DictationListItem): string {
+  if (row.recording_id) return `${row.recording_id.slice(0, 8)}… (rec)`
+  if (row.client_run_id) return `${row.client_run_id.slice(0, 8)}… (run)`
+  return `${row.id.slice(0, 8)}…`
+}
+
 function DiffColumn({ label, text }: { label: string; text?: string | null }) {
   return (
     <div className="min-w-0">
@@ -88,12 +99,13 @@ export function TelemetryUserPage() {
   const [dictationTotal, setDictationTotal] = useState(0)
   const [dictationSummary, setDictationSummary] = useState<ObservabilitySummary | null>(null)
   const [dictationLoading, setDictationLoading] = useState(false)
-  const [selectedRecording, setSelectedRecording] = useState<string | null>(null)
+  const [selectedDictationKey, setSelectedDictationKey] = useState<string | null>(null)
   const [dictationDetail, setDictationDetail] = useState<{
     item: DictationDetailItem
     alias_events: AliasLearnEvent[]
   } | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState('')
   const [loading, setLoading] = useState(true)
   const [runsLoading, setRunsLoading] = useState(false)
   const [error, setError] = useState('')
@@ -173,18 +185,26 @@ export function TelemetryUserPage() {
   }, [orgId, accountId, innerTab, days])
 
   useEffect(() => {
-    if (!orgId || !accountId || !selectedRecording) {
+    if (!orgId || !accountId || !selectedDictationKey) {
       setDictationDetail(null)
+      setDetailError('')
       return
     }
     setDetailLoading(true)
+    setDetailError('')
     apiJson<{ item: DictationDetailItem; alias_events: AliasLearnEvent[] }>(
-      `/v1/orgs/${orgId}/observability/dictation/${encodeURIComponent(selectedRecording)}?account_id=${accountId}`,
+      `/v1/orgs/${orgId}/observability/dictation/${encodeURIComponent(selectedDictationKey)}?account_id=${accountId}`,
     )
-      .then(setDictationDetail)
-      .catch(() => setDictationDetail(null))
+      .then(data => {
+        setDictationDetail(data)
+        setDetailError('')
+      })
+      .catch(e => {
+        setDictationDetail(null)
+        setDetailError(e instanceof Error ? e.message : 'Failed to load dictation detail')
+      })
       .finally(() => setDetailLoading(false))
-  }, [orgId, accountId, selectedRecording])
+  }, [orgId, accountId, selectedDictationKey])
 
   const switchTab = (tab: 'telemetry' | 'memory' | 'dictation') => {
     setInnerTab(tab)
@@ -195,7 +215,7 @@ export function TelemetryUserPage() {
   }
 
   const openDictation = (recordingId: string) => {
-    setSelectedRecording(recordingId)
+    setSelectedDictationKey(recordingId)
     switchTab('dictation')
   }
 
@@ -351,19 +371,21 @@ export function TelemetryUserPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {dictationItems.map(row => (
+                    {dictationItems.map(row => {
+                      const rowKey = dictationRowKey(row)
+                      return (
                       <tr
                         key={row.id}
                         className={`cursor-pointer hover:bg-surface-4/30 ${
-                          selectedRecording === row.recording_id ? 'bg-accent-light/40' : ''
+                          selectedDictationKey === rowKey ? 'bg-accent-light/40' : ''
                         }`}
-                        onClick={() => row.recording_id && setSelectedRecording(row.recording_id)}
+                        onClick={() => setSelectedDictationKey(rowKey)}
                       >
                         <td className="text-[11px] px-4 py-2 border-b border-border-light">
                           {new Date(row.created_at).toLocaleString()}
                         </td>
                         <td className="text-[11px] font-mono px-4 py-2 border-b border-border-light truncate max-w-[8rem]">
-                          {row.recording_id?.slice(0, 8) || '—'}…
+                          {dictationRowLabel(row)}
                         </td>
                         <td className="text-[11px] px-4 py-2 border-b border-border-light truncate max-w-[6rem]">
                           {row.target_app || '—'}
@@ -378,7 +400,7 @@ export function TelemetryUserPage() {
                           {ms(row.total_ms ?? null)}
                         </td>
                       </tr>
-                    ))}
+                    )})}
                     {!dictationItems.length && (
                       <tr>
                         <td colSpan={6} className="text-[12px] text-fg-4 px-4 py-4">
@@ -393,15 +415,17 @@ export function TelemetryUserPage() {
 
               <div className="card p-4">
                 <SectionLabel>Detail</SectionLabel>
-                {!selectedRecording ? (
+                {!selectedDictationKey ? (
                   <p className="text-[12px] text-fg-4">Select a row to inspect transcript stages and edits.</p>
                 ) : detailLoading ? (
                   <Loading />
+                ) : detailError ? (
+                  <p className="text-[12px] text-live">{detailError}</p>
                 ) : !dictationDetail ? (
                   <p className="text-[12px] text-fg-4">Detail not found for this recording.</p>
                 ) : (
                   <>
-                    <div className="text-[11px] text-fg-4 mb-3 font-mono">{selectedRecording}</div>
+                    <div className="text-[11px] text-fg-4 mb-3 font-mono">{selectedDictationKey}</div>
                     <div className="grid grid-cols-1 gap-3 mb-4">
                       <DiffColumn label="Raw STT" text={dictationDetail.item.raw_transcript} />
                       <DiffColumn label="Transcript" text={dictationDetail.item.transcript} />

@@ -41,7 +41,7 @@ enum HUDState: Equatable {
     case negativeConfirm(term: String, wrong: String)
     case reviewing(candidates: [ReviewCandidate], recordingId: String)
     // system
-    case error(message: String, audioId: String?)
+    case error(message: String, runId: String?, audioId: String?, errorCode: String?, rawError: String?, diagnostic: String?)
     case updateReady(version: String, message: String)
     case recents([RecentItem])
     case placement(message: String)
@@ -58,6 +58,19 @@ enum HUDState: Equatable {
         switch self {
         case .confirming, .negativeConfirm, .reviewing, .error,
              .updateReady, .recents, .learned:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Actionable cards should survive the app's normal `idle` sync that fires
+    /// after processing ends. The user must be able to click Retry/Approve even
+    /// after the recorder has returned to idle.
+    var keepsOverIdle: Bool {
+        switch self {
+        case .confirming, .negativeConfirm, .reviewing, .error,
+             .updateReady, .recents, .placement:
             return true
         default:
             return false

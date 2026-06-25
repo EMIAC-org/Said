@@ -27,7 +27,7 @@ mod swift_stt_engine;
 mod swift_stt_guard;
 mod telemetry;
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -73,6 +73,8 @@ const MEETING_MIN_CHUNK_MS: u64 = 700;
 const MEETING_MAX_CHUNK_MS: u64 = 30_000;
 const AUTOSTART_ARG: &str = "--airnote-autostart";
 const SWIFT_FINAL_HANDOFF_WAIT_MS: u64 = 8_500;
+const DICTATION_NO_SPEECH_PEAK: f64 = 0.0035;
+const DICTATION_NO_SPEECH_RMS: f64 = 0.0008;
 const VOICE_ERROR_ALREADY_EMITTED_PREFIX: &str = "__airnote_voice_error_already_emitted__:";
 fn is_short_recording_cancel(err: &str) -> bool {
     err == desktop::RECORDING_TOO_SHORT_ERROR
@@ -2059,7 +2061,15 @@ fn create_status_bar(app: &tauri::AppHandle) {
     let idle_h = STATUS_BAR_HEIGHT;
     let (x, y) = status_bar_target_origin(app, idle_w, idle_h);
 
-    let url = "index.html?view=statusbar#statusbar";
+    let recovery_preview_enabled = std::env::var("AIRNOTE_RECOVERY_PREVIEW")
+        .or_else(|_| std::env::var("VITE_AIRNOTE_RECOVERY_PREVIEW"))
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    let url = if recovery_preview_enabled {
+        "index.html?view=statusbar&recoveryPreview=1#statusbar"
+    } else {
+        "index.html?view=statusbar#statusbar"
+    };
     tracing::info!(
         "[status-bar] creating window url={url} x={x:.0} y={y:.0} size={idle_w:.0}x{idle_h:.0} visible=false"
     );
@@ -2655,9 +2665,57 @@ fn smart_repair_last(app: &tauri::AppHandle) {
     }
 }
 
-/// Ctrl+Option+R (macOS) / Ctrl+Left-Alt+R (Windows): re-run the LAST dictation
-/// as a fresh, full-quality attempt from saved audio.
+/// ⌃⌥R: re-run the LAST dictation as a fresh, FULL-quality attempt — re-transcribe
+/// (STT) AND re-polish from the saved audio. Unlike `smart_repair_last` (which tries
+/// a quick re-polish first and only escalates to a full reprocess on a second press),
+/// this ALWAYS does the full reprocess from the recorded voice, so the user gets a
+/// proper attempt even if the first transcript or polish failed — never a degraded one.
 fn retry_last_from_audio(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let endpoint = app
+            .try_state::<BackendState>()
+            .and_then(|state| state.0.lock().ok()?.clone());
+        if let Some(ep) = endpoint {
+            match api::latest_failed_voice_run(&ep).await {
+                Ok(Some(run)) => {
+                    if let Some(audio_id) = run
+                        .audio_id
+                        .clone()
+                        .filter(|id| saved_voice_audio_exists(id))
+                    {
+                        let message_polish = run.mode == "message_polish";
+                        tracing::info!(
+                            "[retry] DB-first latest failed run run_id={} audio_id={} mode={} attempts={} error_code={}",
+                            run.run_id,
+                            audio_id,
+                            run.mode,
+                            run.attempt_count,
+                            run.error_code.as_deref().unwrap_or("none"),
+                        );
+                        retry_recording_internal_with_mode(
+                            app.clone(),
+                            audio_id,
+                            Some(message_polish),
+                            "latest_failed_db",
+                        );
+                        return;
+                    }
+                    tracing::warn!(
+                        "[retry] DB latest failed run has no available audio run_id={} audio_id={}",
+                        run.run_id,
+                        run.audio_id.as_deref().unwrap_or("none"),
+                    );
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!("[retry] latest failed run lookup failed: {e}"),
+            }
+        }
+        retry_last_from_audio_fallback(&app);
+    });
+}
+
+fn retry_last_from_audio_fallback(app: &tauri::AppHandle) {
     if let Some(failed) = app
         .try_state::<LastFailedVoiceActionState>()
         .and_then(|state| state.0.lock().ok()?.clone())
@@ -2948,6 +3006,7 @@ fn is_status_bar_notification_event(event_name: &str) -> bool {
             | "vocab-wrong-fixed"
             | "retrain-status"
             | "auto-update-ready"
+            | "voice-error"
             | "message-polish-mode"
             | "learning_saved"
     )
@@ -4783,8 +4842,22 @@ fn do_finish_recording(
             .and_then(|hot| hot.0.try_read().ok().map(|guard| guard.language.clone()))
             .filter(|lang| !lang.is_empty())
             .unwrap_or_else(|| "hi".to_string());
+        let swift_local_provider = said_core::stt::is_swift_local(&stt_provider);
+        let no_speech_levels = if !message_polish_mode && swift_local_provider {
+            dictation_wav_is_no_speech(&wav)
+        } else {
+            None
+        };
         let pre_transcript: Option<dg_stream::StreamingTranscript> = if message_polish_mode {
             tracing::info!("[finish] message polish mode — skipping STT pre-transcript");
+            None
+        } else if let Some(levels) = no_speech_levels {
+            tracing::warn!(
+                "[finish] no speech energy detected for Swift local run — suppressing STT transcript (peak={:.5}, rms={:.5}, samples={})",
+                levels.peak,
+                levels.rms,
+                levels.samples,
+            );
             None
         } else if said_core::stt::is_whisper_local(&stt_provider) {
             if let Some(t) = whisper_local_pre_transcript(&wav, &stt_language).await {
@@ -4941,8 +5014,6 @@ fn do_finish_recording(
             .try_state::<ScreenContextState>()
             .and_then(|s| s.0.lock().ok()?.clone());
 
-        let persist_audio = should_persist_audio_for_voice(&back_arc2, is_meeting, is_divo).await;
-
         let result = run_voice_polish_sse(
             &back_arc2,
             wav,
@@ -4955,7 +5026,6 @@ fn do_finish_recording(
             &app2,
             is_meeting,
             is_divo,
-            persist_audio,
         )
         .await;
 
@@ -5246,27 +5316,60 @@ fn reject_pre_transcript_reason(
     None
 }
 
-async fn should_persist_audio_for_voice(
-    back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
-    is_meeting: bool,
-    is_divo: bool,
-) -> bool {
-    if is_meeting || is_divo {
-        return false;
+#[derive(Debug, Clone, Copy)]
+struct DictationAudioLevels {
+    peak: f64,
+    rms: f64,
+    samples: usize,
+}
+
+fn dictation_pcm16_levels(wav: &[u8]) -> Option<DictationAudioLevels> {
+    if wav.len() < 44 || &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
+        return None;
     }
-    let ep = match back_arc.lock().ok().and_then(|g| g.clone()) {
-        Some(ep) => ep,
-        None => return true,
-    };
-    match api::get_preferences(&ep).await {
-        Ok(prefs) => prefs.server_runtime_enabled || prefs.server_audio_runtime_enabled,
-        Err(e) => {
-            tracing::warn!(
-                "[privacy] could not read prefs for audio persistence; preserving legacy save behavior: {e}"
-            );
-            true
+    let mut offset = 12usize;
+    while offset + 8 <= wav.len() {
+        let chunk_id = &wav[offset..offset + 4];
+        let chunk_len = u32::from_le_bytes([
+            wav[offset + 4],
+            wav[offset + 5],
+            wav[offset + 6],
+            wav[offset + 7],
+        ]) as usize;
+        offset += 8;
+        if offset + chunk_len > wav.len() {
+            return None;
         }
+        if chunk_id == b"data" {
+            let data = &wav[offset..offset + chunk_len];
+            let mut samples = 0usize;
+            let mut peak = 0f64;
+            let mut sum_sq = 0f64;
+            for bytes in data.chunks_exact(2) {
+                let sample = i16::from_le_bytes([bytes[0], bytes[1]]) as f64 / i16::MAX as f64;
+                let amp = sample.abs();
+                peak = peak.max(amp);
+                sum_sq += sample * sample;
+                samples += 1;
+            }
+            if samples == 0 {
+                return None;
+            }
+            return Some(DictationAudioLevels {
+                peak,
+                rms: (sum_sq / samples as f64).sqrt(),
+                samples,
+            });
+        }
+        offset += chunk_len + (chunk_len % 2);
     }
+    None
+}
+
+fn dictation_wav_is_no_speech(wav: &[u8]) -> Option<DictationAudioLevels> {
+    let levels = dictation_pcm16_levels(wav)?;
+    (levels.peak < DICTATION_NO_SPEECH_PEAK && levels.rms < DICTATION_NO_SPEECH_RMS)
+        .then_some(levels)
 }
 
 /// Re-transcribe a recovered orphan recording. Uses a no-op event handler so the
@@ -5282,7 +5385,6 @@ async fn recover_transcribe(ep: &BackendEndpoint, wav: Vec<u8>) -> Result<api::P
         None,
         None,
         None,
-        false,
         false,
         |_event: api::PolishEvent| {},
     )
@@ -5304,7 +5406,6 @@ async fn run_voice_polish_sse(
     app: &tauri::AppHandle,
     #[allow(unused_variables)] is_meeting: bool,
     is_divo: bool,
-    persist_audio: bool,
 ) -> Result<api::PolishDone, String> {
     let ep = {
         let lock = back_arc.lock().map_err(|_| "backend lock failed")?;
@@ -5490,6 +5591,7 @@ async fn run_voice_polish_sse(
             }
             api::PolishEvent::Error {
                 message,
+                run_id,
                 audio_id,
                 error_code,
                 retryable,
@@ -5504,7 +5606,7 @@ async fn run_voice_polish_sse(
                     diagnostic.as_deref().unwrap_or(message),
                     error_code.clone(),
                     error_target_app.clone(),
-                    error_client_run_id.clone(),
+                    run_id.clone().or_else(|| error_client_run_id.clone()),
                     message_polish_mode,
                 );
                 let human = humanize_error(&message);
@@ -5513,6 +5615,7 @@ async fn run_voice_polish_sse(
                     serde_json::json!({
                         "message":  human,
                         "raw_error": message,
+                        "run_id": run_id,
                         "audio_id": audio_id,
                         "error_code": error_code,
                         "retryable": retryable,
@@ -5542,7 +5645,6 @@ async fn run_voice_polish_sse(
             repair_mode,
             screen_context,
             message_polish_mode,
-            persist_audio,
             &mut on_polish_event,
         )
         .await
@@ -5557,7 +5659,6 @@ async fn run_voice_polish_sse(
             repair_mode,
             screen_context,
             message_polish_mode,
-            persist_audio,
             &mut on_polish_event,
         )
         .await
@@ -5571,7 +5672,59 @@ async fn run_voice_polish_sse(
             if error_already_emitted.load(Ordering::Relaxed) {
                 return Err(mark_voice_error_already_emitted(&e));
             }
-            return Err(e);
+            let mut retry_audio_id: Option<String> = None;
+            if let Some(run_id) = client_run_id.as_deref() {
+                match api::mark_voice_run_failed(&ep, run_id, "sse_missing_done", &e, true, true)
+                    .await
+                {
+                    Ok(Some(run)) => {
+                        retry_audio_id = run.audio_id.clone();
+                        tracing::warn!(
+                            "[retry] marked voice run failed after missing done run_id={} audio_id={} status={} attempts={}",
+                            run.run_id,
+                            run.audio_id.as_deref().unwrap_or("none"),
+                            run.status,
+                            run.attempt_count,
+                        );
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            "[retry] missing-done failure could not be linked to run_id={run_id}"
+                        );
+                    }
+                    Err(mark_err) => {
+                        tracing::warn!(
+                            "[retry] failed to mark missing-done run_id={run_id}: {mark_err}"
+                        );
+                    }
+                }
+            }
+            cache_last_failed_voice_action(
+                &app,
+                retry_audio_id.clone(),
+                &e,
+                Some("sse_missing_done".to_string()),
+                target_app_for_telemetry.clone(),
+                client_run_id.clone(),
+                message_polish_mode,
+            );
+            let _ = app.emit(
+                "voice-error",
+                serde_json::json!({
+                    "message": "Audio saved. Processing failed.",
+                    "raw_error": e,
+                    "run_id": client_run_id,
+                    "audio_id": retry_audio_id,
+                    "error_code": "sse_missing_done",
+                    "retryable": true,
+                    "owned_by_airnote": true,
+                    "diagnostic": "SSE stream ended without a done event after audio capture",
+                    "auto_hide_ms": 4000,
+                }),
+            );
+            return Err(mark_voice_error_already_emitted(
+                "SSE stream ended without a `done` event",
+            ));
         }
     };
 
@@ -5718,6 +5871,15 @@ async fn run_voice_polish_sse(
     }
 
     if let Some(run_id) = client_run_id.as_deref() {
+        if let Err(e) = api::mark_voice_run_paste(&ep, run_id, output_pasted).await {
+            tracing::warn!("[voice-run] paste status update failed run_id={run_id}: {e}");
+        } else {
+            tracing::info!(
+                "[voice-run] paste status updated run_id={} paste_success={}",
+                run_id,
+                output_pasted,
+            );
+        }
         let mode = if is_divo {
             "divo"
         } else if is_meeting {
@@ -6272,6 +6434,53 @@ fn reveal_saved_audio(audio_id: String) -> Result<(), String> {
     reveal_downloaded_file(path.display().to_string())
 }
 
+fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("pbcopy failed to start: {e}"))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| format!("pbcopy write failed: {e}"))?;
+        }
+        let status = child
+            .wait()
+            .map_err(|e| format!("pbcopy wait failed: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("pbcopy exited with {status}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "clip"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("clip failed to start: {e}"))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| format!("clip write failed: {e}"))?;
+        }
+        let status = child.wait().map_err(|e| format!("clip wait failed: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("clip exited with {status}"));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = text;
+        Err("clipboard copy is not supported on this platform".to_string())
+    }
+}
+
 /// Retry a failed recording by re-submitting its saved WAV file.
 /// `audio_id` is the UUID that the backend included in the `voice-error` event.
 #[tauri::command]
@@ -6398,16 +6607,6 @@ fn retry_recording_spawn(
         wav_path.display(),
     );
 
-    retry_recording_wav_spawn(wav, shared, backend, app, message_polish_mode)
-}
-
-fn retry_recording_wav_spawn(
-    wav: Vec<u8>,
-    shared: Arc<Mutex<DesktopApp>>,
-    backend: Arc<Mutex<Option<BackendEndpoint>>>,
-    app: tauri::AppHandle,
-    message_polish_mode: Option<bool>,
-) -> Result<(), String> {
     // Mark as processing so the UI shows a spinner
     {
         let mut d = shared.lock().map_err(|_| "lock failed")?;
@@ -6449,7 +6648,6 @@ fn retry_recording_wav_spawn(
             &app2,
             false,
             false, // not a Divo turn
-            false, // retry output should not create another saved-audio copy
         )
         .await;
 
@@ -7316,17 +7514,6 @@ fn wire_notch_events(app: &tauri::AppHandle, sidecar: &notch_sidecar::NotchSidec
         });
     }
 
-    // voice-level uses `level`; the HUD protocol uses `value`.
-    {
-        let sc = sidecar.clone();
-        app.listen("voice-level", move |e| {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(e.payload()) {
-                let level = v.get("level").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                sc.send(&serde_json::json!({ "type": "level", "value": level }));
-            }
-        });
-    }
-
     // Pass-through events: forward the payload verbatim with a `type` tag.
     let passthrough: [(&str, &str); 13] = [
         ("voice-status", "status"),
@@ -7471,6 +7658,24 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
                 let state = app.state::<SharedApp>();
                 let backend = app.state::<BackendState>();
                 let _ = retry_recording(audio_id, state, backend, app.clone());
+            }
+        }
+
+        "open_audio" => {
+            let audio_id = notch_str(&action, "audio_id");
+            if !audio_id.is_empty() {
+                if let Err(e) = reveal_saved_audio(audio_id.clone()) {
+                    tracing::warn!("[notch] reveal saved audio failed audio_id={audio_id}: {e}");
+                }
+            }
+        }
+
+        "copy_details" => {
+            let text = notch_str(&action, "text");
+            if !text.is_empty() {
+                if let Err(e) = copy_text_to_clipboard(&text) {
+                    tracing::warn!("[notch] copy details failed: {e}");
+                }
             }
         }
 
@@ -7659,39 +7864,6 @@ fn edit_watch_timeouts(word_count: usize) -> (Duration, Duration, Duration) {
         Duration::from_secs_f64(no_edit_idle_secs),
         Duration::from_secs_f64(post_edit_idle_secs),
     )
-}
-
-#[cfg(test)]
-fn edit_watch_finish_reason(
-    saw_user_edit: bool,
-    idle_elapsed: Duration,
-    total_elapsed: Duration,
-    max_duration: Duration,
-    no_edit_idle_timeout: Duration,
-    post_edit_idle_timeout: Duration,
-) -> Option<&'static str> {
-    let active_idle_timeout = if saw_user_edit {
-        post_edit_idle_timeout
-    } else {
-        no_edit_idle_timeout
-    };
-    let hard_timeout = if saw_user_edit {
-        Duration::from_secs(120)
-    } else {
-        max_duration
-    };
-
-    if idle_elapsed > active_idle_timeout {
-        Some(if saw_user_edit {
-            "post_edit_idle"
-        } else {
-            "no_edit_idle"
-        })
-    } else if total_elapsed > hard_timeout {
-        Some("hard_timeout")
-    } else {
-        None
-    }
 }
 
 async fn blocking_ax_option<T, F>(label: &'static str, f: F) -> Option<T>
@@ -8192,6 +8364,7 @@ async fn watch_for_edit(
             capture_method,
             capture_meta,
             client_run_id.as_deref(),
+            pre_paste_text.as_deref(),
         )
         .await
         {
@@ -9394,14 +9567,14 @@ fn main() {
                     });
                 }
 
-                // ── HUD surface: native notch sidecar (first-class) or the pill ─
-                // The notch sidecar is the primary HUD by default. Opt out with
-                // AIRNOTE_NOTCH_SIDECAR=0 to use the legacy status-bar pill; we
-                // also fall back to the pill if the notch binary is missing.
+                // ── HUD surface: status-bar pill by default; native notch opt-in ─
+                // Keep the notch sidecar code staged for later launch, but do not
+                // connect it in normal builds. Explicitly opt in with
+                // AIRNOTE_NOTCH_SIDECAR=1 while developing the notch surface.
                 {
                     let notch_enabled = std::env::var("AIRNOTE_NOTCH_SIDECAR")
-                        .map(|v| v != "0")
-                        .unwrap_or(true);
+                        .map(|v| v == "1")
+                        .unwrap_or(false);
                     let mut notch_active = false;
                     if notch_enabled {
                         let action_handle = app.handle().clone();
@@ -9412,7 +9585,9 @@ fn main() {
                             app.manage(sidecar);
                             NOTCH_FIRST_CLASS.store(true, Ordering::SeqCst);
                             notch_active = true;
-                            tracing::info!("[notch] sidecar first-class — status-bar pill suppressed");
+                            tracing::info!(
+                                "[notch] sidecar opt-in active — status-bar pill suppressed"
+                            );
                         } else {
                             tracing::warn!("[notch] sidecar binary not found — using status-bar pill");
                         }
@@ -9929,7 +10104,7 @@ fn main() {
                             }
                             hotkey::HudShortcutAction::RetryLastFromAudio => {
                                 tracing::info!(
-                                    "[hotkey] ⌃⌥R / Ctrl+Left-Alt+R → retry last dictation"
+                                    "[hotkey] ⌃⌥R / Ctrl+Left-Alt+R → full retry of last dictation from saved audio"
                                 );
                                 retry_last_from_audio(&app_h);
                             }
@@ -10325,62 +10500,6 @@ mod meaningful_edit_tests {
 }
 
 #[cfg(test)]
-mod edit_watch_finish_reason_tests {
-    use std::time::Duration;
-
-    use super::{edit_watch_finish_reason, edit_watch_timeouts};
-
-    #[test]
-    fn short_edits_wait_at_least_eight_seconds_after_last_change() {
-        let (_max, _no_edit_idle, post_edit_idle) = edit_watch_timeouts(5);
-        assert!(post_edit_idle >= Duration::from_secs(8));
-    }
-
-    #[test]
-    fn delayed_second_edit_resets_quiet_window() {
-        let (max, no_edit_idle, post_edit_idle) = edit_watch_timeouts(5);
-        assert_eq!(
-            edit_watch_finish_reason(
-                true,
-                post_edit_idle - Duration::from_millis(1),
-                Duration::from_secs(14),
-                max,
-                no_edit_idle,
-                post_edit_idle,
-            ),
-            None
-        );
-        assert_eq!(
-            edit_watch_finish_reason(
-                true,
-                post_edit_idle + Duration::from_millis(1),
-                Duration::from_secs(18),
-                max,
-                no_edit_idle,
-                post_edit_idle,
-            ),
-            Some("post_edit_idle")
-        );
-    }
-
-    #[test]
-    fn no_edit_uses_idle_window() {
-        let (max, no_edit_idle, post_edit_idle) = edit_watch_timeouts(5);
-        assert_eq!(
-            edit_watch_finish_reason(
-                false,
-                no_edit_idle + Duration::from_millis(1),
-                no_edit_idle + Duration::from_millis(1),
-                max,
-                no_edit_idle,
-                post_edit_idle,
-            ),
-            Some("no_edit_idle")
-        );
-    }
-}
-
-#[cfg(test)]
 mod live_typing_guard_tests {
     use super::{LiveTypingDecision, LiveTypingGuard, STREAM_RESET_SENTINEL};
 
@@ -10406,6 +10525,49 @@ mod live_typing_guard_tests {
             LiveTypingDecision::PreviewOnly
         );
         assert_eq!(guard.on_token("final"), LiveTypingDecision::TypeToken);
+    }
+}
+
+#[cfg(test)]
+mod dictation_audio_level_tests {
+    use super::{dictation_pcm16_levels, dictation_wav_is_no_speech};
+
+    fn wav_from_samples(samples: &[i16]) -> Vec<u8> {
+        let data_len = samples.len() * 2;
+        let mut wav = Vec::with_capacity(44 + data_len);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&16_000u32.to_le_bytes());
+        wav.extend_from_slice(&32_000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        wav
+    }
+
+    #[test]
+    fn detects_no_speech_energy_in_quiet_wav() {
+        let wav = wav_from_samples(&[0, 1, -1, 2, -2, 0, 1, -1]);
+        let levels = dictation_wav_is_no_speech(&wav).expect("quiet wav should be no speech");
+        assert!(levels.peak < 0.0035);
+        assert!(levels.rms < 0.0008);
+    }
+
+    #[test]
+    fn keeps_speech_like_wav() {
+        let wav = wav_from_samples(&[0, 900, -900, 1200, -1200, 600, -600, 0]);
+        let levels = dictation_pcm16_levels(&wav).expect("valid wav levels");
+        assert!(levels.peak > 0.0035);
+        assert!(dictation_wav_is_no_speech(&wav).is_none());
     }
 }
 

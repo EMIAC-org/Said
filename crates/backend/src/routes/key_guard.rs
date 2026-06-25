@@ -132,9 +132,13 @@ mod tests {
 
     #[test]
     fn deepgram_stt_requires_deepgram_key() {
-        let env_has_deepgram = std::env::var("DEEPGRAM_API_KEY")
-            .ok()
-            .is_some_and(|value| !value.trim().is_empty());
+        let env_has_deepgram = said_core::stt::DEEPGRAM_ENV_KEY_CANDIDATES
+            .iter()
+            .any(|key| {
+                std::env::var(key)
+                    .ok()
+                    .is_some_and(|value| !value.trim().is_empty())
+            });
         assert_eq!(has_stt_key(&prefs("deepgram", None)), env_has_deepgram);
         assert!(has_stt_key(&prefs("deepgram", Some("dg_key".into()))));
     }

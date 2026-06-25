@@ -214,7 +214,7 @@ async fn main() {
             loop {
                 interval.tick().await;
                 said_backend::store::history::cleanup_old_recordings(&pool2);
-                said_backend::routes::voice::cleanup_old_audio();
+                said_backend::routes::voice::cleanup_old_audio(&pool2);
                 info!("[cleanup] 7-day recording + 24h audio sweep complete");
             }
         });

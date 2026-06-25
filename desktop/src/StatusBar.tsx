@@ -77,6 +77,10 @@ const sounds = {
   tick:      () => { osc(1200, "sine", 0.06, 0.06); },
 } as const;
 
+const RECOVERY_PREVIEW_ENABLED =
+  import.meta.env.VITE_AIRNOTE_RECOVERY_PREVIEW === "1" ||
+  new URLSearchParams(window.location.search).get("recoveryPreview") === "1";
+
 type SoundName = keyof typeof sounds;
 
 function playSound(name: SoundName | null) {
@@ -93,7 +97,8 @@ type BarState =
   | { kind: "done" }
   | { kind: "pasted" }
   | { kind: "manual_paste"; message?: string }
-  | { kind: "error"; message: string; audioId?: string; rawError?: string; errorCode?: string; diagnostic?: string }
+  | { kind: "error"; message: string; runId?: string; audioId?: string; rawError?: string; errorCode?: string; diagnostic?: string }
+  | { kind: "recovered"; text: string; copied: boolean }
   | { kind: "learned"; term: string; message: string }
   | { kind: "email_saved"; email: string; message: string }
   | { kind: "confirming"; term: string; original: string; context: string; recordingId: string }
@@ -154,6 +159,7 @@ type ReviewCandidate = {
 
 type VoiceErrorPayload = {
   message: string;
+  run_id?: string;
   audio_id?: string;
   error_code?: string;
   raw_error?: string;
@@ -174,6 +180,7 @@ function keepsHudOverIdle(kind: PillKind): boolean {
     || kind === "pasted"
     || kind === "manual_paste"
     || kind === "update_ready"
+    || kind === "recovered"
     || kind.startsWith("divo");
 }
 
@@ -222,6 +229,7 @@ function pillSize(
   label = "",
   candidateCount = 0,
   reviewExpanded = true,
+  actionCount = 0,
 ): { width: number; height: number } {
   if (hasTranscript) return { width: VOICE_INNER_WIDTH, height: VOICE_INNER_HEIGHT };
   if (kind === "divo_stage") return { width: 520, height: 58 };
@@ -232,6 +240,18 @@ function pillSize(
   if (kind === "divo_ready") return { width: 168, height: 46 };
   if (kind === "divo_pending") return { width: 300, height: 104 };
   if (kind === "divo_error") return { width: 300, height: 96 };
+  if (kind === "error") {
+    const actionWidth = actionCount > 0
+      ? (actionCount * 22) + ((actionCount - 1) * 6) + 8
+      : 0;
+    const content = Math.min(textWidth(label), 300) + actionWidth + 42;
+    return { width: Math.max(240, Math.min(Math.ceil(content), 460)), height: 40 };
+  }
+  if (kind === "recovered") return { width: 380, height: 196 };
+  if (kind === "update_ready") {
+    const content = Math.min(textWidth(label), 190) + 148;
+    return { width: Math.max(320, Math.min(Math.ceil(content), 390)), height: 136 };
+  }
   if (kind === "confirming") return { width: 280, height: 142 };
   if (kind === "negative_confirm") return { width: 280, height: 142 };
   if (kind === "reviewing") {
@@ -368,6 +388,7 @@ export default function StatusBar() {
     || bar.kind === "error"
     || bar.kind === "learned"
     || bar.kind === "update_ready"
+    || bar.kind === "recovered"
     || bar.kind === "placement"
     // Divo: the working HUD stays VISIBLE (persistent hold) but click-through —
     // it floats over the user's app, so making it interactive would swallow every
@@ -389,6 +410,7 @@ export default function StatusBar() {
       case "pasted": return "Pasted";
       case "manual_paste": return bar.message || "Paste latest";
       case "error": return bar.message;
+      case "recovered": return "Recovered dictation";
       case "learned": return bar.message;
       case "email_saved": return bar.message;
       case "queued": return `"${bar.term}" — ${bar.remaining === 1 ? "1 more edit to learn" : `${bar.remaining} more edits to learn`}`;
@@ -403,7 +425,15 @@ export default function StatusBar() {
   })();
 
   const candidateCount = bar.kind === "reviewing" ? bar.candidates.length : 0;
-  const innerSize = pillSize(bar.kind, hasTranscript, pillLabel, candidateCount, reviewExpanded);
+  const compactActionCount = bar.kind === "error" ? 2 + (bar.audioId ? 2 : 0) : 0;
+  const innerSize = pillSize(
+    bar.kind,
+    hasTranscript,
+    pillLabel,
+    candidateCount,
+    reviewExpanded,
+    compactActionCount,
+  );
 
   useEffect(() => {
     barKindRef.current = bar.kind;
@@ -714,6 +744,16 @@ export default function StatusBar() {
   }, []);
 
   useEffect(() => {
+    if (!RECOVERY_PREVIEW_ENABLED) return;
+    const text = [
+      "This is a recovered dictation preview from AirNote.",
+      "The card should stay in the status bar, follow light and dark theme colors, and keep the main app clean.",
+    ].join(" ");
+    presentStatusBar("dictation-recovered-preview");
+    setBar({ kind: "recovered", text, copied: false });
+  }, []);
+
+  useEffect(() => {
     const subs: Array<() => void> = [];
 
     listen<{ reason?: string; state?: string }>("status-bar-resync", (e) => {
@@ -846,7 +886,7 @@ export default function StatusBar() {
 
     // ── Error: show message + optional retry ──────────────────────────────
     listen<VoiceErrorPayload>("voice-error", (e) => {
-      const { message, audio_id, auto_hide_ms, raw_error, error_code, diagnostic } = e.payload;
+      const { message, run_id, audio_id, auto_hide_ms, raw_error, error_code, diagnostic } = e.payload;
       console.error("[status-bar] voice-error event", {
         message,
         raw_error,
@@ -858,7 +898,7 @@ export default function StatusBar() {
       if (!notifEnabled("error")) return;
       presentStatusBar("voice-error");
       playSound("lowThud");
-      setBar({ kind: "error", message, audioId: audio_id, rawError: raw_error, errorCode: error_code, diagnostic });
+      setBar({ kind: "error", message, runId: run_id, audioId: audio_id, rawError: raw_error, errorCode: error_code, diagnostic });
       if (typeof auto_hide_ms === "number" && auto_hide_ms > 0) {
         doneTimer.current = setTimeout(
           () => returnToIdleOrPinned("auto-update-ready-after-error", false),
@@ -869,6 +909,19 @@ export default function StatusBar() {
       console.info("[status-bar] subscribed voice-error");
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] voice-error subscribe failed", err));
+
+    listen<{ text: string }>("dictation-recovered", (e) => {
+      const text = e.payload?.text?.trim() || "";
+      if (!text) return;
+      console.info("[status-bar] dictation-recovered event", { chars: text.length });
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      presentStatusBar("dictation-recovered");
+      playSound("ding");
+      setBar({ kind: "recovered", text, copied: false });
+    }).then((fn) => {
+      console.info("[status-bar] subscribed dictation-recovered");
+      subs.push(fn);
+    }).catch((err) => console.warn("[status-bar] dictation-recovered subscribe failed", err));
 
     listen("long-dictation-locked", () => {
       console.info("[status-bar] long-dictation-locked event");
@@ -1828,7 +1881,7 @@ export default function StatusBar() {
       <CardHost>
         <div
           className="sb-survey sb-survey--panel sb-survey--interactive"
-          style={{ width: 300, height: 122 }}
+          style={{ width: innerSize.width, height: innerSize.height }}
           aria-label="AirNote update ready"
         >
           <div className="sb-survey-kicker-row">
@@ -1872,6 +1925,55 @@ export default function StatusBar() {
             >
               Restart
               <RotateCcw size={14} strokeWidth={2} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </CardHost>
+    );
+  }
+
+  if (bar.kind === "recovered") {
+    return (
+      <CardHost>
+        <div
+          className="sb-survey sb-survey--panel sb-survey--interactive"
+          style={{ width: innerSize.width, height: innerSize.height }}
+          aria-label="AirNote recovered dictation"
+        >
+          <div className="sb-survey-kicker-row">
+            <span className="sb-status-dot sb-status-dot--info" />
+            <span className="sb-survey-kicker">Recovered your last dictation</span>
+          </div>
+          <div className="sb-survey-body sb-recovered-body">
+            AirNote recovered audio from the previous run.
+          </div>
+          <div className="sb-recovered-text">
+            {bar.text}
+          </div>
+          <div className="sb-survey-footer">
+            <button
+              type="button"
+              className="sb-survey-skip"
+              onClick={() => {
+                setBar({ kind: "idle" });
+                invoke("dismiss_status_bar").catch(() => {});
+              }}
+            >
+              Dismiss
+            </button>
+            <button
+              type="button"
+              className="sb-survey-next"
+              onClick={() => {
+                navigator.clipboard.writeText(bar.text)
+                  .then(() => {
+                    setBar((prev) => prev.kind === "recovered" ? { ...prev, copied: true } : prev);
+                  })
+                  .catch((err) => console.warn("[status-bar] copy recovered dictation failed", err));
+              }}
+            >
+              {bar.copied ? "Copied" : "Copy"}
+              <Copy size={14} strokeWidth={2} aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -1938,7 +2040,7 @@ export default function StatusBar() {
           </div>
         )}
 
-        <div className="sb-survey-controlbar">
+        <div className={`sb-survey-controlbar${bar.kind === "error" ? " sb-survey-controlbar--actions" : ""}`}>
           {bar.kind === "processing" ? (
             <div className="sb-survey-processing">
               <span>{processingLabel(bar.phase)}</span>
@@ -2044,6 +2146,7 @@ export default function StatusBar() {
                   const details = [
                     bar.message,
                     bar.errorCode ? `code=${bar.errorCode}` : "",
+                    bar.runId ? `run_id=${bar.runId}` : "",
                     bar.audioId ? `audio_id=${bar.audioId}` : "",
                     bar.diagnostic || bar.rawError || "",
                   ].filter(Boolean).join("\n");

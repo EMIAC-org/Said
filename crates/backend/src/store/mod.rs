@@ -27,6 +27,7 @@ pub mod vectors;
 pub mod vocab_embeddings;
 pub mod vocab_fts;
 pub mod vocabulary;
+pub mod voice_runs;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
@@ -81,6 +82,7 @@ const MIGRATION_048: &str = include_str!("migrations/048_default_cerebras_gpt_os
 const MIGRATION_049: &str = include_str!("migrations/049_lock_cerebras_polish_defaults.sql");
 const MIGRATION_050: &str = include_str!("migrations/050_local_profile_summary.sql");
 const MIGRATION_051: &str = include_str!("migrations/051_observability_outbox.sql");
+const MIGRATION_052: &str = include_str!("migrations/052_voice_runs.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -544,6 +546,14 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 51")
             .expect("failed to set user_version to 51");
     }
+
+    if version < 52 {
+        info!("running migration 052_voice_runs");
+        conn.execute_batch(MIGRATION_052)
+            .expect("migration 052 failed");
+        conn.execute_batch("PRAGMA user_version = 52")
+            .expect("failed to set user_version to 52");
+    }
 }
 
 /// Idempotent repairs for partial migration states (e.g. user_version bumped without ALTER).
@@ -796,7 +806,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 51);
+        assert_eq!(version, 52);
 
         for table in [
             "tier2_policy_weights",

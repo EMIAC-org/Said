@@ -73,6 +73,7 @@ static HUD_SHORTCUT_CB: OnceLock<Arc<dyn Fn(HudShortcutAction) + Send + Sync>> =
 static DIVO_PRESS_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
 static DIVO_RELEASE_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
 static DIVO_CANCEL_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+const DIVO_HOTKEY_ACTIVE: bool = false;
 /// True while the target key is physically held. The low-level hook fires on
 /// every autorepeat, so we de-duplicate via this flag.
 static IS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -396,20 +397,24 @@ pub fn register_divo_hotkey_callbacks(
     let _ = DIVO_PRESS_CB.set(on_press);
     let _ = DIVO_RELEASE_CB.set(on_release);
     let _ = DIVO_CANCEL_CB.set(on_cancel);
-    DIVO_ENABLED.store(true, Ordering::SeqCst);
-    tracing::info!("[hotkey] Divo Ctrl hold-to-talk registered");
+    DIVO_ENABLED.store(false, Ordering::SeqCst);
+    tracing::info!("[hotkey] Divo Ctrl hold-to-talk registered but disabled");
 }
 
 pub fn set_divo_hotkey_enabled(enabled: bool) {
-    DIVO_ENABLED.store(enabled, Ordering::SeqCst);
-    if !enabled {
+    let active = DIVO_HOTKEY_ACTIVE && enabled;
+    DIVO_ENABLED.store(active, Ordering::SeqCst);
+    if !active {
         store_divo_snapshot(DivoSnapshot::default());
         DIVO_NEW_CHAT.store(false, Ordering::SeqCst);
         DIVO_GEN.fetch_add(1, Ordering::SeqCst);
     }
-    tracing::info!("[hotkey] Divo Ctrl hotkey enabled={enabled}");
+    tracing::info!(
+        "[hotkey] Divo Ctrl hotkey enabled={active} requested={enabled} plugged_out={}",
+        !DIVO_HOTKEY_ACTIVE
+    );
 }
 
 pub fn divo_take_new_chat() -> bool {
-    DIVO_NEW_CHAT.swap(false, Ordering::SeqCst)
+    DIVO_HOTKEY_ACTIVE && DIVO_NEW_CHAT.swap(false, Ordering::SeqCst)
 }

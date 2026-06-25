@@ -1994,6 +1994,39 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   font-weight: 600;
 }
 
+.sb-recovered-body {
+  flex: 0 0 auto;
+  margin-bottom: 7px;
+}
+
+.sb-recovered-text {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: hsl(var(--muted) / 0.54);
+  color: hsl(var(--foreground) / 0.9);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow: inset 0 0 0 1px hsl(var(--foreground) / 0.055);
+}
+
+.sb-recovered-text::-webkit-scrollbar {
+  width: 5px;
+}
+
+.sb-recovered-text::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sb-recovered-text::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: hsl(var(--foreground) / 0.14);
+}
+
 .sb-survey-em {
   color: hsl(var(--primary));
   font-weight: 600;
@@ -2062,11 +2095,24 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   gap: 6px;
 }
 
+.sb-survey-controlbar--actions {
+  justify-content: flex-start;
+}
+
 .sb-survey-controlbar .sb-survey-label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 240px;
+  min-width: 0;
+  max-width: none;
+}
+
+.sb-survey-controlbar--actions .sb-survey-label {
+  flex: 1 1 auto;
+}
+
+.sb-survey-controlbar .sb-survey-icon-btn {
+  flex: 0 0 22px;
 }
 
 .sb-survey-transcript {
@@ -2167,7 +2213,14 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   font-size: 12px;
   font-weight: 500;
   color: hsl(var(--muted-foreground));
+  min-width: 0;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sb-survey-label > span:last-child {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }

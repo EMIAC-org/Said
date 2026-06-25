@@ -371,6 +371,18 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/history", get(routes::history::list))
         .route(
+            "/v1/voice-runs/latest-failed",
+            get(routes::voice_runs::latest_failed),
+        )
+        .route(
+            "/v1/voice-runs/:run_id/failed",
+            post(routes::voice_runs::mark_failed),
+        )
+        .route(
+            "/v1/voice-runs/:run_id/paste",
+            post(routes::voice_runs::mark_paste),
+        )
+        .route(
             "/v1/recordings/:id",
             axum::routing::delete(routes::history::delete),
         )
@@ -471,7 +483,7 @@ pub fn router_with_state(state: AppState) -> Router {
 
     public
         .merge(authenticated)
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB — covers long recordings
+        .layer(DefaultBodyLimit::max(32 * 1024 * 1024)) // 32 MB — keeps long saved-audio retries inside AirNote-owned errors
         .layer(cors)
         .with_state(state)
 }
