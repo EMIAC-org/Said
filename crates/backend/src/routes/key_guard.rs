@@ -12,6 +12,15 @@ fn has_deepgram_key(prefs: &Preferences) -> bool {
 }
 
 pub fn effective_stt_provider(prefs: &Preferences) -> String {
+    // Dev/testing override mirrors said_core::stt::effective_dictation_provider so
+    // AIRNOTE_FORCE_STT_PROVIDER=whisper_local routes dictation to on-device
+    // whisper.cpp here in the backend too.
+    if let Ok(forced) = std::env::var("AIRNOTE_FORCE_STT_PROVIDER") {
+        let norm = said_core::stt::normalize_toggle_stt_provider(&forced);
+        if !norm.is_empty() {
+            return norm;
+        }
+    }
     said_core::stt::resolve_provider_from_pref(&prefs.stt_provider)
 }
 

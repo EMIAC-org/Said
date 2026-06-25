@@ -59,7 +59,8 @@ fn default_llm_provider() -> String {
 }
 
 fn default_stt_provider() -> String {
-    "deepgram".to_string()
+    // Native, Python-free on-device whisper.cpp is the default.
+    "whisper_local".to_string()
 }
 
 fn default_learning_enabled() -> bool {

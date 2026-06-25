@@ -12721,6 +12721,102 @@ pub async fn meeting_download_whisper_model(app: AppHandle, name: String) -> Res
     result
 }
 
+/// Public GGML (fp16) conversion of Oriserve Whisper-Hindi2Hinglish-Swift used by
+/// the native, Python-free dictation path. Downloaded into `whisper_model_path()`,
+/// which the backend loads at startup.
+pub const DICTATION_MODEL_URL: &str = "https://huggingface.co/anish2305/airnote-hinglish-stt-ggml/resolve/main/ggml-oriserve-hinglish-fp16.bin";
+const DICTATION_MODEL_SIZE_HINT: u64 = 148_000_000;
+
+#[derive(serde::Serialize)]
+pub struct DictationModelStatus {
+    pub installed: bool,
+    pub size_bytes: u64,
+    pub path: String,
+}
+
+#[tauri::command]
+pub fn dictation_model_status() -> DictationModelStatus {
+    let path = said_core::paths::whisper_model_path();
+    let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    DictationModelStatus {
+        installed: path.is_file(),
+        size_bytes,
+        path: path.to_string_lossy().to_string(),
+    }
+}
+
+/// Remove the on-device dictation model file (frees ~148 MB). Idempotent.
+#[tauri::command]
+pub fn delete_dictation_model() -> Result<(), String> {
+    let path = said_core::paths::whisper_model_path();
+    if path.is_file() {
+        fs::remove_file(&path).map_err(|e| format!("couldn't delete model: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Download the fp16 dictation model into `whisper_model_path()`. Streams with
+/// progress on the shared `meeting-model-download` event. Idempotent. Auto-fetches
+/// the Silero VAD model afterwards if missing (the native path gates on it).
+#[tauri::command]
+pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
+    let dest = said_core::paths::whisper_model_path();
+    let name = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("ggml-oriserve-hinglish-fp16.bin")
+        .to_string();
+    let dir = dest
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| said_core::paths::data_dir().join("models"));
+    if dest.is_file() {
+        return Ok(()); // already installed — idempotent
+    }
+    {
+        let mut inflight = model_downloads_inflight()
+            .lock()
+            .map_err(|_| "download registry poisoned".to_string())?;
+        if !inflight.insert(name.clone()) {
+            return Err("this model is already downloading".to_string());
+        }
+    }
+    if let Ok(mut cancels) = model_download_cancels().lock() {
+        cancels.remove(&name);
+    }
+
+    let app_dl = app.clone();
+    let name_task = name.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        download_whisper_model_blocking(
+            &app_dl,
+            &name_task,
+            DICTATION_MODEL_URL,
+            DICTATION_MODEL_SIZE_HINT,
+            &dir,
+            &dest,
+        )
+    })
+    .await
+    .map_err(|e| format!("download task failed: {e}"))?;
+
+    if let Ok(mut inflight) = model_downloads_inflight().lock() {
+        inflight.remove(&name);
+    }
+    if let Ok(mut cancels) = model_download_cancels().lock() {
+        cancels.remove(&name);
+    }
+    if result.is_ok() && !silero_vad_model_installed() {
+        let app_auto = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = meeting_download_silero_vad_model(app_auto).await {
+                tracing::warn!("[meeting_engine] auto Silero VAD after dictation model: {e}");
+            }
+        });
+    }
+    result
+}
+
 fn download_whisper_model_blocking(
     app: &AppHandle,
     name: &str,
