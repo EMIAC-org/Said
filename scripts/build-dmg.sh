@@ -122,6 +122,32 @@ else
   warn "DEEPSEEK_API_KEY not set — meeting summaries will fail until a key is bundled"
 fi
 
+# ── Bundle the Deepgram STT + Gateway/LLM keys into the build ────────────────
+# These are baked at compile time via option_env! in said-core
+# (crates/core/src/{stt.rs,lib.rs}) so the shipped app ships with working keys —
+# end users never enter API keys. crates/core/build.rs has rerun-if-env-changed
+# directives, so cargo re-bakes when the values change. Pull from .env if not
+# already exported.
+if [ -f "$REPO_ROOT/.env" ]; then
+  for _bundle_key in DEEPGRAM_API_KEY GATEWAY_API_KEY; do
+    if [ -z "$(eval "echo \${$_bundle_key:-}")" ]; then
+      _bundle_val="$(grep -E "^${_bundle_key}=" "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"'')"
+      [ -n "$_bundle_val" ] && export "$_bundle_key=$_bundle_val"
+    fi
+  done
+  unset _bundle_key _bundle_val
+fi
+if [ -n "${DEEPGRAM_API_KEY:-}" ]; then
+  ok "Deepgram STT key will be bundled into the build"
+else
+  warn "DEEPGRAM_API_KEY not set — Cloud dictation will fail until a key is bundled"
+fi
+if [ -n "${GATEWAY_API_KEY:-}" ]; then
+  ok "Gateway/LLM key will be bundled into the build"
+else
+  warn "GATEWAY_API_KEY not set — polish will fail until a key is bundled"
+fi
+
 # ── Tauri build ──────────────────────────────────────────────────────────────
 step "Run tauri build (--target $TARGET)"
 cd "$DESKTOP_DIR"

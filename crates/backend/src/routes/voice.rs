@@ -8,8 +8,6 @@
 //! Pipeline: auth → load prefs → STT → evidence collection → dynamic prompt →
 //!           LLM stream → post-LLM passes → SSE.
 
-const SERVER_STT_PROBE_ENV: &str = "AIRNOTE_ENABLE_SERVER_STT_PROBE";
-
 use axum::{
     Json,
     extract::{Multipart, State},
@@ -33,17 +31,6 @@ use tokio_tungstenite::{
 };
 use tracing::{debug, info, warn};
 use uuid::Uuid;
-
-fn server_stt_probe_enabled() -> bool {
-    matches!(
-        std::env::var(SERVER_STT_PROBE_ENV)
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
 
 fn chaos_voice_fail_after_save_enabled() -> bool {
     let enabled = |key: &str| {
@@ -1880,23 +1867,18 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let stt_provider_for_guard = crate::routes::key_guard::effective_stt_provider(prefs_for_guard);
-    let can_use_server_managed_deepgram = !message_polish_mode
-        && pre_transcript.is_none()
-        && said_core::stt::is_deepgram(&stt_provider_for_guard)
-        && prefs_for_guard.server_runtime_enabled;
-    let local_stt_selected = said_core::stt::is_swift_local(&stt_provider_for_guard)
-        || said_core::stt::is_whisper_local(&stt_provider_for_guard);
-    let require_stt_key = !message_polish_mode
-        && pre_transcript.is_none()
-        && !local_stt_selected
-        && !can_use_server_managed_deepgram;
+    // Two providers only: Deepgram (cloud) runs on-device with a build-bundled
+    // key, so its STT key is always present; local Swift needs no key at all.
+    // The Deepgram check below therefore only ever trips in a dev build that was
+    // compiled without bundling a key.
+    let local_stt_selected = said_core::stt::is_swift_local(&stt_provider_for_guard);
+    let require_stt_key = !message_polish_mode && pre_transcript.is_none() && !local_stt_selected;
     info!(
-        "[voice] key guard require_stt_key={} pre_transcript_present={} message_polish={} prefs_stt_provider={} server_managed_deepgram={}",
+        "[voice] key guard require_stt_key={} pre_transcript_present={} message_polish={} prefs_stt_provider={}",
         require_stt_key,
         pre_transcript.is_some(),
         message_polish_mode,
         prefs_for_guard.stt_provider,
-        can_use_server_managed_deepgram,
     );
     let missing = if message_polish_mode {
         Vec::new()
@@ -2309,215 +2291,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             return;
         }
 
-        let server_audio_stt_provider = crate::routes::key_guard::effective_stt_provider(&prefs);
-        let auto_server_managed_deepgram =
-            pre_transcript.is_none() && said_core::stt::is_deepgram(&server_audio_stt_provider);
-        if ((prefs.server_audio_runtime_enabled && server_stt_probe_enabled())
-            || auto_server_managed_deepgram)
-            && !wav_data.is_empty()
-            && !message_polish_mode
-            && repair_mode.is_none()
-        {
-            let recording_id = Uuid::new_v4().to_string();
-            let server_audio_transport = std::env::var("AIRNOTE_SERVER_AUDIO_RUNTIME_TRANSPORT")
-                .unwrap_or_else(|_| "http".to_string())
-                .trim()
-                .to_ascii_lowercase();
-            let live_cached_result = if server_audio_transport == "ws" {
-                match client_run_id.as_deref() {
-                    Some(run_id) => {
-                        crate::take_live_server_runtime_result(&state.live_server_runtime_cache, run_id)
-                            .await
-                    }
-                    None => None,
-                }
-            } else {
-                None
-            };
-            if live_cached_result.is_none() {
-                yield Ok(Event::default().event("status")
-                    .data(json!({"phase": "server_transcribing"}).to_string()));
-            }
-
-            let server_audio_result = if let Some(cached) = live_cached_result {
-                info!(
-                    "[voice] using cached live server runtime result run_id={:?} transcript={} chars output={} chars",
-                    client_run_id,
-                    cached.transcript.len(),
-                    cached.output.len(),
-                );
-                Ok((
-                    cached.transcript,
-                    crate::llm::PolishResult {
-                        polished: cached.output,
-                        polish_ms: cached.latency_ms.polish.max(0) as u64,
-                    },
-                    format!("server-audio-runtime-live:{}", cached.model_used),
-                    ServerRuntimeAudioLatency {
-                        stt: cached.latency_ms.stt,
-                        polish: cached.latency_ms.polish,
-                        total: cached.latency_ms.total,
-                    },
-                ))
-            } else {
-                let safe_vocab_terms = vocab_full
-                    .iter()
-                    .map(|term| term.term.trim().to_string())
-                    .filter(|term| !term.is_empty())
-                    .take(30)
-                    .collect::<Vec<_>>();
-                if server_audio_transport == "ws" {
-                    run_server_runtime_voice_ws_probe(
-                        &pool,
-                        &user_id,
-                        &wav_data,
-                        &prefs.output_language,
-                        &prefs.selected_model,
-                        screen_context.as_deref(),
-                        safe_vocab_terms,
-                        &server_audio_stt_provider,
-                    )
-                    .await
-                } else {
-                    run_server_runtime_voice_wav_probe(
-                        &http_client,
-                        &pool,
-                        &user_id,
-                        &wav_data,
-                        &prefs.output_language,
-                        &prefs.selected_model,
-                        screen_context.as_deref(),
-                        safe_vocab_terms,
-                        &server_audio_stt_provider,
-                        Some(&recording_id),
-                        "normal_voice",
-                        client_run_id.as_deref(),
-                    )
-                    .await
-                }
-            };
-
-            match server_audio_result
-            {
-                Ok((server_transcript, server_result, server_model, server_latency)) => {
-                    let total_ms = total_start.elapsed().as_millis() as i64;
-                    let server_source = if server_model.starts_with("server-audio-runtime-live:") {
-                        "server_audio_runtime_live"
-                    } else {
-                        "server_audio_runtime"
-                    };
-                    info!(
-                        "[voice] server audio runtime returned transcript={} chars output={} chars model={} total={}ms",
-                        server_transcript.len(),
-                        server_result.polished.len(),
-                        server_model,
-                        server_latency.total,
-                    );
-
-                    let recording_id_for_store = recording_id.clone();
-                    let transcript_for_store = server_transcript.clone();
-                    let polished_for_store = server_result.polished.clone();
-                    let model_for_store = server_model.clone();
-                    let target_app_for_store = target_app.clone();
-                    let audio_id_for_store = saved_audio_id.clone();
-                    let pool_store = pool.clone();
-                    let user_id_store = user_id.clone();
-                    let word_count = polished_for_store.split_whitespace().count() as i64;
-                    let crid_store = client_run_id.clone();
-                    let run_id_store = voice_run_id.clone();
-                    tokio::spawn(async move {
-                        let rec = InsertRecording {
-                            id: &recording_id_for_store,
-                            user_id: &user_id_store,
-                            transcript: &transcript_for_store,
-                            polished: &polished_for_store,
-                            word_count,
-                            recording_seconds: estimated_secs(word_count),
-                            model_used: &model_for_store,
-                            confidence: None,
-                            transcribe_ms: Some(server_latency.stt),
-                            embed_ms: None,
-                            polish_ms: Some(server_latency.polish),
-                            target_app: target_app_for_store.as_deref(),
-                            source: server_source,
-                            audio_id: audio_id_for_store.as_deref(),
-                            enriched_transcript: Some(&transcript_for_store),
-                            raw_transcript: Some(&transcript_for_store),
-                            local_corrected_transcript: Some(&transcript_for_store),
-                            polished_output: Some(&polished_for_store),
-                        };
-                        crate::observability::after_recording_insert(
-                            &pool_store,
-                            &user_id_store,
-                            &rec,
-                            crate::observability::observability_extras(crid_store.as_deref()),
-                        );
-                        if insert_recording(&pool_store, rec).is_some() {
-                            let _ = crate::store::voice_runs::mark_voice_run_completed(
-                                &pool_store,
-                                &run_id_store,
-                                &recording_id_for_store,
-                                None,
-                            );
-                        }
-                    });
-
-                    yield Ok(Event::default().event("done").data(
-                        json!({
-                            "recording_id": recording_id,
-                            "transcript": server_transcript,
-                            "polished": server_result.polished,
-                            "model_used": server_model,
-                            "confidence": null,
-                            "audio_id": aid,
-                            "source": server_source,
-                            "target_app": target_app,
-                            "output_language": prefs.output_language,
-                            "latency_ms": {
-                                "transcribe": server_latency.stt,
-                                "embed": 0,
-                                "retrieve": 0,
-                                "polish": server_result.polish_ms,
-                                "total": total_ms,
-                            },
-                            "examples_used": 0,
-                            "server_audio_runtime": true,
-                        }).to_string()
-                    ));
-                    return;
-                }
-                Err(e) => {
-                    warn!("[voice] server audio runtime failed: {e}");
-                    let local_deepgram_key_available = said_core::stt::resolve_deepgram_api_key(
-                        prefs.deepgram_api_key.as_deref(),
-                    )
-                    .is_some();
-                    if said_core::stt::is_deepgram(&server_audio_stt_provider)
-                        && !local_deepgram_key_available
-                    {
-                        let message = format!(
-                            "server-managed Deepgram failed and no local Deepgram key is available: {e}"
-                        );
-                        yield Ok(voice_run_failed_event(
-                            &pool,
-                            &voice_run_id,
-                            message,
-                            aid,
-                            Some("server_managed_deepgram_failed"),
-                        ));
-                        return;
-                    }
-                    warn!("[voice] server audio runtime failed; using local STT fallback");
-                    yield Ok(Event::default().event("status")
-                        .data(json!({"phase": "server_audio_fallback"}).to_string()));
-                }
-            }
-        }
-        if prefs.server_audio_runtime_enabled && !server_stt_probe_enabled() {
-            debug!(
-                "[voice] server audio runtime probe disabled; using local Deepgram STT + polish path"
-            );
-        }
 
         // ── STEP 1: STT ───────────────────────────────────────────────────────────
         info!("[voice] stt_provider={stt_provider:?}");
@@ -2610,15 +2383,13 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             yield Ok(Event::default().event("status")
                 .data(json!({"phase": "transcribing"}).to_string()));
 
-            #[cfg(feature = "local-stt")]
-            let use_whisper = stt_provider == "whisper_local";
-            #[cfg(not(feature = "local-stt"))]
-            let use_whisper = false;
-
             if said_core::stt::is_swift_local(&stt_provider) {
-                let message = "Swift local STT did not produce a transcript; not falling back to Deepgram because local STT is selected";
+                // Local Swift is selected but no transcript arrived from the
+                // on-device sidecar. Local stays local — never fall back to
+                // cloud Deepgram; surface an actionable error instead.
+                let message = "Local Swift speech recognition didn't produce a transcript. Open Settings → Speech recognition, make sure the Swift model is installed and the local engine is ready, then try again.";
                 warn!(
-                    "[voice] local STT missing transcript provider={} wav_bytes={} audio_seconds={:.2} — cloud STT fallback disabled",
+                    "[voice] local Swift STT produced no transcript provider={} wav_bytes={} audio_seconds={:.2} — cloud fallback disabled (local stays local)",
                     stt_provider,
                     wav_data.len(),
                     audio_seconds,
@@ -2631,74 +2402,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     Some("local_stt_no_transcript"),
                 ));
                 return;
-            } else if stt_provider == "groq_whisper" {
-                match crate::stt::groq_whisper::transcribe(
-                    &http_client,
-                    &groq_key,
-                    wav_data.clone(),
-                    &prefs.language,
-                ).await {
-                    Ok(result) => {
-                        let ms = total_start.elapsed().as_millis() as i64;
-                        info!(
-                            "[timing] STT={}ms (groq_whisper, {} words, conf={:.2}, decision_ms={})",
-                            ms,
-                            result.word_count,
-                            result.confidence,
-                            stt_start.elapsed().as_millis(),
-                        );
-                        (
-                            result.transcript,
-                            result.enriched_transcript,
-                            result.confidence,
-                            ms,
-                        )
-                    }
-                    Err(e) => {
-                        warn!("[voice] groq whisper STT error: {e}");
-                        yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
-                        return;
-                    }
-                }
-            } else if use_whisper {
-                #[cfg(feature = "local-stt")]
-                {
-                    let wav_c = wav_data.clone();
-                    let lang_c = prefs.language.clone();
-                    let whisper_result = tokio::task::spawn_blocking(move || {
-                        crate::stt::whisper::transcribe_wav(&wav_c, &lang_c)
-                    }).await;
-                    match whisper_result {
-                        Ok(Ok(result)) => {
-                            let ms = total_start.elapsed().as_millis() as i64;
-                            info!(
-                                "[timing] STT={}ms (whisper_local, {} words, decision_ms={})",
-                                ms,
-                                result.word_count,
-                                stt_start.elapsed().as_millis(),
-                            );
-                            (
-                                result.transcript,
-                                result.enriched_transcript,
-                                result.confidence,
-                                ms,
-                            )
-                        }
-                        Ok(Err(e)) => {
-                            warn!("[voice] whisper STT error: {e}");
-                            yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
-                            return;
-                        }
-                        Err(e) => {
-                            warn!("[voice] whisper task panicked: {e}");
-                            yield Ok(voice_run_failed_event(&pool, &voice_run_id, format!("{e}"), aid, None));
-                            return;
-                        }
-                    }
-                }
-                #[cfg(not(feature = "local-stt"))]
-                unreachable!()
             } else {
+                // Cloud Deepgram (the only non-local provider). Key is bundled
+                // into the build, so this always has credentials.
                 match maybe_rescue_transcript(
                     &http_client,
                     &stt_provider,
@@ -3802,6 +3508,16 @@ async fn maybe_rescue_transcript(
     primary_ws: Option<TranscriptCandidate>,
 ) -> Result<(TranscriptCandidate, i64), String> {
     if let Some(primary) = primary_ws {
+        // Local STT (Swift) is authoritative — never rescue it via cloud
+        // Deepgram. Local stays local: if Swift produced this transcript, we
+        // keep it as-is rather than silently round-tripping to the cloud.
+        if !said_core::stt::is_deepgram(provider) {
+            info!(
+                "[stt] local provider={} pre-transcript accepted without cloud rescue",
+                provider
+            );
+            return Ok((primary, 0));
+        }
         let primary_quality = assess_candidate(&primary, audio_seconds, bias);
         let Some(rescue_mode) = rescue_mode_for(&primary_quality, &primary.meta.stt_mode) else {
             info!(

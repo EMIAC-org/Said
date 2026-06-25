@@ -1,4 +1,9 @@
 fn main() {
+    // Re-link the crate whenever the DeepSeek meeting-summary key baked via
+    // option_env!("DEEPSEEK_API_KEY") in meeting_engine.rs changes, so a cached
+    // object file never ships a stale or missing key. Mirrors crates/backend/build.rs.
+    println!("cargo:rerun-if-env-changed=DEEPSEEK_API_KEY");
+
     #[cfg(target_os = "macos")]
     {
         println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET=13.0");

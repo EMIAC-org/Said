@@ -4,10 +4,10 @@ import { cn } from "@/lib/utils";
 import { formatKeycap, type Platform } from "@/lib/hotkeys";
 import { getVersion } from "@tauri-apps/api/app";
 import {
-  Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap,
+  Shield, Key, Info, Wifi, Check, Sparkles,
   Languages, MessageSquareText, Loader2, RefreshCw,
-  Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, Download, Activity,
-  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown, Power, BookOpen, AlertCircle,
+  Bell, Bug, Copy, FileText, Mic, Download, Activity,
+  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, Power, BookOpen,
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
@@ -32,9 +32,6 @@ import {
   readBackendLog, backendLogLocation, openLogFolder,
   openExternal,
   getServerSettingsStatus,
-  getCredentialVaultStatus,
-  syncCredentialVault,
-  type CredentialVaultStatus,
   type DebugLogs,
   type NotifPermission,
   type DesktopPrefs,
@@ -149,117 +146,6 @@ function Row({
   );
 }
 
-function SecretInput({
-  icon,
-  label,
-  helper,
-  placeholder,
-  value,
-  visible,
-  onChange,
-  onToggle,
-}: {
-  icon:        React.ReactNode;
-  label:       string;
-  helper?:     string;
-  placeholder: string;
-  value:       string;
-  visible:     boolean;
-  onChange:    (value: string) => void;
-  onToggle:    () => void;
-}) {
-  return (
-    <div>
-      <div className="mb-1.5">
-        <p className="text-[12px] font-semibold text-foreground flex items-center gap-1.5">
-          {icon}
-          {label}
-        </p>
-        {helper && (
-          <p className="text-[11px] text-muted-foreground mt-0.5">
-            {helper}
-          </p>
-        )}
-      </div>
-      <div className="relative">
-        <input
-          type={visible ? "text" : "password"}
-          placeholder={placeholder}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="input pr-9 font-mono text-[12px]"
-        />
-        <button
-          type="button"
-          onClick={onToggle}
-          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-          tabIndex={-1}
-          aria-label={visible ? `Hide ${label}` : `Show ${label}`}
-        >
-          {visible ? <EyeOff size={14} /> : <Eye size={14} />}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function SettingsDisclosure({
-  title,
-  description,
-  icon,
-  defaultOpen = false,
-  status,
-  children,
-}: {
-  title:        string;
-  description:  string;
-  icon:         React.ReactNode;
-  defaultOpen?: boolean;
-  status?:      React.ReactNode;
-  children:     React.ReactNode;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-
-  return (
-    <div className="settings-disclosure">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-[hsl(var(--surface-hover))]"
-        aria-expanded={open}
-      >
-        <span
-          className="settings-disclosure__icon w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-        >
-          {icon}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-[13px] font-semibold text-foreground">
-            {title}
-          </span>
-          <span className="block text-[11.5px] text-muted-foreground mt-0.5 leading-relaxed">
-            {description}
-          </span>
-        </span>
-        {status && <span className="flex-shrink-0">{status}</span>}
-        <ChevronDown
-          size={15}
-          className="flex-shrink-0 text-muted-foreground transition-transform"
-          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
-        />
-      </button>
-      {open && (
-        <div
-          className="px-4 pb-4 pt-2 space-y-4"
-          style={{ borderTop: "1px solid hsl(var(--border))" }}
-        >
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Section routing (used by SettingsModal) ───────────────────────────────────
 
 export type SettingsSection =
@@ -270,7 +156,6 @@ export type SettingsSection =
   | "meeting"
   | "notifications"
   | "permissions"
-  | "api-keys"
   | "enterprise"
   | "debug"
   | "about";
@@ -281,7 +166,6 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "meeting",        label: "Meeting"        },
   { id: "notifications",  label: "Notifications"  },
   { id: "permissions",    label: "Permissions"     },
-  { id: "api-keys",    label: "API keys"      },
   { id: "enterprise",  label: "Enterprise"    },
   { id: "about",       label: "About"         },
 ];
@@ -695,42 +579,6 @@ export function SettingsView({
     }).catch(() => setServerSyncState("idle"));
   }, [currentSection]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Credential vault sync (local API keys → server DB) ─────────────────────
-  const [vaultStatus, setVaultStatus] = useState<CredentialVaultStatus | null>(null);
-  const [vaultSyncState, setVaultSyncState] = useState<SyncBadgeState>("idle");
-
-  const refreshVaultStatus = useCallback(async () => {
-    const status = await getCredentialVaultStatus();
-    setVaultStatus(status);
-    if (!status?.signed_in) {
-      setVaultSyncState("idle");
-      return;
-    }
-    if (!status.encryption_configured) {
-      setVaultSyncState("failed");
-      return;
-    }
-    const local = new Set(status.local_providers);
-    const serverActive = status.server_credentials.filter(
-      (c) => c.scope === "user" && c.status === "active",
-    );
-    const server = new Set(serverActive.map((c) => c.provider));
-    if (local.size > 0 && [...local].every((p) => server.has(p))) {
-      setVaultSyncState("synced");
-    } else if (local.size > 0 && server.size === 0) {
-      setVaultSyncState("failed");
-    } else if (server.size > 0) {
-      setVaultSyncState("synced");
-    } else {
-      setVaultSyncState("offline");
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!isOn("api-keys")) return;
-    void refreshVaultStatus();
-  }, [currentSection, refreshVaultStatus]);
-
   // ── Prefs state ─────────────────────────────────────────────────────────────
   const [prefs,        setPrefs]        = useState<Preferences | null>(null);
   const [saving,       setSaving]       = useState(false);
@@ -749,19 +597,6 @@ export function SettingsView({
   const promptLoadStartedRef = useRef(false);
 
   // ── API key state ────────────────────────────────────────────────────────────
-  const [deepgramKey,   setDeepgramKey]   = useState("");
-  const [groqKey,       setGroqKey]       = useState("");
-  const [showDeepgram,  setShowDeepgram]  = useState(false);
-  const [showGroq,      setShowGroq]      = useState(false);
-  const [keySaving,     setKeySaving]     = useState(false);
-  const [keySaved,      setKeySaved]      = useState(false);
-  const keySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const sttProvider = prefs?.stt_provider ?? "deepgram";
-  const usesLocalSwift = sttProvider === "swift_local";
-  const managedDeepgramAvailable = !!vaultStatus?.signed_in;
-  const deepgramReady = usesLocalSwift || !!prefs?.deepgram_api_key || managedDeepgramAvailable;
-  const voiceKeysReady = !!prefs?.groq_api_key && deepgramReady;
-
   // ── Debug logs state ───────────────────────────────────────────────────────
   const [debugLogs,    setDebugLogs]    = useState<DebugLogs | null>(null);
   const [debugBusy,    setDebugBusy]    = useState(false);
@@ -886,12 +721,6 @@ export function SettingsView({
   // Polish chord shown per-platform (cmd+shift+p → Ctrl+Shift+P on Windows).
   const polishHotkeyLabel = formatKeycap(prefs?.polish_text_hotkey ?? "cmd+shift+p", platform);
 
-  function syncApiKeyInputs(nextPrefs: Preferences) {
-    setDeepgramKey(nextPrefs.deepgram_api_key ?? "");
-    setGroqKey(nextPrefs.groq_api_key ?? "");
-    setShowDeepgram(false);
-    setShowGroq(false);
-  }
 
 
   useEffect(() => {
@@ -948,7 +777,6 @@ export function SettingsView({
       if (p) {
         setPrefs(p);
         setCustomPrompt(p.custom_prompt ?? "");
-        syncApiKeyInputs(p);
         if (!p.learning_enabled) {
           patchPreferences({ learning_enabled: true }).then((updated) => {
             if (updated) setPrefs(updated);
@@ -956,12 +784,6 @@ export function SettingsView({
         }
       }
     });
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (keySaveTimer.current) clearTimeout(keySaveTimer.current);
-    };
   }, []);
 
   async function refreshDebugLogs() {
@@ -979,61 +801,6 @@ export function SettingsView({
     await navigator.clipboard.writeText(text);
     setDebugCopied(kind);
     setTimeout(() => setDebugCopied((prev) => prev === kind ? null : prev), 1800);
-  }
-
-  async function saveApiKeys() {
-    if (!prefs) return;
-    setKeySaving(true);
-    setSaveError("");
-    try {
-      const update: Partial<Preferences> = {};
-      const currentDeepgram = prefs.deepgram_api_key ?? "";
-      const currentGroq = prefs.groq_api_key ?? "";
-      const nextDeepgram = deepgramKey.trim();
-      const nextGroq = groqKey.trim();
-
-      if (nextDeepgram !== currentDeepgram) update.deepgram_api_key = nextDeepgram || null;
-      if (nextGroq !== currentGroq) update.groq_api_key = nextGroq || null;
-
-      if (Object.keys(update).length === 0) {
-        setKeySaved(true);
-        if (keySaveTimer.current) clearTimeout(keySaveTimer.current);
-        keySaveTimer.current = setTimeout(() => setKeySaved(false), 2500);
-        return;
-      }
-
-      const updated = await patchPreferences(update);
-      if (!updated) throw new Error("preferences update returned no data");
-      setPrefs(updated);
-      syncApiKeyInputs(updated);
-
-      setVaultSyncState("syncing");
-      const vault = await syncCredentialVault();
-      await refreshVaultStatus();
-      if (vault?.failed) {
-        // Name exactly which provider key the server rejected, so the user
-        // knows which one to fix (Abhishek's server-side validation returns
-        // a per-provider error; surface it instead of a generic failure).
-        const labels: Record<string, string> = {
-          groq: "Groq", deepgram: "Deepgram", gemini: "Gemini", openai: "ChatGPT",
-        };
-        const bad = (vault.results ?? []).filter((r) => r.error);
-        const names = bad.map((r) => labels[r.provider] ?? r.provider).join(", ");
-        throw new Error(
-          names
-            ? `${names} key${bad.length > 1 ? "s" : ""} rejected — check the value${bad.length > 1 ? "s" : ""} and save again.`
-            : "Keys saved locally but server vault sync failed — check you're signed in.",
-        );
-      }
-
-      setKeySaved(true);
-      if (keySaveTimer.current) clearTimeout(keySaveTimer.current);
-      keySaveTimer.current = setTimeout(() => setKeySaved(false), 2500);
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Failed to save — is the backend running?");
-    } finally {
-      setKeySaving(false);
-    }
   }
 
   async function patch(update: Partial<Preferences>) {
@@ -1810,11 +1577,15 @@ export function SettingsView({
 
         {/* ── Models ───────────────────────────────────── */}
         <Show when={isOn("models")}>
-        <DictationSttSection
-          prefs={prefs}
-          onPrefsUpdated={setPrefs}
-          platform={snapshot?.platform ?? "macos"}
-        />
+        {/* Local Swift dictation is macOS-only — Windows has no on-device option,
+            so the cloud-vs-local picker is hidden there entirely. */}
+        {snapshot?.platform === "macos" && (
+          <DictationSttSection
+            prefs={prefs}
+            onPrefsUpdated={setPrefs}
+            platform={snapshot?.platform ?? "macos"}
+          />
+        )}
         <Section title="Dictation polish" extra={<SyncBadge state={serverSyncState} />}>
           <div className="px-5 py-4">
             <div className="flex items-center gap-4">
@@ -2071,94 +1842,6 @@ export function SettingsView({
         </div>
         </Show>
 
-        {/* ── API Keys ──────────────────────────────────── */}
-        <Show when={isOn("api-keys")}>
-        <div className="mb-7">
-          <p className="section-label px-1 mb-2.5 flex items-center gap-2">
-            <span
-              className="inline-block w-1 h-1 rounded-full"
-              style={{ background: "hsl(var(--accent-violet))" }}
-            />
-            API Keys
-            <SyncBadge state={vaultSyncState} />
-          </p>
-          <div className="panel p-5 space-y-4">
-            <p className="text-[12px] text-muted-foreground leading-relaxed">
-              {vaultStatus?.signed_in
-                ? "Keys are saved on this device and synced to your AirNote account vault for server-side polish."
-                : `Stored on this ${isWindows ? "PC" : "Mac"} until you sign in — then they sync to your account vault.`}
-            </p>
-
-            <SettingsDisclosure
-              title="Required for dictation"
-              description="Groq polishes text. AirNote uses local Swift or managed Deepgram for transcription."
-              icon={<Zap size={15} />}
-              defaultOpen
-              status={
-                voiceKeysReady ? (
-                  <span className="status-pill--ready">Ready</span>
-                ) : (
-                  <span className="status-pill--warn">Missing</span>
-                )
-              }
-            >
-              <SecretInput
-                icon={<Zap size={12} style={{ color: "hsl(var(--primary))" }} />}
-                label="Groq API Key"
-                helper="Used by voice polish, repair, classification, meeting transcript cleanup & summaries, and fallbacks."
-                placeholder="gsk_..."
-                value={groqKey}
-                visible={showGroq}
-                onChange={setGroqKey}
-                onToggle={() => setShowGroq((v) => !v)}
-              />
-              <SecretInput
-                icon={<Cpu size={12} style={{ color: "hsl(var(--primary))" }} />}
-                label="Deepgram API Key"
-                helper={
-                  usesLocalSwift
-                    ? "Optional fallback. Local Swift is selected for dictation."
-                    : managedDeepgramAvailable
-                      ? "Optional fallback. AirNote can use managed server Deepgram when your key is empty."
-                      : "Optional if your AirNote account is signed in to a managed server; otherwise used for Deepgram dictation."
-                }
-                placeholder="Token ..."
-                value={deepgramKey}
-                visible={showDeepgram}
-                onChange={setDeepgramKey}
-                onToggle={() => setShowDeepgram((v) => !v)}
-              />
-            </SettingsDisclosure>
-
-            {/* Save button */}
-            <div className="flex items-center justify-between pt-1">
-              {saveError && (
-                <span
-                  className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-medium"
-                  style={{ background: "hsl(0 75% 60% / 0.12)", color: "hsl(0 75% 72%)" }}
-                >
-                  <AlertCircle size={12} /> {saveError}
-                </span>
-              )}
-              <div className="ml-auto flex items-center gap-3">
-                {keySaved && (
-                  <span className="text-[12px] flex items-center gap-1" style={{ color: "hsl(var(--muted-foreground))" }}>
-                    <Check size={12} /> Saved
-                  </span>
-                )}
-                <button
-                  onClick={saveApiKeys}
-                  disabled={keySaving}
-                  className="btn-accent !py-1.5 !px-4 !text-[12px] !h-8 flex items-center gap-1.5"
-                >
-                  {keySaving ? <Loader2 size={12} className="animate-spin" /> : null}
-                  Save Keys
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        </Show>
 
         {/* ── Enterprise ──────────────────────────────── */}
         <Show when={isOn("enterprise")}>
