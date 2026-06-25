@@ -11885,18 +11885,11 @@ fn meeting_cleanup_config() -> Result<MeetingCleanupConfig, String> {
 fn meeting_ai_config() -> Result<MeetingCleanupConfig, String> {
     said_core::load_env();
 
-    let ai_provider = env_nonempty("AIRNOTE_MEETING_AI_PROVIDER");
-    let provider = ai_provider
-        .clone()
-        .unwrap_or_else(meeting_cleanup_provider)
-        .to_ascii_lowercase();
-    let model = env_nonempty("AIRNOTE_MEETING_AI_MODEL").unwrap_or_else(|| {
-        if ai_provider.is_some() {
-            default_meeting_model(&provider)
-        } else {
-            meeting_cleanup_model(&provider)
-        }
-    });
+    // Meetings always use DeepSeek (no gateway/groq). Provider is locked; only
+    // the model stays tunable via AIRNOTE_MEETING_AI_MODEL.
+    let provider = meeting_cleanup_provider();
+    let model =
+        env_nonempty("AIRNOTE_MEETING_AI_MODEL").unwrap_or_else(|| meeting_cleanup_model(&provider));
     meeting_provider_config(
         provider,
         model,
@@ -12059,9 +12052,10 @@ fn meeting_ai_verification_enabled() -> bool {
 }
 
 fn meeting_cleanup_provider() -> String {
-    env_nonempty("AIRNOTE_MEETING_CLEANUP_PROVIDER")
-        .unwrap_or_else(|| DEFAULT_MEETING_CLEANUP_PROVIDER.to_string())
-        .to_ascii_lowercase()
+    // Meetings always use DeepSeek for all AI (transcript cleanup + summary).
+    // The provider is intentionally NOT env/user-switchable - no gateway/groq in
+    // the meeting pipeline.
+    DEFAULT_MEETING_CLEANUP_PROVIDER.to_string()
 }
 
 fn meeting_cleanup_model(provider: &str) -> String {
