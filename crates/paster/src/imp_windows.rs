@@ -627,8 +627,9 @@ pub fn replace_focused_text_exact(existing_text: &str, replacement: &str) -> Res
 //
 // Real-host smoke tests that exercise the Win32 clipboard plumbing end-to-end.
 // They only compile when targeting Windows (this whole file is gated to
-// `cfg(target_os = "windows")` from lib.rs) and only run on the rust-windows
-// CI job's `cargo test -p said-paster` step.
+// `cfg(target_os = "windows")` from lib.rs) and are opt-in because headless
+// CI/window-station clipboard behavior is not stable enough for safe default
+// execution.
 //
 // SendInput tests are intentionally omitted — they would actually inject
 // keystrokes into whatever has focus on the test runner, which is racy and
@@ -642,6 +643,10 @@ mod windows_tests {
     use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
     use windows::core::PCWSTR;
 
+    fn clipboard_smoke_tests_enabled() -> bool {
+        std::env::var_os("AIRNOTE_RUN_WINDOWS_CLIPBOARD_TESTS").is_some()
+    }
+
     /// Headless CI runners (no interactive window-station) frequently have a
     /// clipboard that accepts opens/writes but returns nothing on read, so a
     /// real round-trip can't be exercised there. Probe a tiny round-trip; if it
@@ -649,6 +654,9 @@ mod windows_tests {
     /// skip gracefully instead of failing the build. A real clipboard passes the
     /// probe and the full assertions still run.
     fn clipboard_round_trips() -> bool {
+        if !clipboard_smoke_tests_enabled() {
+            return false;
+        }
         let probe = "airnote-clipboard-probe";
         if open_clipboard_with_retry().is_err() {
             return false;
@@ -682,7 +690,7 @@ mod windows_tests {
     fn clipboard_round_trip_preserves_unicode() {
         if !clipboard_round_trips() {
             eprintln!(
-                "skipping clipboard_round_trip_preserves_unicode: no functional clipboard on this runner (headless CI)"
+                "skipping clipboard_round_trip_preserves_unicode: set AIRNOTE_RUN_WINDOWS_CLIPBOARD_TESTS=1 on an interactive Windows host"
             );
             return;
         }
@@ -712,7 +720,7 @@ mod windows_tests {
     fn clipboard_snapshot_restores_registered_non_text_format() {
         if !clipboard_round_trips() {
             eprintln!(
-                "skipping clipboard_snapshot_restores_registered_non_text_format: no functional clipboard on this runner (headless CI)"
+                "skipping clipboard_snapshot_restores_registered_non_text_format: set AIRNOTE_RUN_WINDOWS_CLIPBOARD_TESTS=1 on an interactive Windows host"
             );
             return;
         }

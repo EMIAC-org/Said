@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { listHistory, downloadRecordingAudio, getRecordingAudioBytes } from "@/lib/invoke";
+import { listHistory, downloadRecordingAudio, getRecordingAudioBytes, openExternal } from "@/lib/invoke";
 import { cn } from "@/lib/utils";
-import { Copy, Download, Check, Play, Square } from "lucide-react";
+import { Copy, Download, Check, Play, Square, BookOpen, ExternalLink } from "lucide-react";
 import type { AppSnapshot, Recording } from "@/types";
 
 interface Props {
   snapshot:      AppSnapshot | null;
 }
+
+const GUIDE_URL = "https://airnote.emiactech.com/guide";
 
 /**
  * Editorial dashboard — pattern B from the layout proposals.
@@ -105,6 +107,8 @@ export function EditorialDashboard({ snapshot }: Props) {
           </p>
         </div>
 
+        <GuidePrompt />
+
         {/* At a glance — 3-column row, hairline separators */}
         <Section label="At a glance">
           <div
@@ -177,6 +181,68 @@ export function EditorialDashboard({ snapshot }: Props) {
 }
 
 // ── Tiny presentational primitives (file-local) ───────────────────────────────
+
+function GuidePrompt() {
+  return (
+    <button
+      type="button"
+      onClick={() => void openExternal(GUIDE_URL)}
+      className="group w-full mb-7 text-left"
+      style={{
+        display: "grid",
+        gridTemplateColumns: "36px minmax(0, 1fr) auto",
+        alignItems: "center",
+        gap: 12,
+        padding: "12px 0",
+        borderTop: "1px solid hsl(var(--border))",
+        borderBottom: "1px solid hsl(var(--border))",
+      }}
+      title="Open AirNote guide and shortcuts"
+    >
+      <span
+        className="grid place-items-center"
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 8,
+          background: "hsl(var(--primary) / 0.10)",
+          color: "hsl(var(--primary))",
+        }}
+      >
+        <BookOpen size={18} />
+      </span>
+      <span className="min-w-0">
+        <span
+          className="block"
+          style={{
+            fontSize: 13,
+            fontWeight: 650,
+            color: "hsl(var(--foreground))",
+          }}
+        >
+          New here? Open the guide.
+        </span>
+        <span
+          className="block truncate"
+          style={{
+            marginTop: 2,
+            fontSize: 12,
+            color: "hsl(var(--muted-foreground))",
+          }}
+        >
+          Shortcuts, dictation, retry, polish mode, and status pill placement.
+        </span>
+      </span>
+      <span
+        className="inline-flex items-center gap-1 text-[12px] font-semibold"
+        style={{ color: "hsl(var(--primary))" }}
+      >
+        Open
+        <ExternalLink size={13} />
+      </span>
+    </button>
+  );
+}
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (

@@ -49,6 +49,8 @@ function isDivoAllowed(): boolean {
   return !!email && DIVO_ALLOWED_EMAILS.includes(email);
 }
 
+const GUIDE_URL = "https://airnote.emiactech.com/guide";
+
 // ── Nav button ─────────────────────────────────────────────────────────────────
 
 function NavButton({
@@ -232,6 +234,18 @@ export function Sidebar({
             <Settings size={15} />
           </span>
           <span className="flex-1 truncate">Settings</span>
+        </button>
+
+        {/* Guide — keep shortcut help visible without making users dig through Settings. */}
+        <button
+          className="nav-item"
+          onClick={() => void openExternal(GUIDE_URL)}
+          title="Open AirNote guide and shortcuts"
+        >
+          <span className="flex-shrink-0 opacity-70">
+            <BookOpen size={15} />
+          </span>
+          <span className="flex-1 truncate">Guide</span>
         </button>
 
         {/* Report bug — opens the control-plane report form with a signed token when connected. */}

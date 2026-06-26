@@ -288,6 +288,11 @@ pub fn router_with_state(state: AppState) -> Router {
     let authenticated = Router::new()
         .route("/v1/pre-embed", post(routes::pre_embed::handler))
         .route("/v1/voice/polish", post(routes::voice::polish))
+        .route(
+            "/v1/problem/transcribe",
+            post(routes::voice::problem_transcribe),
+        )
+        .route("/v1/problem/solve", post(routes::problem::solve))
         .route("/v1/runtime/live/config", get(routes::runtime_live::config))
         .route(
             "/v1/runtime/notifications/config",

@@ -1,8 +1,11 @@
 package com.emiac.airnote.android
 
+import android.text.InputType
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class SetupModelTest {
     @Test
@@ -69,6 +72,176 @@ class SetupModelTest {
         )
 
         assertEquals("raw transcript", item.displayText)
+    }
+
+    @Test
+    fun runtimeVoicePayloadIncludesOnlySupportedAndroidFields() {
+        val payload = runtimeVoicePayloadFields(
+            wavBytes = byteArrayOf(1, 2, 3),
+            clientRunId = "android-test-run",
+            deviceId = "android-device",
+            outputLanguage = "hinglish",
+            selectedModel = "smart",
+            safeVocabTerms = listOf("N8N", "  EMIAC  ", "N8N"),
+            mode = "message-polish",
+        )
+
+        assertEquals("hinglish", payload.outputLanguage)
+        assertEquals("smart", payload.selectedModel)
+        assertEquals("android-test-run", payload.clientRunId)
+        assertEquals("android", payload.platform)
+        assertEquals(listOf("N8N", "EMIAC"), payload.safeVocabTerms)
+        assertEquals("message_polish", payload.mode)
+    }
+
+    @Test
+    fun runtimeTextPolishPayloadMatchesIosRewriteContract() {
+        val payload = runtimeTextPolishPayloadFields(
+            text = "  make this sharper  ",
+            clientRunId = "android-rewrite-run",
+            outputLanguage = "english",
+            tonePreset = "work",
+            screenContext = "x".repeat(700),
+            safeVocabTerms = listOf("  N8N  ", "N8N", "EMIAC"),
+        )
+
+        assertEquals("make this sharper", payload.transcript)
+        assertEquals("english", payload.outputLanguage)
+        assertEquals("smart", payload.selectedModel)
+        assertEquals("professional", payload.tonePreset)
+        assertEquals(500, payload.screenContext?.length)
+        assertEquals(listOf("N8N", "EMIAC"), payload.safeVocabTerms)
+        assertEquals("android-rewrite-run", payload.clientRunId)
+    }
+
+    @Test
+    fun vocabTermsAreSanitizedForSafeHints() {
+        assertEquals("EMIAC Tech", sanitizeVocabTerm(" EMIAC   Tech "))
+        assertNull(sanitizeVocabTerm("x"))
+        assertEquals("bad term", sanitizeVocabTerm("bad\nterm"))
+        assertNull(sanitizeVocabTerm("bad\u0001term"))
+    }
+
+    @Test
+    fun gatewayUrlsAreNormalizedForAndroidSettings() {
+        assertEquals("https://airnote-dev.103.180.163.41.sslip.io", normalizeGatewayUrl("https://airnote-dev.103.180.163.41.sslip.io/"))
+        assertEquals("https://airnote.emiactech.com", normalizeGatewayUrl("airnote.emiactech.com"))
+    }
+
+    @Test
+    fun diagnosticsSummaryAvoidsRawDictationData() {
+        val summary = AndroidDiagnosticsSnapshot(
+            serverUrl = "https://airnote-dev.103.180.163.41.sslip.io",
+            authState = "signed_in",
+            micPermission = "granted",
+            accessibilityEnabled = true,
+            audioRoute = "Phone mic",
+            lastRequestId = "android-test",
+            lastLatencyMs = 123,
+            lastInsertionResult = "inserted",
+            lastFailure = "",
+        ).redactedSummary
+
+        assertTrue(summary.contains("server=https://airnote-dev.103.180.163.41.sslip.io"))
+        assertTrue(summary.contains("request=android-test"))
+        assertFalse(summary.contains("transcript"))
+        assertFalse(summary.contains("output="))
+        assertFalse(summary.contains("wav"))
+    }
+
+    @Test
+    fun accessibilityServiceDetectionAcceptsAndroidShortAndFullComponentNames() {
+        val expectedPackage = "com.emiac.airnote.android"
+        val expectedClass = "com.emiac.airnote.android.AirNoteBubbleAccessibilityService"
+
+        assertTrue(
+            isAirNoteAccessibilityServiceListed(
+                "com.emiac.airnote.android/.AirNoteBubbleAccessibilityService",
+                expectedPackage,
+                expectedClass,
+            ),
+        )
+        assertTrue(
+            isAirNoteAccessibilityServiceListed(
+                "com.other/.Service:com.emiac.airnote.android/com.emiac.airnote.android.AirNoteBubbleAccessibilityService",
+                expectedPackage,
+                expectedClass,
+            ),
+        )
+        assertFalse(
+            isAirNoteAccessibilityServiceListed(
+                "com.emiac.airnote.android/.OtherService",
+                expectedPackage,
+                expectedClass,
+            ),
+        )
+    }
+
+    @Test
+    fun fieldSafetyBlocksPasswordAndOtpLikeFields() {
+        assertTrue(
+            AndroidFieldSafety.isSensitiveField(
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                isPassword = false,
+                text = null,
+                hint = null,
+                className = null,
+            ),
+        )
+        assertTrue(
+            AndroidFieldSafety.isSensitiveField(
+                inputType = InputType.TYPE_CLASS_NUMBER,
+                isPassword = false,
+                text = null,
+                hint = "Enter OTP",
+                className = "android.widget.EditText",
+            ),
+        )
+        assertFalse(
+            AndroidFieldSafety.isSensitiveField(
+                inputType = InputType.TYPE_CLASS_TEXT,
+                isPassword = false,
+                text = "Write a message",
+                hint = "Message",
+                className = "android.widget.EditText",
+            ),
+        )
+    }
+
+    @Test
+    fun androidRewriteTargetPrefersSelectionThenCursorSentence() {
+        val text = "First sentence. Polish this one please. Last bit"
+        val selectedText = "Polish this one please"
+        val selected = resolveAndroidRewriteTarget(
+            fullText = text,
+            selectionStart = text.indexOf(selectedText),
+            selectionEnd = text.indexOf(selectedText) + selectedText.length,
+        )
+
+        assertEquals(AndroidRewriteScope.Selection, selected?.scope)
+        assertEquals("Polish this one please", selected?.text)
+
+        val cursorText = "First sentence. Polish this one please"
+        val cursor = resolveAndroidRewriteTarget(
+            fullText = cursorText,
+            selectionStart = cursorText.length,
+            selectionEnd = cursorText.length,
+        )
+
+        assertEquals(AndroidRewriteScope.CursorSentence, cursor?.scope)
+        assertEquals("Polish this one please", cursor?.text)
+    }
+
+    @Test
+    fun androidRewriteReplacementRequiresExactTarget() {
+        val target = resolveAndroidRewriteTarget(
+            fullText = "Before. rewrite me",
+            selectionStart = 18,
+            selectionEnd = 18,
+        ) ?: error("expected target")
+
+        assertEquals("Before. Rewritten.", replaceAndroidRewriteTarget(target, "Rewritten."))
+        assertNull(replaceAndroidRewriteTarget(target.copy(fullText = "Before. edited"), "Rewritten."))
     }
 
     private fun runtimeStatus(activeCredentials: Int, memoryReady: Boolean): RuntimeStatus =

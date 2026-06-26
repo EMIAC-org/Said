@@ -6,4 +6,3 @@ CREATE TABLE IF NOT EXISTS local_profile_summary (
     version            INTEGER NOT NULL DEFAULT 0,
     updated_at         INTEGER NOT NULL
 );
-

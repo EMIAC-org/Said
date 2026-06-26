@@ -8,6 +8,7 @@ import {
   Languages, MessageSquareText, Loader2, RefreshCw,
   Bell, Bug, Copy, FileText, Mic, Download, Activity,
   RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, Power, BookOpen,
+  Code2, Plus, Trash2, AlertTriangle,
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
@@ -32,10 +33,18 @@ import {
   readBackendLog, backendLogLocation, openLogFolder,
   openExternal,
   getServerSettingsStatus,
+  getDeveloperSettings,
+  saveDeveloperSettings,
+  developerProblemBegin,
+  developerProblemEnd,
+  emptyDeveloperSettings,
   type DebugLogs,
   type NotifPermission,
   type DesktopPrefs,
   type ServerSettingsStatus,
+  type DeveloperSettings,
+  type DeveloperProjectProfile,
+  type DeveloperProfileWarning,
 } from "@/lib/invoke";
 
 // ── Tone presets ──────────────────────────────────────────────────────────────
@@ -50,6 +59,31 @@ const TONE_PRESETS = [
 ] as const;
 
 type ToneKey = (typeof TONE_PRESETS)[number]["key"];
+
+const DEVELOPER_CONTEXT_MAX_CHARS = 8_000;
+
+function splitDeveloperAliases(value: string): string[] {
+  return value
+    .split(/[\n,]/g)
+    .map((alias) => alias.trim())
+    .filter(Boolean);
+}
+
+function createDeveloperProfile(): DeveloperProjectProfile {
+  const id =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `profile-${Date.now()}`;
+  return {
+    id,
+    name: "New Project",
+    aliases: [],
+    context: "",
+    enabled: true,
+    source_type: "manual",
+    updated_at: Date.now(),
+  };
+}
 
 // ── Language options ──────────────────────────────────────────────────────────
 
@@ -154,6 +188,7 @@ export type SettingsSection =
   | "hotkeys"
   | "models"
   | "meeting"
+  | "developer"
   | "notifications"
   | "permissions"
   | "enterprise"
@@ -164,6 +199,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "hotkeys",      label: "Hotkeys"      },
   { id: "models",         label: "Models"         },
   { id: "meeting",        label: "Meeting"        },
+  { id: "developer",      label: "Developer"      },
   { id: "notifications",  label: "Notifications"  },
   { id: "permissions",    label: "Permissions"     },
   { id: "enterprise",  label: "Enterprise"    },
@@ -634,6 +670,63 @@ export function SettingsView({
   const [devLogPath, setDevLogPath] = useState("");
   const [devLogLoading, setDevLogLoading] = useState(false);
 
+  // ── Developer Problem Command state ──────────────────────────────────────
+  const [developerSettings, setDeveloperSettings] = useState<DeveloperSettings>(() => emptyDeveloperSettings());
+  const [developerWarnings, setDeveloperWarnings] = useState<DeveloperProfileWarning[]>([]);
+  const [developerLoaded, setDeveloperLoaded] = useState(false);
+  const [developerDirty, setDeveloperDirty] = useState(false);
+  const [developerBusy, setDeveloperBusy] = useState(false);
+  const [developerError, setDeveloperError] = useState("");
+
+  const updateDeveloperDraft = useCallback((updater: (prev: DeveloperSettings) => DeveloperSettings) => {
+    setDeveloperSettings((prev) => updater(prev));
+    setDeveloperDirty(true);
+    setDeveloperError("");
+  }, []);
+
+  const saveDeveloperDraft = useCallback(async (settings = developerSettings) => {
+    setDeveloperBusy(true);
+    setDeveloperError("");
+    try {
+      const response = await saveDeveloperSettings(settings);
+      setDeveloperSettings(response.settings);
+      setDeveloperWarnings(response.warnings);
+      setDeveloperDirty(false);
+    } catch (err) {
+      setDeveloperError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeveloperBusy(false);
+    }
+  }, [developerSettings]);
+
+  const addDeveloperProfile = useCallback(() => {
+    updateDeveloperDraft((prev) => ({
+      ...prev,
+      profiles: [...prev.profiles, createDeveloperProfile()],
+    }));
+  }, [updateDeveloperDraft]);
+
+  const updateDeveloperProfile = useCallback((
+    profileId: string,
+    patchProfile: (profile: DeveloperProjectProfile) => DeveloperProjectProfile,
+  ) => {
+    updateDeveloperDraft((prev) => ({
+      ...prev,
+      profiles: prev.profiles.map((profile) =>
+        profile.id === profileId
+          ? { ...patchProfile(profile), updated_at: Date.now() }
+          : profile,
+      ),
+    }));
+  }, [updateDeveloperDraft]);
+
+  const removeDeveloperProfile = useCallback((profileId: string) => {
+    updateDeveloperDraft((prev) => ({
+      ...prev,
+      profiles: prev.profiles.filter((profile) => profile.id !== profileId),
+    }));
+  }, [updateDeveloperDraft]);
+
   const loadDevLog = useCallback(async () => {
     setDevLogLoading(true);
     try {
@@ -937,6 +1030,44 @@ export function SettingsView({
       loadVoicePrompt();
     }
   }, [activeSection, voicePrompt, promptBusy]);
+
+  useEffect(() => {
+    if (!isOn("developer") || developerLoaded || developerBusy) return;
+    let alive = true;
+    setDeveloperBusy(true);
+    setDeveloperError("");
+    getDeveloperSettings()
+      .then((response) => {
+        if (!alive) return;
+        setDeveloperSettings(response.settings);
+        setDeveloperWarnings(response.warnings);
+        setDeveloperLoaded(true);
+        setDeveloperDirty(false);
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setDeveloperLoaded(true);
+        setDeveloperError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (alive) setDeveloperBusy(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [activeSection, developerLoaded, developerBusy]);
+
+  const beginDeveloperCommandTest = useCallback(() => {
+    developerProblemBegin().catch((err) => {
+      setDeveloperError(err instanceof Error ? err.message : String(err));
+    });
+  }, []);
+
+  const endDeveloperCommandTest = useCallback(() => {
+    developerProblemEnd().catch((err) => {
+      setDeveloperError(err instanceof Error ? err.message : String(err));
+    });
+  }, []);
 
   const tone = (prefs?.tone_preset ?? "neutral") as ToneKey;
   const activeToneLabel = TONE_PRESETS.find((preset) => preset.key === tone)?.label ?? "Neutral";
@@ -1608,6 +1739,297 @@ export function SettingsView({
           </div>
         </Section>
 
+        </Show>
+
+        {/* ── Developer Problem Command ─────────────────── */}
+        <Show when={isOn("developer")}>
+        <Section title="Developer problem command">
+          <Row
+            icon={<Code2 size={16} />}
+            label="Enable add-on"
+            description={
+              developerSettings.enabled
+                ? "On — problem requests use their own isolated solve flow."
+                : "Off — normal dictation, polish, retry, Divo, and meetings stay unchanged."
+            }
+            action={
+              <button
+                type="button"
+                role="switch"
+                aria-checked={developerSettings.enabled}
+                disabled={developerBusy}
+                onClick={() => updateDeveloperDraft((prev) => ({ ...prev, enabled: !prev.enabled }))}
+                className="relative h-6 w-11 rounded-full transition-colors disabled:opacity-50"
+                style={{
+                  background: developerSettings.enabled
+                    ? "hsl(var(--primary))"
+                    : "hsl(var(--surface-4))",
+                }}
+              >
+                <span
+                  className="absolute top-1 h-4 w-4 rounded-full transition-transform"
+                  style={{
+                    left: 4,
+                    transform: developerSettings.enabled ? "translateX(20px)" : "translateX(0)",
+                    background: "hsl(var(--foreground))",
+                  }}
+                />
+              </button>
+            }
+          />
+          <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+          <div className="px-5 py-4">
+            <div className="flex items-start gap-4">
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
+                style={{ background: "hsl(var(--surface-4))" }}
+              >
+                <Mic size={16} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[13px] font-medium text-foreground">Manual hold trigger</p>
+                <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
+                  Hold to record a developer problem. It transcribes first, resolves project context locally, then pastes only the final answer.
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={!developerSettings.enabled || developerDirty || developerBusy}
+                    onMouseDown={beginDeveloperCommandTest}
+                    onMouseUp={endDeveloperCommandTest}
+                    onMouseLeave={endDeveloperCommandTest}
+                    onTouchStart={beginDeveloperCommandTest}
+                    onTouchEnd={endDeveloperCommandTest}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition disabled:opacity-45"
+                    style={{
+                      background: "hsl(var(--primary))",
+                      color: "hsl(var(--primary-foreground))",
+                    }}
+                  >
+                    <Mic size={12} />
+                    Hold Developer Command
+                  </button>
+                  {developerDirty && (
+                    <span className="text-[11px] text-muted-foreground">
+                      Save settings before testing
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </Section>
+
+        <Section
+          title="Project context profiles"
+          extra={
+            <span className="ml-2 text-[10px] font-semibold px-2 py-0.5 rounded-full"
+              style={{ color: "hsl(var(--muted-foreground))", background: "hsl(var(--surface-4))" }}>
+              Local only
+            </span>
+          }
+        >
+          <div className="px-5 py-4 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[13px] font-medium text-foreground">Context is a short project gist</p>
+                <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
+                  Keep it to stack, architecture, known modules, conventions, and current goals. V1 does not learn from edits or sync wiki pages.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={addDeveloperProfile}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition"
+                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+              >
+                <Plus size={12} />
+                Add
+              </button>
+            </div>
+
+            {developerSettings.profiles.length === 0 ? (
+              <div
+                className="rounded-xl px-4 py-5 text-center text-[12px] text-muted-foreground"
+                style={{ background: "hsl(var(--surface-2))" }}
+              >
+                Add a project profile to let spoken aliases select context.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {developerSettings.profiles.map((profile) => {
+                  const contextCount = profile.context.length;
+                  const overLimit = contextCount > DEVELOPER_CONTEXT_MAX_CHARS;
+                  const profileWarnings = developerWarnings.filter((warning) => warning.profile_id === profile.id);
+                  return (
+                    <div
+                      key={profile.id}
+                      className="rounded-xl p-4"
+                      style={{
+                        background: "hsl(var(--surface-2))",
+                        border: "1px solid hsl(var(--border) / 0.55)",
+                      }}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="flex-1 min-w-0 grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <label className="block">
+                            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.05em]">
+                              Project name
+                            </span>
+                            <input
+                              value={profile.name}
+                              onChange={(e) => updateDeveloperProfile(profile.id, (p) => ({ ...p, name: e.target.value }))}
+                              className="mt-1 w-full rounded-lg px-3 py-2 text-[13px] outline-none"
+                              style={{
+                                background: "hsl(var(--surface-1))",
+                                color: "hsl(var(--foreground))",
+                                border: "1px solid hsl(var(--border))",
+                              }}
+                              placeholder="HRM8"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.05em]">
+                              Aliases
+                            </span>
+                            <textarea
+                              value={profile.aliases.join("\n")}
+                              onChange={(e) => updateDeveloperProfile(profile.id, (p) => ({
+                                ...p,
+                                aliases: splitDeveloperAliases(e.target.value),
+                              }))}
+                              className="mt-1 w-full min-h-[74px] resize-y rounded-lg px-3 py-2 text-[13px] outline-none"
+                              style={{
+                                background: "hsl(var(--surface-1))",
+                                color: "hsl(var(--foreground))",
+                                border: "1px solid hsl(var(--border))",
+                              }}
+                              placeholder={"hrm8\nhrm\nhrm desktop"}
+                            />
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={profile.enabled}
+                            onClick={() => updateDeveloperProfile(profile.id, (p) => ({ ...p, enabled: !p.enabled }))}
+                            className="relative h-6 w-11 rounded-full transition-colors"
+                            title={profile.enabled ? "Profile enabled" : "Profile disabled"}
+                            style={{
+                              background: profile.enabled
+                                ? "hsl(var(--primary))"
+                                : "hsl(var(--surface-4))",
+                            }}
+                          >
+                            <span
+                              className="absolute top-1 h-4 w-4 rounded-full transition-transform"
+                              style={{
+                                left: 4,
+                                transform: profile.enabled ? "translateX(20px)" : "translateX(0)",
+                                background: "hsl(var(--foreground))",
+                              }}
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeDeveloperProfile(profile.id)}
+                            className="w-8 h-8 rounded-lg inline-flex items-center justify-center transition"
+                            style={{ color: "hsl(var(--destructive))", background: "hsl(var(--surface-3))" }}
+                            title="Delete profile"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <label className="block mt-3">
+                        <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.05em]">
+                          Context brief
+                        </span>
+                        <textarea
+                          value={profile.context}
+                          maxLength={DEVELOPER_CONTEXT_MAX_CHARS}
+                          onChange={(e) => updateDeveloperProfile(profile.id, (p) => ({ ...p, context: e.target.value }))}
+                          className="mt-1 w-full min-h-[150px] resize-y rounded-lg px-3 py-2 text-[13px] leading-relaxed outline-none"
+                          style={{
+                            background: "hsl(var(--surface-1))",
+                            color: "hsl(var(--foreground))",
+                            border: overLimit
+                              ? "1px solid hsl(var(--destructive))"
+                              : "1px solid hsl(var(--border))",
+                          }}
+                          placeholder={"Stack:\nArchitecture:\nKnown modules:\nConventions:\nCurrent goals:"}
+                        />
+                        <div className="mt-1 flex items-center justify-between gap-2">
+                          <span className="text-[11px] text-muted-foreground">
+                            {contextCount.toLocaleString()} / {DEVELOPER_CONTEXT_MAX_CHARS.toLocaleString()} characters
+                          </span>
+                          {profile.enabled ? (
+                            <span className="status-pill--ready text-[10px]">Enabled</span>
+                          ) : (
+                            <span className="status-pill text-[10px]">Disabled</span>
+                          )}
+                        </div>
+                      </label>
+
+                      {profileWarnings.length > 0 && (
+                        <div className="mt-3 space-y-1.5">
+                          {profileWarnings.map((warning, index) => (
+                            <div
+                              key={`${warning.alias ?? "profile"}-${index}`}
+                              className="flex items-start gap-2 rounded-lg px-3 py-2 text-[11px]"
+                              style={{
+                                background: "hsl(38 80% 12% / 0.75)",
+                                color: "hsl(38 90% 72%)",
+                              }}
+                            >
+                              <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                              <span>{warning.alias ? `${warning.alias}: ` : ""}{warning.message}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div
+              className="rounded-xl px-4 py-3 text-[12px] leading-relaxed"
+              style={{ background: "hsl(var(--surface-2))", color: "hsl(var(--muted-foreground))" }}
+            >
+              <p className="font-semibold text-foreground mb-1">Future context source</p>
+              <p>Lark Wiki sync stays out of V1. When added later, it should be explicit, permissioned, source-labeled, and versioned.</p>
+            </div>
+
+            {developerError && (
+              <div
+                className="rounded-xl px-4 py-3 text-[12px]"
+                style={{ background: "hsl(var(--destructive) / 0.12)", color: "hsl(var(--destructive))" }}
+              >
+                {developerError}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <span className="text-[11px] text-muted-foreground">
+                {developerDirty ? "Unsaved developer settings" : developerLoaded ? "Developer settings saved" : "Loading developer settings"}
+              </span>
+              <button
+                type="button"
+                disabled={developerBusy || !developerDirty}
+                onClick={() => void saveDeveloperDraft()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition disabled:opacity-45"
+                style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+              >
+                {developerBusy ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                Save Developer Settings
+              </button>
+            </div>
+          </div>
+        </Section>
         </Show>
 
         {/* ── Notifications ─────────────────────────────── */}
