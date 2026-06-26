@@ -11888,8 +11888,8 @@ fn meeting_ai_config() -> Result<MeetingCleanupConfig, String> {
     // Meetings always use DeepSeek (no gateway/groq). Provider is locked; only
     // the model stays tunable via AIRNOTE_MEETING_AI_MODEL.
     let provider = meeting_cleanup_provider();
-    let model =
-        env_nonempty("AIRNOTE_MEETING_AI_MODEL").unwrap_or_else(|| meeting_cleanup_model(&provider));
+    let model = env_nonempty("AIRNOTE_MEETING_AI_MODEL")
+        .unwrap_or_else(|| meeting_cleanup_model(&provider));
     meeting_provider_config(
         provider,
         model,
