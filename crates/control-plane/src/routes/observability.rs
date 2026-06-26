@@ -140,6 +140,7 @@ pub struct AliasLearnEvent {
     pub created_at: DateTime<Utc>,
 }
 
+
 pub async fn list_org_dictation(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -318,23 +319,22 @@ pub async fn get_org_dictation_detail(
         }
     }
 
-    let aliases: Vec<AliasLearnEvent> =
-        if let Some(rec_id) = row.recording_id.as_deref().filter(|s| !s.is_empty()) {
-            sqlx::query_as(
-                "SELECT id, account_id, recording_id, heard, correct, source, safety, created_at
+    let aliases: Vec<AliasLearnEvent> = if let Some(rec_id) = row.recording_id.as_deref().filter(|s| !s.is_empty()) {
+        sqlx::query_as(
+            "SELECT id, account_id, recording_id, heard, correct, source, safety, created_at
                FROM runtime_alias_learn_events
               WHERE org_id = $1 AND account_id = $2 AND recording_id = $3
               ORDER BY created_at ASC",
-            )
-            .bind(org_id)
-            .bind(row.account_id)
-            .bind(rec_id)
-            .fetch_all(&state.db)
-            .await
-            .unwrap_or_default()
-        } else {
-            vec![]
-        };
+        )
+        .bind(org_id)
+        .bind(row.account_id)
+        .bind(rec_id)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default()
+    } else {
+        vec![]
+    };
 
     Ok(Json(json!({
         "item": row,

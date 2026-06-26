@@ -11888,8 +11888,8 @@ fn meeting_ai_config() -> Result<MeetingCleanupConfig, String> {
     // Meetings always use DeepSeek (no gateway/groq). Provider is locked; only
     // the model stays tunable via AIRNOTE_MEETING_AI_MODEL.
     let provider = meeting_cleanup_provider();
-    let model = env_nonempty("AIRNOTE_MEETING_AI_MODEL")
-        .unwrap_or_else(|| meeting_cleanup_model(&provider));
+    let model =
+        env_nonempty("AIRNOTE_MEETING_AI_MODEL").unwrap_or_else(|| meeting_cleanup_model(&provider));
     meeting_provider_config(
         provider,
         model,
@@ -12323,11 +12323,13 @@ pub fn meeting_cleanup_storage() -> Result<(), String> {
 
 const MODEL_DOWNLOAD_EVENT: &str = "meeting-model-download";
 
-/// Downloadable whisper.cpp models (name, source URL, approx size for a progress
-/// estimate before Content-Length is known). These are shared by meeting
-/// transcription and local Windows dictation; dictation uses the ACTIVE model
-/// (`AIRNOTE_WHISPER_CPP_MODEL`). All are multilingual (no `*.en`) to preserve
-/// Hindi/Hinglish. Sizes are HF download-size hints.
+/// Downloadable meeting whisper.cpp models (name, source URL, approx size for a
+/// progress estimate before Content-Length is known). Keep Settings intentionally
+/// simple: one Q5 Turbo model for both live and after-meeting transcription.
+// All selectable whisper.cpp models (meetings + LOCAL Windows dictation). Multiple
+// sizes so dictation can be tested across the speed/accuracy range; dictation uses
+// whichever is the ACTIVE model (AIRNOTE_WHISPER_CPP_MODEL). All multilingual
+// (no *.en) to preserve Hindi/Hinglish. Sizes are HF download-size hints.
 const WHISPER_MODEL_CATALOG: &[(&str, &str, u64)] = &[
     (
         "ggml-large-v3-turbo-q5_0.bin",
@@ -16248,22 +16250,18 @@ mod tests {
     }
 
     #[test]
-    fn meeting_whisper_catalog_exposes_supported_multilingual_models() {
+    fn meeting_whisper_catalog_only_exposes_q5() {
         let names = WHISPER_MODEL_CATALOG
             .iter()
             .map(|(name, _, _)| *name)
             .collect::<std::collections::HashSet<_>>();
 
-        assert_eq!(names.len(), 5);
+        assert_eq!(names.len(), 1);
         assert!(names.contains("ggml-large-v3-turbo-q5_0.bin"));
-        assert!(names.contains("ggml-medium.bin"));
-        assert!(names.contains("ggml-small.bin"));
-        assert!(names.contains("ggml-base.bin"));
-        assert!(names.contains("ggml-tiny.bin"));
     }
 
     #[test]
-    fn meeting_whisper_cleanup_removes_unsupported_models_and_keeps_supported() {
+    fn meeting_whisper_cleanup_removes_legacy_models_and_keeps_q5() {
         let dir = std::env::temp_dir().join(format!(
             "airnote-whisper-cleanup-test-{}-{}",
             std::process::id(),
@@ -16284,14 +16282,15 @@ mod tests {
             .map(|model| model.name.as_str())
             .collect::<std::collections::HashSet<_>>();
 
-        assert_eq!(removed.len(), 2);
+        assert_eq!(removed.len(), 3);
         assert!(removed.contains("ggml-large-v3-turbo.bin"));
+        assert!(removed.contains("ggml-medium.bin"));
         assert!(removed.contains("ggml-small-q5_0.bin.part"));
         assert!(dir.join("ggml-large-v3-turbo-q5_0.bin").exists());
         assert!(dir.join("ggml-large-v3-turbo-q5_0.bin.part").exists());
-        assert!(dir.join("ggml-medium.bin").exists());
         assert!(dir.join("ggml-silero-v5.1.2.bin").exists());
         assert!(!dir.join("ggml-large-v3-turbo.bin").exists());
+        assert!(!dir.join("ggml-medium.bin").exists());
         assert!(!dir.join("ggml-small-q5_0.bin.part").exists());
 
         let _ = fs::remove_dir_all(dir);

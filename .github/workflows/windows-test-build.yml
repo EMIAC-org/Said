@@ -45,11 +45,11 @@ jobs:
 
       - name: Install desktop deps
         working-directory: desktop
+        shell: pwsh
         run: |
-          # `create-dmg` is macOS-only and pulls `appdmg` (`os: darwin`),
-          # which makes `npm ci` fail on Windows. The Windows installer path
-          # only needs Tauri/NSIS, so remove the Mac-only dev tool in the
-          # ephemeral runner checkout and keep platform optional deps intact.
+          # create-dmg pulls appdmg/fs-xattr, which are darwin-only. The
+          # Windows NSIS build does not use create-dmg, so remove it only in
+          # this runner workspace before doing the lockfile install.
           npm pkg delete devDependencies.create-dmg
           npm install --package-lock-only --ignore-scripts
           npm ci
@@ -64,6 +64,25 @@ jobs:
           Copy-Item `
             "target/x86_64-pc-windows-msvc/release/airnote-backend.exe" `
             "desktop/src-tauri/binaries/airnote-backend-x86_64-pc-windows-msvc.exe"
+
+      # Vulkan SDK gives whisper-cli GPU acceleration (parity with macOS Metal).
+      # The build script auto-detects it and falls back to CPU-only if absent, so
+      # a failure here never breaks the build.
+      - name: Setup Vulkan SDK
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          choco install vulkan-sdk -y --no-progress
+
+      - name: Build whisper-cli sidecar
+        shell: pwsh
+        timeout-minutes: 30
+        run: |
+          ./scripts/build-whisper-cli-windows.ps1 -Target x86_64-pc-windows-msvc
+          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
+          Copy-Item `
+            "target/x86_64-pc-windows-msvc/release/whisper-cli.exe" `
+            "desktop/src-tauri/binaries/whisper-cli-x86_64-pc-windows-msvc.exe"
 
       - name: Build AirNote.exe + NSIS installer
         working-directory: desktop

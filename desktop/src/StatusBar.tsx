@@ -11,14 +11,7 @@ import {
   requestApplyPendingUpdate,
   snoozeReadyUpdateReminder,
 } from "./lib/autoUpdate";
-import {
-  developerProblemChooseProject,
-  developerProblemDismiss,
-  divoListThreads,
-  onDeveloperContext,
-  type DeveloperContextCandidate,
-  type DivoThreadSummary,
-} from "./lib/invoke";
+import { divoListThreads, type DivoThreadSummary } from "./lib/invoke";
 import { Markdown } from "./components/Markdown";
 
 function notifEnabled(key: string): boolean {
@@ -115,7 +108,6 @@ type BarState =
   | { kind: "reviewing"; candidates: ReviewCandidate[]; selected: Set<number>; recordingId: string }
   | { kind: "placement"; message: string }
   | { kind: "polish_mode"; enabled: boolean; message: string }
-  | { kind: "problem_ambiguous"; candidates: DeveloperContextCandidate[] }
   | { kind: "update_ready"; version: string; message: string }
   | { kind: "retraining" }
   | { kind: "retrain_done"; durationS: number }
@@ -187,7 +179,6 @@ function keepsHudOverIdle(kind: PillKind): boolean {
     || kind === "done"
     || kind === "pasted"
     || kind === "manual_paste"
-    || kind === "problem_ambiguous"
     || kind === "update_ready"
     || kind === "recovered"
     || kind.startsWith("divo");
@@ -249,7 +240,6 @@ function pillSize(
   if (kind === "divo_ready") return { width: 168, height: 46 };
   if (kind === "divo_pending") return { width: 300, height: 104 };
   if (kind === "divo_error") return { width: 300, height: 96 };
-  if (kind === "problem_ambiguous") return { width: 360, height: 176 };
   if (kind === "error") {
     const actionWidth = actionCount > 0
       ? (actionCount * 22) + ((actionCount - 1) * 6) + 8
@@ -288,10 +278,6 @@ function pillSize(
 
 function processingLabel(phase: string): string {
   const p = phase.toLowerCase();
-  if (p.startsWith("using context:")) return phase;
-  if (p === "no project context") return "No Project Context";
-  if (p.includes("problem_transcribing")) return "Transcribing problem";
-  if (p.includes("problem_solving")) return "Solving problem";
   if (p.includes("server_audio_fallback")) return "Using local runtime";
   if (p.includes("server_transcrib") || p.includes("server-audio")) return "Server transcribing";
   if (p.includes("server_polish") || p.includes("server-polish") || p.includes("server_polishing")) return "Server polish";
@@ -404,7 +390,6 @@ export default function StatusBar() {
     || bar.kind === "update_ready"
     || bar.kind === "recovered"
     || bar.kind === "placement"
-    || bar.kind === "problem_ambiguous"
     // Divo: the working HUD stays VISIBLE (persistent hold) but click-through —
     // it floats over the user's app, so making it interactive would swallow every
     // click over its area for the whole run and feel like the app froze. Only the
@@ -432,7 +417,6 @@ export default function StatusBar() {
       case "wrong_fixed": return `Got it — won’t type "${bar.wrongReplacement}" for "${bar.term}"`;
       case "placement": return bar.message;
       case "polish_mode": return bar.message;
-      case "problem_ambiguous": return "Ambiguous Project Match";
       case "update_ready": return `Update ${bar.version} ready`;
       case "retraining": return "Improving model...";
       case "retrain_done": return bar.durationS > 0 ? `Model updated (${bar.durationS.toFixed(1)}s)` : "Model updated";
@@ -883,25 +867,6 @@ export default function StatusBar() {
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] voice-output subscribe failed", err));
 
-    subs.push(onDeveloperContext((payload) => {
-      console.info("[status-bar] problem-command-context", payload);
-      if (doneTimer.current) clearTimeout(doneTimer.current);
-      if (payload.outcome === "ambiguous") {
-        presentStatusBar("problem-ambiguous");
-        playSound("alert");
-        invoke("set_status_bar_persistent", {
-          persistent: true,
-          reason: "problem-ambiguous",
-          interactive: true,
-        }).catch(() => presentStatusBar("problem-ambiguous"));
-        setBar({ kind: "problem_ambiguous", candidates: payload.candidates });
-        win.setFocus().catch(() => {});
-        return;
-      }
-      playSound(payload.outcome === "project" ? "tick" : "chimeDown");
-      setBar({ kind: "processing", phase: payload.label });
-    }));
-
     listen<{ enabled: boolean; message?: string }>("message-polish-mode", (e) => {
       console.info("[status-bar] message-polish-mode event", e.payload);
       if (restorePinnedUpdate("auto-update-ready-after-polish-mode")) return;
@@ -1304,41 +1269,6 @@ export default function StatusBar() {
     }, 1500);
   }
 
-  async function releaseProblemHold(reason: string) {
-    try {
-      await invoke("set_status_bar_persistent", { persistent: false, reason });
-    } catch {
-      // The solve path can still continue; this only controls HUD click capture.
-    }
-  }
-
-  async function chooseProblemProject(project: DeveloperContextCandidate) {
-    try {
-      await developerProblemChooseProject(project.id);
-      await releaseProblemHold("problem-choice");
-      setBar({ kind: "processing", phase: `Using Context: ${project.name}` });
-    } catch (e) {
-      await releaseProblemHold("problem-choice-error");
-      setBar({ kind: "error", message: e instanceof Error ? e.message : String(e) });
-    }
-  }
-
-  async function dismissProblemAmbiguity(openSettings: boolean) {
-    try {
-      await developerProblemDismiss();
-    } catch {
-      // Dismiss is best-effort; clearing local UI state is still safe.
-    }
-    await releaseProblemHold(openSettings ? "problem-edit-aliases" : "problem-dismiss");
-    setBar({ kind: "idle" });
-    if (openSettings) {
-      invoke("focus_main_from_pill").catch(() => {});
-      emit("nav-settings", { section: "developer" }).catch(() => {});
-    } else {
-      invoke("dismiss_status_bar").catch(() => {});
-    }
-  }
-
   async function handleConfirm(term: string, original: string, action: "learn" | "skip", recordingId: string) {
     try {
       await invoke("confirm_term", { term, original, action, recordingId: recordingId || null });
@@ -1366,58 +1296,6 @@ export default function StatusBar() {
   // ── Idle: nothing visible; native window hides via dismiss_status_bar ──
   if (bar.kind === "idle") {
     return null;
-  }
-
-  // ── Developer Problem Command: hard stop on ambiguous project context ──
-  if (bar.kind === "problem_ambiguous") {
-    return (
-      <CardHost>
-        <div
-          className="sb-survey sb-survey--panel sb-survey--interactive"
-          style={{ width: innerSize.width, height: innerSize.height }}
-          aria-label="Ambiguous project match"
-        >
-          <div className="sb-survey-kicker-row">
-            <span className="sb-status-dot sb-status-dot--warn" />
-            <span className="sb-survey-kicker">Ambiguous Project Match</span>
-            <button
-              className="divo-hide"
-              title="Dismiss"
-              aria-label="Dismiss"
-              onClick={() => { void dismissProblemAmbiguity(false); }}
-            >
-              <X size={13} />
-            </button>
-          </div>
-          <div className="sb-survey-body">
-            Pick the project context to continue. No answer is generated until you choose.
-          </div>
-          <div className="divo-route-chips" style={{ maxHeight: 56 }}>
-            {bar.candidates.map((candidate) => (
-              <button
-                key={candidate.id}
-                type="button"
-                className="divo-chip"
-                title={candidate.matched_alias ? `Matched "${candidate.matched_alias}"` : candidate.name}
-                onClick={() => { void chooseProblemProject(candidate); }}
-              >
-                {candidate.name}
-              </button>
-            ))}
-          </div>
-          <div className="divo-stage-foot">
-            <span className="divo-route-hint">Context hard stop</span>
-            <button
-              type="button"
-              className="sb-survey-skip"
-              onClick={() => { void dismissProblemAmbiguity(true); }}
-            >
-              Edit Aliases
-            </button>
-          </div>
-        </div>
-      </CardHost>
-    );
   }
 
   // ── Divo: compact review bar — transcript + Send + ✎ (stays horizontal) ──

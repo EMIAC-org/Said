@@ -75,7 +75,6 @@ type SettingsSectionId =
   | "hotkeys"
   | "models"
   | "meeting"
-  | "developer"
   | "notifications"
   | "permissions"
   | "enterprise"
@@ -548,12 +547,8 @@ export default function App() {
     const unsubVocabToast = onVocabToast(setVocabToast);
 
     // Tray menu → navigate to Settings
-    const unsubNav = onNavSettings((section) => {
-      setSettingsSection(
-        section && ["appearance", "writing", "hotkeys", "models", "meeting", "developer", "notifications", "permissions", "enterprise", "debug", "about"].includes(section)
-          ? (section as SettingsSectionId)
-          : "models",
-      );
+    const unsubNav = onNavSettings(() => {
+      setSettingsSection("models");
       setSettingsOpen(true);
     });
 

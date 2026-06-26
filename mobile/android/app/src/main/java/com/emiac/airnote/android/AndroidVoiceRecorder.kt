@@ -23,29 +23,12 @@ class AndroidVoiceRecorder(
     private val lock = Any()
     private var record: AudioRecord? = null
     private var readJob: Job? = null
-    private var startRoute: AndroidAudioRouteSnapshot? = null
-    private var stopRoute: AndroidAudioRouteSnapshot? = null
-    private var routeContext: Context? = null
     @Volatile
     private var running = false
     private var pcm = ByteArrayOutputStream()
 
     val isRecording: Boolean
         get() = running
-
-    val routeSummary: String
-        get() {
-            val start = startRoute?.label ?: "Unknown mic"
-            val stop = stopRoute?.label
-            return if (stop != null && stop != start) "$start -> $stop" else start
-        }
-
-    val routeChanged: Boolean
-        get() {
-            val start = startRoute?.label ?: return false
-            val stop = stopRoute?.label ?: return false
-            return start != stop
-        }
 
     @SuppressLint("MissingPermission")
     fun start(
@@ -60,7 +43,6 @@ class AndroidVoiceRecorder(
             return true
         }
 
-        val route = AndroidAudioRoute.current(context)
         val minBuffer = AudioRecord.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
@@ -87,9 +69,6 @@ class AndroidVoiceRecorder(
         synchronized(lock) {
             pcm = ByteArrayOutputStream()
             record = nextRecord
-            routeContext = context.applicationContext
-            startRoute = route
-            stopRoute = null
             running = true
         }
         try {
@@ -121,7 +100,6 @@ class AndroidVoiceRecorder(
     suspend fun stop(): ByteArray = withContext(Dispatchers.IO) {
         val current = synchronized(lock) {
             running = false
-            routeContext?.let { stopRoute = AndroidAudioRoute.current(it) }
             record
         }
         runCatching { current?.stop() }
@@ -147,9 +125,6 @@ class AndroidVoiceRecorder(
             record = null
             readJob = null
             pcm = ByteArrayOutputStream()
-            startRoute = null
-            stopRoute = null
-            routeContext = null
         }
     }
 

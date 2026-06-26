@@ -80,15 +80,6 @@ enum class AndroidVoicePhase(
     Error("Retry");
 }
 
-enum class AndroidRewritePhase(
-    val label: String,
-) {
-    Idle("Ready"),
-    Polishing("Polishing"),
-    Ready("Ready"),
-    Error("Retry");
-}
-
 fun AndroidSetupStep.next(): AndroidSetupStep? =
     AndroidSetupStep.ordered.getOrNull(ordinal + 1)
 

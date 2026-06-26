@@ -711,10 +711,10 @@ export function onAppState(
 }
 
 /** Listen for "nav-settings" — fired when the tray menu's Settings entry is clicked. */
-export function onNavSettings(handler: (section?: string) => void): Unsubscribe {
+export function onNavSettings(handler: () => void): Unsubscribe {
   if (!isTauriRuntime()) return () => {};
   let unsub: Unsubscribe = () => {};
-  listen<{ section?: string } | null>("nav-settings", (e) => handler(e.payload?.section)).then((fn) => { unsub = fn; });
+  listen("nav-settings", () => handler()).then((fn) => { unsub = fn; });
   return () => unsub();
 }
 
@@ -1021,102 +1021,6 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
 export async function setDesktopPrefs(prefs: DesktopPrefs): Promise<void> {
   if (!isTauriRuntime()) return;
   return tauriInvoke<void>("set_desktop_prefs", { prefs });
-}
-
-// ── Developer Problem Command ────────────────────────────────────────────────
-
-export interface DeveloperProjectProfile {
-  id: string;
-  name: string;
-  aliases: string[];
-  context: string;
-  enabled: boolean;
-  source_type: string;
-  updated_at: number;
-}
-
-export interface DeveloperSettings {
-  enabled: boolean;
-  command_key: string;
-  profiles: DeveloperProjectProfile[];
-}
-
-export interface DeveloperProfileWarning {
-  profile_id: string;
-  alias: string | null;
-  message: string;
-}
-
-export interface DeveloperSettingsResponse {
-  settings: DeveloperSettings;
-  warnings: DeveloperProfileWarning[];
-}
-
-export interface DeveloperContextCandidate {
-  id: string;
-  name: string;
-  matched_alias: string;
-}
-
-export interface DeveloperContextEvent {
-  outcome: "project" | "none" | "ambiguous";
-  label: string;
-  project: DeveloperContextCandidate | null;
-  candidates: DeveloperContextCandidate[];
-}
-
-export function emptyDeveloperSettings(): DeveloperSettings {
-  return {
-    enabled: false,
-    command_key: "tray",
-    profiles: [],
-  };
-}
-
-export async function getDeveloperSettings(): Promise<DeveloperSettingsResponse> {
-  if (!isTauriRuntime()) {
-    return { settings: emptyDeveloperSettings(), warnings: [] };
-  }
-  return tauriInvoke<DeveloperSettingsResponse>("developer_get_settings");
-}
-
-export async function saveDeveloperSettings(
-  settings: DeveloperSettings
-): Promise<DeveloperSettingsResponse> {
-  if (!isTauriRuntime()) {
-    return { settings, warnings: [] };
-  }
-  return tauriInvoke<DeveloperSettingsResponse>("developer_save_settings", { settings });
-}
-
-export async function developerProblemBegin(): Promise<void> {
-  if (!isTauriRuntime()) return;
-  return tauriInvoke<void>("developer_problem_begin");
-}
-
-export async function developerProblemEnd(): Promise<void> {
-  if (!isTauriRuntime()) return;
-  return tauriInvoke<void>("developer_problem_end");
-}
-
-export async function developerProblemChooseProject(projectId: string): Promise<void> {
-  if (!isTauriRuntime()) return;
-  return tauriInvoke<void>("developer_problem_choose_project", { projectId });
-}
-
-export async function developerProblemDismiss(): Promise<void> {
-  if (!isTauriRuntime()) return;
-  return tauriInvoke<void>("developer_problem_dismiss");
-}
-
-export function onDeveloperContext(
-  handler: (payload: DeveloperContextEvent) => void
-): Unsubscribe {
-  if (!isTauriRuntime()) return () => {};
-  let unsub: Unsubscribe = () => {};
-  listen<DeveloperContextEvent>("problem-command-context", (e) => handler(e.payload))
-    .then((fn) => { unsub = fn; });
-  return () => unsub();
 }
 
 // ── Developer log (backend.log tail) ─────────────────────────────────────────
