@@ -9573,6 +9573,9 @@ fn main() {
                             // Reclaim empty orphan dirs from past sessions that
                             // captured nothing (invisible in the UI otherwise).
                             meeting_engine::gc_orphan_meeting_dirs();
+                            // Install the bundled Silero VAD into the data dir so
+                            // dictation gets the VAD gate offline on first run.
+                            meeting_engine::ensure_bundled_silero_vad();
                             // Ensure a model is selected if any is installed.
                             meeting_engine::ensure_active_model_sync();
                             recovery_handle

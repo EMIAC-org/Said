@@ -60,14 +60,20 @@ interface Props {
   onLocalModelReady?: () => void;
 }
 
+// The one on-device dictation model (Oriserve Hinglish GGML, ~148 MB). The Silero
+// VAD is bundled with the app and auto-fetched after this download, so onboarding
+// only ever surfaces this single model.
+const DICTATION_MODEL_NAME = "ggml-oriserve-hinglish-fp16.bin";
+
 interface SwiftModelStatus {
   installed: boolean;
   size_bytes: number;
   path: string;
-  downloading_percent: number | null;
 }
 
+// Payload of the shared `meeting-model-download` event (keyed by model name).
 interface SwiftDownloadProgress {
+  name: string;
   received: number;
   total: number;
   status: "downloading" | "done" | "cancelled" | "error";
@@ -176,7 +182,7 @@ export function OnboardingFlow({
       return null;
     }
     try {
-      const status = await invoke<SwiftModelStatus>("swift_stt_model_status");
+      const status = await invoke<SwiftModelStatus>("dictation_model_status");
       setSwiftModel(status);
       if (status.installed) onLocalModelReady?.();
       return status;
@@ -192,8 +198,11 @@ export function OnboardingFlow({
 
   useEffect(() => {
     if (!isMac) return;
-    const unlistenP = listen<SwiftDownloadProgress>("swift-model-download", (event) => {
+    const unlistenP = listen<SwiftDownloadProgress>("meeting-model-download", (event) => {
       const payload = event.payload;
+      // The event is shared across models (dictation + VAD); only react to the
+      // dictation model so VAD's silent auto-fetch never shows in onboarding.
+      if (payload.name !== DICTATION_MODEL_NAME) return;
       if (payload.status === "downloading") {
         setSwiftDownload(payload);
         setSwiftError("");
@@ -204,7 +213,7 @@ export function OnboardingFlow({
         void refreshSwiftModel();
       }
       if (payload.status === "error") {
-        setSwiftError(payload.error || "Swift model download failed.");
+        setSwiftError(payload.error || "Model download failed.");
       }
     });
     return () => {
@@ -446,7 +455,7 @@ export function OnboardingFlow({
     setKeySaving(true);
     setKeyError("");
     try {
-      const updated = await patchPreferences({ stt_provider: "swift_local" });
+      const updated = await patchPreferences({ stt_provider: "whisper_local" });
       if (updated) {
         setPrefs(updated);
         onLocalModelReady?.();
@@ -464,7 +473,7 @@ export function OnboardingFlow({
     setSwiftError("");
     setKeyError("");
     try {
-      await invoke("swift_stt_download_model");
+      await invoke("download_dictation_model");
       const status = await refreshSwiftModel();
       if (status?.installed) onLocalModelReady?.();
     } catch (e) {
@@ -476,7 +485,7 @@ export function OnboardingFlow({
   }, [onLocalModelReady, refreshSwiftModel]);
 
   const handleSwiftCancel = useCallback(async () => {
-    await invoke("swift_stt_cancel_download").catch(() => {});
+    await invoke("meeting_cancel_model_download", { name: DICTATION_MODEL_NAME }).catch(() => {});
     setSwiftDownload(null);
   }, []);
 
@@ -852,7 +861,7 @@ export function OnboardingFlow({
             }}
           >
             <div className="flex items-center justify-between mb-1.5">
-              <p className="text-[13px] font-semibold text-foreground">On-device (Swift)</p>
+              <p className="text-[13px] font-semibold text-foreground">On-device</p>
               <span
                 className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
                 style={{ background: "hsl(var(--primary) / 0.15)", color: "hsl(var(--primary))" }}
@@ -862,12 +871,12 @@ export function OnboardingFlow({
             </div>
             <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
               Transcribes Hinglish on your Mac — works offline, nothing leaves the device, and there’s
-              no per-use cost. One-time ~290 MB download.
+              no per-use cost. One-time ~148 MB download.
             </p>
             <SwiftModelCard
               installed={swiftInstalled}
               sizeBytes={swiftModel?.size_bytes ?? 0}
-              progressPct={swiftDownloadPct ?? swiftModel?.downloading_percent ?? null}
+              progressPct={swiftDownloadPct ?? null}
               busy={swiftBusy}
               error={swiftError}
               onDownload={() => void handleSwiftDownload()}
@@ -1062,7 +1071,7 @@ function SwiftModelCard({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="text-[12.5px] font-semibold" style={{ color: "hsl(var(--foreground))" }}>
-                Swift local model
+                On-device model
               </span>
               {installed && (
                 <span className="accent-pill" style={{ color: "hsl(140 65% 65%)", background: "hsl(140 65% 50% / 0.14)" }}>

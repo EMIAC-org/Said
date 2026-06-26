@@ -147,6 +147,17 @@ pub fn transcribe_pcm(audio_f32: &[f32], language: &str) -> Result<TranscriptRes
 
 pub fn transcribe_wav(wav_data: &[u8], language: &str) -> Result<TranscriptResult, String> {
     let audio_f32 = decode_wav_to_f32(wav_data)?;
+    // Lazy load: the model is loaded once at startup, but a model that was missing
+    // then (e.g. the user deleted it and re-downloaded it later) would otherwise
+    // never load until the backend restarts. `WHISPER_CTX` is a OnceCell that only
+    // stores on success, so a prior failed/absent load is safely retried here.
+    if WHISPER_CTX.get().is_none() {
+        let model = crate::paths::whisper_model_path();
+        let model_str = model
+            .to_str()
+            .ok_or_else(|| "whisper model path is not valid UTF-8".to_string())?;
+        ensure_model_loaded(model_str)?;
+    }
     transcribe_pcm(&audio_f32, language)
 }
 

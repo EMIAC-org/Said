@@ -4,6 +4,7 @@ pub mod deepgram;
 pub mod paths;
 pub mod polish;
 pub mod prefs;
+pub mod redecode_flagging;
 pub mod reporter;
 pub mod script;
 pub mod scrub;

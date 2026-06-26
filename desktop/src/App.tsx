@@ -64,7 +64,6 @@ interface SwiftModelStatus {
   installed: boolean;
   size_bytes: number;
   path: string;
-  downloading_percent: number | null;
 }
 
 export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "meetings" | "divo" | "settings" | "live-meeting";
@@ -74,7 +73,6 @@ type SettingsSectionId =
   | "writing"
   | "hotkeys"
   | "models"
-  | "meeting"
   | "developer"
   | "notifications"
   | "permissions"
@@ -305,7 +303,7 @@ export default function App() {
       return;
     }
     let alive = true;
-    invoke<SwiftModelStatus>("swift_stt_model_status")
+    invoke<SwiftModelStatus>("dictation_model_status")
       .then((status) => {
         if (alive) setSwiftModelInstalled(status.installed);
       })
@@ -809,10 +807,6 @@ export default function App() {
                   <MeetingsView
                     focusMeetingId={focusMeetingId}
                     onFocusConsumed={() => setFocusMeetingId(null)}
-                    onConfigureModels={() => {
-                      setSettingsSection("meeting");
-                      setSettingsOpen(true);
-                    }}
                     onOpenWorkspaces={() => {
                       setSettingsSection("enterprise");
                       setSettingsOpen(true);

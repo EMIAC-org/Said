@@ -196,10 +196,16 @@ Your job:
 
 Return JSON only:
 {"speakers":[{"speaker_id":"speaker_1","name":"Rahul","evidence":"short reason"}]}"#;
-const MEETING_INTELLIGENCE_SYSTEM_PROMPT: &str = r#"You are AirNote's meeting intelligence engine.
+const MEETING_INTELLIGENCE_SYSTEM_PROMPT: &str = r#"You are AirNote's meeting intelligence engine. You turn a raw meeting transcript into a faithful, client-ready Minutes of Meeting (MoM) plus action items and decisions.
 
-Use only the supplied transcript. Do not invent facts, attendees, dates, action items, or decisions.
-The transcript may contain speaker labels and timestamps. Preserve uncertainty when the transcript is unclear.
+=== FAITHFULNESS (read first — these rules override everything below) ===
+1. Ground every claim in the transcript. State only what was actually said. Do NOT infer, assume, or "fill in" unstated facts, attendees, agreements, owners, numbers, or dates — circumstantial inference is the most common and most damaging error. If something is only implied, either omit it or hedge it ("discussed", "raised the possibility"), never assert it as settled ("decided", "agreed").
+2. It is correct to say nothing. If the transcript has no decision, owner, number, or date for a slot, leave it empty or null. Never invent plausible-sounding content to fill a gap.
+3. The transcript is produced by automatic speech recognition and may be noisy or contain mis-heard words. Do not build a claim on a single ambiguous or garbled token. Prefer content that is stated clearly or repeated. Never "correct" a name, number, or term into something that merely sounds more plausible — keep proper nouns exactly as transcribed.
+4. The transcript is code-mixed Hindi + English (romanized Hinglish). Capture content stated in BOTH languages — do not drop or under-weight points made in Hindi. Do not silently translate-then-summarize away the Hindi half. Write the MoM in clear professional English, faithfully carrying over the meaning of Hindi statements; keep proper nouns, product names, and pivotal phrases as spoken.
+5. Speaker labels are derived from audio tracks (e.g. the device user vs. the other party) and may be generic. Use a real person's name only when it is explicitly spoken in the transcript; preserve names exactly and never infer gender, pronouns, or surnames. An action item's assignee is the person the task is given to, which may differ from who spoke the line.
+
+Preserve uncertainty when the transcript is unclear.
 Write the summary field as a detailed, client-ready Minutes of Meeting / MoM, not a short recap.
 The MoM must be useful to someone who did not attend: explain the context, what the speakers were trying to do, what got clarified, what changed during the conversation, why it matters, and what remains unresolved.
 Connect related points across the meeting when the transcript supports the connection, but do not invent facts beyond the transcript.
@@ -229,11 +235,12 @@ When the transcript is a client, sales, product, project, or consulting discussi
 Action-style sections in the summary may include tentative follow-ups and open possibilities, but label them as tentative unless the transcript confirms them.
 Use specific nouns from the meeting instead of vague phrases like "they discussed various topics".
 Summaries may mention proposals, debates, tentative follow-ups, tentative leanings, and unresolved questions.
-Action items require an explicit firm commitment, assignment, or follow-up request in the transcript. If ownership is unclear, use null.
-Do not include tentative follow-ups like "maybe", "probably", "I might", "we could", or "we can check" as action items. Mention them only in the summary.
-Decisions require explicit agreement or a clear final choice. Do not convert brainstorms, preferences, suggestions, or tentative plans into decisions.
+Action items require an explicit firm commitment, assignment, or follow-up request in the transcript (a clear "I will…", "please do…", "can you send…", "we'll deliver…"). The assignee is the person the task is given to, resolved only from an explicit assignment — it may differ from the speaker. If ownership is not explicit, use null; never guess an owner.
+Distinguish firm commitments from tentative talk by the speaker's wording: hedged language ("maybe", "probably", "I might", "we could", "we should", "let's consider", "we can check") is NOT an action item. Mention such tentative follow-ups only in the summary.
+Decisions require explicit agreement or a clear final choice that a participant voiced. Do not convert brainstorms, preferences, suggestions, strong leanings, or tentative plans into decisions.
 Phrases like "maybe", "should", "probably", "I think", "we could", or "we should" are not decisions unless a later turn clearly confirms agreement or commitment. When in doubt, leave decisions empty.
-Every action item and decision must include an "evidence" field containing a short exact quote from the transcript line that supports it. If there is no exact quote, omit that item.
+Dates: no meeting date is provided. Set "due" only when an absolute date is explicitly stated (e.g. "by 14 March"). Do NOT resolve relative references ("next week", "by Friday", "end of month") into a concrete date — leave "due" null and keep the timing words inside the action title instead.
+Every action item and decision must include an "evidence" field containing a short exact verbatim quote from the transcript that supports it (copied, not paraphrased). For an action item the quote must show the commitment or assignment itself — not merely that the topic was mentioned. If there is no such exact quote, omit that item.
 If an assignee is non-null, the evidence must clearly support that assignee by name, speaker label, or role. Otherwise set assignee to null.
 Every action item must include "support": "firm". Every decision must include "support": "explicit". Omit items that cannot honestly use those support values.
 
@@ -257,19 +264,21 @@ const MEETING_INTELLIGENCE_VERIFIER_SYSTEM_PROMPT: &str = r#"You are AirNote's s
 
 Use only the supplied transcript and draft JSON. Return only valid JSON with the same shape as the draft.
 
-Rules:
+Method: read the draft as a list of factual claims. For each claim in the summary, action_items, and decisions, check whether the transcript directly supports it. Keep supported claims; soften claims that overstate certainty; delete claims the transcript does not support. Then apply these rules:
 - Preserve the "title" and "tags" fields. Keep the title concise (3-8 words), specific, and free of dates/times; replace it only if it is generic, inaccurate, or missing. Keep 3-5 grounded Title-Case tags; drop any tag not supported by the transcript.
-- Rewrite the summary if it states tentative proposals as settled decisions.
+- Delete or hedge any sentence that asserts an unstated fact, decision, agreement, owner, number, or date (circumstantial inference). "Decided/agreed" must become "discussed/proposed" unless the transcript shows explicit agreement.
+- Do not drop points that were made in Hindi; if the draft omitted Hindi-stated content that the transcript supports, add it back in English.
+- Keep proper nouns, names, and numbers exactly as in the transcript. Do not "correct" a transcribed name or figure into a more plausible one; if a token is clearly garbled STT noise and unsupported, remove the claim that depends on it.
 - Preserve or improve the summary's detailed numbered MoM format. Do not collapse it into one paragraph or a short recap.
 - The summary should remain useful to someone who did not attend: include supported context, core discussion, key questions, clarifications, implications, risks/open points, action-style follow-ups, and final interpretation where the transcript supports them.
 - Remove or soften any unsupported implications, risks, deliverables, follow-up messages, or stakeholder expectations.
-- Keep an action item only when the transcript contains an explicit firm commitment, assignment, or follow-up request.
+- Keep an action item only when the transcript contains an explicit firm commitment, assignment, or follow-up request, and its evidence quote shows that commitment. Resolve assignee only from an explicit assignment; otherwise set assignee to null. Set "due" only for an explicitly stated absolute date; null out any relative date the draft resolved on its own.
 - Remove tentative follow-ups like "maybe", "probably", "I might", "we could", or "we can check" from action items. They can stay in the summary.
 - Keep a decision only when the transcript contains explicit agreement or a clear final choice.
 - Remove brainstorms, preferences, suggestions, strong leanings, and tentative plans from decisions.
-- Every kept action item and decision must include an "evidence" field copied from the transcript. Do not paraphrase evidence.
+- Every kept action item and decision must include an "evidence" field copied verbatim from the transcript. Do not paraphrase evidence.
 - Every kept action item must include "support": "firm"; every kept decision must include "support": "explicit".
-- If a kept item's evidence does not directly support the item, remove the item.
+- If a kept item's evidence does not directly support the item (including its assignee), remove the item.
 - If uncertain, remove the action item or decision and mention the uncertainty only in the summary."#;
 const MEETING_CHAT_SYSTEM_PROMPT: &str = r#"You are AirNote's meeting Q&A engine.
 
@@ -425,6 +434,10 @@ struct MeetingTranscriptionPlan {
     output_paths: TranscriptPaths,
     source_wavs: Vec<PathBuf>,
     source_activity_path: Option<PathBuf>,
+    /// Try reusing the durable live transcript before a full re-transcription.
+    /// True for automatic post-meeting + crash recovery; false for the explicit
+    /// "Re-transcribe" action (which always does a full pass).
+    prefer_live_reuse: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1839,6 +1852,7 @@ impl MeetingEngineState {
             mic: mic_summary,
             system: None,
             source_activity_path: None,
+            prefer_live_reuse: true,
         };
 
         let Some(session) = session else {
@@ -1857,6 +1871,7 @@ impl MeetingEngineState {
             mic: mic_summary,
             system: None,
             source_activity_path: None,
+            prefer_live_reuse: true,
         };
 
         let Some(system_summary) = system_summary else {
@@ -1905,6 +1920,7 @@ impl MeetingEngineState {
                     output_paths,
                     source_wavs,
                     source_activity_path: Some(merged.source_activity_path),
+                    prefer_live_reuse: true,
                 })
             }
             Err(e) => {
@@ -2029,7 +2045,8 @@ impl MeetingEngineState {
             if !has_transcript && !has_retranscribable_audio {
                 continue;
             }
-            match build_retranscribe_plan(&dir) {
+            // Crash recovery prefers reusing the durable live transcript.
+            match build_retranscribe_plan(&dir, true) {
                 Ok(plan) => {
                     self.start_transcription_job(plan);
                     requeued += 1;
@@ -2594,18 +2611,58 @@ fn run_transcription_job(
         }
     };
 
-    match transcribe_meeting_plan(
-        plan,
-        &config,
-        Some(&cancel_requested),
-        Some(&report_progress),
-    ) {
+    // Fast path: reuse the durable live transcript when eligible (auto/recovery
+    // only). Falls back to a full re-transcription otherwise — always correct.
+    let transcribe_result = if plan.prefer_live_reuse && live_reuse_enabled() {
+        match finalize_done_from_live(plan, &config, Some(&cancel_requested)) {
+            Some(done) => {
+                tracing::info!(meeting_id, "[meeting_engine] finalize_source=live");
+                Ok(done)
+            }
+            None => {
+                tracing::info!(
+                    meeting_id,
+                    "[meeting_engine] finalize_source=batch (full pass)"
+                );
+                transcribe_meeting_plan(
+                    plan,
+                    &config,
+                    Some(&cancel_requested),
+                    Some(&report_progress),
+                )
+            }
+        }
+    } else {
+        if plan.prefer_live_reuse {
+            tracing::info!(
+                meeting_id,
+                "[meeting_engine] finalize_source=batch (live-reuse disabled via AIRNOTE_MEETING_LIVE_REUSE)"
+            );
+        }
+        transcribe_meeting_plan(
+            plan,
+            &config,
+            Some(&cancel_requested),
+            Some(&report_progress),
+        )
+    };
+
+    match transcribe_result {
         Ok(mut done) => {
             if let Some(outcome) =
                 cancelled_or_deleted_job_outcome(meeting_id, jobs, job_artifact_dir.as_deref())
             {
                 return outcome;
             }
+            // Confidence-gated second pass: re-decode only the low-confidence
+            // segments before cleanup/romanize/speaker-naming run on the text.
+            // Env-gated (AIRNOTE_MEETING_REDECODE) and fail-safe.
+            refine_low_confidence_segments(
+                &mut done,
+                &config,
+                &transcript_paths,
+                Some(&cancel_requested),
+            );
             let cleanup_config = meeting_cleanup_config();
             let cleanup_provider = cleanup_config
                 .as_ref()
@@ -2633,7 +2690,7 @@ fn run_transcription_job(
             let cleanup_started = Instant::now();
             let cleanup_result = cleanup_config
                 .and_then(|config| cleanup_meeting_transcript_with_llm(&done.transcript, config));
-            let (mut cleaned_transcript, cleanup) = match cleanup_result {
+            let (cleaned_transcript, cleanup) = match cleanup_result {
                 Ok(result) => (
                     Some(result.transcript.clone()),
                     MeetingCleanupSnapshot::completed(&result),
@@ -2673,26 +2730,9 @@ fn run_transcription_job(
                 done.transcript = format_meeting_timeline_transcript(&done.segments);
             }
 
-            match name_meeting_speakers_with_ai(&mut done.segments, cleaned_transcript.as_deref()) {
-                Ok(replacements) => {
-                    if !replacements.is_empty() {
-                        if let Some(text) = cleaned_transcript.as_mut() {
-                            *text = rewrite_speaker_labels_in_text(text, &replacements);
-                        }
-                        done.transcript = format_meeting_timeline_transcript(&done.segments);
-                        tracing::info!(
-                            count = replacements.len(),
-                            "[meeting_engine] inferred meeting speaker names from transcript context"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "[meeting_engine] speaker naming skipped; keeping generic labels"
-                    );
-                }
-            }
+            // AI speaker naming (diarization) removed: keep the deterministic
+            // source-based labels (mic vs system track) instead of letting an LLM
+            // guess speaker names from transcript context.
 
             if let Some(outcome) =
                 cancelled_or_deleted_job_outcome(meeting_id, jobs, job_artifact_dir.as_deref())
@@ -3851,7 +3891,8 @@ pub fn meeting_engine_retranscribe(
     if state.jobs.is_active(&meeting_id) {
         return Err("This meeting is already being processed; please wait.".to_string());
     }
-    let plan = build_retranscribe_plan(&dir)?;
+    // Explicit user re-transcribe always does a full pass (no live reuse).
+    let plan = build_retranscribe_plan(&dir, false)?;
     state.start_transcription_job(plan);
     let status = state.status();
     emit_main(&app, STATUS_EVENT, status.clone());
@@ -5185,6 +5226,19 @@ fn transcribe_live_window(
         });
     }
 
+    // Durably persist this window so post-processing can reuse the live
+    // transcript (and survive a crash). Best-effort — never fails the window.
+    if let Err(e) = persist_live_window(
+        live_dir,
+        &chunks,
+        &paths.whisper_json,
+        start_ms,
+        config,
+        &summary,
+    ) {
+        tracing::warn!(error = %e, "[meeting_engine] live transcript persist failed (non-fatal)");
+    }
+
     tracing::info!(
         session_id = %session.session_id,
         source = source.source_label(),
@@ -5219,6 +5273,157 @@ fn write_pcm_window_wav(path: &Path, samples: Vec<i16>) -> Result<MicCaptureSumm
         duration_ms: samples_written.saturating_mul(1_000) / SAMPLE_RATE as u64,
         peak: peak_i16 as f32 / i16::MAX as f32,
     })
+}
+
+// ── Durable live transcript (for post-meeting reuse) ────────────────────────
+// Persisted per deduped live segment as it is produced, so post-processing can
+// reuse the live transcript instead of re-transcribing the full audio — and so
+// it survives a crash. Append-only JSONL: a torn last line is dropped on parse.
+
+const LIVE_TRANSCRIPT_JSONL: &str = "live-transcript.jsonl";
+const LIVE_MANIFEST_FILE: &str = "live-manifest.json";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedLiveWord {
+    start_ms: u64,
+    end_ms: u64,
+    prob: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedLiveSegment {
+    chunk_index: u64,
+    source: String,
+    speaker_id: String,
+    speaker_name: String,
+    start_ms: u64,
+    end_ms: u64,
+    text: String,
+    #[serde(default)]
+    words: Vec<PersistedLiveWord>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct LiveManifest {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    language: String,
+    /// End (absolute ms) of the latest audio window the live pass has covered.
+    #[serde(default)]
+    last_covered_ms: u64,
+}
+
+/// Persist one window's deduped segments (with per-word confidence pulled from
+/// the window's `*.whisper.json`) and advance the coverage manifest. Best-effort.
+fn persist_live_window(
+    live_dir: &Path,
+    chunks: &[MeetingLiveTranscriptChunk],
+    whisper_json: &Path,
+    window_start_ms: u64,
+    config: &LiveTranscriptConfig,
+    summary: &MicCaptureSummary,
+) -> Result<(), String> {
+    let covered_end_ms = window_start_ms.saturating_add(summary.duration_ms);
+    // Always advance coverage, even for windows that produced no chunk (silence).
+    write_live_manifest(
+        live_dir,
+        &LiveManifest {
+            model: config.whisper.model.to_string_lossy().to_string(),
+            language: config.whisper.language.clone(),
+            last_covered_ms: covered_end_ms,
+        },
+    )?;
+    if chunks.is_empty() {
+        return Ok(());
+    }
+    // Per-word confidences for this window (times relative to the window start).
+    let conf_segs = fs::read(whisper_json)
+        .ok()
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .map(|json| said_core::redecode_flagging::conf_segments_from_whisper_json_full(&json))
+        .unwrap_or_default();
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(live_dir.join(LIVE_TRANSCRIPT_JSONL))
+        .map_err(|e| format!("open live jsonl: {e}"))?;
+    for chunk in chunks {
+        // Match this chunk to the nearest window segment by absolute start time.
+        let words = conf_segs
+            .iter()
+            .min_by_key(|cs| {
+                let abs = window_start_ms.saturating_add(cs.start_ms);
+                abs.abs_diff(chunk.timestamp_ms)
+            })
+            .filter(|cs| {
+                window_start_ms
+                    .saturating_add(cs.start_ms)
+                    .abs_diff(chunk.timestamp_ms)
+                    <= 400
+            })
+            .map(|cs| {
+                let end = cs.end_ms;
+                (
+                    end,
+                    cs.words
+                        .iter()
+                        .map(|w| PersistedLiveWord {
+                            start_ms: window_start_ms.saturating_add(w.start_ms),
+                            end_ms: window_start_ms.saturating_add(w.end_ms),
+                            prob: w.prob,
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            });
+        let (seg_end, words) = words.unwrap_or((0, Vec::new()));
+        let end_ms = window_start_ms
+            .saturating_add(seg_end)
+            .max(chunk.timestamp_ms);
+        let record = PersistedLiveSegment {
+            chunk_index: chunk.chunk_index,
+            source: chunk.source.clone(),
+            speaker_id: chunk.speaker_id.clone(),
+            speaker_name: chunk.speaker_name.clone(),
+            start_ms: chunk.timestamp_ms,
+            end_ms,
+            text: chunk.text.clone(),
+            words,
+        };
+        let line =
+            serde_json::to_string(&record).map_err(|e| format!("encode live record: {e}"))?;
+        use std::io::Write as _;
+        writeln!(file, "{line}").map_err(|e| format!("write live record: {e}"))?;
+    }
+    Ok(())
+}
+
+fn write_live_manifest(live_dir: &Path, manifest: &LiveManifest) -> Result<(), String> {
+    let json = serde_json::to_vec(manifest).map_err(|e| format!("encode live manifest: {e}"))?;
+    write_atomic(&live_dir.join(LIVE_MANIFEST_FILE), &json)
+        .map_err(|e| format!("write live manifest: {e}"))
+}
+
+/// Read the persisted live transcript into ordered segments (for reuse). Drops
+/// a torn final line (crash mid-write) instead of failing.
+fn read_persisted_live_segments(live_dir: &Path) -> Vec<PersistedLiveSegment> {
+    let Ok(text) = fs::read_to_string(live_dir.join(LIVE_TRANSCRIPT_JSONL)) else {
+        return Vec::new();
+    };
+    let mut segs: Vec<PersistedLiveSegment> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<PersistedLiveSegment>(l).ok())
+        .collect();
+    segs.sort_by_key(|s| (s.start_ms, s.chunk_index));
+    segs
+}
+
+fn read_live_manifest(live_dir: &Path) -> Option<LiveManifest> {
+    fs::read(live_dir.join(LIVE_MANIFEST_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
 fn merge_meeting_audio(
@@ -6228,7 +6433,10 @@ fn capture_summary_from_wav(path: &Path) -> Option<MicCaptureSummary> {
 /// re-transcribed with the current language/model settings. Prefers separate
 /// mic + system tracks (matching the live pipeline); falls back to the merged
 /// track when the per-source WAVs are gone.
-fn build_retranscribe_plan(dir: &Path) -> Result<MeetingTranscriptionPlan, String> {
+fn build_retranscribe_plan(
+    dir: &Path,
+    prefer_live_reuse: bool,
+) -> Result<MeetingTranscriptionPlan, String> {
     // Repair WAV size headers before reading. A recording interrupted before its
     // graceful finalize (crash, force-quit, hard kill) leaves the RIFF/`data`
     // chunk sizes at 0, so the file would read as 0 samples and be wrongly
@@ -6272,6 +6480,7 @@ fn build_retranscribe_plan(dir: &Path) -> Result<MeetingTranscriptionPlan, Strin
         source_wavs,
         source_activity_path: Some(dir.join("meeting.source-activity.json"))
             .filter(|path| path.is_file()),
+        prefer_live_reuse,
     })
 }
 
@@ -6492,8 +6701,21 @@ fn detect_meeting_track_language(config: &WhisperCppConfig, audio_path: &Path) -
 /// "no confident speech". Set AIRNOTE_MEETING_LANG_AUTODETECT=0 to force the
 /// default language for every track.
 fn meeting_track_config(config: &WhisperCppConfig, audio_path: &Path) -> WhisperCppConfig {
-    if !env_bool("AIRNOTE_MEETING_LANG_AUTODETECT", true) {
-        return config.clone();
+    // The Oriserve Hindi2Hinglish model is Hindi-only: per-track auto-detection
+    // mis-detects on it and hallucinates random scripts (e.g. Icelandic). Force
+    // `hi` for it (it emits romanized Hinglish). Auto-detect is for multilingual
+    // models like large-v3-turbo.
+    let oriserve_model = config
+        .model
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .contains("oriserve");
+    if oriserve_model || !env_bool("AIRNOTE_MEETING_LANG_AUTODETECT", true) {
+        let mut forced = config.clone();
+        if oriserve_model {
+            forced.language = "hi".to_string();
+        }
+        return forced;
     }
     let mut per_track = config.clone();
     per_track.language = detect_meeting_track_language(config, audio_path);
@@ -7132,6 +7354,444 @@ fn source_sort_key(source: &str) -> u8 {
         "speaker_1" => 1,
         _ => 2,
     }
+}
+
+// ── Confidence-gated second-pass re-decode (env-gated, fail-safe) ───────────
+// After the main whisper pass, re-decode ONLY the few segments that contain a
+// dense low-confidence cluster (~5/24, ~20% of audio on a real meeting), giving
+// each slice the meeting's preceding confident text as context (and optionally a
+// bigger model via AIRNOTE_MEETING_REDECODE_MODEL). Whole-segment replacement
+// keeps speaker labels/timestamps intact. Disabled by default; never fails the
+// job — any error keeps the original segment.
+
+fn meeting_redecode_enabled() -> bool {
+    env_bool("AIRNOTE_MEETING_REDECODE", false)
+}
+
+fn meeting_redecode_threshold() -> f32 {
+    env_f32("AIRNOTE_MEETING_REDECODE_THRESHOLD", 0.15).clamp(0.01, 0.5)
+}
+
+fn redecode_config_base(config: &WhisperCppConfig) -> WhisperCppConfig {
+    let mut c = config.clone();
+    if let Some(model) = env_path("AIRNOTE_MEETING_REDECODE_MODEL") {
+        if model.is_file() {
+            tracing::info!(model = %model.display(), "[redecode] using bigger second-pass model");
+            c.model = model;
+        }
+    }
+    c
+}
+
+/// Extract [start_ms, end_ms] of a 16 kHz mono WAV into `out`.
+fn slice_wav_span(src: &Path, out: &Path, start_ms: u64, end_ms: u64) -> Result<(), String> {
+    let reader = hound::WavReader::open(src).map_err(|e| format!("open slice src: {e}"))?;
+    let rate = reader.spec().sample_rate as u64;
+    let start = start_ms.saturating_mul(rate) / 1000;
+    let end = end_ms.saturating_mul(rate) / 1000;
+    let mut writer = create_audio_wav_writer(out, "redecode")?;
+    for (i, sample) in reader.into_samples::<i16>().enumerate() {
+        let i = i as u64;
+        if i < start {
+            continue;
+        }
+        if i >= end {
+            break;
+        }
+        let v = sample.map_err(|e| format!("read slice sample: {e}"))?;
+        writer
+            .write_sample(v)
+            .map_err(|e| format!("write slice sample: {e}"))?;
+    }
+    writer
+        .finalize()
+        .map_err(|e| format!("finalize slice: {e}"))?;
+    repair_wav_header_sizes(out)?;
+    Ok(())
+}
+
+/// Confident transcript text immediately before `before_ms`, last `max_chars`
+/// characters — fed to whisper as `--prompt` so the isolated slice keeps the
+/// meeting's context (UTF-8 safe).
+fn preceding_context(
+    segments: &[MeetingTranscriptSegment],
+    before_ms: u64,
+    max_chars: usize,
+) -> String {
+    let mut text = String::new();
+    for seg in segments {
+        if seg.start_ms >= before_ms {
+            break;
+        }
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(seg.text.trim());
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() > max_chars {
+        chars[chars.len() - max_chars..].iter().collect()
+    } else {
+        text
+    }
+}
+
+/// Re-decode a single time range; returns the new text, or None if the result
+/// is empty. Cleans up all temp files.
+fn redecode_range(
+    src: &Path,
+    seg_start_ms: u64,
+    seg_end_ms: u64,
+    config: &WhisperCppConfig,
+    context: &str,
+    cancel: Option<&dyn Fn() -> bool>,
+) -> Result<Option<String>, String> {
+    let parent = src.parent().unwrap_or_else(|| Path::new("."));
+    let stem = format!(".redecode-{seg_start_ms}");
+    let slice_path = parent.join(format!("{stem}.wav"));
+    slice_wav_span(src, &slice_path, seg_start_ms, seg_end_ms)?;
+    let summary = capture_summary_from_wav(&slice_path).ok_or("slice summary failed")?;
+    let paths = transcript_paths_for_stem(parent, &stem);
+    let mut cfg = config.clone();
+    if !context.trim().is_empty() {
+        cfg.prompt = Some(context.trim().to_string());
+    }
+    let result = transcribe_with_whisper_cpp_for(
+        &summary,
+        &paths,
+        &cfg,
+        MeetingAudioTrack::Mic,
+        WHISPER_TIMEOUT,
+        cancel,
+    );
+    let _ = fs::remove_file(&slice_path);
+    let _ = fs::remove_file(&paths.whisper_txt);
+    let _ = fs::remove_file(&paths.whisper_json);
+    let _ = fs::remove_file(&paths.text);
+    let _ = fs::remove_file(&paths.json);
+    let done = result?;
+    let new_text = done.transcript.trim().to_string();
+    Ok((!new_text.is_empty()).then_some(new_text))
+}
+
+/// Replace the most-overlapping segment's text with `new_text`. Hallucination
+/// guard: rejects wildly-different word counts. Returns true if replaced.
+fn apply_redecoded_segment(
+    segments: &mut [MeetingTranscriptSegment],
+    start_ms: u64,
+    end_ms: u64,
+    new_text: &str,
+) -> bool {
+    let mut best: Option<(usize, u64)> = None;
+    for (i, seg) in segments.iter().enumerate() {
+        let lo = seg.start_ms.max(start_ms);
+        let hi = seg.end_ms.min(end_ms);
+        let overlap = hi.saturating_sub(lo);
+        if overlap > 0 && best.map_or(true, |(_, b)| overlap > b) {
+            best = Some((i, overlap));
+        }
+    }
+    let Some((idx, _)) = best else {
+        return false;
+    };
+    if !redecode_passes_length_guard(&segments[idx].text, new_text) {
+        return false;
+    }
+    segments[idx].text = new_text.to_string();
+    true
+}
+
+/// Only accept a re-decode that is similar length: a much shorter result means
+/// the isolated slice (VAD-trimmed, less context) dropped content; a much longer
+/// one means it ran away / hallucinated. Keeping the original is always safe.
+/// Accept window: 0.6x .. 1.8x of the original word count.
+fn redecode_passes_length_guard(orig: &str, new_text: &str) -> bool {
+    let orig_words = orig.split_whitespace().count().max(1);
+    let new_words = new_text.split_whitespace().count();
+    if new_words == 0 || new_words * 10 < orig_words * 6 || new_words * 10 > orig_words * 18 {
+        tracing::warn!(
+            orig_words,
+            new_words,
+            "[redecode] rejected re-decode (length guard); keeping original"
+        );
+        return false;
+    }
+    true
+}
+
+/// Orchestrate the confidence-gated second pass over `done`.
+fn refine_low_confidence_segments(
+    done: &mut MeetingPlanTranscriptionDone,
+    config: &WhisperCppConfig,
+    paths: &TranscriptPaths,
+    cancel: Option<&dyn Fn() -> bool>,
+) {
+    if !meeting_redecode_enabled() {
+        return;
+    }
+    if done.source_wavs.len() > 1 {
+        tracing::info!("[redecode] skipped: multi-track meeting (single-track only for now)");
+        return;
+    }
+    let Some(json) = fs::read(&paths.whisper_json)
+        .ok()
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+    else {
+        return;
+    };
+    let conf_segs = said_core::redecode_flagging::conf_segments_from_whisper_json_full(&json);
+    if conf_segs.is_empty() {
+        return;
+    }
+    let cfg = said_core::redecode_flagging::RedecodeConfig {
+        prob_threshold: meeting_redecode_threshold(),
+        ..Default::default()
+    };
+    let flagged = said_core::redecode_flagging::flag_low_conf_segments(&conf_segs, &cfg);
+    if flagged.is_empty() {
+        tracing::info!("[redecode] no low-confidence clusters; skipping second pass");
+        return;
+    }
+    tracing::info!(
+        flagged = flagged.len(),
+        total = conf_segs.len(),
+        threshold = cfg.prob_threshold,
+        "[redecode] re-decoding low-confidence segments"
+    );
+    let base = redecode_config_base(config);
+    let src = done.summary.path.clone();
+    let mut changed = 0usize;
+    for &i in &flagged {
+        if cancel.map_or(false, |c| c()) {
+            break;
+        }
+        let cs = &conf_segs[i];
+        let context = preceding_context(&done.segments, cs.start_ms, 200);
+        match redecode_range(&src, cs.start_ms, cs.end_ms, &base, &context, cancel) {
+            Ok(Some(text)) => {
+                if apply_redecoded_segment(&mut done.segments, cs.start_ms, cs.end_ms, &text) {
+                    changed += 1;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, start_ms = cs.start_ms, "[redecode] span re-decode failed")
+            }
+        }
+    }
+    if changed > 0 {
+        done.transcript = format_meeting_timeline_transcript(&done.segments);
+        tracing::info!(
+            changed,
+            "[redecode] re-decoded segments; transcript rebuilt"
+        );
+    }
+}
+
+// ── Finalize-from-live (reuse the durable live transcript) ──────────────────
+// When eligible, assemble the final transcript from the live transcript persisted
+// during the meeting (re-decoding only the low-confidence spans) instead of
+// re-transcribing the whole audio. Returns None to fall back to a full pass —
+// so every case still produces a correct transcript.
+
+/// Master on/off switch for reusing the durable live transcript in post-meeting
+/// processing. When `false`, every meeting takes a full re-transcription pass
+/// (the live transcript is still persisted, just not reused). Default `true`.
+fn live_reuse_enabled() -> bool {
+    env_bool("AIRNOTE_MEETING_LIVE_REUSE", true)
+}
+
+fn live_reuse_min_coverage() -> f32 {
+    env_f32("AIRNOTE_MEETING_LIVE_REUSE_MIN_COVERAGE", 0.85).clamp(0.0, 1.0)
+}
+
+/// Confidence-gated re-decode of the live-derived segments, in place. Uses the
+/// per-word confidence persisted in the live JSONL — no whisper.json re-read.
+/// Re-decode low-confidence live segments in place. `segments` is 1:1 with
+/// `records` (same order, pre-tail/sort), so a flagged index maps directly to
+/// its segment — and the slice is taken from that record's own track WAV
+/// (mic or system), keeping dual-track speakers correct.
+fn redecode_live_segments(
+    segments: &mut [MeetingTranscriptSegment],
+    records: &[PersistedLiveSegment],
+    mic_src: &Path,
+    system_src: Option<&Path>,
+    config: &WhisperCppConfig,
+    cancel: Option<&dyn Fn() -> bool>,
+) {
+    let conf_segs: Vec<said_core::redecode_flagging::ConfSegment> = records
+        .iter()
+        .map(|r| said_core::redecode_flagging::ConfSegment {
+            start_ms: r.start_ms,
+            end_ms: r.end_ms,
+            words: r
+                .words
+                .iter()
+                .map(|w| said_core::redecode_flagging::WordConf {
+                    start_ms: w.start_ms,
+                    end_ms: w.end_ms,
+                    prob: w.prob,
+                })
+                .collect(),
+        })
+        .collect();
+    let cfg = said_core::redecode_flagging::RedecodeConfig {
+        prob_threshold: meeting_redecode_threshold(),
+        ..Default::default()
+    };
+    let flagged = said_core::redecode_flagging::flag_low_conf_segments(&conf_segs, &cfg);
+    if flagged.is_empty() {
+        return;
+    }
+    let base = redecode_config_base(config);
+    let mut changed = 0usize;
+    for &i in &flagged {
+        if cancel.is_some_and(|c| c()) || i >= segments.len() {
+            break;
+        }
+        // Slice from this segment's own track so dual-track speakers stay clean.
+        let src = if records[i].source == "system" {
+            system_src
+        } else {
+            Some(mic_src)
+        };
+        let Some(src) = src else { continue };
+        let cs = &conf_segs[i];
+        let context = preceding_context(segments, cs.start_ms, 200);
+        if let Ok(Some(text)) = redecode_range(src, cs.start_ms, cs.end_ms, &base, &context, cancel)
+        {
+            let text = text.trim();
+            if redecode_passes_length_guard(&segments[i].text, text) {
+                segments[i].text = text.to_string();
+                changed += 1;
+            }
+        }
+    }
+    if changed > 0 {
+        tracing::info!(changed, "[live-reuse] re-decoded low-confidence segments");
+    }
+}
+
+/// Try to build the final transcript from the persisted live transcript. None =>
+/// not eligible / unsafe => caller falls back to a full re-transcription.
+fn finalize_done_from_live(
+    plan: &MeetingTranscriptionPlan,
+    config: &WhisperCppConfig,
+    cancel: Option<&dyn Fn() -> bool>,
+) -> Option<MeetingPlanTranscriptionDone> {
+    if cancel.is_some_and(|c| c()) {
+        return None;
+    }
+    let live_dir = plan.summary.path.parent()?.join("live");
+    let records = read_persisted_live_segments(&live_dir);
+    if records.is_empty() {
+        tracing::info!("[live-reuse] no persisted live transcript → full pass");
+        return None;
+    }
+    let manifest = read_live_manifest(&live_dir).unwrap_or_default();
+    let configured_model = config.model.to_string_lossy().to_string();
+    if !manifest.model.is_empty() && manifest.model != configured_model {
+        tracing::info!(
+            live = %manifest.model,
+            now = %configured_model,
+            "[live-reuse] model changed since recording → full pass"
+        );
+        return None;
+    }
+    let audio_ms = plan.summary.duration_ms;
+    if audio_ms == 0 {
+        return None;
+    }
+    let coverage = manifest.last_covered_ms as f32 / audio_ms as f32;
+    let min_cov = live_reuse_min_coverage();
+    if coverage < min_cov {
+        tracing::info!(
+            coverage,
+            min_cov,
+            covered_ms = manifest.last_covered_ms,
+            audio_ms,
+            "[live-reuse] coverage below threshold → full pass"
+        );
+        return None;
+    }
+
+    let mut segments: Vec<MeetingTranscriptSegment> = records
+        .iter()
+        .map(|r| MeetingTranscriptSegment {
+            source: r.source.clone(),
+            speaker_id: r.speaker_id.clone(),
+            speaker_name: r.speaker_name.clone(),
+            start_ms: r.start_ms,
+            end_ms: r.end_ms,
+            text: r.text.clone(),
+        })
+        .collect();
+
+    redecode_live_segments(
+        &mut segments,
+        &records,
+        &plan.mic.path,
+        plan.system.as_ref().map(|s| s.path.as_path()),
+        config,
+        cancel,
+    );
+
+    // Cover the tail the live windows never reached (≤ one step, the audio after
+    // the last drained window) so the reused transcript is complete. Larger gaps
+    // were already rejected by the coverage gate above.
+    let covered = manifest.last_covered_ms;
+    if audio_ms.saturating_sub(covered) >= 1500 && !cancel.is_some_and(|c| c()) {
+        let context = preceding_context(&segments, covered, 200);
+        if let Ok(Some(text)) = redecode_range(
+            &plan.summary.path,
+            covered,
+            audio_ms,
+            &redecode_config_base(config),
+            &context,
+            cancel,
+        ) {
+            let text = text.trim();
+            if !text.is_empty() {
+                segments.push(MeetingTranscriptSegment {
+                    source: "mic".to_string(),
+                    speaker_id: "you".to_string(),
+                    speaker_name: "You".to_string(),
+                    start_ms: covered,
+                    end_ms: audio_ms,
+                    text: text.to_string(),
+                });
+                segments.sort_by_key(|s| s.start_ms);
+                tracing::info!(
+                    from_ms = covered,
+                    to_ms = audio_ms,
+                    "[live-reuse] transcribed tail"
+                );
+            }
+        }
+    }
+
+    // Dual-track: drop mic segments that are echoes of system audio (same step
+    // the full pass runs). No-op for single-track (no system segments).
+    let segments = suppress_mic_echo_segments(segments, plan.source_activity_path.as_deref());
+
+    let transcript = format_meeting_timeline_transcript(&segments);
+    if transcript.trim().is_empty() {
+        tracing::info!("[live-reuse] assembled transcript empty → full pass");
+        return None;
+    }
+    tracing::info!(
+        segments = segments.len(),
+        coverage,
+        tracks = plan.source_wavs.len(),
+        "[live-reuse] finalizing from durable live transcript (skipping full re-transcription)"
+    );
+    Some(MeetingPlanTranscriptionDone {
+        transcript,
+        latency_ms: 0,
+        summary: plan.summary.clone(),
+        segments,
+        source_wavs: plan.source_wavs.clone(),
+    })
 }
 
 fn format_meeting_timeline_transcript(segments: &[MeetingTranscriptSegment]) -> String {
@@ -12329,30 +12989,15 @@ const MODEL_DOWNLOAD_EVENT: &str = "meeting-model-download";
 /// (`AIRNOTE_WHISPER_CPP_MODEL`). All are multilingual (no `*.en`) to preserve
 /// Hindi/Hinglish. Sizes are HF download-size hints.
 const WHISPER_MODEL_CATALOG: &[(&str, &str, u64)] = &[
+    // Oriserve Hindi2Hinglish (GGML fp16) is the ONE and only meeting/dictation
+    // model — a single local download serves both pipelines, romanized Hinglish
+    // output, language forced to `hi`. No other model is selectable: any other
+    // ggml-*.bin on disk is treated as legacy and cleaned up. When this model is
+    // absent the UI shows the "download model" banner (no silent fallback).
     (
-        "ggml-large-v3-turbo-q5_0.bin",
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
-        573_000_000,
-    ),
-    (
-        "ggml-medium.bin",
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
-        1_530_000_000,
-    ),
-    (
-        "ggml-small.bin",
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
-        488_000_000,
-    ),
-    (
-        "ggml-base.bin",
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+        "ggml-oriserve-hinglish-fp16.bin",
+        "https://huggingface.co/anish2305/airnote-hinglish-stt-ggml/resolve/main/ggml-oriserve-hinglish-fp16.bin",
         148_000_000,
-    ),
-    (
-        "ggml-tiny.bin",
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
-        78_000_000,
     ),
 ];
 
@@ -13072,6 +13717,34 @@ pub fn resolve_silero_vad_model_path() -> Option<PathBuf> {
         })
 }
 
+/// Ensure the bundled Silero VAD model is present in the data-dir models folder.
+/// The VAD is shipped with the app (Tauri resources), but the dictation path reads
+/// `said_core::paths::silero_vad_model_path()` (data dir only), so copy the bundled
+/// file there once on startup. Makes VAD available offline on first run with no
+/// download. No-op when the file already exists or no bundled copy is found.
+pub fn ensure_bundled_silero_vad() {
+    let dest = said_core::paths::silero_vad_model_path();
+    if is_usable_silero_vad_model(&dest) {
+        return;
+    }
+    let Some(src) = bundled_models_dirs()
+        .iter()
+        .find_map(|d| find_silero_vad_model(d))
+    else {
+        return; // not bundled (e.g. dev build) — the per-recording path downloads it
+    };
+    if let Some(parent) = dest.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    match fs::copy(&src, &dest) {
+        Ok(_) => tracing::info!(
+            "[meeting_engine] installed bundled Silero VAD → {}",
+            dest.display()
+        ),
+        Err(e) => tracing::warn!("[meeting_engine] failed to install bundled Silero VAD: {e}"),
+    }
+}
+
 fn dictation_whisper_language(pref_language: &str) -> String {
     match pref_language.trim().to_ascii_lowercase().as_str() {
         "en" | "english" => "en".to_string(),
@@ -13340,6 +14013,11 @@ fn resolve_whisper_cpp_config() -> Result<WhisperCppConfig, String> {
         "whisper.cpp model not found; set AIRNOTE_WHISPER_CPP_MODEL or WHISPER_CPP_MODEL"
             .to_string()
     })?;
+    tracing::info!(
+        model = %model.display(),
+        env_override = ?std::env::var("AIRNOTE_WHISPER_CPP_MODEL").ok(),
+        "[meeting_engine] whisper model resolved"
+    );
 
     let language = DEFAULT_WHISPER_LANGUAGE.to_string();
     let prompt = meeting_env("AIRNOTE_MEETING_WHISPER_PROMPT")
@@ -13697,7 +14375,11 @@ fn default_whisper_model_candidates(data_dir: &Path) -> Vec<PathBuf> {
 }
 
 fn whisper_model_candidate_names() -> Vec<&'static str> {
-    vec!["ggml-large-v3-turbo-q5_0.bin"]
+    // The shared Oriserve Hinglish model (same one dictation uses) is the only
+    // meeting model — no fallback. If it isn't installed the engine has no model
+    // and the Meetings view surfaces the download banner. The model is Hindi-only,
+    // so the meeting language is forced to `hi` (see meeting_track_config).
+    vec!["ggml-oriserve-hinglish-fp16.bin"]
 }
 
 fn is_supported_meeting_whisper_model_name(name: &str) -> bool {
@@ -14633,6 +15315,7 @@ mod tests {
             output_paths: transcript_paths_for_stem(dir, "meeting"),
             source_wavs: vec![wav],
             source_activity_path: None,
+            prefer_live_reuse: false,
         }
     }
 
@@ -16174,7 +16857,7 @@ mod tests {
             vec![source_activity_for_test("system_audio", 0, 1_000)],
         );
 
-        let plan = build_retranscribe_plan(&dir).unwrap();
+        let plan = build_retranscribe_plan(&dir, false).unwrap();
 
         assert_eq!(
             plan.source_wavs,
@@ -16190,15 +16873,17 @@ mod tests {
     }
 
     #[test]
-    fn meeting_whisper_defaults_prefer_q5_for_light_meeting_flow() {
+    fn meeting_whisper_defaults_are_oriserve_only() {
         let candidates = default_whisper_model_candidates(Path::new("/tmp/airnote-test-data"));
 
+        // Meetings use the on-device Oriserve model only (same as dictation, forced
+        // to `hi`). No fallback — a missing model surfaces the download banner.
         assert_eq!(candidates.len(), 1);
-        assert!(candidates[0].ends_with("models/ggml-large-v3-turbo-q5_0.bin"));
+        assert!(candidates[0].ends_with("models/ggml-oriserve-hinglish-fp16.bin"));
     }
 
     #[test]
-    fn meeting_whisper_model_dir_chooses_recommended_low_memory_model() {
+    fn meeting_whisper_model_dir_chooses_oriserve_only() {
         let dir = std::env::temp_dir().join(format!(
             "airnote-whisper-model-dir-test-{}-{}",
             std::process::id(),
@@ -16207,22 +16892,25 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         // Real-sized stubs: the resolver skips empty/partial models (< 1 MB).
         let blob = vec![0u8; (MIN_WHISPER_MODEL_BYTES + 1) as usize];
+        // Oriserve present alongside a leftover Q5 → Oriserve is chosen; Q5 is
+        // no longer a candidate at all.
+        fs::write(dir.join("ggml-oriserve-hinglish-fp16.bin"), &blob).unwrap();
         fs::write(dir.join("ggml-large-v3-turbo-q5_0.bin"), &blob).unwrap();
-        fs::write(dir.join("ggml-large-v3-turbo.bin"), &blob).unwrap();
 
         let selected = first_whisper_model_in_dir(&dir).unwrap();
 
-        assert!(selected.ends_with("ggml-large-v3-turbo-q5_0.bin"));
+        assert!(selected.ends_with("ggml-oriserve-hinglish-fp16.bin"));
 
         // A 0-byte placeholder must be ignored, not chosen.
         let empty_dir = dir.join("empty");
         fs::create_dir_all(&empty_dir).unwrap();
-        fs::write(empty_dir.join("ggml-large-v3-turbo.bin"), b"").unwrap();
+        fs::write(empty_dir.join("ggml-oriserve-hinglish-fp16.bin"), b"").unwrap();
         assert!(first_whisper_model_in_dir(&empty_dir).is_none());
 
+        // Only a non-Oriserve model on disk → no usable candidate (no fallback).
         let legacy_only_dir = dir.join("legacy-only");
         fs::create_dir_all(&legacy_only_dir).unwrap();
-        fs::write(legacy_only_dir.join("ggml-large-v3-turbo.bin"), &blob).unwrap();
+        fs::write(legacy_only_dir.join("ggml-large-v3-turbo-q5_0.bin"), &blob).unwrap();
         assert!(first_whisper_model_in_dir(&legacy_only_dir).is_none());
 
         let _ = fs::remove_dir_all(dir);
@@ -16237,7 +16925,7 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let blob = vec![0u8; (MIN_WHISPER_MODEL_BYTES + 1) as usize];
-        let model = dir.join("ggml-large-v3-turbo-q5_0.bin");
+        let model = dir.join("ggml-oriserve-hinglish-fp16.bin");
         fs::write(&model, &blob).unwrap();
 
         let selected = choose_whisper_model_path(Some(model.clone()), None).unwrap();
@@ -16248,30 +16936,30 @@ mod tests {
     }
 
     #[test]
-    fn meeting_whisper_catalog_exposes_supported_multilingual_models() {
+    fn meeting_whisper_catalog_is_oriserve_only() {
         let names = WHISPER_MODEL_CATALOG
             .iter()
             .map(|(name, _, _)| *name)
             .collect::<std::collections::HashSet<_>>();
 
-        assert_eq!(names.len(), 5);
-        assert!(names.contains("ggml-large-v3-turbo-q5_0.bin"));
-        assert!(names.contains("ggml-medium.bin"));
-        assert!(names.contains("ggml-small.bin"));
-        assert!(names.contains("ggml-base.bin"));
-        assert!(names.contains("ggml-tiny.bin"));
+        // Exactly one selectable model — Oriserve. Q5/medium/etc. are gone, so
+        // they're treated as legacy and never auto-selected.
+        assert_eq!(names.len(), 1);
+        assert!(names.contains("ggml-oriserve-hinglish-fp16.bin"));
+        assert!(!names.contains("ggml-large-v3-turbo-q5_0.bin"));
     }
 
     #[test]
-    fn meeting_whisper_cleanup_removes_unsupported_models_and_keeps_supported() {
+    fn meeting_whisper_cleanup_keeps_only_oriserve_and_vad() {
         let dir = std::env::temp_dir().join(format!(
             "airnote-whisper-cleanup-test-{}-{}",
             std::process::id(),
             now_ms()
         ));
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("ggml-large-v3-turbo-q5_0.bin"), b"keep").unwrap();
-        fs::write(dir.join("ggml-large-v3-turbo-q5_0.bin.part"), b"keep-part").unwrap();
+        fs::write(dir.join("ggml-oriserve-hinglish-fp16.bin"), b"keep").unwrap();
+        fs::write(dir.join("ggml-oriserve-hinglish-fp16.bin.part"), b"keep-part").unwrap();
+        fs::write(dir.join("ggml-large-v3-turbo-q5_0.bin"), b"delete-q5").unwrap();
         fs::write(dir.join("ggml-large-v3-turbo.bin"), b"delete-full").unwrap();
         fs::write(dir.join("ggml-medium.bin"), b"delete-medium").unwrap();
         fs::write(dir.join("ggml-small-q5_0.bin.part"), b"delete-part").unwrap();
@@ -16284,13 +16972,17 @@ mod tests {
             .map(|model| model.name.as_str())
             .collect::<std::collections::HashSet<_>>();
 
-        assert_eq!(removed.len(), 2);
+        // Oriserve is the only catalog model now, so every other ggml-*.bin is
+        // legacy and removed; Oriserve and the Silero VAD stay.
+        assert_eq!(removed.len(), 4);
+        assert!(removed.contains("ggml-large-v3-turbo-q5_0.bin"));
+        assert!(removed.contains("ggml-medium.bin"));
         assert!(removed.contains("ggml-large-v3-turbo.bin"));
         assert!(removed.contains("ggml-small-q5_0.bin.part"));
-        assert!(dir.join("ggml-large-v3-turbo-q5_0.bin").exists());
-        assert!(dir.join("ggml-large-v3-turbo-q5_0.bin.part").exists());
-        assert!(dir.join("ggml-medium.bin").exists());
+        assert!(dir.join("ggml-oriserve-hinglish-fp16.bin").exists());
+        assert!(dir.join("ggml-oriserve-hinglish-fp16.bin.part").exists());
         assert!(dir.join("ggml-silero-v5.1.2.bin").exists());
+        assert!(!dir.join("ggml-large-v3-turbo-q5_0.bin").exists());
         assert!(!dir.join("ggml-large-v3-turbo.bin").exists());
         assert!(!dir.join("ggml-small-q5_0.bin.part").exists());
 
@@ -16670,6 +17362,201 @@ mod tests {
             end_ms,
             text: text.to_string(),
         }
+    }
+
+    #[test]
+    fn live_jsonl_roundtrip_drops_torn_last_line_and_sorts() {
+        use std::io::Write as _;
+        let dir = std::env::temp_dir().join(format!("live_jsonl_test_{}", std::process::id()));
+        let live = dir.join("live");
+        std::fs::create_dir_all(&live).unwrap();
+        let rec = |idx: u64, start: u64, text: &str| PersistedLiveSegment {
+            chunk_index: idx,
+            source: "mic".to_string(),
+            speaker_id: "you".to_string(),
+            speaker_name: "You".to_string(),
+            start_ms: start,
+            end_ms: start + 1000,
+            text: text.to_string(),
+            words: Vec::new(),
+        };
+        let mut f = std::fs::File::create(live.join(LIVE_TRANSCRIPT_JSONL)).unwrap();
+        writeln!(
+            f,
+            "{}",
+            serde_json::to_string(&rec(1, 1000, "second")).unwrap()
+        )
+        .unwrap();
+        writeln!(f, "{}", serde_json::to_string(&rec(0, 0, "first")).unwrap()).unwrap();
+        write!(f, "{{\"chunk_index\":2,partial torn").unwrap(); // crash mid-write, no newline
+        drop(f);
+        let segs = read_persisted_live_segments(&live);
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(segs.len(), 2, "torn final line must be dropped");
+        assert_eq!(segs[0].text, "first", "sorted by start_ms");
+        assert_eq!(segs[1].text, "second");
+    }
+
+    #[test]
+    fn live_records_feed_redecode_flagging() {
+        use said_core::redecode_flagging::{
+            ConfSegment, RedecodeConfig, WordConf, flag_low_conf_segments,
+        };
+        let rec = |start: u64, probs: &[f32]| PersistedLiveSegment {
+            chunk_index: 0,
+            source: "mic".to_string(),
+            speaker_id: "you".to_string(),
+            speaker_name: "You".to_string(),
+            start_ms: start,
+            end_ms: start + 3000,
+            text: "x".to_string(),
+            words: probs
+                .iter()
+                .enumerate()
+                .map(|(i, &p)| PersistedLiveWord {
+                    start_ms: start + i as u64 * 300,
+                    end_ms: start + i as u64 * 300 + 250,
+                    prob: p,
+                })
+                .collect(),
+        };
+        let records = vec![
+            rec(0, &[0.99, 0.98, 0.97]),            // all confident
+            rec(30_000, &[0.99, 0.08, 0.10, 0.99]), // dense low-conf cluster
+        ];
+        let conf: Vec<ConfSegment> = records
+            .iter()
+            .map(|r| ConfSegment {
+                start_ms: r.start_ms,
+                end_ms: r.end_ms,
+                words: r
+                    .words
+                    .iter()
+                    .map(|w| WordConf {
+                        start_ms: w.start_ms,
+                        end_ms: w.end_ms,
+                        prob: w.prob,
+                    })
+                    .collect(),
+            })
+            .collect();
+        let flagged = flag_low_conf_segments(&conf, &RedecodeConfig::default());
+        assert_eq!(
+            flagged,
+            vec![1],
+            "only the clustered-low-conf segment is flagged"
+        );
+    }
+
+    #[test]
+    fn meeting_oriserve_model_forces_hi_language() {
+        let mk = |model: &str, lang: &str| WhisperCppConfig {
+            binary: PathBuf::from("whisper-cli"),
+            model: PathBuf::from(model),
+            language: lang.to_string(),
+            max_context_tokens: 0,
+            prompt: None,
+            suppress_non_speech: true,
+            no_fallback: true,
+            no_speech_threshold: Some(DEFAULT_WHISPER_NO_SPEECH_THRESHOLD),
+            logprob_threshold: Some(DEFAULT_WHISPER_LOGPROB_THRESHOLD),
+            entropy_threshold: Some(DEFAULT_WHISPER_ENTROPY_THRESHOLD),
+            min_segment_confidence: Some(DEFAULT_WHISPER_MIN_SEGMENT_CONFIDENCE),
+            vad_model: None,
+            vad_threshold: DEFAULT_VAD_THRESHOLD,
+            vad_speech_pad_ms: DEFAULT_VAD_SPEECH_PAD_MS,
+            vad_min_silence_ms: DEFAULT_VAD_MIN_SILENCE_MS,
+            romanize: true,
+        };
+        // Oriserve is Hindi-only: forced to `hi`, never auto-detected (which would
+        // mis-detect and hallucinate). Returns early — no whisper spawn.
+        let cfg = mk("/x/models/ggml-oriserve-hinglish-fp16.bin", "en");
+        assert_eq!(
+            meeting_track_config(&cfg, Path::new("/x/mic.wav")).language,
+            "hi"
+        );
+    }
+
+    #[test]
+    fn redecode_replaces_best_overlapping_segment() {
+        let mut segs = vec![
+            mic_segment_for_test(0, 30_000, "first segment original text here"),
+            mic_segment_for_test(30_000, 60_000, "second segment original words go here"),
+            mic_segment_for_test(60_000, 90_000, "third segment stays untouched here"),
+        ];
+        // a flagged range inside the 2nd segment
+        let replaced = apply_redecoded_segment(
+            &mut segs,
+            35_000,
+            45_000,
+            "second segment fixed words go here",
+        );
+        assert!(replaced);
+        assert_eq!(segs[1].text, "second segment fixed words go here");
+        assert_eq!(segs[0].text, "first segment original text here");
+        assert_eq!(segs[2].text, "third segment stays untouched here");
+    }
+
+    #[test]
+    fn redecode_length_guard_rejects_content_loss_and_runaway() {
+        // 10-word original; accept window is 0.6x..1.8x (6..18 words).
+        let orig = "one two three four five six seven eight nine ten";
+        let mut segs = vec![mic_segment_for_test(0, 30_000, orig)];
+        // content loss (4 words, 0.4x) → reject, keep original
+        assert!(!apply_redecoded_segment(
+            &mut segs,
+            0,
+            30_000,
+            "one two three four"
+        ));
+        assert_eq!(segs[0].text, orig);
+        // runaway (25 words) → reject
+        let long = "a ".repeat(25);
+        assert!(!apply_redecoded_segment(&mut segs, 0, 30_000, &long));
+        assert_eq!(segs[0].text, orig);
+        // similar length (9 words, 0.9x) → accept
+        assert!(apply_redecoded_segment(
+            &mut segs,
+            0,
+            30_000,
+            "one two three four five six seven eight NINE"
+        ));
+        assert_eq!(segs[0].text, "one two three four five six seven eight NINE");
+    }
+
+    #[test]
+    fn preceding_context_is_utf8_safe_and_bounded() {
+        let segs = vec![
+            mic_segment_for_test(0, 5_000, "ज़रा बताना यह कैसा चल रहा है"),
+            mic_segment_for_test(5_000, 10_000, "deepgram side slow hai"),
+            mic_segment_for_test(10_000, 15_000, "should not appear"),
+        ];
+        let ctx = preceding_context(&segs, 10_000, 12);
+        // only segments before 10s, last 12 chars, never panics on multibyte
+        assert!(!ctx.contains("should not appear"));
+        assert!(ctx.chars().count() <= 12);
+    }
+
+    #[test]
+    fn slice_wav_span_extracts_expected_duration() {
+        let wav = std::path::PathBuf::from(
+            std::env::var("HOME").unwrap_or_default(),
+        )
+        .join("Library/Application Support/VoicePolish/meetings/d75db266-de6e-4a4f-a35c-a3f9d79119ee/meeting.merged.wav");
+        if !wav.is_file() {
+            eprintln!("[skip] meeting fixture not present");
+            return;
+        }
+        let out = std::env::temp_dir().join("redecode_slice_test.wav");
+        slice_wav_span(&wav, &out, 10_000, 20_000).expect("slice failed");
+        let summary = capture_summary_from_wav(&out).expect("read sliced summary");
+        let _ = std::fs::remove_file(&out);
+        // 10s slice at 16 kHz mono → ~10_000 ms, ~160_000 samples (allow tolerance)
+        assert!(
+            (9_500..=10_500).contains(&summary.duration_ms),
+            "expected ~10s slice, got {}ms",
+            summary.duration_ms
+        );
     }
 
     fn source_activity_for_test(source: &str, start_ms: u64, end_ms: u64) -> SourceActivitySegment {

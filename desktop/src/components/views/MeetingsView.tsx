@@ -3,6 +3,7 @@ import { formatTimestamp, speakerColor } from "@/lib/meetingFormat";
 import type { MutableRefObject, ReactNode } from "react";
 import {
   AlertTriangle,
+  Ban,
   Check,
   ChevronDown,
   Copy,
@@ -1064,6 +1065,8 @@ function ProcessingBanner({
         <div className="flex min-w-0 items-center gap-2">
           {failed ? (
             <AlertTriangle size={16} style={{ color: "hsl(354 85% 75%)" }} />
+          ) : cancelled ? (
+            <Ban size={16} style={{ color: "hsl(var(--muted-foreground))" }} />
           ) : (
             <Loader2 size={16} className="animate-spin" style={{ color: "hsl(var(--primary))" }} />
           )}
@@ -1104,6 +1107,17 @@ function ProcessingBanner({
               <X size={14} />
             </button>
           </div>
+        ) : cancelled ? (
+          <button
+            type="button"
+            title="Dismiss"
+            aria-label="Dismiss processing message"
+            onClick={onDismiss}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors hover:text-foreground"
+            style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--muted-foreground))" }}
+          >
+            <X size={14} />
+          </button>
         ) : status.can_cancel ? (
           <button
             type="button"
@@ -1160,17 +1174,18 @@ interface MeetingsViewProps {
    *  just ended). Consumed once via onFocusConsumed. */
   focusMeetingId?: string | null;
   onFocusConsumed?: () => void;
-  /** Open Settings → Meeting (to download/select a transcription model). */
-  onConfigureModels?: () => void;
   /** Open Settings → Enterprise (to select/activate a workspace). */
   onOpenWorkspaces?: () => void;
 }
+
+// The one and only meeting transcription model — Oriserve Hindi2Hinglish (GGML).
+// There is no model picker; first run downloads this and nothing else.
+const MEETING_MODEL_NAME = "ggml-oriserve-hinglish-fp16.bin";
 
 export function MeetingsView({
   onJoinMeeting,
   focusMeetingId,
   onFocusConsumed,
-  onConfigureModels,
   onOpenWorkspaces,
 }: MeetingsViewProps) {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -1280,25 +1295,38 @@ export function MeetingsView({
   // ~6-connection WebView2 pool (each invoke also costs a CORS preflight). The
   // download flow refreshes this explicitly, so 30s is plenty to clear the banner.
   const [hasModel, setHasModel] = useState<boolean | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const check = async () => {
-      try {
-        // Keep a model selected whenever one is installed (auto-select single).
-        await invoke("meeting_ensure_active_model").catch(() => null);
-        const models = await invoke<{ incomplete: boolean }[]>("meeting_list_whisper_models");
-        if (!cancelled) setHasModel(models.some((m) => !m.incomplete));
-      } catch {
-        if (!cancelled) setHasModel(null);
-      }
-    };
-    void check();
-    const id = setInterval(check, 30_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
+  const [downloadingModel, setDownloadingModel] = useState(false);
+  const refreshHasModel = useCallback(async () => {
+    try {
+      // Keep a model selected whenever one is installed (auto-select single).
+      await invoke("meeting_ensure_active_model").catch(() => null);
+      const models = await invoke<{ incomplete: boolean }[]>("meeting_list_whisper_models");
+      setHasModel(models.some((m) => !m.incomplete));
+    } catch {
+      setHasModel(null);
+    }
   }, []);
+  useEffect(() => {
+    void refreshHasModel();
+    const id = setInterval(() => void refreshHasModel(), 30_000);
+    return () => clearInterval(id);
+  }, [refreshHasModel]);
+
+  // First-run provisioning: there is no model picker, so just fetch Oriserve.
+  const downloadMeetingModel = useCallback(async () => {
+    if (downloadingModel) return;
+    setDownloadingModel(true);
+    setError("");
+    try {
+      await invoke("meeting_download_whisper_model", { name: MEETING_MODEL_NAME });
+      await refreshHasModel();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg !== "cancelled") setError(`Couldn't download the transcription model: ${msg}`);
+    } finally {
+      setDownloadingModel(false);
+    }
+  }, [downloadingModel, refreshHasModel]);
 
   const startNewLocalMeeting = useCallback(async () => {
     setCreating(true);
@@ -1339,8 +1367,7 @@ export function MeetingsView({
 
   const handleNewMeeting = useCallback(async () => {
     if (hasModel === false) {
-      setError("Install a transcription model first (Settings → Meeting).");
-      onConfigureModels?.();
+      void downloadMeetingModel();
       return;
     }
     // Never start a second meeting while one is already recording — show a popup
@@ -1365,7 +1392,7 @@ export function MeetingsView({
     }
 
     await startNewLocalMeeting();
-  }, [findRunningProcessingMeeting, hasModel, onConfigureModels, startNewLocalMeeting]);
+  }, [downloadMeetingModel, findRunningProcessingMeeting, hasModel, startNewLocalMeeting]);
 
   const handlePauseProcessingAndStart = useCallback(async () => {
     const warning = processingStartWarning;
@@ -2291,16 +2318,18 @@ export function MeetingsView({
         >
           <AlertTriangle size={15} className="flex-shrink-0" style={{ color: "hsl(var(--chip-amber-fg))" }} />
           <span className="min-w-0 flex-1 text-[12px] text-foreground">
-            <span className="font-semibold">No transcription model installed.</span> Meetings can't
-            be transcribed until you download and select a model.
+            <span className="font-semibold">Transcription model not installed yet.</span> Meetings
+            can't be transcribed until the model finishes downloading.
           </span>
           <button
             type="button"
-            onClick={() => onConfigureModels?.()}
-            className="h-7 flex-shrink-0 rounded-lg px-3 text-[12px] font-bold"
+            onClick={() => void downloadMeetingModel()}
+            disabled={downloadingModel}
+            className="flex h-7 flex-shrink-0 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold disabled:opacity-70"
             style={{ background: "hsl(var(--chip-amber-fg))", color: "hsl(var(--background))" }}
           >
-            Download a model
+            {downloadingModel ? <Loader2 size={13} className="animate-spin" /> : null}
+            {downloadingModel ? "Downloading…" : "Download model"}
           </button>
         </div>
       ) : null}

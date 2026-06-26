@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   X, RefreshCw, CloudCheck,
-  Wand2, ShieldCheck, Info, Bug, Palette, Link, Bell, Brain, Keyboard, Video,
+  Wand2, ShieldCheck, Info, Bug, Palette, Link, Bell, Brain, Keyboard,
   Code2,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
@@ -24,7 +24,6 @@ const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
   "writing":       <Wand2        size={14} />,
   "hotkeys":       <Keyboard     size={14} />,
   "models":        <Brain        size={14} />,
-  "meeting":       <Video        size={14} />,
   "developer":     <Code2        size={14} />,
   "notifications": <Bell         size={14} />,
   "permissions":   <ShieldCheck  size={14} />,
@@ -38,7 +37,6 @@ const SECTION_TITLES: Record<SettingsSection, string> = {
   "writing":       "Writing style",
   "hotkeys":       "Hotkeys",
   "models":        "Models",
-  "meeting":       "Meeting",
   "developer":     "Developer",
   "notifications": "Notifications",
   "permissions":   "Permissions",
@@ -52,7 +50,6 @@ const SECTION_SUBTITLES: Record<SettingsSection, string> = {
   "writing":       "Advanced voice prompt controls.",
   "hotkeys":       "Choose the key AirNote listens for while you speak.",
   "models":        "Dictation speed, quality, and ChatGPT connection.",
-  "meeting":       "Meeting transcription language and Whisper model.",
   "developer":     "Project context for the optional Problem Command.",
   "notifications": "Control which status bar alerts you see.",
   "permissions":   "Accessibility, input monitoring, notifications.",
