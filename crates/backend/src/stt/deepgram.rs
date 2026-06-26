@@ -71,6 +71,7 @@ impl TranscriptResult {
             word_count: self.word_count,
             languages: self.languages.clone(),
             stt_mode: self.stt_mode.clone(),
+            origin: said_core::stt::TranscriptOrigin::DeepgramBatch,
         }
     }
 }

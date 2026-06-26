@@ -196,7 +196,9 @@ export type SettingsSection =
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "hotkeys",      label: "Hotkeys"      },
   { id: "models",         label: "Models"         },
-  { id: "developer",      label: "Developer"      },
+  // Developer section hidden from the user-facing nav. The section type, panel,
+  // and all handlers are intentionally kept — re-add this entry to surface it.
+  // { id: "developer",      label: "Developer"      },
   { id: "notifications",  label: "Notifications"  },
   { id: "permissions",    label: "Permissions"     },
   { id: "enterprise",  label: "Enterprise"    },
@@ -1714,27 +1716,31 @@ export function SettingsView({
             platform={snapshot?.platform ?? "macos"}
           />
         )}
-        <Section title="Dictation polish" extra={<SyncBadge state={serverSyncState} />}>
-          <div className="px-5 py-4">
-            <div className="flex items-center gap-4">
-              <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
-                style={{ background: "hsl(var(--surface-4))" }}
-              >
-                <Sparkles size={16} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium text-foreground">GPT OSS 120B (Cerebras)</p>
-                <p className="text-[12px] text-muted-foreground mt-0.5">
-                  {polishHotkeyLabel} polish always runs on airnote.emiactech.com using Cerebras GPT OSS 120B.
-                  {prefs?.stt_provider === "swift_local"
-                    ? " Speech recognition stays on this Mac (Swift)."
-                    : " Speech recognition uses Deepgram in the cloud."}
-                </p>
+        {/* Dictation polish card hidden from the user-facing settings. Kept (not
+            deleted) and still type-checked — change `false` to `true` to restore. */}
+        {false && (
+          <Section title="Dictation polish" extra={<SyncBadge state={serverSyncState} />}>
+            <div className="px-5 py-4">
+              <div className="flex items-center gap-4">
+                <div
+                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
+                  style={{ background: "hsl(var(--surface-4))" }}
+                >
+                  <Sparkles size={16} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] font-medium text-foreground">GPT OSS 120B (Cerebras)</p>
+                  <p className="text-[12px] text-muted-foreground mt-0.5">
+                    {polishHotkeyLabel} polish always runs on airnote.emiactech.com using Cerebras GPT OSS 120B.
+                    {prefs?.stt_provider === "swift_local"
+                      ? " Speech recognition stays on this Mac (Swift)."
+                      : " Speech recognition uses Deepgram in the cloud."}
+                  </p>
+                </div>
               </div>
             </div>
-          </div>
-        </Section>
+          </Section>
+        )}
 
         </Show>
 

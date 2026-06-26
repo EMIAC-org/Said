@@ -16958,7 +16958,11 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("ggml-oriserve-hinglish-fp16.bin"), b"keep").unwrap();
-        fs::write(dir.join("ggml-oriserve-hinglish-fp16.bin.part"), b"keep-part").unwrap();
+        fs::write(
+            dir.join("ggml-oriserve-hinglish-fp16.bin.part"),
+            b"keep-part",
+        )
+        .unwrap();
         fs::write(dir.join("ggml-large-v3-turbo-q5_0.bin"), b"delete-q5").unwrap();
         fs::write(dir.join("ggml-large-v3-turbo.bin"), b"delete-full").unwrap();
         fs::write(dir.join("ggml-medium.bin"), b"delete-medium").unwrap();

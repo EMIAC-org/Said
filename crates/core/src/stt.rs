@@ -6,20 +6,30 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Active STT vendor. Deepgram is the only cloud vendor.
+/// The dictation STT engine, as a typed first-class value. This is the single
+/// source of truth for "which engine" — prefer it over ad-hoc string checks.
+///
+/// - `Deepgram`   — cloud (build-bundled key). Also the bucket for legacy cloud
+///   ids like `groq_whisper`.
+/// - `SwiftLocal` — on-device, macOS-only Python sidecar (Oriserve Swift).
+/// - `WhisperLocal` — on-device, native whisper.cpp (Oriserve Hinglish GGML).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SttProvider {
     Deepgram,
     SwiftLocal,
+    WhisperLocal,
 }
 
 impl SttProvider {
+    /// Parse a (possibly un-normalized) provider id. Anything that is not a known
+    /// local engine — including `groq_whisper` and empty/unknown ids — is treated
+    /// as cloud `Deepgram`.
     pub fn parse(raw: &str) -> Self {
-        if is_swift_local(raw) {
-            Self::SwiftLocal
-        } else {
-            Self::Deepgram
+        match normalize_toggle_stt_provider(raw).as_str() {
+            "swift_local" => Self::SwiftLocal,
+            "whisper_local" => Self::WhisperLocal,
+            _ => Self::Deepgram,
         }
     }
 
@@ -27,6 +37,124 @@ impl SttProvider {
         match self {
             Self::Deepgram => "deepgram",
             Self::SwiftLocal => "swift_local",
+            Self::WhisperLocal => "whisper_local",
+        }
+    }
+
+    /// On-device engine (audio never leaves the machine).
+    pub fn is_local(self) -> bool {
+        matches!(self, Self::SwiftLocal | Self::WhisperLocal)
+    }
+
+    /// Cloud engine (Deepgram).
+    pub fn is_cloud(self) -> bool {
+        matches!(self, Self::Deepgram)
+    }
+
+    /// The transcript origin a pre-transcript MUST carry to be accepted as this
+    /// provider's authoritative local output. `None` for cloud.
+    pub fn expected_local_origin(self) -> Option<TranscriptOrigin> {
+        match self {
+            Self::SwiftLocal => Some(TranscriptOrigin::SwiftLocal),
+            Self::WhisperLocal => Some(TranscriptOrigin::WhisperLocal),
+            Self::Deepgram => None,
+        }
+    }
+}
+
+/// Where a transcript was produced. First-class provenance, kept SEPARATE from
+/// `TranscriptMeta.stt_mode` (which is the bias *language* mode: "hi"/"multi").
+/// Serialized with the transcript so the backend reads a real enum instead of
+/// sniffing a string. Unknown/absent values degrade to `Unspecified`/`Unknown`
+/// so mixed desktop↔backend builds stay compatible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptOrigin {
+    /// Producer did not declare an origin (e.g. a stale desktop build).
+    #[default]
+    Unspecified,
+    DeepgramWs,
+    DeepgramBatch,
+    WhisperLocal,
+    SwiftLocal,
+    SwiftLocalLivePartial,
+    GroqWhisper,
+    /// A future id this build doesn't recognize (forward-compat).
+    #[serde(other)]
+    Unknown,
+}
+
+impl TranscriptOrigin {
+    /// Produced by an on-device engine.
+    pub fn is_local(self) -> bool {
+        matches!(
+            self,
+            Self::WhisperLocal | Self::SwiftLocal | Self::SwiftLocalLivePartial
+        )
+    }
+
+    /// The engine that produced this transcript, when unambiguous.
+    pub fn provider(self) -> Option<SttProvider> {
+        match self {
+            Self::DeepgramWs | Self::DeepgramBatch => Some(SttProvider::Deepgram),
+            Self::WhisperLocal => Some(SttProvider::WhisperLocal),
+            Self::SwiftLocal | Self::SwiftLocalLivePartial => Some(SttProvider::SwiftLocal),
+            Self::GroqWhisper | Self::Unspecified | Self::Unknown => None,
+        }
+    }
+}
+
+/// What the backend should do with the inbound audio + optional pre-transcript.
+/// Produced by [`decide_stt_plan`] — one place, readable, unit-tested.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SttPlan {
+    /// Trust the inbound local pre-transcript as authoritative (no cloud).
+    UseInboundLocal,
+    /// Use the inbound Deepgram WS pre-transcript (rescue-eligible).
+    UseInboundCloudWs,
+    /// No pre-transcript; run cloud Deepgram batch on the WAV.
+    CloudBatch,
+    /// No usable local pre-transcript; re-run the on-device engine here.
+    LocalOnDeviceBatch,
+    /// Local engine genuinely produced nothing AND no on-device engine is
+    /// available in this build → cloud Deepgram as the genuine-failure safety net.
+    CloudFallbackAfterLocalFail,
+}
+
+/// Decide what to do with the audio + optional pre-transcript for the selected
+/// provider. Pure (no I/O) so it is exhaustively unit-tested.
+///
+/// `local_batch_available` is whether THIS process can re-run the selected local
+/// engine itself (e.g. `cfg!(feature = "local-stt")` for whisper.cpp). Dev
+/// backends are built without it, so a local provider with no usable inbound
+/// transcript correctly resolves to the Deepgram safety net.
+pub fn decide_stt_plan(
+    selected: SttProvider,
+    pre_present: bool,
+    pre_origin: TranscriptOrigin,
+    local_batch_available: bool,
+) -> SttPlan {
+    match selected {
+        SttProvider::Deepgram => {
+            if pre_present {
+                SttPlan::UseInboundCloudWs
+            } else {
+                SttPlan::CloudBatch
+            }
+        }
+        local @ (SttProvider::SwiftLocal | SttProvider::WhisperLocal) => {
+            // Accept the inbound transcript only when it actually came from the
+            // selected local engine. `Unspecified` (stale desktop that doesn't
+            // tag origin yet) is trusted, since the provider was locally selected.
+            let origin_ok =
+                pre_origin == TranscriptOrigin::Unspecified || pre_origin.provider() == Some(local);
+            if pre_present && origin_ok {
+                SttPlan::UseInboundLocal
+            } else if local_batch_available {
+                SttPlan::LocalOnDeviceBatch
+            } else {
+                SttPlan::CloudFallbackAfterLocalFail
+            }
         }
     }
 }
@@ -184,7 +312,8 @@ mod tests {
     fn normalize_toggle_maps_ui_values() {
         assert_eq!(normalize_toggle_stt_provider("Deepgram"), "deepgram");
         assert_eq!(normalize_toggle_stt_provider("deepgram"), "deepgram");
-        assert_eq!(normalize_toggle_stt_provider(""), "deepgram");
+        // Empty pref defaults to the native, Python-free on-device whisper.cpp path.
+        assert_eq!(normalize_toggle_stt_provider(""), "whisper_local");
         assert_eq!(
             normalize_toggle_stt_provider("groq_whisper"),
             "groq_whisper"
@@ -215,10 +344,10 @@ mod tests {
             effective_dictation_provider("swift_local", true, false),
             swift_expected
         );
-        // Legacy whisper_local is no longer a dictation option → Deepgram.
+        // whisper_local is the native, Python-free on-device default.
         assert_eq!(
             effective_dictation_provider("whisper_local", false, true),
-            "deepgram"
+            "whisper_local"
         );
         assert_eq!(
             effective_dictation_provider("deepgram", false, false),
@@ -247,7 +376,153 @@ mod tests {
 
     #[test]
     fn pref_resolution_ignores_empty() {
-        assert_eq!(resolve_provider_from_pref(""), "deepgram");
+        // Empty pref → native on-device whisper.cpp default.
+        assert_eq!(resolve_provider_from_pref(""), "whisper_local");
         assert_eq!(resolve_provider_from_pref("deepgram"), "deepgram");
+    }
+
+    #[test]
+    fn provider_parse_and_class() {
+        assert_eq!(SttProvider::parse("swift_local"), SttProvider::SwiftLocal);
+        assert_eq!(
+            SttProvider::parse("whisper_local"),
+            SttProvider::WhisperLocal
+        );
+        assert_eq!(SttProvider::parse("turbo_q5"), SttProvider::WhisperLocal);
+        assert_eq!(SttProvider::parse("deepgram"), SttProvider::Deepgram);
+        assert_eq!(SttProvider::parse("groq_whisper"), SttProvider::Deepgram);
+        assert_eq!(SttProvider::WhisperLocal.as_str(), "whisper_local");
+        assert!(SttProvider::WhisperLocal.is_local());
+        assert!(SttProvider::SwiftLocal.is_local());
+        assert!(!SttProvider::Deepgram.is_local());
+        assert!(SttProvider::Deepgram.is_cloud());
+    }
+
+    #[test]
+    fn transcript_origin_classification() {
+        assert!(TranscriptOrigin::WhisperLocal.is_local());
+        assert!(TranscriptOrigin::SwiftLocalLivePartial.is_local());
+        assert!(!TranscriptOrigin::DeepgramWs.is_local());
+        assert_eq!(
+            TranscriptOrigin::WhisperLocal.provider(),
+            Some(SttProvider::WhisperLocal)
+        );
+        assert_eq!(
+            TranscriptOrigin::SwiftLocalLivePartial.provider(),
+            Some(SttProvider::SwiftLocal)
+        );
+        assert_eq!(TranscriptOrigin::Unspecified.provider(), None);
+        assert_eq!(TranscriptOrigin::default(), TranscriptOrigin::Unspecified);
+    }
+
+    #[test]
+    fn transcript_origin_serde_compat() {
+        // Round-trip.
+        assert_eq!(
+            serde_json::to_string(&TranscriptOrigin::WhisperLocal).unwrap(),
+            "\"whisper_local\""
+        );
+        // Unknown future id degrades to Unknown, not an error (forward-compat).
+        let unknown: TranscriptOrigin = serde_json::from_str("\"future_engine\"").unwrap();
+        assert_eq!(unknown, TranscriptOrigin::Unknown);
+    }
+
+    #[test]
+    fn decide_plan_uses_local_when_origin_matches() {
+        // The exact bug: whisper_local + a whisper-origin pre-transcript → use it.
+        assert_eq!(
+            decide_stt_plan(
+                SttProvider::WhisperLocal,
+                true,
+                TranscriptOrigin::WhisperLocal,
+                false,
+            ),
+            SttPlan::UseInboundLocal
+        );
+        // Stale desktop that doesn't tag origin is still trusted for a local provider.
+        assert_eq!(
+            decide_stt_plan(
+                SttProvider::WhisperLocal,
+                true,
+                TranscriptOrigin::Unspecified,
+                false,
+            ),
+            SttPlan::UseInboundLocal
+        );
+        assert_eq!(
+            decide_stt_plan(
+                SttProvider::SwiftLocal,
+                true,
+                TranscriptOrigin::SwiftLocal,
+                false,
+            ),
+            SttPlan::UseInboundLocal
+        );
+    }
+
+    #[test]
+    fn decide_plan_local_failure_falls_back() {
+        // Dev build (no on-device engine) + no pre-transcript → Deepgram safety net.
+        assert_eq!(
+            decide_stt_plan(
+                SttProvider::WhisperLocal,
+                false,
+                TranscriptOrigin::Unspecified,
+                false,
+            ),
+            SttPlan::CloudFallbackAfterLocalFail
+        );
+        // Swift unified with whisper: genuine failure → Deepgram fallback.
+        assert_eq!(
+            decide_stt_plan(
+                SttProvider::SwiftLocal,
+                false,
+                TranscriptOrigin::Unspecified,
+                false,
+            ),
+            SttPlan::CloudFallbackAfterLocalFail
+        );
+        // Release build can re-run the engine locally instead.
+        assert_eq!(
+            decide_stt_plan(
+                SttProvider::WhisperLocal,
+                false,
+                TranscriptOrigin::Unspecified,
+                true,
+            ),
+            SttPlan::LocalOnDeviceBatch
+        );
+        // Mismatched provenance (stale Deepgram WS partial) is not trusted as local.
+        assert_eq!(
+            decide_stt_plan(
+                SttProvider::WhisperLocal,
+                true,
+                TranscriptOrigin::DeepgramWs,
+                false,
+            ),
+            SttPlan::CloudFallbackAfterLocalFail
+        );
+    }
+
+    #[test]
+    fn decide_plan_deepgram_paths() {
+        assert_eq!(
+            decide_stt_plan(
+                SttProvider::Deepgram,
+                true,
+                TranscriptOrigin::DeepgramWs,
+                false,
+            ),
+            SttPlan::UseInboundCloudWs
+        );
+        assert_eq!(
+            decide_stt_plan(
+                SttProvider::Deepgram,
+                false,
+                TranscriptOrigin::Unspecified,
+                false,
+            ),
+            SttPlan::CloudBatch
+        );
     }
 }

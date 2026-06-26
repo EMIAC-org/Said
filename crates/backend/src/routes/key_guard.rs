@@ -56,17 +56,19 @@ fn has_llm_credential(pool: &DbPool, user_id: &str, prefs: &Preferences) -> bool
 }
 
 pub fn missing_voice_api_keys(
-    pool: &DbPool,
-    user_id: &str,
+    _pool: &DbPool,
+    _user_id: &str,
     prefs: &Preferences,
     require_stt_key: bool,
 ) -> Vec<&'static str> {
+    // The local backend only validates the STT (Deepgram) key. Polish always runs
+    // server-side (Cerebras via the server runtime), so it needs no local LLM key —
+    // gating on one here just blocks keyless shipped builds before the request can
+    // even reach the server. (STT still needs a key when cloud Deepgram is used;
+    // local whisper/swift and server-managed Deepgram set require_stt_key=false.)
     let mut missing = Vec::new();
     if require_stt_key && !has_stt_key(prefs) {
         missing.push("deepgram");
-    }
-    if !has_llm_credential(pool, user_id, prefs) {
-        missing.push("llm");
     }
     missing
 }

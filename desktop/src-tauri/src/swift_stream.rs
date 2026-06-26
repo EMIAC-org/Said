@@ -239,7 +239,9 @@ impl ActiveRecording {
             low_confidence_count: 0,
             word_count,
             languages: vec!["hi".to_string()],
-            stt_mode: "swift_local".to_string(),
+            // Language mode; provenance lives in `origin`.
+            stt_mode: "hi".to_string(),
+            origin: said_core::stt::TranscriptOrigin::SwiftLocal,
         };
         let payload = if transcript.is_empty() {
             None
@@ -610,7 +612,9 @@ pub async fn transcribe_pcm_oneshot(
         low_confidence_count: 0,
         word_count,
         languages: vec!["hi".to_string()],
-        stt_mode: "swift_local".to_string(),
+        // Language mode; provenance lives in `origin`.
+        stt_mode: "hi".to_string(),
+        origin: said_core::stt::TranscriptOrigin::SwiftLocal,
     };
     Some(StreamingTranscript { transcript, meta })
 }

@@ -44,8 +44,16 @@ pub struct TranscriptMeta {
     pub word_count: usize,
     #[serde(default)]
     pub languages: Vec<String>,
+    /// Bias *language* mode for this transcript ("hi" / "multi"). NOT provenance —
+    /// see `origin` for which engine produced it.
     #[serde(default)]
     pub stt_mode: String,
+    /// First-class provenance: which engine produced this transcript. Lets the
+    /// backend robustly accept a local transcript instead of re-running STT.
+    /// `#[serde(default)]` → `Unspecified` for payloads from builds that predate
+    /// this field, keeping desktop↔backend wire-compatible.
+    #[serde(default)]
+    pub origin: crate::stt::TranscriptOrigin,
 }
 
 pub fn resolve_stt_mode(language: &str) -> String {

@@ -715,9 +715,21 @@ pub async fn problem_transcribe(
     };
 
     let stt_provider = crate::routes::key_guard::effective_stt_provider(&prefs);
-    let use_alt_stt = said_core::stt::use_batch_stt_only(&stt_provider);
+    let selected = said_core::stt::SttProvider::parse(&stt_provider);
+    let pre_origin = pre_transcript_meta
+        .as_ref()
+        .map(|m| m.origin)
+        .unwrap_or_default();
+    // The retry/problem path runs no on-device engine, so a local provider with
+    // no usable inbound transcript resolves to the Deepgram safety net.
+    let plan =
+        said_core::stt::decide_stt_plan(selected, pre_transcript.is_some(), pre_origin, false);
+    let use_inbound = matches!(
+        plan,
+        said_core::stt::SttPlan::UseInboundLocal | said_core::stt::SttPlan::UseInboundCloudWs
+    );
     let inbound_pre_transcript = pre_transcript.is_some();
-    let pre_transcript = if use_alt_stt { None } else { pre_transcript };
+    let pre_transcript = if use_inbound { pre_transcript } else { None };
     let deepgram_key = said_core::stt::resolve_deepgram_api_key(prefs.deepgram_api_key.as_deref())
         .unwrap_or_default();
     let stt_bias_package = tokio::task::spawn_blocking({
@@ -780,22 +792,17 @@ pub async fn problem_transcribe(
                     .into_response();
             }
         }
-    } else if said_core::stt::is_swift_local(&stt_provider) {
-        let message = "Local Swift speech recognition didn't produce a transcript. Open Settings → Speech recognition, make sure the Swift model is installed and the local engine is ready, then try again.";
-        warn!(
-            "[problem] local Swift selected but no pre-transcript arrived run_id={} wav_bytes={}",
-            client_run_id.as_deref().unwrap_or("none"),
-            wav_data.len()
-        );
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({
-                "error_code": "local_stt_no_transcript",
-                "message": message,
-            })),
-        )
-            .into_response();
     } else {
+        // No usable inbound transcript. For a local provider this is the
+        // genuine-failure safety net (no on-device engine here) → Deepgram.
+        if selected.is_local() {
+            warn!(
+                "[problem] local STT produced no usable transcript (provider={}, plan={:?}) — using Deepgram fallback run_id={}",
+                stt_provider,
+                plan,
+                client_run_id.as_deref().unwrap_or("none"),
+            );
+        }
         match maybe_rescue_transcript(
             &state.http_client,
             &stt_provider,
@@ -2511,22 +2518,34 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         // ── STEP 1: STT ───────────────────────────────────────────────────────────
         info!("[voice] stt_provider={stt_provider:?}");
         let audio_seconds = wav_duration_seconds(&wav_data);
-        let use_alt_stt = said_core::stt::use_batch_stt_only(&stt_provider);
-        let inbound_pre_transcript = pre_transcript.is_some();
-        if inbound_pre_transcript && use_alt_stt {
-            info!(
-                "[voice] stt decision: dropping pre_transcript because provider={} is batch-only",
-                stt_provider
-            );
-        }
-        let pre_transcript = if use_alt_stt { None } else { pre_transcript };
-        info!(
-            "[voice] stt decision provider={} batch_only_provider={} inbound_pre_transcript={} using_pre_transcript={} batch_http_stt={} wav_bytes={} audio_seconds={:.2}",
-            stt_provider,
-            use_alt_stt,
-            inbound_pre_transcript,
+        // Typed STT decision (said_core::stt::decide_stt_plan): a transcript from
+        // the selected local engine is authoritative; cloud Deepgram is reached
+        // only when a local provider genuinely produced nothing.
+        let selected = said_core::stt::SttProvider::parse(&stt_provider);
+        let pre_origin = pre_transcript_meta
+            .as_ref()
+            .map(|m| m.origin)
+            .unwrap_or_default();
+        let local_batch_available =
+            cfg!(feature = "local-stt") && selected == said_core::stt::SttProvider::WhisperLocal;
+        let plan = said_core::stt::decide_stt_plan(
+            selected,
             pre_transcript.is_some(),
-            pre_transcript.is_none(),
+            pre_origin,
+            local_batch_available,
+        );
+        let use_inbound = matches!(
+            plan,
+            said_core::stt::SttPlan::UseInboundLocal | said_core::stt::SttPlan::UseInboundCloudWs
+        );
+        let pre_transcript = if use_inbound { pre_transcript } else { None };
+        info!(
+            "[voice] stt decision provider={} plan={:?} pre_origin={:?} using_pre_transcript={} local_batch_available={} wav_bytes={} audio_seconds={:.2}",
+            stt_provider,
+            plan,
+            pre_origin,
+            pre_transcript.is_some(),
+            local_batch_available,
             wav_data.len(),
             audio_seconds,
         );
@@ -2591,84 +2610,67 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         } else {
             let stt_start = Instant::now();
             info!(
-                "[voice] stt path=batch_http_stt start provider={} wav_bytes={} audio_seconds={:.2}",
+                "[voice] stt path=batch start provider={} plan={:?} wav_bytes={} audio_seconds={:.2}",
                 stt_provider,
+                plan,
                 wav_data.len(),
                 audio_seconds,
             );
             yield Ok(Event::default().event("status")
                 .data(json!({"phase": "transcribing"}).to_string()));
 
-            if said_core::stt::is_swift_local(&stt_provider) {
-                // Local Swift is selected but no transcript arrived from the
-                // on-device sidecar. Local stays local — never fall back to
-                // cloud Deepgram; surface an actionable error instead.
-                let message = "Local Swift speech recognition didn't produce a transcript. Open Settings → Speech recognition, make sure the Swift model is installed and the local engine is ready, then try again.";
-                warn!(
-                    "[voice] local Swift STT produced no transcript provider={} wav_bytes={} audio_seconds={:.2} — cloud fallback disabled (local stays local)",
-                    stt_provider,
-                    wav_data.len(),
-                    audio_seconds,
-                );
-                yield Ok(voice_run_failed_event(
-                    &pool,
-                    &voice_run_id,
-                    message,
-                    aid,
-                    Some("local_stt_no_transcript"),
-                ));
-                return;
-            } else if cfg!(feature = "local-stt") && said_core::stt::is_whisper_local(&stt_provider) {
-                // On-device whisper.cpp (Oriserve Hinglish fp16 GGML). Loaded at
-                // startup from paths::whisper_model_path(). Local stays local.
-                #[cfg(feature = "local-stt")]
-                {
-                    let wav = wav_data.clone();
-                    match tokio::task::spawn_blocking(move || {
-                        crate::stt::whisper::transcribe_wav(&wav, "hi")
-                    })
-                    .await
+            // On-device whisper.cpp first when the plan calls for it (release
+            // builds with the `local-stt` feature). On ANY failure we fall
+            // through to the Deepgram safety net below rather than erroring —
+            // local-first, cloud as the genuine-failure fallback.
+            let local_tuple: Option<(String, String, f64, i64)> =
+                if matches!(plan, said_core::stt::SttPlan::LocalOnDeviceBatch) {
+                    #[cfg(feature = "local-stt")]
                     {
-                        Ok(Ok(r)) => {
-                            let ms = total_start.elapsed().as_millis() as i64;
-                            info!(
-                                "[timing] STT={}ms (whisper_local on-device, {} words, conf={:.2})",
-                                ms, r.word_count, r.confidence
-                            );
-                            (r.transcript.clone(), r.enriched_transcript, r.confidence, ms)
-                        }
-                        Ok(Err(e)) => {
-                            warn!("[voice] whisper_local STT error: {e}");
-                            yield Ok(voice_run_failed_event(
-                                &pool,
-                                &voice_run_id,
-                                e,
-                                aid,
-                                Some("local_stt_no_transcript"),
-                            ));
-                            return;
-                        }
-                        Err(e) => {
-                            let m = format!("whisper_local task failed: {e}");
-                            warn!("[voice] {m}");
-                            yield Ok(voice_run_failed_event(
-                                &pool,
-                                &voice_run_id,
-                                m,
-                                aid,
-                                Some("local_stt_no_transcript"),
-                            ));
-                            return;
+                        let wav = wav_data.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            crate::stt::whisper::transcribe_wav(&wav, "hi")
+                        })
+                        .await
+                        {
+                            Ok(Ok(r)) => {
+                                let ms = total_start.elapsed().as_millis() as i64;
+                                info!(
+                                    "[timing] STT={}ms (whisper_local on-device, {} words, conf={:.2})",
+                                    ms, r.word_count, r.confidence
+                                );
+                                Some((r.transcript.clone(), r.enriched_transcript, r.confidence, ms))
+                            }
+                            Ok(Err(e)) => {
+                                warn!("[voice] whisper_local STT error: {e} — using Deepgram fallback");
+                                None
+                            }
+                            Err(e) => {
+                                warn!("[voice] whisper_local task failed: {e} — using Deepgram fallback");
+                                None
+                            }
                         }
                     }
-                }
-                #[cfg(not(feature = "local-stt"))]
-                {
-                    unreachable!("guarded by cfg!(feature = \"local-stt\")")
-                }
+                    #[cfg(not(feature = "local-stt"))]
+                    {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+            if let Some(tuple) = local_tuple {
+                tuple
             } else {
-                // Cloud Deepgram (the only non-local provider). Key is bundled
-                // into the build, so this always has credentials.
+                // Cloud Deepgram: the normal path for a Deepgram user, OR the
+                // genuine-failure safety net when a local provider produced no
+                // usable transcript. The bundled key means credentials always exist.
+                if selected.is_local() {
+                    warn!(
+                        "[voice] local STT produced no usable transcript (provider={}, plan={:?}) — using Deepgram fallback",
+                        stt_provider, plan,
+                    );
+                }
                 match maybe_rescue_transcript(
                     &http_client,
                     &stt_provider,

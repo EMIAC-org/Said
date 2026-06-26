@@ -128,10 +128,14 @@ fi
 # end users never enter API keys. crates/core/build.rs has rerun-if-env-changed
 # directives, so cargo re-bakes when the values change. Pull from .env if not
 # already exported.
+# Only the Deepgram STT key is bundled. Polish runs server-side (Cerebras via the
+# server runtime), so no local LLM/gateway key is baked in. The `|| true` keeps a
+# missing/empty key from aborting the build under `set -euo pipefail` (a failed
+# grep in the command substitution would otherwise kill the whole script).
 if [ -f "$REPO_ROOT/.env" ]; then
-  for _bundle_key in DEEPGRAM_API_KEY GATEWAY_API_KEY; do
+  for _bundle_key in DEEPGRAM_API_KEY; do
     if [ -z "$(eval "echo \${$_bundle_key:-}")" ]; then
-      _bundle_val="$(grep -E "^${_bundle_key}=" "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"'')"
+      _bundle_val="$(grep -E "^${_bundle_key}=" "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"'' || true)"
       [ -n "$_bundle_val" ] && export "$_bundle_key=$_bundle_val"
     fi
   done
@@ -141,11 +145,6 @@ if [ -n "${DEEPGRAM_API_KEY:-}" ]; then
   ok "Deepgram STT key will be bundled into the build"
 else
   warn "DEEPGRAM_API_KEY not set — Cloud dictation will fail until a key is bundled"
-fi
-if [ -n "${GATEWAY_API_KEY:-}" ]; then
-  ok "Gateway/LLM key will be bundled into the build"
-else
-  warn "GATEWAY_API_KEY not set — polish will fail until a key is bundled"
 fi
 
 # ── Tauri build ──────────────────────────────────────────────────────────────

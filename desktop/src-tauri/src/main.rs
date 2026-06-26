@@ -956,7 +956,9 @@ fn swift_live_partial_to_transcript(text: String) -> dg_stream::StreamingTranscr
             low_confidence_count: 0,
             word_count,
             languages: vec!["hi".to_string()],
-            stt_mode: "swift_local_live_partial".to_string(),
+            // Language mode; provenance lives in `origin`.
+            stt_mode: "hi".to_string(),
+            origin: said_core::stt::TranscriptOrigin::SwiftLocalLivePartial,
         },
     }
 }
@@ -972,7 +974,9 @@ fn whisper_local_to_transcript(text: String) -> dg_stream::StreamingTranscript {
             low_confidence_count: 0,
             word_count,
             languages: vec!["hi".to_string()],
-            stt_mode: "whisper_local_batch".to_string(),
+            // Language mode; provenance lives in `origin`.
+            stt_mode: "hi".to_string(),
+            origin: said_core::stt::TranscriptOrigin::WhisperLocal,
         },
     }
 }
@@ -3857,6 +3861,38 @@ fn lock_shared<'a>(
     Ok(TrackedGuard { inner })
 }
 
+/// Abandon the in-flight `Processing` run and reset to Idle so a fresh recording
+/// can start immediately. This is an INTENTIONAL user action (they pressed record
+/// again to redo a mis-released take), so — unlike [`heal_stuck_state`] — it emits
+/// no error telemetry and deliberately does NOT recover the orphan audio: the take
+/// is being discarded, and the superseded pipeline's paste is already suppressed
+/// via the recording-generation bump in `do_start_recording`. No-op unless the
+/// state is actually `Processing`.
+fn cancel_processing_run(app: &tauri::AppHandle, reason: &'static str) {
+    let snap = {
+        let shared = app.state::<SharedApp>();
+        let mut d = match shared.0.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        d.recover_stuck_to_idle()
+    };
+    let Some(snap) = snap else {
+        return;
+    };
+    FINISH_AFTER_START.store(false, Ordering::SeqCst);
+    HOTKEY_START_IN_FLIGHT.store(false, Ordering::SeqCst);
+    HOTKEY_FINISH_RETRY_IN_FLIGHT.store(false, Ordering::SeqCst);
+    RECORDING_STARTING.store(false, Ordering::SeqCst);
+    restore_speaker_suppression(app, "record pressed during processing");
+    reset_long_dictation_lock(app);
+    tracing::info!("[record] processing run abandoned, reset to idle (reason={reason})");
+    diag::breadcrumb(format!("cancel_processing:{reason}"));
+    sync_tray(app, &snap);
+    let _ = app.emit("app-state", &snap);
+    sync_status_bar(app, "idle");
+}
+
 /// Heal a wedged app after an operation was abandoned mid-way (a caught panic, a
 /// killed pipeline task, a lost event). Resets a stuck `Processing` state to Idle,
 /// clears the in-flight recording guards, restores audio/HUD/tray, and recovers
@@ -4815,6 +4851,11 @@ fn do_finish_recording(
         .try_state::<RecordingSessionState>()
         .and_then(|session| session.end());
     let client_run_id = session_end.as_ref().map(|(_, id)| id.clone());
+    // This run's recording generation. If the user starts a new recording while
+    // this one is still processing (pressed record again to redo a mis-released
+    // take), the generation bumps and this finish must not touch the shared state
+    // machine — the newer recording owns it now.
+    let finish_generation = session_end.as_ref().map(|(g, _)| *g);
     let session_tag = session_end
         .as_ref()
         .map(|(generation, id)| format!("id={id} generation={generation}"))
@@ -5224,6 +5265,23 @@ fn do_finish_recording(
             is_divo,
         )
         .await;
+
+        // A newer recording superseded this run (user pressed record again during
+        // processing to redo a mis-released take). The new recording now owns the
+        // state machine and recovery buffer — this stale finish must not call
+        // finish_ok/err (which would reset the live recording to Idle) or paste.
+        // Its paste was already suppressed inside run_voice_polish_sse.
+        if app2
+            .try_state::<RecordingSessionState>()
+            .map(|s| Some(s.generation.load(Ordering::SeqCst)) != finish_generation)
+            .unwrap_or(false)
+        {
+            tracing::info!(
+                "[record] finish superseded by a newer recording — leaving the live run intact (run_id={})",
+                client_run_id.as_deref().unwrap_or("none"),
+            );
+            return;
+        }
 
         if is_divo {
             // Divo turn: reset the desktop recording state (capture is done), then
@@ -5849,6 +5907,15 @@ async fn run_voice_polish_sse(
     // typing, no paste, no focused-field read) — they only need the polished text.
     let suppress_local = is_meeting || is_divo;
     let app_clone = app.clone();
+    // Snapshot this run's recording generation. If the user starts a NEW
+    // recording while this one is still processing (e.g. they released the
+    // hotkey early by mistake and pressed it again to redo), the generation
+    // bumps — and this now-superseded run must stop typing and skip its paste so
+    // the abandoned take never gets injected into the focused app.
+    let run_generation = app
+        .try_state::<RecordingSessionState>()
+        .map(|s| s.generation.load(Ordering::SeqCst))
+        .unwrap_or(0);
     let message_polish_mode = !suppress_local
         && message_polish_override.unwrap_or_else(|| said_core::prefs::load().message_polish_mode);
     if message_polish_mode {
@@ -5937,6 +6004,15 @@ async fn run_voice_polish_sse(
                 // Meeting / Divo: skip all typing — only emit for live preview
                 if suppress_local {
                     let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
+                    return;
+                }
+                // A newer recording superseded this run (user pressed the hotkey
+                // again to redo a mis-released take) — stop typing its tokens.
+                if app_clone
+                    .try_state::<RecordingSessionState>()
+                    .map(|s| s.generation.load(Ordering::SeqCst) != run_generation)
+                    .unwrap_or(false)
+                {
                     return;
                 }
                 let decision = live_guard2
@@ -6165,7 +6241,17 @@ async fn run_voice_polish_sse(
     let n_failed = fail_count.load(std::sync::atomic::Ordering::Relaxed);
     let mut output_pasted = false;
     let mut used_clipboard_fallback = false;
-    if suppress_local {
+    // If a newer recording superseded this one, never paste the abandoned take.
+    let superseded = app
+        .try_state::<RecordingSessionState>()
+        .map(|s| s.generation.load(Ordering::SeqCst) != run_generation)
+        .unwrap_or(false);
+    if superseded {
+        tracing::info!(
+            "[main] run superseded by a newer recording — skipping paste run_id={}",
+            client_run_id.as_deref().unwrap_or("none"),
+        );
+    } else if suppress_local {
         tracing::info!("[main] meeting/divo mode — skipping paste for polished chunk");
     } else if typed_any.load(std::sync::atomic::Ordering::Relaxed) {
         let typed_snapshot = typed_text
@@ -6253,7 +6339,8 @@ async fn run_voice_polish_sse(
 
     // Always store latest result so the paste-latest hotkey can re-paste it any time.
     // Divo instructions are commands, not dictation output — never store them.
-    if !is_divo && !done.polished.is_empty() {
+    // A superseded run is abandoned — don't make its text the paste-latest target.
+    if !is_divo && !superseded && !done.polished.is_empty() {
         if let Ok(mut g) = app.state::<LatestResult>().0.lock() {
             *g = Some(done.polished.clone());
         }
@@ -10308,6 +10395,26 @@ fn main() {
                                         long_stop_consumed.store(true, Ordering::SeqCst);
                                         do_finish_recording(shared, app_h, back);
                                     } else if current == Some(desktop::AppState::Idle) {
+                                        do_start_recording(&shared, &app_h);
+                                        if FINISH_AFTER_START.load(Ordering::SeqCst) {
+                                            request_queued_finish(
+                                                shared,
+                                                app_h,
+                                                back,
+                                                "release_during_start",
+                                            );
+                                        }
+                                    } else if current == Some(desktop::AppState::Processing) {
+                                        // Pressing record again while the previous take is
+                                        // still processing means the user abandoned it (e.g.
+                                        // released the hotkey early by mistake). Reset that
+                                        // run to idle and start a fresh recording immediately
+                                        // — the generation bump in do_start_recording makes
+                                        // the abandoned run skip its paste.
+                                        tracing::info!(
+                                            "[hotkey] record pressed during processing — abandoning previous take, starting fresh"
+                                        );
+                                        cancel_processing_run(&app_h, "record_pressed_during_processing");
                                         do_start_recording(&shared, &app_h);
                                         if FINISH_AFTER_START.load(Ordering::SeqCst) {
                                             request_queued_finish(

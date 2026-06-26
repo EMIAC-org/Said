@@ -11,6 +11,27 @@ interface Props {
 
 const GUIDE_URL = "https://airnote.emiactech.com/guide";
 
+// Persist that the user has opened the guide so the dashboard prompt is shown
+// only until they've read it once. Mirrors the localStorage pattern used by
+// onboarding/enterprise state.
+const GUIDE_SEEN_KEY = "said:guide-opened";
+
+function guideWasOpened(): boolean {
+  try {
+    return localStorage.getItem(GUIDE_SEEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markGuideOpened(): void {
+  try {
+    localStorage.setItem(GUIDE_SEEN_KEY, "1");
+  } catch {
+    /* localStorage unavailable — prompt simply reappears next session */
+  }
+}
+
 /**
  * Editorial dashboard — pattern B from the layout proposals.
  *
@@ -20,6 +41,7 @@ const GUIDE_URL = "https://airnote.emiactech.com/guide";
  */
 export function EditorialDashboard({ snapshot }: Props) {
   const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [guideOpened, setGuideOpened] = useState(guideWasOpened);
   const history = snapshot?.history ?? [];
 
   useEffect(() => {
@@ -107,7 +129,14 @@ export function EditorialDashboard({ snapshot }: Props) {
           </p>
         </div>
 
-        <GuidePrompt />
+        {!guideOpened && (
+          <GuidePrompt
+            onOpen={() => {
+              markGuideOpened();
+              setGuideOpened(true);
+            }}
+          />
+        )}
 
         {/* At a glance — 3-column row, hairline separators */}
         <Section label="At a glance">
@@ -182,11 +211,14 @@ export function EditorialDashboard({ snapshot }: Props) {
 
 // ── Tiny presentational primitives (file-local) ───────────────────────────────
 
-function GuidePrompt() {
+function GuidePrompt({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
-      onClick={() => void openExternal(GUIDE_URL)}
+      onClick={() => {
+        onOpen();
+        void openExternal(GUIDE_URL);
+      }}
       className="group w-full mb-7 text-left"
       style={{
         display: "grid",
