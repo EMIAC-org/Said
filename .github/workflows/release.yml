@@ -302,28 +302,19 @@ jobs:
           spctl --assess --type open --context context:primary-signature -v "$DMG_OUT"
           echo "DMG is signed, notarized, stapled, and Gatekeeper-verified: $DMG_OUT"
 
-      # ── Windows: airnote-backend sidecar + Tauri NSIS installer ─────────────
+      # ── Windows: sidecars + Tauri NSIS installer ───────────────────────────
       #    The CLI binary (`said`) is skipped on Windows for v3.0 — only the
       #    desktop app ships. Bring the CLI up in a follow-up if power users
       #    request it.
-      - name: Build airnote-backend sidecar (Windows)
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          cargo build -p said-backend --release --target ${{ matrix.target }} --features local-stt
-          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
-          Copy-Item `
-            "target/${{ matrix.target }}/release/airnote-backend.exe" `
-            "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}.exe"
-
       - name: Build AirNote.exe + NSIS installer (Windows)
         if: matrix.platform == 'windows'
         shell: pwsh
         env:
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY_1 || secrets.DEEPGRAM_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        working-directory: desktop
-        run: npm run tauri:build -- --target ${{ matrix.target }}
+        run: pwsh scripts/build-windows.ps1 -RequireInstaller -RequireWhisper
 
       # ── Stage artifacts ────────────────────────────────────────────────────
       - name: Stage release artifacts (Mac)
