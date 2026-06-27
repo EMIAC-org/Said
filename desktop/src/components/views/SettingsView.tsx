@@ -1710,15 +1710,14 @@ export function SettingsView({
 
         {/* ── Models ───────────────────────────────────── */}
         <Show when={isOn("models")}>
-        {/* Local Swift dictation is macOS-only — Windows has no on-device option,
-            so the cloud-vs-local picker is hidden there entirely. */}
-        {snapshot?.platform === "macos" && (
-          <DictationSttSection
-            prefs={prefs}
-            onPrefsUpdated={setPrefs}
-            platform={snapshot?.platform ?? "macos"}
-          />
-        )}
+        {/* On-device STT is whisper.cpp now (cross-platform), so the cloud-vs-local
+            picker shows on Windows too. The legacy Swift model block inside is
+            still macOS-only (guarded by `platform`/`isMac` within the component). */}
+        <DictationSttSection
+          prefs={prefs}
+          onPrefsUpdated={setPrefs}
+          platform={snapshot?.platform ?? "macos"}
+        />
         {/* Dictation polish card hidden from the user-facing settings. Kept (not
             deleted) and still type-checked — change `false` to `true` to restore. */}
         {false && (
