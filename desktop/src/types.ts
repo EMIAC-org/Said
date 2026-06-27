@@ -36,6 +36,7 @@ export interface AppSnapshot {
   current_mode: string;
   current_mode_label: string;
   current_model: string;
+  message_polish_mode?: boolean;
   auto_paste_supported:     boolean;
   accessibility_granted:    boolean;
   microphone_granted:       boolean;

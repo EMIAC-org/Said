@@ -54,9 +54,9 @@ interface Props {
   workspaceOnly?: boolean;
   /** Restored onboarding progress from localStorage. */
   initialProgress?: OnboardingProgress | null;
-  /** Existing macOS users must install the local Swift model before continuing. */
+  /** Existing users may be forced back here until the local dictation model is installed. */
   requireLocalModelSetup?: boolean;
-  /** Called once the local Swift model is installed. */
+  /** Called once the local dictation model is installed. */
   onLocalModelReady?: () => void;
 }
 
@@ -65,14 +65,14 @@ interface Props {
 // only ever surfaces this single model.
 const DICTATION_MODEL_NAME = "ggml-oriserve-hinglish-fp16.bin";
 
-interface SwiftModelStatus {
+interface DictationModelStatus {
   installed: boolean;
   size_bytes: number;
   path: string;
 }
 
 // Payload of the shared `meeting-model-download` event (keyed by model name).
-interface SwiftDownloadProgress {
+interface DictationDownloadProgress {
   name: string;
   received: number;
   total: number;
@@ -89,12 +89,11 @@ function formatSize(bytes: number): string {
 
 const STEPS = ONBOARDING_STEP_IDS;
 
-// The "keys" step is the macOS-only "Speech recognition" step (choose on-device
-// Swift vs Cloud). Windows has no on-device dictation option, so that step is
-// filtered out of the flow entirely — Windows never sees it and it isn't counted.
-const MAC_ONLY_STEPS: ReadonlySet<Step> = new Set<Step>(["keys"]);
-function visibleStepsFor(isMac: boolean): Step[] {
-  return isMac ? [...STEPS] : STEPS.filter((s) => !MAC_ONLY_STEPS.has(s));
+// All desktop platforms get the same high-level onboarding order. The speech
+// recognition step renders platform-specific copy but always includes the
+// cross-platform whisper.cpp local model download.
+function visibleStepsFor(): Step[] {
+  return [...STEPS];
 }
 
 type HotkeyMode = "hold" | "toggle";
@@ -133,10 +132,10 @@ export function OnboardingFlow({
   const [keySaving, setKeySaving] = useState(false);
   const [keyError, setKeyError] = useState("");
   const [dictationTried, setDictationTried] = useState(false);
-  const [swiftModel, setSwiftModel] = useState<SwiftModelStatus | null>(null);
-  const [swiftDownload, setSwiftDownload] = useState<SwiftDownloadProgress | null>(null);
-  const [swiftBusy, setSwiftBusy] = useState(false);
-  const [swiftError, setSwiftError] = useState("");
+  const [dictationModel, setDictationModel] = useState<DictationModelStatus | null>(null);
+  const [dictationDownload, setDictationDownload] = useState<DictationDownloadProgress | null>(null);
+  const [dictationBusy, setDictationBusy] = useState(false);
+  const [dictationError, setDictationError] = useState("");
   const [workspacePreview, setWorkspacePreview] = useState<EnterpriseConnection | null>(null);
   const [userNavigatedManually, setUserNavigatedManually] = useState(false);
   const resumeSynced = useRef(false);
@@ -145,7 +144,6 @@ export function OnboardingFlow({
     computeResumeProgress(initialProgress ?? loadOnboardingProgress(), {
       workspaceOnly,
       snapshot: null,
-      prefs: null,
     }),
   );
 
@@ -170,9 +168,7 @@ export function OnboardingFlow({
 
   const [step, setStep] = useState<Step>(() => progress.currentStep);
 
-  // Platform-aware step list. On Windows the macOS-only "Speech recognition"
-  // (keys) step is filtered out — it is never shown, navigated to, or counted.
-  const visibleStepIds = useMemo(() => visibleStepsFor(isMac), [isMac]);
+  const visibleStepIds = useMemo(() => visibleStepsFor(), []);
   const totalSteps = visibleStepIds.length;
   const visStepIndex = useCallback(
     (s: Step) => {
@@ -194,71 +190,65 @@ export function OnboardingFlow({
     });
   }, []);
 
-  const refreshSwiftModel = useCallback(async () => {
-    if (!isMac) {
-      setSwiftModel(null);
-      return null;
-    }
+  const refreshDictationModel = useCallback(async () => {
     try {
-      const status = await invoke<SwiftModelStatus>("dictation_model_status");
-      setSwiftModel(status);
+      const status = await invoke<DictationModelStatus>("dictation_model_status");
+      setDictationModel(status);
       if (status.installed) onLocalModelReady?.();
       return status;
     } catch (e) {
-      setSwiftError(e instanceof Error ? e.message : String(e));
+      setDictationError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [isMac, onLocalModelReady]);
+  }, [onLocalModelReady]);
 
   useEffect(() => {
-    void refreshSwiftModel();
-  }, [refreshSwiftModel]);
+    void refreshDictationModel();
+  }, [refreshDictationModel]);
 
   useEffect(() => {
-    if (!isMac) return;
-    const unlistenP = listen<SwiftDownloadProgress>("meeting-model-download", (event) => {
+    const unlistenP = listen<DictationDownloadProgress>("meeting-model-download", (event) => {
       const payload = event.payload;
       // The event is shared across models (dictation + VAD); only react to the
       // dictation model so VAD's silent auto-fetch never shows in onboarding.
       if (payload.name !== DICTATION_MODEL_NAME) return;
       if (payload.status === "downloading") {
-        setSwiftDownload(payload);
-        setSwiftError("");
+        setDictationDownload(payload);
+        setDictationError("");
       } else {
-        setSwiftDownload(null);
+        setDictationDownload(null);
       }
       if (payload.status === "done") {
-        void refreshSwiftModel();
+        void refreshDictationModel();
       }
       if (payload.status === "error") {
-        setSwiftError(payload.error || "Model download failed.");
+        setDictationError(payload.error || "Model download failed.");
       }
     });
     return () => {
       void unlistenP.then((fn) => fn());
     };
-  }, [isMac, refreshSwiftModel]);
+  }, [refreshDictationModel]);
 
   useEffect(() => {
     if (resumeSynced.current) return;
-    if (!prefs && !snapshot) return;
+    if (!snapshot) return;
     resumeSynced.current = true;
     const next = computeResumeProgress(initialProgress ?? loadOnboardingProgress(), {
       workspaceOnly,
       snapshot,
-      prefs,
     });
     setProgress(next);
     saveOnboardingProgress(next);
     setStep(next.currentStep);
     setAuthMode(next.authMode);
-  }, [initialProgress, workspaceOnly, snapshot, prefs]);
+  }, [initialProgress, workspaceOnly, snapshot]);
 
   useEffect(() => {
     saveOnboardingProgress({ authMode });
   }, [authMode]);
 
-  const swiftInstalled = isMac ? (swiftModel?.installed ?? false) : true;
+  const dictationModelInstalled = dictationModel?.installed ?? false;
   const permsReady = micGranted && (isWindows || (accGranted && imGranted));
   const stepIndex = visStepIndex(step);
 
@@ -301,13 +291,6 @@ export function OnboardingFlow({
         status.account = "done";
         next = firstUndoneStep(status);
       }
-      // Windows has no on-device dictation — the macOS-only "Speech recognition"
-      // (keys) step is skipped automatically so it never becomes current.
-      while (next === "keys" && !isMac) {
-        status.keys = "done";
-        next = firstUndoneStep(status);
-      }
-
       if (!next) {
         applyProgress({
           stepStatus: status,
@@ -333,13 +316,22 @@ export function OnboardingFlow({
       authMode,
       enterpriseRequired,
       permsReady,
-      isMac,
       applyProgress,
       workspaceOnly,
       totalSteps,
       visStepIndex,
     ],
   );
+
+  const completedThroughCurrentStep = useCallback((): Partial<Record<OnboardingStep, "done">> => {
+    const done: Partial<Record<OnboardingStep, "done">> = {};
+    const currentIdx = visStepIndex(step);
+    for (let i = 0; i <= currentIdx; i += 1) {
+      const id = visibleStepIds[i];
+      if (id) done[id] = "done";
+    }
+    return done;
+  }, [step, visStepIndex, visibleStepIds]);
 
   const goBack = useCallback(() => {
     const idx = visStepIndex(step);
@@ -366,7 +358,7 @@ export function OnboardingFlow({
   );
 
   useEffect(() => {
-    if (!requireLocalModelSetup || workspaceOnly || !isMac || swiftInstalled) return;
+    if (!requireLocalModelSetup || workspaceOnly || !isMac || dictationModelInstalled) return;
     if (step === "keys" && progress.stepStatus.keys !== "done") return;
     const updated = applyProgress({
       currentStep: "keys",
@@ -381,7 +373,7 @@ export function OnboardingFlow({
     progress.stepStatus,
     requireLocalModelSetup,
     step,
-    swiftInstalled,
+    dictationModelInstalled,
     workspaceOnly,
     visStepIndex,
   ]);
@@ -450,65 +442,77 @@ export function OnboardingFlow({
   ]);
 
   // No API keys are collected anymore — they're bundled into the build. This
-  // macOS-only step just records which speech engine the user wants.
+  // step records which speech engine the user wants.
   const chooseCloudEngine = useCallback(async () => {
     setKeySaving(true);
     setKeyError("");
     try {
-      const updated = await patchPreferences({ stt_provider: "deepgram" });
-      if (updated) setPrefs(updated);
-      advanceToNextUndone({ keys: "done" });
-    } catch {
-      setKeyError("Couldn't save your choice. Try again.");
+      const updated = await patchPreferences(
+        { stt_provider: "deepgram" },
+        { throwOnError: true },
+      );
+      if (!updated) {
+        throw new Error("AirNote could not save cloud speech recognition.");
+      }
+      setPrefs(updated);
+      advanceToNextUndone(completedThroughCurrentStep());
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setKeyError(message || "Couldn't save your choice. Try again.");
     } finally {
       setKeySaving(false);
     }
-  }, [advanceToNextUndone]);
+  }, [advanceToNextUndone, completedThroughCurrentStep]);
 
   const chooseLocalEngine = useCallback(async () => {
-    if (!swiftInstalled) {
+    if (!dictationModelInstalled) {
       setKeyError("Download the local model first, then continue.");
       return;
     }
     setKeySaving(true);
     setKeyError("");
     try {
-      const updated = await patchPreferences({ stt_provider: "whisper_local" });
-      if (updated) {
-        setPrefs(updated);
-        onLocalModelReady?.();
+      const updated = await patchPreferences(
+        { stt_provider: "whisper_local" },
+        { throwOnError: true },
+      );
+      if (!updated) {
+        throw new Error("AirNote could not save on-device speech recognition.");
       }
-      advanceToNextUndone({ keys: "done" });
-    } catch {
-      setKeyError("Couldn't save your choice. Try again.");
+      setPrefs(updated);
+      onLocalModelReady?.();
+      advanceToNextUndone(completedThroughCurrentStep());
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setKeyError(message || "Couldn't save your choice. Try again.");
     } finally {
       setKeySaving(false);
     }
-  }, [advanceToNextUndone, onLocalModelReady, swiftInstalled]);
+  }, [advanceToNextUndone, completedThroughCurrentStep, dictationModelInstalled, onLocalModelReady]);
 
-  const handleSwiftDownload = useCallback(async () => {
-    setSwiftBusy(true);
-    setSwiftError("");
+  const handleDictationDownload = useCallback(async () => {
+    setDictationBusy(true);
+    setDictationError("");
     setKeyError("");
     try {
       await invoke("download_dictation_model");
-      const status = await refreshSwiftModel();
+      const status = await refreshDictationModel();
       if (status?.installed) onLocalModelReady?.();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg !== "cancelled") setSwiftError(msg);
+      if (msg !== "cancelled") setDictationError(msg);
     } finally {
-      setSwiftBusy(false);
+      setDictationBusy(false);
     }
-  }, [onLocalModelReady, refreshSwiftModel]);
+  }, [onLocalModelReady, refreshDictationModel]);
 
-  const handleSwiftCancel = useCallback(async () => {
+  const handleDictationCancel = useCallback(async () => {
     await invoke("meeting_cancel_model_download", { name: DICTATION_MODEL_NAME }).catch(() => {});
-    setSwiftDownload(null);
+    setDictationDownload(null);
   }, []);
 
   const handleHotkeySelect = useCallback(async (key: string) => {
-    const updated = await patchPreferences({ record_hotkey: key });
+    const updated = await patchPreferences({ record_hotkey: key }, { throwOnError: true });
     // Reflect the choice in local state so the next step ("Try it") shows the
     // key the user actually picked (not the stale default).
     if (updated) setPrefs(updated);
@@ -535,7 +539,7 @@ export function OnboardingFlow({
         title="Welcome to AirNote."
         subtitle={
           isWindows
-            ? "A two-minute setup. Create your account, grant microphone access, pick a dictation key — then you’ll never type by hand again."
+            ? "A two-minute setup. Create your account, grant microphone access, choose on-device or cloud speech recognition, pick a dictation key — then you’ll never type by hand again."
             : "A two-minute setup. Create your account, grant three permissions, choose on-device or cloud speech recognition, pick a dictation key — then you’ll never type by hand again."
         }
         brandTagline={
@@ -810,7 +814,7 @@ export function OnboardingFlow({
         brandQuote={
           isWindows
             ? "Audio goes only to your selected speech provider. Nothing is stored on our servers."
-            : "Speech recognition runs locally after the Swift model is installed. Nothing is stored on our servers."
+            : "Speech recognition runs locally after the on-device model is installed. Nothing is stored on our servers."
         }
         topRight={<span>{stepLabel(step)}</span>}
         bottomNote={<span>Change any time in Settings → Permissions</span>}
@@ -859,25 +863,25 @@ export function OnboardingFlow({
     );
   }
 
-  // ── Step 4 (macOS only): Speech recognition engine ───────────────────────
-  // On-device Swift vs Cloud Deepgram. No API keys — they're bundled into the
-  // build. Windows never reaches this step (it's filtered out of the flow);
-  // Windows dictation always uses Cloud.
-  if (step === "keys" && isMac) {
-    const swiftDownloadPct =
-      swiftDownload && swiftDownload.total > 0
-        ? Math.min(100, Math.round((swiftDownload.received / swiftDownload.total) * 100))
+  // ── Step 4: Speech recognition engine ────────────────────────────────────
+  // On-device whisper.cpp vs Cloud Deepgram. No API keys are collected here;
+  // cloud credentials are server-managed.
+  if (step === "keys") {
+    const dictationDownloadPct =
+      dictationDownload && dictationDownload.total > 0
+        ? Math.min(100, Math.round((dictationDownload.received / dictationDownload.total) * 100))
         : null;
+    const deviceName = isWindows ? "PC" : "Mac";
     return (
       <OnboardingShell
         step={stepIndex}
         totalSteps={totalSteps}
         eyebrow="Speech recognition"
         title="How should AirNote hear you?"
-        subtitle="Run speech recognition on this Mac, or in the cloud. You can switch any time in Settings."
-        brandTagline="On-device keeps your voice on this Mac. Cloud is instant with nothing to download."
+        subtitle={`Run speech recognition on this ${deviceName}, or in the cloud. You can switch any time in Settings.`}
+        brandTagline={`On-device keeps your voice on this ${deviceName}. Cloud is instant with nothing to download.`}
         brandKicker="Recommended · on-device"
-        brandQuote="The local model transcribes Hinglish right on your Mac — private, works offline, no per-use cost."
+        brandQuote={`The local model transcribes Hinglish right on your ${deviceName} — private, works offline, no per-use cost.`}
         topRight={<span>{stepLabel(step)}</span>}
         onBack={goBack}
         {...navProps}
@@ -901,28 +905,28 @@ export function OnboardingFlow({
               </span>
             </div>
             <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              Hinglish, transcribed on your Mac — offline, private, no per-use cost.
+              Hinglish, transcribed on this device — offline, private, no per-use cost.
             </p>
-            <SwiftModelCard
-              installed={swiftInstalled}
-              sizeBytes={swiftModel?.size_bytes ?? 0}
-              progressPct={swiftDownloadPct ?? null}
-              busy={swiftBusy}
-              error={swiftError}
-              onDownload={() => void handleSwiftDownload()}
-              onCancel={() => void handleSwiftCancel()}
+            <DictationModelCard
+              installed={dictationModelInstalled}
+              sizeBytes={dictationModel?.size_bytes ?? 0}
+              progressPct={dictationDownloadPct ?? null}
+              busy={dictationBusy}
+              error={dictationError}
+              onDownload={() => void handleDictationDownload()}
+              onCancel={() => void handleDictationCancel()}
             />
             <button
               onClick={() => void chooseLocalEngine()}
-              disabled={keySaving || !swiftInstalled}
+              disabled={keySaving || !dictationModelInstalled}
               className="btn-primary btn-lg w-full mt-3"
             >
               {keySaving
                 ? "Saving…"
-                : swiftInstalled
+                : dictationModelInstalled
                   ? "Use on-device model"
                   : "Download to use on-device"}
-              {!keySaving && swiftInstalled && <ArrowRight size={14} />}
+              {!keySaving && dictationModelInstalled && <ArrowRight size={14} />}
             </button>
           </div>
 
@@ -1139,7 +1143,7 @@ function PermRow({
 
 // ── Local model setup card ───────────────────────────────────────────────────
 
-function SwiftModelCard({
+function DictationModelCard({
   installed,
   sizeBytes,
   progressPct,

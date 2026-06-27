@@ -117,6 +117,8 @@ pub struct AppSnapshot {
     pub current_mode: &'static str,
     pub current_mode_label: &'static str,
     pub current_model: &'static str,
+    #[serde(default)]
+    pub message_polish_mode: bool,
     pub auto_paste_supported: bool,
     pub accessibility_granted: bool,
     pub microphone_granted: bool,

@@ -65,6 +65,7 @@ impl DesktopApp {
             current_mode: "mini",
             current_mode_label: "Fast (gpt-5.4-mini)",
             current_model: "gpt-5.4-mini",
+            message_polish_mode: said_core::prefs::load().message_polish_mode,
             // Windows supports the same paste path (clipboard + Ctrl+V via SendInput).
             // Linux remains unsupported until a paster impl lands.
             auto_paste_supported: cfg!(any(target_os = "macos", target_os = "windows")),
