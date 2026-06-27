@@ -36,10 +36,18 @@ webkit_ids = sys.argv[3:]
 
 LOCAL_STORAGE_KEYS = {
     "said:onboarding-complete",
+    # Per-step progress — without this the flow resumes mid-way and SKIPS steps
+    # whose stale status is still "done" (e.g. jumps engine → test, past hotkey).
+    "said:onboarding-progress",
+    "said:onboarding-auth-mode",
     "said:enterprise",
     "said:enterprise-pending-url",
     "said:enterprise-recent-urls",
     "said:enterprise-device-id",
+    # Server-URL override (Settings → Workspace server) so reset returns to the
+    # env/default backend.
+    "said:server-url-mode",
+    "said:server-url-override",
 }
 
 PREFERENCE_RESETS = {

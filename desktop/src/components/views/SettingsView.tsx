@@ -19,7 +19,13 @@ import { DictationSttSection } from "@/components/DictationSttSection";
 import {
   getConnection as enterpriseGetConnection,
   disconnectEnterprise,
+  getServerUrlMode,
+  getServerUrlOverride,
+  getActiveServerUrl,
+  applyServerUrlConfig,
+  DEFAULT_CLOUD_SERVER_URL,
   type EnterpriseConnection,
+  type ServerUrlMode,
 } from "@/lib/enterprise";
 import { EnterpriseConnectForm } from "@/components/EnterpriseConnectForm";
 import {
@@ -356,6 +362,97 @@ function renderPromptTemplatePreview(
 
 // ── Enterprise section ────────────────────────────────────────────────────────
 
+/** Server URL override — toggle between the default (prod AirNote) backend and a
+ *  custom URL. The active URL governs the control-plane AND the local backend's
+ *  polish forwarding. Applying reloads the app so every endpoint re-resolves. */
+function ServerOverrideCard() {
+  const [mode, setMode] = useState<ServerUrlMode>(() => getServerUrlMode());
+  const [customUrl, setCustomUrl] = useState<string>(() => getServerUrlOverride());
+  const [busy, setBusy] = useState(false);
+  const active = getActiveServerUrl();
+
+  async function apply(nextMode: ServerUrlMode, nextUrl?: string) {
+    setBusy(true);
+    try {
+      await applyServerUrlConfig(nextMode, nextUrl);
+      window.location.reload(); // reload so cached endpoints pick up the new URL
+    } catch {
+      setBusy(false);
+    }
+  }
+
+  const segStyle = (on: boolean) => ({
+    background: on ? "hsl(var(--primary))" : "hsl(var(--muted))",
+    color: on ? "hsl(var(--primary-foreground))" : "hsl(var(--foreground))",
+    boxShadow: on ? "0 2px 8px -4px hsl(var(--primary) / 0.45)" : "inset 0 0 0 1px hsl(var(--border))",
+  });
+
+  return (
+    <div className="mb-7">
+      <p className="section-label px-1 mb-2.5 flex items-center gap-2">
+        <span className="inline-block w-1 h-1 rounded-full" style={{ background: "hsl(var(--accent-violet))" }} />
+        Workspace server
+      </p>
+      <div className="panel p-5 space-y-3">
+        <p className="text-[12px] text-muted-foreground leading-relaxed">
+          Where AirNote sends sign-in and dictation requests. Changing this reloads the app and may require signing in again.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => { setMode("default"); if (mode !== "default") void apply("default"); }}
+            className="text-[11.5px] font-semibold px-3 py-1.5 rounded-full transition-colors disabled:opacity-50"
+            style={segStyle(mode === "default")}
+          >
+            Default (prod AirNote)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setMode("custom")}
+            className="text-[11.5px] font-semibold px-3 py-1.5 rounded-full transition-colors disabled:opacity-50"
+            style={segStyle(mode === "custom")}
+          >
+            Custom
+          </button>
+        </div>
+
+        {mode === "custom" && (
+          <div className="flex items-center gap-2">
+            <input
+              type="url"
+              value={customUrl}
+              disabled={busy}
+              onChange={(e) => setCustomUrl(e.target.value)}
+              placeholder="https://your-server.example.com"
+              className="input flex-1 text-[12px] font-mono"
+            />
+            <button
+              type="button"
+              disabled={busy || !customUrl.trim()}
+              onClick={() => void apply("custom", customUrl)}
+              className="btn-primary !py-1.5 !px-4 !text-[12px] flex-shrink-0"
+            >
+              Done
+            </button>
+          </div>
+        )}
+
+        <p className="text-[11px] text-muted-foreground">
+          Active:{" "}
+          <span className="font-mono" style={{ color: "hsl(var(--foreground) / 0.8)" }}>
+            {active}
+          </span>
+          {getServerUrlMode() === "default" && (
+            <span className="ml-1 opacity-60">· {DEFAULT_CLOUD_SERVER_URL.replace(/^https?:\/\//, "")}</span>
+          )}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function EnterpriseSection({ onDisconnect }: { onDisconnect?: () => void }) {
   const [connection, setConnection] = useState<EnterpriseConnection | null>(null);
   const [workspaces, setWorkspaces] = useState<
@@ -388,6 +485,8 @@ function EnterpriseSection({ onDisconnect }: { onDisconnect?: () => void }) {
 
   if (connection) {
     return (
+      <>
+      <ServerOverrideCard />
       <div className="mb-7">
         <p className="section-label px-1 mb-2.5 flex items-center gap-2">
           <span
@@ -533,27 +632,31 @@ function EnterpriseSection({ onDisconnect }: { onDisconnect?: () => void }) {
           </div>
         </div>
       </div>
+      </>
     );
   }
 
   return (
-    <div className="mb-7">
-      <p className="section-label px-1 mb-2.5 flex items-center gap-2">
-        <span
-          className="inline-block w-1 h-1 rounded-full"
-          style={{ background: "hsl(var(--accent-violet))" }}
-        />
-        Enterprise
-      </p>
-      <div className="panel p-5">
-        <EnterpriseConnectForm
-          compact
-          onConnected={(conn) => {
-            setConnection(conn);
-          }}
-        />
+    <>
+      <ServerOverrideCard />
+      <div className="mb-7">
+        <p className="section-label px-1 mb-2.5 flex items-center gap-2">
+          <span
+            className="inline-block w-1 h-1 rounded-full"
+            style={{ background: "hsl(var(--accent-violet))" }}
+          />
+          Enterprise
+        </p>
+        <div className="panel p-5">
+          <EnterpriseConnectForm
+            compact
+            onConnected={(conn) => {
+              setConnection(conn);
+            }}
+          />
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 

@@ -26,6 +26,10 @@ export interface EnterpriseConnectFormProps {
   variant?: "default" | "onboarding";
   /** Back out of OAuth waiting (e.g. onboarding goBack). */
   onCancel?: () => void;
+  /** When set, the server URL is fixed (pulled from config/env): the URL input
+   *  is hidden, the URL is auto-validated, and the form jumps straight to the
+   *  Lark sign-in. Used by onboarding so users never type a server URL. */
+  lockedServerUrl?: string;
 }
 
 export function EnterpriseConnectForm({
@@ -34,6 +38,7 @@ export function EnterpriseConnectForm({
   compact = false,
   variant = "default",
   onCancel,
+  lockedServerUrl,
 }: EnterpriseConnectFormProps) {
   const [serverUrl, setServerUrl] = useState(initialServerUrl);
   const [validating, setValidating] = useState(false);
@@ -98,6 +103,28 @@ export function EnterpriseConnectForm({
       setServerUrl(recents[0]);
     }
   }, [initialServerUrl]);
+
+  // Locked server URL (from config/env): pin it, auto-validate, and skip the
+  // URL-entry step so the user lands directly on the Lark sign-in.
+  useEffect(() => {
+    if (!lockedServerUrl) return;
+    let alive = true;
+    const url = lockedServerUrl.trim().replace(/\/+$/, "");
+    setServerUrl(url);
+    if (getConnection()) return; // already connected → Lark card already shows
+    setValidating(true);
+    setValidationError("");
+    void (async () => {
+      const ok = await validateServer(url).catch(() => false);
+      if (!alive) return;
+      setValidating(false);
+      if (ok) setValidated(true);
+      else setValidationError("Couldn't reach AirNote — check your connection and retry.");
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [lockedServerUrl]);
 
   const startOAuth = useCallback(async (url: string) => {
     const trimmed = url.trim().replace(/\/+$/, "");
@@ -274,6 +301,14 @@ export function EnterpriseConnectForm({
         </p>
       )}
 
+      {lockedServerUrl && validating && !validated && (
+        <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
+          <Loader2 size={14} className="animate-spin" />
+          Connecting to AirNote…
+        </div>
+      )}
+
+      {!lockedServerUrl && (
       <div>
         <p className="text-[12px] font-semibold text-foreground mb-1.5 flex items-center gap-1.5">
           <Link size={12} className="text-muted-foreground" />
@@ -337,6 +372,7 @@ export function EnterpriseConnectForm({
           </div>
         )}
       </div>
+      )}
 
       {validationError && (
         <div
@@ -345,6 +381,12 @@ export function EnterpriseConnectForm({
         >
           {validationError}
         </div>
+      )}
+      {lockedServerUrl && validationError && !validated && !validating && (
+        <button onClick={() => void handleValidate()} className={connectBtnClass}>
+          <RotateCcw size={14} />
+          Retry
+        </button>
       )}
 
       {validated && !waitingForBrowser && oauthPhase === "idle" && (
@@ -374,78 +416,71 @@ export function EnterpriseConnectForm({
       )}
 
       {waitingForBrowser && (
-        <div className="space-y-3 pt-1">
+        <div className="space-y-2.5 pt-1">
+          {/* De-noised: one compact status strip — no wall of text, no Try-again
+              (the inline "Reopen" already restarts OAuth). */}
           <div
-            className="rounded-lg px-3 py-3 text-[12px] space-y-2"
-            style={{ background: "hsl(210 60% 12%)", color: "hsl(210 70% 70%)" }}
+            className="flex items-start gap-2.5 rounded-lg px-3 py-2.5"
+            style={{ background: "hsl(210 50% 12% / 0.5)", boxShadow: "inset 0 0 0 1px hsl(210 60% 60% / 0.16)" }}
           >
-            <div className="flex items-center gap-2">
-              {oauthPhase === "submitting" ? (
-                <Loader2 size={14} className="shrink-0 animate-spin" />
-              ) : (
-                <ExternalLink size={14} className="shrink-0" />
-              )}
-              <span>
-                {oauthPhase === "submitting"
-                  ? "Finishing sign-in…"
-                  : "Waiting for browser sign-in…"}
-              </span>
-            </div>
-            <p className="text-[11px] opacity-80 leading-relaxed">
-              Complete Lark sign-in in your browser. AirNote will connect automatically when
-              you&apos;re done — no copy/paste needed.
-            </p>
-            {authUrl && oauthPhase === "waiting" && (
-              <button
-                type="button"
-                className="text-[11px] opacity-80 hover:opacity-100 truncate text-left underline"
-                onClick={() => void openExternal(authUrl)}
-                title={authUrl}
-              >
-                Didn&apos;t open? Click here to reopen sign-in
-              </button>
+            {oauthPhase === "submitting" ? (
+              <Loader2 size={14} className="shrink-0 animate-spin mt-0.5" style={{ color: "hsl(210 80% 74%)" }} />
+            ) : (
+              <ExternalLink size={14} className="shrink-0 mt-0.5" style={{ color: "hsl(210 80% 74%)" }} />
             )}
+            <div className="min-w-0">
+              <p className="text-[12.5px] font-semibold" style={{ color: "hsl(210 75% 82%)" }}>
+                {oauthPhase === "submitting" ? "Finishing sign-in…" : "Waiting for browser sign-in…"}
+              </p>
+              <p className="text-[11.5px] leading-snug mt-0.5" style={{ color: "hsl(210 25% 72% / 0.85)" }}>
+                Finish in your browser — we&apos;ll connect automatically.
+                {authUrl && oauthPhase === "waiting" && (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      className="underline hover:opacity-100"
+                      onClick={() => void openExternal(authUrl)}
+                      title={authUrl}
+                    >
+                      Reopen
+                    </button>
+                  </>
+                )}
+              </p>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {oauthPhase === "waiting" && (
+          {/* A single muted row replaces the old Cancel + Try-again + paste-token stack. */}
+          <div className="flex items-center justify-between">
+            {onCancel && oauthPhase !== "submitting" ? (
               <button
                 type="button"
-                onClick={() => void startOAuth(serverUrl)}
-                className={secondaryBtnClass}
-              >
-                <RotateCcw size={12} />
-                Try again
-              </button>
-            )}
-            {onCancel && oauthPhase !== "submitting" && (
-              <button
-                type="button"
+                className="text-[11.5px] text-muted-foreground hover:text-foreground transition-colors"
                 onClick={() => {
                   void resetOAuth();
                   onCancel();
                 }}
-                className={secondaryBtnClass}
               >
-                <X size={12} />
                 Cancel
+              </button>
+            ) : (
+              <span />
+            )}
+            {!showManualToken && (
+              <button
+                type="button"
+                className="text-[11px] text-muted-foreground hover:text-foreground underline transition-colors"
+                onClick={() => setShowManualToken(true)}
+              >
+                Having trouble? Paste token
               </button>
             )}
           </div>
 
-          {!showManualToken ? (
-            <button
-              type="button"
-              onClick={() => setShowManualToken(true)}
-              className="text-[11px] text-muted-foreground hover:text-foreground underline transition-colors"
-            >
-              Paste token manually
-            </button>
-          ) : (
+          {showManualToken && (
             <div className="space-y-2 pt-1">
-              <p className="text-[12px] font-semibold text-foreground">
-                Session token (fallback)
-              </p>
+              <p className="text-[12px] font-semibold text-foreground">Session token (fallback)</p>
               <div className="flex items-center gap-2">
                 <input
                   type="text"

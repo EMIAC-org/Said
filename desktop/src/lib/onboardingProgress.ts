@@ -1,7 +1,7 @@
 import type { AppSnapshot, Preferences } from "@/types";
 import { getConnection, loadSavedAuthMode } from "@/lib/enterprise";
 
-export type OnboardingStep = "welcome" | "account" | "permissions" | "keys" | "hotkey";
+export type OnboardingStep = "welcome" | "account" | "permissions" | "keys" | "hotkey" | "test";
 export type OnboardingAuthMode = "personal" | "workspace";
 export type StepCompletion = "pending" | "done";
 
@@ -13,6 +13,7 @@ export const ONBOARDING_STEPS: { id: OnboardingStep; label: string }[] = [
   { id: "permissions", label: "Permissions" },
   { id: "keys", label: "Keys" },
   { id: "hotkey", label: "Hotkey" },
+  { id: "test", label: "Try it" },
 ];
 
 export const ONBOARDING_STEP_IDS = ONBOARDING_STEPS.map((s) => s.id);
@@ -24,6 +25,7 @@ function emptyStepStatus(): Record<OnboardingStep, StepCompletion> {
     permissions: "pending",
     keys: "pending",
     hotkey: "pending",
+    test: "pending",
   };
 }
 
@@ -156,6 +158,7 @@ export function computeResumeProgress(
     status.permissions = permissionsReady(opts.snapshot) ? "done" : "pending";
     status.keys = keysReady(opts.prefs) ? "done" : "pending";
     status.hotkey = "done";
+    status.test = "done";
     status.account = getConnection() ? "done" : "pending";
 
     const storedStep = stored?.currentStep;

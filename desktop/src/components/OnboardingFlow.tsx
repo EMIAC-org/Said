@@ -20,7 +20,7 @@ import type { EnterpriseConnection } from "@/lib/enterprise";
 import {
   getConnection,
   completeEmailAuth,
-  DEFAULT_CLOUD_SERVER_URL,
+  getActiveServerUrl,
   loadSavedAuthMode,
 } from "@/lib/enterprise";
 import type { AppSnapshot, Preferences } from "@/types";
@@ -97,6 +97,23 @@ function visibleStepsFor(isMac: boolean): Step[] {
   return isMac ? [...STEPS] : STEPS.filter((s) => !MAC_ONLY_STEPS.has(s));
 }
 
+type HotkeyMode = "hold" | "toggle";
+
+/** Display label for a record-hotkey id, platform-aware. */
+function hotkeyLabelFor(key: string, isWindows: boolean): string {
+  if (key === "fn") return "Fn / Globe";
+  if (key === "right_option") return isWindows ? "Right Alt" : "Right Option";
+  return "Caps Lock";
+}
+
+/** How the key actually behaves at runtime (must mirror crates/hotkey):
+ *  macOS Caps Lock is a LOCKING key → tap to start, tap again to stop (toggle).
+ *  Fn / Right Option, and every Windows key (incl. the hook-suppressed Caps
+ *  Lock), are momentary → push-to-talk (hold while speaking, release to send). */
+function hotkeyMode(key: string, isWindows: boolean): HotkeyMode {
+  return key === "caps_lock" && !isWindows ? "toggle" : "hold";
+}
+
 // ── Main component ─────────────────────────────────────────────────────────
 
 export function OnboardingFlow({
@@ -115,6 +132,7 @@ export function OnboardingFlow({
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [keySaving, setKeySaving] = useState(false);
   const [keyError, setKeyError] = useState("");
+  const [dictationTried, setDictationTried] = useState(false);
   const [swiftModel, setSwiftModel] = useState<SwiftModelStatus | null>(null);
   const [swiftDownload, setSwiftDownload] = useState<SwiftDownloadProgress | null>(null);
   const [swiftBusy, setSwiftBusy] = useState(false);
@@ -399,7 +417,7 @@ export function OnboardingFlow({
     setPersonalError("");
     try {
       const conn = await completeEmailAuth(
-        DEFAULT_CLOUD_SERVER_URL,
+        getActiveServerUrl(),
         trimmedEmail,
         password,
         emailSignup,
@@ -490,14 +508,22 @@ export function OnboardingFlow({
   }, []);
 
   const handleHotkeySelect = useCallback(async (key: string) => {
-    await patchPreferences({ record_hotkey: key });
-    if (workspaceOnly) {
-      advanceToNextUndone({ hotkey: "done" });
-      return;
-    }
+    const updated = await patchPreferences({ record_hotkey: key });
+    // Reflect the choice in local state so the next step ("Try it") shows the
+    // key the user actually picked (not the stale default).
+    if (updated) setPrefs(updated);
+    // Hotkey is no longer the final step — advance to the live "Try it" step,
+    // which is where onboarding actually completes (handleTestComplete). In
+    // workspaceOnly reconnect mode "test" is pre-marked done, so this is a no-op
+    // there and the existing account-driven completion is unchanged.
+    advanceToNextUndone({ hotkey: "done" });
+  }, [advanceToNextUndone]);
+
+  // Final step: the live dictation try-it. Completing it ends onboarding.
+  const handleTestComplete = useCallback(() => {
     clearOnboardingProgress();
     onFinish();
-  }, [workspaceOnly, advanceToNextUndone, onFinish]);
+  }, [onFinish]);
 
   // ── Step 1: Welcome ──────────────────────────────────────────────────────
   if (step === "welcome") {
@@ -509,8 +535,8 @@ export function OnboardingFlow({
         title="Welcome to AirNote."
         subtitle={
           isWindows
-            ? "A two-minute setup. Create your account, grant microphone access, pick a hold-key — then you’ll never type by hand again."
-            : "A two-minute setup. Create your account, grant three permissions, choose on-device or cloud speech recognition, pick a hold-key — then you’ll never type by hand again."
+            ? "A two-minute setup. Create your account, grant microphone access, pick a dictation key — then you’ll never type by hand again."
+            : "A two-minute setup. Create your account, grant three permissions, choose on-device or cloud speech recognition, pick a dictation key — then you’ll never type by hand again."
         }
         brandTagline={
           isWindows
@@ -641,11 +667,15 @@ export function OnboardingFlow({
               setAuthMode("workspace");
               setPersonalError("");
             }}
-            className="w-full rounded-lg border px-3 py-2.5 text-[12px] font-semibold transition-colors flex items-center justify-center gap-2"
+            className="w-full rounded-lg border px-3 py-2.5 transition-colors text-center"
             style={{ borderColor: "hsl(var(--border))", color: "hsl(var(--foreground))" }}
           >
-            Setting up for your organization?
-            <span style={{ color: "hsl(var(--primary))" }}>Connect a workspace →</span>
+            <span className="block text-[12px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
+              Setting up for your organization?
+            </span>
+            <span className="block text-[12px] font-semibold mt-0.5" style={{ color: "hsl(var(--primary))" }}>
+              Connect a workspace →
+            </span>
           </button>
         </div>
       </OnboardingShell>
@@ -667,7 +697,7 @@ export function OnboardingFlow({
         subtitle={
           workspacePreview
             ? "Signed in to your organization. Continue setup on the next step."
-            : "Enter your organization's server URL, then sign in. For teams on a self-hosted AirNote server."
+            : "Sign in with your Lark account to connect your workspace."
         }
         brandTagline="Enterprise AirNote runs on your organization's server — your data stays in your workspace."
         brandKicker="Workspace sign-in"
@@ -736,6 +766,7 @@ export function OnboardingFlow({
             <EnterpriseConnectForm
               compact
               variant="onboarding"
+              lockedServerUrl={getActiveServerUrl()}
               onConnected={setWorkspacePreview}
               onCancel={workspaceBack}
             />
@@ -870,8 +901,7 @@ export function OnboardingFlow({
               </span>
             </div>
             <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              Transcribes Hinglish on your Mac — works offline, nothing leaves the device, and there’s
-              no per-use cost. One-time ~148 MB download.
+              Hinglish, transcribed on your Mac — offline, private, no per-use cost.
             </p>
             <SwiftModelCard
               installed={swiftInstalled}
@@ -929,30 +959,105 @@ export function OnboardingFlow({
     );
   }
 
+  // ── Step 6: Try it — live dictation ──────────────────────────────────────
+  // Real dictation: the global hotkey pipeline is already active, so holding
+  // the key and speaking types polished text straight into the focused
+  // textarea below. This works because the user is now authenticated (account
+  // step, required), mic is granted, and (macOS) Accessibility is granted.
+  if (step === "test") {
+    const hk = prefs?.record_hotkey ?? "caps_lock";
+    const hkLabel = hotkeyLabelFor(hk, isWindows);
+    const isToggle = hotkeyMode(hk, isWindows) === "toggle";
+    const trySubtitle = isToggle
+      ? `Tap ${hkLabel} to start, speak, then tap again — AirNote types polished text right into the box below. This is the real thing, not a demo.`
+      : `Hold ${hkLabel} and speak, then release — AirNote types polished text right into the box below. This is the real thing, not a demo.`;
+    const tryPlaceholder = isToggle
+      ? `Tap ${hkLabel} and speak — your polished words appear here…`
+      : `Hold ${hkLabel} and speak — your polished words appear here…`;
+    return (
+      <OnboardingShell
+        step={stepIndex}
+        totalSteps={totalSteps}
+        eyebrow="Try it"
+        title="Your first dictation."
+        subtitle={trySubtitle}
+        brandTagline={isToggle ? "Tap to start, speak, tap to send — and watch it land." : "Hold the key, speak, release — and watch it land."}
+        brandKicker="Live"
+        brandQuote="This is exactly how dictation feels everywhere else in your apps."
+        topRight={<span>{stepLabel(step)}</span>}
+        onBack={goBack}
+        {...navProps}
+      >
+        <div className="mt-7">
+          <textarea
+            autoFocus
+            className="onb-try-field"
+            placeholder={tryPlaceholder}
+            onChange={(e) => {
+              if (e.target.value.trim()) setDictationTried(true);
+            }}
+          />
+          <div className="onb-try-hint">
+            <Mic size={13} />
+            {isToggle ? (
+              <>Tap <span className="onb-try-kbd">{hkLabel}</span> to start, tap again to send.</>
+            ) : (
+              <>Hold <span className="onb-try-kbd">{hkLabel}</span> and speak, then release.</>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-6">
+          <button onClick={handleTestComplete} className="btn-primary btn-lg w-full">
+            {dictationTried ? "Perfect — finish setup" : "Finish setup"}
+            <ArrowRight size={14} />
+          </button>
+        </div>
+      </OnboardingShell>
+    );
+  }
+
   // ── Step 5: Hotkey ───────────────────────────────────────────────────────
   const currentHotkey = prefs?.record_hotkey ?? "caps_lock";
   const options: { key: string; glyph: string; label: string; desc: string }[] = [
-    { key: "caps_lock",    glyph: "⇪",  label: "Caps Lock",     desc: "Single key, easy to hold." },
-    { key: "right_option", glyph: isWindows ? "Alt" : "⌥",  label: isWindows ? "Right Alt" : "Right Option",  desc: "Stays out of the way." },
+    {
+      key: "caps_lock",
+      glyph: "⇪",
+      label: "Caps Lock",
+      // macOS Caps Lock toggles; on Windows the hook makes it hold-to-talk.
+      desc: isWindows ? "Hold to talk — one easy key." : "Tap to start, tap again to stop.",
+    },
+    {
+      key: "right_option",
+      glyph: isWindows ? "Alt" : "⌥",
+      label: isWindows ? "Right Alt" : "Right Option",
+      desc: "Hold while you speak.",
+    },
     ...(!isWindows
-      ? [{ key: "fn", glyph: "fn", label: "Fn / Globe", desc: "The world key on MacBooks." }]
+      ? [{ key: "fn", glyph: "fn", label: "Fn / Globe", desc: "Hold to talk — the Globe key." }]
       : []),
   ];
-  // Reflect the actually-selected hold-key (not a hardcoded "Caps Lock").
+  // Reflect the actually-selected key (not a hardcoded "Caps Lock").
   const selectedHotkeyLabel = options.find((o) => o.key === currentHotkey)?.label ?? "Caps Lock";
+  const selectedMode = hotkeyMode(currentHotkey, isWindows);
 
   return (
     <OnboardingShell
       step={stepIndex}
       totalSteps={totalSteps}
       eyebrow="Hotkey"
-      title="Pick a hold-key."
-      subtitle="Hold this key to record, release to send. You can change it any time."
-      brandTagline="Hold to record, release to send. Your thumb learns it in a day."
+      title="Pick your dictation key."
+      subtitle="Choose the key you’ll use to dictate. You can change it any time."
+      brandTagline="One key to dictate. Your thumb learns it in a day."
       brandKicker="Pro tip"
-      brandQuote="Most users settle on Caps Lock — it’s already a hold-key for nothing useful."
+      brandQuote="Most users settle on Caps Lock — it’s right under your finger."
       topRight={<span>{stepLabel(step)}</span>}
-      bottomNote={<span>Press {selectedHotkeyLabel} anywhere to dictate, once setup is done</span>}
+      bottomNote={
+        <span>
+          {selectedMode === "toggle" ? "Tap" : "Hold"} {selectedHotkeyLabel} anywhere to dictate,
+          once setup is done
+        </span>
+      }
       onBack={goBack}
       {...navProps}
     >
@@ -993,7 +1098,7 @@ export function OnboardingFlow({
           onClick={() => handleHotkeySelect(currentHotkey)}
           className="btn-primary btn-lg w-full"
         >
-          Start using AirNote
+          Continue
           <ArrowRight size={14} />
         </button>
       </div>
@@ -1060,38 +1165,30 @@ function SwiftModelCard({
         boxShadow: "inset 0 0 0 1px hsl(var(--glass-stroke))",
       }}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-2 min-w-0">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
           <span
-            className="w-[18px] h-[18px] rounded-[5px] grid place-items-center text-[10px] font-bold shrink-0"
+            className="w-[20px] h-[20px] rounded-[6px] grid place-items-center shrink-0"
             style={{ background: "#6c5ce7", color: "white" }}
           >
-            <Cpu size={11} />
+            <Cpu size={12} />
           </span>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-[12.5px] font-semibold" style={{ color: "hsl(var(--foreground))" }}>
-                On-device model
-              </span>
-              {installed && (
-                <span className="accent-pill" style={{ color: "hsl(140 65% 65%)", background: "hsl(140 65% 50% / 0.14)" }}>
-                  Installed
-                </span>
-              )}
-            </div>
-            <p className="text-[11.5px] mt-1" style={{ color: "hsl(var(--muted-foreground))" }}>
-              On-device speech recognition for this Mac. Your voice never leaves the device; polishing happens after.
-            </p>
-            {installed && sizeBytes > 0 && (
-              <p className="text-[11px] mt-1" style={{ color: "hsl(var(--muted-foreground))" }}>
-                {formatSize(sizeBytes)} installed
-              </p>
-            )}
-          </div>
+          <span className="text-[12.5px] font-medium truncate" style={{ color: "hsl(var(--foreground))" }}>
+            {installed
+              ? `On-device model · ${sizeBytes > 0 ? formatSize(sizeBytes) : "148 MB"}`
+              : downloading
+                ? "Downloading model…"
+                : "On-device model · ~148 MB"}
+          </span>
         </div>
 
         {installed ? (
-          <Check size={16} style={{ color: "hsl(140 65% 65%)" }} />
+          <span
+            className="accent-pill shrink-0"
+            style={{ color: "hsl(140 65% 65%)", background: "hsl(140 65% 50% / 0.14)" }}
+          >
+            <Check size={11} /> Installed
+          </span>
         ) : downloading ? (
           <button
             type="button"
