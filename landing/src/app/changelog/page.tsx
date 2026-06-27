@@ -30,53 +30,53 @@ export const metadata: Metadata = {
 const latest = {
   version: "2.4.1",
   date: "Jun 27, 2026",
-  title: "Mac and Windows stable refresh",
+  title: "Faster, better, cleaner dictation",
   intro:
-    "AirNote 2.4.1 refreshes the stable desktop release for macOS and Windows. Detailed release notes will be expanded after final QA.",
+    "AirNote 2.4.1 is the current stable desktop release for macOS and Windows, focused on faster polish, cleaner local-model setup, and more reliable updates.",
   sections: [
     {
-      id: "desktop-refresh",
-      eyebrow: "#Desktop",
-      title: "Stable desktop artifacts refreshed",
+      id: "faster",
+      eyebrow: "#Faster",
+      title: "Faster dictation handoff",
       icon: ArrowDownToLine,
       body: [
-        "The stable Mac and Windows download links now point at the 2.4.1 release artifacts.",
-        "The updater manifests are published per platform so macOS and Windows can move independently without overwriting each other.",
+        "Dictation now moves through capture, local transcription, polish, and paste with fewer avoidable waits.",
+        "The app keeps the fast status feedback path while the final text lands through the more reliable completed-output path.",
       ],
       bullets: [
-        "Mac DMG for Apple Silicon",
-        "Windows NSIS setup installer",
+        "Lower post-recording wait",
+        "Cleaner polish handoff",
+        "Better retry state tracking",
+      ],
+    },
+    {
+      id: "better",
+      eyebrow: "#Better",
+      title: "Better local model behavior",
+      icon: Bell,
+      body: [
+        "The local speech model path is treated as a first-class setup path, with clearer download and readiness checks.",
+        "Windows and macOS ship from separate update manifests so one platform release no longer disturbs the other.",
+      ],
+      bullets: [
+        "Current Mac DMG",
+        "Current Windows setup",
         "Per-platform updater manifests",
       ],
     },
     {
-      id: "windows-updater",
-      eyebrow: "#Windows",
-      title: "Windows update discovery remains manifest-driven",
-      icon: Bell,
-      body: [
-        "Windows clients check the VM-hosted Windows manifest and download the signed setup executable listed there.",
-        "Manual update checks remain available from Settings > About.",
-      ],
-      bullets: [
-        "Automatic daily update check",
-        "Manual Settings > About check",
-        "Status-bar restart prompt after download",
-      ],
-    },
-    {
-      id: "server-credentials",
-      eyebrow: "#Server",
-      title: "Runtime credentials are aligned for production",
+      id: "cleaner",
+      eyebrow: "#Cleaner",
+      title: "Cleaner recovery and update UX",
       icon: ShieldCheck,
       body: [
-        "The production control-plane has the runtime keys required by the current polish and transcription paths.",
-        "Future deploys propagate those keys through the deployment workflow instead of relying on manual VM state.",
+        "Failure states now keep more useful local context, so users can retry recent audio instead of speaking again.",
+        "The update flow keeps automatic checks and the manual Settings > About check pointed at the current stable release.",
       ],
       bullets: [
-        "Cerebras polish key",
-        "DeepSeek message-polish key",
-        "Managed Deepgram key pool",
+        "Saved failed audio",
+        "Status-bar recovery card",
+        "Current 2.4.1 downloads only",
       ],
     },
   ],
@@ -84,30 +84,30 @@ const latest = {
 
 const noteGroups = [
   {
-    title: "Learning",
+    title: "Faster",
     count: 3,
     items: [
-      "Restored auto-learning for one clear STT correction after the server raw-judge path returns one candidate.",
-      "Kept multi-candidate and ambiguous learning edits in review instead of auto-persisting them.",
-      "Preserved centralized validation, alias-safety checks, lexicon invalidation, and retrain scheduling.",
+      "Reduced avoidable delay between recording release and final polish.",
+      "Kept live status feedback fast while final insertion uses completed output.",
+      "Improved retry bookkeeping so failed runs can be recovered quickly.",
     ],
   },
   {
-    title: "Review UI",
+    title: "Better",
     count: 3,
     items: [
-      "Preserved review, confirmation, error, and paste/manual-paste HUD states through idle status-bar resyncs.",
-      "Separated actionable review cards from the passive Word learned notification toggle.",
-      "Stopped paste auto-hide timers from clearing review and confirmation prompts.",
+      "Aligned production runtime credentials for the current polish and transcription paths.",
+      "Kept macOS and Windows updater manifests independent per platform.",
+      "Improved local-model setup and readiness checks for desktop installs.",
     ],
   },
   {
-    title: "Verification",
+    title: "Cleaner",
     count: 3,
     items: [
-      "Validated the full repository gate with just check before merging to main.",
-      "Built, signed, notarized, stapled, and Gatekeeper-verified the Apple Silicon DMG.",
-      "Published the Darwin updater manifest while leaving the Windows updater manifest untouched.",
+      "Published the signed, notarized, stapled Apple Silicon DMG.",
+      "Updated the landing and changelog download links to the current stable version.",
+      "Removed stale historical download buttons so users only see supported artifacts.",
     ],
   },
 ];
@@ -121,36 +121,6 @@ const releaseDownloads = [
       { platform: "Mac", label: "Mac DMG", href: downloads.mac.latestDmg },
       { platform: "Windows", label: "Windows setup", href: downloads.windows.latestSetup },
     ],
-  },
-  {
-    version: "2.4.0",
-    date: "Jun 18, 2026",
-    title: "Learning, review card, and light-mode polish",
-    downloads: [],
-  },
-  {
-    version: "2.3.9",
-    date: "Jun 17, 2026",
-    title: "Crash-hardened desktop runtime",
-    downloads: [],
-  },
-  {
-    version: "2.3.8",
-    date: "Jun 17, 2026",
-    title: "Cleaner stream shutdown",
-    downloads: [],
-  },
-  {
-    version: "2.3.7",
-    date: "Jun 15, 2026",
-    title: "Bluetooth-safe dictation",
-    downloads: [],
-  },
-  {
-    version: "2.3.6",
-    date: "Jun 2026",
-    title: "Windows stable setup",
-    downloads: [],
   },
 ];
 
@@ -645,7 +615,7 @@ export default function ChangelogPage() {
                 href="#downloads"
                 className="inline-flex h-11 items-center rounded-full border border-white/10 bg-black/20 px-5 text-sm font-medium text-white/75 backdrop-blur-md transition-colors hover:bg-white/8 hover:text-white"
               >
-                Previous versions
+                Mac + Windows downloads
               </a>
               <a
                 href="/guide"
@@ -724,7 +694,7 @@ export default function ChangelogPage() {
               <Headphones className="h-4 w-4" />
               #Downloads
             </div>
-            <h2 className="text-3xl font-semibold tracking-tight text-white">Stable downloads</h2>
+            <h2 className="text-3xl font-semibold tracking-tight text-white">Current stable downloads</h2>
             <div className="mt-7 divide-y divide-white/10 rounded-2xl border border-white/10 bg-white/[0.035]">
               {releaseDownloads.map((release) => (
                 <div key={release.version} className="grid gap-4 p-5 md:grid-cols-[1fr_auto] md:items-center">
@@ -738,22 +708,16 @@ export default function ChangelogPage() {
                     <p className="mt-3 text-sm text-white/62">{release.title}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {release.downloads.length > 0 ? (
-                      release.downloads.map((download) => (
-                        <a
-                          key={download.href}
-                          href={download.href}
-                          className="inline-flex h-10 items-center gap-2 rounded-full border border-white/10 bg-black/20 px-4 text-sm font-medium text-white/78 transition-colors hover:bg-white/10 hover:text-white"
-                        >
-                          <DownloadIcon platform={download.platform} />
-                          {download.label}
-                        </a>
-                      ))
-                    ) : (
-                      <span className="inline-flex h-10 items-center rounded-full border border-white/10 bg-black/20 px-4 text-sm font-medium text-white/45">
-                        Archived artifact unavailable
-                      </span>
-                    )}
+                    {release.downloads.map((download) => (
+                      <a
+                        key={download.href}
+                        href={download.href}
+                        className="inline-flex h-10 items-center gap-2 rounded-full border border-white/10 bg-black/20 px-4 text-sm font-medium text-white/78 transition-colors hover:bg-white/10 hover:text-white"
+                      >
+                        <DownloadIcon platform={download.platform} />
+                        {download.label}
+                      </a>
+                    ))}
                   </div>
                 </div>
               ))}
