@@ -118,13 +118,16 @@ final class RecordingPadView: UIView {
     }
 
     /// Keep the look correct when the host app flips light/dark while the keyboard
-    /// is up. Adaptive UIColors update themselves; cgColor-based borders don't.
+    /// is up. Adaptive UIColors (and config-based key caps) update themselves, but
+    /// the cgColor-based borders/shadows/tints on the voice surface and its children
+    /// (waveform hero, transcript/preview tiles, chips) don't — so rebuild the voice
+    /// surface to repaint them all with the new palette. The typing keys are
+    /// untouched (their fills + strokes are dynamic UIColors that adapt on their own).
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {
         super.traitCollectionDidChange(previous)
         guard traitCollection.userInterfaceStyle != previous?.userInterfaceStyle else { return }
         backgroundColor = KeyboardTheme.keyboardBackground
-        voiceSurface?.layer.borderColor = KeyboardTheme.border.cgColor
-        voiceSurface?.layer.shadowColor = KeyboardTheme.cardShadow.cgColor
+        update(state: state, canTeachFix: canTeachFix, animated: false)
     }
 
     /// Swap ONLY the voice surface for the new state — the keys stay put, so
@@ -167,12 +170,13 @@ final class RecordingPadView: UIView {
         surface.layer.cornerRadius = KeyboardTheme.surfaceRadius
         surface.layer.cornerCurve = .continuous
         surface.layer.borderWidth = 1
-        surface.layer.borderColor = KeyboardTheme.border.cgColor
-        // Soft, ink-tinted elevation for depth (premium feel) — the keys stay flat below it.
+        surface.layer.borderColor = KeyboardTheme.borderStrong.cgColor
+        // Soft ambient elevation matching the app's AirNoteCard — the alpha lives in
+        // the color, so shadowOpacity is 1.0. The keys stay flat below it.
         surface.layer.shadowColor = KeyboardTheme.cardShadow.cgColor
-        surface.layer.shadowOpacity = 0.10
-        surface.layer.shadowRadius = 16
-        surface.layer.shadowOffset = CGSize(width: 0, height: 6)
+        surface.layer.shadowOpacity = 1.0
+        surface.layer.shadowRadius = 22
+        surface.layer.shadowOffset = CGSize(width: 0, height: 12)
 
         let stack = UIStackView()
         stack.axis = .vertical
@@ -291,15 +295,16 @@ final class RecordingPadView: UIView {
     /// Mic Orb.
     private func makeWaveButton() -> UIView {
         let isRec: Bool = { if case .recording = state { return true } else { return false } }()
-        let accent = isRec ? KeyboardTheme.danger : KeyboardTheme.accent
+        // An app-style inky/white card surface — the accent lives only in the
+        // waveform bars (statusColor), not as a flat tinted blob.
         let button = UIControl()
         button.translatesAutoresizingMaskIntoConstraints = false
         button.heightAnchor.constraint(equalToConstant: 64).isActive = true
-        button.backgroundColor = accent.withAlphaComponent(0.10)
-        button.layer.cornerRadius = 18
+        button.backgroundColor = KeyboardTheme.surfaceBackground
+        button.layer.cornerRadius = KeyboardTheme.surfaceRadius
         button.layer.cornerCurve = .continuous
         button.layer.borderWidth = 1
-        button.layer.borderColor = accent.withAlphaComponent(0.30).cgColor
+        button.layer.borderColor = KeyboardTheme.borderStrong.cgColor
         button.isUserInteractionEnabled = !isPrimaryActionDisabled
         button.alpha = isPrimaryActionDisabled ? 0.55 : 1.0
         button.addTarget(self, action: #selector(primaryTapped), for: .touchUpInside)
@@ -477,6 +482,8 @@ final class RecordingPadView: UIView {
         label.backgroundColor = KeyboardTheme.secondarySurface
         label.layer.cornerRadius = KeyboardTheme.tileRadius
         label.layer.cornerCurve = .continuous
+        label.layer.borderWidth = 1
+        label.layer.borderColor = KeyboardTheme.border.cgColor
         label.layer.masksToBounds = true
         label.accessibilityLabel = "Live transcript"
         liveLabel = label
@@ -496,6 +503,8 @@ final class RecordingPadView: UIView {
         label.backgroundColor = KeyboardTheme.secondarySurface
         label.layer.cornerRadius = KeyboardTheme.tileRadius
         label.layer.cornerCurve = .continuous
+        label.layer.borderWidth = 1
+        label.layer.borderColor = KeyboardTheme.border.cgColor
         label.layer.masksToBounds = true
         label.accessibilityLabel = "Insert preview. \(text)"
         return label
@@ -864,7 +873,10 @@ final class RecordingPadView: UIView {
         globe.heightAnchor.constraint(equalToConstant: KeyboardTheme.keyHeight).isActive = true
         let space = spaceKey()
         let ret = specialKey(title: "return")
-        ret.addAction(UIAction { [weak self] _ in self?.onKeyTap?("\n") }, for: .touchUpInside)
+        ret.addAction(UIAction { [weak self] _ in
+            self?.playKeyHaptic()
+            self?.onKeyTap?("\n")
+        }, for: .touchUpInside)
         let row = UIStackView(arrangedSubviews: [modeKey, globe, space, ret])
         row.axis = .horizontal
         row.spacing = 6
@@ -939,6 +951,13 @@ final class RecordingPadView: UIView {
         ) { self.layoutIfNeeded() }
     }
 
+    /// A light tactile tick on key actuation — the tactile half of the premium
+    /// feel. iOS only delivers extension haptics with Full Access, so this no-ops
+    /// gracefully otherwise (and matches the soft tick already used on collapse).
+    private func playKeyHaptic() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
     /// Character key — letters follow the shift state; everything else inserts literally.
     private func charKey(_ ch: String) -> UIButton {
         let isLetter = ch.count == 1 && ch.rangeOfCharacter(from: .letters) != nil
@@ -946,6 +965,7 @@ final class RecordingPadView: UIView {
         let button = baseKey(title: display, background: KeyboardTheme.keyBackground, fontSize: 22)
         button.addAction(UIAction { [weak self] _ in
             guard let self else { return }
+            self.playKeyHaptic()
             self.onKeyTap?(display)
             if isLetter, self.shiftState == .on {
                 self.shiftState = .off
@@ -958,7 +978,10 @@ final class RecordingPadView: UIView {
 
     private func spaceKey() -> UIButton {
         let button = baseKey(title: "space", background: KeyboardTheme.keyBackground, fontSize: 15)
-        button.addAction(UIAction { [weak self] _ in self?.onKeyTap?(" ") }, for: .touchUpInside)
+        button.addAction(UIAction { [weak self] _ in
+            self?.playKeyHaptic()
+            self?.onKeyTap?(" ")
+        }, for: .touchUpInside)
         button.accessibilityLabel = "Space"
         return button
     }
@@ -1013,6 +1036,7 @@ final class RecordingPadView: UIView {
     }
 
     @objc private func deleteTouchDown() {
+        playKeyHaptic()
         onDelete?()
         deleteRepeatTimer?.invalidate()
         deleteRepeatTimer = Timer.scheduledTimer(withTimeInterval: 0.11, repeats: true) { [weak self] _ in
@@ -1044,6 +1068,10 @@ final class RecordingPadView: UIView {
         config.baseForegroundColor = KeyboardTheme.foreground
         config.baseBackgroundColor = background
         config.background.cornerRadius = KeyboardTheme.radius
+        // Hairline edge so the inky key caps read as discrete keys (config-based
+        // stroke uses a dynamic UIColor, so it adapts to light/dark on its own).
+        config.background.strokeColor = KeyboardTheme.border
+        config.background.strokeWidth = 1
         config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 4, bottom: 6, trailing: 4)
         button.configuration = config
         if title != nil {
@@ -1061,7 +1089,10 @@ final class RecordingPadView: UIView {
         config.imagePadding = 6
         config.baseForegroundColor = color == KeyboardTheme.accent ? KeyboardTheme.primaryButtonForeground : KeyboardTheme.secondaryButtonForeground
         config.baseBackgroundColor = color == KeyboardTheme.accent ? KeyboardTheme.primaryButtonBackground : KeyboardTheme.secondarySurface
-        config.background.cornerRadius = KeyboardTheme.radius
+        // App primary-button radius (10) + a hairline edge for definition.
+        config.background.cornerRadius = 10
+        config.background.strokeColor = KeyboardTheme.borderStrong
+        config.background.strokeWidth = 1
         config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
         button.configuration = config
         button.titleLabel?.font = .preferredFont(forTextStyle: .subheadline)
@@ -1079,10 +1110,14 @@ final class RecordingPadView: UIView {
         label.textAlignment = .center
         label.translatesAutoresizingMaskIntoConstraints = false
 
-        // Padded capsule so glyphs never touch the rounded corners.
+        // Padded capsule so glyphs never touch the rounded corners — matches the
+        // app's AirNoteStatusPill (continuous corner + faint accent hairline).
         let chip = UIView()
-        chip.backgroundColor = KeyboardTheme.accent.withAlphaComponent(0.12)
-        chip.layer.cornerRadius = 11
+        chip.backgroundColor = KeyboardTheme.accent.withAlphaComponent(0.14)
+        chip.layer.cornerRadius = 7
+        chip.layer.cornerCurve = .continuous
+        chip.layer.borderWidth = 1
+        chip.layer.borderColor = KeyboardTheme.accent.withAlphaComponent(0.20).cgColor
         chip.layer.masksToBounds = true
         chip.addSubview(label)
         NSLayoutConstraint.activate([
