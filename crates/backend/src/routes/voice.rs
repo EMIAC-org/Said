@@ -2435,6 +2435,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 &user_id,
                 &stt_transcript_raw,
                 client_run_id.as_deref(),
+                "polish",
             ).await {
                 Ok((llm_result, model_used)) => {
                     let total_ms = total_start.elapsed().as_millis() as i64;
