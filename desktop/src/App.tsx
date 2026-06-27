@@ -61,12 +61,6 @@ import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
-interface DictationModelStatus {
-  installed: boolean;
-  size_bytes: number;
-  path: string;
-}
-
 export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "meetings" | "divo" | "settings" | "live-meeting";
 const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "meetings", "divo", "settings", "live-meeting"];
 type SettingsSectionId =
@@ -212,7 +206,6 @@ export default function App() {
       return false;
     }
   });
-  const [dictationModelInstalled, setDictationModelInstalled] = useState<boolean | null>(null);
   // ── Retry toast ───────────────────────────────────────────────────────────
   const [retryToast, setRetryToast] = useState<{ message: string; audioId: string } | null>(null);
 
@@ -296,25 +289,6 @@ export default function App() {
       });
     refreshHistory();
   }, [refreshHistory]);
-
-  useEffect(() => {
-    if (!snapshot?.platform) return;
-    if (snapshot.platform !== "macos") {
-      setDictationModelInstalled(true);
-      return;
-    }
-    let alive = true;
-    invoke<DictationModelStatus>("dictation_model_status")
-      .then((status) => {
-        if (alive) setDictationModelInstalled(status.installed);
-      })
-      .catch(() => {
-        if (alive) setDictationModelInstalled(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [snapshot?.platform]);
 
   useEffect(() => {
     let alive = true;
@@ -729,8 +703,7 @@ export default function App() {
       (!!snapshot?.accessibility_granted && !!snapshot?.input_monitoring_granted));
 
   const needsEnterprise = enterpriseGate === "required";
-  const localModelSetupRequired =
-    snapshot?.platform === "macos" && dictationModelInstalled !== true;
+  const localModelSetupRequired = false;
   const needsSetup = !corePermissionsReady || !onboardingComplete || localModelSetupRequired;
   const workspaceOnly =
     needsEnterprise && onboardingComplete && corePermissionsReady && !localModelSetupRequired;
@@ -743,7 +716,6 @@ export default function App() {
         enterpriseRequired={needsEnterprise}
         initialProgress={loadOnboardingProgress()}
         requireLocalModelSetup={localModelSetupRequired}
-        onLocalModelReady={() => setDictationModelInstalled(true)}
         onEnterpriseConnected={handleEnterpriseConnected}
         onMicrophone={handleMicrophone}
         onAccessibility={handleAccessibility}

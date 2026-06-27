@@ -1813,9 +1813,7 @@ export function SettingsView({
 
         {/* ── Models ───────────────────────────────────── */}
         <Show when={isOn("models")}>
-        {/* On-device STT is whisper.cpp now (cross-platform), so the cloud-vs-local
-            picker shows on Windows too. The legacy Swift model block inside is
-            still macOS-only (guarded by `platform`/`isMac` within the component). */}
+        {/* On-device STT is cross-platform, so the cloud-vs-local picker shows on Windows too. */}
         <DictationSttSection
           prefs={prefs}
           onPrefsUpdated={setPrefs}
