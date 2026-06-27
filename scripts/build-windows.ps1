@@ -177,10 +177,12 @@ if ($Clean) {
 }
 
 # ---- Bundle build-time keys (option_env!) -----------------------------------
-# said-core bakes DEEPGRAM_API_KEY + GATEWAY_API_KEY and said-desktop bakes
-# DEEPSEEK_API_KEY via option_env!, so the shipped app works without users
-# entering any API key (the key-entry UI was removed in the STT simplification).
-# These must be set BEFORE the backend build (said-core compiles there) and stay
+# said-core bakes DEEPGRAM_API_KEY (Cloud dictation) and said-desktop bakes
+# DEEPSEEK_API_KEY (meeting summaries) via option_env!, so the shipped app works
+# without users entering any API key (the key-entry UI was removed). Note polish
+# runs server-side (Cerebras via the server runtime), so NO gateway/LLM key is
+# bundled - this matches build-dmg.sh (which dropped GATEWAY_API_KEY in 5814e82).
+# Keys must be set BEFORE the backend build (said-core compiles there) and stay
 # set through the tauri build; the crates' build.rs rerun-if-env-changed
 # directives re-bake on change. Loaded from repo-root .env, then unset after the
 # build so they do not leak into the caller's session.
@@ -189,8 +191,7 @@ $EnvFile = Join-Path $RepoRoot '.env'
 $ScriptSetKeys = @()
 $BundledKeys = @(
   @{ name = 'DEEPSEEK_API_KEY'; purpose = 'meeting summaries' },
-  @{ name = 'DEEPGRAM_API_KEY'; purpose = 'Cloud dictation (the only Windows dictation provider)' },
-  @{ name = 'GATEWAY_API_KEY';  purpose = 'note polish' }
+  @{ name = 'DEEPGRAM_API_KEY'; purpose = 'Cloud dictation' }
 )
 foreach ($k in $BundledKeys) {
   $n = $k.name
