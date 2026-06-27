@@ -287,6 +287,8 @@ pub struct VoicePolishRequest {
     pub client_run_id: Option<String>,
     #[serde(default)]
     pub client_profile_markdown: Option<String>,
+    #[serde(default)]
+    pub client_profile_version: Option<i64>,
     /// Optional per-request tone override (e.g. the iOS keyboard "rewrite selection"
     /// picks a tone per tap). When present it wins over the account's saved tone_preset;
     /// when absent — every existing caller — behavior is byte-for-byte unchanged.
@@ -3894,6 +3896,11 @@ async fn execute_voice_polish(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let profile_snapshot = crate::prompt_profile_telemetry::snapshot_from_raw(profile_md);
+    let prompt_built_meta = crate::prompt_profile_telemetry::prompt_built_metadata(
+        &profile_snapshot,
+        req.client_profile_version,
+    );
 
     let (system_prompt, user_message) = if is_rewrite {
         (
@@ -3945,15 +3952,15 @@ async fn execute_voice_polish(
         } else {
             "voice_polish"
         },
-        profile_version: None,
-        profile_status: if profile_md.is_some() {
+        profile_version: req.client_profile_version,
+        profile_status: if profile_snapshot.profile_chars > 0 {
             "client_local"
         } else {
             "missing"
         },
         profile_cache_hit: false,
-        profile_chars: profile_md.map(|p| p.chars().count()).unwrap_or(0),
-        profile_injected: !is_rewrite && profile_md.is_some(),
+        profile_chars: profile_snapshot.profile_chars,
+        profile_injected: !is_rewrite && profile_snapshot.profile_chars > 0,
         transcript_chars: transcript.chars().count(),
         user_message: &user_message,
         system_prompt: &system_prompt,
@@ -3963,6 +3970,7 @@ async fn execute_voice_polish(
     {
         // Telemetry only — fire-and-forget so it never gates the model call (#4).
         let bg = state.clone();
+        let meta = prompt_built_meta.clone();
         tokio::spawn(async move {
             let _ = insert_stage_event(
                 &bg,
@@ -3971,7 +3979,7 @@ async fn execute_voice_polish(
                 "ok",
                 Some(prompt_ms),
                 None,
-                json!({"prompt_version": said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION}),
+                meta,
             )
             .await;
         });
@@ -4139,6 +4147,9 @@ async fn execute_voice_polish(
         let bg_account_id = user.account_id;
         let bg_model = model.to_string();
         let org_id_for_history = tenant_ctx.active_org_id;
+        let org_scope_for_profile = crate::profile::resolve_org_scope(&tenant_ctx);
+        let bg_profile_snapshot = profile_snapshot;
+        let bg_client_profile_version = req.client_profile_version;
         tokio::spawn(async move {
             if let Some(ref credential) = bg_credential {
                 let _ = update_credential_used(&bg_state, credential.credential_id).await;
@@ -4158,6 +4169,22 @@ async fn execute_voice_polish(
                 let _ =
                     insert_stage_event(&bg_state, run_id, name, "ok", latency_ms, None, payload)
                         .await;
+            }
+            if let Err(err) = crate::prompt_profile_telemetry::upsert_latest(
+                &bg_state.db,
+                bg_account_id,
+                org_scope_for_profile,
+                run_id,
+                &bg_profile_snapshot,
+                bg_client_profile_version,
+            )
+            .await
+            {
+                tracing::warn!(
+                    "[runtime] prompt profile telemetry upsert failed account={} run_id={}: {err}",
+                    bg_account_id,
+                    run_id,
+                );
             }
             let _ = mark_runtime_session(&bg_state, run_id, "completed", None).await;
             crate::routes::runtime_history::write_history_from_runtime(

@@ -21,6 +21,7 @@ pub mod number_format;
 pub mod openai_compat_polish;
 pub mod org_quota;
 pub mod profile;
+pub mod prompt_profile_telemetry;
 pub mod routes;
 pub mod store;
 pub mod stt;

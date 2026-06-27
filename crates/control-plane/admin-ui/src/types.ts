@@ -403,6 +403,21 @@ export interface TelemetryUserMemory {
     reason: string
     model?: string | null
   }[]
+  prompt_profile_latest?: {
+    profile_source: string
+    profile_markdown: string
+    profile_chars: number
+    profile_hash: string
+    client_profile_version?: number | null
+    last_run_id?: string | null
+    updated_at: string
+  } | null
+  server_learned_profile?: {
+    profile_markdown: string
+    version: number
+    status: string
+    updated_at: string
+  } | null
 }
 
 export interface ObservabilitySummary {
