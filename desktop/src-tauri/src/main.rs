@@ -11392,6 +11392,178 @@ mod batch_a_tests {
     }
 }
 
+// ── Real-pipeline scenario tests: chain the ACTUAL edit-watch pre-flight gates
+//    (extract_kept → no-diff → word-overlap/format → meaningful) in the exact
+//    order watch_for_edit uses, and assert the end-to-end "would this dictation
+//    edit be sent to the classifier (and pop a learning toast)?" outcome. This
+//    exercises the real learning decision WITHOUT touching the dictation core or
+//    the backend classify call. ───────────────────────────────────────────────
+#[cfg(test)]
+mod learning_pipeline_scenarios {
+    use super::{extract_kept, is_format_transformation, is_meaningful_edit, shares_word_overlap};
+
+    /// Returns the text that would be handed to the classifier (and thus pop a
+    /// learning toast), or None if the watcher would skip it (no classify, no
+    /// popup). Mirrors watch_for_edit's AX-path pre-flight gates exactly.
+    fn would_learn(
+        polished: &str,
+        post_paste: &str,
+        last_val: &str,
+        pre_paste: Option<&str>,
+    ) -> Option<String> {
+        let user_kept = extract_kept(polished, post_paste, last_val, pre_paste);
+        if user_kept.is_empty() || user_kept.trim() == polished.trim() {
+            return None; // A1: no anchor / no diff → never the whole field
+        }
+        if !shares_word_overlap(&user_kept, polished) && !is_format_transformation(&user_kept) {
+            return None; // leaked placeholder / zero overlap
+        }
+        if !is_meaningful_edit(polished, &user_kept) {
+            return None; // A5: punctuation / autocorrect jitter
+        }
+        Some(user_kept)
+    }
+
+    // ── A1: never learn surrounding/whole-document text ──────────────────────────
+    #[test]
+    fn stray_email_already_in_field_is_not_learned() {
+        // Field already has an email above the cursor; the user changed nothing in
+        // AirNote's output. Old bug leaked the whole field (incl. the email).
+        let polished = "thanks";
+        let post = "Reach me at a@b.com\nthanks";
+        assert_eq!(would_learn(polished, post, post, None), None);
+    }
+
+    #[test]
+    fn app_recased_insertion_is_a_safe_no_op() {
+        // Host capitalised AirNote's text → not found verbatim → anchor fails →
+        // empty (no garbage popup) rather than leaking the field.
+        assert_eq!(
+            would_learn("super base", "I use Super Base", "I use Super Base", None),
+            None
+        );
+    }
+
+    #[test]
+    fn typing_paragraphs_after_dictation_is_not_learned_as_one_blob() {
+        let polished = "hello";
+        let post = "note. hello";
+        let last = "note. hello and then a long unrelated paragraph the user wrote by hand well past the size bound";
+        assert_eq!(would_learn(polished, post, last, None), None);
+    }
+
+    // ── happy path: real corrections DO still learn ──────────────────────────────
+    #[test]
+    fn real_stt_jargon_fix_in_empty_field_is_learned() {
+        let r = would_learn(
+            "I use written daily",
+            "I use written daily",
+            "I use n8n daily",
+            None,
+        );
+        assert_eq!(r.as_deref(), Some("I use n8n daily"));
+    }
+
+    #[test]
+    fn real_jargon_fix_with_surrounding_text_isolates_the_edit() {
+        let polished = "deploy k9s today";
+        let post = "Notes:\ndeploy k9s today";
+        let last = "Notes:\ndeploy k8s today";
+        assert_eq!(
+            would_learn(polished, post, last, None).as_deref(),
+            Some("deploy k8s today")
+        );
+    }
+
+    #[test]
+    fn real_fix_via_pre_paste_anchor_is_learned() {
+        // Strategy 1 (pre_paste) path: existing "Hi. " prefix, fix a coined term.
+        let pre = "Hi. ";
+        let post = "Hi. ship k9s now";
+        let last = "Hi. ship k8s now";
+        assert_eq!(
+            would_learn("ship k9s now", post, last, Some(pre)).as_deref(),
+            Some("ship k8s now")
+        );
+    }
+
+    #[test]
+    fn email_format_transformation_is_learned_even_without_word_overlap() {
+        let polished = "abhishek at the rate gmail dot com";
+        assert!(would_learn(polished, polished, "abhishek@gmail.com", None).is_some());
+    }
+
+    // ── A5: ordinary-word autocorrect does NOT pop; real jargon does ─────────────
+    #[test]
+    fn autocorrect_on_ordinary_hyphen_word_is_not_learned() {
+        let polished = "my co-worker is great";
+        assert_eq!(
+            would_learn(polished, polished, "my co-worled is great", None),
+            None
+        );
+    }
+
+    #[test]
+    fn one_char_jargon_correction_is_learned() {
+        let polished = "ship v2.1 now";
+        assert!(would_learn(polished, polished, "ship v2.0 now", None).is_some());
+    }
+
+    // ── A5 trade-off, precisely characterised by these two tests ─────────────────
+    #[test]
+    fn name_fix_that_changes_length_is_still_learned() {
+        // "Anugra" → "Anugraha" is an INSERTION (length change), so the char-
+        // distance gate sees a large diff and keeps it — even though A5 no longer
+        // treats a first-capital word as "jargon". Real name corrections survive.
+        let polished = "call Anugra now";
+        assert_eq!(
+            would_learn(polished, polished, "call Anugraha now", None).as_deref(),
+            Some("call Anugraha now")
+        );
+    }
+
+    #[test]
+    fn tiny_same_length_substitution_on_first_capital_word_is_filtered() {
+        // The NARROW, intended A5 trade-off: a 1-char SAME-LENGTH substitution on a
+        // first-capital-only word ("Anugra"→"Anagra") falls below the 3-char prose
+        // floor exactly like a plain-word typo — it's almost always autocorrect
+        // jitter, and filtering it is what kills the garbage popups. (A length-
+        // changing fix, or a coined/mixed-case/digit term, still learns at floor 1.)
+        let polished = "call Anugra now";
+        assert_eq!(
+            would_learn(polished, polished, "call Anagra now", None),
+            None
+        );
+    }
+
+    // ── bound is not over-eager + rephrases are dropped pre-classify ─────────────
+    #[test]
+    fn moderate_in_place_expansion_within_bound_is_still_learned() {
+        // Confirms the A1 size bound doesn't reject an ordinary in-place expansion
+        // (the bound only catches whole-paragraph leaks, not normal edits).
+        let polished = "meeting at 5";
+        let r = would_learn(polished, polished, "meeting at 5 pm sharp", None);
+        assert_eq!(r.as_deref(), Some("meeting at 5 pm sharp"));
+    }
+
+    #[test]
+    fn zero_overlap_full_rephrase_is_dropped_before_classify() {
+        // A complete rewrite with NO shared words ("see you tomorrow" → "call me
+        // later") shares zero overlap and isn't a format transform → dropped by the
+        // cheap pre-flight before any classify/learn. (Rephrases that DO share words
+        // are forwarded and the 4-way classifier — not modelled here — filters them.)
+        assert_eq!(
+            would_learn(
+                "see you tomorrow",
+                "see you tomorrow",
+                "call me later",
+                None
+            ),
+            None
+        );
+    }
+}
+
 #[cfg(test)]
 mod live_typing_guard_tests {
     use super::{LiveTypingDecision, LiveTypingGuard, STREAM_RESET_SENTINEL};
