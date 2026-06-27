@@ -497,11 +497,55 @@ jobs:
           set -euo pipefail
           cd "$REMOTE_RELEASE_ROOT/releases"
           mapfile -t versions < <(find . -mindepth 1 -maxdepth 1 -type d -print | sed 's#^\./##' | sort -V)
-          remove_count=$((${#versions[@]} - KEEP_RELEASES))
-          if [ "$remove_count" -gt 0 ]; then
-            for old in "${versions[@]:0:$remove_count}"; do
+          mapfile -t preserve_versions < <(python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          root = Path(os.environ["REMOTE_RELEASE_ROOT"])
+          versions = set()
+          for path in [
+              root / "updates" / "darwin" / "latest.json",
+              root / "updates" / "windows" / "latest.json",
+              root / "updates" / "latest.json",
+          ]:
+              if not path.exists():
+                  continue
+              try:
+                  data = json.loads(path.read_text())
+              except Exception:
+                  continue
+              for entry in (data.get("platforms") or {}).values():
+                  url = entry.get("url") if isinstance(entry, dict) else ""
+                  match = re.search(r"/releases/([^/]+)/", url or "")
+                  if match:
+                      versions.add(match.group(1))
+          for version in sorted(versions):
+              print(version)
+          PY
+          )
+
+          is_preserved_version() {
+            local candidate="$1"
+            local preserved
+            for preserved in "${preserve_versions[@]}"; do
+              [ "$candidate" = "$preserved" ] && return 0
+            done
+            return 1
+          }
+
+          current_count=${#versions[@]}
+          if [ "$current_count" -gt "$KEEP_RELEASES" ]; then
+            for old in "${versions[@]}"; do
+              [ "$current_count" -le "$KEEP_RELEASES" ] && break
+              if is_preserved_version "$old"; then
+                echo "Preserving release still referenced by updater manifest: $old"
+                continue
+              fi
               echo "Pruning old release: $old"
               rm -rf -- "$old"
+              current_count=$((current_count - 1))
             done
           fi
           REMOTE
