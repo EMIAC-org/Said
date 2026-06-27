@@ -354,13 +354,17 @@ export function VocabularyToast({ kind, term, source, onUndo, onDismiss }: Vocab
           {headline}
         </p>
         <p className="text-[11px] text-muted-foreground leading-tight mt-0.5 truncate">
-          <span
-            className="font-mono px-1.5 py-0.5 rounded"
-            style={{ background: "hsl(var(--surface-4))" }}
-          >
-            {term}
+          {term.trim() && (
+            <span
+              className="font-mono px-1.5 py-0.5 rounded"
+              style={{ background: "hsl(var(--surface-4))" }}
+            >
+              {term}
+            </span>
+          )}
+          <span className={term.trim() ? "ml-1.5" : undefined}>
+            {term.trim() ? `· ${subtle}` : subtle}
           </span>
-          <span className="ml-1.5">· {subtle}</span>
         </p>
       </div>
 

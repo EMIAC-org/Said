@@ -8368,6 +8368,12 @@ fn get_performance_snapshot(
 const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(50);
 const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
+/// A2: settle delay between the idle-expiry read and the confirming re-read. Two
+/// consecutive reads must agree before the watcher finalizes, so a mid-typing /
+/// autocorrect / AX-tree-rebuild transient on the exit poll is never captured as
+/// the user's correction. 200ms matches the Chrome/Electron AX-cache rebuild wait
+/// used in read_focused_value_first.
+const EDIT_WATCH_CONFIRM_DELAY: Duration = Duration::from_millis(200);
 
 /// Compute edit-watch timeouts scaled by sentence length.
 ///
@@ -8594,6 +8600,10 @@ async fn watch_for_edit(
         post_edit_idle_timeout.as_secs(),
     );
     let mut saw_user_edit = false;
+    // A2: require two consecutive agreeing reads before finalizing, so a mid-typing
+    // / autocorrect / AX-tree-rebuild transient on the exit poll is never captured
+    // as the "correction". Reset to false whenever the field value moves.
+    let mut confirmed_stable = false;
     // Capture-error metadata, hoisted so we can ship it to the backend's
     // CAPTURE_ERROR pre-filter alongside the edit text.
     let mut app_switched_during_capture: bool = false;
@@ -8689,6 +8699,7 @@ async fn watch_for_edit(
         if now_val != last_val {
             idle_at = Instant::now();
             last_change_at = Instant::now();
+            confirmed_stable = false; // A2: value moved — must re-confirm before finalizing
             current_interval = EDIT_WATCH_FAST_INTERVAL;
             if now_val != post_paste {
                 if !saw_user_edit {
@@ -8724,8 +8735,67 @@ async fn watch_for_edit(
         let done = done_by_idle || done_by_hard_timeout;
 
         if done {
+            // A2: hard timeout is a safety cap — finalize immediately, never extend.
+            // For the normal idle exit, confirm the value is stable with one re-read
+            // after a short settle. A transient (mid-keystroke, autocorrect
+            // intermediate, AX tree rebuild) that happened to land on this poll will
+            // differ from a settled re-read; if so we fold it in and keep watching.
+            if done_by_idle && !confirmed_stable && !post_paste.is_empty() {
+                if !cancellable_sleep(&token, EDIT_WATCH_CONFIRM_DELAY).await {
+                    tracing::info!(
+                        "[edit-watch] watcher cancelled during confirm-read for {recording_id}"
+                    );
+                    return;
+                }
+                let confirm_val = if let Some(pid) = initial_pid {
+                    let fast = blocking_ax_option("read_focused_value_fast confirm", move || {
+                        paster::read_focused_value_fast_for_pid(pid)
+                    })
+                    .await;
+                    if fast.as_ref().is_some_and(|v| !v.is_empty()) || post_paste.is_empty() {
+                        fast
+                    } else {
+                        blocking_ax_option("read_focused_value_first confirm", move || {
+                            paster::read_focused_value_first_for_pid(pid)
+                        })
+                        .await
+                    }
+                } else {
+                    blocking_ax_option(
+                        "read_focused_value_fast confirm",
+                        paster::read_focused_value_fast,
+                    )
+                    .await
+                };
+                // A None/empty confirm read means AX went momentarily unreadable
+                // (not a real change) → finalize on the prior stable last_val. A
+                // different non-empty value means the exit poll caught a transient
+                // → re-arm idle from this newer value and keep watching.
+                match confirm_decision(confirm_val.as_deref(), &last_val) {
+                    ConfirmOutcome::ReArm(cv) => {
+                        tracing::info!(
+                            "[edit-watch] confirm-read disagreed for {recording_id} (transient on exit poll) — re-arming idle from this change"
+                        );
+                        idle_at = Instant::now();
+                        last_change_at = Instant::now();
+                        current_interval = EDIT_WATCH_FAST_INTERVAL;
+                        if cv != post_paste {
+                            saw_user_edit = true;
+                        }
+                        if shares_word_overlap(&cv, &polished) {
+                            best_candidate = cv.clone();
+                        }
+                        last_val = cv;
+                        // confirmed_stable stays false — next idle expiry re-confirms.
+                        continue;
+                    }
+                    ConfirmOutcome::Finalize => {
+                        confirmed_stable = true;
+                    }
+                }
+            }
             tracing::info!(
-                "[edit-watch] finishing watch for {recording_id}; reason={} total={}ms idle={}ms edited={}",
+                "[edit-watch] finishing watch for {recording_id}; reason={} total={}ms idle={}ms edited={} confirmed={}",
                 if done_by_idle {
                     if saw_user_edit {
                         "post_edit_idle"
@@ -8738,6 +8808,7 @@ async fn watch_for_edit(
                 started.elapsed().as_millis(),
                 idle_at.elapsed().as_millis(),
                 saw_user_edit,
+                confirmed_stable,
             );
             break;
         }
@@ -8956,30 +9027,21 @@ async fn watch_for_edit(
                             }
                         }
                     }
-                    // Show learning result in the status bar
-                    let term_display = first_term
-                        .clone()
-                        .unwrap_or_else(|| "your correction".to_string());
-                    let msg = match (resp.class.as_str(), resp.is_repeat) {
-                        ("STT_ERROR" | "stt_error", true) => {
-                            format!("Added new spelling for \"{}\"", term_display)
-                        }
-                        ("STT_ERROR" | "stt_error", false) => {
-                            format!("Will recognise \"{}\" next time", term_display)
-                        }
-                        ("POLISH_ERROR" | "polish_error", _) => {
-                            "Updated writing preference".to_string()
-                        }
-                        _ => "Remembered your correction".to_string(),
-                    };
-                    let _ = present_status_bar_native(&app, "vocab-learned", false);
-                    let _ = app.emit(
-                        "vocab-learned",
-                        serde_json::json!({
-                            "term": term_display,
-                            "message": msg,
-                        }),
-                    );
+                    // Show learning result in the status bar. Only surface a
+                    // concrete term; never invent a "your correction" placeholder
+                    // (which rendered as a junk vocabulary chip).
+                    if let Some((term, msg)) =
+                        learned_toast(resp.class.as_str(), resp.is_repeat, first_term.as_deref())
+                    {
+                        let _ = present_status_bar_native(&app, "vocab-learned", false);
+                        let _ = app.emit(
+                            "vocab-learned",
+                            serde_json::json!({
+                                "term": term,
+                                "message": msg,
+                            }),
+                        );
+                    }
                 }
 
                 // Surface queued terms in the status bar pill so the user knows
@@ -9297,21 +9359,28 @@ fn extract_kept(
                             prefix_bytes,
                             suffix_bytes,
                         );
-                        return middle.trim().to_string();
+                        return bound_or_empty(middle.trim(), polished);
                     }
                 }
                 tracing::info!(
                     "[edit-watch] extract_kept via pre_paste prefix only: {}b",
                     prefix_bytes,
                 );
-                return after_prefix.trim().to_string();
+                return bound_or_empty(after_prefix.trim(), polished);
             }
         }
     }
 
     // ── Strategy 2 (fallback): find polished verbatim in post_paste ──────
+    // If polished isn't present verbatim, we have no reliable anchor. Returning
+    // last_val here would hand the user's ENTIRE surrounding document to the
+    // classifier as an "edit" (garbage popup + stray-email learning), so bail
+    // out as a no-edit instead. The caller's no-diff guard turns "" into a no-op.
     let Some(offset) = post_paste.find(polished.trim()) else {
-        return last_val.to_string();
+        tracing::info!(
+            "[edit-watch] extract_kept: no anchor (polished not in post_paste) — returning empty (no edit)"
+        );
+        return String::new();
     };
 
     let prefix = &post_paste[..offset];
@@ -9320,12 +9389,41 @@ fn extract_kept(
 
     if let Some(lv_after_prefix) = last_val.strip_prefix(prefix) {
         if let Some(edited) = lv_after_prefix.strip_suffix(suffix) {
-            return edited.trim().to_string();
+            return bound_or_empty(edited.trim(), polished);
         }
-        return lv_after_prefix.trim().to_string();
+        return bound_or_empty(lv_after_prefix.trim(), polished);
     }
 
-    last_val.to_string()
+    // last_val doesn't start with the prefix we anchored from post_paste — the
+    // anchor is invalid. Returning last_val would leak the whole field. No edit.
+    tracing::info!("[edit-watch] extract_kept: prefix anchor mismatch — returning empty (no edit)");
+    String::new()
+}
+
+/// Sanity bound for [`extract_kept`]: a real in-place user edit is roughly the
+/// size of the polished text. If the extracted region is empty, or far larger
+/// than the polished text (>2x chars + slack), the anchor almost certainly
+/// failed and we captured surrounding document text — return empty so the caller
+/// treats it as no edit (never learn from a whole-paragraph "diff").
+fn bound_or_empty(extracted: &str, polished: &str) -> String {
+    let extracted = extracted.trim();
+    if extracted.is_empty() {
+        return String::new();
+    }
+    let polished_len = polished.trim().chars().count();
+    let extracted_len = extracted.chars().count();
+    // Slack of 24 chars lets short polished strings tolerate small real edits.
+    let bound = polished_len.saturating_mul(2).saturating_add(24);
+    if extracted_len > bound {
+        tracing::info!(
+            "[edit-watch] extract_kept: extracted region {}c exceeds bound {}c (polished {}c) — anchor likely failed, returning empty",
+            extracted_len,
+            bound,
+            polished_len,
+        );
+        return String::new();
+    }
+    extracted.to_string()
 }
 
 fn common_prefix_bytes(a: &str, b: &str) -> usize {
@@ -9437,27 +9535,97 @@ fn normalize_spacing_and_punctuation(s: &str) -> String {
         .replace('\u{00a0}', " ") // non-breaking space
 }
 
+/// A2: outcome of the post-idle confirm re-read in the edit watcher.
+enum ConfirmOutcome {
+    /// The field is stable (confirm read matched, or AX went momentarily
+    /// unreadable so there is no contradicting evidence) — finalize.
+    Finalize,
+    /// The confirm read saw a DIFFERENT settled value — the idle-expiry read was a
+    /// mid-typing / autocorrect transient. Fold this newer value in and keep watching.
+    ReArm(String),
+}
+
+/// A2: decide whether the watcher should finalize or re-arm after the confirm read.
+/// Pure (no AX/FFI) so the branching is unit-testable on headless CI.
+fn confirm_decision(confirm: Option<&str>, last_val: &str) -> ConfirmOutcome {
+    match confirm {
+        Some(cv) if !cv.is_empty() && cv != last_val => ConfirmOutcome::ReArm(cv.to_string()),
+        _ => ConfirmOutcome::Finalize,
+    }
+}
+
+/// Decide the learning toast `(term, message)` for a classify outcome, or `None`
+/// when there is no concrete term to surface (so we never emit a "your correction"
+/// placeholder that renders as a junk vocabulary chip). A POLISH_ERROR preference
+/// learn legitimately has no term and still shows a message with an empty term
+/// (the toast UI hides the chip when the term is blank).
+fn learned_toast(
+    class: &str,
+    is_repeat: bool,
+    first_term: Option<&str>,
+) -> Option<(String, String)> {
+    let concrete_term = first_term.map(str::trim).filter(|t| !t.is_empty());
+    match (class, is_repeat) {
+        ("STT_ERROR" | "stt_error", true) => {
+            concrete_term.map(|t| (t.to_string(), format!("Added new spelling for \"{}\"", t)))
+        }
+        ("STT_ERROR" | "stt_error", false) => {
+            concrete_term.map(|t| (t.to_string(), format!("Will recognise \"{}\" next time", t)))
+        }
+        ("POLISH_ERROR" | "polish_error", _) => Some((
+            concrete_term.unwrap_or("").to_string(),
+            "Updated writing preference".to_string(),
+        )),
+        _ => concrete_term.map(|t| (t.to_string(), "Remembered your correction".to_string())),
+    }
+}
+
 fn looks_jargon_like_word(word: &str) -> bool {
+    // Strip surrounding non-token punctuation, but keep internal code-y chars.
     let trimmed =
         word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.');
     if trimmed.is_empty() {
         return false;
     }
 
-    let has_digit = trimmed.chars().any(|c| c.is_ascii_digit());
-    let alpha_len = trimmed.chars().filter(|c| c.is_ascii_alphabetic()).count();
-    let all_caps_alpha = alpha_len >= 2
-        && alpha_len <= 8
-        && trimmed
-            .chars()
-            .all(|c| !c.is_ascii_lowercase() || !c.is_ascii_alphabetic())
-        && trimmed.chars().any(|c| c.is_ascii_uppercase());
-    let has_upper = trimmed.chars().any(|c| c.is_ascii_uppercase());
-    let has_lower = trimmed.chars().any(|c| c.is_ascii_lowercase());
-    let mixed_case = has_upper && has_lower;
-    let codey_punct = trimmed.contains('_') || trimmed.contains('-') || trimmed.contains('.');
+    // Drop a trailing possessive / contraction tail ('s or ') so ordinary words
+    // like "team's" / "It's" are not mistaken for code tokens.
+    let core = trimmed
+        .strip_suffix("'s")
+        .or_else(|| trimmed.strip_suffix('\''))
+        .unwrap_or(trimmed);
 
-    has_digit || all_caps_alpha || mixed_case || codey_punct
+    // 1) Any digit => coined / version / tool token (n8n, k8s, v2.0, GPT-4).
+    let has_digit = core.chars().any(|c| c.is_ascii_digit());
+
+    // 2) All-caps acronym of 2..=8 letters (IPO, API, MACOBS). A single leading
+    //    capital (sentence-start "Hello") has lowercase letters, so it is excluded.
+    let alpha_len = core.chars().filter(|c| c.is_ascii_alphabetic()).count();
+    let upper_len = core.chars().filter(|c| c.is_ascii_uppercase()).count();
+    let lower_len = core.chars().filter(|c| c.is_ascii_lowercase()).count();
+    let all_caps_acronym = (2..=8).contains(&alpha_len) && lower_len == 0 && upper_len >= 2;
+
+    // 3) Internal mixed-case (camelCase / PascalCase brand): an uppercase letter
+    //    that is NOT just the first character. "AirNote", "MacOps", "iPhone"
+    //    qualify; "Hello", "It's", "Co-worker" (only the first letter capital) do not.
+    let internal_mixed_case = {
+        let mut chars = core.chars();
+        let first = chars.next();
+        let rest_has_upper = chars.any(|c| c.is_ascii_uppercase());
+        let first_is_lower = first.map(|c| c.is_ascii_lowercase()).unwrap_or(false);
+        rest_has_upper || (first_is_lower && core.chars().any(|c| c.is_ascii_uppercase()))
+    };
+
+    // 4) Real code punctuation: an underscore, or an INTERNAL dot (a.b, v2.0).
+    //    A lone hyphen in an otherwise plain word ("co-worker", "well-known") is
+    //    NOT a jargon signal; a trailing sentence period is excluded by the
+    //    internal-dot check.
+    let has_underscore = core.contains('_');
+    let internal_dot = core
+        .char_indices()
+        .any(|(i, c)| c == '.' && i > 0 && i + 1 < core.len());
+
+    has_digit || all_caps_acronym || internal_mixed_case || has_underscore || internal_dot
 }
 
 fn alnum_word_core(word: &str) -> &str {
@@ -11068,6 +11236,159 @@ mod meaningful_edit_tests {
     #[test]
     fn rejects_zero_alphanumeric_word_changes() {
         assert!(!is_meaningful_edit("hello world", "hello   world"));
+    }
+}
+
+// ── Batch A: edit-watch popup hardening (A1 extract_kept, A2 confirm, A4 toast,
+//    A5 jargon) — all post-paste/learning-only; never touch dictation/paste ──────
+#[cfg(test)]
+mod batch_a_tests {
+    use super::{
+        ConfirmOutcome, bound_or_empty, confirm_decision, extract_kept, is_meaningful_edit,
+        learned_toast, looks_jargon_like_word,
+    };
+
+    // ── A1: extract_kept must never return the whole surrounding field ──────────
+    #[test]
+    fn extract_kept_returns_the_in_place_edit_on_clean_anchor() {
+        // polished "written" was typed; user fixed it to "n8n" in place.
+        let kept = extract_kept("written", "I use written daily", "I use n8n daily", None);
+        assert_eq!(kept, "n8n");
+    }
+
+    #[test]
+    fn extract_kept_returns_empty_when_polished_not_found_verbatim() {
+        // App re-cased the inserted text, so "super base" isn't found verbatim →
+        // no reliable anchor → must NOT leak the field; returns empty (no edit).
+        let kept = extract_kept("super base", "I use Super Base", "I use Super Base", None);
+        assert_eq!(kept, "");
+    }
+
+    #[test]
+    fn extract_kept_returns_empty_on_prefix_mismatch_instead_of_whole_field() {
+        // last_val doesn't start with the anchored prefix → the old code returned
+        // the WHOLE field (garbage popup). Now it returns empty.
+        let kept = extract_kept("hello", "X hello", "totally different document", None);
+        assert_eq!(kept, "");
+    }
+
+    #[test]
+    fn extract_kept_bounds_giant_extracted_region_to_empty() {
+        // post_paste ends right after the polished snippet (empty suffix), but the
+        // final field has paragraphs of extra text → the extraction expands far
+        // past the polished size; the bound rejects it so we never learn a whole
+        // paragraph as a "correction".
+        let post_paste = "note. hello";
+        let last_val = "note. hello and then a very long unrelated paragraph the user typed manually that goes on and on well past the size bound for a real edit";
+        let kept = extract_kept("hello", post_paste, last_val, None);
+        assert_eq!(kept, "");
+    }
+
+    #[test]
+    fn bound_or_empty_behaviour() {
+        assert_eq!(bound_or_empty("   ", "hello"), ""); // empty after trim
+        assert_eq!(bound_or_empty("n8n", "written"), "n8n"); // within 2x+24
+        let huge = "a".repeat(200);
+        assert_eq!(bound_or_empty(&huge, "hi"), ""); // way over bound
+    }
+
+    // ── A2: confirm-read decision logic ─────────────────────────────────────────
+    #[test]
+    fn confirm_decision_finalizes_on_agreeing_or_unreadable() {
+        assert!(matches!(
+            confirm_decision(Some("abc"), "abc"),
+            ConfirmOutcome::Finalize
+        ));
+        assert!(matches!(
+            confirm_decision(None, "abc"),
+            ConfirmOutcome::Finalize
+        ));
+        assert!(matches!(
+            confirm_decision(Some(""), "abc"),
+            ConfirmOutcome::Finalize
+        ));
+    }
+
+    #[test]
+    fn confirm_decision_rearms_on_a_different_settled_value() {
+        match confirm_decision(Some("abc def"), "abc") {
+            ConfirmOutcome::ReArm(v) => assert_eq!(v, "abc def"),
+            ConfirmOutcome::Finalize => panic!("expected re-arm on a changed confirm read"),
+        }
+    }
+
+    // ── A4: learning toast never invents a placeholder term ─────────────────────
+    #[test]
+    fn learned_toast_suppresses_termless_stt_and_default() {
+        assert!(learned_toast("STT_ERROR", true, None).is_none());
+        assert!(learned_toast("STT_ERROR", false, None).is_none());
+        assert!(learned_toast("STT_ERROR", false, Some("   ")).is_none()); // whitespace = none
+        assert!(learned_toast("anything_else", false, None).is_none());
+    }
+
+    #[test]
+    fn learned_toast_keeps_polish_preference_without_a_term() {
+        let t = learned_toast("POLISH_ERROR", false, None);
+        assert_eq!(
+            t,
+            Some((String::new(), "Updated writing preference".to_string()))
+        );
+    }
+
+    #[test]
+    fn learned_toast_embeds_a_real_term() {
+        let t = learned_toast("STT_ERROR", false, Some("Supabase"));
+        assert_eq!(
+            t,
+            Some((
+                "Supabase".to_string(),
+                "Will recognise \"Supabase\" next time".to_string()
+            ))
+        );
+    }
+
+    // ── A5: jargon gate — real coined terms qualify, ordinary words don't ────────
+    #[test]
+    fn jargon_positives_still_qualify() {
+        for w in [
+            "n8n", "k8s", "v2.0", "GPT-4", "AirNote", "MacOps", "iPhone", "MACOBS", "API",
+            "user_id",
+        ] {
+            assert!(looks_jargon_like_word(w), "{w} should look like jargon");
+        }
+    }
+
+    #[test]
+    fn jargon_negatives_no_longer_qualify() {
+        for w in [
+            "Co-worker",
+            "co-worker",
+            "well-known",
+            "It's",
+            "World's",
+            "Sentence.",
+            "Hello",
+        ] {
+            assert!(
+                !looks_jargon_like_word(w),
+                "{w} should NOT look like jargon"
+            );
+        }
+    }
+
+    #[test]
+    fn one_char_autocorrect_on_plain_hyphen_word_is_not_meaningful() {
+        // The reported false-positive: a 1-char autocorrect on a hyphenated/
+        // possessive ordinary word must NOT pop a learning prompt anymore.
+        assert!(!is_meaningful_edit("Co-worker here", "Co-worled here"));
+        assert!(!is_meaningful_edit("Well-known fact", "Well-knoan fact"));
+    }
+
+    #[test]
+    fn one_char_jargon_fix_is_still_meaningful() {
+        assert!(is_meaningful_edit("I use k9s", "I use k8s"));
+        assert!(is_meaningful_edit("GPT-3 now", "GPT-4 now"));
+        assert!(is_meaningful_edit("v2.1 release", "v2.0 release"));
     }
 }
 
