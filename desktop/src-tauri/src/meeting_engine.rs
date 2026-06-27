@@ -3002,7 +3002,7 @@ fn finish_transcribed_meeting(
                 source: summary_source,
                 text: summary_text,
             };
-            match run_meeting_intelligence(selected, Some(dir.to_path_buf())) {
+            match run_meeting_intelligence(selected, Some(dir.to_path_buf()), None) {
                 Ok(_) => {}
                 Err(e) => {
                     tracing::warn!(error = %e, dir = %dir.display(), "[meeting_engine] meeting summary generation failed");
@@ -3030,6 +3030,18 @@ pub fn meeting_engine_start_session(
     meeting_id: Option<String>,
 ) -> MeetingEngineStatus {
     tracing::info!(meeting_id = ?meeting_id, "[meeting_engine] start session");
+    #[cfg(target_os = "macos")]
+    if !crate::permissions::screen_recording_granted() {
+        let message = "AirNote needs Screen Recording permission to capture meeting audio. Enable it in System Settings → Privacy & Security → Screen Recording, then reopen AirNote and try again.".to_string();
+        tracing::warn!(
+            meeting_id = ?meeting_id,
+            "[meeting_engine] refusing to start meeting before Screen Recording permission is granted"
+        );
+        state.set_last_error(Some(message));
+        let status = state.status();
+        emit_main(&app, STATUS_EVENT, status.clone());
+        return status;
+    }
     let status = state.start(meeting_id, Some(app.clone()));
     emit_main(&app, STATUS_EVENT, status.clone());
     status
@@ -3119,6 +3131,7 @@ pub async fn meeting_engine_get_live_transcript(
 pub async fn meeting_engine_generate_intelligence(
     state: State<'_, MeetingEngineState>,
     meeting_id: Option<String>,
+    user_context: Option<String>,
 ) -> Result<MeetingIntelligenceResult, String> {
     // Regenerate guard: if this meeting is still being transcribed/cleaned, the
     // transcript isn't final yet — don't kick off a summary against partial text.
@@ -3131,9 +3144,15 @@ pub async fn meeting_engine_generate_intelligence(
     // LLM off the main thread so the UI never freezes during analysis.
     let selected = resolve_intelligence_transcript(&state, meeting_id.as_deref())?;
     let target_dir = intelligence_target_dir(&state, meeting_id.as_deref());
-    tauri::async_runtime::spawn_blocking(move || run_meeting_intelligence(selected, target_dir))
-        .await
-        .map_err(|e| format!("meeting intelligence task failed: {e}"))?
+    let user_context = user_context.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    });
+    tauri::async_runtime::spawn_blocking(move || {
+        run_meeting_intelligence(selected, target_dir, user_context)
+    })
+    .await
+    .map_err(|e| format!("meeting intelligence task failed: {e}"))?
 }
 
 // Async (off the main thread) for the same reason as get_processing_status —
@@ -9501,11 +9520,20 @@ fn intelligence_target_dir(
 fn run_meeting_intelligence(
     selected: MeetingAiTranscript,
     target_dir: Option<PathBuf>,
+    user_context: Option<String>,
 ) -> Result<MeetingIntelligenceResult, String> {
     let config = meeting_ai_config()?;
-    let user_prompt = format!(
-        "Transcript source: {}\n\nTranscript:\n<<<TRANSCRIPT\n{}\nTRANSCRIPT>>>",
-        selected.source, selected.text
+    let previous_intelligence = user_context.as_ref().and_then(|_| {
+        target_dir.as_deref().and_then(|dir| {
+            load_cached_meeting_intelligence_from_dir(dir)
+                .ok()
+                .flatten()
+        })
+    });
+    let user_prompt = build_meeting_intelligence_user_prompt(
+        &selected,
+        previous_intelligence.as_ref(),
+        user_context.as_deref(),
     );
     let completion = complete_meeting_llm(
         MEETING_INTELLIGENCE_SYSTEM_PROMPT,
@@ -9538,6 +9566,58 @@ fn run_meeting_intelligence(
         write_meeting_intelligence_cache(&dir, &result);
     }
     Ok(result)
+}
+
+fn build_meeting_intelligence_user_prompt(
+    selected: &MeetingAiTranscript,
+    previous: Option<&MeetingIntelligenceResult>,
+    user_context: Option<&str>,
+) -> String {
+    let mut prompt = String::new();
+    if let Some(context) = user_context
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        prompt.push_str("User-provided correction/context for this regeneration:\n");
+        prompt.push_str("<<<CONTEXT\n");
+        prompt.push_str(context);
+        prompt.push_str("\nCONTEXT>>>\n\n");
+        prompt.push_str("Treat this as high-priority guidance, but do not invent facts not supported by the transcript. Use it to correct names, acronyms, emphasis, or exclusions only when the transcript supports or does not contradict it.\n\n");
+        if let Some(previous) = previous {
+            prompt.push_str("Previous generated summary/action draft, for reference only. Improve it using the context above, but the transcript remains the source of truth:\n");
+            prompt.push_str("<<<PREVIOUS_SUMMARY\n");
+            prompt.push_str(previous.summary.trim());
+            if !previous.action_items.is_empty() {
+                prompt.push_str("\n\nPrevious action items:\n");
+                for action in &previous.action_items {
+                    prompt.push_str("- ");
+                    prompt.push_str(action.title.trim());
+                    if let Some(assignee) =
+                        action.assignee.as_deref().filter(|v| !v.trim().is_empty())
+                    {
+                        prompt.push_str(" (");
+                        prompt.push_str(assignee.trim());
+                        prompt.push(')');
+                    }
+                    prompt.push('\n');
+                }
+            }
+            if !previous.decisions.is_empty() {
+                prompt.push_str("\nPrevious decisions:\n");
+                for decision in &previous.decisions {
+                    prompt.push_str("- ");
+                    prompt.push_str(decision.text.trim());
+                    prompt.push('\n');
+                }
+            }
+            prompt.push_str("\nPREVIOUS_SUMMARY>>>\n\n");
+        }
+    }
+    prompt.push_str(&format!(
+        "Transcript source: {}\n\nTranscript:\n<<<TRANSCRIPT\n{}\nTRANSCRIPT>>>",
+        selected.source, selected.text
+    ));
+    prompt
 }
 
 fn load_cached_meeting_intelligence(
@@ -11060,6 +11140,7 @@ fn run_meeting_digest(refs: Vec<DigestMeetingRef>, missing: &str) -> Result<Dige
                             text,
                         },
                         Some(dir.clone()),
+                        None,
                     ) {
                         Ok(generated) => intel = Some(generated),
                         Err(e) => skipped.push(DigestSkipped {
@@ -17024,6 +17105,64 @@ mod tests {
         let selected = select_meeting_ai_transcript_from_snapshot(&snapshot).unwrap();
         assert_eq!(selected.source, "raw");
         assert_eq!(selected.text, "raw transcript");
+    }
+
+    #[test]
+    fn meeting_intelligence_prompt_without_context_matches_plain_transcript_request() {
+        let selected = MeetingAiTranscript {
+            source: "final".to_string(),
+            text: "Speaker 1 discussed Emiac deployment risks.".to_string(),
+        };
+
+        let prompt = build_meeting_intelligence_user_prompt(&selected, None, None);
+
+        assert!(prompt.contains("Transcript source: final"));
+        assert!(prompt.contains("Speaker 1 discussed Emiac deployment risks."));
+        assert!(!prompt.contains("User-provided correction/context"));
+        assert!(!prompt.contains("PREVIOUS_SUMMARY"));
+    }
+
+    #[test]
+    fn meeting_intelligence_prompt_includes_regeneration_context_and_previous_draft() {
+        let selected = MeetingAiTranscript {
+            source: "cleaned".to_string(),
+            text: "Speaker 1 said MACOBS integration depends on Emiac approval.".to_string(),
+        };
+        let previous = MeetingIntelligenceResult {
+            status: "completed".to_string(),
+            provider: "test".to_string(),
+            model: "test-model".to_string(),
+            latency_ms: 12,
+            transcript_source: "cleaned".to_string(),
+            title: "Old title".to_string(),
+            tags: vec!["ops".to_string()],
+            summary: "Old summary with wrong company spelling.".to_string(),
+            action_items: vec![MeetingAiActionItem {
+                title: "Fix company spelling".to_string(),
+                assignee: Some("Abhishek".to_string()),
+                due: None,
+                evidence: None,
+            }],
+            decisions: vec![MeetingAiDecision {
+                text: "Keep MACOBS as product name.".to_string(),
+                evidence: None,
+            }],
+        };
+
+        let prompt = build_meeting_intelligence_user_prompt(
+            &selected,
+            Some(&previous),
+            Some("Speaker 1 is Abhishek. MACOBS is a product name; Emiac is the company."),
+        );
+
+        assert!(prompt.contains("User-provided correction/context for this regeneration"));
+        assert!(prompt.contains("Treat this as high-priority guidance"));
+        assert!(prompt.contains("MACOBS is a product name"));
+        assert!(prompt.contains("Previous generated summary/action draft"));
+        assert!(prompt.contains("Old summary with wrong company spelling."));
+        assert!(prompt.contains("Fix company spelling (Abhishek)"));
+        assert!(prompt.contains("Keep MACOBS as product name."));
+        assert!(prompt.contains("Speaker 1 said MACOBS integration depends on Emiac approval."));
     }
 
     #[test]
