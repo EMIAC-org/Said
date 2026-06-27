@@ -120,15 +120,16 @@ fn server_row_to_recording(row: RuntimeHistoryItem, user_id: &str) -> Recording 
         row.raw_transcript.as_deref(),
     ])
     .unwrap_or_default();
+    // History stores strictly what AirNote OUTPUT (the polished paste), never the
+    // user's later manual correction. `final_text` (the 30s edit-watch capture)
+    // feeds the learning pipeline only — it must not become the displayed heading.
     let polished = first_non_empty([
-        row.final_text.as_deref(),
         row.polished_output.as_deref(),
+        row.final_text.as_deref(),
         Some(transcript.as_str()),
     ])
     .unwrap_or_default();
-    let word_count = row
-        .word_count
-        .unwrap_or_else(|| count_words(row.final_text.as_deref().unwrap_or(&polished)));
+    let word_count = row.word_count.unwrap_or_else(|| count_words(&polished));
 
     Recording {
         id: row
@@ -293,7 +294,9 @@ mod tests {
         assert_eq!(rec.user_id, "user-1");
         assert_eq!(rec.timestamp_ms, 1780920000000);
         assert_eq!(rec.transcript, "corrected words");
-        assert_eq!(rec.polished, "final words kept");
+        // History shows AirNote's original output (`polished_output`), NOT the
+        // user's post-paste edit (`final_text`) — even though final_text is set.
+        assert_eq!(rec.polished, "polished words");
         assert_eq!(rec.final_text.as_deref(), Some("final words kept"));
         assert_eq!(rec.word_count, 3);
         assert_eq!(rec.recording_seconds, 2.5);

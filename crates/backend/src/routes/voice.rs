@@ -420,6 +420,8 @@ struct ServerRuntimeVoiceRequest {
     safe_vocab_terms: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     client_profile_markdown: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_profile_version: Option<i64>,
     client_run_id: Option<String>,
 }
 
@@ -1123,6 +1125,7 @@ async fn run_server_runtime_voice_probe(
     screen_context: Option<&str>,
     vocab_entries: &[VocabEntry],
     client_profile_markdown: Option<&str>,
+    client_profile_version: Option<i64>,
 ) -> Result<(crate::llm::PolishResult, String), String> {
     let setup_start = Instant::now();
     let Some(user) = crate::store::users::get_user(pool, user_id) else {
@@ -1154,6 +1157,7 @@ async fn run_server_runtime_voice_probe(
         screen_context: screen_context.map(|s| s.chars().take(500).collect()),
         safe_vocab_terms,
         client_profile_markdown: client_profile_markdown.map(str::to_string),
+        client_profile_version,
         client_run_id: client_run_id
             .filter(|s| !s.trim().is_empty())
             .map(str::to_string)
@@ -1241,6 +1245,7 @@ async fn run_server_runtime_voice_stream(
     screen_context: Option<String>,
     vocab_entries: Vec<VocabEntry>,
     client_profile_markdown: Option<String>,
+    client_profile_version: Option<i64>,
     token_tx: mpsc::Sender<String>,
 ) -> Result<(crate::llm::PolishResult, String), String> {
     let setup_start = Instant::now();
@@ -1273,6 +1278,7 @@ async fn run_server_runtime_voice_stream(
         screen_context: screen_context.map(|s| s.chars().take(500).collect()),
         safe_vocab_terms,
         client_profile_markdown,
+        client_profile_version,
         client_run_id: client_run_id
             .filter(|s| !s.trim().is_empty())
             .or_else(|| Some(Uuid::new_v4().to_string())),
@@ -2868,6 +2874,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let client_profile_markdown = client_profile_summary
             .as_ref()
             .map(|summary| summary.profile_markdown.as_str());
+        let client_profile_version = client_profile_summary.as_ref().map(|summary| summary.version);
         info!(
             "[profile-summary] voice prompt profile version={} chars={} injected={}",
             client_profile_summary
@@ -3023,6 +3030,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 screen_context.clone(),
                 vocab_entries.clone(),
                 client_profile_markdown.map(str::to_string),
+                client_profile_version,
                 token_tx,
             ));
 
