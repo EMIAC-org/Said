@@ -187,6 +187,7 @@ function keepsHudOverIdle(kind: PillKind): boolean {
     || kind === "done"
     || kind === "pasted"
     || kind === "manual_paste"
+    || kind === "polish_mode"
     || kind === "problem_ambiguous"
     || kind === "update_ready"
     || kind === "recovered"
@@ -332,6 +333,7 @@ export default function StatusBar() {
   const dragActiveRef = useRef(false);
   const [liveTranscript, setLiveTranscript] = useState("");
   const [audioLevel, setAudioLevel] = useState(0);
+  const [polishModeEnabled, setPolishModeEnabled] = useState(false);
   const [divo, setDivo] = useState<DivoActivity>(() => emptyDivo());
   const [divoCopied, setDivoCopied] = useState(false);
   const [divoDraft, setDivoDraft] = useState("");
@@ -713,6 +715,7 @@ export default function StatusBar() {
   // Seed from current snapshot on mount so we reflect any in-progress state
   const applyActiveSnapshot = (snap: AppSnapshot, source: string) => {
     console.info("[status-bar] snapshot resync", source, snap.state);
+    setPolishModeEnabled(Boolean(snap.message_polish_mode));
     if (snap.state === "recording") {
       setBar((prev) =>
         prev.kind === "recording"
@@ -785,6 +788,7 @@ export default function StatusBar() {
     listen<AppSnapshot>("app-state", (e) => {
       const { state } = e.payload;
       console.info("[status-bar] app-state event", state);
+      setPolishModeEnabled(Boolean(e.payload.message_polish_mode));
       if (state === "recording") {
         if (barKindRef.current !== "recording") {
           if (doneTimer.current) clearTimeout(doneTimer.current);
@@ -908,12 +912,13 @@ export default function StatusBar() {
       if (doneTimer.current) clearTimeout(doneTimer.current);
       presentStatusBar("message-polish-mode");
       playSound(e.payload.enabled ? "levelUp" : "tick");
+      setPolishModeEnabled(e.payload.enabled);
       setBar({
         kind: "polish_mode",
         enabled: e.payload.enabled,
         message: e.payload.message || (e.payload.enabled ? "Polish mode on" : "Polish mode off"),
       });
-      doneTimer.current = setTimeout(() => returnToIdleOrPinned("message-polish-mode-hide"), 1700);
+      doneTimer.current = setTimeout(() => returnToIdleOrPinned("message-polish-mode-hide"), 3200);
     }).then((fn) => {
       console.info("[status-bar] subscribed message-polish-mode");
       subs.push(fn);
@@ -2165,7 +2170,10 @@ export default function StatusBar() {
         <div className={`sb-survey-controlbar${bar.kind === "error" ? " sb-survey-controlbar--actions" : ""}`}>
           {bar.kind === "processing" ? (
             <div className="sb-survey-processing">
-              <span>{processingLabel(bar.phase)}</span>
+              <div className="sb-processing-line">
+                <span>{processingLabel(bar.phase)}</span>
+                {polishModeEnabled && <span className="sb-mode-badge">Polish</span>}
+              </div>
               <span className="sb-progress-dots" aria-hidden="true">
                 <span />
                 <span />
@@ -2211,6 +2219,9 @@ export default function StatusBar() {
             </div>
           ) : (
             <div className={`sb-survey-visualizer${bar.kind === "recording" ? " sb-survey-visualizer--active" : ""}`}>
+              {bar.kind === "recording" && polishModeEnabled && (
+                <span className="sb-mode-badge sb-mode-badge--recording">Polish</span>
+              )}
               {Array.from({ length: 15 }).map((_, index) => (
                 <span
                   key={index}

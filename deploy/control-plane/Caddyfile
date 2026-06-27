@@ -7,7 +7,7 @@
 
 	handle_path /releases/* {
 		root * /srv/airnote-releases/releases
-		header Cache-Control "public, max-age=31536000, immutable"
+		header Cache-Control "no-cache"
 		file_server
 	}
 

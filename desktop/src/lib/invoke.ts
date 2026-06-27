@@ -126,6 +126,7 @@ const mockSnapshot: AppSnapshot = {
   current_mode: "mini",
   current_mode_label: "Fast (gpt-5.4-mini)",
   current_model: "gpt-5.4-mini",
+  message_polish_mode: false,
   auto_paste_supported: false,
   accessibility_granted: false,
   microphone_granted: false,
@@ -294,12 +295,16 @@ export async function listPolishModels(
 
 /** Partially update preferences. Returns the updated preferences. */
 export async function patchPreferences(
-  update: PrefsUpdate
+  update: PrefsUpdate,
+  options?: { throwOnError?: boolean }
 ): Promise<Preferences | null> {
   if (!isTauriRuntime()) return null;
   try {
     return await tauriInvoke<Preferences>("patch_preferences", { update });
-  } catch {
+  } catch (e) {
+    if (options?.throwOnError) {
+      throw e;
+    }
     return null;
   }
 }

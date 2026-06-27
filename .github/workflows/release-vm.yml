@@ -153,6 +153,8 @@ jobs:
       - name: Build CLI binary (Mac)
         if: matrix.platform == 'darwin'
         shell: bash
+        env:
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY_1 || secrets.DEEPGRAM_API_KEY }}
         run: |
           cargo build -p said --release --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/release/airnote airnote-${{ matrix.target }}
@@ -162,6 +164,8 @@ jobs:
         if: matrix.platform == 'darwin'
         shell: bash
         timeout-minutes: 12
+        env:
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY_1 || secrets.DEEPGRAM_API_KEY }}
         run: |
           cargo build -p said-backend --release --target ${{ matrix.target }}
           mkdir -p desktop/src-tauri/binaries

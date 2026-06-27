@@ -323,6 +323,16 @@ export function OnboardingFlow({
     ],
   );
 
+  const completedThroughCurrentStep = useCallback((): Partial<Record<OnboardingStep, "done">> => {
+    const done: Partial<Record<OnboardingStep, "done">> = {};
+    const currentIdx = visStepIndex(step);
+    for (let i = 0; i <= currentIdx; i += 1) {
+      const id = visibleStepIds[i];
+      if (id) done[id] = "done";
+    }
+    return done;
+  }, [step, visStepIndex, visibleStepIds]);
+
   const goBack = useCallback(() => {
     const idx = visStepIndex(step);
     if (idx <= 0) return;
@@ -437,15 +447,22 @@ export function OnboardingFlow({
     setKeySaving(true);
     setKeyError("");
     try {
-      const updated = await patchPreferences({ stt_provider: "deepgram" });
-      if (updated) setPrefs(updated);
-      advanceToNextUndone({ keys: "done" });
-    } catch {
-      setKeyError("Couldn't save your choice. Try again.");
+      const updated = await patchPreferences(
+        { stt_provider: "deepgram" },
+        { throwOnError: true },
+      );
+      if (!updated) {
+        throw new Error("AirNote could not save cloud speech recognition.");
+      }
+      setPrefs(updated);
+      advanceToNextUndone(completedThroughCurrentStep());
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setKeyError(message || "Couldn't save your choice. Try again.");
     } finally {
       setKeySaving(false);
     }
-  }, [advanceToNextUndone]);
+  }, [advanceToNextUndone, completedThroughCurrentStep]);
 
   const chooseLocalEngine = useCallback(async () => {
     if (!dictationModelInstalled) {
@@ -455,18 +472,23 @@ export function OnboardingFlow({
     setKeySaving(true);
     setKeyError("");
     try {
-      const updated = await patchPreferences({ stt_provider: "whisper_local" });
-      if (updated) {
-        setPrefs(updated);
-        onLocalModelReady?.();
+      const updated = await patchPreferences(
+        { stt_provider: "whisper_local" },
+        { throwOnError: true },
+      );
+      if (!updated) {
+        throw new Error("AirNote could not save on-device speech recognition.");
       }
-      advanceToNextUndone({ keys: "done" });
-    } catch {
-      setKeyError("Couldn't save your choice. Try again.");
+      setPrefs(updated);
+      onLocalModelReady?.();
+      advanceToNextUndone(completedThroughCurrentStep());
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setKeyError(message || "Couldn't save your choice. Try again.");
     } finally {
       setKeySaving(false);
     }
-  }, [advanceToNextUndone, dictationModelInstalled, onLocalModelReady]);
+  }, [advanceToNextUndone, completedThroughCurrentStep, dictationModelInstalled, onLocalModelReady]);
 
   const handleDictationDownload = useCallback(async () => {
     setDictationBusy(true);
@@ -490,7 +512,7 @@ export function OnboardingFlow({
   }, []);
 
   const handleHotkeySelect = useCallback(async (key: string) => {
-    const updated = await patchPreferences({ record_hotkey: key });
+    const updated = await patchPreferences({ record_hotkey: key }, { throwOnError: true });
     // Reflect the choice in local state so the next step ("Try it") shows the
     // key the user actually picked (not the stale default).
     if (updated) setPrefs(updated);
