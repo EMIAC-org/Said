@@ -65,6 +65,7 @@ interface Props {
   onAccessibility:    () => void;
   onInputMonitoring:  () => void;
   onMicrophone:       () => void;
+  onScreenRecording:  () => void;
   performanceMonitorEnabled?: boolean;
   onPerformanceMonitorChange?: (enabled: boolean) => void;
   onEnterpriseDisconnect?: () => void;
@@ -74,7 +75,7 @@ interface Props {
 
 export function SettingsModal({
   open, onClose, snapshot, onAccessibility, onInputMonitoring,
-  onMicrophone, performanceMonitorEnabled, onPerformanceMonitorChange,
+  onMicrophone, onScreenRecording, performanceMonitorEnabled, onPerformanceMonitorChange,
   onEnterpriseDisconnect, initialSection,
 }: Props) {
   const [activeSection, setActiveSection] = useState<SettingsSection>(
@@ -273,6 +274,7 @@ export function SettingsModal({
               onAccessibility={onAccessibility}
               onInputMonitoring={onInputMonitoring}
               onMicrophone={onMicrophone}
+              onScreenRecording={onScreenRecording}
               performanceMonitorEnabled={performanceMonitorEnabled}
               onPerformanceMonitorChange={onPerformanceMonitorChange}
               onEnterpriseDisconnect={onEnterpriseDisconnect}

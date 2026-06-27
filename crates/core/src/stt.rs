@@ -204,42 +204,57 @@ pub fn swift_local_platform_supported() -> bool {
     cfg!(target_os = "macos")
 }
 
-/// Resolve the dictation STT provider at runtime. Two providers only:
-/// `swift_local` (on-device, macOS) and `deepgram` (cloud, build-bundled key).
+/// Resolve the *effective* dictation STT provider — the one actually usable
+/// right now, given which on-device models are installed. This is what the
+/// Settings UI should pre-select and what telemetry reports.
 ///
-/// Swift on a non-macOS build falls back to Deepgram (platform limitation).
-/// Swift when the model isn't installed STILL resolves to `swift_local` — the
-/// recording path surfaces an explicit "install the model / engine not ready"
-/// error rather than silently using the cloud. Local stays local. Any legacy
-/// provider id (`whisper_local`, `groq_whisper`) collapses to Deepgram.
+/// Rules (installed-aware, so the selection follows what onboarding set up):
+/// - Explicit `deepgram` → cloud.
+/// - `swift_local` → on-device Swift only on macOS AND when its model is
+///   installed; otherwise cloud.
+/// - `whisper_local` or the default (unset) → on-device whisper.cpp only when
+///   its model is installed; otherwise fall back to an installed Swift model
+///   (macOS), else cloud Deepgram.
 ///
-/// The `_swift_model_installed` / `_whisper_model_installed` params are retained
-/// for call-site stability but no longer change the result — readiness is
-/// reported separately (see desktop `get_stt_runtime`) and enforced at record time.
+/// So: a user who downloaded the local model gets it auto-selected; one who
+/// didn't (or chose cloud) gets Deepgram. The bundled Deepgram key means cloud
+/// is always available as the fallback.
 pub fn effective_dictation_provider(
     pref: &str,
-    _swift_model_installed: bool,
-    _whisper_model_installed: bool,
+    swift_model_installed: bool,
+    whisper_model_installed: bool,
 ) -> String {
     // Dev/testing override: force a specific dictation STT provider regardless of
-    // prefs (e.g. AIRNOTE_FORCE_STT_PROVIDER=whisper_local to exercise the local
-    // whisper.cpp path). Honors any normalized id, including whisper_local.
+    // prefs or install state (e.g. AIRNOTE_FORCE_STT_PROVIDER=whisper_local).
     if let Ok(forced) = std::env::var("AIRNOTE_FORCE_STT_PROVIDER") {
         let norm = normalize_toggle_stt_provider(&forced);
         if !norm.is_empty() {
             return norm;
         }
     }
+    let swift_available = swift_local_platform_supported() && swift_model_installed;
     let resolved = resolve_provider_from_pref(pref);
     if is_deepgram(&resolved) {
         // Explicit cloud opt-in.
-        "deepgram".to_string()
-    } else if is_swift_local(&resolved) && swift_local_platform_supported() {
-        // Legacy Python-sidecar path, only if explicitly chosen on macOS.
+        return "deepgram".to_string();
+    }
+    if is_swift_local(&resolved) {
+        // Legacy Python-sidecar path, only if explicitly chosen, on macOS, and
+        // its model is present. Otherwise the cloud key is always available.
+        return if swift_available {
+            "swift_local".to_string()
+        } else {
+            "deepgram".to_string()
+        };
+    }
+    // `whisper_local` or the default: native, Python-free on-device whisper.cpp —
+    // but only when the model has actually been downloaded.
+    if whisper_model_installed {
+        "whisper_local".to_string()
+    } else if swift_available {
         "swift_local".to_string()
     } else {
-        // Default + `whisper_local`: native, Python-free on-device whisper.cpp.
-        "whisper_local".to_string()
+        "deepgram".to_string()
     }
 }
 
@@ -328,29 +343,41 @@ mod tests {
     }
 
     #[test]
-    fn effective_dictation_two_providers_only() {
-        // Swift stays local even when the model isn't installed — the recording
-        // path surfaces an explicit error rather than silently using the cloud.
-        let swift_expected = if swift_local_platform_supported() {
+    fn effective_dictation_is_installed_aware() {
+        // A local provider whose model isn't installed falls back to cloud, so the
+        // auto-selected option matches what the user actually downloaded.
+        assert_eq!(
+            effective_dictation_provider("swift_local", false, false),
+            "deepgram"
+        );
+        // Swift selected + installed (macOS only) → swift; otherwise cloud.
+        let swift_installed_expected = if swift_local_platform_supported() {
             "swift_local"
         } else {
             "deepgram"
         };
         assert_eq!(
-            effective_dictation_provider("swift_local", false, false),
-            swift_expected
-        );
-        assert_eq!(
             effective_dictation_provider("swift_local", true, false),
-            swift_expected
+            swift_installed_expected
         );
-        // whisper_local is the native, Python-free on-device default.
+        // whisper_local only when its model is downloaded.
         assert_eq!(
             effective_dictation_provider("whisper_local", false, true),
             "whisper_local"
         );
         assert_eq!(
-            effective_dictation_provider("deepgram", false, false),
+            effective_dictation_provider("whisper_local", false, false),
+            "deepgram"
+        );
+        // Default (unset) is installed-aware too: local if downloaded, else cloud.
+        assert_eq!(
+            effective_dictation_provider("", false, true),
+            "whisper_local"
+        );
+        assert_eq!(effective_dictation_provider("", false, false), "deepgram");
+        // Explicit cloud always wins.
+        assert_eq!(
+            effective_dictation_provider("deepgram", false, true),
             "deepgram"
         );
     }

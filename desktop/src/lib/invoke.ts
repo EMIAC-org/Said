@@ -130,6 +130,7 @@ const mockSnapshot: AppSnapshot = {
   accessibility_granted: false,
   microphone_granted: false,
   input_monitoring_granted: false,
+  screen_recording_granted: true,
   modes: [
     { key: "mini", label: "Fast (gpt-5.4-mini)", model: "gpt-5.4-mini", icon: "fast" },
   ],
@@ -540,6 +541,30 @@ export async function requestInputMonitoring(): Promise<void> {
     await tauriInvoke("request_input_monitoring");
   } catch {
     // silently ignore
+  }
+}
+
+/** Whether macOS Screen Recording is already granted (no prompt). */
+export async function screenRecordingGranted(): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  try {
+    return await tauriInvoke<boolean>("screen_recording_granted");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensure Screen Recording (needed for meeting system-audio capture): prompts +
+ * opens the pane if missing. Returns the resulting grant state (often false
+ * until the app is relaunched).
+ */
+export async function requestScreenRecording(): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  try {
+    return await tauriInvoke<boolean>("request_screen_recording");
+  } catch {
+    return false;
   }
 }
 

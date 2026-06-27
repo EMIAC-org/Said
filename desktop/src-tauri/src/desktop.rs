@@ -75,6 +75,7 @@ impl DesktopApp {
             // Windows → always true (low-level keyboard hooks need no special grant).
             // Other → false (stub).
             input_monitoring_granted: is_input_monitoring_granted(),
+            screen_recording_granted: permissions::screen_recording_granted(),
             modes: all_modes().to_vec(),
             last_result: self.last_result.clone(),
             last_error: self.last_error.clone(),

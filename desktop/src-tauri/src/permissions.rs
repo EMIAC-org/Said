@@ -8,6 +8,15 @@ mod imp {
 
     const AV_AUTHORIZED: i64 = 3;
 
+    // CoreGraphics screen-capture permission (gates ScreenCaptureKit, which is how
+    // meetings capture system audio). Preflight checks without prompting; Request
+    // raises the TCC dialog the first time and is a no-op afterward.
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+
     fn open_privacy_pane(anchor: &str) {
         let _ = std::process::Command::new("open")
             .arg(format!(
@@ -74,6 +83,30 @@ mod imp {
             granted
         }
     }
+
+    /// Whether Screen Recording is already granted (no prompt). Meetings need this
+    /// because system-audio capture goes through ScreenCaptureKit.
+    pub fn screen_recording_granted() -> bool {
+        unsafe { CGPreflightScreenCaptureAccess() }
+    }
+
+    /// Ensure Screen Recording access: returns true if already granted, otherwise
+    /// raises the macOS prompt (first time) and opens the Screen Recording pane,
+    /// returning the resulting grant state. NOTE: macOS often only honors a fresh
+    /// grant after the app is relaunched, so callers should treat `false` as
+    /// "not ready yet — guide the user, don't start capture".
+    pub fn request_screen_recording() -> bool {
+        unsafe {
+            if CGPreflightScreenCaptureAccess() {
+                return true;
+            }
+            let granted = CGRequestScreenCaptureAccess();
+            if !granted {
+                open_privacy_pane("Privacy_ScreenCapture");
+            }
+            granted
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -99,6 +132,15 @@ mod imp {
                 .creation_flags(CREATE_NO_WINDOW)
                 .spawn();
         }
+        true
+    }
+
+    // Screen Recording is a macOS-only TCC permission; other platforms don't gate
+    // system-audio capture this way, so report it as always available.
+    pub fn screen_recording_granted() -> bool {
+        true
+    }
+    pub fn request_screen_recording() -> bool {
         true
     }
 }

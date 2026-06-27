@@ -3573,6 +3573,20 @@ fn request_microphone(state: State<'_, SharedApp>) -> Result<AppSnapshot, String
     Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
 }
 
+/// Whether Screen Recording is already granted (no prompt). Used to gate meeting
+/// start, since system-audio capture goes through ScreenCaptureKit.
+#[tauri::command]
+fn screen_recording_granted() -> bool {
+    permissions::screen_recording_granted()
+}
+
+/// Check Screen Recording; if not granted, raise the macOS prompt + open the pane.
+/// Returns the resulting grant state (often `false` until the app is relaunched).
+#[tauri::command]
+fn request_screen_recording() -> bool {
+    permissions::request_screen_recording()
+}
+
 /// Run the 5-method AX field reading diagnostic on whatever is focused right now.
 /// The Tauri app already has Accessibility permission, so unlike a fresh standalone
 /// binary, this can always reach the focused application.
@@ -10801,6 +10815,8 @@ fn main() {
             request_accessibility,
             request_input_monitoring,
             request_microphone,
+            screen_recording_granted,
+            request_screen_recording,
             diagnose_ax,
             // Cloud auth
             cloud_signup,

@@ -1366,6 +1366,25 @@ export function MeetingsView({
   }, [meetings, overviews]);
 
   const handleNewMeeting = useCallback(async () => {
+    // Screen Recording permission is required to capture meeting system audio
+    // (ScreenCaptureKit). Check it FIRST and prompt if missing — never start
+    // capture and surprise the user with the macOS dialog mid-meeting. (No-op on
+    // platforms without this permission; the command returns true there.)
+    try {
+      const granted = await invoke<boolean>("screen_recording_granted");
+      if (!granted) {
+        // Raises the macOS prompt the first time and opens the Screen Recording
+        // pane; macOS usually only honors a fresh grant after a relaunch.
+        await invoke<boolean>("request_screen_recording");
+        setError(
+          "AirNote needs Screen Recording permission to capture meeting audio. Enable it in System Settings → Privacy & Security → Screen Recording, then reopen AirNote and try again.",
+        );
+        return;
+      }
+    } catch {
+      /* permission probe failed — fall through; capture surfaces its own error */
+    }
+
     if (hasModel === false) {
       void downloadMeetingModel();
       return;

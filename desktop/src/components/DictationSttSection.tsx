@@ -67,7 +67,27 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
   const mounted = useRef(true);
   const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const rawProvider = prefs?.stt_provider ?? "whisper_local";
+  const swiftInstalled = deletingSwift ? false : (model?.installed ?? false);
+  const whisperInstalled = deletingWhisper
+    ? false
+    : (whisperModel?.installed ?? runtime?.whisper_installed ?? false);
+
+  // Which option shows as selected. Honor an explicit, still-usable choice;
+  // otherwise auto-select the installed-aware effective provider so the picker
+  // follows what onboarding actually set up — the downloaded local model if it's
+  // present, else Deepgram. (Empty pref or a local choice whose model is no
+  // longer installed both fall through to the effective default.)
+  const storedProvider = (prefs?.stt_provider ?? "").trim();
+  let rawProvider: string;
+  if (storedProvider === "deepgram") {
+    rawProvider = "deepgram";
+  } else if (storedProvider === "swift_local" && isMac && swiftInstalled) {
+    rawProvider = "swift_local";
+  } else if (storedProvider === "whisper_local" && whisperInstalled) {
+    rawProvider = "whisper_local";
+  } else {
+    rawProvider = runtime?.effective_provider || "deepgram";
+  }
   const provider: SttProviderChoice =
     rawProvider === "deepgram"
       ? "deepgram"
@@ -75,7 +95,6 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform }: Dictati
         ? "swift_local"
         : "whisper_local";
   const swiftSelected = provider === "swift_local";
-  const swiftInstalled = deletingSwift ? false : (model?.installed ?? false);
 
   const showSuccess = useCallback((msg: string) => {
     if (successTimer.current) clearTimeout(successTimer.current);

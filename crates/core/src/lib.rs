@@ -121,6 +121,10 @@ pub struct AppSnapshot {
     pub accessibility_granted: bool,
     pub microphone_granted: bool,
     pub input_monitoring_granted: bool,
+    /// macOS Screen Recording (gates ScreenCaptureKit → meeting system-audio
+    /// capture). Always true on platforms without this permission.
+    #[serde(default)]
+    pub screen_recording_granted: bool,
     pub modes: Vec<Mode>,
     pub last_result: Option<ProcessSummary>,
     pub last_error: Option<String>,

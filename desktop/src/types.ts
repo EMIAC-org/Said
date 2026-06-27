@@ -40,6 +40,7 @@ export interface AppSnapshot {
   accessibility_granted:    boolean;
   microphone_granted:       boolean;
   input_monitoring_granted: boolean;
+  screen_recording_granted: boolean;
   modes: Mode[];
   last_result: LastResult | null;
   last_error: string | null;

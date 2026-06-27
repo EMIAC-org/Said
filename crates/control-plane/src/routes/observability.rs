@@ -499,34 +499,29 @@ pub struct IngestOk {
     pub ok: bool,
 }
 
-async fn upsert_dictation_row(
+/// Match an existing row by recording_id or client_run_id (dedup index prefers client_run_id).
+const DICTATION_UPDATE_WHERE: &str = "
+    WHERE account_id = $1 AND deleted_at IS NULL
+      AND (
+        recording_id = $2
+        OR ($3::text IS NOT NULL AND client_run_id = $3)
+      )";
+
+async fn apply_dictation_update(
     db: &sqlx::PgPool,
     account_id: Uuid,
+    recording_id: &str,
+    client_run_id: Option<&str>,
     org_id: Option<Uuid>,
     req: &DictationUpsertRequest,
-) -> Result<(), sqlx::Error> {
-    let recording_id = req.recording_id.trim();
-    if recording_id.is_empty() {
-        return Ok(());
-    }
-
-    let source = req
-        .source
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .unwrap_or("desktop_voice");
-
-    let word_count = req.word_count.or_else(|| {
-        req.polished_output
-            .as_deref()
-            .or(req.transcript.as_deref())
-            .map(|t| t.split_whitespace().count() as i32)
-    });
-
-    let updated = sqlx::query(
+    source: &str,
+    word_count: Option<i32>,
+) -> Result<u64, sqlx::Error> {
+    let updated = sqlx::query(&format!(
         "UPDATE runtime_history_items SET
-            org_id = COALESCE($3, org_id),
-            client_run_id = COALESCE($4, client_run_id),
+            org_id = COALESCE($4, org_id),
+            recording_id = COALESCE(recording_id, $2),
+            client_run_id = COALESCE($3, client_run_id),
             raw_transcript = COALESCE($5, raw_transcript),
             transcript = COALESCE($6, transcript),
             local_corrected_transcript = COALESCE($7, local_corrected_transcript),
@@ -544,12 +539,12 @@ async fn upsert_dictation_row(
             platform = COALESCE($19, platform),
             app_version = COALESCE($20, app_version),
             updated_at = now()
-         WHERE account_id = $1 AND recording_id = $2 AND deleted_at IS NULL",
-    )
+         {DICTATION_UPDATE_WHERE}"
+    ))
     .bind(account_id)
     .bind(recording_id)
+    .bind(client_run_id)
     .bind(org_id)
-    .bind(req.client_run_id.as_deref().filter(|s| !s.is_empty()))
     .bind(req.raw_transcript.as_deref())
     .bind(req.transcript.as_deref())
     .bind(req.local_corrected_transcript.as_deref())
@@ -569,12 +564,52 @@ async fn upsert_dictation_row(
     .execute(db)
     .await?
     .rows_affected();
+    Ok(updated)
+}
 
-    if updated > 0 {
+async fn upsert_dictation_row(
+    db: &sqlx::PgPool,
+    account_id: Uuid,
+    org_id: Option<Uuid>,
+    req: &DictationUpsertRequest,
+) -> Result<(), sqlx::Error> {
+    let recording_id = req.recording_id.trim();
+    if recording_id.is_empty() {
         return Ok(());
     }
 
-    sqlx::query(
+    let client_run_id = req.client_run_id.as_deref().filter(|s| !s.is_empty());
+
+    let source = req
+        .source
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("desktop_voice");
+
+    let word_count = req.word_count.or_else(|| {
+        req.polished_output
+            .as_deref()
+            .or(req.transcript.as_deref())
+            .map(|t| t.split_whitespace().count() as i32)
+    });
+
+    if apply_dictation_update(
+        db,
+        account_id,
+        recording_id,
+        client_run_id,
+        org_id,
+        req,
+        source,
+        word_count,
+    )
+    .await?
+        > 0
+    {
+        return Ok(());
+    }
+
+    let inserted = sqlx::query(
         "INSERT INTO runtime_history_items
             (account_id, org_id, client_run_id, recording_id, source,
              device_id, platform, app_version,
@@ -582,11 +617,12 @@ async fn upsert_dictation_row(
              polished_output, final_text, model_used,
              word_count, recording_seconds,
              transcribe_ms, embed_ms, polish_ms, target_app)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)",
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+         ON CONFLICT DO NOTHING",
     )
     .bind(account_id)
     .bind(org_id)
-    .bind(req.client_run_id.as_deref().filter(|s| !s.is_empty()))
+    .bind(client_run_id)
     .bind(recording_id)
     .bind(source)
     .bind(req.device_id.as_deref())
@@ -605,6 +641,25 @@ async fn upsert_dictation_row(
     .bind(req.polish_ms)
     .bind(req.target_app.as_deref())
     .execute(db)
+    .await?
+    .rows_affected();
+
+    if inserted > 0 {
+        return Ok(());
+    }
+
+    // Server runtime may have inserted first (client_run_id only, ON CONFLICT DO NOTHING).
+    // Merge desktop fields without treating the duplicate as an error.
+    let _ = apply_dictation_update(
+        db,
+        account_id,
+        recording_id,
+        client_run_id,
+        org_id,
+        req,
+        source,
+        word_count,
+    )
     .await?;
 
     Ok(())
@@ -663,7 +718,8 @@ pub async fn patch_dictation(
         sqlx::query(
             "INSERT INTO runtime_history_items
                 (account_id, org_id, recording_id, source, final_text, edit_feedback_json)
-             VALUES ($1, $2, $3, 'desktop_voice', $4, $5)",
+             VALUES ($1, $2, $3, 'desktop_voice', $4, $5)
+             ON CONFLICT DO NOTHING",
         )
         .bind(user.account_id)
         .bind(tenant_ctx.active_org_id)
