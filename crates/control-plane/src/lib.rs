@@ -15,6 +15,7 @@ pub mod legacy_personal_memory;
 pub mod meeting_hub;
 pub mod memory_hygiene;
 pub mod memory_hygiene_worker;
+pub mod message_helpers;
 pub mod notification_hub;
 pub mod notification_worker;
 pub mod number_format;
