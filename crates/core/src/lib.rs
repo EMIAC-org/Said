@@ -4,11 +4,13 @@ pub mod deepgram;
 pub mod paths;
 pub mod polish;
 pub mod prefs;
+pub mod redecode_flagging;
 pub mod reporter;
 pub mod script;
 pub mod scrub;
 pub mod stt;
 pub mod telemetry;
+pub mod text;
 
 // ── Gateway constants ─────────────────────────────────────────────────────────
 
@@ -26,9 +28,9 @@ pub struct Mode {
 }
 
 pub const MODES: &[Mode] = &[Mode {
-    key: "smart",
-    label: "Llama 4 Scout (Groq)",
-    model: "meta-llama/llama-4-scout-17b-16e-instruct",
+    key: "cerebras-gpt-oss",
+    label: "GPT OSS 120B (Cerebras)",
+    model: polish::model::CEREBRAS_POLISH_MODEL_GPT_OSS,
     icon: "fast",
 }];
 
@@ -48,13 +50,28 @@ pub fn mode_label() -> &'static str {
     MODES[0].label
 }
 
-/// Returns the Groq Llama 4 Scout model — the default smart model.
-pub fn resolve_model(_key_or_model: &str) -> &'static str {
-    "meta-llama/llama-4-scout-17b-16e-instruct"
+/// Returns the polish model route (Groq GPT OSS 120B for smart tier).
+pub fn resolve_model(key_or_model: &str) -> String {
+    polish::model::resolve_polish_route(key_or_model).label()
 }
 
+/// Gateway/LLM key baked into the build at compile time (set `GATEWAY_API_KEY`
+/// in the build environment; `build-dmg.sh` exports it from `.env`). The shipped
+/// app ships with a working key so end users never enter one. Captured at
+/// compile time, never written to a tracked file — never committed to git.
+const BUNDLED_GATEWAY_API_KEY: Option<&str> = option_env!("GATEWAY_API_KEY");
+
+/// Gateway/LLM key: runtime env (dev/server) → build-time bundled key (shipped app).
 pub fn api_key() -> String {
-    std::env::var("GATEWAY_API_KEY").unwrap_or_default()
+    std::env::var("GATEWAY_API_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            BUNDLED_GATEWAY_API_KEY
+                .map(str::to_string)
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_default()
 }
 
 pub fn validate_api_key() {
@@ -104,6 +121,10 @@ pub struct AppSnapshot {
     pub accessibility_granted: bool,
     pub microphone_granted: bool,
     pub input_monitoring_granted: bool,
+    /// macOS Screen Recording (gates ScreenCaptureKit → meeting system-audio
+    /// capture). Always true on platforms without this permission.
+    #[serde(default)]
+    pub screen_recording_granted: bool,
     pub modes: Vec<Mode>,
     pub last_result: Option<ProcessSummary>,
     pub last_error: Option<String>,

@@ -1,23 +1,31 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { formatKeycap, type Platform } from "@/lib/hotkeys";
 import { getVersion } from "@tauri-apps/api/app";
 import {
-  Shield, Cpu, Key, Info, Wifi, Check, Sparkles, Zap, Cloud,
+  Shield, Key, Info, Wifi, Check, Sparkles,
   Languages, MessageSquareText, Loader2, RefreshCw,
-  Eye, EyeOff, Bell, Bug, Copy, FileText, Mic, Download, Activity,
-  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, ChevronDown, Power,
+  Bell, Bug, Copy, FileText, Mic, Download, Activity,
+  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, Power, BookOpen,
+  Code2, Plus, Trash2, AlertTriangle, Monitor,
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
 import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
-import { MeetingSettingsSection } from "@/components/views/MeetingSettingsSection";
+import { DictationSttSection } from "@/components/DictationSttSection";
 
 import {
   getConnection as enterpriseGetConnection,
   disconnectEnterprise,
+  getServerUrlMode,
+  getServerUrlOverride,
+  getActiveServerUrl,
+  applyServerUrlConfig,
+  DEFAULT_CLOUD_SERVER_URL,
   type EnterpriseConnection,
+  type ServerUrlMode,
 } from "@/lib/enterprise";
 import { EnterpriseConnectForm } from "@/components/EnterpriseConnectForm";
 import {
@@ -28,16 +36,20 @@ import {
   requestNotifications, checkNotificationPermission,
   getDesktopPrefs, setDesktopPrefs,
   readBackendLog, backendLogLocation, openLogFolder,
-  openaiConnect, openaiStatus, openaiDisconnect,
+  openExternal,
   getServerSettingsStatus,
-  getCredentialVaultStatus,
-  syncCredentialVault,
-  type CredentialVaultStatus,
+  getDeveloperSettings,
+  saveDeveloperSettings,
+  developerProblemBegin,
+  developerProblemEnd,
+  emptyDeveloperSettings,
   type DebugLogs,
   type NotifPermission,
   type DesktopPrefs,
-  type OpenAIStatus,
   type ServerSettingsStatus,
+  type DeveloperSettings,
+  type DeveloperProjectProfile,
+  type DeveloperProfileWarning,
 } from "@/lib/invoke";
 
 // ── Tone presets ──────────────────────────────────────────────────────────────
@@ -52,6 +64,31 @@ const TONE_PRESETS = [
 ] as const;
 
 type ToneKey = (typeof TONE_PRESETS)[number]["key"];
+
+const DEVELOPER_CONTEXT_MAX_CHARS = 8_000;
+
+function splitDeveloperAliases(value: string): string[] {
+  return value
+    .split(/[\n,]/g)
+    .map((alias) => alias.trim())
+    .filter(Boolean);
+}
+
+function createDeveloperProfile(): DeveloperProjectProfile {
+  const id =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `profile-${Date.now()}`;
+  return {
+    id,
+    name: "New Project",
+    aliases: [],
+    context: "",
+    enabled: true,
+    source_type: "manual",
+    updated_at: Date.now(),
+  };
+}
 
 // ── Language options ──────────────────────────────────────────────────────────
 
@@ -148,205 +185,6 @@ function Row({
   );
 }
 
-function SecretInput({
-  icon,
-  label,
-  helper,
-  placeholder,
-  value,
-  visible,
-  onChange,
-  onToggle,
-}: {
-  icon:        React.ReactNode;
-  label:       string;
-  helper?:     string;
-  placeholder: string;
-  value:       string;
-  visible:     boolean;
-  onChange:    (value: string) => void;
-  onToggle:    () => void;
-}) {
-  return (
-    <div>
-      <div className="mb-1.5">
-        <p className="text-[12px] font-semibold text-foreground flex items-center gap-1.5">
-          {icon}
-          {label}
-        </p>
-        {helper && (
-          <p className="text-[11px] text-muted-foreground mt-0.5">
-            {helper}
-          </p>
-        )}
-      </div>
-      <div className="relative">
-        <input
-          type={visible ? "text" : "password"}
-          placeholder={placeholder}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="input pr-9 font-mono text-[12px]"
-        />
-        <button
-          type="button"
-          onClick={onToggle}
-          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-          tabIndex={-1}
-          aria-label={visible ? `Hide ${label}` : `Show ${label}`}
-        >
-          {visible ? <EyeOff size={14} /> : <Eye size={14} />}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function SettingsDisclosure({
-  title,
-  description,
-  icon,
-  defaultOpen = false,
-  status,
-  children,
-}: {
-  title:        string;
-  description:  string;
-  icon:         React.ReactNode;
-  defaultOpen?: boolean;
-  status?:      React.ReactNode;
-  children:     React.ReactNode;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-
-  return (
-    <div className="settings-disclosure">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-[hsl(var(--surface-hover))]"
-        aria-expanded={open}
-      >
-        <span
-          className="settings-disclosure__icon w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-        >
-          {icon}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-[13px] font-semibold text-foreground">
-            {title}
-          </span>
-          <span className="block text-[11.5px] text-muted-foreground mt-0.5 leading-relaxed">
-            {description}
-          </span>
-        </span>
-        {status && <span className="flex-shrink-0">{status}</span>}
-        <ChevronDown
-          size={15}
-          className="flex-shrink-0 text-muted-foreground transition-transform"
-          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
-        />
-      </button>
-      {open && (
-        <div
-          className="px-4 pb-4 pt-2 space-y-4"
-          style={{ borderTop: "1px solid hsl(var(--border))" }}
-        >
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── ChatGPT Connection Section ────────────────────────────────────────────────
-
-function ChatGPTSection() {
-  const [status, setStatus] = useState<OpenAIStatus | null>(null);
-  const [connecting, setConnecting] = useState(false);
-
-  const refresh = useCallback(async () => {
-    const s = await openaiStatus();
-    setStatus(s);
-  }, []);
-
-  useEffect(() => { void refresh(); }, [refresh]);
-
-  // Poll for connection after initiating OAuth (browser flow)
-  useEffect(() => {
-    if (!connecting) return;
-    const interval = setInterval(async () => {
-      const s = await openaiStatus();
-      if (s?.connected) {
-        setStatus(s);
-        setConnecting(false);
-      }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [connecting]);
-
-  const handleConnect = async () => {
-    setConnecting(true);
-    await openaiConnect();
-  };
-
-  const handleDisconnect = async () => {
-    await openaiDisconnect();
-    setStatus({ connected: false, expires_at: null, connected_at: null });
-  };
-
-  const isConnected = status?.connected === true;
-  const expiresDate = status?.expires_at
-    ? new Date(status.expires_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
-    : null;
-
-  return (
-    <Section title="ChatGPT">
-      <Row
-        icon={<Sparkles size={16} />}
-        label={isConnected ? "ChatGPT Connected" : "Connect ChatGPT"}
-        description={
-          isConnected
-            ? `Used for shortcut transforms and repair/refine${expiresDate ? ` · expires ${expiresDate}` : ""}`
-            : connecting
-            ? "Waiting for browser sign-in..."
-            : "Optional. AirNote falls back to Groq when ChatGPT is not connected."
-        }
-        action={
-          <div className="flex items-center gap-2">
-            {isConnected && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded"
-                    style={{ background: "hsl(145 60% 15%)", color: "hsl(145 70% 65%)" }}>
-                Connected
-              </span>
-            )}
-            {connecting && (
-              <Loader2 size={14} className="animate-spin" style={{ color: "hsl(var(--muted-foreground))" }} />
-            )}
-            {isConnected ? (
-              <button
-                onClick={() => void handleDisconnect()}
-                className="px-3 py-1 rounded-md text-[11px] font-medium transition-all border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
-              >
-                Disconnect
-              </button>
-            ) : (
-              <button
-                onClick={() => void handleConnect()}
-                disabled={connecting}
-                className="px-3 py-1 rounded-md text-[11px] font-medium transition-all border border-transparent"
-                style={{ background: "hsl(var(--accent-violet))", color: "#fff", opacity: connecting ? 0.6 : 1 }}
-              >
-                {connecting ? "Connecting..." : "Connect"}
-              </button>
-            )}
-          </div>
-        }
-      />
-    </Section>
-  );
-}
-
 // ── Section routing (used by SettingsModal) ───────────────────────────────────
 
 export type SettingsSection =
@@ -354,10 +192,9 @@ export type SettingsSection =
   | "writing"
   | "hotkeys"
   | "models"
-  | "meeting"
+  | "developer"
   | "notifications"
   | "permissions"
-  | "api-keys"
   | "enterprise"
   | "debug"
   | "about";
@@ -365,10 +202,11 @@ export type SettingsSection =
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "hotkeys",      label: "Hotkeys"      },
   { id: "models",         label: "Models"         },
-  { id: "meeting",        label: "Meeting"        },
+  // Developer section hidden from the user-facing nav. The section type, panel,
+  // and all handlers are intentionally kept — re-add this entry to surface it.
+  // { id: "developer",      label: "Developer"      },
   { id: "notifications",  label: "Notifications"  },
   { id: "permissions",    label: "Permissions"     },
-  { id: "api-keys",    label: "API keys"      },
   { id: "enterprise",  label: "Enterprise"    },
   { id: "about",       label: "About"         },
 ];
@@ -524,6 +362,97 @@ function renderPromptTemplatePreview(
 
 // ── Enterprise section ────────────────────────────────────────────────────────
 
+/** Server URL override — toggle between the default (prod AirNote) backend and a
+ *  custom URL. The active URL governs the control-plane AND the local backend's
+ *  polish forwarding. Applying reloads the app so every endpoint re-resolves. */
+function ServerOverrideCard() {
+  const [mode, setMode] = useState<ServerUrlMode>(() => getServerUrlMode());
+  const [customUrl, setCustomUrl] = useState<string>(() => getServerUrlOverride());
+  const [busy, setBusy] = useState(false);
+  const active = getActiveServerUrl();
+
+  async function apply(nextMode: ServerUrlMode, nextUrl?: string) {
+    setBusy(true);
+    try {
+      await applyServerUrlConfig(nextMode, nextUrl);
+      window.location.reload(); // reload so cached endpoints pick up the new URL
+    } catch {
+      setBusy(false);
+    }
+  }
+
+  const segStyle = (on: boolean) => ({
+    background: on ? "hsl(var(--primary))" : "hsl(var(--muted))",
+    color: on ? "hsl(var(--primary-foreground))" : "hsl(var(--foreground))",
+    boxShadow: on ? "0 2px 8px -4px hsl(var(--primary) / 0.45)" : "inset 0 0 0 1px hsl(var(--border))",
+  });
+
+  return (
+    <div className="mb-7">
+      <p className="section-label px-1 mb-2.5 flex items-center gap-2">
+        <span className="inline-block w-1 h-1 rounded-full" style={{ background: "hsl(var(--accent-violet))" }} />
+        Workspace server
+      </p>
+      <div className="panel p-5 space-y-3">
+        <p className="text-[12px] text-muted-foreground leading-relaxed">
+          Where AirNote sends sign-in and dictation requests. Changing this reloads the app and may require signing in again.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => { setMode("default"); if (mode !== "default") void apply("default"); }}
+            className="text-[11.5px] font-semibold px-3 py-1.5 rounded-full transition-colors disabled:opacity-50"
+            style={segStyle(mode === "default")}
+          >
+            Default (prod AirNote)
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setMode("custom")}
+            className="text-[11.5px] font-semibold px-3 py-1.5 rounded-full transition-colors disabled:opacity-50"
+            style={segStyle(mode === "custom")}
+          >
+            Custom
+          </button>
+        </div>
+
+        {mode === "custom" && (
+          <div className="flex items-center gap-2">
+            <input
+              type="url"
+              value={customUrl}
+              disabled={busy}
+              onChange={(e) => setCustomUrl(e.target.value)}
+              placeholder="https://your-server.example.com"
+              className="input flex-1 text-[12px] font-mono"
+            />
+            <button
+              type="button"
+              disabled={busy || !customUrl.trim()}
+              onClick={() => void apply("custom", customUrl)}
+              className="btn-primary !py-1.5 !px-4 !text-[12px] flex-shrink-0"
+            >
+              Done
+            </button>
+          </div>
+        )}
+
+        <p className="text-[11px] text-muted-foreground">
+          Active:{" "}
+          <span className="font-mono" style={{ color: "hsl(var(--foreground) / 0.8)" }}>
+            {active}
+          </span>
+          {getServerUrlMode() === "default" && (
+            <span className="ml-1 opacity-60">· {DEFAULT_CLOUD_SERVER_URL.replace(/^https?:\/\//, "")}</span>
+          )}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function EnterpriseSection({ onDisconnect }: { onDisconnect?: () => void }) {
   const [connection, setConnection] = useState<EnterpriseConnection | null>(null);
   const [workspaces, setWorkspaces] = useState<
@@ -556,6 +485,8 @@ function EnterpriseSection({ onDisconnect }: { onDisconnect?: () => void }) {
 
   if (connection) {
     return (
+      <>
+      <ServerOverrideCard />
       <div className="mb-7">
         <p className="section-label px-1 mb-2.5 flex items-center gap-2">
           <span
@@ -701,27 +632,31 @@ function EnterpriseSection({ onDisconnect }: { onDisconnect?: () => void }) {
           </div>
         </div>
       </div>
+      </>
     );
   }
 
   return (
-    <div className="mb-7">
-      <p className="section-label px-1 mb-2.5 flex items-center gap-2">
-        <span
-          className="inline-block w-1 h-1 rounded-full"
-          style={{ background: "hsl(var(--accent-violet))" }}
-        />
-        Enterprise
-      </p>
-      <div className="panel p-5">
-        <EnterpriseConnectForm
-          compact
-          onConnected={(conn) => {
-            setConnection(conn);
-          }}
-        />
+    <>
+      <ServerOverrideCard />
+      <div className="mb-7">
+        <p className="section-label px-1 mb-2.5 flex items-center gap-2">
+          <span
+            className="inline-block w-1 h-1 rounded-full"
+            style={{ background: "hsl(var(--accent-violet))" }}
+          />
+          Enterprise
+        </p>
+        <div className="panel p-5">
+          <EnterpriseConnectForm
+            compact
+            onConnected={(conn) => {
+              setConnection(conn);
+            }}
+          />
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -732,6 +667,7 @@ interface SettingsViewProps {
   onAccessibility:   () => void;
   onInputMonitoring: () => void;
   onMicrophone:      () => void;
+  onScreenRecording: () => void;
   /** When provided, only the matching section renders (modal mode). */
   activeSection?:    SettingsSection;
   /** Hide the page header entirely (modal mode renders its own). */
@@ -750,6 +686,7 @@ export function SettingsView({
   onAccessibility,
   onInputMonitoring,
   onMicrophone,
+  onScreenRecording,
   activeSection,
   hideHeader,
   embedded,
@@ -765,6 +702,7 @@ export function SettingsView({
   const axGranted  = snapshot?.accessibility_granted    ?? false;
   const imGranted  = snapshot?.input_monitoring_granted ?? false;
   const micGranted = snapshot?.microphone_granted       ?? false;
+  const screenGranted = snapshot?.screen_recording_granted ?? false;
 
   const [notifPerm, setNotifPerm] = useState<NotifPermission>("unknown");
   const [notifBusy, setNotifBusy] = useState(false);
@@ -781,42 +719,6 @@ export function SettingsView({
       setServerSyncState("offline");
     }).catch(() => setServerSyncState("idle"));
   }, [currentSection]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Credential vault sync (local API keys → server DB) ─────────────────────
-  const [vaultStatus, setVaultStatus] = useState<CredentialVaultStatus | null>(null);
-  const [vaultSyncState, setVaultSyncState] = useState<SyncBadgeState>("idle");
-
-  const refreshVaultStatus = useCallback(async () => {
-    const status = await getCredentialVaultStatus();
-    setVaultStatus(status);
-    if (!status?.signed_in) {
-      setVaultSyncState("idle");
-      return;
-    }
-    if (!status.encryption_configured) {
-      setVaultSyncState("failed");
-      return;
-    }
-    const local = new Set(status.local_providers);
-    const serverActive = status.server_credentials.filter(
-      (c) => c.scope === "user" && c.status === "active",
-    );
-    const server = new Set(serverActive.map((c) => c.provider));
-    if (local.size > 0 && [...local].every((p) => server.has(p))) {
-      setVaultSyncState("synced");
-    } else if (local.size > 0 && server.size === 0) {
-      setVaultSyncState("failed");
-    } else if (server.size > 0) {
-      setVaultSyncState("synced");
-    } else {
-      setVaultSyncState("offline");
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!isOn("api-keys")) return;
-    void refreshVaultStatus();
-  }, [currentSection, refreshVaultStatus]);
 
   // ── Prefs state ─────────────────────────────────────────────────────────────
   const [prefs,        setPrefs]        = useState<Preferences | null>(null);
@@ -836,16 +738,6 @@ export function SettingsView({
   const promptLoadStartedRef = useRef(false);
 
   // ── API key state ────────────────────────────────────────────────────────────
-  const [deepgramKey,   setDeepgramKey]   = useState("");
-  const [groqKey,       setGroqKey]       = useState("");
-  const [cerebrasKey,   setCerebrasKey]   = useState("");
-  const [showDeepgram,  setShowDeepgram]  = useState(false);
-  const [showGroq,      setShowGroq]      = useState(false);
-  const [, setShowCerebras]  = useState(false);
-  const [keySaving,     setKeySaving]     = useState(false);
-  const [keySaved,      setKeySaved]      = useState(false);
-  const keySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   // ── Debug logs state ───────────────────────────────────────────────────────
   const [debugLogs,    setDebugLogs]    = useState<DebugLogs | null>(null);
   const [debugBusy,    setDebugBusy]    = useState(false);
@@ -859,6 +751,7 @@ export function SettingsView({
     update_channel: "stable",
     message_polish_mode: false,
     launch_at_login: false,
+    beta_mode: false,
   });
   useEffect(() => {
     void getDesktopPrefs().then(setDesktopPrefsState).catch(() => {});
@@ -881,6 +774,63 @@ export function SettingsView({
   const [devLog, setDevLog] = useState("");
   const [devLogPath, setDevLogPath] = useState("");
   const [devLogLoading, setDevLogLoading] = useState(false);
+
+  // ── Developer Problem Command state ──────────────────────────────────────
+  const [developerSettings, setDeveloperSettings] = useState<DeveloperSettings>(() => emptyDeveloperSettings());
+  const [developerWarnings, setDeveloperWarnings] = useState<DeveloperProfileWarning[]>([]);
+  const [developerLoaded, setDeveloperLoaded] = useState(false);
+  const [developerDirty, setDeveloperDirty] = useState(false);
+  const [developerBusy, setDeveloperBusy] = useState(false);
+  const [developerError, setDeveloperError] = useState("");
+
+  const updateDeveloperDraft = useCallback((updater: (prev: DeveloperSettings) => DeveloperSettings) => {
+    setDeveloperSettings((prev) => updater(prev));
+    setDeveloperDirty(true);
+    setDeveloperError("");
+  }, []);
+
+  const saveDeveloperDraft = useCallback(async (settings = developerSettings) => {
+    setDeveloperBusy(true);
+    setDeveloperError("");
+    try {
+      const response = await saveDeveloperSettings(settings);
+      setDeveloperSettings(response.settings);
+      setDeveloperWarnings(response.warnings);
+      setDeveloperDirty(false);
+    } catch (err) {
+      setDeveloperError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeveloperBusy(false);
+    }
+  }, [developerSettings]);
+
+  const addDeveloperProfile = useCallback(() => {
+    updateDeveloperDraft((prev) => ({
+      ...prev,
+      profiles: [...prev.profiles, createDeveloperProfile()],
+    }));
+  }, [updateDeveloperDraft]);
+
+  const updateDeveloperProfile = useCallback((
+    profileId: string,
+    patchProfile: (profile: DeveloperProjectProfile) => DeveloperProjectProfile,
+  ) => {
+    updateDeveloperDraft((prev) => ({
+      ...prev,
+      profiles: prev.profiles.map((profile) =>
+        profile.id === profileId
+          ? { ...patchProfile(profile), updated_at: Date.now() }
+          : profile,
+      ),
+    }));
+  }, [updateDeveloperDraft]);
+
+  const removeDeveloperProfile = useCallback((profileId: string) => {
+    updateDeveloperDraft((prev) => ({
+      ...prev,
+      profiles: prev.profiles.filter((profile) => profile.id !== profileId),
+    }));
+  }, [updateDeveloperDraft]);
 
   const loadDevLog = useCallback(async () => {
     setDevLogLoading(true);
@@ -961,19 +911,15 @@ export function SettingsView({
   // VK_RMENU (Right Alt) on Windows. The Fn / Globe key has no PC analog,
   // so it's hidden from the picker on Windows entirely.
   const isWindows = snapshot?.platform === "windows";
+  const platform = (snapshot?.platform ?? "macos") as Platform;
   const recordHotkeyLabel =
     recordHotkey === "right_option" ? (isWindows ? "Right Alt" : "Right Option") :
-    recordHotkey === "fn" ? "Fn" :
+    recordHotkey === "fn" ? (isWindows ? "Caps Lock" : "Fn") :
     "Caps Lock";
+  // Polish chord shown per-platform (cmd+shift+p → Ctrl+Shift+P on Windows).
+  const polishHotkeyLabel = formatKeycap(prefs?.polish_text_hotkey ?? "cmd+shift+p", platform);
 
-  function syncApiKeyInputs(nextPrefs: Preferences) {
-    setDeepgramKey(nextPrefs.deepgram_api_key ?? "");
-    setGroqKey(nextPrefs.groq_api_key ?? "");
-    setCerebrasKey(nextPrefs.cerebras_api_key ?? "");
-    setShowDeepgram(false);
-    setShowGroq(false);
-    setShowCerebras(false);
-  }
+
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion("?"));
@@ -1029,7 +975,6 @@ export function SettingsView({
       if (p) {
         setPrefs(p);
         setCustomPrompt(p.custom_prompt ?? "");
-        syncApiKeyInputs(p);
         if (!p.learning_enabled) {
           patchPreferences({ learning_enabled: true }).then((updated) => {
             if (updated) setPrefs(updated);
@@ -1037,12 +982,6 @@ export function SettingsView({
         }
       }
     });
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (keySaveTimer.current) clearTimeout(keySaveTimer.current);
-    };
   }, []);
 
   async function refreshDebugLogs() {
@@ -1062,63 +1001,21 @@ export function SettingsView({
     setTimeout(() => setDebugCopied((prev) => prev === kind ? null : prev), 1800);
   }
 
-  async function saveApiKeys() {
-    if (!prefs) return;
-    setKeySaving(true);
-    setSaveError("");
-    try {
-      const update: Partial<Preferences> = {};
-      const currentDeepgram = prefs.deepgram_api_key ?? "";
-      const currentGroq = prefs.groq_api_key ?? "";
-      const currentCerebras = prefs.cerebras_api_key ?? "";
-      const nextDeepgram = deepgramKey.trim();
-      const nextGroq = groqKey.trim();
-      const nextCerebras = cerebrasKey.trim();
-
-      if (nextDeepgram !== currentDeepgram) update.deepgram_api_key = nextDeepgram || null;
-      if (nextGroq !== currentGroq) update.groq_api_key = nextGroq || null;
-      if (nextCerebras !== currentCerebras) update.cerebras_api_key = nextCerebras || null;
-
-      if (Object.keys(update).length === 0) {
-        setKeySaved(true);
-        if (keySaveTimer.current) clearTimeout(keySaveTimer.current);
-        keySaveTimer.current = setTimeout(() => setKeySaved(false), 2500);
-        return;
-      }
-
-      const updated = await patchPreferences(update);
-      if (!updated) throw new Error("preferences update returned no data");
-      setPrefs(updated);
-      syncApiKeyInputs(updated);
-
-      setVaultSyncState("syncing");
-      const vault = await syncCredentialVault();
-      await refreshVaultStatus();
-      if (vault?.failed) {
-        const firstErr = vault.results?.find((r) => r.error)?.error;
-        throw new Error(
-          firstErr ?? "Keys saved locally but server vault sync failed — check you're signed in",
-        );
-      }
-
-      setKeySaved(true);
-      if (keySaveTimer.current) clearTimeout(keySaveTimer.current);
-      keySaveTimer.current = setTimeout(() => setKeySaved(false), 2500);
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Failed to save — is the backend running?");
-    } finally {
-      setKeySaving(false);
-    }
-  }
-
   async function patch(update: Partial<Preferences>) {
     if (!prefs) return;
+    const prev = prefs;
     setSaving(true);
     setSaveError("");
     try {
       const updated = await patchPreferences(update);
-      if (updated) setPrefs(updated);
+      if (!updated) {
+        setPrefs(prev);
+        setSaveError("Failed to save — is the backend running?");
+        return;
+      }
+      setPrefs(updated);
     } catch (err) {
+      setPrefs(prev);
       console.error("[patch] error:", err);
       setSaveError("Failed to save — is the backend running?");
     } finally {
@@ -1239,6 +1136,44 @@ export function SettingsView({
     }
   }, [activeSection, voicePrompt, promptBusy]);
 
+  useEffect(() => {
+    if (!isOn("developer") || developerLoaded || developerBusy) return;
+    let alive = true;
+    setDeveloperBusy(true);
+    setDeveloperError("");
+    getDeveloperSettings()
+      .then((response) => {
+        if (!alive) return;
+        setDeveloperSettings(response.settings);
+        setDeveloperWarnings(response.warnings);
+        setDeveloperLoaded(true);
+        setDeveloperDirty(false);
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setDeveloperLoaded(true);
+        setDeveloperError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (alive) setDeveloperBusy(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [activeSection, developerLoaded, developerBusy]);
+
+  const beginDeveloperCommandTest = useCallback(() => {
+    developerProblemBegin().catch((err) => {
+      setDeveloperError(err instanceof Error ? err.message : String(err));
+    });
+  }, []);
+
+  const endDeveloperCommandTest = useCallback(() => {
+    developerProblemEnd().catch((err) => {
+      setDeveloperError(err instanceof Error ? err.message : String(err));
+    });
+  }, []);
+
   const tone = (prefs?.tone_preset ?? "neutral") as ToneKey;
   const activeToneLabel = TONE_PRESETS.find((preset) => preset.key === tone)?.label ?? "Neutral";
   const promptDiff = useMemo(
@@ -1349,7 +1284,7 @@ export function SettingsView({
               })}
             </div>
             <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
-              Current: {recordHotkeyLabel}. macOS requires Input Monitoring for global hotkeys.
+              Current: {recordHotkeyLabel}.{!isWindows ? " macOS requires Input Monitoring for global hotkeys." : ""}
             </p>
             {saveError && (
               <p className="text-[11px] mt-2" style={{ color: "hsl(var(--destructive))" }}>
@@ -1878,69 +1813,331 @@ export function SettingsView({
 
         {/* ── Models ───────────────────────────────────── */}
         <Show when={isOn("models")}>
-        <Section title="Dictation Model" extra={<SyncBadge state={serverSyncState} />}>
-          <div className="px-5 py-4">
-            <div className="flex items-center gap-4">
-              <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
-                style={{ background: "hsl(var(--surface-4))" }}
-              >
-                <Sparkles size={16} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium text-foreground">Normal voice polish</p>
-                <p className="text-[12px] text-muted-foreground mt-0.5">
-                  Groq Llama 4 Scout polishes your hotkey dictation — tuned for Hinglish and complex sentences.
-                </p>
+        {/* On-device STT is whisper.cpp now (cross-platform), so the cloud-vs-local
+            picker shows on Windows too. The legacy Swift model block inside is
+            still macOS-only (guarded by `platform`/`isMac` within the component). */}
+        <DictationSttSection
+          prefs={prefs}
+          onPrefsUpdated={setPrefs}
+          platform={snapshot?.platform ?? "macos"}
+        />
+        {/* Dictation polish card hidden from the user-facing settings. Kept (not
+            deleted) and still type-checked — change `false` to `true` to restore. */}
+        {false && (
+          <Section title="Dictation polish" extra={<SyncBadge state={serverSyncState} />}>
+            <div className="px-5 py-4">
+              <div className="flex items-center gap-4">
+                <div
+                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
+                  style={{ background: "hsl(var(--surface-4))" }}
+                >
+                  <Sparkles size={16} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] font-medium text-foreground">GPT OSS 120B (Cerebras)</p>
+                  <p className="text-[12px] text-muted-foreground mt-0.5">
+                    {polishHotkeyLabel} polish always runs on airnote.emiactech.com using Cerebras GPT OSS 120B.
+                    {prefs?.stt_provider === "swift_local"
+                      ? " Speech recognition stays on this Mac (Swift)."
+                      : " Speech recognition uses Deepgram in the cloud."}
+                  </p>
+                </div>
               </div>
             </div>
-          </div>
+          </Section>
+        )}
 
-          <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+        </Show>
 
-          <div className="px-5 py-4">
-            <div className="flex items-center gap-4">
-              <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
-                style={{ background: "hsl(var(--surface-4))" }}
-              >
-                <Cloud size={16} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium text-foreground">Server polish runtime</p>
-                <p className="text-[12px] text-muted-foreground mt-0.5">
-                  Keeps Deepgram on this Mac, then sends the finished transcript to airnote.emiactech.com for polish.
-                </p>
-              </div>
+        {/* ── Developer Problem Command ─────────────────── */}
+        <Show when={isOn("developer")}>
+        <Section title="Developer problem command">
+          <Row
+            icon={<Code2 size={16} />}
+            label="Enable add-on"
+            description={
+              developerSettings.enabled
+                ? "On — problem requests use their own isolated solve flow."
+                : "Off — normal dictation, polish, retry, Divo, and meetings stay unchanged."
+            }
+            action={
               <button
                 type="button"
                 role="switch"
-                aria-checked={!!prefs?.server_runtime_enabled}
-                onClick={() => void patch({ server_runtime_enabled: !prefs?.server_runtime_enabled })}
-                className="relative w-11 h-6 rounded-full transition-colors shrink-0"
+                aria-checked={developerSettings.enabled}
+                disabled={developerBusy}
+                onClick={() => updateDeveloperDraft((prev) => ({ ...prev, enabled: !prev.enabled }))}
+                className="relative h-6 w-11 rounded-full transition-colors disabled:opacity-50"
                 style={{
-                  background: prefs?.server_runtime_enabled
+                  background: developerSettings.enabled
                     ? "hsl(var(--primary))"
                     : "hsl(var(--surface-4))",
                 }}
               >
                 <span
-                  className="absolute top-1 w-4 h-4 rounded-full transition-transform"
+                  className="absolute top-1 h-4 w-4 rounded-full transition-transform"
                   style={{
                     left: 4,
-                    transform: prefs?.server_runtime_enabled
-                      ? "translateX(20px)"
-                      : "translateX(0)",
+                    transform: developerSettings.enabled ? "translateX(20px)" : "translateX(0)",
                     background: "hsl(var(--foreground))",
                   }}
                 />
               </button>
+            }
+          />
+          <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+          <div className="px-5 py-4">
+            <div className="flex items-start gap-4">
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
+                style={{ background: "hsl(var(--surface-4))" }}
+              >
+                <Mic size={16} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[13px] font-medium text-foreground">Manual hold trigger</p>
+                <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
+                  Hold to record a developer problem. It transcribes first, resolves project context locally, then pastes only the final answer.
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={!developerSettings.enabled || developerDirty || developerBusy}
+                    onMouseDown={beginDeveloperCommandTest}
+                    onMouseUp={endDeveloperCommandTest}
+                    onMouseLeave={endDeveloperCommandTest}
+                    onTouchStart={beginDeveloperCommandTest}
+                    onTouchEnd={endDeveloperCommandTest}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition disabled:opacity-45"
+                    style={{
+                      background: "hsl(var(--primary))",
+                      color: "hsl(var(--primary-foreground))",
+                    }}
+                  >
+                    <Mic size={12} />
+                    Hold Developer Command
+                  </button>
+                  {developerDirty && (
+                    <span className="text-[11px] text-muted-foreground">
+                      Save settings before testing
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
-
           </div>
         </Section>
 
-        <ChatGPTSection />
+        <Section
+          title="Project context profiles"
+          extra={
+            <span className="ml-2 text-[10px] font-semibold px-2 py-0.5 rounded-full"
+              style={{ color: "hsl(var(--muted-foreground))", background: "hsl(var(--surface-4))" }}>
+              Local only
+            </span>
+          }
+        >
+          <div className="px-5 py-4 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[13px] font-medium text-foreground">Context is a short project gist</p>
+                <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
+                  Keep it to stack, architecture, known modules, conventions, and current goals. V1 does not learn from edits or sync wiki pages.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={addDeveloperProfile}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition"
+                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+              >
+                <Plus size={12} />
+                Add
+              </button>
+            </div>
+
+            {developerSettings.profiles.length === 0 ? (
+              <div
+                className="rounded-xl px-4 py-5 text-center text-[12px] text-muted-foreground"
+                style={{ background: "hsl(var(--surface-2))" }}
+              >
+                Add a project profile to let spoken aliases select context.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {developerSettings.profiles.map((profile) => {
+                  const contextCount = profile.context.length;
+                  const overLimit = contextCount > DEVELOPER_CONTEXT_MAX_CHARS;
+                  const profileWarnings = developerWarnings.filter((warning) => warning.profile_id === profile.id);
+                  return (
+                    <div
+                      key={profile.id}
+                      className="rounded-xl p-4"
+                      style={{
+                        background: "hsl(var(--surface-2))",
+                        border: "1px solid hsl(var(--border) / 0.55)",
+                      }}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="flex-1 min-w-0 grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <label className="block">
+                            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.05em]">
+                              Project name
+                            </span>
+                            <input
+                              value={profile.name}
+                              onChange={(e) => updateDeveloperProfile(profile.id, (p) => ({ ...p, name: e.target.value }))}
+                              className="mt-1 w-full rounded-lg px-3 py-2 text-[13px] outline-none"
+                              style={{
+                                background: "hsl(var(--surface-1))",
+                                color: "hsl(var(--foreground))",
+                                border: "1px solid hsl(var(--border))",
+                              }}
+                              placeholder="HRM8"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.05em]">
+                              Aliases
+                            </span>
+                            <textarea
+                              value={profile.aliases.join("\n")}
+                              onChange={(e) => updateDeveloperProfile(profile.id, (p) => ({
+                                ...p,
+                                aliases: splitDeveloperAliases(e.target.value),
+                              }))}
+                              className="mt-1 w-full min-h-[74px] resize-y rounded-lg px-3 py-2 text-[13px] outline-none"
+                              style={{
+                                background: "hsl(var(--surface-1))",
+                                color: "hsl(var(--foreground))",
+                                border: "1px solid hsl(var(--border))",
+                              }}
+                              placeholder={"hrm8\nhrm\nhrm desktop"}
+                            />
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={profile.enabled}
+                            onClick={() => updateDeveloperProfile(profile.id, (p) => ({ ...p, enabled: !p.enabled }))}
+                            className="relative h-6 w-11 rounded-full transition-colors"
+                            title={profile.enabled ? "Profile enabled" : "Profile disabled"}
+                            style={{
+                              background: profile.enabled
+                                ? "hsl(var(--primary))"
+                                : "hsl(var(--surface-4))",
+                            }}
+                          >
+                            <span
+                              className="absolute top-1 h-4 w-4 rounded-full transition-transform"
+                              style={{
+                                left: 4,
+                                transform: profile.enabled ? "translateX(20px)" : "translateX(0)",
+                                background: "hsl(var(--foreground))",
+                              }}
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeDeveloperProfile(profile.id)}
+                            className="w-8 h-8 rounded-lg inline-flex items-center justify-center transition"
+                            style={{ color: "hsl(var(--destructive))", background: "hsl(var(--surface-3))" }}
+                            title="Delete profile"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <label className="block mt-3">
+                        <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.05em]">
+                          Context brief
+                        </span>
+                        <textarea
+                          value={profile.context}
+                          maxLength={DEVELOPER_CONTEXT_MAX_CHARS}
+                          onChange={(e) => updateDeveloperProfile(profile.id, (p) => ({ ...p, context: e.target.value }))}
+                          className="mt-1 w-full min-h-[150px] resize-y rounded-lg px-3 py-2 text-[13px] leading-relaxed outline-none"
+                          style={{
+                            background: "hsl(var(--surface-1))",
+                            color: "hsl(var(--foreground))",
+                            border: overLimit
+                              ? "1px solid hsl(var(--destructive))"
+                              : "1px solid hsl(var(--border))",
+                          }}
+                          placeholder={"Stack:\nArchitecture:\nKnown modules:\nConventions:\nCurrent goals:"}
+                        />
+                        <div className="mt-1 flex items-center justify-between gap-2">
+                          <span className="text-[11px] text-muted-foreground">
+                            {contextCount.toLocaleString()} / {DEVELOPER_CONTEXT_MAX_CHARS.toLocaleString()} characters
+                          </span>
+                          {profile.enabled ? (
+                            <span className="status-pill--ready text-[10px]">Enabled</span>
+                          ) : (
+                            <span className="status-pill text-[10px]">Disabled</span>
+                          )}
+                        </div>
+                      </label>
+
+                      {profileWarnings.length > 0 && (
+                        <div className="mt-3 space-y-1.5">
+                          {profileWarnings.map((warning, index) => (
+                            <div
+                              key={`${warning.alias ?? "profile"}-${index}`}
+                              className="flex items-start gap-2 rounded-lg px-3 py-2 text-[11px]"
+                              style={{
+                                background: "hsl(38 80% 12% / 0.75)",
+                                color: "hsl(38 90% 72%)",
+                              }}
+                            >
+                              <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                              <span>{warning.alias ? `${warning.alias}: ` : ""}{warning.message}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div
+              className="rounded-xl px-4 py-3 text-[12px] leading-relaxed"
+              style={{ background: "hsl(var(--surface-2))", color: "hsl(var(--muted-foreground))" }}
+            >
+              <p className="font-semibold text-foreground mb-1">Future context source</p>
+              <p>Lark Wiki sync stays out of V1. When added later, it should be explicit, permissioned, source-labeled, and versioned.</p>
+            </div>
+
+            {developerError && (
+              <div
+                className="rounded-xl px-4 py-3 text-[12px]"
+                style={{ background: "hsl(var(--destructive) / 0.12)", color: "hsl(var(--destructive))" }}
+              >
+                {developerError}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <span className="text-[11px] text-muted-foreground">
+                {developerDirty ? "Unsaved developer settings" : developerLoaded ? "Developer settings saved" : "Loading developer settings"}
+              </span>
+              <button
+                type="button"
+                disabled={developerBusy || !developerDirty}
+                onClick={() => void saveDeveloperDraft()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition disabled:opacity-45"
+                style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+              >
+                {developerBusy ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                Save Developer Settings
+              </button>
+            </div>
+          </div>
+        </Section>
         </Show>
 
         {/* ── Notifications ─────────────────────────────── */}
@@ -2171,95 +2368,63 @@ export function SettingsView({
               </>
             )}
 
+            {/* Screen Recording row — macOS only. Gates ScreenCaptureKit, which
+                is how meetings capture system audio. */}
+            {!isWindows && (
+              <>
+                <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+                <div className="flex items-center gap-4 px-5 py-4">
+                  <div
+                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{
+                      background: "hsl(var(--surface-4))",
+                      color: "hsl(var(--muted-foreground))",
+                    }}
+                  >
+                    <Monitor size={16} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium text-foreground">Screen Recording</p>
+                    <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
+                      {screenGranted
+                        ? "Granted — AirNote can capture meeting audio."
+                        : "Required to record meeting audio (system sound). Opens System Settings → Privacy & Security → Screen Recording. You may need to reopen AirNote after granting."}
+                    </p>
+                  </div>
+                  <div className="flex-shrink-0 ml-4">
+                    {axSupported ? (
+                      screenGranted ? (
+                        <span
+                          className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1"
+                          style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
+                        >
+                          <Check size={11} /> Granted
+                        </span>
+                      ) : (
+                        <button
+                          onClick={onScreenRecording}
+                          className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
+                          style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+                        >
+                          Open Settings
+                        </button>
+                      )
+                    ) : (
+                      <span className="text-[12px] text-muted-foreground">macOS only</span>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+
           </div>
         </div>
         </Show>
 
-        {/* ── API Keys ──────────────────────────────────── */}
-        <Show when={isOn("api-keys")}>
-        <div className="mb-7">
-          <p className="section-label px-1 mb-2.5 flex items-center gap-2">
-            <span
-              className="inline-block w-1 h-1 rounded-full"
-              style={{ background: "hsl(var(--accent-violet))" }}
-            />
-            API Keys
-            <SyncBadge state={vaultSyncState} />
-          </p>
-          <div className="panel p-5 space-y-4">
-            <p className="text-[12px] text-muted-foreground leading-relaxed">
-              {vaultStatus?.signed_in
-                ? "Keys are saved on this device and synced to your AirNote account vault for server-side polish."
-                : `Stored on this ${isWindows ? "PC" : "Mac"} until you sign in — then they sync to your account vault.`}
-            </p>
-
-            <SettingsDisclosure
-              title="Required for dictation"
-              description="Groq polishes text. Deepgram transcribes audio."
-              icon={<Zap size={15} />}
-              defaultOpen
-              status={
-                prefs?.groq_api_key && prefs?.deepgram_api_key ? (
-                  <span className="status-pill--ready">Ready</span>
-                ) : (
-                  <span className="status-pill--warn">Missing</span>
-                )
-              }
-            >
-              <SecretInput
-                icon={<Zap size={12} style={{ color: "hsl(var(--primary))" }} />}
-                label="Groq API Key"
-                helper="Used by voice polish, repair, classification, meeting transcript cleanup & summaries, and fallbacks."
-                placeholder="gsk_..."
-                value={groqKey}
-                visible={showGroq}
-                onChange={setGroqKey}
-                onToggle={() => setShowGroq((v) => !v)}
-              />
-              <SecretInput
-                icon={<Cpu size={12} style={{ color: "hsl(var(--primary))" }} />}
-                label="Deepgram API Key"
-                helper="Speech-to-text for dictation."
-                placeholder="Token ..."
-                value={deepgramKey}
-                visible={showDeepgram}
-                onChange={setDeepgramKey}
-                onToggle={() => setShowDeepgram((v) => !v)}
-              />
-            </SettingsDisclosure>
-
-            {/* Save button */}
-            <div className="flex items-center justify-between pt-1">
-              {saveError && (
-                <p className="text-[12px]" style={{ color: "hsl(0 75% 75%)" }}>{saveError}</p>
-              )}
-              <div className="ml-auto flex items-center gap-3">
-                {keySaved && (
-                  <span className="text-[12px] flex items-center gap-1" style={{ color: "hsl(var(--muted-foreground))" }}>
-                    <Check size={12} /> Saved
-                  </span>
-                )}
-                <button
-                  onClick={saveApiKeys}
-                  disabled={keySaving}
-                  className="btn-accent !py-1.5 !px-4 !text-[12px] !h-8 flex items-center gap-1.5"
-                >
-                  {keySaving ? <Loader2 size={12} className="animate-spin" /> : null}
-                  Save Keys
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        </Show>
 
         {/* ── Enterprise ──────────────────────────────── */}
         <Show when={isOn("enterprise")}>
           <EnterpriseSection onDisconnect={onEnterpriseDisconnect} />
-        </Show>
-
-        <Show when={isOn("meeting")}>
-          <MeetingSettingsSection />
         </Show>
 
         {/* ── Debug ───────────────────────────────────── */}
@@ -2425,6 +2590,23 @@ export function SettingsView({
             icon={<Info size={16} />}
             label={`AirNote v${appVersion}`}
             description="Voice Polish Studio · Local-first · Tauri + Rust + React"
+          />
+
+          {/* User guide — every shortcut, dictation, polish & HUD, in one page. */}
+          <Row
+            icon={<BookOpen size={16} />}
+            label="User Guide & shortcuts"
+            description="All hotkeys, dictation, message polish & HUD placement — opens the full guide in your browser."
+            action={
+              <button
+                type="button"
+                onClick={() => void openExternal("https://airnote.emiactech.com/guide")}
+                className="rounded-lg border px-3 py-1.5 text-[13px] font-medium text-foreground transition-colors hover:bg-[hsl(var(--surface-3))]"
+                style={{ borderColor: "hsl(var(--surface-3))" }}
+              >
+                Open guide
+              </button>
+            }
           />
 
           {/* Diagnostics toggle — Sentry, opt-out. Requires restart. */}

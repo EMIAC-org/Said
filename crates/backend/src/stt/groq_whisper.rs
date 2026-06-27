@@ -80,7 +80,7 @@ pub async fn transcribe(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        let preview = &body[..body.len().min(300)];
+        let preview = said_core::text::truncate_utf8(&body, 300);
         return Err(format!("Groq whisper error {status}: {preview}"));
     }
 
@@ -130,12 +130,5 @@ fn logprob_to_confidence(avg_logprob: f64) -> f64 {
 }
 
 fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
+    said_core::text::truncate_utf8(s, max_bytes)
 }

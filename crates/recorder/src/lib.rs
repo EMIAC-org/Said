@@ -270,8 +270,20 @@ impl AudioRecorder {
             println!("[rec] opened input '{device_name}' at {native_rate}Hz {sample_format:?}");
 
             if let Ok(RecCmd::Stop(reply)) = cmd_rx.recv() {
+                let teardown_started = std::time::Instant::now();
+                // Pause before drop so CoreAudio is asked to stop IO explicitly.
+                // On macOS this is more reliable than relying on Drop alone,
+                // especially when Bluetooth devices are connected and CoreAudio
+                // device routing is being reconfigured.
+                if let Err(e) = stream.pause() {
+                    eprintln!("[rec] failed to pause input stream before drop: {e}");
+                }
                 // `stream` drops here → chunk_tx_cb drops → all senders gone → chunk_rx sees close
                 drop(stream);
+                let teardown_ms = teardown_started.elapsed().as_millis();
+                if teardown_ms >= 100 {
+                    eprintln!("[rec] input stream teardown took {teardown_ms}ms");
+                }
                 let data = match frames_for_reply.lock() {
                     Ok(frames) => frames.clone(),
                     Err(poison) => {
@@ -324,6 +336,20 @@ impl AudioRecorder {
         Some(reply_rx)
     }
 
+    /// True while this recorder still owns handles that can keep the platform
+    /// input stream alive. Used by desktop-side release cleanup to catch missed
+    /// hotkey-release transitions without touching CoreAudio from the main thread.
+    pub fn mic_stream_held(&self) -> bool {
+        self.cmd_tx.is_some() || self.chunk_tx.is_some() || self.level_tx.is_some()
+    }
+
+    /// Best-effort emergency release for a recorder that still owns its mic
+    /// stream after the app already moved past the normal stop point. The caller
+    /// should drain the returned receiver on a background thread and discard it.
+    pub fn release_mic_stream(&mut self) -> Option<StopReceiver> {
+        self.initiate_stop()
+    }
+
     pub fn collect_wav_result(reply_rx: StopReceiver) -> Result<Vec<u8>, String> {
         let (samples_f32, native_rate) = match reply_rx.recv_timeout(STOP_REPLY_TIMEOUT) {
             Ok(reply) => reply,
@@ -351,7 +377,10 @@ impl AudioRecorder {
 
         if max_amp < 0.0001 {
             eprintln!("[rec] audio is silence — microphone permission not granted?");
+            #[cfg(target_os = "macos")]
             eprintln!("[rec]   System Settings → Privacy & Security → Microphone");
+            #[cfg(target_os = "windows")]
+            eprintln!("[rec]   Settings → Privacy & security → Microphone (allow desktop apps)");
             return Err("audio is silence".to_string());
         }
 

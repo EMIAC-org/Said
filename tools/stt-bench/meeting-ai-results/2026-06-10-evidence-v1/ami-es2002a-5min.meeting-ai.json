@@ -1,0 +1,65 @@
+{
+  "case": "ami-es2002a-5min",
+  "transcript_path": "tools/stt-bench/public-meetings/ami-es2002a-5min/airnote-final-sortformer.current.first5min.transcript.txt",
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "draft_latency_ms": 4721,
+  "verify_latency_ms": 2991,
+  "filtered_mom": {
+    "summary": "The meeting served as a kickoff for a project to design a new remote control that is original, trendy, and user-friendly. The project manager, Laura, outlined a three-stage design process involving individual work followed by meetings. Attendees introduced themselves: Laura as project manager, David as an industrial designer, Andrew as a marketing expert, and Greg (or Craig) as a digital interface specialist. The team then participated in an icebreaker activity where they drew their favorite animals on a whiteboard and described their characteristics. Andrew drew a beagle and valued physical affection, personality, and good health, while another participant drew a monkey described as small, cute, and furry.",
+    "action_items": [],
+    "decisions": []
+  },
+  "raw_counts": {
+    "draft_actions": 0,
+    "draft_decisions": 0,
+    "verified_actions": 0,
+    "verified_decisions": 0,
+    "filtered_actions": 0,
+    "filtered_decisions": 0
+  },
+  "chat": [
+    {
+      "question": "What was the main topic of this meeting?",
+      "answer": "The main topic of the meeting was the kickoff for a project to design a new remote control that is original, trendy, and user-friendly. Laura, the project manager, outlined a three-stage design process involving individual work followed by meetings.",
+      "latency_ms": 1894
+    },
+    {
+      "question": "What concrete decisions were explicitly made? If none, say none.",
+      "answer": "Based on the transcript, no concrete decisions were explicitly made.",
+      "latency_ms": 1055
+    },
+    {
+      "question": "List only explicit action items or follow-ups, with owners only if the transcript gives them.",
+      "answer": "The transcript does not contain any explicit action items or follow-ups.",
+      "latency_ms": 1378
+    },
+    {
+      "question": "What important unresolved questions or risks remain?",
+      "answer": "Based on the transcript, no unresolved questions or risks are explicitly discussed. The meeting focuses on introductions, the project brief, the design process, and an icebreaker activity. There is no mention of outstanding issues, concerns, or risks.",
+      "latency_ms": 2358
+    },
+    {
+      "question": "Give a PM-ready brief with problem, approach, decisions, risks, and next steps. Mark uncertainty.",
+      "answer": "Based on the provided transcript, here is a PM-ready brief. The transcript does not contain enough information to fully populate all requested sections, so uncertainties are marked.\n\n**Problem**\nThe team is tasked with designing a new remote control that is \"original, trendy, and user-friendly\" [01:49].\n\n**Approach**\nThe project manager, Laura, outlined a three-stage design process. Each stage consists of individual work followed by a meeting [02:25]. The meeting served as the project kickoff [00:56].\n\n**Decisions**\nNo decisions were captured in the transcript.\n\n**Risks**\nNo risks were discussed in the transcript.\n\n**Next Steps**\nThe immediate next step captured is an icebreaker activity where team members draw their favorite animal on a whiteboard [02:34]. The transcript does not specify the next formal project step after this activity concludes.\n\n**Uncertainty**\n- The specific deliverables for each of the three design stages are not mentioned.\n- The timeline for the project beyond the 25-minute kickoff meeting is not defined.\n- The roles of the team members (David, Andrew, Greg/Craig) beyond their titles were not elaborated upon.",
+      "latency_ms": 6867
+    }
+  ],
+  "judge": {
+    "latency_ms": 4961,
+    "result": {
+      "summary_accuracy": 8,
+      "summary_coverage": 8,
+      "action_precision": 10,
+      "decision_precision": 10,
+      "chat_grounding": 9,
+      "overall": 9,
+      "issues": [
+        "Summary mentions 'Greg (or Craig)' but transcript shows Speaker 4 says 'I'm Greg' and Laura later says 'Craig', which is a transcription ambiguity, not a MoM error.",
+        "Chat answer for 'PM-ready brief' correctly marks uncertainty and does not invent facts.",
+        "No action items or decisions were invented; MoM and chat correctly reflect absence of explicit commitments.",
+        "Chat answer for 'What important unresolved questions or risks remain?' is accurate given transcript lacks such discussion."
+      ]
+    }
+  }
+}

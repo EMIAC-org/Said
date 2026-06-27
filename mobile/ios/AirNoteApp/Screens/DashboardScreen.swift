@@ -273,6 +273,7 @@ struct DashboardScreen: View {
         .buttonStyle(.plain)
     }
 
+
     private var recentCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader("Recent")

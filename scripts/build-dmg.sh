@@ -29,6 +29,8 @@ BUNDLE_DIR="$REPO_ROOT/target/$TARGET/release/bundle"
 APP_PATH="$BUNDLE_DIR/macos/AirNote.app"
 SIDECAR_SRC="$REPO_ROOT/target/$TARGET/release/airnote-backend"
 SIDECAR_DEST="$TAURI_DIR/binaries/airnote-backend-$TARGET"
+WHISPER_CLI_SRC="$REPO_ROOT/target/$TARGET/release/whisper-cli"
+WHISPER_CLI_DEST="$TAURI_DIR/binaries/whisper-cli-$TARGET"
 BUNDLE_ID="com.emiac.airnote.desktop"
 
 # Read the workspace version from Cargo.toml. Single source of truth — bumped
@@ -83,14 +85,25 @@ step "Build airnote-backend (release, $TARGET)"
 cd "$REPO_ROOT"
 # Bust the Cargo fingerprint cache for the binary entry point.
 touch crates/backend/src/main.rs
-cargo build -p said-backend --release --target "$TARGET"
-ok "airnote-backend built"
+cargo build -p said-backend --release --target "$TARGET" --features local-stt,metal
+ok "airnote-backend built (local-stt + metal)"
 
 step "Sync sidecar to Tauri externalBin slot"
 mkdir -p "$TAURI_DIR/binaries"
 cp "$SIDECAR_SRC" "$SIDECAR_DEST"
 chmod +x "$SIDECAR_DEST"
 ok "synced to $SIDECAR_DEST"
+
+# ── Build whisper-cli before Tauri validates externalBin ─────────────────────
+# Without this a packaged install cannot transcribe meetings on clean machines
+# where whisper-cli is not on PATH. Silero is fetched here too and copied into
+# the app resources after Tauri creates AirNote.app.
+step "Build & sync whisper-cli externalBin ($TARGET)"
+"$REPO_ROOT/scripts/build-whisper-cli.sh" "$TARGET"
+[ -x "$WHISPER_CLI_SRC" ] || fail "whisper-cli not built (see scripts/build-whisper-cli.sh)"
+cp "$WHISPER_CLI_SRC" "$WHISPER_CLI_DEST"
+chmod +x "$WHISPER_CLI_DEST"
+ok "synced to $WHISPER_CLI_DEST"
 
 # ── Bundle the DeepSeek meeting-summary key into the build ───────────────────
 # DeepSeek is the bundled meeting-AI provider; its key is baked in at compile
@@ -109,6 +122,31 @@ else
   warn "DEEPSEEK_API_KEY not set — meeting summaries will fail until a key is bundled"
 fi
 
+# ── Bundle the Deepgram STT + Gateway/LLM keys into the build ────────────────
+# These are baked at compile time via option_env! in said-core
+# (crates/core/src/{stt.rs,lib.rs}) so the shipped app ships with working keys —
+# end users never enter API keys. crates/core/build.rs has rerun-if-env-changed
+# directives, so cargo re-bakes when the values change. Pull from .env if not
+# already exported.
+# Only the Deepgram STT key is bundled. Polish runs server-side (Cerebras via the
+# server runtime), so no local LLM/gateway key is baked in. The `|| true` keeps a
+# missing/empty key from aborting the build under `set -euo pipefail` (a failed
+# grep in the command substitution would otherwise kill the whole script).
+if [ -f "$REPO_ROOT/.env" ]; then
+  for _bundle_key in DEEPGRAM_API_KEY; do
+    if [ -z "$(eval "echo \${$_bundle_key:-}")" ]; then
+      _bundle_val="$(grep -E "^${_bundle_key}=" "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"'' || true)"
+      [ -n "$_bundle_val" ] && export "$_bundle_key=$_bundle_val"
+    fi
+  done
+  unset _bundle_key _bundle_val
+fi
+if [ -n "${DEEPGRAM_API_KEY:-}" ]; then
+  ok "Deepgram STT key will be bundled into the build"
+else
+  warn "DEEPGRAM_API_KEY not set — Cloud dictation will fail until a key is bundled"
+fi
+
 # ── Tauri build ──────────────────────────────────────────────────────────────
 step "Run tauri build (--target $TARGET)"
 cd "$DESKTOP_DIR"
@@ -122,14 +160,11 @@ else
 fi
 ok "tauri build finished"
 
-# ── Bundle whisper-cli (meeting transcription engine) + Silero VAD ───────────
-# Without these a packaged install can't transcribe meetings (no whisper-cli on
-# a clean Mac's PATH) and VAD stays off (no Silero model). whisper-cli is copied
-# next to the app binary (Contents/MacOS); Silero goes in Contents/Resources/
-# models. The runtime resolver in meeting_engine.rs looks in both spots.
-step "Build & bundle whisper-cli + Silero VAD"
-"$REPO_ROOT/scripts/build-whisper-cli.sh" "$TARGET"
-WHISPER_CLI_SRC="$REPO_ROOT/target/$TARGET/release/whisper-cli"
+# ── Bundle Silero VAD and verify whisper-cli ─────────────────────────────────
+# Tauri externalBin embeds whisper-cli next to the app binary; Silero goes in
+# Contents/Resources/models. The runtime resolver in meeting_engine.rs checks
+# both app resource locations and the user's data models dir.
+step "Bundle whisper-cli + Silero VAD"
 [ -x "$WHISPER_CLI_SRC" ] || fail "whisper-cli not built (see scripts/build-whisper-cli.sh)"
 cp "$WHISPER_CLI_SRC" "$APP_PATH/Contents/MacOS/whisper-cli"
 chmod +x "$APP_PATH/Contents/MacOS/whisper-cli"

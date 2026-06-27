@@ -30,6 +30,10 @@ final class WarmDictationHost: ObservableObject {
     private let streamer = VoiceStreamingClient()
     private let gateway = GatewayEnvironment.makeClient()
     private var warmWindowTask: Task<Void, Never>?
+    /// Liveness heartbeat: while the mic is warm we stamp SharedStore every ~2s so
+    /// the keyboard (and the notch) can tell a live session from a force-quit one.
+    private var heartbeatTimer: Timer?
+    private var heartbeatTick = 0
     private var currentRunID = ""
     private var isStreaming = false
     private var maxLevel: Float = 0
@@ -72,6 +76,45 @@ final class WarmDictationHost: ObservableObject {
         DarwinSignal.shared.observe(DarwinSignal.sessionControl) { [weak self] in
             Task { @MainActor in self?.setSessionEnabled(SharedStore.sessionEnabled) }
         }
+        // Removed from the app switcher (deck): iOS posts this just before tearing
+        // the scene down. `willTerminate` never fires on a force-quit, but this does
+        // — and because the warm session keeps the app alive in the background, the
+        // handler gets to run and clear the notch before the process dies. We end
+        // the Activity synchronously (semaphore) because a fire-and-forget Task can
+        // lose the race with termination.
+        NotificationCenter.default.addObserver(
+            forName: UIScene.didDisconnectNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleSceneDisconnect() }
+        }
+    }
+
+    /// App is being removed from the deck. Tear down the warm engine + clear the
+    /// notch NOW. Keep `sessionEnabled` ON so the session auto-restarts next launch
+    /// (the user's intent persists — they removed the app, they didn't turn it off).
+    private func handleSceneDisconnect() {
+        stopHeartbeat()
+        warmWindowTask?.cancel()
+        warmWindowTask = nil
+        isStreaming = false
+        SharedStore.sessionWarmUntil = nil
+        warmUntil = nil
+        streamer.stopWarmEngine()
+        #if canImport(ActivityKit)
+        // Block briefly so the async end() completes before the process is killed —
+        // the validated pattern for ending Live Activities during scene teardown.
+        let semaphore = DispatchSemaphore(value: 0)
+        let held = liveActivity
+        liveActivity = nil
+        Task.detached {
+            await held?.end(nil, dismissalPolicy: .immediate)
+            for activity in Activity<DictationSessionAttributes>.activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 2.0)
+        #endif
     }
 
     /// Called (while foreground) right after a handoff dictation completes, to
@@ -121,11 +164,43 @@ final class WarmDictationHost: ObservableObject {
     func endWarmSession() {
         warmWindowTask?.cancel()
         warmWindowTask = nil
+        stopHeartbeat()
         isStreaming = false
         SharedStore.sessionWarmUntil = nil
         warmUntil = nil
         streamer.stopWarmEngine()
         syncLiveActivity()   // engine stopped → clear the notch
+    }
+
+    // MARK: Liveness heartbeat
+
+    /// Stamp `warmHeartbeatAt` now and every ~2s while warm. Idempotent. A live app
+    /// keeps this fresh; a force-quit stops it, so the keyboard's `warmHeartbeatFresh`
+    /// check flips to false within seconds and it stops waiting on the dead app.
+    /// Every ~16s it also refreshes the Live Activity so its `staleDate` stays ahead
+    /// of "now" while alive, and lapses (notch goes stale) shortly after a force-quit.
+    private func startHeartbeat() {
+        SharedStore.warmHeartbeatAt = Date()
+        guard heartbeatTimer == nil else { return }
+        let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+            SharedStore.warmHeartbeatAt = Date()   // synchronous, thread-safe, every 2s
+            Task { @MainActor in
+                guard let self else { return }
+                self.heartbeatTick += 1
+                if self.heartbeatTick % 8 == 0 { self.syncLiveActivity() }
+            }
+        }
+        // `.common` so it keeps firing in the background (the warm audio session
+        // keeps the run loop alive) and during scroll/scene transitions.
+        RunLoop.main.add(timer, forMode: .common)
+        heartbeatTimer = timer
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        heartbeatTick = 0
+        SharedStore.warmHeartbeatAt = nil   // immediately stale, not just on next check
     }
 
     // MARK: Session intent (Wispr-style persistent session)
@@ -193,9 +268,13 @@ final class WarmDictationHost: ObservableObject {
         // on and clears when turned off, without flickering off on a momentary
         // engine dip or a scene transition (which made it never appear).
         if SharedStore.sessionEnabled {
+            // staleDate ~25s ahead; the heartbeat re-syncs every ~16s so it stays
+            // fresh while the app is alive. After a force-quit nothing re-syncs, so
+            // the system marks the notch stale within seconds — signalling the dead
+            // session — and it fully clears the moment AirNote is reopened.
             let content = ActivityContent(
                 state: DictationSessionAttributes.ContentState(listening: false, active: true),
-                staleDate: nil
+                staleDate: Date().addingTimeInterval(25)
             )
             if let activity = liveActivity {
                 Task { await activity.update(content) }
@@ -376,6 +455,7 @@ final class WarmDictationHost: ObservableObject {
     // MARK: Warm window
 
     private func extendWarmWindow() {
+        startHeartbeat()   // keep proving the app is alive while the session is warm
         warmWindowTask?.cancel()
         warmWindowTask = nil
 

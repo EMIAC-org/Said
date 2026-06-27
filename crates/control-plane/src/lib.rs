@@ -5,21 +5,29 @@
 
 pub mod ai_worker;
 pub mod auth;
+pub mod cerebras;
 pub mod codex_client;
+pub mod deepinfra;
 pub mod format_recover;
 pub mod lark_client;
 pub mod lark_sync;
+pub mod legacy_personal_memory;
 pub mod meeting_hub;
 pub mod memory_hygiene;
 pub mod memory_hygiene_worker;
+pub mod message_helpers;
 pub mod notification_hub;
 pub mod notification_worker;
 pub mod number_format;
+pub mod openai_compat_polish;
 pub mod org_quota;
+pub mod profile;
+pub mod prompt_profile_telemetry;
 pub mod routes;
 pub mod store;
 pub mod stt;
 pub mod tenant;
+pub mod ttl_cache;
 pub mod vocab_worker;
 pub mod voice_polish_standalone;
 
@@ -28,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use axum::{
     Router,
-    extract::Path,
+    extract::{DefaultBodyLimit, Path},
     http::{Method, StatusCode, Uri, header},
     response::{Html, IntoResponse, Redirect},
     routing::{delete, get, patch, post},
@@ -69,9 +77,20 @@ pub struct AppState {
     pub hub: Arc<meeting_hub::MeetingHub>,
     pub notifications: Arc<notification_hub::NotificationHub>,
     pub deepgram_api_key: String,
+    /// Managed Deepgram STT key pool. Values come from DEEPGRAM_API_KEY_1..3,
+    /// with legacy DEEPGRAM_API_KEY as key-1 fallback. Never log values.
+    pub deepgram_api_keys: Vec<String>,
     /// Active STT vendor for server runtime (always "deepgram").
     pub stt_provider: String,
+    /// OpenAI API key for message-polish audio transcription.
+    pub openai_api_key: String,
+    /// OpenAI audio transcription model for message-polish audio.
+    pub openai_transcribe_model: String,
     pub groq_api_key: String,
+    /// Cerebras API key for server-runtime beta polish (CEREBRAS_API_KEY).
+    pub cerebras_api_key: String,
+    /// DeepInfra API key for server-runtime beta polish (DEEPINFRA_API_KEY).
+    pub deepinfra_api_key: String,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
     /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
     pub divo_base_url: String,
@@ -85,6 +104,34 @@ pub struct AppState {
     pub deepseek_api_key: String,
     pub deepseek_base_url: String,
     pub deepseek_message_polish_model: String,
+    /// In-memory per-account caches that collapse the per-dictation setup
+    /// round-trips (active-org/role resolution and runtime learning memory).
+    /// ~200 accounts → a plain map with a short TTL + invalidate-on-write is
+    /// plenty; no Redis. See `ttl_cache`.
+    pub tenant_cache: Arc<ttl_cache::TtlCache<uuid::Uuid, tenant::TenantContext>>,
+    pub runtime_memory_cache: Arc<ttl_cache::TtlCache<uuid::Uuid, routes::runtime::RuntimeMemory>>,
+    pub profile_cache:
+        Arc<ttl_cache::TtlCache<profile::ProfileCacheKey, profile::CachedRuntimeProfile>>,
+}
+
+/// TTL for the per-account setup caches. Short enough that org/role and learned
+/// vocab changes self-heal within seconds even without explicit invalidation;
+/// long enough that a burst of dictations all hit warm.
+pub const SETUP_CACHE_TTL: Duration = Duration::from_secs(60);
+const RUNTIME_VOICE_WAV_BODY_LIMIT_BYTES: usize = 24 * 1024 * 1024;
+
+/// Construct the in-memory setup caches (one place so every `AppState` builder
+/// stays in sync).
+pub fn new_setup_caches() -> (
+    Arc<ttl_cache::TtlCache<uuid::Uuid, tenant::TenantContext>>,
+    Arc<ttl_cache::TtlCache<uuid::Uuid, routes::runtime::RuntimeMemory>>,
+    Arc<ttl_cache::TtlCache<profile::ProfileCacheKey, profile::CachedRuntimeProfile>>,
+) {
+    (
+        Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+        Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+        Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+    )
 }
 
 // ── Router constructor ───────────────────────────────────────────────────────
@@ -144,10 +191,22 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::runtime::voice_polish),
         )
         .route(
+            "/v1/runtime/voice/polish/stream",
+            post(routes::runtime::voice_polish_stream),
+        )
+        .route(
             "/v1/runtime/message-polish",
             post(routes::runtime::message_polish),
         )
-        .route("/v1/runtime/voice/wav", post(routes::runtime::voice_wav))
+        .route(
+            "/v1/runtime/problem/solve",
+            post(routes::runtime::problem_solve),
+        )
+        .route(
+            "/v1/runtime/voice/wav",
+            post(routes::runtime::voice_wav)
+                .layer(DefaultBodyLimit::max(RUNTIME_VOICE_WAV_BODY_LIMIT_BYTES)),
+        )
         .route("/v1/runtime/status", get(routes::runtime::status))
         .route("/v1/runtime/runs", get(routes::runtime::list_runs))
         .route("/v1/runtime/runs/:id", get(routes::runtime::run_detail))
@@ -246,6 +305,34 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/orgs/:org_id/telemetry/users/:account_id/memory",
             get(routes::telemetry::user_memory),
         )
+        .route(
+            "/v1/orgs/:org_id/observability/summary",
+            get(routes::observability::org_observability_summary),
+        )
+        .route(
+            "/v1/orgs/:org_id/observability/dictation",
+            get(routes::observability::list_org_dictation),
+        )
+        .route(
+            "/v1/orgs/:org_id/observability/dictation/:recording_id",
+            get(routes::observability::get_org_dictation_detail),
+        )
+        .route(
+            "/v1/orgs/:org_id/observability/users/:account_id/aliases",
+            get(routes::observability::list_user_alias_events),
+        )
+        .route(
+            "/v1/runtime/observability/dictation",
+            post(routes::observability::ingest_dictation),
+        )
+        .route(
+            "/v1/runtime/observability/dictation/:recording_id",
+            patch(routes::observability::patch_dictation),
+        )
+        .route(
+            "/v1/runtime/observability/aliases",
+            post(routes::observability::ingest_aliases),
+        )
         // Enterprise — Desktop clients
         .route("/v1/clients/register", post(routes::clients::register))
         .route("/v1/clients/heartbeat", post(routes::clients::heartbeat))
@@ -319,7 +406,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/orgs/me", get(routes::orgs::me))
         .route("/v1/orgs/:org_id/activate", post(routes::orgs::activate))
         .route("/v1/orgs/deactivate", post(routes::orgs::deactivate))
-        .route("/v1/orgs/:org_id/members", get(routes::orgs::members))
+        .route(
+            "/v1/orgs/:org_id/members",
+            get(routes::orgs::members).post(routes::orgs::add_member),
+        )
+        .route(
+            "/v1/orgs/:org_id/members/:account_id",
+            patch(routes::orgs::set_member_role),
+        )
         // Enterprise — Meetings
         .route(
             "/v1/meetings",

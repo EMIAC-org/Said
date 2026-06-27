@@ -252,6 +252,7 @@ impl ActiveRecording {
                 word_count: self.total_word_count,
                 languages: self.languages_seen.clone(),
                 stt_mode,
+                origin: said_core::stt::TranscriptOrigin::DeepgramWs,
             },
         })
     }

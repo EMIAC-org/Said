@@ -40,6 +40,7 @@ export interface AppSnapshot {
   accessibility_granted:    boolean;
   microphone_granted:       boolean;
   input_monitoring_granted: boolean;
+  screen_recording_granted: boolean;
   modes: Mode[];
   last_result: LastResult | null;
   last_error: string | null;
@@ -59,6 +60,11 @@ export interface SttRuntimeInfo {
   preferred_provider: string;
   effective_provider: string;
   deepgram_configured: boolean;
+  swift_installed: boolean;
+  swift_ready: boolean;
+  whisper_installed: boolean;
+  whisper_ready: boolean;
+  whisper_vad_installed: boolean;
 }
 
 export interface Preferences {
@@ -81,9 +87,10 @@ export interface Preferences {
   gemini_api_key:     string | null;
   groq_api_key:       string | null;
   cerebras_api_key:   string | null;
-  /** LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex" */
+  deepinfra_api_key:  string | null;
+  /** LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex" */
   llm_provider:       string;
-  /** STT routing: "deepgram" */
+  /** STT routing: "deepgram" | "swift_local" | "whisper_local" */
   stt_provider:       string;
 }
 
@@ -106,10 +113,25 @@ export interface PrefsUpdate {
   gemini_api_key?:     string | null;
   groq_api_key?:       string | null;
   cerebras_api_key?:   string | null;
-  /** LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex" */
+  deepinfra_api_key?:  string | null;
+  /** LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex" */
   llm_provider?:       string;
-  /** STT routing: "deepgram" */
+  /** STT routing: "deepgram" | "swift_local" | "whisper_local" */
   stt_provider?:       string;
+}
+
+export interface PolishModelEntry {
+  key: string;
+  label: string;
+  provider: string;
+  model_id: string;
+  beta_only: boolean;
+  available: boolean;
+}
+
+export interface ListPolishModelsResponse {
+  models: PolishModelEntry[];
+  selected_model: string;
 }
 
 export interface PromptTemplateResponse {

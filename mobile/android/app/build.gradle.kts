@@ -21,8 +21,8 @@ android {
     buildTypes {
         debug {
             buildConfigField("Boolean", "USE_MOCK_GATEWAY", "false")
-            buildConfigField("String", "GATEWAY_BASE_URL", "\"http://192.168.1.142:3100\"")
-            manifestPlaceholders["usesCleartextTraffic"] = "true"
+            buildConfigField("String", "GATEWAY_BASE_URL", "\"https://airnote-dev.103.180.163.41.sslip.io\"")
+            manifestPlaceholders["usesCleartextTraffic"] = "false"
         }
         release {
             isMinifyEnabled = false

@@ -54,25 +54,14 @@ jobs:
           npm install --package-lock-only --ignore-scripts
           npm ci
 
-      - name: Build airnote-backend sidecar
-        shell: pwsh
-        run: |
-          # Package is still `said-backend`; the sidecar bin is `airnote-backend`
-          # (matches externalBin in tauri.conf.json). Build just that bin.
-          cargo build -p said-backend --bin airnote-backend --release --target x86_64-pc-windows-msvc
-          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
-          Copy-Item `
-            "target/x86_64-pc-windows-msvc/release/airnote-backend.exe" `
-            "desktop/src-tauri/binaries/airnote-backend-x86_64-pc-windows-msvc.exe"
-
       - name: Build AirNote.exe + NSIS installer
-        working-directory: desktop
+        shell: pwsh
         env:
-          # Signing the updater bundle is required because the updater plugin is
-          # configured; it only writes a local .sig and publishes nothing.
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri:build -- --target x86_64-pc-windows-msvc
+        run: pwsh scripts/build-windows.ps1 -RequireInstaller
 
       - name: Stage installer
         shell: pwsh

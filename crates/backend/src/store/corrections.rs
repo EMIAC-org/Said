@@ -51,6 +51,14 @@ pub fn extract_diffs(ai_output: &str, user_kept: &str) -> Vec<(String, String)> 
 /// Upsert word corrections for a user.  If the same `wrong_text` already exists,
 /// bump the count and update `correct_text` to the latest preference.
 pub fn upsert(pool: &DbPool, user_id: &str, diffs: &[(String, String)]) {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "word_corrections",
+            "upsert",
+            "corrections::upsert",
+        );
+        return;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return,
@@ -138,6 +146,14 @@ pub fn load_all(pool: &DbPool, user_id: &str) -> Vec<Correction> {
 
 /// Backfill word_corrections from existing edit_events (runs once at startup).
 pub fn backfill_from_edit_events(pool: &DbPool) {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "word_corrections",
+            "backfill_from_edit_events",
+            "corrections::backfill_from_edit_events",
+        );
+        return;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return,

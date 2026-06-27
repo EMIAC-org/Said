@@ -486,76 +486,19 @@ pub async fn add_doc_content(
     let token = get_app_access_token(app_id, app_secret).await?;
 
     // ── Build blocks ───────────────────────────────────────────────────────
-    let mut blocks: Vec<serde_json::Value> = Vec::new();
-
-    // H1: meeting title
-    blocks.push(heading_block(3, meeting_title));
-
-    // H2: Summary
-    blocks.push(heading_block(4, "Summary"));
-    blocks.push(text_block(summary));
-
-    // H2: Action Items (only if non-empty)
-    if !tasks.is_empty() {
-        blocks.push(heading_block(4, "Action Items"));
-        for (title, assignee) in tasks {
-            let label = if let Some(name) = assignee {
-                format!("{title} \u{2014} {name}")
-            } else {
-                title.clone()
-            };
-            blocks.push(bullet_block(&label));
-        }
-    }
-
-    // H2: Decisions (only if non-empty)
-    if !decisions.is_empty() {
-        blocks.push(heading_block(4, "Decisions"));
-        for d in decisions {
-            blocks.push(bullet_block(d));
-        }
-    }
+    let mut blocks = build_minutes_blocks(meeting_title, "", summary, tasks, decisions);
 
     // H2: Transcript
-    blocks.push(heading_block(4, "Transcript"));
-    for (speaker, text) in transcript {
-        blocks.push(text_block(&format!("[{speaker}]: {text}")));
+    if !transcript.is_empty() {
+        blocks.push(divider_block());
+        blocks.push(heading_block(4, "Transcript"));
+        for (speaker, text) in transcript {
+            blocks.push(text_block(&format!("{speaker}: {text}")));
+        }
     }
 
     // ── Send in batches of 50 ──────────────────────────────────────────────
-    let url = format!(
-        "https://open.larksuite.com/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children"
-    );
-    let client = reqwest::Client::new();
-
-    for chunk in blocks.chunks(50) {
-        let body = serde_json::json!({ "children": chunk });
-
-        let resp = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Content-Type", "application/json; charset=utf-8")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                tracing::error!("add_doc_content request failed: {e}");
-                format!("add_doc_content request failed: {e}")
-            })?;
-
-        let envelope: LarkEnvelope<serde_json::Value> = resp.json().await.map_err(|e| {
-            tracing::error!("add_doc_content parse failed: {e}");
-            format!("add_doc_content parse failed: {e}")
-        })?;
-
-        if envelope.code != 0 {
-            let msg = envelope.msg.as_deref().unwrap_or("unknown");
-            tracing::error!("add_doc_content API error {}: {msg}", envelope.code);
-            return Err(format!("Lark API error {}: {msg}", envelope.code));
-        }
-    }
-
-    Ok(())
+    insert_blocks_with_token(&token, document_id, &blocks).await
 }
 
 /// Send a rich-text (post) message to a Lark user.
@@ -1280,18 +1223,6 @@ fn text_block(text: &str) -> serde_json::Value {
     })
 }
 
-fn bullet_block(text: &str) -> serde_json::Value {
-    // block_type 12 (bullet) MUST use the "bullet" key — using "text" makes Lark
-    // reject the whole children batch with "invalid param" (1770001). Lark renders
-    // the bullet glyph itself, so no manual "•" prefix.
-    serde_json::json!({
-        "block_type": 12,
-        "bullet": {
-            "elements": [{ "text_run": { "content": text } }]
-        }
-    })
-}
-
 /// A horizontal divider block.
 fn divider_block() -> serde_json::Value {
     serde_json::json!({ "block_type": 22, "divider": {} })
@@ -1334,6 +1265,248 @@ fn bullet_rich_block(text: &str) -> serde_json::Value {
     serde_json::json!({ "block_type": 12, "bullet": { "elements": inline_elements(text) } })
 }
 
+/// An ordered-list block (block_type 13 + "ordered") with inline `**bold**`.
+fn ordered_rich_block(text: &str) -> serde_json::Value {
+    serde_json::json!({ "block_type": 13, "ordered": { "elements": inline_elements(text) } })
+}
+
+/// A quote block (block_type 15 + "quote") for the top-level takeaway.
+fn quote_rich_block(text: &str) -> serde_json::Value {
+    serde_json::json!({ "block_type": 15, "quote": { "elements": inline_elements(text) } })
+}
+
+/// A todo/checklist block (block_type 17 + "todo") for action trackers.
+fn todo_rich_block(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "block_type": 17,
+        "todo": {
+            "elements": inline_elements(text),
+            "style": { "done": false }
+        }
+    })
+}
+
+fn numbered_section_title(line: &str) -> Option<&str> {
+    let (digits, rest) = line.split_once(". ")?;
+    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let rest = rest.trim();
+    if rest.is_empty() || rest.len() > 96 {
+        return None;
+    }
+    if rest.ends_with('.') || rest.ends_with('?') || rest.ends_with('!') {
+        return None;
+    }
+    Some(rest)
+}
+
+fn clean_summary_line_for_snapshot(line: &str) -> Option<String> {
+    let mut trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    while let Some(rest) = trimmed.strip_prefix('#') {
+        trimmed = rest.trim_start();
+    }
+    if let Some(rest) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .or_else(|| trimmed.strip_prefix("+ "))
+        .or_else(|| trimmed.strip_prefix("\u{2022} "))
+    {
+        trimmed = rest.trim();
+    }
+    if let Some(rest) = numbered_section_title(trimmed) {
+        trimmed = rest;
+    }
+    let cleaned = trimmed.replace("**", "").trim().to_string();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let lower = cleaned.to_ascii_lowercase();
+    let looks_like_section_label = cleaned.len() <= 80
+        && !cleaned.contains(':')
+        && !cleaned.ends_with('.')
+        && matches!(
+            lower.as_str(),
+            "summary"
+                | "executive summary"
+                | "recap"
+                | "overview"
+                | "meeting context"
+                | "key discussion"
+                | "core discussion"
+                | "important background and current state"
+                | "key questions, concerns, and clarifications"
+        );
+    if looks_like_section_label {
+        return None;
+    }
+
+    Some(cleaned)
+}
+
+fn truncate_at_word_boundary(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+
+    let mut limit_byte = text.len();
+    for (idx, _) in text.char_indices().take(max_chars + 1) {
+        limit_byte = idx;
+    }
+    let candidate = text[..limit_byte].trim_end();
+    if let Some(sentence_end) = candidate.rfind(". ") {
+        if sentence_end > 120 {
+            return candidate[..=sentence_end].trim().to_string();
+        }
+    }
+    if let Some(word_end) = candidate.rfind(' ') {
+        if word_end > 120 {
+            return format!("{}...", candidate[..word_end].trim());
+        }
+    }
+    format!("{}...", candidate.trim())
+}
+
+fn executive_snapshot(summary_md: &str) -> Option<String> {
+    let mut lines = Vec::new();
+    let mut chars = 0usize;
+    for raw in summary_md.lines() {
+        let Some(cleaned) = clean_summary_line_for_snapshot(raw) else {
+            continue;
+        };
+        chars += cleaned.chars().count();
+        lines.push(cleaned);
+        if chars >= 420 || lines.len() >= 3 {
+            break;
+        }
+    }
+    let joined = lines.join(" ");
+    if joined.trim().is_empty() {
+        None
+    } else {
+        Some(truncate_at_word_boundary(joined.trim(), 520))
+    }
+}
+
+#[derive(Debug)]
+struct SummarySection {
+    title: String,
+    lines: Vec<String>,
+}
+
+fn is_summary_heading(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if let Some(rest) = trimmed.strip_prefix("### ") {
+        return Some(rest.trim().to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("## ") {
+        return Some(rest.trim().to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("# ") {
+        return Some(rest.trim().to_string());
+    }
+    numbered_section_title(trimmed).map(str::to_string)
+}
+
+fn clean_summary_content_line(line: &str) -> Option<String> {
+    let mut trimmed = line.trim();
+    if trimmed.is_empty() || is_summary_heading(trimmed).is_some() {
+        return None;
+    }
+    if let Some(rest) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .or_else(|| trimmed.strip_prefix("+ "))
+        .or_else(|| trimmed.strip_prefix("\u{2022} "))
+    {
+        trimmed = rest.trim();
+    }
+    let cleaned = trimmed.replace("**", "").trim().to_string();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+fn parse_summary_sections(summary_md: &str) -> Vec<SummarySection> {
+    let mut sections: Vec<SummarySection> = Vec::new();
+    let mut current = SummarySection {
+        title: "Overview".to_string(),
+        lines: Vec::new(),
+    };
+
+    for raw in summary_md.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(title) = is_summary_heading(trimmed) {
+            if !current.lines.is_empty() || current.title != "Overview" {
+                sections.push(current);
+            }
+            current = SummarySection {
+                title,
+                lines: Vec::new(),
+            };
+            continue;
+        }
+        if let Some(line) = clean_summary_content_line(trimmed) {
+            current.lines.push(line);
+        }
+    }
+
+    if !current.lines.is_empty() || current.title != "Overview" {
+        sections.push(current);
+    }
+    sections
+}
+
+fn section_title_matches(title: &str, needles: &[&str]) -> bool {
+    let lower = title.to_ascii_lowercase();
+    needles.iter().any(|needle| lower.contains(needle))
+}
+
+fn first_section_line<'a>(sections: &'a [SummarySection], needles: &[&str]) -> Option<&'a str> {
+    sections
+        .iter()
+        .find(|section| section_title_matches(&section.title, needles))
+        .and_then(|section| section.lines.first())
+        .map(String::as_str)
+}
+
+fn collect_summary_lines(
+    sections: &[SummarySection],
+    include_needles: &[&str],
+    exclude_needles: &[&str],
+    max_lines: usize,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    for section in sections {
+        if !include_needles.is_empty() && !section_title_matches(&section.title, include_needles) {
+            continue;
+        }
+        if !exclude_needles.is_empty() && section_title_matches(&section.title, exclude_needles) {
+            continue;
+        }
+        for line in &section.lines {
+            let clipped = truncate_at_word_boundary(line, 240);
+            if clipped.trim().is_empty() || lines.iter().any(|existing| existing == &clipped) {
+                continue;
+            }
+            lines.push(clipped);
+            if lines.len() >= max_lines {
+                return lines;
+            }
+        }
+    }
+    lines
+}
+
 /// Render the LLM's lightweight Markdown summary into Docx blocks: ATX headings
 /// (`#`/`##`/`###`), bullet lists (`-`/`*`/`+`/`•`), and paragraphs, with
 /// `**bold**` spans. Blank lines are dropped. This makes the MoM read like a
@@ -1353,6 +1526,8 @@ fn markdown_to_blocks(md: &str) -> Vec<serde_json::Value> {
         } else if let Some(rest) = trimmed.strip_prefix("# ") {
             // Demote H1 so it doesn't compete with the document title.
             blocks.push(rich_block(4, "heading2", rest.trim()));
+        } else if let Some(rest) = numbered_section_title(trimmed) {
+            blocks.push(rich_block(5, "heading3", rest));
         } else if let Some(rest) = trimmed
             .strip_prefix("- ")
             .or_else(|| trimmed.strip_prefix("* "))
@@ -1367,9 +1542,9 @@ fn markdown_to_blocks(md: &str) -> Vec<serde_json::Value> {
     blocks
 }
 
-/// Build the full block list for a beautiful meeting-minutes doc: title,
-/// metadata line, divider, summary (rendered Markdown), Action Items, Decisions.
-/// Pure (no I/O) so it can be unit-tested.
+/// Build the full block list for a polished meeting brief. The shape is
+/// outcome-first: skim-friendly snapshot, action tracker, decisions, then the
+/// richer discussion notes. Pure (no I/O) so it can be unit-tested.
 pub fn build_minutes_blocks(
     title: &str,
     meta_line: &str,
@@ -1377,38 +1552,130 @@ pub fn build_minutes_blocks(
     action_items: &[(String, Option<String>)],
     decisions: &[String],
 ) -> Vec<serde_json::Value> {
+    let title = title.trim();
+    let title = if title.is_empty() {
+        "Meeting Minutes"
+    } else {
+        title
+    };
     let mut blocks = vec![heading_block(3, title)];
     if !meta_line.trim().is_empty() {
         blocks.push(text_block(meta_line));
     }
     blocks.push(divider_block());
 
+    let sections = parse_summary_sections(summary_md);
+
+    blocks.push(heading_block(4, "Executive Brief"));
+    match executive_snapshot(summary_md) {
+        Some(snapshot) => blocks.push(quote_rich_block(&format!("**Bottom line:** {snapshot}"))),
+        None => blocks.push(quote_rich_block(
+            "**Bottom line:** No generated summary is available yet.",
+        )),
+    }
+
+    if let Some(situation) = first_section_line(
+        &sections,
+        &["context", "overview", "background", "current state"],
+    ) {
+        blocks.push(heading_block(5, "Situation"));
+        blocks.push(text_block(&truncate_at_word_boundary(situation, 360)));
+    }
+
+    let key_points = collect_summary_lines(
+        &sections,
+        &[],
+        &[
+            "risk",
+            "caution",
+            "open",
+            "question",
+            "decision",
+            "alignment",
+            "action",
+            "next",
+            "follow",
+            "final interpretation",
+            "suggested",
+        ],
+        5,
+    );
+    if !key_points.is_empty() {
+        blocks.push(heading_block(5, "Key Points"));
+        for point in key_points {
+            blocks.push(bullet_rich_block(&point));
+        }
+    }
+
+    let risks = collect_summary_lines(
+        &sections,
+        &[
+            "risk",
+            "caution",
+            "open",
+            "question",
+            "concern",
+            "unresolved",
+        ],
+        &[],
+        4,
+    );
+    if !risks.is_empty() {
+        blocks.push(heading_block(5, "Risks / Open Questions"));
+        for risk in risks {
+            blocks.push(bullet_rich_block(&risk));
+        }
+    }
+
+    blocks.push(divider_block());
+    blocks.push(heading_block(4, "Action Tracker"));
+    let mut wrote_action = false;
+    for (item_title, owner) in action_items {
+        let item_title = item_title.trim();
+        if item_title.is_empty() {
+            continue;
+        }
+        wrote_action = true;
+        let line = match owner {
+            Some(o) if !o.trim().is_empty() => {
+                format!("**{}** - {}", o.trim(), item_title)
+            }
+            _ => format!("**Unassigned** - {item_title}"),
+        };
+        blocks.push(todo_rich_block(&line));
+    }
+    if !wrote_action {
+        blocks.push(text_block("No confirmed action items captured."));
+    }
+
+    blocks.push(heading_block(4, "Decision Log"));
+    let mut wrote_decision = false;
+    for d in decisions {
+        let decision = d.trim();
+        if decision.is_empty() {
+            continue;
+        }
+        wrote_decision = true;
+        blocks.push(ordered_rich_block(decision));
+    }
+    if !wrote_decision {
+        blocks.push(text_block("No explicit decisions captured."));
+    }
+
     if !summary_md.trim().is_empty() {
-        blocks.push(heading_block(4, "\u{1F4CC} Summary"));
+        blocks.push(divider_block());
+        blocks.push(heading_block(4, "Detailed Notes"));
         blocks.extend(markdown_to_blocks(summary_md));
     }
 
-    if !action_items.is_empty() {
-        blocks.push(heading_block(4, "\u{2705} Action Items"));
-        for (item_title, owner) in action_items {
-            let line = match owner {
-                Some(o) if !o.trim().is_empty() => {
-                    format!("**{}** \u{2014} {}", o.trim(), item_title.trim())
-                }
-                _ => item_title.trim().to_string(),
-            };
-            blocks.push(bullet_rich_block(&line));
-        }
-    }
-
-    if !decisions.is_empty() {
-        blocks.push(heading_block(4, "\u{1F3AF} Decisions"));
-        for d in decisions {
-            if !d.trim().is_empty() {
-                blocks.push(bullet_rich_block(d.trim()));
-            }
-        }
-    }
+    blocks.push(divider_block());
+    blocks.push(heading_block(4, "Review & Source"));
+    blocks.push(bullet_rich_block(
+        "**Source:** Generated by AirNote from the meeting transcript.",
+    ));
+    blocks.push(bullet_rich_block(
+        "**Review:** Confirm owners, deadlines, and any sensitive wording before sharing externally.",
+    ));
 
     blocks
 }
@@ -1537,13 +1804,14 @@ mod tests {
 
     #[test]
     fn markdown_to_blocks_maps_headings_bullets_and_text() {
-        let blocks = markdown_to_blocks("## Section\n- first\n* second\nplain line\n\n### Sub");
+        let blocks =
+            markdown_to_blocks("## Section\n- first\n* second\nplain line\n\n### Sub\n4. Risks");
         let types: Vec<i64> = blocks
             .iter()
             .map(|b| b["block_type"].as_i64().unwrap())
             .collect();
-        // heading2, bullet, bullet, text, heading3 — blank line dropped.
-        assert_eq!(types, vec![4, 12, 12, 2, 5]);
+        // heading2, bullet, bullet, text, heading3, numbered heading — blank line dropped.
+        assert_eq!(types, vec![4, 12, 12, 2, 5, 5]);
         assert_eq!(
             blocks[0]["heading2"]["elements"][0]["text_run"]["content"],
             "Section"
@@ -1552,10 +1820,14 @@ mod tests {
         // (1770001) and fails the entire children batch (empty doc).
         assert!(blocks[1]["bullet"].is_object());
         assert!(blocks[1]["text"].is_null());
+        assert_eq!(
+            blocks[5]["heading3"]["elements"][0]["text_run"]["content"],
+            "Risks"
+        );
     }
 
     #[test]
-    fn build_minutes_blocks_has_title_summary_actions_decisions() {
+    fn build_minutes_blocks_has_premium_sections_actions_decisions() {
         let blocks = build_minutes_blocks(
             "Weekly Sync",
             "Jun 15, 2026 10:00 UTC \u{00B7} 30 min",
@@ -1569,11 +1841,43 @@ mod tests {
             blocks[0]["heading1"]["elements"][0]["text_run"]["content"],
             "Weekly Sync"
         );
-        // The owner is bolded inside the action-item bullet.
+        // The owner is bolded inside a todo/checklist block.
         let json = serde_json::to_string(&blocks).unwrap();
-        assert!(json.contains("\u{2705} Action Items"));
-        assert!(json.contains("\u{1F3AF} Decisions"));
+        assert!(json.contains("Executive Brief"));
+        assert!(json.contains("Action Tracker"));
+        assert!(json.contains("Detailed Notes"));
+        assert!(json.contains("Review & Source"));
         assert!(json.contains("Rahul"));
         assert!(json.contains("Use DeepSeek for summaries"));
+        assert!(blocks.iter().any(|b| b["block_type"] == 15));
+        assert!(blocks.iter().any(|b| b["block_type"] == 17));
+        assert!(blocks.iter().any(|b| b["block_type"] == 13));
+    }
+
+    #[test]
+    fn build_minutes_blocks_has_clear_empty_states() {
+        let blocks = build_minutes_blocks("No Output Yet", "", "", &[], &[]);
+        let json = serde_json::to_string(&blocks).unwrap();
+        assert!(json.contains("No generated summary is available yet."));
+        assert!(json.contains("No confirmed action items captured."));
+        assert!(json.contains("No explicit decisions captured."));
+    }
+
+    #[test]
+    fn build_minutes_blocks_creates_front_loaded_brief_from_long_summary() {
+        let blocks = build_minutes_blocks(
+            "Monitor Damage",
+            "",
+            "1. Meeting Context\nA damaged monitor and laptop issue blocked work.\n\n2. Core Discussion\nThe monitor was hit repeatedly.\n- A mobile internet workaround was discussed.\n\n5. Risks, Cautions, and Open Points\n- Hardware condition is blocking productivity.",
+            &[],
+            &[],
+        );
+        let json = serde_json::to_string(&blocks).unwrap();
+        assert!(json.contains("Executive Brief"));
+        assert!(json.contains("Situation"));
+        assert!(json.contains("Key Points"));
+        assert!(json.contains("Risks / Open Questions"));
+        assert!(json.contains("Detailed Notes"));
+        assert!(!json.contains("\u{1F4CC} Summary"));
     }
 }

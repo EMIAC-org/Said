@@ -67,6 +67,14 @@ const EXAMPLES_RING_SIZE: usize = 10;
 /// stays in sync. Kept for cases where the caller has only the centroid
 /// (e.g. a migration backfill) and not the original example sentence.
 pub fn upsert_embedding(pool: &DbPool, user_id: &str, term: &str, embedding: &[f32]) {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "vocab_embeddings",
+            "upsert_embedding",
+            "vocab_embeddings::upsert_embedding",
+        );
+        return;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
@@ -99,6 +107,14 @@ pub fn record_example_and_recentre(
     embedding: &[f32],
     example_text: &str,
 ) {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "vocab_embeddings",
+            "record_example_and_recentre",
+            "vocab_embeddings::record_example_and_recentre",
+        );
+        return;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
@@ -318,6 +334,14 @@ pub fn bump_last_used(pool: &DbPool, user_id: &str, terms: &[String]) {
     if terms.is_empty() {
         return;
     }
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "vocab_embeddings",
+            "bump_last_used",
+            "vocab_embeddings::bump_last_used",
+        );
+        return;
+    }
     let Ok(conn) = pool.get() else {
         return;
     };
@@ -363,6 +387,14 @@ pub fn has_example_ring(pool: &DbPool, user_id: &str, term: &str) -> bool {
 }
 
 pub fn rebuild_centroid_from_examples(pool: &DbPool, user_id: &str, term: &str) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "vocab_embeddings",
+            "rebuild_centroid_from_examples",
+            "vocab_embeddings::rebuild_centroid_from_examples",
+        );
+        return false;
+    }
     let Ok(conn) = pool.get() else {
         return false;
     };

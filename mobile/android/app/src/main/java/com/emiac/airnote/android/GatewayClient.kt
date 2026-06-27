@@ -1,10 +1,10 @@
 package com.emiac.airnote.android
 
-import android.util.Base64
 import java.io.BufferedReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -45,6 +45,7 @@ data class RuntimeSettings(
     val selectedModel: String,
     val outputLanguage: String,
     val tonePreset: String,
+    val messagePolishMode: Boolean,
     val learningEnabled: Boolean,
     val serverRuntimeEnabled: Boolean,
     val serverAudioRuntimeEnabled: Boolean,
@@ -56,6 +57,10 @@ data class RuntimeVoiceResult(
     val transcript: String,
     val output: String,
     val totalLatencyMs: Int,
+)
+
+data class RuntimeTextPolishResult(
+    val output: String,
 )
 
 data class RuntimeHistoryItem(
@@ -116,7 +121,17 @@ interface GatewayClient {
         deviceId: String,
         outputLanguage: String = "hinglish",
         selectedModel: String = "fast",
+        safeVocabTerms: List<String> = emptyList(),
+        mode: String = "normal_voice",
     ): RuntimeVoiceResult
+    suspend fun rewriteText(
+        text: String,
+        clientRunId: String,
+        outputLanguage: String = "hinglish",
+        tonePreset: String = "professional",
+        screenContext: String? = null,
+        safeVocabTerms: List<String> = emptyList(),
+    ): RuntimeTextPolishResult
 }
 
 class MockGatewayClient : GatewayClient {
@@ -158,6 +173,7 @@ class MockGatewayClient : GatewayClient {
             selectedModel = "fast",
             outputLanguage = "hinglish",
             tonePreset = "work",
+            messagePolishMode = false,
             learningEnabled = true,
             serverRuntimeEnabled = true,
             serverAudioRuntimeEnabled = true,
@@ -170,12 +186,30 @@ class MockGatewayClient : GatewayClient {
         deviceId: String,
         outputLanguage: String,
         selectedModel: String,
+        safeVocabTerms: List<String>,
+        mode: String,
     ): RuntimeVoiceResult =
         RuntimeVoiceResult(
             runId = clientRunId,
             transcript = "kal ka update concise banake rahul ko bhej do",
             output = "Kal ka update concise bana ke Rahul ko bhej do.",
             totalLatencyMs = 420,
+        )
+
+    override suspend fun rewriteText(
+        text: String,
+        clientRunId: String,
+        outputLanguage: String,
+        tonePreset: String,
+        screenContext: String?,
+        safeVocabTerms: List<String>,
+    ): RuntimeTextPolishResult =
+        RuntimeTextPolishResult(
+            output = when (tonePreset) {
+                "concise" -> text.trim().replace(Regex("\\s+"), " ").take(140)
+                "casual" -> text.trim().replaceFirstChar { it.uppercase() }
+                else -> "Polished: ${text.trim()}"
+            },
         )
 
     override suspend fun listHistory(limit: Int): List<RuntimeHistoryItem> =
@@ -282,6 +316,7 @@ class HttpGatewayClient(
             selectedModel = json.optString("selected_model", "fast"),
             outputLanguage = json.optString("output_language", "hinglish"),
             tonePreset = json.optString("tone_preset", "work"),
+            messagePolishMode = json.optBoolean("message_polish_mode", false),
             learningEnabled = json.optBoolean("learning_enabled", true),
             serverRuntimeEnabled = json.optBoolean("server_runtime_enabled", true),
             serverAudioRuntimeEnabled = json.optBoolean("server_audio_runtime_enabled", true),
@@ -295,15 +330,18 @@ class HttpGatewayClient(
         deviceId: String,
         outputLanguage: String,
         selectedModel: String,
+        safeVocabTerms: List<String>,
+        mode: String,
     ): RuntimeVoiceResult {
-        val body = JSONObject()
-            .put("wav_b64", Base64.encodeToString(wavBytes, Base64.NO_WRAP))
-            .put("output_language", outputLanguage)
-            .put("selected_model", selectedModel)
-            .put("client_run_id", clientRunId)
-            .put("device_id", deviceId)
-            .put("platform", "android")
-            .put("app_version", BuildConfig.VERSION_NAME)
+        val body = buildRuntimeVoicePayload(
+            wavBytes = wavBytes,
+            clientRunId = clientRunId,
+            deviceId = deviceId,
+            outputLanguage = outputLanguage,
+            selectedModel = selectedModel,
+            safeVocabTerms = safeVocabTerms,
+            mode = mode,
+        )
         val json = requestJson("/v1/runtime/voice/wav", method = "POST", body = body, authorized = true)
         val latency = json.optJSONObject("latency_ms")
         return RuntimeVoiceResult(
@@ -312,6 +350,26 @@ class HttpGatewayClient(
             output = json.optString("output"),
             totalLatencyMs = latency?.optInt("total") ?: 0,
         )
+    }
+
+    override suspend fun rewriteText(
+        text: String,
+        clientRunId: String,
+        outputLanguage: String,
+        tonePreset: String,
+        screenContext: String?,
+        safeVocabTerms: List<String>,
+    ): RuntimeTextPolishResult {
+        val body = buildRuntimeTextPolishPayload(
+            text = text,
+            clientRunId = clientRunId,
+            outputLanguage = outputLanguage,
+            tonePreset = tonePreset,
+            screenContext = screenContext,
+            safeVocabTerms = safeVocabTerms,
+        )
+        val json = requestJson("/v1/runtime/voice/polish", method = "POST", body = body, authorized = true)
+        return RuntimeTextPolishResult(output = json.optString("output"))
     }
 
     override suspend fun listHistory(limit: Int): List<RuntimeHistoryItem> {
@@ -454,3 +512,143 @@ class HttpGatewayClient(
             tag = optString("tag"),
         )
 }
+
+internal fun buildRuntimeVoicePayload(
+    wavBytes: ByteArray,
+    clientRunId: String,
+    deviceId: String,
+    outputLanguage: String,
+    selectedModel: String,
+    safeVocabTerms: List<String>,
+    mode: String = "normal_voice",
+): JSONObject {
+    val fields = runtimeVoicePayloadFields(
+        wavBytes = wavBytes,
+        clientRunId = clientRunId,
+        deviceId = deviceId,
+        outputLanguage = outputLanguage,
+        selectedModel = selectedModel,
+        safeVocabTerms = safeVocabTerms,
+        mode = mode,
+    )
+    return JSONObject()
+        .put("wav_b64", fields.wavB64)
+        .put("output_language", fields.outputLanguage)
+        .put("selected_model", fields.selectedModel)
+        .put("client_run_id", fields.clientRunId)
+        .put("device_id", fields.deviceId)
+        .put("platform", fields.platform)
+        .put("app_version", fields.appVersion)
+        .put("safe_vocab_terms", JSONArray(fields.safeVocabTerms))
+        .put("mode", fields.mode)
+}
+
+internal data class RuntimeVoicePayloadFields(
+    val wavB64: String,
+    val outputLanguage: String,
+    val selectedModel: String,
+    val clientRunId: String,
+    val deviceId: String,
+    val platform: String,
+    val appVersion: String,
+    val safeVocabTerms: List<String>,
+    val mode: String,
+)
+
+internal fun runtimeVoicePayloadFields(
+    wavBytes: ByteArray,
+    clientRunId: String,
+    deviceId: String,
+    outputLanguage: String,
+    selectedModel: String,
+    safeVocabTerms: List<String>,
+    mode: String = "normal_voice",
+): RuntimeVoicePayloadFields =
+    RuntimeVoicePayloadFields(
+        wavB64 = Base64.getEncoder().encodeToString(wavBytes),
+        outputLanguage = outputLanguage,
+        selectedModel = selectedModel,
+        clientRunId = clientRunId,
+        deviceId = deviceId,
+        platform = "android",
+        appVersion = BuildConfig.VERSION_NAME,
+        safeVocabTerms = safeVocabTerms
+            .mapNotNull(::sanitizeVocabTerm)
+            .distinctBy { it.lowercase() }
+            .take(50),
+        mode = normalizeRuntimeVoiceMode(mode),
+    )
+
+internal data class RuntimeTextPolishPayloadFields(
+    val transcript: String,
+    val outputLanguage: String,
+    val selectedModel: String,
+    val tonePreset: String,
+    val screenContext: String?,
+    val safeVocabTerms: List<String>,
+    val clientRunId: String,
+)
+
+internal fun runtimeTextPolishPayloadFields(
+    text: String,
+    clientRunId: String,
+    outputLanguage: String,
+    tonePreset: String,
+    screenContext: String?,
+    safeVocabTerms: List<String>,
+): RuntimeTextPolishPayloadFields =
+    RuntimeTextPolishPayloadFields(
+        transcript = text.trim(),
+        outputLanguage = outputLanguage.ifBlank { "hinglish" },
+        selectedModel = "smart",
+        tonePreset = normalizeTonePreset(tonePreset),
+        screenContext = screenContext
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.take(500),
+        safeVocabTerms = safeVocabTerms
+            .mapNotNull(::sanitizeVocabTerm)
+            .distinctBy { it.lowercase() }
+            .take(50),
+        clientRunId = clientRunId,
+    )
+
+internal fun buildRuntimeTextPolishPayload(
+    text: String,
+    clientRunId: String,
+    outputLanguage: String,
+    tonePreset: String,
+    screenContext: String?,
+    safeVocabTerms: List<String>,
+): JSONObject {
+    val fields = runtimeTextPolishPayloadFields(
+        text = text,
+        clientRunId = clientRunId,
+        outputLanguage = outputLanguage,
+        tonePreset = tonePreset,
+        screenContext = screenContext,
+        safeVocabTerms = safeVocabTerms,
+    )
+    val body = JSONObject()
+        .put("transcript", fields.transcript)
+        .put("output_language", fields.outputLanguage)
+        .put("selected_model", fields.selectedModel)
+        .put("tone_preset", fields.tonePreset)
+        .put("safe_vocab_terms", JSONArray(fields.safeVocabTerms))
+        .put("client_run_id", fields.clientRunId)
+    fields.screenContext?.let { body.put("screen_context", it) }
+    return body
+}
+
+internal fun normalizeRuntimeVoiceMode(mode: String): String =
+    when (mode.trim().lowercase()) {
+        "message_polish", "message-polish", "polish_message", "polish-my-message" -> "message_polish"
+        else -> "normal_voice"
+    }
+
+internal fun normalizeTonePreset(tone: String): String =
+    when (tone.trim().lowercase()) {
+        "professional", "casual", "concise", "neutral" -> tone.trim().lowercase()
+        "work" -> "professional"
+        else -> "professional"
+    }

@@ -16,6 +16,7 @@ struct AirNoteTone: Identifiable {
         AirNoteTone(key: "casual", label: "Casual", detail: "Friendly and conversational"),
         AirNoteTone(key: "assertive", label: "Assertive", detail: "Direct and confident"),
         AirNoteTone(key: "concise", label: "Concise", detail: "Minimal words, every one earns its place"),
+        AirNoteTone(key: "custom", label: "Custom", detail: "Write your own persona instructions"),
     ]
 
     static func label(for key: String) -> String {

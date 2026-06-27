@@ -49,6 +49,8 @@ function isDivoAllowed(): boolean {
   return !!email && DIVO_ALLOWED_EMAILS.includes(email);
 }
 
+const GUIDE_URL = "https://airnote.emiactech.com/guide";
+
 // ── Nav button ─────────────────────────────────────────────────────────────────
 
 function NavButton({
@@ -112,24 +114,15 @@ export function Sidebar({
       className="flex flex-col h-full overflow-hidden flex-shrink-0 relative"
       style={{
         width:      "var(--sidebar-width)",
-        // Glass sidebar — wallpaper bleeds through softly, deep black tint
-        // keeps text readable. Values tuned via the live glass control
-        // panel at .context/said-glass-control.html.
-        background: "hsl(var(--glass-bg))",
-        backdropFilter: "blur(40px) saturate(180%)",
-        WebkitBackdropFilter: "blur(40px) saturate(180%)",
-        borderRight: "1px solid hsl(var(--glass-stroke))",
+        background: "hsl(var(--surface-1))",
+        borderRight: "1px solid hsl(var(--border))",
       }}
     >
-      {/* ── Brand header — drag region + traffic light space ── */}
-      <div className="flex items-center h-[var(--topbar-height)] px-4 flex-shrink-0">
-        {/* macOS native traffic lights live in the top-left; reserve 70px so
-            the brand mark doesn't sit under them. Windows puts its close/min/max
-            buttons on the right, so we only need a 12px breathing gap there. */}
+      {/* ── Brand header — drag region ── */}
+      <div className="flex items-center h-[var(--topbar-height)] pl-[86px] pr-4 flex-shrink-0">
         <div
           data-tauri-drag-region
-          className="flex-shrink-0 drag-region"
-          style={{ width: snapshot?.platform === "windows" ? 12 : 70 }}
+          className="w-3 flex-shrink-0 drag-region"
         />
 
         {/* Brand mark — single source of truth in BrandMark.tsx */}
@@ -241,6 +234,18 @@ export function Sidebar({
             <Settings size={15} />
           </span>
           <span className="flex-1 truncate">Settings</span>
+        </button>
+
+        {/* Guide — keep shortcut help visible without making users dig through Settings. */}
+        <button
+          className="nav-item"
+          onClick={() => void openExternal(GUIDE_URL)}
+          title="Open AirNote guide and shortcuts"
+        >
+          <span className="flex-shrink-0 opacity-70">
+            <BookOpen size={15} />
+          </span>
+          <span className="flex-1 truncate">Guide</span>
         </button>
 
         {/* Report bug — opens the control-plane report form with a signed token when connected. */}

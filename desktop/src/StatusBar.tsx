@@ -2,15 +2,23 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
-import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, ListChecks, Mic, Pencil, Plus, RotateCcw, Send, Sparkles, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, Download, ListChecks, Mic, Pencil, Plus, RotateCcw, Send, Sparkles, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
+import { formatKeycap } from "./lib/hotkeys";
 import {
   APPLY_UPDATE_FAILED_EVENT,
   getPendingReadyUpdateReminder,
   requestApplyPendingUpdate,
   snoozeReadyUpdateReminder,
 } from "./lib/autoUpdate";
-import { divoListThreads, type DivoThreadSummary } from "./lib/invoke";
+import {
+  developerProblemChooseProject,
+  developerProblemDismiss,
+  divoListThreads,
+  onDeveloperContext,
+  type DeveloperContextCandidate,
+  type DivoThreadSummary,
+} from "./lib/invoke";
 import { Markdown } from "./components/Markdown";
 
 function notifEnabled(key: string): boolean {
@@ -76,6 +84,10 @@ const sounds = {
   tick:      () => { osc(1200, "sine", 0.06, 0.06); },
 } as const;
 
+const RECOVERY_PREVIEW_ENABLED =
+  import.meta.env.VITE_AIRNOTE_RECOVERY_PREVIEW === "1" ||
+  new URLSearchParams(window.location.search).get("recoveryPreview") === "1";
+
 type SoundName = keyof typeof sounds;
 
 function playSound(name: SoundName | null) {
@@ -91,8 +103,9 @@ type BarState =
   | { kind: "processing"; phase: string }
   | { kind: "done" }
   | { kind: "pasted" }
-  | { kind: "manual_paste" }
-  | { kind: "error"; message: string; audioId?: string }
+  | { kind: "manual_paste"; message?: string }
+  | { kind: "error"; message: string; runId?: string; audioId?: string; rawError?: string; errorCode?: string; diagnostic?: string }
+  | { kind: "recovered"; text: string; copied: boolean }
   | { kind: "learned"; term: string; message: string }
   | { kind: "email_saved"; email: string; message: string }
   | { kind: "confirming"; term: string; original: string; context: string; recordingId: string }
@@ -102,6 +115,7 @@ type BarState =
   | { kind: "reviewing"; candidates: ReviewCandidate[]; selected: Set<number>; recordingId: string }
   | { kind: "placement"; message: string }
   | { kind: "polish_mode"; enabled: boolean; message: string }
+  | { kind: "problem_ambiguous"; candidates: DeveloperContextCandidate[] }
   | { kind: "update_ready"; version: string; message: string }
   | { kind: "retraining" }
   | { kind: "retrain_done"; durationS: number }
@@ -153,8 +167,11 @@ type ReviewCandidate = {
 
 type VoiceErrorPayload = {
   message: string;
+  run_id?: string;
   audio_id?: string;
   error_code?: string;
+  raw_error?: string;
+  diagnostic?: string;
   auto_hide_ms?: number;
 };
 
@@ -170,7 +187,9 @@ function keepsHudOverIdle(kind: PillKind): boolean {
     || kind === "done"
     || kind === "pasted"
     || kind === "manual_paste"
+    || kind === "problem_ambiguous"
     || kind === "update_ready"
+    || kind === "recovered"
     || kind.startsWith("divo");
 }
 
@@ -219,6 +238,7 @@ function pillSize(
   label = "",
   candidateCount = 0,
   reviewExpanded = true,
+  actionCount = 0,
 ): { width: number; height: number } {
   if (hasTranscript) return { width: VOICE_INNER_WIDTH, height: VOICE_INNER_HEIGHT };
   if (kind === "divo_stage") return { width: 520, height: 58 };
@@ -229,6 +249,19 @@ function pillSize(
   if (kind === "divo_ready") return { width: 168, height: 46 };
   if (kind === "divo_pending") return { width: 300, height: 104 };
   if (kind === "divo_error") return { width: 300, height: 96 };
+  if (kind === "problem_ambiguous") return { width: 360, height: 176 };
+  if (kind === "error") {
+    const actionWidth = actionCount > 0
+      ? (actionCount * 22) + ((actionCount - 1) * 6) + 8
+      : 0;
+    const content = Math.min(textWidth(label), 300) + actionWidth + 42;
+    return { width: Math.max(240, Math.min(Math.ceil(content), 460)), height: 40 };
+  }
+  if (kind === "recovered") return { width: 380, height: 196 };
+  if (kind === "update_ready") {
+    const content = Math.min(textWidth(label), 190) + 148;
+    return { width: Math.max(320, Math.min(Math.ceil(content), 390)), height: 136 };
+  }
   if (kind === "confirming") return { width: 280, height: 142 };
   if (kind === "negative_confirm") return { width: 280, height: 142 };
   if (kind === "reviewing") {
@@ -255,6 +288,10 @@ function pillSize(
 
 function processingLabel(phase: string): string {
   const p = phase.toLowerCase();
+  if (p.startsWith("using context:")) return phase;
+  if (p === "no project context") return "No Project Context";
+  if (p.includes("problem_transcribing")) return "Transcribing problem";
+  if (p.includes("problem_solving")) return "Solving problem";
   if (p.includes("server_audio_fallback")) return "Using local runtime";
   if (p.includes("server_transcrib") || p.includes("server-audio")) return "Server transcribing";
   if (p.includes("server_polish") || p.includes("server-polish") || p.includes("server_polishing")) return "Server polish";
@@ -356,7 +393,8 @@ export default function StatusBar() {
     } catch { /* ignore */ }
     returnToIdleOrPinned(reason, true);
   };
-  const hasTranscript = bar.kind === "processing" && liveTranscript.trim().length > 0;
+  const hasTranscript =
+    (bar.kind === "recording" || bar.kind === "processing") && liveTranscript.trim().length > 0;
   const isInteractive =
     bar.kind === "confirming"
     || bar.kind === "negative_confirm"
@@ -364,7 +402,9 @@ export default function StatusBar() {
     || bar.kind === "error"
     || bar.kind === "learned"
     || bar.kind === "update_ready"
+    || bar.kind === "recovered"
     || bar.kind === "placement"
+    || bar.kind === "problem_ambiguous"
     // Divo: the working HUD stays VISIBLE (persistent hold) but click-through —
     // it floats over the user's app, so making it interactive would swallow every
     // click over its area for the whole run and feel like the app froze. Only the
@@ -383,14 +423,16 @@ export default function StatusBar() {
       case "processing": return bar.phase;
       case "done": return "Done";
       case "pasted": return "Pasted";
-      case "manual_paste": return "Pasted";
+      case "manual_paste": return bar.message || "Paste latest";
       case "error": return bar.message;
+      case "recovered": return "Recovered dictation";
       case "learned": return bar.message;
       case "email_saved": return bar.message;
       case "queued": return `"${bar.term}" — ${bar.remaining === 1 ? "1 more edit to learn" : `${bar.remaining} more edits to learn`}`;
       case "wrong_fixed": return `Got it — won’t type "${bar.wrongReplacement}" for "${bar.term}"`;
       case "placement": return bar.message;
       case "polish_mode": return bar.message;
+      case "problem_ambiguous": return "Ambiguous Project Match";
       case "update_ready": return `Update ${bar.version} ready`;
       case "retraining": return "Improving model...";
       case "retrain_done": return bar.durationS > 0 ? `Model updated (${bar.durationS.toFixed(1)}s)` : "Model updated";
@@ -399,7 +441,15 @@ export default function StatusBar() {
   })();
 
   const candidateCount = bar.kind === "reviewing" ? bar.candidates.length : 0;
-  const innerSize = pillSize(bar.kind, hasTranscript, pillLabel, candidateCount, reviewExpanded);
+  const compactActionCount = bar.kind === "error" ? 2 + (bar.audioId ? 2 : 0) : 0;
+  const innerSize = pillSize(
+    bar.kind,
+    hasTranscript,
+    pillLabel,
+    candidateCount,
+    reviewExpanded,
+    compactActionCount,
+  );
 
   useEffect(() => {
     barKindRef.current = bar.kind;
@@ -710,6 +760,16 @@ export default function StatusBar() {
   }, []);
 
   useEffect(() => {
+    if (!RECOVERY_PREVIEW_ENABLED) return;
+    const text = [
+      "This is a recovered dictation preview from AirNote.",
+      "The card should stay in the status bar, follow light and dark theme colors, and keep the main app clean.",
+    ].join(" ");
+    presentStatusBar("dictation-recovered-preview");
+    setBar({ kind: "recovered", text, copied: false });
+  }, []);
+
+  useEffect(() => {
     const subs: Array<() => void> = [];
 
     listen<{ reason?: string; state?: string }>("status-bar-resync", (e) => {
@@ -767,11 +827,14 @@ export default function StatusBar() {
       const { phase, transcript } = e.payload;
       console.info("[status-bar] voice-status event", phase);
       if (transcript?.trim()) setLiveTranscript(transcript.trim());
-      setBar((prev) =>
-        prev.kind === "processing"
+      setBar((prev) => {
+        if (prev.kind === "recording" && phase === "live_stt") {
+          return prev;
+        }
+        return prev.kind === "processing"
           ? (prev.phase === phase ? prev : { kind: "processing", phase })
-          : prev
-      );
+          : prev;
+      });
     }).then((fn) => {
       console.info("[status-bar] subscribed voice-status");
       subs.push(fn);
@@ -806,7 +869,11 @@ export default function StatusBar() {
       if (restorePinnedUpdate("auto-update-ready-after-output")) return;
       if (doneTimer.current) clearTimeout(doneTimer.current);
       playSound("whoosh");
-      setBar({ kind: e.payload.status });
+      setBar(
+        e.payload.status === "manual_paste"
+          ? { kind: "manual_paste", message: e.payload.message }
+          : { kind: "pasted" },
+      );
       doneTimer.current = setTimeout(
         () => setBar((prev) => isActionPromptKind(prev.kind) ? prev : { kind: "idle" }),
         e.payload.status === "pasted" ? 100 : 5200,
@@ -815,6 +882,25 @@ export default function StatusBar() {
       console.info("[status-bar] subscribed voice-output");
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] voice-output subscribe failed", err));
+
+    subs.push(onDeveloperContext((payload) => {
+      console.info("[status-bar] problem-command-context", payload);
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      if (payload.outcome === "ambiguous") {
+        presentStatusBar("problem-ambiguous");
+        playSound("alert");
+        invoke("set_status_bar_persistent", {
+          persistent: true,
+          reason: "problem-ambiguous",
+          interactive: true,
+        }).catch(() => presentStatusBar("problem-ambiguous"));
+        setBar({ kind: "problem_ambiguous", candidates: payload.candidates });
+        win.setFocus().catch(() => {});
+        return;
+      }
+      playSound(payload.outcome === "project" ? "tick" : "chimeDown");
+      setBar({ kind: "processing", phase: payload.label });
+    }));
 
     listen<{ enabled: boolean; message?: string }>("message-polish-mode", (e) => {
       console.info("[status-bar] message-polish-mode event", e.payload);
@@ -834,14 +920,20 @@ export default function StatusBar() {
     }).catch((err) => console.warn("[status-bar] message-polish-mode subscribe failed", err));
 
     // ── Error: show message + optional retry ──────────────────────────────
-    listen<VoiceErrorPayload & { raw_error?: string }>("voice-error", (e) => {
-      const { message, audio_id, auto_hide_ms, raw_error } = e.payload;
-      console.error("[status-bar] voice-error event", { message, raw_error, hasAudioId: Boolean(audio_id) });
+    listen<VoiceErrorPayload>("voice-error", (e) => {
+      const { message, run_id, audio_id, auto_hide_ms, raw_error, error_code, diagnostic } = e.payload;
+      console.error("[status-bar] voice-error event", {
+        message,
+        raw_error,
+        error_code,
+        diagnostic,
+        hasAudioId: Boolean(audio_id),
+      });
       if (doneTimer.current) clearTimeout(doneTimer.current);
       if (!notifEnabled("error")) return;
       presentStatusBar("voice-error");
       playSound("lowThud");
-      setBar({ kind: "error", message, audioId: audio_id });
+      setBar({ kind: "error", message, runId: run_id, audioId: audio_id, rawError: raw_error, errorCode: error_code, diagnostic });
       if (typeof auto_hide_ms === "number" && auto_hide_ms > 0) {
         doneTimer.current = setTimeout(
           () => returnToIdleOrPinned("auto-update-ready-after-error", false),
@@ -852,6 +944,19 @@ export default function StatusBar() {
       console.info("[status-bar] subscribed voice-error");
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] voice-error subscribe failed", err));
+
+    listen<{ text: string }>("dictation-recovered", (e) => {
+      const text = e.payload?.text?.trim() || "";
+      if (!text) return;
+      console.info("[status-bar] dictation-recovered event", { chars: text.length });
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      presentStatusBar("dictation-recovered");
+      playSound("ding");
+      setBar({ kind: "recovered", text, copied: false });
+    }).then((fn) => {
+      console.info("[status-bar] subscribed dictation-recovered");
+      subs.push(fn);
+    }).catch((err) => console.warn("[status-bar] dictation-recovered subscribe failed", err));
 
     listen("long-dictation-locked", () => {
       console.info("[status-bar] long-dictation-locked event");
@@ -1199,6 +1304,41 @@ export default function StatusBar() {
     }, 1500);
   }
 
+  async function releaseProblemHold(reason: string) {
+    try {
+      await invoke("set_status_bar_persistent", { persistent: false, reason });
+    } catch {
+      // The solve path can still continue; this only controls HUD click capture.
+    }
+  }
+
+  async function chooseProblemProject(project: DeveloperContextCandidate) {
+    try {
+      await developerProblemChooseProject(project.id);
+      await releaseProblemHold("problem-choice");
+      setBar({ kind: "processing", phase: `Using Context: ${project.name}` });
+    } catch (e) {
+      await releaseProblemHold("problem-choice-error");
+      setBar({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  async function dismissProblemAmbiguity(openSettings: boolean) {
+    try {
+      await developerProblemDismiss();
+    } catch {
+      // Dismiss is best-effort; clearing local UI state is still safe.
+    }
+    await releaseProblemHold(openSettings ? "problem-edit-aliases" : "problem-dismiss");
+    setBar({ kind: "idle" });
+    if (openSettings) {
+      invoke("focus_main_from_pill").catch(() => {});
+      emit("nav-settings", { section: "developer" }).catch(() => {});
+    } else {
+      invoke("dismiss_status_bar").catch(() => {});
+    }
+  }
+
   async function handleConfirm(term: string, original: string, action: "learn" | "skip", recordingId: string) {
     try {
       await invoke("confirm_term", { term, original, action, recordingId: recordingId || null });
@@ -1226,6 +1366,58 @@ export default function StatusBar() {
   // ── Idle: nothing visible; native window hides via dismiss_status_bar ──
   if (bar.kind === "idle") {
     return null;
+  }
+
+  // ── Developer Problem Command: hard stop on ambiguous project context ──
+  if (bar.kind === "problem_ambiguous") {
+    return (
+      <CardHost>
+        <div
+          className="sb-survey sb-survey--panel sb-survey--interactive"
+          style={{ width: innerSize.width, height: innerSize.height }}
+          aria-label="Ambiguous project match"
+        >
+          <div className="sb-survey-kicker-row">
+            <span className="sb-status-dot sb-status-dot--warn" />
+            <span className="sb-survey-kicker">Ambiguous Project Match</span>
+            <button
+              className="divo-hide"
+              title="Dismiss"
+              aria-label="Dismiss"
+              onClick={() => { void dismissProblemAmbiguity(false); }}
+            >
+              <X size={13} />
+            </button>
+          </div>
+          <div className="sb-survey-body">
+            Pick the project context to continue. No answer is generated until you choose.
+          </div>
+          <div className="divo-route-chips" style={{ maxHeight: 56 }}>
+            {bar.candidates.map((candidate) => (
+              <button
+                key={candidate.id}
+                type="button"
+                className="divo-chip"
+                title={candidate.matched_alias ? `Matched "${candidate.matched_alias}"` : candidate.name}
+                onClick={() => { void chooseProblemProject(candidate); }}
+              >
+                {candidate.name}
+              </button>
+            ))}
+          </div>
+          <div className="divo-stage-foot">
+            <span className="divo-route-hint">Context hard stop</span>
+            <button
+              type="button"
+              className="sb-survey-skip"
+              onClick={() => { void dismissProblemAmbiguity(true); }}
+            >
+              Edit Aliases
+            </button>
+          </div>
+        </div>
+      </CardHost>
+    );
   }
 
   // ── Divo: compact review bar — transcript + Send + ✎ (stays horizontal) ──
@@ -1330,7 +1522,9 @@ export default function StatusBar() {
             </button>
           </div>
           <div className="divo-stage-foot">
-            <span className="divo-route-hint">⌘↵ to send</span>
+            <span className="divo-route-hint">
+              {formatKeycap("cmd+enter", /Win/i.test(navigator.userAgent) ? "windows" : "macos")} to send
+            </span>
             <button type="button" className="sb-survey-skip" onClick={() => setBar({ kind: "divo_stage" })}>
               Cancel
             </button>
@@ -1809,7 +2003,7 @@ export default function StatusBar() {
       <CardHost>
         <div
           className="sb-survey sb-survey--panel sb-survey--interactive"
-          style={{ width: 300, height: 122 }}
+          style={{ width: innerSize.width, height: innerSize.height }}
           aria-label="AirNote update ready"
         >
           <div className="sb-survey-kicker-row">
@@ -1853,6 +2047,55 @@ export default function StatusBar() {
             >
               Restart
               <RotateCcw size={14} strokeWidth={2} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </CardHost>
+    );
+  }
+
+  if (bar.kind === "recovered") {
+    return (
+      <CardHost>
+        <div
+          className="sb-survey sb-survey--panel sb-survey--interactive"
+          style={{ width: innerSize.width, height: innerSize.height }}
+          aria-label="AirNote recovered dictation"
+        >
+          <div className="sb-survey-kicker-row">
+            <span className="sb-status-dot sb-status-dot--info" />
+            <span className="sb-survey-kicker">Recovered your last dictation</span>
+          </div>
+          <div className="sb-survey-body sb-recovered-body">
+            AirNote recovered audio from the previous run.
+          </div>
+          <div className="sb-recovered-text">
+            {bar.text}
+          </div>
+          <div className="sb-survey-footer">
+            <button
+              type="button"
+              className="sb-survey-skip"
+              onClick={() => {
+                setBar({ kind: "idle" });
+                invoke("dismiss_status_bar").catch(() => {});
+              }}
+            >
+              Dismiss
+            </button>
+            <button
+              type="button"
+              className="sb-survey-next"
+              onClick={() => {
+                navigator.clipboard.writeText(bar.text)
+                  .then(() => {
+                    setBar((prev) => prev.kind === "recovered" ? { ...prev, copied: true } : prev);
+                  })
+                  .catch((err) => console.warn("[status-bar] copy recovered dictation failed", err));
+              }}
+            >
+              {bar.copied ? "Copied" : "Copy"}
+              <Copy size={14} strokeWidth={2} aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -1919,7 +2162,7 @@ export default function StatusBar() {
           </div>
         )}
 
-        <div className="sb-survey-controlbar">
+        <div className={`sb-survey-controlbar${bar.kind === "error" ? " sb-survey-controlbar--actions" : ""}`}>
           {bar.kind === "processing" ? (
             <div className="sb-survey-processing">
               <span>{processingLabel(bar.phase)}</span>
@@ -2015,6 +2258,41 @@ export default function StatusBar() {
                   }}
                 >
                   <RotateCcw size={12} />
+                </button>
+              )}
+              <button
+                className="sb-survey-icon-btn"
+                title="Copy error details"
+                aria-label="Copy error details"
+                onClick={() => {
+                  const details = [
+                    bar.message,
+                    bar.errorCode ? `code=${bar.errorCode}` : "",
+                    bar.runId ? `run_id=${bar.runId}` : "",
+                    bar.audioId ? `audio_id=${bar.audioId}` : "",
+                    bar.diagnostic || bar.rawError || "",
+                  ].filter(Boolean).join("\n");
+                  navigator.clipboard.writeText(details).catch((err) => {
+                    console.warn("[status-bar] copy error details failed", err);
+                  });
+                }}
+              >
+                <Copy size={12} />
+              </button>
+              {bar.audioId && (
+                <button
+                  className="sb-survey-icon-btn"
+                  title="Show saved audio"
+                  aria-label="Show saved audio"
+                  onClick={async () => {
+                    try {
+                      await invoke("reveal_saved_audio", { audioId: bar.audioId });
+                    } catch (e) {
+                      console.warn("[status-bar] reveal saved audio failed", e);
+                    }
+                  }}
+                >
+                  <Download size={12} />
                 </button>
               )}
               <button

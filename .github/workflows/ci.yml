@@ -39,6 +39,16 @@ jobs:
         with:
           cache-bin: false
 
+      - name: Stub Tauri sidecars for externalBin check
+        shell: bash
+        run: |
+          HOST_TARGET="$(rustc -vV | awk '/^host:/ {print $2}')"
+          mkdir -p desktop/src-tauri/binaries
+          touch "desktop/src-tauri/binaries/airnote-backend-$HOST_TARGET"
+          touch "desktop/src-tauri/binaries/whisper-cli-$HOST_TARGET"
+          chmod +x "desktop/src-tauri/binaries/airnote-backend-$HOST_TARGET"
+          chmod +x "desktop/src-tauri/binaries/whisper-cli-$HOST_TARGET"
+
       - name: cargo fmt --check
         run: cargo fmt --all --check
 
@@ -67,16 +77,16 @@ jobs:
           key: ci-windows
           cache-bin: false
 
-      # Tauri's build script verifies the externalBin sidecar exists for the
-      # target triple. `cargo check` doesn't build it (and the real .exe is only
-      # produced in the release workflow), so drop a placeholder to satisfy the
-      # existence check. The sidecar's *code* is still type-checked as part of
-      # the workspace check below — we only need the file path to exist here.
-      - name: Stub airnote-backend sidecar for tauri externalBin check
+      # Tauri's build script verifies externalBin sidecars exist for the target
+      # triple. `cargo check` doesn't build them (the real .exe files are only
+      # produced in build/release workflows), so drop placeholders to satisfy the
+      # existence check. The sidecar code is still type-checked below.
+      - name: Stub Tauri sidecars for externalBin check
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
           New-Item -ItemType File -Force -Path desktop/src-tauri/binaries/airnote-backend-x86_64-pc-windows-msvc.exe | Out-Null
+          New-Item -ItemType File -Force -Path desktop/src-tauri/binaries/whisper-cli-x86_64-pc-windows-msvc.exe | Out-Null
 
       # Full Windows compile gate: check the whole workspace including the Tauri
       # desktop shell (`said-desktop`) so a push to main reports real Windows

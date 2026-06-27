@@ -52,6 +52,10 @@ pub struct DesktopPrefs {
     /// starts automatically when the user signs in.
     #[serde(default)]
     pub launch_at_login: bool,
+
+    /// Unlocks experimental polish model picker in Settings → Models.
+    #[serde(default)]
+    pub beta_mode: bool,
 }
 
 fn default_channel() -> String {
@@ -65,6 +69,7 @@ impl Default for DesktopPrefs {
             update_channel: default_channel(),
             message_polish_mode: false,
             launch_at_login: false,
+            beta_mode: false,
         }
     }
 }
@@ -124,6 +129,7 @@ mod tests {
         assert_eq!(p.update_channel, "stable");
         assert!(!p.message_polish_mode);
         assert!(!p.launch_at_login);
+        assert!(!p.beta_mode);
 
         let partial = r#"{ "sentry_disabled": true }"#;
         let p: DesktopPrefs = serde_json::from_str(partial).unwrap();
@@ -131,6 +137,7 @@ mod tests {
         assert_eq!(p.update_channel, "stable");
         assert!(!p.message_polish_mode);
         assert!(!p.launch_at_login);
+        assert!(!p.beta_mode);
     }
 
     #[test]
@@ -140,6 +147,7 @@ mod tests {
             update_channel: "beta".into(),
             message_polish_mode: true,
             launch_at_login: true,
+            beta_mode: true,
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: DesktopPrefs = serde_json::from_str(&json).unwrap();
@@ -147,5 +155,6 @@ mod tests {
         assert_eq!(back.update_channel, "beta");
         assert!(back.message_polish_mode);
         assert!(back.launch_at_login);
+        assert!(back.beta_mode);
     }
 }

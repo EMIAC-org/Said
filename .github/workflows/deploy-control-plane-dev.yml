@@ -88,6 +88,11 @@ jobs:
           test -n "${{ secrets.DEPLOY_HOST }}" || (echo "DEPLOY_HOST is missing" && exit 1)
           test -n "${{ secrets.DEPLOY_USER }}" || (echo "DEPLOY_USER is missing" && exit 1)
           test -n "${{ secrets.DEPLOY_SSH_KEY }}" || (echo "DEPLOY_SSH_KEY is missing" && exit 1)
+          test -n "${{ secrets.CEREBRAS_API_KEY }}" || (echo "CEREBRAS_API_KEY is missing" && exit 1)
+          test -n "${{ secrets.DEEPSEEK_API_KEY }}" || (echo "DEEPSEEK_API_KEY is missing" && exit 1)
+          test -n "${{ secrets.OPENAI_API_KEY }}" || (echo "OPENAI_API_KEY is missing" && exit 1)
+          test -n "${{ secrets.DEEPINFRA_API_KEY }}" || (echo "DEEPINFRA_API_KEY is missing" && exit 1)
+          test -n "${{ secrets.DEEPGRAM_API_KEY_1 }}" || (echo "DEEPGRAM_API_KEY_1 is missing" && exit 1)
 
       - name: Configure SSH
         shell: bash
@@ -99,13 +104,33 @@ jobs:
 
       - name: Upload compose files
         shell: bash
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
+          DEEPGRAM_API_KEY_1: ${{ secrets.DEEPGRAM_API_KEY_1 }}
+          DEEPGRAM_API_KEY_2: ${{ secrets.DEEPGRAM_API_KEY_2 }}
+          DEEPGRAM_API_KEY_3: ${{ secrets.DEEPGRAM_API_KEY_3 }}
         run: |
           tar -C deploy/control-plane -czf /tmp/airnote-control-plane-dev-deploy.tgz \
             docker-compose.yml docker-compose.dev.yml Caddyfile README.md .env.example
+          {
+            printf 'CEREBRAS_API_KEY=%s\n' "$CEREBRAS_API_KEY"
+            printf 'DEEPSEEK_API_KEY=%s\n' "$DEEPSEEK_API_KEY"
+            printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
+            printf 'DEEPINFRA_API_KEY=%s\n' "$DEEPINFRA_API_KEY"
+            printf 'DEEPGRAM_API_KEY_1=%s\n' "$DEEPGRAM_API_KEY_1"
+            printf 'DEEPGRAM_API_KEY_2=%s\n' "$DEEPGRAM_API_KEY_2"
+            printf 'DEEPGRAM_API_KEY_3=%s\n' "$DEEPGRAM_API_KEY_3"
+          } > /tmp/airnote-control-plane-dev-secrets.env
+          chmod 600 /tmp/airnote-control-plane-dev-secrets.env
           ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
             "mkdir -p '$DEPLOY_PATH'"
           scp /tmp/airnote-control-plane-dev-deploy.tgz \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:$DEPLOY_PATH/deploy.tgz"
+          scp /tmp/airnote-control-plane-dev-secrets.env \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:$DEPLOY_PATH/deploy-secrets.env"
 
       - name: Pull image and restart dev stack
         shell: bash
@@ -133,6 +158,7 @@ jobs:
           from pathlib import Path
 
           env_path = Path(".env")
+          secret_path = Path("deploy-secrets.env")
           updates = {
               "CONTROL_PLANE_IMAGE": os.environ["IMAGE_TAG"],
               "CONTROL_PLANE_BIND": "127.0.0.1",
@@ -144,6 +170,13 @@ jobs:
               "POSTGRES_VOLUME_NAME": os.environ["POSTGRES_VOLUME_NAME"],
               "DOMAIN": os.environ["DEV_DOMAIN"],
           }
+
+          if secret_path.exists():
+              for line in secret_path.read_text().splitlines():
+                  if not line.strip() or line.lstrip().startswith("#") or "=" not in line:
+                      continue
+                  key, value = line.split("=", 1)
+                  updates[key] = value
 
           lines = env_path.read_text().splitlines()
           out = []
@@ -162,6 +195,7 @@ jobs:
                   out.append(f"{key}={value}")
 
           env_path.write_text("\n".join(out) + "\n")
+          secret_path.unlink(missing_ok=True)
           PY
 
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
@@ -173,6 +207,21 @@ jobs:
           docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -q "^DATABASE_URL=.*${POSTGRES_DB}" \
             || (echo "DATABASE_URL does not point at $POSTGRES_DB" && exit 1)
+          docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -q "^CEREBRAS_API_KEY=." \
+            || (echo "CEREBRAS_API_KEY was not propagated into the dev control-plane container" && exit 1)
+          docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -q "^DEEPSEEK_API_KEY=." \
+            || (echo "DEEPSEEK_API_KEY was not propagated into the dev control-plane container" && exit 1)
+          docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -q "^OPENAI_API_KEY=." \
+            || (echo "OPENAI_API_KEY was not propagated into the dev control-plane container" && exit 1)
+          docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -q "^DEEPINFRA_API_KEY=." \
+            || (echo "DEEPINFRA_API_KEY was not propagated into the dev control-plane container" && exit 1)
+          docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -q "^DEEPGRAM_API_KEY_1=." \
+            || (echo "DEEPGRAM_API_KEY_1 was not propagated into the dev control-plane container" && exit 1)
 
           for i in $(seq 1 60); do
             if curl -fsS "http://127.0.0.1:${CONTROL_PLANE_PORT}/v1/health" >/dev/null; then

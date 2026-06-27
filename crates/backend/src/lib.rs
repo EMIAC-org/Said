@@ -17,8 +17,10 @@ pub mod auth;
 pub mod cp_client;
 pub mod embedder;
 pub mod formatting;
+pub mod legacy_learning;
 pub mod llm;
 pub mod number_format;
+pub mod observability;
 pub mod routes;
 pub mod store;
 pub mod stt;
@@ -34,6 +36,8 @@ pub use said_core::paths;
 mod alpha_test_suite;
 #[cfg(test)]
 mod learning_flow_tests;
+#[cfg(test)]
+mod legacy_learning_tests;
 
 // ── Preferences hot-cache (Gap 3) ─────────────────────────────────────────────
 //
@@ -284,6 +288,11 @@ pub fn router_with_state(state: AppState) -> Router {
     let authenticated = Router::new()
         .route("/v1/pre-embed", post(routes::pre_embed::handler))
         .route("/v1/voice/polish", post(routes::voice::polish))
+        .route(
+            "/v1/problem/transcribe",
+            post(routes::voice::problem_transcribe),
+        )
+        .route("/v1/problem/solve", post(routes::problem::solve))
         .route("/v1/runtime/live/config", get(routes::runtime_live::config))
         .route(
             "/v1/runtime/notifications/config",
@@ -367,6 +376,18 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/history", get(routes::history::list))
         .route(
+            "/v1/voice-runs/latest-failed",
+            get(routes::voice_runs::latest_failed),
+        )
+        .route(
+            "/v1/voice-runs/:run_id/failed",
+            post(routes::voice_runs::mark_failed),
+        )
+        .route(
+            "/v1/voice-runs/:run_id/paste",
+            post(routes::voice_runs::mark_paste),
+        )
+        .route(
             "/v1/recordings/:id",
             axum::routing::delete(routes::history::delete),
         )
@@ -376,6 +397,7 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/preferences", get(routes::prefs::get_prefs))
         .route("/v1/preferences", patch(routes::prefs::patch_prefs))
+        .route("/v1/polish/models", get(routes::polish_models::list_models))
         .route("/v1/prompts/voice", get(routes::prompts::get_voice_prompt))
         .route(
             "/v1/prompts/voice/draft",
@@ -466,7 +488,7 @@ pub fn router_with_state(state: AppState) -> Router {
 
     public
         .merge(authenticated)
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB — covers long recordings
+        .layer(DefaultBodyLimit::max(32 * 1024 * 1024)) // 32 MB — keeps long saved-audio retries inside AirNote-owned errors
         .layer(cors)
         .with_state(state)
 }

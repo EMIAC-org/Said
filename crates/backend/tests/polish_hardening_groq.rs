@@ -73,6 +73,7 @@ fn prefs(output_language: &str, custom_prompt: Option<&str>) -> Preferences {
         groq_api_key: None,
         llm_provider: "groq".into(),
         cerebras_api_key: None,
+        deepinfra_api_key: None,
         stt_provider: "deepgram".into(),
         updated_at: 0,
     }

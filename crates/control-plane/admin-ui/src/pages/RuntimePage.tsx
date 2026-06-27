@@ -97,7 +97,7 @@ function modelLabel(run: RuntimeRunSummary, detail?: RuntimeRunDetail): string {
   const fromProvider = detail?.provider_usage.find(p => p.model)?.model
   const fromSummary = run.provider_summary?.model || run.provider_summary?.model_used
   const model = String(fromProvider || fromSummary || 'unknown')
-  if (model.includes('scout')) return 'Smart Scout'
+  if (model.includes('maverick') || model.includes('scout')) return 'Smart Scout'
   if (model.includes('8b') || model.includes('instant')) return 'Fast 8B'
   if (model === 'unknown') return 'Unknown model'
   return model.split('/').pop() || model

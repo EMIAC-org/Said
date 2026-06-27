@@ -40,6 +40,20 @@ struct WorkspaceSwitcherView: View {
                 } header: {
                     Text("Workspaces")
                 }
+
+                if !env.personalMode, let org = env.activeOrg {
+                    Section {
+                        NavigationLink {
+                            WorkspaceMembersView(orgID: org.id, isAdmin: Self.isAdmin(org.role))
+                        } label: {
+                            Label("Members", systemImage: "person.2")
+                        }
+                    } header: {
+                        Text("Manage")
+                    } footer: {
+                        Text("See who's in this workspace. Admins can add teammates and change roles.")
+                    }
+                }
             }
             .scrollContentBackground(.hidden)
             .disabled(env.workspaceWorking)
@@ -53,6 +67,10 @@ struct WorkspaceSwitcherView: View {
                 ProgressView().controlSize(.large).tint(AirNoteDesign.accent)
             }
         }
+    }
+
+    static func isAdmin(_ role: String) -> Bool {
+        ["admin", "company_admin", "manager"].contains(role.lowercased())
     }
 
     private func row(title: String, subtitle: String, active: Bool, action: @escaping () -> Void) -> some View {

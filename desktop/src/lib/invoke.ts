@@ -6,6 +6,7 @@ import type {
   CloudAuthResponse,
   CloudStatus,
   HistoryItem,
+  ListPolishModelsResponse,
   PendingEditsResponse,
   PerformanceSnapshot,
   PolishDone,
@@ -129,6 +130,7 @@ const mockSnapshot: AppSnapshot = {
   accessibility_granted: false,
   microphone_granted: false,
   input_monitoring_granted: false,
+  screen_recording_granted: true,
   modes: [
     { key: "mini", label: "Fast (gpt-5.4-mini)", model: "gpt-5.4-mini", icon: "fast" },
   ],
@@ -272,6 +274,19 @@ export async function getSttRuntime(): Promise<SttRuntimeInfo | null> {
   if (!isTauriRuntime()) return null;
   try {
     return await tauriInvoke<SttRuntimeInfo>("get_stt_runtime");
+  } catch {
+    return null;
+  }
+}
+
+export async function listPolishModels(
+  beta = true
+): Promise<ListPolishModelsResponse | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<ListPolishModelsResponse>("list_polish_models", {
+      beta,
+    });
   } catch {
     return null;
   }
@@ -529,6 +544,30 @@ export async function requestInputMonitoring(): Promise<void> {
   }
 }
 
+/** Whether macOS Screen Recording is already granted (no prompt). */
+export async function screenRecordingGranted(): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  try {
+    return await tauriInvoke<boolean>("screen_recording_granted");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensure Screen Recording (needed for meeting system-audio capture): prompts +
+ * opens the pane if missing. Returns the resulting grant state (often false
+ * until the app is relaunched).
+ */
+export async function requestScreenRecording(): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  try {
+    return await tauriInvoke<boolean>("request_screen_recording");
+  } catch {
+    return false;
+  }
+}
+
 /** Retry a recording by re-submitting its saved WAV. Result is auto-pasted. */
 export async function retryRecording(audioId: string): Promise<void> {
   if (!isTauriRuntime()) return;
@@ -645,13 +684,24 @@ export function onVoiceDone(
 }
 
 /** Listen for error events. `audioId` is the saved WAV id for retrying. */
+export type VoiceErrorPayload = {
+  message: string;
+  run_id?: string;
+  audio_id?: string;
+  error_code?: string;
+  retryable?: boolean;
+  owned_by_airnote?: boolean;
+  diagnostic?: string;
+  raw_error?: string;
+};
+
 export function onVoiceError(
-  handler: (message: string, audioId?: string, errorCode?: string) => void
+  handler: (message: string, audioId?: string, errorCode?: string, payload?: VoiceErrorPayload) => void
 ): Unsubscribe {
   if (!isTauriRuntime()) return () => {};
   let unsub: Unsubscribe = () => {};
-  listen<{ message: string; audio_id?: string; error_code?: string }>("voice-error", (e) =>
-    handler(e.payload.message, e.payload.audio_id, e.payload.error_code)
+  listen<VoiceErrorPayload>("voice-error", (e) =>
+    handler(e.payload.message, e.payload.audio_id, e.payload.error_code, e.payload)
   ).then((fn) => { unsub = fn; });
   return () => unsub();
 }
@@ -686,10 +736,10 @@ export function onAppState(
 }
 
 /** Listen for "nav-settings" — fired when the tray menu's Settings entry is clicked. */
-export function onNavSettings(handler: () => void): Unsubscribe {
+export function onNavSettings(handler: (section?: string) => void): Unsubscribe {
   if (!isTauriRuntime()) return () => {};
   let unsub: Unsubscribe = () => {};
-  listen("nav-settings", () => handler()).then((fn) => { unsub = fn; });
+  listen<{ section?: string } | null>("nav-settings", (e) => handler(e.payload?.section)).then((fn) => { unsub = fn; });
   return () => unsub();
 }
 
@@ -977,6 +1027,7 @@ export interface DesktopPrefs {
   update_channel: "stable" | "beta";
   message_polish_mode: boolean;
   launch_at_login: boolean;
+  beta_mode: boolean;
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
@@ -986,6 +1037,7 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
       update_channel: "stable",
       message_polish_mode: false,
       launch_at_login: false,
+      beta_mode: false,
     };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");
@@ -994,6 +1046,102 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
 export async function setDesktopPrefs(prefs: DesktopPrefs): Promise<void> {
   if (!isTauriRuntime()) return;
   return tauriInvoke<void>("set_desktop_prefs", { prefs });
+}
+
+// ── Developer Problem Command ────────────────────────────────────────────────
+
+export interface DeveloperProjectProfile {
+  id: string;
+  name: string;
+  aliases: string[];
+  context: string;
+  enabled: boolean;
+  source_type: string;
+  updated_at: number;
+}
+
+export interface DeveloperSettings {
+  enabled: boolean;
+  command_key: string;
+  profiles: DeveloperProjectProfile[];
+}
+
+export interface DeveloperProfileWarning {
+  profile_id: string;
+  alias: string | null;
+  message: string;
+}
+
+export interface DeveloperSettingsResponse {
+  settings: DeveloperSettings;
+  warnings: DeveloperProfileWarning[];
+}
+
+export interface DeveloperContextCandidate {
+  id: string;
+  name: string;
+  matched_alias: string;
+}
+
+export interface DeveloperContextEvent {
+  outcome: "project" | "none" | "ambiguous";
+  label: string;
+  project: DeveloperContextCandidate | null;
+  candidates: DeveloperContextCandidate[];
+}
+
+export function emptyDeveloperSettings(): DeveloperSettings {
+  return {
+    enabled: false,
+    command_key: "tray",
+    profiles: [],
+  };
+}
+
+export async function getDeveloperSettings(): Promise<DeveloperSettingsResponse> {
+  if (!isTauriRuntime()) {
+    return { settings: emptyDeveloperSettings(), warnings: [] };
+  }
+  return tauriInvoke<DeveloperSettingsResponse>("developer_get_settings");
+}
+
+export async function saveDeveloperSettings(
+  settings: DeveloperSettings
+): Promise<DeveloperSettingsResponse> {
+  if (!isTauriRuntime()) {
+    return { settings, warnings: [] };
+  }
+  return tauriInvoke<DeveloperSettingsResponse>("developer_save_settings", { settings });
+}
+
+export async function developerProblemBegin(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  return tauriInvoke<void>("developer_problem_begin");
+}
+
+export async function developerProblemEnd(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  return tauriInvoke<void>("developer_problem_end");
+}
+
+export async function developerProblemChooseProject(projectId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  return tauriInvoke<void>("developer_problem_choose_project", { projectId });
+}
+
+export async function developerProblemDismiss(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  return tauriInvoke<void>("developer_problem_dismiss");
+}
+
+export function onDeveloperContext(
+  handler: (payload: DeveloperContextEvent) => void
+): Unsubscribe {
+  if (!isTauriRuntime()) return () => {};
+  let unsub: Unsubscribe = () => {};
+  listen<DeveloperContextEvent>("problem-command-context", (e) => handler(e.payload))
+    .then((fn) => { unsub = fn; });
+  return () => unsub();
 }
 
 // ── Developer log (backend.log tail) ─────────────────────────────────────────

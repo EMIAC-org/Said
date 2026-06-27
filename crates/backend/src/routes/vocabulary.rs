@@ -26,6 +26,10 @@ use crate::{
 };
 
 pub fn spawn_prompt_artifact_repair(state: AppState) {
+    if crate::legacy_learning::legacy_table_writes_frozen() {
+        info!("[learning] skipped prompt artifact repair — user learning disabled");
+        return;
+    }
     tokio::spawn(async move {
         let user_id = state.default_user_id.to_string();
         let total = vocabulary::count(&state.pool, &user_id).max(0) as usize;
@@ -191,6 +195,13 @@ pub async fn create(
     State(state): State<AppState>,
     Json(body): Json<CreateBody>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if crate::legacy_learning::audit_only_legacy_mutations() {
+        info!("[vocab] manual add blocked — legacy learning frozen");
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "learning_disabled" })),
+        );
+    }
     let trimmed = body.term.trim();
     if trimmed.is_empty() {
         return (
@@ -351,6 +362,10 @@ pub async fn patch(
     Path(term): Path<String>,
     Json(body): Json<PatchBody>,
 ) -> StatusCode {
+    if crate::legacy_learning::audit_only_legacy_mutations() {
+        info!("[vocab] patch blocked — legacy learning frozen");
+        return StatusCode::CONFLICT;
+    }
     let trimmed = term.trim();
     if trimmed.is_empty() {
         return StatusCode::BAD_REQUEST;
@@ -389,6 +404,10 @@ pub async fn toggle_star(
     State(state): State<AppState>,
     Path(term): Path<String>,
 ) -> (StatusCode, Json<StarResponse>) {
+    if crate::legacy_learning::audit_only_legacy_mutations() {
+        info!("[vocab] star toggle blocked — legacy learning frozen");
+        return (StatusCode::CONFLICT, Json(StarResponse { starred: false }));
+    }
     let trimmed = term.trim();
     if trimmed.is_empty() {
         return (

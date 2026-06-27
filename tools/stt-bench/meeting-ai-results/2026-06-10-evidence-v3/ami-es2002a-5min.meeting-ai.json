@@ -1,0 +1,63 @@
+{
+  "case": "ami-es2002a-5min",
+  "transcript_path": "tools/stt-bench/public-meetings/ami-es2002a-5min/airnote-final-sortformer.current.first5min.transcript.txt",
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "draft_latency_ms": 4253,
+  "verify_latency_ms": 3292,
+  "filtered_mom": {
+    "summary": "The meeting began with informal chatter and technical setup before Laura, the project manager, initiated the kickoff for a new remote control design project. Attendees introduced themselves: Laura as project manager, David as industrial designer, Andrew as marketing expert, and Greg as digital interface. Laura outlined the project brief to design an original, trendy, and user-friendly remote control, and described a three-stage iterative process of individual work followed by meetings. The group then engaged in an icebreaker activity where they drew their favorite animals on a whiteboard and described their characteristics.",
+    "action_items": [],
+    "decisions": []
+  },
+  "raw_counts": {
+    "draft_actions": 0,
+    "draft_decisions": 0,
+    "verified_actions": 0,
+    "verified_decisions": 0,
+    "filtered_actions": 0,
+    "filtered_decisions": 0
+  },
+  "chat": [
+    {
+      "question": "What was the main topic of this meeting?",
+      "answer": "Based on the transcript, the main topic of the meeting was the kickoff for a new remote control design project. Laura, the project manager, stated they are \"designing a new remote control\" that is supposed to be \"original, trendy, and user-friendly\" [01:32–01:58]. She also outlined a three-stage iterative process of individual work followed by meetings [02:25–02:28].",
+      "latency_ms": 3144
+    },
+    {
+      "question": "What concrete decisions were explicitly made? If none, say none.",
+      "answer": "Based on the provided transcript and meeting intelligence, no concrete decisions were explicitly made. The meeting intelligence also confirms that the decisions list is empty.",
+      "latency_ms": 1592
+    },
+    {
+      "question": "List only explicit action items or follow-ups, with owners only if the transcript gives them.",
+      "answer": "The transcript does not contain any explicit action items or follow-ups.",
+      "latency_ms": 1392
+    },
+    {
+      "question": "What important unresolved questions or risks remain?",
+      "answer": "Based on the transcript, no unresolved questions or risks are mentioned. The meeting covers introductions, the project brief, the three-stage process, and an icebreaker activity, but does not identify any uncertainties, blockers, or risks.",
+      "latency_ms": 2004
+    },
+    {
+      "question": "Give a PM-ready brief with problem, approach, decisions, risks, and next steps. Mark uncertainty.",
+      "answer": "**Project Brief: Remote Control Design Kickoff**\n\n**Problem**\nThe team is tasked with designing a new remote control that is original, trendy, and user-friendly, as outlined by Laura, the project manager [01:49–01:58].\n\n**Approach**\nThe project will follow a three-stage iterative process, alternating between individual work and team meetings [02:25–02:28]. The team includes Laura (project manager), David (industrial designer), Andrew (marketing expert), and Greg (digital interface) [01:12–01:27].\n\n**Decisions**\nNo explicit decisions are captured in the transcript.\n\n**Risks**\n- **Uncertainty in Brief Details**: Laura expressed uncertainty about what information team members had received via email, asking “What did you get?” [02:06–02:10]. David noted he only received a basic project announcement [02:12–02:14], suggesting potential gaps in shared understanding of the full brief.\n\n**Next Steps**\n- Begin the first stage of individual work as part of the iterative design process [02:25–02:28].\n- The icebreaker activity (drawing favorite animals) is currently in progress and does not represent a formal project step [02:34–02:45].",
+      "latency_ms": 7003
+    }
+  ],
+  "judge": {
+    "latency_ms": 4608,
+    "result": {
+      "summary_accuracy": 9,
+      "summary_coverage": 9,
+      "action_precision": 10,
+      "decision_precision": 10,
+      "chat_grounding": 9,
+      "overall": 9,
+      "issues": [
+        "Summary mentions 'Greg as digital interface' but transcript says 'I'm Greg, and I'm a digital interface' [01:27], which is a minor phrasing difference, not a factual error.",
+        "Chat answer for 'PM-ready brief' lists a risk about 'Uncertainty in Brief Details' based on Laura's question 'What did you get?' [02:06–02:10]. The transcript shows David answered and Laura confirmed 'everybody got it' [02:20], resolving the uncertainty. The risk is therefore slightly over-stated."
+      ]
+    }
+  }
+}

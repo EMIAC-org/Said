@@ -69,6 +69,16 @@ pub async fn resolve_tenant(
     headers: &HeaderMap,
 ) -> Result<TenantContext, (StatusCode, Json<Value>)> {
     let header_org = parse_org_header(headers);
+
+    // Hot path: desktop dictation sends no org header, and active-org/role only
+    // change on explicit activate/clear (which invalidate this entry). Serving
+    // the resolved tenant from memory skips ~4 DB round-trips per dictation.
+    if header_org.is_none() {
+        if let Some(cached) = state.tenant_cache.get(&user.account_id) {
+            return Ok(cached);
+        }
+    }
+
     let (session_org, account_org) =
         session_and_account_org(state, user.session_token, user.account_id)
             .await
@@ -95,12 +105,20 @@ pub async fn resolve_tenant(
         None
     };
 
-    Ok(TenantContext {
+    let ctx = TenantContext {
         account_id: user.account_id,
         active_org_id,
         org_role,
         personal_mode: active_org_id.is_none(),
-    })
+    };
+
+    // Only the header-less resolution is account-stable; a header override is a
+    // per-request scope and must not poison the cached default.
+    if header_org.is_none() {
+        state.tenant_cache.insert(user.account_id, ctx.clone());
+    }
+
+    Ok(ctx)
 }
 
 pub async fn require_active_org(
@@ -250,6 +268,8 @@ pub async fn activate_org(
             .map_err(db_err)?;
     }
 
+    state.tenant_cache.invalidate(&user.account_id);
+
     Ok(Some(org_id))
 }
 
@@ -270,6 +290,8 @@ pub async fn clear_active_org(
             .await
             .map_err(db_err)?;
     }
+
+    state.tenant_cache.invalidate(&user.account_id);
 
     Ok(())
 }

@@ -280,6 +280,7 @@ fn make_test_prefs() -> Preferences {
         gemini_api_key: None,
         groq_api_key: None,
         cerebras_api_key: None,
+        deepinfra_api_key: None,
         llm_provider: "groq".to_string(),
         stt_provider: "deepgram".to_string(),
     }
@@ -379,7 +380,7 @@ async fn call_groq(
         let body_text = resp.text().await.unwrap_or_default();
         return Err(format!(
             "Groq API error {status}: {}",
-            &body_text[..body_text.len().min(400)]
+            said_core::text::truncate_utf8(&body_text, 400)
         ));
     }
 

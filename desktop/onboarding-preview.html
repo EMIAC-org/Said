@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AirNote · Onboarding Preview</title>
+<script src="https://unpkg.com/lucide@latest"></script>
+<style>
+/* ════════════════════════════════════════════════════════════════════════
+   Design tokens — copied verbatim from desktop/src/styles.css (DARK theme)
+   ════════════════════════════════════════════════════════════════════════ */
+:root {
+  --background:           240 8% 2.5%;
+  --foreground:           240 6% 93%;
+  --primary:              226 92% 79%;
+  --primary-foreground:   240 8% 8%;
+  --accent-violet:        226 92% 79%;
+  --muted-foreground:     240 5% 60%;
+  --accent:               226 80% 78%;
+  --destructive:          354 80% 62%;
+  --border:               240 5% 18%;
+  --surface-1:            235 8% 6.5%;
+  --surface-2:            240 7% 3.5%;
+  --surface-3:            240 5% 9.5%;
+  --surface-4:            240 5% 15%;
+  --surface-hover:        240 5% 13%;
+  --glass-stroke:         0 0% 100% / 0.075;
+  --glass-stroke-strong:  0 0% 100% / 0.12;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: hsl(240 8% 4%);
+  color: hsl(var(--foreground));
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+               "Inter", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  font-feature-settings: "ss01", "cv11", "rlig" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Preview chrome ─────────────────────────────────────────────────── */
+.preview-head {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 36px 28px 8px;
+}
+.preview-head h1 {
+  font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 6px;
+}
+.preview-head p {
+  font-size: 13px; color: hsl(var(--muted-foreground)); margin: 0; line-height: 1.6;
+}
+.preview-stack {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 28px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+.preview-card { display: flex; flex-direction: column; gap: 10px; }
+.preview-label {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em;
+  color: hsl(var(--muted-foreground));
+}
+.preview-label .num {
+  display: inline-grid; place-items: center;
+  width: 22px; height: 22px; border-radius: 7px;
+  background: hsl(var(--primary) / 0.14); color: hsl(var(--primary));
+  font-size: 11px; font-weight: 700;
+}
+.preview-label .sub { color: hsl(var(--muted-foreground) / 0.6); font-weight: 600; text-transform: none; letter-spacing: 0; }
+.preview-frame {
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 30px 80px hsl(0 0% 0% / 0.55), inset 0 0 0 1px hsl(0 0% 100% / 0.06);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Onboarding layout — copied from styles.css (.onb-*)
+   In-app this is height:100vh; here we fix the height so cards stack.
+   ════════════════════════════════════════════════════════════════════════ */
+.onb-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  height: 720px;
+  width: 100%;
+  overflow: hidden;
+}
+.onb-brand {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(120% 85% at 16% 6%,  hsl(230 72% 34% / 0.40) 0%, transparent 52%),
+    radial-gradient(95% 80% at 90% 104%, hsl(256 64% 42% / 0.26) 0%, transparent 58%),
+    radial-gradient(60% 50% at 50% 46%,  hsl(226 84% 56% / 0.10) 0%, transparent 72%),
+    linear-gradient(168deg, hsl(240 13% 7.5%) 0%, hsl(240 15% 4.5%) 52%, hsl(240 18% 3%) 100%);
+  border-right: 1px solid hsl(0 0% 100% / 0.06);
+  display: flex;
+  flex-direction: column;
+  padding: 34px 42px;
+  overflow: hidden;
+}
+/* soft top-down vignette for depth */
+.onb-brand::before {
+  content: "";
+  position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background: radial-gradient(135% 105% at 50% -10%, transparent 50%, hsl(240 40% 2% / 0.6) 100%);
+}
+/* fine film grain — premium texture, replaces the cheap scanline */
+.onb-brand::after {
+  content: "";
+  position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  opacity: 0.4; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+.onb-brand > * { position: relative; z-index: 1; }
+.onb-form {
+  position: relative;
+  background: hsl(240 5% 6% / 0.84);
+  display: flex;
+  flex-direction: column;
+  padding: 28px 56px;
+  overflow-y: auto;
+}
+
+/* Brand panel inner (was inline styles in OnboardingShell.tsx) */
+/* Quiet corner brand lockup */
+.brand-top { display: inline-flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; color: hsl(var(--foreground) / 0.92); }
+.brand-top .mk {
+  width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 8px;
+  color: hsl(224 95% 82%);
+  background: linear-gradient(150deg, hsl(240 8% 16% / 0.9), hsl(240 10% 9% / 0.9));
+  box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.08), 0 2px 8px hsl(0 0% 0% / 0.4);
+}
+
+.brand-center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30px; text-align: center; }
+
+/* ── Voice waveform hero — the centrepiece, replaces the boxed icon ── */
+.brand-wave {
+  display: flex; align-items: center; justify-content: center; gap: 3px;
+  height: 128px; width: 100%; max-width: 320px;
+  filter: drop-shadow(0 8px 30px hsl(226 92% 60% / 0.34));
+}
+.brand-wave .bar {
+  width: 3.5px; border-radius: 999px;
+  background: linear-gradient(to top, hsl(226 78% 60% / 0.45) 0%, hsl(223 96% 82%) 100%);
+}
+.brand-halo {
+  position: absolute; width: 360px; height: 360px; border-radius: 50%; z-index: 0; pointer-events: none;
+  background: radial-gradient(circle, hsl(226 90% 60% / 0.16) 0%, transparent 62%);
+  filter: blur(8px);
+}
+
+.brand-headline {
+  font-size: 21px; font-weight: 500; letter-spacing: -0.02em; line-height: 1.45;
+  color: hsl(var(--foreground) / 0.95); max-width: 312px; margin: 0; text-wrap: balance;
+}
+
+/* Refined pull-quote footer */
+.brand-foot { padding-top: 22px; border-top: 1px solid hsl(0 0% 100% / 0.07); }
+.brand-kicker { display: inline-flex; align-items: center; gap: 7px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.18em; margin-bottom: 9px; color: hsl(224 80% 78% / 0.92); }
+.brand-kicker::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: hsl(224 90% 76%); box-shadow: 0 0 8px hsl(224 90% 70% / 0.8); }
+.brand-quote { font-size: 13.5px; font-style: normal; line-height: 1.62; color: hsl(var(--foreground) / 0.74); margin: 0; max-width: 380px; }
+
+/* Form panel inner */
+.form-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; min-height: 36px; }
+.form-topright { font-size: 11.5px; color: hsl(var(--muted-foreground) / 0.7); }
+.back-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 8px;
+  color: hsl(var(--muted-foreground));
+  border: 1px solid transparent; background: transparent; cursor: pointer;
+  transition: all .12s ease;
+}
+.back-btn:hover { color: hsl(var(--foreground)); background: hsl(0 0% 100% / 0.04); border-color: hsl(var(--glass-stroke-strong)); }
+.form-body { flex: 1; display: flex; flex-direction: column; justify-content: center; max-width: 440px; width: 100%; margin: 0 auto; padding: 24px 0; }
+.eyebrow { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.16em; margin: 0 0 12px; color: hsl(var(--primary)); }
+.onb-title { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.025em; line-height: 1.18; color: hsl(var(--foreground)); }
+.onb-subtitle { margin: 12px 0 0; font-size: 13.5px; color: hsl(var(--muted-foreground)); line-height: 1.6; }
+.form-foot { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+.bottom-note-row { display: flex; align-items: center; justify-content: flex-end; min-height: 24px; }
+.bottom-note-row span { font-size: 11px; color: hsl(var(--muted-foreground) / 0.6); }
+
+/* Step nav */
+.onb-stepnav { display: flex; gap: 4px; width: 100%; max-width: 440px; margin: 0 auto; padding-top: 4px; }
+.onb-stepnav-pill {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 6px 2px 5px; border-radius: 8px;
+  border: 1px solid transparent; background: transparent;
+  color: hsl(var(--muted-foreground) / 0.55);
+  font-size: 9px; font-weight: 600; letter-spacing: 0.02em; line-height: 1.1;
+  font-family: inherit; cursor: default;
+}
+.onb-stepnav-clickable { cursor: pointer; color: hsl(var(--muted-foreground) / 0.85); }
+.onb-stepnav-current { color: hsl(var(--primary)); background: hsl(var(--primary) / 0.08); border-color: hsl(var(--primary) / 0.25); }
+.onb-stepnav-done { color: hsl(140 55% 58% / 0.9); }
+.onb-stepnav-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.7; }
+.onb-stepnav-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+
+/* Onboarding rows */
+.onb-row {
+  display: grid; grid-template-columns: 32px 1fr auto; align-items: center; gap: 12px;
+  padding: 12px; border-radius: 8px;
+  background: hsl(0 0% 100% / 0.025);
+  box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke));
+}
+.onb-row + .onb-row { margin-top: 8px; }
+.onb-row.selectable { cursor: pointer; transition: background .12s ease, box-shadow .12s ease; }
+.onb-row.selectable:hover { background: hsl(0 0% 100% / 0.05); }
+.onb-row.selected { background: hsl(var(--primary) / 0.10); box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.35); }
+.onb-row .ico-wrap {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: hsl(0 0% 100% / 0.04);
+  box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke));
+  display: grid; place-items: center; color: hsl(var(--foreground));
+}
+.onb-row .row-title { font-size: 12.5px; font-weight: 500; color: hsl(var(--foreground)); }
+.onb-row .row-desc { font-size: 11.5px; color: hsl(var(--muted-foreground)); margin-top: 2px; line-height: 1.4; }
+
+.key-glyph {
+  width: 40px; height: 40px; border-radius: 9px;
+  background: hsl(0 0% 100% / 0.05);
+  box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong)), 0 1px 0 hsl(0 0% 0% / 0.4);
+  display: grid; place-items: center; color: hsl(var(--foreground));
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  font-size: 13px; font-weight: 500;
+}
+
+/* Buttons */
+.btn-primary {
+  background: hsl(0 0% 98%); color: hsl(240 8% 8%);
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  border: none; cursor: pointer; transition: all .15s; height: 36px; font-family: inherit;
+  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.8), 0 1px 2px hsl(0 0% 0% / 0.2), 0 6px 16px hsl(0 0% 0% / 0.18);
+}
+.btn-primary:hover { background: hsl(0 0% 100%); }
+.btn-primary:disabled { background: hsl(var(--surface-4)); color: hsl(var(--muted-foreground)); box-shadow: none; cursor: not-allowed; }
+.btn-lg { height: 42px; font-size: 13.5px; padding-left: 20px; padding-right: 20px; }
+.w-full { width: 100%; }
+.btn-ghost {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 6px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 500;
+  color: hsl(var(--foreground)); background: transparent; cursor: pointer; font-family: inherit;
+  box-shadow: inset 0 0 0 1px hsl(var(--border)); height: 36px; transition: all .15s;
+}
+.btn-ghost:hover { background: hsl(0 0% 100% / 0.04); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong)); }
+
+/* Inputs */
+.input {
+  width: 100%; font-size: 13px; border-radius: 8px; padding: 10px 12px;
+  background: hsl(0 0% 0% / 0.25); color: hsl(var(--foreground));
+  border: 1px solid hsl(var(--border)); font-family: inherit; transition: border-color .12s;
+}
+.input::placeholder { color: hsl(var(--muted-foreground) / 0.6); }
+.input:focus { outline: none; background: hsl(0 0% 0% / 0.35); border-color: hsl(var(--primary) / 0.45); box-shadow: 0 0 0 3px hsl(var(--primary) / 0.10); }
+
+/* Pills / badges */
+.accent-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 2px 8px; border-radius: 999px;
+  background: hsl(var(--primary) / 0.14); color: hsl(var(--primary));
+}
+.granted-pill { color: hsl(140 65% 65%); background: hsl(140 65% 50% / 0.14); }
+
+.panel {
+  background: hsl(var(--surface-3));
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px hsl(var(--border)), 0 1px 0 hsl(0 0% 100% / 0.04);
+}
+
+/* Brand mark */
+.bars-mark { fill: currentColor; display: block; }
+
+/* utility */
+.mt-7 { margin-top: 28px; } .mt-6 { margin-top: 24px; } .mt-3 { margin-top: 12px; } .mt-1 { margin-top: 4px; }
+.mb-3 { margin-bottom: 12px; } .mb-15 { margin-bottom: 6px; }
+.flex { display: flex; } .flex-col { flex-direction: column; } .items-center { align-items: center; }
+.justify-between { justify-content: space-between; } .justify-end { justify-content: flex-end; } .justify-center { justify-content: center; }
+.gap-2 { gap: 8px; } .gap-25 { gap: 10px; } .gap-3 { gap: 12px; } .gap-4 { gap: 16px; }
+.text-accent { color: hsl(var(--accent)); font-weight: 600; }
+.text-muted { color: hsl(var(--muted-foreground)); }
+.divider { display: flex; align-items: center; gap: 12px; margin: 4px 0; }
+.divider .line { height: 1px; flex: 1; background: hsl(var(--border)); }
+.divider .or { font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: hsl(var(--muted-foreground)); }
+
+/* Field label (e.g. "Server URL") */
+.field-label { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: hsl(var(--foreground)); margin: 0 0 8px; }
+.field-label i { color: hsl(var(--muted-foreground)); }
+
+/* De-noised OAuth status — one compact line, not a wall of text */
+.lark-status { display: flex; gap: 10px; align-items: flex-start; padding: 11px 13px; border-radius: 10px; background: hsl(210 50% 12% / 0.5); box-shadow: inset 0 0 0 1px hsl(210 60% 60% / 0.14); }
+.lark-status .spin { color: hsl(210 80% 74%); flex-shrink: 0; margin-top: 1px; animation: spin 1s linear infinite; }
+.ls-title { margin: 0; font-size: 12.5px; font-weight: 600; color: hsl(210 75% 82%); }
+.ls-sub { margin: 3px 0 0; font-size: 11.5px; line-height: 1.5; color: hsl(210 25% 72% / 0.8); }
+.ls-sub a { color: inherit; text-decoration: underline; cursor: pointer; }
+.link-muted { background: none; border: none; font-family: inherit; cursor: pointer; font-size: 11.5px; color: hsl(var(--muted-foreground)); padding: 0; transition: color .12s; }
+.link-muted:hover { color: hsl(var(--foreground)); }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="preview-head">
+  <h1>AirNote · Onboarding Preview</h1>
+  <p>Pixel-faithful static render of every onboarding screen (macOS full flow). Pulled directly from <code>OnboardingFlow.tsx</code> + <code>OnboardingShell.tsx</code> + <code>styles.css</code>. This is the iteration surface — we refine the design here, then port back into the components.</p>
+</div>
+
+<div class="preview-stack" id="stack"></div>
+
+<!-- Brand mark template -->
+<template id="brandmark-tpl">
+  <svg viewBox="0 0 24 24" class="bars-mark" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <rect x="3"  y="8.5" width="3" height="7"  rx="1.5" />
+    <rect x="8"  y="4.5" width="3" height="15" rx="1.5" />
+    <rect x="13" y="2.5" width="3" height="19" rx="1.5" />
+    <rect x="18" y="6.5" width="3" height="11" rx="1.5" />
+  </svg>
+</template>
+
+<script>
+/* ──────────────────────────────────────────────────────────────────────────
+   Faithful builders mirroring OnboardingShell.tsx + OnboardingFlow.tsx
+   ────────────────────────────────────────────────────────────────────────── */
+
+const STEPS = [
+  { id: "welcome",     label: "Welcome" },
+  { id: "account",     label: "Account" },
+  { id: "permissions", label: "Permissions" },
+  { id: "keys",        label: "Keys" },
+  { id: "hotkey",      label: "Hotkey" },
+];
+
+function brandMark(size) {
+  const tpl = document.getElementById("brandmark-tpl").content.firstElementChild.cloneNode(true);
+  tpl.setAttribute("width", size);
+  tpl.setAttribute("height", size);
+  return tpl.outerHTML;
+}
+
+// Frozen voice-waveform: bars under a smooth bell envelope with per-bar detail,
+// so it reads as a real spoken utterance rather than a static equalizer.
+function brandWave() {
+  const N = 56, minH = 7, maxH = 116;
+  let bars = "";
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1);
+    const env = Math.pow(Math.sin(Math.PI * t), 0.62);                 // fuller bell
+    const raw = Math.sin(i * 2.3) + 0.6 * Math.sin(i * 0.8 + 1.3) + 0.45 * Math.sin(i * 5.7 + 0.5);
+    const detail = 0.42 + 0.58 * ((raw + 2.05) / 4.1);                 // normalize ~0..1
+    let h = minH + (maxH - minH) * env * detail;
+    h = Math.max(minH, Math.min(maxH, h));
+    bars += `<span class="bar" style="height:${h.toFixed(1)}px"></span>`;
+  }
+  return `<div class="brand-wave">${bars}</div>`;
+}
+
+// stepnav: statuses keyed by step id → "done" | "current" | "pending"
+function stepnav(statuses) {
+  return `<nav class="onb-stepnav" aria-label="Onboarding steps">${STEPS.map((s) => {
+    const st = statuses[s.id] ?? "pending";
+    const cls = st === "current" ? "onb-stepnav-current" : st === "done" ? "onb-stepnav-done" : "";
+    const inner = st === "done"
+      ? `<i data-lucide="check" style="width:10px;height:10px;stroke-width:2.5"></i>`
+      : `<span class="onb-stepnav-dot"></span>`;
+    return `<button class="onb-stepnav-pill ${cls}"><span style="display:flex">${inner}</span><span class="onb-stepnav-label">${s.label}</span></button>`;
+  }).join("")}</nav>`;
+}
+
+// Full split-screen shell
+function shell({ stepIndex, eyebrow, title, subtitle, brandTagline, brandKicker, brandQuote,
+                 topRight, bottomNote, back, statuses, body }) {
+  return `
+  <div class="onb-split">
+    <div class="onb-brand">
+      <div class="brand-top"><span class="mk">${brandMark(15)}</span>AirNote</div>
+      <div class="brand-center">
+        <div style="position:relative;display:flex;align-items:center;justify-content:center;width:100%">
+          <span class="brand-halo"></span>
+          ${brandWave()}
+        </div>
+        <p class="brand-headline">${brandTagline}</p>
+      </div>
+      <div class="brand-foot">
+        <span class="brand-kicker">${brandKicker}</span>
+        <p class="brand-quote">&ldquo;${brandQuote}&rdquo;</p>
+      </div>
+    </div>
+    <div class="onb-form">
+      <div class="form-header">
+        ${back ? `<button class="back-btn" aria-label="Back"><i data-lucide="arrow-left" style="width:14px;height:14px"></i></button>` : `<span></span>`}
+        <div class="form-topright">${topRight ?? ""}</div>
+      </div>
+      <div class="form-body">
+        <p class="eyebrow">${eyebrow}</p>
+        <h1 class="onb-title">${title}</h1>
+        <p class="onb-subtitle">${subtitle}</p>
+        ${body}
+      </div>
+      <div class="form-foot">
+        <div class="bottom-note-row"><span>${bottomNote ?? `Step ${stepIndex + 1} of 5`}</span></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function permRow({ icon, title, desc, granted }) {
+  return `
+  <div class="onb-row">
+    <span class="ico-wrap"><i data-lucide="${icon}" style="width:15px;height:15px"></i></span>
+    <div>
+      <div class="row-title">${title}</div>
+      <div class="row-desc">${desc}</div>
+    </div>
+    ${granted
+      ? `<span class="accent-pill granted-pill">Granted</span>`
+      : `<button class="btn-ghost" style="height:28px;font-size:11.5px">Allow</button>`}
+  </div>`;
+}
+
+function hotkeyRow({ glyph, title, desc, selected }) {
+  return `
+  <div class="onb-row selectable ${selected ? "selected" : ""}">
+    <span class="key-glyph">${glyph}</span>
+    <div>
+      <div class="row-title">${title}</div>
+      <div class="row-desc">${desc}</div>
+    </div>
+    ${selected
+      ? `<i data-lucide="check" style="width:14px;height:14px;color:hsl(var(--primary))"></i>`
+      : `<i data-lucide="arrow-right" style="width:14px;height:14px;color:hsl(var(--muted-foreground) / 0.6)"></i>`}
+  </div>`;
+}
+
+/* ── Screen bodies ──────────────────────────────────────────────────────── */
+
+const welcomeBody = `
+  <div class="mt-7 flex flex-col" style="gap:10px">
+    <button class="btn-primary btn-lg w-full">Get started <i data-lucide="arrow-right" style="width:14px;height:14px"></i></button>
+  </div>`;
+
+const accountPersonalBody = `
+  <div class="mt-7 flex flex-col gap-3">
+    <div class="flex items-center justify-end">
+      <button class="text-accent" style="font-size:11px;background:none;border:none;cursor:pointer;font-family:inherit">Already have an account? Log in</button>
+    </div>
+    <input class="input" type="email" placeholder="you@company.com" />
+    <input class="input" type="password" placeholder="Password (8+ characters)" />
+    <button class="btn-primary btn-lg w-full"><i data-lucide="arrow-right" style="width:14px;height:14px"></i> Create account</button>
+    <div class="divider"><span class="line"></span><span class="or">or</span><span class="line"></span></div>
+    <button class="w-full" style="border-radius:8px;border:1px solid hsl(var(--border));padding:10px 12px;font-size:12px;font-weight:600;color:hsl(var(--foreground));background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;font-family:inherit">
+      Setting up for your organization? <span style="color:hsl(var(--primary))">Connect a workspace &rarr;</span>
+    </button>
+  </div>`;
+
+const accountWorkspaceBody = `
+  <div class="mt-7 flex flex-col gap-4">
+    <div>
+      <label class="field-label"><i data-lucide="link" style="width:13px;height:13px"></i> Server URL</label>
+      <input class="input" type="url" value="https://airnote-dev.103.180.163.41.sslip.io" />
+    </div>
+
+    <!-- Single primary action: connect + Lark sign-in folded into one button -->
+    <button class="w-full" style="border-radius:10px;padding:11px 16px;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:10px;background:#fff;color:#1a1a1a;border:none;cursor:pointer;font-family:inherit;box-shadow:0 6px 18px -8px rgba(0,0,0,0.55)">
+      <i data-lucide="link" style="width:17px;height:17px"></i> Continue with Lark
+    </button>
+
+    <!-- Waiting state, de-noised: one compact status line + inline reopen -->
+    <div class="lark-status">
+      <i data-lucide="loader-2" class="spin" style="width:15px;height:15px"></i>
+      <div>
+        <p class="ls-title">Waiting for browser sign-in…</p>
+        <p class="ls-sub">Finish in your browser — we&rsquo;ll connect automatically. <a>Reopen</a></p>
+      </div>
+    </div>
+
+    <!-- One muted secondary row replaces 4 competing links -->
+    <div class="flex items-center justify-between" style="margin-top:2px">
+      <button class="link-muted">Cancel</button>
+      <button class="link-muted">Sign in with email instead</button>
+    </div>
+  </div>`;
+
+const permissionsBody = `
+  <div class="mt-7">
+    ${permRow({ icon: "mic",      title: "Microphone",       desc: "Capture audio while you hold the hotkey.",                              granted: true })}
+    ${permRow({ icon: "shield",   title: "Accessibility",    desc: "Type polished text into the focused app.",                             granted: false })}
+    ${permRow({ icon: "keyboard", title: "Input Monitoring", desc: "Hear your hotkey from any app — even when AirNote isn’t focused.",      granted: false })}
+  </div>
+  <div class="mt-6">
+    <button class="btn-primary btn-lg w-full" disabled>Waiting for grants…</button>
+  </div>`;
+
+const keysBody = `
+  <div class="mt-7 flex flex-col gap-3">
+    <!-- On-device (recommended) -->
+    <div style="border-radius:12px;padding:16px;border:1px solid hsl(var(--primary) / 0.4);background:hsl(var(--primary) / 0.04)">
+      <div class="flex items-center justify-between" style="margin-bottom:6px">
+        <p style="font-size:13px;font-weight:600;color:hsl(var(--foreground));margin:0">On-device</p>
+        <span style="font-size:10px;padding:2px 6px;border-radius:999px;font-weight:500;background:hsl(var(--primary) / 0.15);color:hsl(var(--primary))">Recommended</span>
+      </div>
+      <p style="font-size:11.5px;color:hsl(var(--muted-foreground));line-height:1.55;margin:0 0 12px">Transcribes Hinglish on your Mac — works offline, nothing leaves the device, and there’s no per-use cost. One-time ~148 MB download.</p>
+      <!-- Swift model card -->
+      <div style="border-radius:8px;padding:12px;background:hsl(0 0% 100% / 0.025);box-shadow:inset 0 0 0 1px hsl(var(--glass-stroke))">
+        <div class="flex items-start justify-between gap-3">
+          <div class="flex items-start gap-2" style="min-width:0">
+            <span style="width:18px;height:18px;border-radius:5px;display:grid;place-items:center;font-size:10px;font-weight:700;flex-shrink:0;background:#6c5ce7;color:#fff"><i data-lucide="cpu" style="width:11px;height:11px"></i></span>
+            <div style="min-width:0">
+              <div class="flex items-center gap-2">
+                <span style="font-size:12.5px;font-weight:600;color:hsl(var(--foreground))">On-device model</span>
+              </div>
+              <p style="font-size:11.5px;margin-top:4px;color:hsl(var(--muted-foreground))">On-device speech recognition for this Mac. Your voice never leaves the device; polishing happens after.</p>
+            </div>
+          </div>
+          <button class="btn-ghost" style="height:28px;font-size:11px;flex-shrink:0"><i data-lucide="download" style="width:12px;height:12px"></i> Download</button>
+        </div>
+      </div>
+      <button class="btn-primary btn-lg w-full" style="margin-top:12px" disabled>Download to use on-device</button>
+    </div>
+    <!-- Cloud -->
+    <div style="border-radius:12px;padding:16px;border:1px solid hsl(var(--surface-3));background:hsl(var(--surface-2))">
+      <p style="font-size:13px;font-weight:600;color:hsl(var(--foreground));margin:0 0 6px">Cloud (Deepgram)</p>
+      <p style="font-size:11.5px;color:hsl(var(--muted-foreground));line-height:1.55;margin:0 0 12px">Instant — nothing to download. Needs an internet connection while you dictate.</p>
+      <button class="w-full" style="border-radius:12px;padding:10px 16px;font-size:13px;font-weight:500;border:1px solid hsl(var(--surface-3));background:hsl(var(--surface-3));color:hsl(var(--foreground));cursor:pointer;font-family:inherit">Use cloud instead</button>
+    </div>
+  </div>`;
+
+const hotkeyBody = `
+  <div class="mt-7">
+    ${hotkeyRow({ glyph: "⇪",  title: "Caps Lock",     desc: "Single key, easy to hold.",     selected: true })}
+    ${hotkeyRow({ glyph: "⌥",  title: "Right Option",  desc: "Stays out of the way.",         selected: false })}
+    ${hotkeyRow({ glyph: "fn", title: "Fn / Globe",    desc: "The world key on MacBooks.",    selected: false })}
+  </div>
+  <div class="mt-6">
+    <button class="btn-primary btn-lg w-full">Start using AirNote <i data-lucide="arrow-right" style="width:14px;height:14px"></i></button>
+  </div>`;
+
+/* ── Screen definitions ─────────────────────────────────────────────────── */
+const screens = [
+  {
+    tag: "Step 1", note: "Welcome",
+    cfg: {
+      stepIndex: 0, eyebrow: "Get started", title: "Welcome to AirNote.",
+      subtitle: "A two-minute setup. Create your account, grant three permissions, choose on-device or cloud speech recognition, pick a hold-key — then you’ll never type by hand again.",
+      brandTagline: "Voice polish for Mac. Hold a key, speak, release — AirNote types polished text into any app.",
+      brandKicker: "Built for macOS",
+      brandQuote: "Local speech recognition first. Cloud STT only if you choose it later.",
+      bottomNote: "macOS 14+", back: false,
+      statuses: { welcome: "current" }, body: welcomeBody,
+    },
+  },
+  {
+    tag: "Step 2a", note: "Account — personal sign-up (default)",
+    cfg: {
+      stepIndex: 1, eyebrow: "Account", title: "Create your account.",
+      subtitle: "Sign up with email — it takes seconds. No server or setup needed.",
+      brandTagline: "Voice polish that just works. Sign in and start dictating in seconds.",
+      brandKicker: "Your account",
+      brandQuote: "One sign-in, then just hold the key and talk.",
+      topRight: "2 of 5", bottomNote: "Free to start · no credit card", back: true,
+      statuses: { welcome: "done", account: "current" }, body: accountPersonalBody,
+    },
+  },
+  {
+    tag: "Step 2b", note: "Account — connect workspace (enterprise / Lark)",
+    cfg: {
+      stepIndex: 1, eyebrow: "Workspace", title: "Connect your workspace.",
+      subtitle: "Enter your organization's server URL and sign in with Lark.",
+      brandTagline: "Enterprise AirNote runs on your organization's server — your data stays in your workspace.",
+      brandKicker: "Workspace sign-in",
+      brandQuote: "One workspace login, then every device knows who you are.",
+      topRight: "2 of 5", bottomNote: "Managed by your organization", back: true,
+      statuses: { welcome: "done", account: "current" }, body: accountWorkspaceBody,
+    },
+  },
+  {
+    tag: "Step 3", note: "Permissions (macOS — mic granted, others pending)",
+    cfg: {
+      stepIndex: 2, eyebrow: "Permissions", title: "A few system grants.",
+      subtitle: "Three macOS permissions — one click each. AirNote detects each grant automatically.",
+      brandTagline: "macOS will ask you once for each permission. AirNote detects each grant the moment it happens.",
+      brandKicker: "Privacy",
+      brandQuote: "Speech recognition runs locally after the Swift model is installed. Nothing is stored on our servers.",
+      topRight: "3 of 5", bottomNote: "Change any time in Settings → Permissions", back: true,
+      statuses: { welcome: "done", account: "done", permissions: "current" }, body: permissionsBody,
+    },
+  },
+  {
+    tag: "Step 4", note: "Speech recognition (macOS-only) — on-device vs cloud",
+    cfg: {
+      stepIndex: 3, eyebrow: "Speech recognition", title: "How should AirNote hear you?",
+      subtitle: "Run speech recognition on this Mac, or in the cloud. You can switch any time in Settings.",
+      brandTagline: "On-device keeps your voice on this Mac. Cloud is instant with nothing to download.",
+      brandKicker: "Recommended · on-device",
+      brandQuote: "The local model transcribes Hinglish right on your Mac — private, works offline, no per-use cost.",
+      topRight: "4 of 5", back: true,
+      statuses: { welcome: "done", account: "done", permissions: "done", keys: "current" }, body: keysBody,
+    },
+  },
+  {
+    tag: "Step 5", note: "Hotkey picker",
+    cfg: {
+      stepIndex: 4, eyebrow: "Hotkey", title: "Pick a hold-key.",
+      subtitle: "Hold this key to record, release to send. You can change it any time.",
+      brandTagline: "Hold to record, release to send. Your thumb learns it in a day.",
+      brandKicker: "Pro tip",
+      brandQuote: "Most users settle on Caps Lock — it’s already a hold-key for nothing useful.",
+      topRight: "5 of 5", bottomNote: "Press Caps Lock anywhere to dictate, once setup is done", back: true,
+      statuses: { welcome: "done", account: "done", permissions: "done", keys: "done", hotkey: "current" }, body: hotkeyBody,
+    },
+  },
+];
+
+/* ── Render ─────────────────────────────────────────────────────────────── */
+const stack = document.getElementById("stack");
+stack.innerHTML = screens.map((s, i) => `
+  <div class="preview-card">
+    <div class="preview-label">
+      <span class="num">${i + 1}</span>${s.tag}
+      <span class="sub">· ${s.note}</span>
+    </div>
+    <div class="preview-frame">${shell(s.cfg)}</div>
+  </div>
+`).join("");
+
+lucide.createIcons();
+</script>
+</body>
+</html>

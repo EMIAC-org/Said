@@ -1,10 +1,9 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   Check,
-  ExternalLink,
-  Eye,
-  EyeOff,
+  Cpu,
+  Download,
   Mic,
   Shield,
   Keyboard,
@@ -12,15 +11,34 @@ import {
   Wifi,
   LogOut,
   Loader2,
+  X,
 } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import { OnboardingShell } from "@/components/OnboardingShell";
 import { EnterpriseConnectForm } from "@/components/EnterpriseConnectForm";
 import type { EnterpriseConnection } from "@/lib/enterprise";
-import { getConnection, completeEmailAuth, DEFAULT_CLOUD_SERVER_URL } from "@/lib/enterprise";
+import {
+  getConnection,
+  completeEmailAuth,
+  getActiveServerUrl,
+  loadSavedAuthMode,
+} from "@/lib/enterprise";
 import type { AppSnapshot, Preferences } from "@/types";
-import { getPreferences, patchPreferences, openExternal } from "@/lib/invoke";
+import { getPreferences, invoke, patchPreferences } from "@/lib/invoke";
+import {
+  clearOnboardingProgress,
+  computeResumeProgress,
+  loadOnboardingProgress,
+  ONBOARDING_STEPS,
+  ONBOARDING_STEP_IDS,
+  saveOnboardingProgress,
+  shellStepStatus,
+  firstUndoneStep,
+  type OnboardingProgress,
+  type OnboardingStep,
+} from "@/lib/onboardingProgress";
 
-type Step = "welcome" | "account" | "permissions" | "keys" | "hotkey";
+type Step = OnboardingStep;
 
 interface Props {
   snapshot: AppSnapshot | null;
@@ -34,48 +52,66 @@ interface Props {
   onEnterpriseConnected?: (conn: EnterpriseConnection) => void;
   /** Reconnect-only mode — skip welcome/permissions/keys/hotkey. */
   workspaceOnly?: boolean;
+  /** Restored onboarding progress from localStorage. */
+  initialProgress?: OnboardingProgress | null;
+  /** Existing macOS users must install the local Swift model before continuing. */
+  requireLocalModelSetup?: boolean;
+  /** Called once the local Swift model is installed. */
+  onLocalModelReady?: () => void;
 }
 
-const STEPS: Step[] = ["welcome", "account", "permissions", "keys", "hotkey"];
-const TOTAL_STEPS = STEPS.length;
+// The one on-device dictation model (Oriserve Hinglish GGML, ~148 MB). The Silero
+// VAD is bundled with the app and auto-fetched after this download, so onboarding
+// only ever surfaces this single model.
+const DICTATION_MODEL_NAME = "ggml-oriserve-hinglish-fp16.bin";
 
-function stepLabel(step: Step): string {
-  return `${STEPS.indexOf(step) + 1} of ${TOTAL_STEPS}`;
+interface SwiftModelStatus {
+  installed: boolean;
+  size_bytes: number;
+  path: string;
 }
 
-// ── Password-style input with show/hide ─────────────────────────────────────
+// Payload of the shared `meeting-model-download` event (keyed by model name).
+interface SwiftDownloadProgress {
+  name: string;
+  received: number;
+  total: number;
+  status: "downloading" | "done" | "cancelled" | "error";
+  error: string | null;
+}
 
-function KeyInput({
-  value,
-  onChange,
-  placeholder,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  placeholder: string;
-}) {
-  const [show, setShow] = useState(false);
-  return (
-    <div className="relative">
-      <input
-        type={show ? "text" : "password"}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="input pr-10"
-        style={{ fontFamily: "ui-monospace, SF Mono, Menlo, monospace" }}
-      />
-      <button
-        type="button"
-        onClick={() => setShow((s) => !s)}
-        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 transition-colors"
-        style={{ color: "hsl(var(--muted-foreground))" }}
-        aria-label={show ? "Hide" : "Show"}
-      >
-        {show ? <EyeOff size={13} /> : <Eye size={13} />}
-      </button>
-    </div>
-  );
+function formatSize(bytes: number): string {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+  if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
+  if (bytes > 0) return `${Math.round(bytes / 1e3)} KB`;
+  return "—";
+}
+
+const STEPS = ONBOARDING_STEP_IDS;
+
+// The "keys" step is the macOS-only "Speech recognition" step (choose on-device
+// Swift vs Cloud). Windows has no on-device dictation option, so that step is
+// filtered out of the flow entirely — Windows never sees it and it isn't counted.
+const MAC_ONLY_STEPS: ReadonlySet<Step> = new Set<Step>(["keys"]);
+function visibleStepsFor(isMac: boolean): Step[] {
+  return isMac ? [...STEPS] : STEPS.filter((s) => !MAC_ONLY_STEPS.has(s));
+}
+
+type HotkeyMode = "hold" | "toggle";
+
+/** Display label for a record-hotkey id, platform-aware. */
+function hotkeyLabelFor(key: string, isWindows: boolean): string {
+  if (key === "fn") return "Fn / Globe";
+  if (key === "right_option") return isWindows ? "Right Alt" : "Right Option";
+  return "Caps Lock";
+}
+
+/** How the key actually behaves at runtime (must mirror crates/hotkey):
+ *  macOS Caps Lock is a LOCKING key → tap to start, tap again to stop (toggle).
+ *  Fn / Right Option, and every Windows key (incl. the hook-suppressed Caps
+ *  Lock), are momentary → push-to-talk (hold while speaking, release to send). */
+function hotkeyMode(key: string, isWindows: boolean): HotkeyMode {
+  return key === "caps_lock" && !isWindows ? "toggle" : "hold";
 }
 
 // ── Main component ─────────────────────────────────────────────────────────
@@ -89,26 +125,40 @@ export function OnboardingFlow({
   enterpriseRequired = false,
   onEnterpriseConnected,
   workspaceOnly = false,
+  initialProgress = null,
+  requireLocalModelSetup = false,
+  onLocalModelReady,
 }: Props) {
   const [prefs, setPrefs] = useState<Preferences | null>(null);
-  const [groqKey, setGroqKey] = useState("");
-  const [deepgramKey, setDeepgramKey] = useState("");
   const [keySaving, setKeySaving] = useState(false);
   const [keyError, setKeyError] = useState("");
+  const [dictationTried, setDictationTried] = useState(false);
+  const [swiftModel, setSwiftModel] = useState<SwiftModelStatus | null>(null);
+  const [swiftDownload, setSwiftDownload] = useState<SwiftDownloadProgress | null>(null);
+  const [swiftBusy, setSwiftBusy] = useState(false);
+  const [swiftError, setSwiftError] = useState("");
   const [workspacePreview, setWorkspacePreview] = useState<EnterpriseConnection | null>(null);
+  const [userNavigatedManually, setUserNavigatedManually] = useState(false);
+  const resumeSynced = useRef(false);
 
-  // account step: personal vs workspace sub-view.
-  // Personal sign-up is the default for everyone; only the Settings reconnect
-  // path (workspaceOnly) lands directly on the workspace screen. NOTE:
-  // `enterpriseRequired` here just means "not signed in yet" (true for every
-  // fresh user, personal included) — it must NOT force the workspace screen.
-  const [authMode, setAuthMode] = useState<"personal" | "workspace">(
-    workspaceOnly ? "workspace" : "personal",
+  const [progress, setProgress] = useState<OnboardingProgress>(() =>
+    computeResumeProgress(initialProgress ?? loadOnboardingProgress(), {
+      workspaceOnly,
+      snapshot: null,
+      prefs: null,
+    }),
   );
-  // personal email signup/login
+
+  const [authMode, setAuthMode] = useState<"personal" | "workspace">(() => {
+    if (workspaceOnly) {
+      return loadSavedAuthMode() ?? initialProgress?.authMode ?? progress.authMode;
+    }
+    return progress.authMode;
+  });
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [emailSignup, setEmailSignup] = useState(true); // true = create, false = log in
+  const [emailSignup, setEmailSignup] = useState(true);
   const [personalLoading, setPersonalLoading] = useState(false);
   const [personalError, setPersonalError] = useState("");
 
@@ -116,44 +166,246 @@ export function OnboardingFlow({
   const accGranted = snapshot?.accessibility_granted ?? false;
   const imGranted = snapshot?.input_monitoring_granted ?? false;
   const isWindows = snapshot?.platform === "windows";
+  const isMac = snapshot?.platform === "macos";
+
+  const [step, setStep] = useState<Step>(() => progress.currentStep);
+
+  // Platform-aware step list. On Windows the macOS-only "Speech recognition"
+  // (keys) step is filtered out — it is never shown, navigated to, or counted.
+  const visibleStepIds = useMemo(() => visibleStepsFor(isMac), [isMac]);
+  const totalSteps = visibleStepIds.length;
+  const visStepIndex = useCallback(
+    (s: Step) => {
+      const i = visibleStepIds.indexOf(s);
+      return i >= 0 ? i : 0;
+    },
+    [visibleStepIds],
+  );
+  const stepLabel = useCallback(
+    (s: Step) => `${visStepIndex(s) + 1} of ${totalSteps}`,
+    [visStepIndex, totalSteps],
+  );
 
   useEffect(() => {
     getPreferences().then((p) => {
       if (p) {
         setPrefs(p);
-        if (p.groq_api_key) setGroqKey(p.groq_api_key);
-        if (p.deepgram_api_key) setDeepgramKey(p.deepgram_api_key);
       }
     });
   }, []);
 
-  const hasKeys = !!(prefs?.groq_api_key && prefs?.deepgram_api_key);
-
-  const [step, setStep] = useState<Step>(() => (workspaceOnly ? "account" : "welcome"));
-
-  const stepIndex = STEPS.indexOf(step);
-
-  const goNext = useCallback(() => {
-    const idx = STEPS.indexOf(step);
-    if (idx >= STEPS.length - 1) return;
-    let next = STEPS[idx + 1];
-    if (next === "account" && !enterpriseRequired && getConnection()) {
-      next = STEPS[idx + 2] ?? next;
+  const refreshSwiftModel = useCallback(async () => {
+    if (!isMac) {
+      setSwiftModel(null);
+      return null;
     }
-    setStep(next);
-  }, [step, enterpriseRequired]);
+    try {
+      const status = await invoke<SwiftModelStatus>("dictation_model_status");
+      setSwiftModel(status);
+      if (status.installed) onLocalModelReady?.();
+      return status;
+    } catch (e) {
+      setSwiftError(e instanceof Error ? e.message : String(e));
+      return null;
+    }
+  }, [isMac, onLocalModelReady]);
+
+  useEffect(() => {
+    void refreshSwiftModel();
+  }, [refreshSwiftModel]);
+
+  useEffect(() => {
+    if (!isMac) return;
+    const unlistenP = listen<SwiftDownloadProgress>("meeting-model-download", (event) => {
+      const payload = event.payload;
+      // The event is shared across models (dictation + VAD); only react to the
+      // dictation model so VAD's silent auto-fetch never shows in onboarding.
+      if (payload.name !== DICTATION_MODEL_NAME) return;
+      if (payload.status === "downloading") {
+        setSwiftDownload(payload);
+        setSwiftError("");
+      } else {
+        setSwiftDownload(null);
+      }
+      if (payload.status === "done") {
+        void refreshSwiftModel();
+      }
+      if (payload.status === "error") {
+        setSwiftError(payload.error || "Model download failed.");
+      }
+    });
+    return () => {
+      void unlistenP.then((fn) => fn());
+    };
+  }, [isMac, refreshSwiftModel]);
+
+  useEffect(() => {
+    if (resumeSynced.current) return;
+    if (!prefs && !snapshot) return;
+    resumeSynced.current = true;
+    const next = computeResumeProgress(initialProgress ?? loadOnboardingProgress(), {
+      workspaceOnly,
+      snapshot,
+      prefs,
+    });
+    setProgress(next);
+    saveOnboardingProgress(next);
+    setStep(next.currentStep);
+    setAuthMode(next.authMode);
+  }, [initialProgress, workspaceOnly, snapshot, prefs]);
+
+  useEffect(() => {
+    saveOnboardingProgress({ authMode });
+  }, [authMode]);
+
+  const swiftInstalled = isMac ? (swiftModel?.installed ?? false) : true;
+  const permsReady = micGranted && (isWindows || (accGranted && imGranted));
+  const stepIndex = visStepIndex(step);
+
+  const applyProgress = useCallback((patch: Partial<OnboardingProgress>) => {
+    const updated = saveOnboardingProgress(patch);
+    setProgress(updated);
+    return updated;
+  }, []);
+
+  const goToStep = useCallback(
+    (target: Step, opts?: { manual?: boolean; authMode?: "personal" | "workspace" }) => {
+      if (opts?.manual) setUserNavigatedManually(true);
+      else setUserNavigatedManually(false);
+      const idx = visStepIndex(target);
+      const nextAuth = opts?.authMode ?? authMode;
+      if (opts?.authMode) setAuthMode(nextAuth);
+      const updated = applyProgress({
+        currentStep: target,
+        maxStepIndex: workspaceOnly
+          ? totalSteps - 1
+          : Math.max(progress.maxStepIndex, idx),
+        authMode: nextAuth,
+      });
+      setStep(updated.currentStep);
+    },
+    [applyProgress, authMode, progress.maxStepIndex, workspaceOnly, totalSteps, visStepIndex],
+  );
+
+  const advanceToNextUndone = useCallback(
+    (patch?: Partial<Record<OnboardingStep, "done">>) => {
+      setUserNavigatedManually(false);
+      const status = { ...progress.stepStatus, ...patch };
+
+      if (step === "welcome") status.welcome = "done";
+      if (step === "account" && getConnection()) status.account = "done";
+      if (step === "permissions" && permsReady) status.permissions = "done";
+
+      let next = firstUndoneStep(status);
+      while (next === "account" && !enterpriseRequired && getConnection()) {
+        status.account = "done";
+        next = firstUndoneStep(status);
+      }
+      // Windows has no on-device dictation — the macOS-only "Speech recognition"
+      // (keys) step is skipped automatically so it never becomes current.
+      while (next === "keys" && !isMac) {
+        status.keys = "done";
+        next = firstUndoneStep(status);
+      }
+
+      if (!next) {
+        applyProgress({
+          stepStatus: status,
+          maxStepIndex: workspaceOnly ? totalSteps - 1 : progress.maxStepIndex,
+        });
+        return;
+      }
+
+      const nextIdx = visStepIndex(next);
+      const updated = applyProgress({
+        currentStep: next,
+        maxStepIndex: workspaceOnly
+          ? totalSteps - 1
+          : Math.max(progress.maxStepIndex, nextIdx),
+        stepStatus: status,
+        authMode,
+      });
+      setStep(updated.currentStep);
+    },
+    [
+      step,
+      progress,
+      authMode,
+      enterpriseRequired,
+      permsReady,
+      isMac,
+      applyProgress,
+      workspaceOnly,
+      totalSteps,
+      visStepIndex,
+    ],
+  );
 
   const goBack = useCallback(() => {
-    const idx = STEPS.indexOf(step);
-    if (idx > 0) setStep(STEPS[idx - 1]);
-  }, [step]);
+    const idx = visStepIndex(step);
+    if (idx <= 0) return;
+    setUserNavigatedManually(true);
+    const prev = visibleStepIds[idx - 1];
+    const nextAuth = prev === "welcome" ? "personal" : authMode;
+    if (nextAuth !== authMode) setAuthMode(nextAuth);
+    goToStep(prev, { manual: true, authMode: nextAuth });
+  }, [step, authMode, goToStep, visStepIndex, visibleStepIds]);
+
+  const handleStepSelect = useCallback(
+    (index: number) => {
+      const reachable = Math.min(progress.maxStepIndex, totalSteps - 1);
+      const limit = workspaceOnly ? totalSteps - 1 : reachable;
+      if (index > limit) return;
+      const target = visibleStepIds[index];
+      if (!target || target === step) return;
+      const nextAuth = target === "welcome" ? "personal" : authMode;
+      if (nextAuth !== authMode) setAuthMode(nextAuth);
+      goToStep(target, { manual: true, authMode: nextAuth });
+    },
+    [progress.maxStepIndex, step, authMode, goToStep, workspaceOnly, totalSteps, visibleStepIds],
+  );
+
+  useEffect(() => {
+    if (!requireLocalModelSetup || workspaceOnly || !isMac || swiftInstalled) return;
+    if (step === "keys" && progress.stepStatus.keys !== "done") return;
+    const updated = applyProgress({
+      currentStep: "keys",
+      maxStepIndex: Math.max(progress.maxStepIndex, visStepIndex("keys")),
+      stepStatus: { ...progress.stepStatus, keys: "pending" },
+    });
+    setStep(updated.currentStep);
+  }, [
+    applyProgress,
+    isMac,
+    progress.maxStepIndex,
+    progress.stepStatus,
+    requireLocalModelSetup,
+    step,
+    swiftInstalled,
+    workspaceOnly,
+    visStepIndex,
+  ]);
+
+  const maxReachableIndex = workspaceOnly
+    ? totalSteps - 1
+    : Math.min(progress.maxStepIndex, totalSteps - 1);
+
+  const navProps = {
+    steps: ONBOARDING_STEPS.filter((s) => visibleStepIds.includes(s.id)).map((s, index) => ({
+      ...s,
+      index,
+    })),
+    currentStepIndex: stepIndex,
+    maxReachableIndex,
+    stepStatus: shellStepStatus(progress, step),
+    onStepSelect: handleStepSelect,
+  };
 
   const handleWorkspaceContinue = useCallback(() => {
     if (!workspacePreview) return;
     onEnterpriseConnected?.(workspacePreview);
-    if (workspaceOnly) return;
-    goNext();
-  }, [workspacePreview, onEnterpriseConnected, workspaceOnly, goNext]);
+    advanceToNextUndone({ account: "done" });
+  }, [workspacePreview, onEnterpriseConnected, advanceToNextUndone]);
 
   const handlePersonalSubmit = useCallback(async () => {
     const trimmedEmail = email.trim();
@@ -165,14 +417,13 @@ export function OnboardingFlow({
     setPersonalError("");
     try {
       const conn = await completeEmailAuth(
-        DEFAULT_CLOUD_SERVER_URL,
+        getActiveServerUrl(),
         trimmedEmail,
         password,
         emailSignup,
       );
       onEnterpriseConnected?.(conn);
-      if (workspaceOnly) return;
-      goNext();
+      advanceToNextUndone({ account: "done" });
     } catch (e) {
       setPersonalError(
         (e as Error).message ||
@@ -181,47 +432,96 @@ export function OnboardingFlow({
     } finally {
       setPersonalLoading(false);
     }
-  }, [email, password, emailSignup, onEnterpriseConnected, workspaceOnly, goNext]);
+  }, [email, password, emailSignup, onEnterpriseConnected, advanceToNextUndone]);
 
-  // Auto-advance the permissions step once the required grants are in (delay so
-  // the user sees the green check before the screen swaps). Windows only needs
-  // microphone — Accessibility / Input Monitoring are macOS-only TCC gates.
   useEffect(() => {
-    const permsReady = micGranted && (isWindows || (accGranted && imGranted));
+    if (userNavigatedManually) return;
     if (step === "permissions" && permsReady) {
-      const t = setTimeout(goNext, 700);
+      const t = setTimeout(() => {
+        advanceToNextUndone({ permissions: "done" });
+      }, 700);
       return () => clearTimeout(t);
     }
-    if (step === "keys" && hasKeys) {
-      const t = setTimeout(goNext, 300);
-      return () => clearTimeout(t);
-    }
-  }, [step, micGranted, accGranted, imGranted, isWindows, hasKeys, goNext]);
+  }, [
+    step,
+    permsReady,
+    advanceToNextUndone,
+    userNavigatedManually,
+  ]);
 
-  const handleSaveKeys = useCallback(async () => {
-    if (!groqKey.trim() || !deepgramKey.trim()) {
-      setKeyError("Both keys are required.");
+  // No API keys are collected anymore — they're bundled into the build. This
+  // macOS-only step just records which speech engine the user wants.
+  const chooseCloudEngine = useCallback(async () => {
+    setKeySaving(true);
+    setKeyError("");
+    try {
+      const updated = await patchPreferences({ stt_provider: "deepgram" });
+      if (updated) setPrefs(updated);
+      advanceToNextUndone({ keys: "done" });
+    } catch {
+      setKeyError("Couldn't save your choice. Try again.");
+    } finally {
+      setKeySaving(false);
+    }
+  }, [advanceToNextUndone]);
+
+  const chooseLocalEngine = useCallback(async () => {
+    if (!swiftInstalled) {
+      setKeyError("Download the local model first, then continue.");
       return;
     }
     setKeySaving(true);
     setKeyError("");
     try {
-      const updated = await patchPreferences({
-        groq_api_key: groqKey.trim(),
-        deepgram_api_key: deepgramKey.trim(),
-        llm_provider: "groq",
-      });
-      if (updated) setPrefs(updated);
-      goNext();
+      const updated = await patchPreferences({ stt_provider: "whisper_local" });
+      if (updated) {
+        setPrefs(updated);
+        onLocalModelReady?.();
+      }
+      advanceToNextUndone({ keys: "done" });
     } catch {
-      setKeyError("Failed to save keys. Try again.");
+      setKeyError("Couldn't save your choice. Try again.");
     } finally {
       setKeySaving(false);
     }
-  }, [groqKey, deepgramKey, goNext]);
+  }, [advanceToNextUndone, onLocalModelReady, swiftInstalled]);
+
+  const handleSwiftDownload = useCallback(async () => {
+    setSwiftBusy(true);
+    setSwiftError("");
+    setKeyError("");
+    try {
+      await invoke("download_dictation_model");
+      const status = await refreshSwiftModel();
+      if (status?.installed) onLocalModelReady?.();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg !== "cancelled") setSwiftError(msg);
+    } finally {
+      setSwiftBusy(false);
+    }
+  }, [onLocalModelReady, refreshSwiftModel]);
+
+  const handleSwiftCancel = useCallback(async () => {
+    await invoke("meeting_cancel_model_download", { name: DICTATION_MODEL_NAME }).catch(() => {});
+    setSwiftDownload(null);
+  }, []);
 
   const handleHotkeySelect = useCallback(async (key: string) => {
-    await patchPreferences({ record_hotkey: key });
+    const updated = await patchPreferences({ record_hotkey: key });
+    // Reflect the choice in local state so the next step ("Try it") shows the
+    // key the user actually picked (not the stale default).
+    if (updated) setPrefs(updated);
+    // Hotkey is no longer the final step — advance to the live "Try it" step,
+    // which is where onboarding actually completes (handleTestComplete). In
+    // workspaceOnly reconnect mode "test" is pre-marked done, so this is a no-op
+    // there and the existing account-driven completion is unchanged.
+    advanceToNextUndone({ hotkey: "done" });
+  }, [advanceToNextUndone]);
+
+  // Final step: the live dictation try-it. Completing it ends onboarding.
+  const handleTestComplete = useCallback(() => {
+    clearOnboardingProgress();
     onFinish();
   }, [onFinish]);
 
@@ -230,13 +530,13 @@ export function OnboardingFlow({
     return (
       <OnboardingShell
         step={stepIndex}
-        totalSteps={TOTAL_STEPS}
+        totalSteps={totalSteps}
         eyebrow="Get started"
         title="Welcome to AirNote."
         subtitle={
           isWindows
-            ? "A two-minute setup. Create your account, grant microphone access, add Groq + Deepgram keys, pick a hold-key — then you’ll never type by hand again."
-            : "A two-minute setup. Create your account, grant three permissions, add Groq + Deepgram keys, pick a hold-key — then you’ll never type by hand again."
+            ? "A two-minute setup. Create your account, grant microphone access, pick a dictation key — then you’ll never type by hand again."
+            : "A two-minute setup. Create your account, grant three permissions, choose on-device or cloud speech recognition, pick a dictation key — then you’ll never type by hand again."
         }
         brandTagline={
           isWindows
@@ -244,11 +544,16 @@ export function OnboardingFlow({
             : "Voice polish for Mac. Hold a key, speak, release — AirNote types polished text into any app."
         }
         brandKicker={isWindows ? "Built for Windows" : "Built for macOS"}
-        brandQuote="It’s like typing, except your brain is the keyboard."
+        brandQuote={
+          isWindows
+            ? "It’s like typing, except your brain is the keyboard."
+            : "Local speech recognition first. Cloud STT only if you choose it later."
+        }
         bottomNote={<span>{isWindows ? "Windows 10/11" : "macOS 14+"}</span>}
+        {...navProps}
       >
         <div className="mt-7 flex flex-col gap-2.5">
-          <button onClick={goNext} className="btn-primary btn-lg w-full">
+          <button onClick={() => advanceToNextUndone({ welcome: "done" })} className="btn-primary btn-lg w-full">
             Get started
             <ArrowRight size={14} />
           </button>
@@ -262,7 +567,7 @@ export function OnboardingFlow({
     return (
       <OnboardingShell
         step={stepIndex}
-        totalSteps={TOTAL_STEPS}
+        totalSteps={totalSteps}
         eyebrow="Account"
         title={emailSignup ? "Create your account." : "Welcome back."}
         subtitle={
@@ -275,7 +580,8 @@ export function OnboardingFlow({
         brandQuote="One sign-in, then just hold the key and talk."
         topRight={<span>{stepLabel(step)}</span>}
         bottomNote={<span>Free to start · no credit card</span>}
-        onBack={workspaceOnly ? undefined : goBack}
+        onBack={stepIndex > 0 ? goBack : undefined}
+        {...navProps}
       >
         <div className="mt-7 flex flex-col gap-3">
           <div className="flex items-center justify-end">
@@ -361,11 +667,15 @@ export function OnboardingFlow({
               setAuthMode("workspace");
               setPersonalError("");
             }}
-            className="w-full rounded-lg border px-3 py-2.5 text-[12px] font-semibold transition-colors flex items-center justify-center gap-2"
+            className="w-full rounded-lg border px-3 py-2.5 transition-colors text-center"
             style={{ borderColor: "hsl(var(--border))", color: "hsl(var(--foreground))" }}
           >
-            Setting up for your organization?
-            <span style={{ color: "hsl(var(--primary))" }}>Connect a workspace →</span>
+            <span className="block text-[12px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
+              Setting up for your organization?
+            </span>
+            <span className="block text-[12px] font-semibold mt-0.5" style={{ color: "hsl(var(--primary))" }}>
+              Connect a workspace →
+            </span>
           </button>
         </div>
       </OnboardingShell>
@@ -374,24 +684,20 @@ export function OnboardingFlow({
 
   // ── Step 2b: Account — connect workspace (secondary, org server) ───────────
   if (step === "account") {
-    // Back from the workspace screen always returns to the personal screen
-    // (workspace is the opt-in secondary path). Settings reconnect has no back.
-    const workspaceBack = workspaceOnly
-      ? undefined
-      : () => {
-          setAuthMode("personal");
-          setWorkspacePreview(null);
-        };
+    const workspaceBack = () => {
+      setAuthMode("personal");
+      setWorkspacePreview(null);
+    };
     return (
       <OnboardingShell
         step={stepIndex}
-        totalSteps={TOTAL_STEPS}
+        totalSteps={totalSteps}
         eyebrow="Workspace"
         title={workspacePreview ? "You're connected." : "Connect your workspace."}
         subtitle={
           workspacePreview
             ? "Signed in to your organization. Continue setup on the next step."
-            : "Enter your organization's server URL, then sign in. For teams on a self-hosted AirNote server."
+            : "Sign in with your Lark account to connect your workspace."
         }
         brandTagline="Enterprise AirNote runs on your organization's server — your data stays in your workspace."
         brandKicker="Workspace sign-in"
@@ -405,6 +711,7 @@ export function OnboardingFlow({
           )
         }
         onBack={workspaceBack}
+        {...navProps}
       >
         {workspacePreview ? (
           <div className="mt-7 flex flex-col gap-4">
@@ -455,13 +762,23 @@ export function OnboardingFlow({
             </button>
           </div>
         ) : (
-          <div className="mt-7">
+          <div className="mt-7 flex flex-col gap-3">
             <EnterpriseConnectForm
               compact
               variant="onboarding"
+              lockedServerUrl={getActiveServerUrl()}
               onConnected={setWorkspacePreview}
               onCancel={workspaceBack}
             />
+            {workspaceOnly && (
+              <button
+                type="button"
+                className="text-[11px] text-center text-muted-foreground hover:text-foreground transition-colors"
+                onClick={workspaceBack}
+              >
+                Sign in with email instead
+              </button>
+            )}
           </div>
         )}
       </OnboardingShell>
@@ -476,7 +793,7 @@ export function OnboardingFlow({
     return (
       <OnboardingShell
         step={stepIndex}
-        totalSteps={TOTAL_STEPS}
+        totalSteps={totalSteps}
         eyebrow="Permissions"
         title={isWindows ? "One system grant." : "A few system grants."}
         subtitle={
@@ -490,10 +807,15 @@ export function OnboardingFlow({
             : "macOS will ask you once for each permission. AirNote detects each grant the moment it happens."
         }
         brandKicker="Privacy"
-        brandQuote="Audio never leaves the path between your mic and Deepgram. Nothing is stored on our servers."
+        brandQuote={
+          isWindows
+            ? "Audio goes only to your selected speech provider. Nothing is stored on our servers."
+            : "Speech recognition runs locally after the Swift model is installed. Nothing is stored on our servers."
+        }
         topRight={<span>{stepLabel(step)}</span>}
         bottomNote={<span>Change any time in Settings → Permissions</span>}
         onBack={goBack}
+        {...navProps}
       >
         <div className="mt-7">
           <PermRow
@@ -525,7 +847,7 @@ export function OnboardingFlow({
 
         <div className="mt-6">
           <button
-            onClick={goNext}
+            onClick={() => advanceToNextUndone({ permissions: "done" })}
             disabled={!allGranted}
             className="btn-primary btn-lg w-full"
           >
@@ -537,57 +859,158 @@ export function OnboardingFlow({
     );
   }
 
-  // ── Step 4: API keys ─────────────────────────────────────────────────────
-  if (step === "keys") {
+  // ── Step 4 (macOS only): Speech recognition engine ───────────────────────
+  // On-device Swift vs Cloud Deepgram. No API keys — they're bundled into the
+  // build. Windows never reaches this step (it's filtered out of the flow);
+  // Windows dictation always uses Cloud.
+  if (step === "keys" && isMac) {
+    const swiftDownloadPct =
+      swiftDownload && swiftDownload.total > 0
+        ? Math.min(100, Math.round((swiftDownload.received / swiftDownload.total) * 100))
+        : null;
     return (
       <OnboardingShell
         step={stepIndex}
-        totalSteps={TOTAL_STEPS}
-        eyebrow="Voice engine"
-        title="Connect your voice."
-        subtitle="Groq + Deepgram are required to start dictating."
-        brandTagline="Groq polishes; Deepgram transcribes. Both have free tiers that cover daily use."
-        brandKicker="Stored locally"
-        brandQuote={`Your keys never leave this ${isWindows ? "PC" : "Mac"} except directly to Groq and Deepgram.`}
+        totalSteps={totalSteps}
+        eyebrow="Speech recognition"
+        title="How should AirNote hear you?"
+        subtitle="Run speech recognition on this Mac, or in the cloud. You can switch any time in Settings."
+        brandTagline="On-device keeps your voice on this Mac. Cloud is instant with nothing to download."
+        brandKicker="Recommended · on-device"
+        brandQuote="The local model transcribes Hinglish right on your Mac — private, works offline, no per-use cost."
         topRight={<span>{stepLabel(step)}</span>}
-        bottomNote={<span>Optional services (e.g. Gemini) live in Settings</span>}
         onBack={goBack}
+        {...navProps}
       >
         <div className="mt-7 flex flex-col gap-3">
-          <KeyCard
-            color="#f55036"
-            letter="G"
-            name="Groq"
-            href="https://console.groq.com/keys"
-            placeholder="gsk_…"
-            value={groqKey}
-            onChange={setGroqKey}
-            connected={!!prefs?.groq_api_key}
-          />
-          <KeyCard
-            color="#0a8d8a"
-            letter="D"
-            name="Deepgram"
-            href="https://console.deepgram.com/signup"
-            placeholder="Paste your Deepgram key"
-            value={deepgramKey}
-            onChange={setDeepgramKey}
-            connected={!!prefs?.deepgram_api_key}
-          />
+          {/* On-device (recommended) */}
+          <div
+            className="rounded-xl p-4"
+            style={{
+              border: "1px solid hsl(var(--primary) / 0.4)",
+              background: "hsl(var(--primary) / 0.04)",
+            }}
+          >
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-[13px] font-semibold text-foreground">On-device</p>
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+                style={{ background: "hsl(var(--primary) / 0.15)", color: "hsl(var(--primary))" }}
+              >
+                Recommended
+              </span>
+            </div>
+            <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
+              Hinglish, transcribed on your Mac — offline, private, no per-use cost.
+            </p>
+            <SwiftModelCard
+              installed={swiftInstalled}
+              sizeBytes={swiftModel?.size_bytes ?? 0}
+              progressPct={swiftDownloadPct ?? null}
+              busy={swiftBusy}
+              error={swiftError}
+              onDownload={() => void handleSwiftDownload()}
+              onCancel={() => void handleSwiftCancel()}
+            />
+            <button
+              onClick={() => void chooseLocalEngine()}
+              disabled={keySaving || !swiftInstalled}
+              className="btn-primary btn-lg w-full mt-3"
+            >
+              {keySaving
+                ? "Saving…"
+                : swiftInstalled
+                  ? "Use on-device model"
+                  : "Download to use on-device"}
+              {!keySaving && swiftInstalled && <ArrowRight size={14} />}
+            </button>
+          </div>
+
+          {/* Cloud */}
+          <div
+            className="rounded-xl p-4"
+            style={{ border: "1px solid hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
+          >
+            <p className="text-[13px] font-semibold text-foreground mb-1.5">Cloud (Deepgram)</p>
+            <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
+              Instant — nothing to download. Needs an internet connection while you dictate.
+            </p>
+            <button
+              onClick={() => void chooseCloudEngine()}
+              disabled={keySaving}
+              className="w-full rounded-xl px-4 py-2.5 text-[13px] font-medium border transition-colors disabled:opacity-50"
+              style={{
+                borderColor: "hsl(var(--surface-3))",
+                background: "hsl(var(--surface-3))",
+                color: "hsl(var(--foreground))",
+              }}
+            >
+              {keySaving ? "Saving…" : "Use cloud instead"}
+            </button>
+          </div>
 
           {keyError && (
             <p className="text-[12px] text-center" style={{ color: "hsl(var(--destructive))" }}>
               {keyError}
             </p>
           )}
+        </div>
+      </OnboardingShell>
+    );
+  }
 
-          <button
-            onClick={handleSaveKeys}
-            disabled={keySaving || !groqKey.trim() || !deepgramKey.trim()}
-            className="btn-primary btn-lg w-full mt-1"
-          >
-            {keySaving ? "Saving…" : "Continue"}
-            {!keySaving && <ArrowRight size={14} />}
+  // ── Step 6: Try it — live dictation ──────────────────────────────────────
+  // Real dictation: the global hotkey pipeline is already active, so holding
+  // the key and speaking types polished text straight into the focused
+  // textarea below. This works because the user is now authenticated (account
+  // step, required), mic is granted, and (macOS) Accessibility is granted.
+  if (step === "test") {
+    const hk = prefs?.record_hotkey ?? "caps_lock";
+    const hkLabel = hotkeyLabelFor(hk, isWindows);
+    const isToggle = hotkeyMode(hk, isWindows) === "toggle";
+    const trySubtitle = isToggle
+      ? `Tap ${hkLabel} to start, speak, then tap again — AirNote types polished text right into the box below. This is the real thing, not a demo.`
+      : `Hold ${hkLabel} and speak, then release — AirNote types polished text right into the box below. This is the real thing, not a demo.`;
+    const tryPlaceholder = isToggle
+      ? `Tap ${hkLabel} and speak — your polished words appear here…`
+      : `Hold ${hkLabel} and speak — your polished words appear here…`;
+    return (
+      <OnboardingShell
+        step={stepIndex}
+        totalSteps={totalSteps}
+        eyebrow="Try it"
+        title="Your first dictation."
+        subtitle={trySubtitle}
+        brandTagline={isToggle ? "Tap to start, speak, tap to send — and watch it land." : "Hold the key, speak, release — and watch it land."}
+        brandKicker="Live"
+        brandQuote="This is exactly how dictation feels everywhere else in your apps."
+        topRight={<span>{stepLabel(step)}</span>}
+        onBack={goBack}
+        {...navProps}
+      >
+        <div className="mt-7">
+          <textarea
+            autoFocus
+            className="onb-try-field"
+            placeholder={tryPlaceholder}
+            onChange={(e) => {
+              if (e.target.value.trim()) setDictationTried(true);
+            }}
+          />
+          <div className="onb-try-hint">
+            <Mic size={13} />
+            {isToggle ? (
+              <>Tap <span className="onb-try-kbd">{hkLabel}</span> to start, tap again to send.</>
+            ) : (
+              <>Hold <span className="onb-try-kbd">{hkLabel}</span> and speak, then release.</>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-6">
+          <button onClick={handleTestComplete} className="btn-primary btn-lg w-full">
+            {dictationTried ? "Perfect — finish setup" : "Finish setup"}
+            <ArrowRight size={14} />
           </button>
         </div>
       </OnboardingShell>
@@ -597,26 +1020,46 @@ export function OnboardingFlow({
   // ── Step 5: Hotkey ───────────────────────────────────────────────────────
   const currentHotkey = prefs?.record_hotkey ?? "caps_lock";
   const options: { key: string; glyph: string; label: string; desc: string }[] = [
-    { key: "caps_lock",    glyph: "⇪",  label: "Caps Lock",     desc: "Single key, easy to hold." },
-    { key: "right_option", glyph: isWindows ? "Alt" : "⌥",  label: isWindows ? "Right Alt" : "Right Option",  desc: "Stays out of the way." },
+    {
+      key: "caps_lock",
+      glyph: "⇪",
+      label: "Caps Lock",
+      // macOS Caps Lock toggles; on Windows the hook makes it hold-to-talk.
+      desc: isWindows ? "Hold to talk — one easy key." : "Tap to start, tap again to stop.",
+    },
+    {
+      key: "right_option",
+      glyph: isWindows ? "Alt" : "⌥",
+      label: isWindows ? "Right Alt" : "Right Option",
+      desc: "Hold while you speak.",
+    },
     ...(!isWindows
-      ? [{ key: "fn", glyph: "fn", label: "Fn / Globe", desc: "The world key on MacBooks." }]
+      ? [{ key: "fn", glyph: "fn", label: "Fn / Globe", desc: "Hold to talk — the Globe key." }]
       : []),
   ];
+  // Reflect the actually-selected key (not a hardcoded "Caps Lock").
+  const selectedHotkeyLabel = options.find((o) => o.key === currentHotkey)?.label ?? "Caps Lock";
+  const selectedMode = hotkeyMode(currentHotkey, isWindows);
 
   return (
     <OnboardingShell
       step={stepIndex}
-      totalSteps={TOTAL_STEPS}
+      totalSteps={totalSteps}
       eyebrow="Hotkey"
-      title="Pick a hold-key."
-      subtitle="Hold this key to record, release to send. You can change it any time."
-      brandTagline="Hold to record, release to send. Your thumb learns it in a day."
+      title="Pick your dictation key."
+      subtitle="Choose the key you’ll use to dictate. You can change it any time."
+      brandTagline="One key to dictate. Your thumb learns it in a day."
       brandKicker="Pro tip"
-      brandQuote="Most users settle on Caps Lock — it’s already a hold-key for nothing useful."
+      brandQuote="Most users settle on Caps Lock — it’s right under your finger."
       topRight={<span>{stepLabel(step)}</span>}
-      bottomNote={<span>Press Caps Lock anywhere to dictate, once setup is done</span>}
+      bottomNote={
+        <span>
+          {selectedMode === "toggle" ? "Tap" : "Hold"} {selectedHotkeyLabel} anywhere to dictate,
+          once setup is done
+        </span>
+      }
       onBack={goBack}
+      {...navProps}
     >
       <div className="mt-7">
         {options.map((opt) => {
@@ -655,7 +1098,7 @@ export function OnboardingFlow({
           onClick={() => handleHotkeySelect(currentHotkey)}
           className="btn-primary btn-lg w-full"
         >
-          Start using AirNote
+          Continue
           <ArrowRight size={14} />
         </button>
       </div>
@@ -694,20 +1137,26 @@ function PermRow({
   );
 }
 
-// ── API key card ────────────────────────────────────────────────────────────
+// ── Local model setup card ───────────────────────────────────────────────────
 
-function KeyCard({
-  color, letter, name, href, placeholder, value, onChange, connected,
+function SwiftModelCard({
+  installed,
+  sizeBytes,
+  progressPct,
+  busy,
+  error,
+  onDownload,
+  onCancel,
 }: {
-  color: string;
-  letter: string;
-  name: string;
-  href: string;
-  placeholder: string;
-  value: string;
-  onChange: (v: string) => void;
-  connected: boolean;
+  installed: boolean;
+  sizeBytes: number;
+  progressPct: number | null;
+  busy: boolean;
+  error: string;
+  onDownload: () => void;
+  onCancel: () => void;
 }) {
+  const downloading = progressPct !== null && !installed;
   return (
     <div
       className="rounded-lg p-3"
@@ -716,35 +1165,78 @@ function KeyCard({
         boxShadow: "inset 0 0 0 1px hsl(var(--glass-stroke))",
       }}
     >
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
           <span
-            className="w-[18px] h-[18px] rounded-[5px] grid place-items-center text-[10px] font-bold"
-            style={{ background: color, color: "white" }}
+            className="w-[20px] h-[20px] rounded-[6px] grid place-items-center shrink-0"
+            style={{ background: "#6c5ce7", color: "white" }}
           >
-            {letter}
+            <Cpu size={12} />
           </span>
-          <span className="text-[12.5px] font-semibold" style={{ color: "hsl(var(--foreground))" }}>
-            {name}
+          <span className="text-[12.5px] font-medium truncate" style={{ color: "hsl(var(--foreground))" }}>
+            {installed
+              ? `On-device model · ${sizeBytes > 0 ? formatSize(sizeBytes) : "148 MB"}`
+              : downloading
+                ? "Downloading model…"
+                : "On-device model · ~148 MB"}
           </span>
-          {connected && (
-            <span className="accent-pill" style={{ color: "hsl(140 65% 65%)", background: "hsl(140 65% 50% / 0.14)" }}>
-              Connected
-            </span>
-          )}
         </div>
-        <button
-          onClick={() => void openExternal(href)}
-          className="flex items-center gap-1 text-[11px] font-medium transition-colors"
-          style={{ color: "hsl(var(--muted-foreground))" }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = "hsl(var(--foreground))")}
-          onMouseLeave={(e) => (e.currentTarget.style.color = "hsl(var(--muted-foreground))")}
-        >
-          Get free key
-          <ExternalLink size={10} />
-        </button>
+
+        {installed ? (
+          <span
+            className="accent-pill shrink-0"
+            style={{ color: "hsl(140 65% 65%)", background: "hsl(140 65% 50% / 0.14)" }}
+          >
+            <Check size={11} /> Installed
+          </span>
+        ) : downloading ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="btn-ghost text-[11px] shrink-0"
+            style={{ height: 28 }}
+          >
+            <X size={12} />
+            Cancel
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onDownload}
+            disabled={busy}
+            className="btn-ghost text-[11px] shrink-0"
+            style={{ height: 28 }}
+          >
+            {busy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+            Download
+          </button>
+        )}
       </div>
-      <KeyInput value={value} onChange={onChange} placeholder={placeholder} />
+
+      {downloading && (
+        <div className="mt-3">
+          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "hsl(var(--surface-3))" }}>
+            <div
+              className="h-full rounded-full transition-all"
+              style={{
+                width: `${Math.max(4, progressPct ?? 0)}%`,
+                background: "hsl(var(--primary))",
+              }}
+            />
+          </div>
+          <p className="text-[11px] mt-1" style={{ color: "hsl(var(--muted-foreground))" }}>
+            Downloading {progressPct ?? 0}%
+          </p>
+        </div>
+      )}
+
+      {error && (
+        <p className="text-[11.5px] mt-2" style={{ color: "hsl(var(--destructive))" }}>
+          {error}
+        </p>
+      )}
     </div>
   );
 }
+
+// ── API key card ────────────────────────────────────────────────────────────

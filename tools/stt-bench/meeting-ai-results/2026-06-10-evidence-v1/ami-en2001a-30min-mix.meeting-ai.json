@@ -1,0 +1,77 @@
+{
+  "case": "ami-en2001a-30min-mix",
+  "transcript_path": "tools/stt-bench/public-meetings/ami-en2001a-30min/airnote-final-sortformer.current.mix-headset.first30min.transcript.txt",
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "draft_latency_ms": 9798,
+  "verify_latency_ms": 5564,
+  "filtered_mom": {
+    "summary": "The team discussed Steve's feedback, which emphasized avoiding duplication of effort and prioritizing a working prototype by week six. They debated the data structure for the browser, considering whether to store importance measures at the word or utterance level, ultimately leaning towards utterance-level storage for simplicity and better skimming. The conversation covered the integration of offline calculations with the NightXML framework, the handling of multi-level meeting series data, and the separation of search functionality using SQL. Key unresolved questions include the feasibility of loading all data into memory and the exact method for linking their importance data to NightXML's existing utterance IDs.",
+    "action_items": [
+      {
+        "title": "Try to build a class that concatenates different waveforms in memory for audio skimming",
+        "assignee": "Speaker 3",
+        "due": null,
+        "evidence": "what I think I might try and build is basically a class that you just feed it a linked list of different waveforms, it'll just string them all together"
+      },
+      {
+        "title": "Ask Jonathan about lazy loading and memory issues with NightXML",
+        "assignee": "Speaker 1",
+        "due": null,
+        "evidence": "I'll probably ask Jonathan about it."
+      }
+    ],
+    "decisions": []
+  },
+  "raw_counts": {
+    "draft_actions": 4,
+    "draft_decisions": 0,
+    "verified_actions": 2,
+    "verified_decisions": 0,
+    "filtered_actions": 2,
+    "filtered_decisions": 0
+  },
+  "chat": [
+    {
+      "question": "What was the main topic of this meeting?",
+      "answer": "The main topic was settling on the data structure for the browser, specifically whether to store importance measures at the word or utterance level, and how to integrate offline calculations with the NightXML framework. The team also discussed prioritizing a working prototype by week six per Steve's feedback.",
+      "latency_ms": 2739
+    },
+    {
+      "question": "What concrete decisions were explicitly made? If none, say none.",
+      "answer": "None.",
+      "latency_ms": 1777
+    },
+    {
+      "question": "List only explicit action items or follow-ups, with owners only if the transcript gives them.",
+      "answer": "Based on the transcript, the explicit action items or follow-ups are:\n\n- **Speaker 3** will try to build a class that concatenates different waveforms in memory for audio skimming.  \n  *Evidence*: \"what I think I might try and build is basically a class that you just feed it a linked list of different waveforms, it'll just string them all together\" [17:00 Speaker 3]\n\n- **Speaker 1** will ask Jonathan about lazy loading and memory issues with NightXML.  \n  *Evidence*: \"I'll probably ask Jonathan about it.\" [20:09 Speaker 1]",
+      "latency_ms": 3512
+    },
+    {
+      "question": "What important unresolved questions or risks remain?",
+      "answer": "Based on the transcript, the key unresolved questions and risks are:\n\n- **Feasibility of loading all data into memory**: There is uncertainty about whether the system can load the entire meeting series data into memory without performance issues. Speaker 1 notes, “I'm still confused because I thought that's just what Jonathan said, that we can't do, like load a massive document of that size” [18:03], and later says, “I'll probably ask Jonathan about it” [20:09] regarding lazy loading and memory constraints.\n\n- **Linking importance data to NightXML utterance IDs**: The team is unsure how to tie their importance measures to NightXML’s existing data structure. Speaker 2 mentions, “But there's no ID for an utterance, I think. It's just for individual words” [27:02], and Speaker 4 adds, “I have only seen that the individual words have got an ID” [28:00]. This leaves open the question of how to reliably reference utterances.\n\n- **Handling multi-level meeting series data**: The group debates whether to treat the whole meeting series as one massive document or to create a virtual meeting structure with separate levels. Speaker 1 suggests, “if we can't actually load the whole thing in… create a virtual meeting out of the whole meeting series” [21:12–21:25], but no final decision is reached.\n\n- **Audio skimming feasibility**: While Speaker 3 proposes building a class to concatenate waveforms in memory [16:56–17:09], it remains untested whether the audio player can accept such input and handle word-level cuts smoothly.",
+      "latency_ms": 8830
+    },
+    {
+      "question": "Give a PM-ready brief with problem, approach, decisions, risks, and next steps. Mark uncertainty.",
+      "answer": "**PM‑Ready Brief**\n\n**Problem**  \nThe team needs to settle the data structure for the browser before building the week‑six prototype. The core tension is whether to store importance measures at the word level or the utterance level, and how to integrate offline calculations with the NightXML framework without exceeding memory limits.\n\n**Approach**  \n- **Utterance‑level storage** is the emerging consensus. It simplifies audio skimming, reduces memory, and naturally produces sentence‑like summaries. Word‑level calculations can still be done internally and then averaged or thresholded to produce utterance scores.  \n- **Offline calculations** will pre‑compute importance for every utterance in the corpus. The online browser will only load utterance IDs, scores, speaker labels, and timestamps – not raw audio or full annotations.  \n- **NightXML integration** will be done by creating a lightweight XML file that ties utterance scores to NightXML’s existing utterance IDs (or timestamps if IDs are missing). The browser will rely on NightXML’s event model for synchronisation.  \n- **Search** will be handled separately via SQL, returning timestamps that are fed back into NightXML to trigger display updates.  \n- **Multi‑level meeting series** may be handled by either loading all utterances into memory (if feasible) or by creating a “virtual meeting” XML that treats meetings as segments and segments as utterances, reusing the same display logic.\n\n**Decisions**  \n- **Utterance‑level importance storage** is the working decision (not yet formally ratified).  \n- **Audio skimming** will be done by concatenating waveforms in memory (Speaker 3 to prototype a class for this).  \n- **Search stays outside NightXML**, using SQL, and only passes timestamps back to the framework.\n\n**Risks & Uncertainties**  \n- **Memory feasibility** – It is unclear whether loading all utterances for a 70‑hour meeting series will fit in RAM. Jonathan previously warned against loading everything; Speaker 1 will ask him about lazy‑loading options.  \n- **Utterance IDs** – It is uncertain whether NightXML’s utterance segments already have IDs. If not, the team will need to add them or rely on timestamps.  \n- **Word‑level filtering** – Averaging word scores may dilute importance; a threshold or pre‑filter may be needed, but the impact on audio skimming is not yet resolved.  \n- **Multi‑level abstraction** – The “virtual meeting” approach is a fallback; the team has not decided whether to pursue it or attempt a single in‑memory load.\n\n**Next Steps**  \n1. **Speaker 3** – Prototype an in‑memory waveform concatenation class for audio skimming.  \n2. **Speaker 1** – Ask Jonathan about lazy loading and memory constraints in NightXML.  \n3. **Team** – Inspect NightXML code to confirm whether utterance segments have IDs and how timestamps are structured.  \n4. **Team** – Finalise the data structure decision (utterance‑level vs. word‑level) after the NightXML review.  \n5. **All** – Align offline output formats with the agreed data structure so the week‑six prototype can integrate pre‑annotated data.",
+      "latency_ms": 17997
+    }
+  ],
+  "judge": {
+    "latency_ms": 7346,
+    "result": {
+      "summary_accuracy": 8,
+      "summary_coverage": 8,
+      "action_precision": 10,
+      "decision_precision": 10,
+      "chat_grounding": 9,
+      "overall": 9,
+      "issues": [
+        "Summary mentions 'debated the data structure... ultimately leaning towards utterance-level storage' which is accurate, but the summary does not mention the alternative 'virtual meeting' fallback plan discussed at length.",
+        "Chat answer for 'What important unresolved questions or risks remain?' invents the risk 'Audio skimming feasibility' as an unresolved question. The transcript shows Speaker 3 committing to build the class and Speaker 1 saying 'That's okay, that we can do', indicating it was accepted as feasible, not an open risk.",
+        "Chat answer for 'PM-ready brief' lists 'Utterance‑level importance storage is the working decision (not yet formally ratified)' under Decisions. The transcript shows a leaning but no explicit decision was made; this is a slight overstatement."
+      ]
+    }
+  }
+}

@@ -75,6 +75,7 @@ impl DesktopApp {
             // Windows → always true (low-level keyboard hooks need no special grant).
             // Other → false (stub).
             input_monitoring_granted: is_input_monitoring_granted(),
+            screen_recording_granted: permissions::screen_recording_granted(),
             modes: all_modes().to_vec(),
             last_result: self.last_result.clone(),
             last_error: self.last_error.clone(),
@@ -146,6 +147,19 @@ impl DesktopApp {
             None if was_too_short => Err(RECORDING_TOO_SHORT_ERROR.to_string()),
             None => Err("no audio captured".to_string()),
         }
+    }
+
+    /// True if the recorder still owns platform mic-stream handles. This is a
+    /// cheap state probe for post-hotkey-release cleanup; it does not touch CPAL.
+    pub fn mic_stream_held(&self) -> bool {
+        self.recorder.mic_stream_held()
+    }
+
+    /// Emergency mic release for cases where the UI state moved on but the
+    /// recorder still owns a platform stream. Normal finish paths must use
+    /// `begin_stop` so the captured audio can be processed.
+    pub fn release_mic_stream(&mut self) -> Option<StopReceiver> {
+        self.recorder.release_mic_stream()
     }
 
     pub fn finish_stop(stop_rx: StopReceiver, was_too_short: bool) -> Result<Vec<u8>, String> {

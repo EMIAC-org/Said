@@ -9,11 +9,14 @@
 //! same UX as macOS. If the user sets the record hotkey to Right Alt, that
 //! key is held instead and the same suppression applies to VK_RMENU.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, VK_CONTROL, VK_LMENU, VK_MENU, VK_RMENU, VK_SHIFT,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW,
     TranslateMessage, WH_KEYBOARD_LL,
@@ -21,7 +24,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::HudShortcutAction;
 use crate::RecordHotkey;
-use crate::win_hotkey::{HookAction, classify, target_vk, wparam_to_kind};
+use crate::win_hotkey::{
+    DIVO_HOLD_DELAY_MS, DivoDecision, DivoEffect, DivoSnapshot, HookAction, ShortcutAction,
+    WinModifiers, classify, classify_divo_event, classify_long_dictation, classify_shortcut,
+    target_vk, wparam_to_kind,
+};
 
 // ── Pref: which key to watch ──────────────────────────────────────────────────
 // 0 = CapsLock, 1 = RightOption (mapped to VK_RMENU on Windows),
@@ -59,19 +66,237 @@ pub fn is_input_monitoring_granted() -> bool {
 
 static ON_PRESS: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
 static ON_RELEASE: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+static SHORTCUT_CB: OnceLock<Arc<dyn Fn(u8) + Send + Sync>> = OnceLock::new();
+static PASTE_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+static LONG_DICTATION_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+static HUD_SHORTCUT_CB: OnceLock<Arc<dyn Fn(HudShortcutAction) + Send + Sync>> = OnceLock::new();
+static DIVO_PRESS_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+static DIVO_RELEASE_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+static DIVO_CANCEL_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+const DIVO_HOTKEY_ACTIVE: bool = false;
 /// True while the target key is physically held. The low-level hook fires on
 /// every autorepeat, so we de-duplicate via this flag.
 static IS_DOWN: AtomicBool = AtomicBool::new(false);
+static DIVO_ENABLED: AtomicBool = AtomicBool::new(false);
+static DIVO_IS_DOWN: AtomicBool = AtomicBool::new(false);
+static DIVO_TAINTED: AtomicBool = AtomicBool::new(false);
+static DIVO_NEW_CHAT: AtomicBool = AtomicBool::new(false);
+static DIVO_STARTED: AtomicBool = AtomicBool::new(false);
+static DIVO_GEN: AtomicU64 = AtomicU64::new(0);
+/// Swallow the next Alt key-up after an Alt-based shortcut fires. Without this,
+/// Windows can focus the menu bar after a global Alt shortcut even when the
+/// actual shortcut key was suppressed.
+static SUPPRESS_NEXT_ALT_UP: AtomicBool = AtomicBool::new(false);
+
+fn vk_down(vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY) -> bool {
+    unsafe { (GetKeyState(vk.0 as i32) as u16 & 0x8000) != 0 }
+}
+
+fn current_modifiers() -> WinModifiers {
+    let left_alt = vk_down(VK_LMENU);
+    let right_alt = vk_down(VK_RMENU);
+    WinModifiers {
+        ctrl: vk_down(VK_CONTROL),
+        shift: vk_down(VK_SHIFT),
+        alt: vk_down(VK_MENU) || left_alt || right_alt,
+        left_alt,
+        right_alt,
+    }
+}
+
+fn is_alt_vk(vk: u32) -> bool {
+    vk == VK_MENU.0 as u32 || vk == VK_LMENU.0 as u32 || vk == VK_RMENU.0 as u32
+}
+
+fn divo_snapshot() -> DivoSnapshot {
+    DivoSnapshot {
+        is_down: DIVO_IS_DOWN.load(Ordering::SeqCst),
+        tainted: DIVO_TAINTED.load(Ordering::SeqCst),
+        started: DIVO_STARTED.load(Ordering::SeqCst),
+    }
+}
+
+fn store_divo_snapshot(next: DivoSnapshot) {
+    DIVO_IS_DOWN.store(next.is_down, Ordering::SeqCst);
+    DIVO_TAINTED.store(next.tainted, Ordering::SeqCst);
+    DIVO_STARTED.store(next.started, Ordering::SeqCst);
+}
+
+fn start_divo_timer(hold_gen: u64) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(DIVO_HOLD_DELAY_MS));
+        if DIVO_GEN.load(Ordering::SeqCst) == hold_gen
+            && DIVO_IS_DOWN.load(Ordering::SeqCst)
+            && !DIVO_TAINTED.load(Ordering::SeqCst)
+            && !DIVO_STARTED.swap(true, Ordering::SeqCst)
+        {
+            tracing::info!("[hotkey] Ctrl held → start Divo capture");
+            if let Some(cb) = DIVO_PRESS_CB.get() {
+                cb();
+            } else {
+                tracing::warn!("[hotkey] Ctrl held but DIVO_PRESS_CB not registered!");
+            }
+        }
+    });
+}
+
+fn apply_divo_decision(decision: DivoDecision) {
+    store_divo_snapshot(decision.next);
+    let hold_gen = if decision.bump_generation {
+        Some(DIVO_GEN.fetch_add(1, Ordering::SeqCst) + 1)
+    } else {
+        None
+    };
+
+    match decision.effect {
+        DivoEffect::None => {}
+        DivoEffect::StartTimer => {
+            DIVO_NEW_CHAT.store(false, Ordering::SeqCst);
+            if let Some(hold_gen) = hold_gen {
+                start_divo_timer(hold_gen);
+            }
+        }
+        DivoEffect::MarkNewChat => {
+            DIVO_NEW_CHAT.store(true, Ordering::SeqCst);
+        }
+        DivoEffect::MarkTainted => {}
+        DivoEffect::Release => {
+            tracing::info!("[hotkey] Ctrl released → send to Divo");
+            if let Some(cb) = DIVO_RELEASE_CB.get() {
+                cb();
+            } else {
+                tracing::warn!("[hotkey] Ctrl released but DIVO_RELEASE_CB not registered!");
+            }
+        }
+        DivoEffect::Cancel => {
+            tracing::info!("[hotkey] Ctrl released (shortcut) → cancel Divo capture");
+            if let Some(cb) = DIVO_CANCEL_CB.get() {
+                cb();
+            } else {
+                tracing::warn!("[hotkey] Ctrl shortcut but DIVO_CANCEL_CB not registered!");
+            }
+        }
+        DivoEffect::ClearTap => {
+            DIVO_NEW_CHAT.store(false, Ordering::SeqCst);
+            tracing::trace!("[hotkey] Ctrl tap ignored — no Divo capture started");
+        }
+    }
+}
+
+fn handle_divo_event(vk: u32, kind: crate::win_hotkey::EvtKind) -> bool {
+    let decision = classify_divo_event(
+        vk,
+        kind,
+        DIVO_ENABLED.load(Ordering::SeqCst),
+        divo_snapshot(),
+    );
+    apply_divo_decision(decision);
+    decision.swallow
+}
+
+fn fire_shortcut(action: ShortcutAction) {
+    match action {
+        ShortcutAction::Tone(n) => {
+            SUPPRESS_NEXT_ALT_UP.store(true, Ordering::Relaxed);
+            tracing::info!("[hotkey] Alt+{n} fired — calling tray polish callback");
+            if let Some(cb) = SHORTCUT_CB.get() {
+                cb(n);
+            } else {
+                tracing::warn!("[hotkey] Alt+{n} fired but SHORTCUT_CB not registered!");
+            }
+        }
+        ShortcutAction::PasteLatest => {
+            SUPPRESS_NEXT_ALT_UP.store(true, Ordering::Relaxed);
+            tracing::info!("[hotkey] Ctrl+Alt+V detected — firing paste callback");
+            if let Some(cb) = PASTE_CB.get() {
+                cb();
+            } else {
+                tracing::warn!("[hotkey] Ctrl+Alt+V fired but PASTE_CB not registered!");
+            }
+        }
+        ShortcutAction::Hud(action) => {
+            tracing::info!("[hotkey] Windows HUD shortcut detected — {action:?}");
+            if let Some(cb) = HUD_SHORTCUT_CB.get() {
+                cb(action);
+            } else {
+                tracing::warn!("[hotkey] HUD shortcut fired but HUD_SHORTCUT_CB not registered!");
+            }
+        }
+    }
+}
+
+fn fire_long_dictation() {
+    tracing::info!("[hotkey] Windows record-key+Space detected — locking long dictation");
+    if let Some(cb) = LONG_DICTATION_CB.get() {
+        cb();
+    } else {
+        tracing::warn!("[hotkey] record-key+Space fired but LONG_DICTATION_CB not registered!");
+    }
+}
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // Catch any panic before it unwinds across the Win32 kernel callback
+    // boundary (undefined behavior / process abort). On panic, pass the event
+    // through untouched — the safe default that never swallows a keystroke.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        hook_proc_inner(code, wparam, lparam)
+    }));
+    match result {
+        Ok(ret) => ret,
+        Err(_) => {
+            tracing::error!("[hotkey] recovered panic inside WH_KEYBOARD_LL hook_proc");
+            unsafe { CallNextHookEx(HHOOK::default(), code, wparam, lparam) }
+        }
+    }
+}
+
+unsafe fn hook_proc_inner(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code < 0 {
+        return unsafe { CallNextHookEx(HHOOK::default(), code, wparam, lparam) };
+    }
+
+    // Defensive: injected/synthetic events (AutoHotKey, IMEs, accessibility
+    // tools) can deliver a null KBDLLHOOKSTRUCT pointer. Dereferencing it is a
+    // hard segfault, so pass through instead.
+    if lparam.0 == 0 {
         return unsafe { CallNextHookEx(HHOOK::default(), code, wparam, lparam) };
     }
 
     let kb = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
     let vk = kb.vkCode;
     let kind = wparam_to_kind(wparam.0 as u32);
-    let target = target_vk(current_record_hotkey());
+
+    if handle_divo_event(vk, kind) {
+        return LRESULT(1);
+    }
+
+    if matches!(kind, crate::win_hotkey::EvtKind::KeyUp)
+        && is_alt_vk(vk)
+        && SUPPRESS_NEXT_ALT_UP.swap(false, Ordering::Relaxed)
+    {
+        return LRESULT(1);
+    }
+
+    let mods = current_modifiers();
+    let record_hotkey = current_record_hotkey();
+
+    if classify_long_dictation(
+        vk,
+        kind,
+        mods,
+        record_hotkey,
+        IS_DOWN.load(Ordering::Relaxed),
+    ) {
+        fire_long_dictation();
+        return LRESULT(1);
+    }
+
+    if let Some(action) = classify_shortcut(vk, kind, mods, record_hotkey) {
+        fire_shortcut(action);
+        return LRESULT(1);
+    }
+
+    let target = target_vk(record_hotkey);
     let was_down = IS_DOWN.load(Ordering::Relaxed);
 
     match classify(vk, kind, target, was_down) {
@@ -146,22 +371,50 @@ pub fn start_hold_listener(
     });
 }
 
-// ── Stubs: Option+1..5 and Ctrl+Cmd+V are not yet wired on Windows ────────────
+// ── Global shortcut callbacks ────────────────────────────────────────────────
 
-pub fn register_shortcut_callback(_cb: Arc<dyn Fn(u8) + Send + Sync>) {
-    tracing::debug!("[hotkey] register_shortcut_callback called on Windows — not yet wired");
+pub fn register_shortcut_callback(cb: Arc<dyn Fn(u8) + Send + Sync>) {
+    let _ = SHORTCUT_CB.set(cb);
 }
 
-pub fn register_paste_callback(_cb: Arc<dyn Fn() + Send + Sync>) {
-    tracing::debug!("[hotkey] register_paste_callback called on Windows — not yet wired");
+pub fn register_paste_callback(cb: Arc<dyn Fn() + Send + Sync>) {
+    let _ = PASTE_CB.set(cb);
 }
 
-pub fn register_long_dictation_callback(_cb: Arc<dyn Fn() + Send + Sync>) {
-    tracing::debug!(
-        "[hotkey] register_long_dictation_callback called on Windows — no Fn key analog"
+pub fn register_long_dictation_callback(cb: Arc<dyn Fn() + Send + Sync>) {
+    let _ = LONG_DICTATION_CB.set(cb);
+}
+
+pub fn register_hud_shortcut_callback(cb: Arc<dyn Fn(HudShortcutAction) + Send + Sync>) {
+    let _ = HUD_SHORTCUT_CB.set(cb);
+}
+
+pub fn register_divo_hotkey_callbacks(
+    on_press: Arc<dyn Fn() + Send + Sync>,
+    on_release: Arc<dyn Fn() + Send + Sync>,
+    on_cancel: Arc<dyn Fn() + Send + Sync>,
+) {
+    let _ = DIVO_PRESS_CB.set(on_press);
+    let _ = DIVO_RELEASE_CB.set(on_release);
+    let _ = DIVO_CANCEL_CB.set(on_cancel);
+    DIVO_ENABLED.store(false, Ordering::SeqCst);
+    tracing::info!("[hotkey] Divo Ctrl hold-to-talk registered but disabled");
+}
+
+pub fn set_divo_hotkey_enabled(enabled: bool) {
+    let active = DIVO_HOTKEY_ACTIVE && enabled;
+    DIVO_ENABLED.store(active, Ordering::SeqCst);
+    if !active {
+        store_divo_snapshot(DivoSnapshot::default());
+        DIVO_NEW_CHAT.store(false, Ordering::SeqCst);
+        DIVO_GEN.fetch_add(1, Ordering::SeqCst);
+    }
+    tracing::info!(
+        "[hotkey] Divo Ctrl hotkey enabled={active} requested={enabled} plugged_out={}",
+        !DIVO_HOTKEY_ACTIVE
     );
 }
 
-pub fn register_hud_shortcut_callback(_cb: Arc<dyn Fn(HudShortcutAction) + Send + Sync>) {
-    tracing::debug!("[hotkey] register_hud_shortcut_callback called on Windows — not yet wired");
+pub fn divo_take_new_chat() -> bool {
+    DIVO_HOTKEY_ACTIVE && DIVO_NEW_CHAT.swap(false, Ordering::SeqCst)
 }

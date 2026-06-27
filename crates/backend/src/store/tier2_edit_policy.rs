@@ -53,6 +53,14 @@ pub fn record_explicit_edit(
     right_context: &[String],
     source_recording_id: Option<&str>,
 ) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "tier2_edit_policy_rules",
+            "record_explicit_edit",
+            "tier2_edit_policy::record_explicit_edit",
+        );
+        return false;
+    }
     let edit_type = normalize_edit_type(edit_type);
     let variant_form = variant_form.trim();
     let correct_form = correct_form.trim();
@@ -134,6 +142,14 @@ pub fn record_explicit_edit(
 }
 
 pub fn penalize_rule(pool: &DbPool, user_id: &str, variant_form: &str, correct_form: &str) -> bool {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "tier2_edit_policy_rules",
+            "penalize_rule",
+            "tier2_edit_policy::penalize_rule",
+        );
+        return false;
+    }
     let variant_norm = normalize_token(variant_form);
     let correct_form_norm = normalize_token(correct_form);
     if variant_norm.is_empty() || correct_form_norm.is_empty() {
@@ -237,6 +253,14 @@ pub fn load_active_replace_rules(pool: &DbPool, user_id: &str) -> Vec<Tier2EditP
 }
 
 pub fn activate_all_for_term(pool: &DbPool, user_id: &str, correct_form: &str) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "tier2_edit_policy_rules",
+            "activate_all_for_term",
+            "tier2_edit_policy::activate_all_for_term",
+        );
+        return 0;
+    }
     let norm = normalize_token(correct_form);
     if norm.is_empty() {
         return 0;
@@ -263,6 +287,14 @@ pub fn mark_removed_feedback(
     visible_output: &str,
     user_kept: &str,
 ) -> FeedbackMarkResult {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "tier2_edit_policy_rules",
+            "mark_removed_feedback",
+            "tier2_edit_policy::mark_removed_feedback",
+        );
+        return FeedbackMarkResult::default();
+    }
     let events: Vec<(String, String, String, String)> = {
         let Ok(conn) = pool.get() else {
             return FeedbackMarkResult::default();

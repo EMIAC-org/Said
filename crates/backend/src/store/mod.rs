@@ -1,6 +1,6 @@
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::params;
+use rusqlite::{Connection, params};
 use std::path::PathBuf;
 use tracing::{info, warn};
 
@@ -13,6 +13,7 @@ pub mod openai_oauth;
 pub mod pending_edits;
 pub mod pending_promotions;
 pub mod prefs;
+pub mod profile_summary;
 pub mod prompt_templates;
 pub mod server_migration;
 pub mod server_settings;
@@ -26,6 +27,7 @@ pub mod vectors;
 pub mod vocab_embeddings;
 pub mod vocab_fts;
 pub mod vocabulary;
+pub mod voice_runs;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
@@ -72,6 +74,16 @@ const MIGRATION_040: &str = include_str!("migrations/040_active_org_id.sql");
 const MIGRATION_041: &str = include_str!("migrations/041_telemetry.sql");
 const MIGRATION_042: &str = include_str!("migrations/042_telemetry_stt.sql");
 const MIGRATION_043: &str = include_str!("migrations/043_sarvam_api_key.sql");
+const MIGRATION_044: &str = include_str!("migrations/044_normalize_deepseek_polish_model.sql");
+const MIGRATION_045: &str = include_str!("migrations/045_deepinfra_api_key.sql");
+const MIGRATION_046: &str = include_str!("migrations/046_force_server_runtime.sql");
+const MIGRATION_047: &str = include_str!("migrations/047_default_gpt_oss_20b.sql");
+const MIGRATION_048: &str = include_str!("migrations/048_default_cerebras_gpt_oss_120b.sql");
+const MIGRATION_049: &str = include_str!("migrations/049_lock_cerebras_polish_defaults.sql");
+const MIGRATION_050: &str = include_str!("migrations/050_local_profile_summary.sql");
+const MIGRATION_051: &str = include_str!("migrations/051_observability_outbox.sql");
+const MIGRATION_052: &str = include_str!("migrations/052_voice_runs.sql");
+const MIGRATION_053: &str = include_str!("migrations/053_retire_swift_local_stt.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -102,14 +114,18 @@ pub fn open(path: &PathBuf) -> DbPool {
     run_migrations(&pool);
     repair_schema_gaps(&pool);
     purge_garbage_edits(&pool);
-    corrections::backfill_from_edit_events(&pool);
-    let repaired_term_types = vocabulary::backfill_missing_term_types(&pool);
-    let rebuilt_fts_rows = vocab_fts::backfill_from_vocabulary(&pool);
-    if repaired_term_types > 0 || rebuilt_fts_rows > 0 {
-        info!(
-            "[vocab-repair] startup repaired term_types={} fts_rows={}",
-            repaired_term_types, rebuilt_fts_rows,
-        );
+    if crate::legacy_learning::legacy_learning_writes_allowed() {
+        corrections::backfill_from_edit_events(&pool);
+        let repaired_term_types = vocabulary::backfill_missing_term_types(&pool);
+        let rebuilt_fts_rows = vocab_fts::backfill_from_vocabulary(&pool);
+        if repaired_term_types > 0 || rebuilt_fts_rows > 0 {
+            info!(
+                "[vocab-repair] startup repaired term_types={} fts_rows={}",
+                repaired_term_types, rebuilt_fts_rows,
+            );
+        }
+    } else {
+        info!("[legacy-learning] skipped startup legacy learning backfills — writes frozen");
     }
     pool
 }
@@ -467,6 +483,86 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 43")
             .expect("failed to set user_version to 43");
     }
+
+    if version < 44 {
+        info!("running migration 044_normalize_deepseek_polish_model");
+        conn.execute_batch(MIGRATION_044)
+            .expect("migration 044 failed");
+        conn.execute_batch("PRAGMA user_version = 44")
+            .expect("failed to set user_version to 44");
+    }
+
+    if version < 45 {
+        info!("running migration 045_deepinfra_api_key");
+        conn.execute_batch(MIGRATION_045)
+            .expect("migration 045 failed");
+        conn.execute_batch("PRAGMA user_version = 45")
+            .expect("failed to set user_version to 45");
+    }
+
+    if version < 46 {
+        info!("running migration 046_force_server_runtime");
+        conn.execute_batch(MIGRATION_046)
+            .expect("migration 046 failed");
+        conn.execute_batch("PRAGMA user_version = 46")
+            .expect("failed to set user_version to 46");
+    }
+
+    if version < 47 {
+        info!("running migration 047_default_gpt_oss_20b");
+        conn.execute_batch(MIGRATION_047)
+            .expect("migration 047 failed");
+        conn.execute_batch("PRAGMA user_version = 47")
+            .expect("failed to set user_version to 47");
+    }
+
+    if version < 48 {
+        info!("running migration 048_default_cerebras_gpt_oss_120b");
+        conn.execute_batch(MIGRATION_048)
+            .expect("migration 048 failed");
+        conn.execute_batch("PRAGMA user_version = 48")
+            .expect("failed to set user_version to 48");
+    }
+
+    if version < 49 {
+        info!("running migration 049_lock_cerebras_polish_defaults");
+        conn.execute_batch(MIGRATION_049)
+            .expect("migration 049 failed");
+        conn.execute_batch("PRAGMA user_version = 49")
+            .expect("failed to set user_version to 49");
+    }
+
+    if version < 50 {
+        info!("running migration 050_local_profile_summary");
+        conn.execute_batch(MIGRATION_050)
+            .expect("migration 050 failed");
+        conn.execute_batch("PRAGMA user_version = 50")
+            .expect("failed to set user_version to 50");
+    }
+
+    if version < 51 {
+        info!("running migration 051_observability_outbox");
+        conn.execute_batch(MIGRATION_051)
+            .expect("migration 051 failed");
+        conn.execute_batch("PRAGMA user_version = 51")
+            .expect("failed to set user_version to 51");
+    }
+
+    if version < 52 {
+        info!("running migration 052_voice_runs");
+        conn.execute_batch(MIGRATION_052)
+            .expect("migration 052 failed");
+        conn.execute_batch("PRAGMA user_version = 52")
+            .expect("failed to set user_version to 52");
+    }
+
+    if version < 53 {
+        info!("running migration 053_retire_swift_local_stt");
+        conn.execute_batch(MIGRATION_053)
+            .expect("migration 053 failed");
+        conn.execute_batch("PRAGMA user_version = 53")
+            .expect("failed to set user_version to 53");
+    }
 }
 
 /// Idempotent repairs for partial migration states (e.g. user_version bumped without ALTER).
@@ -478,21 +574,109 @@ fn repair_schema_gaps(pool: &DbPool) {
             return;
         }
     };
-    let has_active_org: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('local_user') WHERE name = 'active_org_id'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(|n| n > 0)
-        .unwrap_or(false);
-    if !has_active_org {
-        warn!("[schema-repair] adding missing local_user.active_org_id");
-        if let Err(e) = conn.execute_batch("ALTER TABLE local_user ADD COLUMN active_org_id TEXT;")
-        {
-            warn!("[schema-repair] active_org_id add failed: {e}");
+
+    fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
+        let sql = format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1");
+        conn.query_row(&sql, [column], |row| row.get::<_, i64>(0))
+            .map(|n| n > 0)
+            .unwrap_or(false)
+    }
+
+    fn add_column_if_missing(conn: &Connection, table: &str, column: &str, definition: &str) {
+        if has_column(conn, table, column) {
+            return;
+        }
+        warn!("[schema-repair] adding missing {table}.{column}");
+        let sql = format!("ALTER TABLE {table} ADD COLUMN {definition};");
+        if let Err(e) = conn.execute_batch(&sql) {
+            warn!("[schema-repair] {table}.{column} add failed: {e}");
         }
     }
+
+    add_column_if_missing(&conn, "local_user", "active_org_id", "active_org_id TEXT");
+
+    // Older dev builds occasionally advanced user_version while some ALTER
+    // statements were missing. Keep this startup repair idempotent so prefs
+    // reads do not fail forever on partially migrated local databases.
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "output_language",
+        "output_language TEXT NOT NULL DEFAULT 'hinglish'",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "gateway_api_key",
+        "gateway_api_key TEXT",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "deepgram_api_key",
+        "deepgram_api_key TEXT",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "gemini_api_key",
+        "gemini_api_key TEXT",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "llm_provider",
+        "llm_provider TEXT NOT NULL DEFAULT 'gateway'",
+    );
+    add_column_if_missing(&conn, "preferences", "groq_api_key", "groq_api_key TEXT");
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "record_hotkey",
+        "record_hotkey TEXT NOT NULL DEFAULT 'caps_lock'",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "learning_enabled",
+        "learning_enabled INTEGER NOT NULL DEFAULT 1",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "cerebras_api_key",
+        "cerebras_api_key TEXT",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "stt_provider",
+        "stt_provider TEXT NOT NULL DEFAULT 'deepgram'",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "server_runtime_enabled",
+        "server_runtime_enabled INTEGER NOT NULL DEFAULT 0",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "server_audio_runtime_enabled",
+        "server_audio_runtime_enabled INTEGER NOT NULL DEFAULT 0",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "sarvam_api_key",
+        "sarvam_api_key TEXT",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "deepinfra_api_key",
+        "deepinfra_api_key TEXT",
+    );
 }
 
 /// Return the default database path. Delegates to `paths::default_db_path()`
@@ -533,7 +717,7 @@ pub fn ensure_default_user(pool: &DbPool) -> String {
     conn.execute(
         "INSERT INTO preferences (user_id, selected_model, tone_preset, language,
          auto_paste, edit_capture, polish_text_hotkey, record_hotkey, server_runtime_enabled, updated_at)
-         VALUES (?1, 'smart', 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', 0, ?2)",
+         VALUES (?1, 'cerebras-gpt-oss', 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', 0, ?2)",
         params![id, now_ms],
     )
     .expect("failed to create default preferences");
@@ -631,7 +815,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 43);
+        assert_eq!(version, 53);
 
         for table in [
             "tier2_policy_weights",

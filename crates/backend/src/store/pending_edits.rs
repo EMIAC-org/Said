@@ -19,6 +19,14 @@ pub fn insert(
     ai_output: &str,
     user_kept: &str,
 ) -> Option<String> {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "pending_edits",
+            "insert",
+            "pending_edits::insert",
+        );
+        return None;
+    }
     let id = uuid::Uuid::new_v4().to_string();
     let conn = pool.get().ok()?;
     conn.execute(

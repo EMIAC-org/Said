@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AirNote · Onboarding (interactive)</title>
+<script src="https://unpkg.com/lucide@latest"></script>
+<style>
+:root {
+  --background: 240 8% 2.5%; --foreground: 240 6% 93%;
+  --primary: 226 92% 79%; --muted-foreground: 240 5% 60%;
+  --destructive: 354 80% 62%; --border: 240 5% 18%;
+  --surface-2: 240 7% 3.5%; --surface-3: 240 5% 9.5%; --surface-4: 240 5% 15%;
+  --glass-stroke: 0 0% 100% / 0.075; --glass-stroke-strong: 0 0% 100% / 0.12;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(90% 70% at 20% 0%, hsl(232 40% 10%) 0%, transparent 60%),
+    radial-gradient(80% 70% at 100% 100%, hsl(256 35% 9%) 0%, transparent 60%),
+    hsl(240 9% 3%);
+  color: hsl(var(--foreground));
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01","cv11","calt" 1;
+  user-select: none;
+}
+.stage { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.stage-hint { font-size: 12px; color: hsl(var(--muted-foreground) / 0.6); letter-spacing: 0.01em; }
+.stage-hint b { color: hsl(var(--primary) / 0.85); font-weight: 600; }
+
+/* ── App window ───────────────────────────────────────────────────────── */
+.app-window {
+  position: relative;
+  width: 940px; height: 600px;
+  border-radius: 18px; overflow: hidden;
+  box-shadow: 0 40px 120px hsl(0 0% 0% / 0.6), 0 0 0 1px hsl(0 0% 100% / 0.07);
+  display: grid; grid-template-columns: 1fr 1fr;
+}
+/* top progress hairline spanning the whole window */
+.progress-track { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: hsl(0 0% 100% / 0.06); z-index: 30; }
+.progress-fill { height: 100%; width: 0; background: linear-gradient(90deg, hsl(226 90% 70%), hsl(224 96% 82%)); box-shadow: 0 0 12px hsl(226 90% 65% / 0.6); transition: width .5s cubic-bezier(.4,0,.2,1); }
+
+/* ── Brand panel ──────────────────────────────────────────────────────── */
+.brand {
+  position: relative; isolation: isolate;
+  background:
+    radial-gradient(120% 85% at 16% 6%,  hsl(230 72% 34% / 0.40) 0%, transparent 52%),
+    radial-gradient(95% 80% at 90% 104%, hsl(256 64% 42% / 0.26) 0%, transparent 58%),
+    radial-gradient(60% 50% at 50% 46%,  hsl(226 84% 56% / 0.10) 0%, transparent 72%),
+    linear-gradient(168deg, hsl(240 13% 7.5%) 0%, hsl(240 15% 4.5%) 52%, hsl(240 18% 3%) 100%);
+  border-right: 1px solid hsl(0 0% 100% / 0.06);
+  display: flex; flex-direction: column; padding: 32px 38px; overflow: hidden;
+}
+.brand::before { content:""; position:absolute; inset:0; z-index:0; pointer-events:none;
+  background: radial-gradient(135% 105% at 50% -10%, transparent 50%, hsl(240 40% 2% / 0.6) 100%); }
+.brand::after { content:""; position:absolute; inset:0; z-index:0; pointer-events:none; opacity:.4; mix-blend-mode:overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"); }
+.brand > * { position: relative; z-index: 1; }
+
+.brand-top { display: inline-flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; color: hsl(var(--foreground) / 0.92); }
+.brand-top .mk { width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 8px; color: hsl(224 95% 82%);
+  background: linear-gradient(150deg, hsl(240 8% 16% / 0.9), hsl(240 10% 9% / 0.9)); box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.08), 0 2px 8px hsl(0 0% 0% / 0.4); }
+.bars-mark { fill: currentColor; display: block; }
+
+.brand-center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30px; text-align: center; }
+.wave-wrap { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; }
+.brand-halo { position: absolute; width: 360px; height: 300px; border-radius: 50%; z-index: 0; pointer-events: none;
+  background: radial-gradient(circle, hsl(226 90% 60% / 0.16) 0%, transparent 62%); filter: blur(8px); transition: opacity .4s; }
+.brand-wave { display: flex; align-items: center; justify-content: center; gap: 3px; height: 120px; width: 100%; max-width: 320px;
+  filter: drop-shadow(0 8px 30px hsl(226 92% 60% / 0.34)); }
+.brand-wave .bar { width: 3.5px; border-radius: 999px; background: linear-gradient(to top, hsl(226 78% 60% / 0.45) 0%, hsl(223 96% 82%) 100%); height: 8px; }
+
+.brand-headline { font-size: 21px; font-weight: 500; letter-spacing: -0.02em; line-height: 1.45; color: hsl(var(--foreground) / 0.95); max-width: 300px; margin: 0; min-height: 60px; }
+.brand-foot { padding-top: 20px; border-top: 1px solid hsl(0 0% 100% / 0.07); }
+.brand-kicker { display: inline-flex; align-items: center; gap: 7px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.18em; margin-bottom: 9px; color: hsl(224 80% 78% / 0.92); }
+.brand-kicker::before { content:""; width: 5px; height: 5px; border-radius: 50%; background: hsl(224 90% 76%); box-shadow: 0 0 8px hsl(224 90% 70% / 0.8); }
+.brand-quote { font-size: 13px; line-height: 1.6; color: hsl(var(--foreground) / 0.74); margin: 0; min-height: 40px; }
+.fade-swap { transition: opacity .28s ease, transform .28s ease; }
+.fade-swap.out { opacity: 0; transform: translateY(4px); }
+
+/* ── Form panel ───────────────────────────────────────────────────────── */
+.form { position: relative; background: hsl(240 5% 6% / 0.9); display: flex; flex-direction: column; padding: 26px 44px; overflow: hidden; }
+.form-header { display: flex; align-items: center; justify-content: space-between; min-height: 34px; flex-shrink: 0; }
+.back-btn { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; color: hsl(var(--muted-foreground)); border: 1px solid transparent; background: transparent; cursor: pointer; transition: all .12s; }
+.back-btn:hover { color: hsl(var(--foreground)); background: hsl(0 0% 100% / 0.05); border-color: hsl(var(--glass-stroke-strong)); }
+.back-btn.hidden { visibility: hidden; }
+.step-count { font-size: 11.5px; color: hsl(var(--muted-foreground) / 0.65); font-variant-numeric: tabular-nums; }
+
+.form-body-wrap { flex: 1; display: flex; flex-direction: column; justify-content: center; overflow-y: auto; }
+.form-body { max-width: 380px; width: 100%; margin: 0 auto; padding: 14px 0; }
+.form-body.enter { animation: stepIn .42s cubic-bezier(.16,.84,.44,1) both; }
+@keyframes stepIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+.eyebrow { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.16em; margin: 0 0 12px; color: hsl(var(--primary)); }
+.title { margin: 0; font-size: 27px; font-weight: 600; letter-spacing: -0.025em; line-height: 1.16; color: hsl(var(--foreground)); }
+.subtitle { margin: 11px 0 0; font-size: 13.5px; color: hsl(var(--muted-foreground)); line-height: 1.6; }
+
+/* buttons */
+.btn-primary { background: hsl(0 0% 98%); color: hsl(240 8% 8%); display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 18px; border-radius: 9px; font-size: 13.5px; font-weight: 600; border: none; cursor: pointer; height: 42px; font-family: inherit; width: 100%; transition: all .14s;
+  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.8), 0 1px 2px hsl(0 0% 0% / 0.2), 0 6px 16px hsl(0 0% 0% / 0.18); }
+.btn-primary:hover { background: #fff; transform: translateY(-1px); }
+.btn-primary:active { transform: translateY(0); }
+.btn-primary:disabled { background: hsl(var(--surface-4)); color: hsl(var(--muted-foreground)); box-shadow: none; cursor: not-allowed; transform: none; }
+.btn-soft { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 16px; height: 42px; border-radius: 9px; font-size: 13px; font-weight: 500; border: 1px solid hsl(var(--surface-3)); background: hsl(var(--surface-3)); color: hsl(var(--foreground)); cursor: pointer; width: 100%; font-family: inherit; transition: background .14s; }
+.btn-soft:hover { background: hsl(var(--surface-4)); }
+.btn-ghost { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; border-radius: 8px; font-size: 11.5px; font-weight: 500; color: hsl(var(--foreground)); background: transparent; cursor: pointer; font-family: inherit; box-shadow: inset 0 0 0 1px hsl(var(--border)); height: 30px; transition: all .14s; }
+.btn-ghost:hover { background: hsl(0 0% 100% / 0.04); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong)); }
+.btn-lark { display:flex; align-items:center; justify-content:center; gap:10px; width:100%; height:44px; border-radius:10px; font-size:13px; font-weight:600; background:#fff; color:#1a1a1a; border:none; cursor:pointer; font-family:inherit; box-shadow:0 6px 18px -8px rgba(0,0,0,.55); transition: transform .12s; }
+.btn-lark:active { transform: scale(.99); }
+.link-muted { background:none; border:none; font-family:inherit; cursor:pointer; font-size:11.5px; color:hsl(var(--muted-foreground)); padding:0; transition:color .12s; }
+.link-muted:hover { color: hsl(var(--foreground)); }
+
+/* inputs */
+.input { width: 100%; font-size: 13px; border-radius: 9px; padding: 11px 13px; background: hsl(0 0% 0% / 0.25); color: hsl(var(--foreground)); border: 1px solid hsl(var(--border)); font-family: inherit; transition: all .12s; }
+.input::placeholder { color: hsl(var(--muted-foreground) / 0.55); }
+.input:focus { outline: none; background: hsl(0 0% 0% / 0.35); border-color: hsl(var(--primary) / 0.5); box-shadow: 0 0 0 3px hsl(var(--primary) / 0.1); }
+.field-label { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: hsl(var(--foreground)); margin: 0 0 8px; }
+.field-label i { color: hsl(var(--muted-foreground)); }
+
+.stack { display: flex; flex-direction: column; }
+.gap-3 { gap: 12px; } .gap-25 { gap: 10px; } .gap-2 { gap: 8px; } .gap-4 { gap: 16px; }
+.mt-6 { margin-top: 24px; } .mt-7 { margin-top: 28px; } .mt-4 { margin-top: 16px; } .mt-3 { margin-top: 12px; }
+.row { display: flex; align-items: center; } .between { justify-content: space-between; } .center { justify-content: center; } .end { justify-content: flex-end; }
+.divider { display:flex; align-items:center; gap:12px; margin:3px 0; }
+.divider .line { height:1px; flex:1; background:hsl(var(--border)); }
+.divider .or { font-size:10px; text-transform:uppercase; letter-spacing:.12em; color:hsl(var(--muted-foreground)); }
+.text-accent { color: hsl(var(--primary)); }
+
+/* permission / selectable rows */
+.row-card { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 12px; padding: 13px; border-radius: 10px; background: hsl(0 0% 100% / 0.025); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); transition: background .2s, box-shadow .2s; }
+.row-card + .row-card { margin-top: 9px; }
+.row-card.selectable { cursor: pointer; }
+.row-card.selectable:hover { background: hsl(0 0% 100% / 0.05); }
+.row-card.selected { background: hsl(var(--primary) / 0.1); box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.4); }
+.row-card.done { background: hsl(140 50% 40% / 0.08); box-shadow: inset 0 0 0 1px hsl(140 60% 50% / 0.25); }
+.ico-wrap { width: 34px; height: 34px; border-radius: 9px; background: hsl(0 0% 100% / 0.04); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); display: grid; place-items: center; color: hsl(var(--foreground)); }
+.row-title { font-size: 12.5px; font-weight: 500; color: hsl(var(--foreground)); }
+.row-desc { font-size: 11.5px; color: hsl(var(--muted-foreground)); margin-top: 2px; line-height: 1.4; }
+.key-glyph { width: 38px; height: 38px; border-radius: 9px; background: hsl(0 0% 100% / 0.05); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong)), 0 1px 0 hsl(0 0% 0% / 0.4); display: grid; place-items: center; color: hsl(var(--foreground)); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; }
+.granted-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; padding: 3px 9px; border-radius: 999px; color: hsl(140 65% 68%); background: hsl(140 65% 50% / 0.14); animation: pop .3s ease; }
+@keyframes pop { 0% { transform: scale(.8); opacity: 0; } 60% { transform: scale(1.08); } 100% { transform: scale(1); opacity: 1; } }
+
+/* engine cards */
+.engine-card { border-radius: 12px; padding: 15px; transition: border-color .2s, background .2s; }
+.engine-card.primary { border: 1px solid hsl(var(--primary) / 0.4); background: hsl(var(--primary) / 0.04); }
+.engine-card.muted { border: 1px solid hsl(var(--surface-3)); background: hsl(var(--surface-2)); }
+.engine-card.selected { border-color: hsl(var(--primary) / 0.7); box-shadow: 0 0 0 3px hsl(var(--primary) / 0.08); }
+.chip { font-size: 10px; padding: 2px 7px; border-radius: 999px; font-weight: 600; background: hsl(var(--primary) / 0.15); color: hsl(var(--primary)); }
+.dl-card { border-radius: 9px; padding: 12px; background: hsl(0 0% 100% / 0.025); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); margin-top: 12px; }
+.dl-bar { height: 6px; border-radius: 999px; background: hsl(var(--surface-3)); overflow: hidden; margin-top: 10px; }
+.dl-fill { height: 100%; width: 0; border-radius: 999px; background: linear-gradient(90deg, hsl(226 80% 70%), hsl(224 96% 82%)); transition: width .2s linear; }
+.cpu-badge { width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; background: #6c5ce7; color: #fff; flex-shrink: 0; }
+
+/* lark status */
+.lark-status { display:flex; gap:10px; align-items:flex-start; padding:11px 13px; border-radius:10px; background:hsl(210 50% 12% / .5); box-shadow: inset 0 0 0 1px hsl(210 60% 60% / .14); }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.ls-title { margin:0; font-size:12.5px; font-weight:600; color:hsl(210 75% 82%); }
+.ls-sub { margin:3px 0 0; font-size:11.5px; line-height:1.5; color:hsl(210 25% 72% / .8); }
+.ls-sub a { color:inherit; text-decoration:underline; cursor:pointer; }
+
+/* ── TEST step (live dictation) ───────────────────────────────────────── */
+.note { border-radius: 12px; padding: 15px 16px; min-height: 92px; background: hsl(0 0% 0% / 0.28); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); font-size: 14px; line-height: 1.55; color: hsl(var(--foreground)); position: relative; }
+.note .placeholder { color: hsl(var(--muted-foreground) / 0.5); }
+.note .raw { color: hsl(var(--muted-foreground)); }
+.note .caret { display: inline-block; width: 2px; height: 16px; background: hsl(var(--primary)); margin-left: 1px; vertical-align: text-bottom; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.note-tag { position: absolute; top: 10px; right: 12px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: hsl(var(--muted-foreground) / .6); }
+.note-tag.live { color: hsl(354 80% 70%); }
+.note-tag.polish { color: hsl(var(--primary)); }
+.mic-dock { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 18px; }
+.mic-btn { width: 64px; height: 64px; border-radius: 50%; border: none; cursor: pointer; display: grid; place-items: center; color: #fff;
+  background: radial-gradient(circle at 50% 30%, hsl(226 90% 72%), hsl(226 80% 58%)); box-shadow: 0 8px 24px hsl(226 90% 55% / 0.4), inset 0 1px 0 hsl(0 0% 100% / 0.3); transition: transform .1s; }
+.mic-btn:active, .mic-btn.holding { transform: scale(0.94); }
+.mic-btn.holding { background: radial-gradient(circle at 50% 30%, hsl(354 85% 70%), hsl(354 75% 56%)); box-shadow: 0 0 0 8px hsl(354 80% 60% / 0.16), 0 8px 24px hsl(354 80% 55% / 0.45); }
+.mic-hint { font-size: 11.5px; color: hsl(var(--muted-foreground)); }
+.ready-row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+.ready-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; padding: 4px 9px; border-radius: 999px; color: hsl(var(--muted-foreground)); background: hsl(0 0% 100% / 0.04); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); }
+.ready-chip.ok { color: hsl(140 60% 70%); background: hsl(140 60% 50% / 0.1); box-shadow: inset 0 0 0 1px hsl(140 60% 50% / 0.2); }
+
+/* macOS / Windows preview toggle (prototype control, not part of the app UI) */
+.platform-toggle { display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px; background: hsl(0 0% 100% / 0.04); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); }
+.platform-toggle button { font-family: inherit; font-size: 12px; font-weight: 600; padding: 6px 16px; border-radius: 8px; border: none; background: transparent; color: hsl(var(--muted-foreground)); cursor: pointer; transition: all .14s; display: inline-flex; align-items: center; gap: 6px; }
+.platform-toggle button.active { background: hsl(0 0% 98%); color: hsl(240 8% 10%); }
+.success-check { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; margin: 0 auto; color: hsl(140 65% 65%); background: hsl(140 65% 50% / 0.12); box-shadow: inset 0 0 0 1px hsl(140 60% 50% / 0.3); animation: pop .4s ease; }
+.confetti { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.confetti i { position: absolute; width: 7px; height: 11px; border-radius: 2px; top: -14px; animation: fall linear forwards; }
+@keyframes fall { to { transform: translateY(640px) rotate(540deg); opacity: 0; } }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="app-window" id="win">
+    <div class="progress-track"><div class="progress-fill" id="prog"></div></div>
+
+    <!-- Brand -->
+    <div class="brand">
+      <div class="brand-top"><span class="mk" id="mk"></span>AirNote</div>
+      <div class="brand-center">
+        <div class="wave-wrap"><span class="brand-halo" id="halo"></span><div class="brand-wave" id="wave"></div></div>
+        <p class="brand-headline fade-swap" id="b-headline"></p>
+      </div>
+      <div class="brand-foot">
+        <span class="brand-kicker fade-swap" id="b-kicker"></span>
+        <p class="brand-quote fade-swap" id="b-quote"></p>
+      </div>
+    </div>
+
+    <!-- Form -->
+    <div class="form">
+      <div class="form-header">
+        <button class="back-btn" id="back" aria-label="Back"><i data-lucide="arrow-left" style="width:14px;height:14px"></i></button>
+        <span class="step-count" id="count"></span>
+      </div>
+      <div class="form-body-wrap"><div class="form-body" id="body"></div></div>
+    </div>
+  </div>
+  <div class="platform-toggle" id="platform-toggle">
+    <button data-os="macos" class="active"><i data-lucide="apple" style="width:13px;height:13px"></i> macOS</button>
+    <button data-os="windows"><i data-lucide="monitor" style="width:13px;height:13px"></i> Windows</button>
+  </div>
+  <div class="stage-hint">Interactive prototype — <b>click through it</b>. On the “Try it” step, <b>press &amp; hold</b> the mic to use your real microphone.</div>
+</div>
+
+<template id="mk-tpl">
+  <svg viewBox="0 0 24 24" class="bars-mark" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <rect x="3" y="8.5" width="3" height="7" rx="1.5"/><rect x="8" y="4.5" width="3" height="15" rx="1.5"/>
+    <rect x="13" y="2.5" width="3" height="19" rx="1.5"/><rect x="18" y="6.5" width="3" height="11" rx="1.5"/>
+  </svg>
+</template>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   State
+   ════════════════════════════════════════════════════════════════════════ */
+// Platform forks the whole flow. Windows: mic-only permission, no on-device
+// engine step (always cloud), no Fn key → a shorter 5-step flow.
+const state = {
+  i: 0,
+  platform: "macos",           // macos | windows
+  authMode: "personal",        // personal | workspace
+  authed: false,               // gates the real "Try it" dictation
+  email: "", password: "",
+  perms: { mic: false, acc: false, im: false },
+  engine: null,                // local | cloud
+  modelInstalled: false, downloading: false, dlPct: 0,
+  hotkey: "caps_lock",
+  recording: false, tested: false,
+};
+
+function flowSteps() {
+  return state.platform === "windows"
+    ? ["welcome", "account", "permissions", "hotkey", "test", "done"]      // no engine step
+    : ["welcome", "account", "permissions", "speech", "hotkey", "test", "done"];
+}
+
+function hotkeys() {
+  const list = [{ key: "caps_lock", glyph: "⇪", label: "Caps Lock", desc: "Single key, easy to hold." }];
+  if (state.platform === "windows") {
+    list.push({ key: "right_alt", glyph: "Alt", label: "Right Alt", desc: "Stays out of the way." });
+  } else {
+    list.push({ key: "right_option", glyph: "⌥", label: "Right Option", desc: "Stays out of the way." });
+    list.push({ key: "fn", glyph: "fn", label: "Fn / Globe", desc: "The world key on MacBooks." });
+  }
+  return list;
+}
+function hotkeyLabel() { return (hotkeys().find(h => h.key === state.hotkey) || hotkeys()[0]).label; }
+
+// Windows needs only the microphone; Accessibility / Input Monitoring are macOS TCC gates.
+function permsReady() {
+  return state.platform === "windows"
+    ? state.perms.mic
+    : (state.perms.mic && state.perms.acc && state.perms.im);
+}
+
+/* Brand copy per step — platform-aware */
+function getBrand(step) {
+  const win = state.platform === "windows";
+  return ({
+    welcome:     { h: "Type with your voice.<br>Anywhere.",   k: win ? "Built for Windows" : "Built for macOS", q: "Hold a key, speak, release — AirNote types the rest." },
+    account:     { h: "One sign-in,<br>then just talk.",       k: "Your account",            q: "No setup. Start dictating in seconds." },
+    permissions: { h: win ? "One quick grant<br>and you’re in." : "Three quick grants<br>and you’re in.", k: "Privacy-first", q: win ? "Audio goes only to your speech provider. Nothing is stored." : "Your voice is processed on-device. Nothing is stored." },
+    speech:      { h: "On-device or cloud.<br>Your call.",     k: "Recommended · on-device", q: "Local Hinglish transcription — private and offline." },
+    hotkey:      { h: "Pick the key<br>your thumb will love.", k: "Muscle memory",           q: "Hold to record, release to send." },
+    test:        { h: "Try it right now.",                     k: "Live",                    q: "Hold the mic and say anything — watch it polish." },
+    done:        { h: "You’re all set.",                       k: "Ready",                   q: "Hold your key in any app to start dictating." },
+  })[step];
+}
+
+/* ── Brand mark ──────────────────────────────────────────────────────── */
+function brandMarkSVG() {
+  const n = document.getElementById("mk-tpl").content.firstElementChild.cloneNode(true);
+  n.setAttribute("width", 15); n.setAttribute("height", 15); return n.outerHTML;
+}
+document.getElementById("mk").innerHTML = brandMarkSVG();
+
+/* ════════════════════════════════════════════════════════════════════════
+   Living waveform (animated)
+   ════════════════════════════════════════════════════════════════════════ */
+const WAVE_N = 52;
+const waveEl = document.getElementById("wave");
+const haloEl = document.getElementById("halo");
+const bars = [];
+for (let i = 0; i < WAVE_N; i++) { const b = document.createElement("span"); b.className = "bar"; waveEl.appendChild(b); bars.push(b); }
+let amp = 0.18;            // idle amplitude; surges to ~1 while "recording"
+let ampTarget = 0.18;
+const seed = bars.map((_, i) => i * 12.9898);
+function envelope(t) { return Math.pow(Math.sin(Math.PI * t), 0.62); }
+function tick(now) {
+  amp += (ampTarget - amp) * 0.08;
+  const time = now / 1000;
+  for (let i = 0; i < WAVE_N; i++) {
+    const t = i / (WAVE_N - 1);
+    const base = envelope(t);
+    const osc = 0.5 + 0.5 * Math.sin(time * (2.2 + (i % 7) * 0.5) + seed[i]);
+    const detail = 0.4 + 0.6 * osc;
+    const h = 6 + (112 * base * detail) * (0.32 + amp * 0.85);
+    bars[i].style.height = h.toFixed(1) + "px";
+  }
+  haloEl.style.opacity = (0.6 + amp * 0.5).toFixed(2);
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+function setRecording(on) { state.recording = on; ampTarget = on ? 1.0 : 0.18; }
+
+/* ── Real microphone → live waveform amplitude ───────────────────────── */
+let audioCtx, analyser, micStream, micRAF, micData;
+async function startMic() {
+  if (!navigator.mediaDevices?.getUserMedia) return false;
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = audioCtx.createMediaStreamSource(micStream);
+  analyser = audioCtx.createAnalyser(); analyser.fftSize = 512;
+  micData = new Uint8Array(analyser.frequencyBinCount);
+  src.connect(analyser);
+  const loop = () => {
+    analyser.getByteTimeDomainData(micData);
+    let sum = 0; for (const v of micData) { const x = (v - 128) / 128; sum += x * x; }
+    const rms = Math.sqrt(sum / micData.length);
+    ampTarget = Math.min(1, 0.16 + rms * 5.0);           // real voice drives the bars
+    micRAF = requestAnimationFrame(loop);
+  };
+  loop();
+  return true;
+}
+function stopMic() {
+  cancelAnimationFrame(micRAF); ampTarget = 0.18;
+  if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  if (audioCtx) audioCtx.close().catch(() => {});
+  micStream = null; audioCtx = null;
+}
+
+/* ── Real transcription via Web Speech API (Chrome) ──────────────────── */
+let recog;
+function startRecog(onText) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return false;
+  try {
+    recog = new SR(); recog.continuous = true; recog.interimResults = true; recog.lang = "en-US";
+    let finalT = "";
+    recog.onresult = (e) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finalT += r[0].transcript; else interim += r[0].transcript;
+      }
+      onText((finalT + interim).trim());
+    };
+    recog.onerror = () => {};
+    recog.start();
+    return true;
+  } catch (_) { return false; }
+}
+function stopRecog() { if (recog) { try { recog.stop(); } catch (_) {} recog = null; } }
+
+/* Demo "polish": strip fillers, capitalise, punctuate — illustrates the idea.
+   The real app runs the LLM polish pipeline here instead. */
+function lightPolish(t) {
+  t = t.replace(/\b(um|uh|er|ah|like|basically|you know|i mean)\b/gi, "")
+       .replace(/\s+/g, " ").replace(/\s+([,.])/g, "$1").trim();
+  if (!t) return "";
+  t = t.charAt(0).toUpperCase() + t.slice(1);
+  if (!/[.!?]$/.test(t)) t += ".";
+  return t;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Navigation + brand sync
+   ════════════════════════════════════════════════════════════════════════ */
+const bodyEl = document.getElementById("body");
+const backEl = document.getElementById("back");
+const countEl = document.getElementById("count");
+const progEl = document.getElementById("prog");
+
+function setBrand(step) {
+  const data = getBrand(step);
+  const els = { "b-headline": data.h, "b-kicker": data.k, "b-quote": data.q };
+  for (const id in els) {
+    const el = document.getElementById(id);
+    el.classList.add("out");
+    setTimeout(() => { el.innerHTML = els[id]; el.classList.remove("out"); }, 200);
+  }
+}
+
+function go(idx) {
+  const FLOW = flowSteps();
+  state.i = Math.max(0, Math.min(FLOW.length - 1, idx));
+  const step = FLOW[state.i];
+  progEl.style.width = (state.i / (FLOW.length - 1) * 100) + "%";
+  backEl.classList.toggle("hidden", state.i === 0 || step === "done");
+  countEl.textContent = step === "done" ? "" : `${state.i + 1} / ${FLOW.length - 1}`;
+  setBrand(step);
+  render(step);
+}
+const next = () => go(state.i + 1);
+const back = () => go(state.i - 1);
+backEl.addEventListener("click", back);
+
+function render(step) {
+  bodyEl.classList.remove("enter");
+  void bodyEl.offsetWidth;                     // reflow → restart animation
+  bodyEl.innerHTML = SCREENS[step]();
+  bodyEl.classList.add("enter");
+  (WIRE[step] || (() => {}))();
+  lucide.createIcons();
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Screens
+   ════════════════════════════════════════════════════════════════════════ */
+const SCREENS = {
+  welcome: () => {
+    const win = state.platform === "windows";
+    return `
+    <p class="eyebrow">Welcome</p>
+    <h1 class="title">Polished words,<br>spoken in seconds.</h1>
+    <p class="subtitle">A two-minute setup. ${win ? "Account, mic access, your hold-key" : "Account, a few grants, your hold-key"} — then never type by hand again.</p>
+    <div class="mt-7">
+      <button class="btn-primary" id="start">Get started <i data-lucide="arrow-right" style="width:15px;height:15px"></i></button>
+    </div>
+    <p class="subtitle" style="text-align:center;font-size:11.5px;margin-top:14px;opacity:.7">${win ? "Windows 10/11" : "macOS 14+"} · free to start</p>`;
+  },
+
+  account: () => state.authMode === "personal" ? `
+    <p class="eyebrow">Account</p>
+    <h1 class="title">Create your account.</h1>
+    <p class="subtitle">Sign up with email — it takes seconds.</p>
+    <div class="mt-6 stack gap-25">
+      <input class="input" id="email" type="email" placeholder="you@company.com" value="${state.email}" />
+      <input class="input" id="pass" type="password" placeholder="Password (8+ characters)" value="${state.password}" />
+      <button class="btn-primary" id="acc-submit" ${state.email && state.password.length>=8 ? "" : "disabled"}>Create account <i data-lucide="arrow-right" style="width:15px;height:15px"></i></button>
+      <div class="divider"><span class="line"></span><span class="or">or</span><span class="line"></span></div>
+      <button class="link-muted" id="to-workspace" style="text-align:center">Setting up for your organization? <span class="text-accent">Connect a workspace →</span></button>
+    </div>` : `
+    <p class="eyebrow">Workspace</p>
+    <h1 class="title">Connect your workspace.</h1>
+    <p class="subtitle">Enter your server URL and sign in with Lark.</p>
+    <div class="mt-6 stack gap-4">
+      <div>
+        <label class="field-label"><i data-lucide="link" style="width:13px;height:13px"></i> Server URL</label>
+        <input class="input" type="url" placeholder="https://airnote.your-company.com" />
+      </div>
+      <button class="btn-lark" id="ws-continue"><i data-lucide="link" style="width:17px;height:17px"></i> Continue with Lark</button>
+      <div class="row between" style="margin-top:2px">
+        <button class="link-muted" id="to-personal">Sign in with email instead</button>
+        <button class="link-muted" id="ws-skip">Skip for now →</button>
+      </div>
+    </div>`,
+
+  permissions: () => {
+    const p = state.perms, win = state.platform === "windows";
+    const row = (id, icon, title, desc) => `
+      <div class="row-card ${p[id] ? "done" : ""}" data-perm="${id}">
+        <span class="ico-wrap"><i data-lucide="${icon}" style="width:15px;height:15px"></i></span>
+        <div><div class="row-title">${title}</div><div class="row-desc">${desc}</div></div>
+        <span class="perm-action">${p[id]
+          ? `<span class="granted-pill"><i data-lucide="check" style="width:11px;height:11px"></i> Granted</span>`
+          : `<button class="btn-ghost perm-allow" data-perm="${id}">Allow</button>`}</span>
+      </div>`;
+    const ready = permsReady();
+    const rows = win
+      ? row("mic", "mic", "Microphone", "Capture audio while you hold the key.")
+      : row("mic", "mic", "Microphone", "Capture audio while you hold the key.")
+        + row("acc", "shield", "Accessibility", "Type polished text into the focused app.")
+        + row("im", "keyboard", "Input Monitoring", "Hear your hotkey from any app.");
+    return `
+    <p class="eyebrow">Permissions</p>
+    <h1 class="title">${win ? "One system grant." : "A few system grants."}</h1>
+    <p class="subtitle">${win ? "Just microphone access — AirNote detects it automatically." : "One click each. AirNote detects every grant automatically."}</p>
+    <div class="mt-6">${rows}</div>
+    <div class="mt-6">
+      <button class="btn-primary" id="perm-next" ${ready ? "" : "disabled"}>${ready ? "Continue" : "Waiting for grants…"} ${ready ? '<i data-lucide="arrow-right" style="width:15px;height:15px"></i>' : ""}</button>
+    </div>`;
+  },
+
+  speech: () => {
+    const inst = state.modelInstalled, dl = state.downloading, pct = state.dlPct;
+    return `
+    <p class="eyebrow">Speech recognition</p>
+    <h1 class="title">How should AirNote hear you?</h1>
+    <p class="subtitle">On this Mac, or in the cloud. Switch any time.</p>
+    <div class="mt-6 stack gap-3">
+      <div class="engine-card primary ${state.engine==='local'?'selected':''}">
+        <div class="row between" style="margin-bottom:6px">
+          <span class="row-title" style="font-size:13px;font-weight:600">On-device</span>
+          <span class="chip">Recommended</span>
+        </div>
+        <div class="row-desc" style="font-size:11.5px;line-height:1.5">Transcribes Hinglish on your Mac — offline, private, no per-use cost. One-time ~148 MB.</div>
+        <div class="dl-card">
+          <div class="row between">
+            <div class="row" style="gap:9px">
+              <span class="cpu-badge"><i data-lucide="cpu" style="width:11px;height:11px"></i></span>
+              <span class="row-title" style="font-size:12px">On-device model ${inst?'<span class="granted-pill" style="margin-left:4px"><i data-lucide="check" style="width:10px;height:10px"></i> Installed</span>':''}</span>
+            </div>
+            ${inst ? '<i data-lucide="check" style="width:16px;height:16px;color:hsl(140 65% 65%)"></i>'
+                   : dl ? `<button class="link-muted" id="dl-cancel">Cancel</button>`
+                        : `<button class="btn-ghost" id="dl-start"><i data-lucide="download" style="width:12px;height:12px"></i> Download</button>`}
+          </div>
+          ${dl ? `<div class="dl-bar"><div class="dl-fill" id="dl-fill" style="width:${pct}%"></div></div><div class="row-desc" id="dl-label" style="margin-top:6px">Downloading ${pct}%</div>` : ""}
+        </div>
+        <button class="btn-primary" id="use-local" style="margin-top:12px" ${inst?"":"disabled"}>${inst?"Use on-device model":"Download to continue"} ${inst?'<i data-lucide="arrow-right" style="width:15px;height:15px"></i>':""}</button>
+      </div>
+      <div class="engine-card muted">
+        <div class="row-title" style="font-size:13px;font-weight:600;margin-bottom:5px">Cloud (Deepgram)</div>
+        <div class="row-desc" style="font-size:11.5px;line-height:1.5;margin-bottom:11px">Instant — nothing to download. Needs internet while you dictate.</div>
+        <button class="btn-soft" id="use-cloud">Use cloud instead</button>
+      </div>
+    </div>`;
+  },
+
+  hotkey: () => {
+    const rows = hotkeys().map(o => `
+      <div class="row-card selectable ${state.hotkey===o.key?'selected':''}" data-key="${o.key}">
+        <span class="key-glyph">${o.glyph}</span>
+        <div><div class="row-title">${o.label}</div><div class="row-desc">${o.desc}</div></div>
+        ${state.hotkey===o.key ? '<i data-lucide="check" style="width:15px;height:15px;color:hsl(var(--primary))"></i>' : '<i data-lucide="arrow-right" style="width:14px;height:14px;color:hsl(var(--muted-foreground) / .5)"></i>'}
+      </div>`).join("");
+    return `
+    <p class="eyebrow">Hotkey</p>
+    <h1 class="title">Pick a hold-key.</h1>
+    <p class="subtitle">Hold to record, release to send. Change it any time.</p>
+    <div class="mt-6">${rows}</div>
+    <div class="mt-6"><button class="btn-primary" id="hk-next">Continue <i data-lucide="arrow-right" style="width:15px;height:15px"></i></button></div>`;
+  },
+
+  test: () => `
+    <p class="eyebrow">Try it</p>
+    <h1 class="title">Your first dictation.</h1>
+    <p class="subtitle">Press &amp; hold the mic and speak — release to see it polish. This is the real thing.</p>
+    <div class="ready-row">
+      <span class="ready-chip ok"><i data-lucide="check" style="width:11px;height:11px"></i> Signed in</span>
+      <span class="ready-chip ok"><i data-lucide="check" style="width:11px;height:11px"></i> Microphone</span>
+      ${state.platform === "macos" ? `<span class="ready-chip ok"><i data-lucide="check" style="width:11px;height:11px"></i> ${state.engine === "local" ? "On-device model" : "Cloud STT"}</span>` : `<span class="ready-chip ok"><i data-lucide="check" style="width:11px;height:11px"></i> Cloud STT</span>`}
+    </div>
+    <div class="mt-4">
+      <div class="note" id="note">
+        <span class="note-tag" id="note-tag">Note</span>
+        <span id="note-text"><span class="placeholder">Your polished text will appear here…</span></span>
+      </div>
+      <div class="mic-dock">
+        <button class="mic-btn" id="mic"><i data-lucide="mic" style="width:24px;height:24px"></i></button>
+        <span class="mic-hint" id="mic-hint">Press &amp; hold to dictate</span>
+      </div>
+    </div>
+    <div class="mt-4" id="test-cta" style="visibility:hidden">
+      <button class="btn-primary" id="test-next">Finish setup <i data-lucide="arrow-right" style="width:15px;height:15px"></i></button>
+    </div>`,
+
+  done: () => `
+    <div style="text-align:center">
+      <div class="success-check"><i data-lucide="check" style="width:28px;height:28px"></i></div>
+      <h1 class="title" style="margin-top:18px">You’re all set.</h1>
+      <p class="subtitle">Hold <b style="color:hsl(var(--foreground))">${hotkeyLabel()}</b> in any app and start talking.</p>
+      <div class="mt-7"><button class="btn-primary" id="finish">Open AirNote <i data-lucide="arrow-right" style="width:15px;height:15px"></i></button></div>
+      <button class="link-muted" id="restart" style="margin-top:14px">↺ Replay the flow</button>
+    </div>`,
+};
+
+/* ════════════════════════════════════════════════════════════════════════
+   Wiring (per step)
+   ════════════════════════════════════════════════════════════════════════ */
+const $ = (id) => document.getElementById(id);
+const on = (id, ev, fn) => { const el = $(id); if (el) el.addEventListener(ev, fn); };
+
+const WIRE = {
+  welcome() { on("start", "click", next); },
+
+  account() {
+    const auth = () => { state.authed = true; next(); };   // unlocks the real "Try it" step
+    if (state.authMode === "personal") {
+      const sync = () => { state.email = $("email").value.trim(); state.password = $("pass").value;
+        $("acc-submit").disabled = !(state.email && state.password.length >= 8); };
+      on("email", "input", sync); on("pass", "input", sync);
+      on("pass", "keydown", (e) => { if (e.key === "Enter" && !$("acc-submit").disabled) auth(); });
+      on("acc-submit", "click", auth);
+      on("to-workspace", "click", () => { state.authMode = "workspace"; render("account"); lucide.createIcons(); });
+    } else {
+      on("ws-continue", "click", auth);
+      on("ws-skip", "click", auth);
+      on("to-personal", "click", () => { state.authMode = "personal"; render("account"); lucide.createIcons(); });
+    }
+  },
+
+  permissions() {
+    document.querySelectorAll(".perm-allow").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.perm;
+        state.perms[id] = true;
+        render("permissions"); lucide.createIcons();
+        if (permsReady()) {
+          setTimeout(next, 650);                       // seamless auto-advance
+        }
+      });
+    });
+    on("perm-next", "click", next);
+  },
+
+  speech() {
+    on("use-cloud", "click", () => { state.engine = "cloud"; next(); });
+    on("use-local", "click", () => { if (state.modelInstalled) { state.engine = "local"; next(); } });
+    on("dl-start", "click", () => {
+      state.downloading = true; state.dlPct = 0; render("speech"); lucide.createIcons();
+      const timer = setInterval(() => {
+        state.dlPct = Math.min(100, state.dlPct + Math.round(6 + Math.random() * 9));
+        const fill = $("dl-fill"), label = $("dl-label");
+        if (fill) fill.style.width = state.dlPct + "%";
+        if (label) label.textContent = `Downloading ${state.dlPct}%`;
+        if (state.dlPct >= 100) { clearInterval(timer); state.downloading = false; state.modelInstalled = true;
+          setTimeout(() => { render("speech"); lucide.createIcons(); }, 250); }
+      }, 220);
+    });
+  },
+
+  hotkey() {
+    document.querySelectorAll("[data-key]").forEach((el) => {
+      el.addEventListener("click", () => { state.hotkey = el.dataset.key; render("hotkey"); lucide.createIcons(); });
+    });
+    on("hk-next", "click", next);
+  },
+
+  test() {
+    // Scripted text is only a FALLBACK if the real mic / SpeechRecognition is
+    // unavailable (denied permission, file:// quirks, no Web Speech support).
+    const SCRIPT_RAW = "um so basically i need to send the quarterly report by eod";
+    const SCRIPT_POLISHED = "I need to send the quarterly report by end of day.";
+    const noteText = $("note-text"), tag = $("note-tag"), hint = $("mic-hint"), mic = $("mic"), cta = $("test-cta");
+    let held = false, fallbackTimer = null, usingRealMic = false, usingRealASR = false;
+
+    async function startHold() {
+      if (state.tested || held) return;
+      held = true; mic.classList.add("holding");
+      tag.textContent = "Recording"; tag.className = "note-tag live";
+      hint.textContent = "Listening… keep holding";
+      noteText.innerHTML = `<span class="raw"></span><span class="caret"></span>`;
+      const rawEl = noteText.querySelector(".raw");
+
+      // 1) Real mic → drives the live waveform from your actual voice level.
+      usingRealMic = await startMic().catch(() => false);
+      if (!usingRealMic) setRecording(true);   // fall back to synthetic surge
+
+      // 2) Real transcription via Web Speech API, if the browser allows it.
+      usingRealASR = startRecog((text) => { rawEl.textContent = text; });
+      if (!usingRealASR) {                       // no ASR → script the words
+        const words = SCRIPT_RAW.split(" "); let w = 0;
+        fallbackTimer = setInterval(() => {
+          if (w < words.length) { rawEl.textContent += (w ? " " : "") + words[w]; w++; }
+          else clearInterval(fallbackTimer);
+        }, 120);
+      }
+    }
+
+    function endHold() {
+      if (!held || state.tested) return;
+      held = false; mic.classList.remove("holding");
+      clearInterval(fallbackTimer); stopRecog();
+      if (usingRealMic) stopMic(); else setRecording(false);
+
+      const captured = (noteText.querySelector(".raw")?.textContent || "").trim();
+      const rawShown = captured || SCRIPT_RAW;
+      tag.textContent = "Polishing"; tag.className = "note-tag polish";
+      hint.textContent = "Polishing your words…";
+      noteText.innerHTML = `<span class="raw">${rawShown}</span> <i data-lucide="loader-2" class="spin" style="width:14px;height:14px;vertical-align:middle;color:hsl(var(--primary))"></i>`;
+      lucide.createIcons();
+
+      setTimeout(() => {
+        const polished = captured ? lightPolish(captured) : SCRIPT_POLISHED;
+        tag.textContent = "Polished"; tag.className = "note-tag polish";
+        let c = 0; const t = setInterval(() => {
+          noteText.innerHTML = polished.slice(0, c) + '<span class="caret"></span>';
+          c++; if (c > polished.length) {
+            clearInterval(t); noteText.innerHTML = polished;
+            state.tested = true; mic.style.opacity = .5;
+            hint.textContent = usingRealASR ? "That was your voice — that’s the whole loop." : "That’s the whole loop.";
+            cta.style.visibility = "visible";
+          }
+        }, 22);
+      }, 800);
+    }
+
+    mic.addEventListener("mousedown", startHold);
+    window.addEventListener("mouseup", endHold);
+    mic.addEventListener("touchstart", (e) => { e.preventDefault(); startHold(); }, { passive: false });
+    window.addEventListener("touchend", endHold);
+    on("test-next", "click", next);
+  },
+
+  done() {
+    burstConfetti();
+    on("finish", "click", () => { /* would close onboarding */ $("finish").textContent = "Launching…"; });
+    on("restart", "click", () => {
+      Object.assign(state, { i: 0, authMode: "personal", email: "", password: "",
+        perms: { mic: false, acc: false, im: false }, engine: null, modelInstalled: false,
+        downloading: false, dlPct: 0, hotkey: "caps_lock", recording: false, tested: false });
+      go(0);
+    });
+  },
+};
+
+function burstConfetti() {
+  const colors = ["hsl(226 90% 75%)", "hsl(256 70% 72%)", "hsl(140 60% 60%)", "hsl(0 0% 95%)"];
+  const c = document.createElement("div"); c.className = "confetti";
+  for (let i = 0; i < 36; i++) {
+    const p = document.createElement("i");
+    p.style.left = Math.random() * 100 + "%";
+    p.style.background = colors[i % colors.length];
+    p.style.animationDuration = (1.2 + Math.random() * 1.1) + "s";
+    p.style.animationDelay = (Math.random() * 0.25) + "s";
+    c.appendChild(p);
+  }
+  document.getElementById("win").appendChild(c);
+  setTimeout(() => c.remove(), 2600);
+}
+
+/* ── Platform toggle (prototype control) ─────────────────────────────── */
+function resetProgress() {
+  Object.assign(state, {
+    i: 0, authMode: "personal", authed: false, email: "", password: "",
+    perms: { mic: false, acc: false, im: false }, engine: null,
+    modelInstalled: false, downloading: false, dlPct: 0,
+    hotkey: "caps_lock", recording: false, tested: false,
+  });
+}
+document.querySelectorAll("#platform-toggle button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (state.platform === btn.dataset.os) return;
+    state.platform = btn.dataset.os;
+    document.querySelectorAll("#platform-toggle button").forEach((b) => b.classList.toggle("active", b === btn));
+    resetProgress();
+    go(0);
+  });
+});
+
+/* boot */
+go(0);
+lucide.createIcons();
+</script>
+</body>
+</html>

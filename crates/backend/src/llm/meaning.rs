@@ -253,7 +253,7 @@ async fn call_chat_completions(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        let preview = &body[..body.len().min(200)];
+        let preview = said_core::text::truncate_utf8(&body, 200);
         warn!("[meaning] {provider_tag} returned {status}: {preview}");
         return None;
     }

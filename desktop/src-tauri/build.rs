@@ -1,4 +1,9 @@
 fn main() {
+    // Re-link the crate whenever the DeepSeek meeting-summary key baked via
+    // option_env!("DEEPSEEK_API_KEY") in meeting_engine.rs changes, so a cached
+    // object file never ships a stale or missing key. Mirrors crates/backend/build.rs.
+    println!("cargo:rerun-if-env-changed=DEEPSEEK_API_KEY");
+
     #[cfg(target_os = "macos")]
     {
         println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET=13.0");
@@ -7,7 +12,61 @@ fn main() {
         }
         println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
     }
+    ensure_dev_external_bin_placeholders();
     tauri_build::build()
+}
+
+fn ensure_dev_external_bin_placeholders() {
+    if std::env::var("PROFILE").ok().as_deref() == Some("release") {
+        return;
+    }
+
+    let Ok(target) = std::env::var("TARGET") else {
+        return;
+    };
+    if target.is_empty() {
+        return;
+    }
+
+    let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") else {
+        return;
+    };
+    let binaries_dir = std::path::PathBuf::from(manifest_dir).join("binaries");
+    if std::fs::create_dir_all(&binaries_dir).is_err() {
+        return;
+    }
+
+    let extension = if target.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    for stem in ["airnote-backend", "whisper-cli"] {
+        let path = binaries_dir.join(format!("{stem}-{target}{extension}"));
+        if path.exists() {
+            continue;
+        }
+        if std::fs::write(
+            &path,
+            placeholder_binary_contents(target.contains("windows")),
+        )
+        .is_ok()
+        {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
+}
+
+fn placeholder_binary_contents(is_windows: bool) -> &'static [u8] {
+    if is_windows {
+        b""
+    } else {
+        b"#!/bin/sh\necho 'AirNote development placeholder: build the real sidecar binary before runtime.' >&2\nexit 127\n"
+    }
 }
 
 #[cfg(target_os = "macos")]

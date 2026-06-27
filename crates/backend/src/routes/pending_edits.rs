@@ -36,6 +36,13 @@ pub async fn create(
     State(state): State<AppState>,
     Json(body): Json<CreateBody>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if crate::legacy_learning::audit_only_legacy_mutations() {
+        info!("[pending-edits] create blocked — user learning disabled");
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "learning_disabled" })),
+        );
+    }
     match pending_edits::insert(
         &state.pool,
         &state.default_user_id,

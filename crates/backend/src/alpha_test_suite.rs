@@ -29,6 +29,7 @@ static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 // ── Test DB setup ────────────────────────────────────────────────────────────
 
 fn fresh_db() -> (DbPool, PathBuf) {
+    crate::legacy_learning::enable_debug_legacy_writes_for_tests();
     let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
     let db_path = std::env::temp_dir().join(format!("alpha_test_{n}_{}.db", std::process::id()));
     // Remove stale file from previous test run

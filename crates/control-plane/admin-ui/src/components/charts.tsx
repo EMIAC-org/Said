@@ -205,21 +205,67 @@ export function Gauge({ value, label }: { value: number; label?: string }) {
 }
 
 // ── Stage timeline (runtime_stage_events for one polish) ────────────────────
-export function StageTimeline({ stages }: { stages: { stage: string; status: string; latency_ms: number | null; error_kind?: string | null }[] }) {
+export function StageTimeline({
+  stages,
+}: {
+  stages: {
+    stage: string
+    status: string
+    latency_ms: number | null
+    error_kind?: string | null
+    metadata_json?: Record<string, unknown>
+  }[]
+}) {
   const dot: Record<string, string> = { ok: 'bg-ok', error: 'bg-live', warning: 'bg-warn' }
   const txt: Record<string, string> = { ok: 'text-fg-3', error: 'text-live', warning: 'text-warn' }
   return (
     <div className="relative pl-4">
       <div className="absolute left-[5px] top-1.5 bottom-1.5 w-px bg-border" />
       <div className="space-y-2.5">
-        {stages.map((s, i) => (
-          <div key={i} className="flex items-center gap-3 relative">
-            <span className={`absolute -left-4 w-[7px] h-[7px] rounded-full ${dot[s.status] || 'bg-fg-4'}`} />
-            <span className={`text-[12px] font-mono ${txt[s.status] || 'text-fg-3'}`}>{s.stage}</span>
-            {s.error_kind && <span className="text-[10px] text-live bg-live-bg px-1.5 py-0.5 rounded">{s.error_kind}</span>}
-            <span className="ml-auto text-[11px] text-fg-4 tabular-nums">{s.latency_ms != null ? `${s.latency_ms} ms` : '—'}</span>
-          </div>
-        ))}
+        {stages.map((s, i) => {
+          const meta = s.metadata_json
+          const profileMarkdown =
+            s.stage === 'prompt_built' && meta && typeof meta.profile_markdown === 'string'
+              ? meta.profile_markdown
+              : null
+          const profileChars =
+            s.stage === 'prompt_built' && meta && typeof meta.profile_chars === 'number'
+              ? meta.profile_chars
+              : null
+          const profileHash =
+            s.stage === 'prompt_built' && meta && typeof meta.profile_hash === 'string'
+              ? meta.profile_hash
+              : null
+          return (
+            <div key={i} className="relative">
+              <div className="flex items-center gap-3">
+                <span
+                  className={`absolute -left-4 w-[7px] h-[7px] rounded-full ${dot[s.status] || 'bg-fg-4'}`}
+                />
+                <span className={`text-[12px] font-mono ${txt[s.status] || 'text-fg-3'}`}>{s.stage}</span>
+                {s.error_kind && (
+                  <span className="text-[10px] text-live bg-live-bg px-1.5 py-0.5 rounded">{s.error_kind}</span>
+                )}
+                <span className="ml-auto text-[11px] text-fg-4 tabular-nums">
+                  {s.latency_ms != null ? `${s.latency_ms} ms` : '—'}
+                </span>
+              </div>
+              {s.stage === 'prompt_built' && (profileChars != null || profileHash) ? (
+                <div className="ml-0 mt-1.5 pl-0 text-[10px] text-fg-4 font-mono space-y-1">
+                  {profileChars != null ? <div>{profileChars} profile chars</div> : null}
+                  {profileHash ? <div className="truncate">hash {profileHash.slice(0, 16)}…</div> : null}
+                  {profileMarkdown ? (
+                    <pre className="text-[10px] leading-relaxed whitespace-pre-wrap break-words font-mono bg-surface-3 rounded p-2 border border-border-light max-h-[10rem] overflow-auto mt-1">
+                      {profileMarkdown.length > 600
+                        ? `${profileMarkdown.slice(0, 600)}…`
+                        : profileMarkdown}
+                    </pre>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          )
+        })}
       </div>
     </div>
   )

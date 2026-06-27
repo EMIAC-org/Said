@@ -8,7 +8,15 @@ import { TelemetryStatCard } from '../components/telemetry/TelemetryStatCard'
 import { RunDetailPanel } from '../components/telemetry/RunDetailPanel'
 import { pct, ms } from '../components/telemetry/format'
 import { Loading, ErrorBox } from '../components/States'
-import type { TelemetryRun, TelemetryUserMemory, TelemetryUserProfile } from '../types'
+import type {
+  AliasLearnEvent,
+  DictationDetailItem,
+  DictationListItem,
+  ObservabilitySummary,
+  TelemetryRun,
+  TelemetryUserMemory,
+  TelemetryUserProfile,
+} from '../types'
 
 function AuthBadge({ source, lark }: { source: string; lark: boolean }) {
   const isLark = lark || source === 'lark'
@@ -46,6 +54,131 @@ function CountGrid({ items }: { items: [string, number][] }) {
   )
 }
 
+function dictationRowKey(row: DictationListItem): string {
+  // Always use the Postgres history row id — guaranteed to match list + detail.
+  return row.id
+}
+
+function dictationRowLabel(row: DictationListItem): string {
+  if (row.recording_id) return `${row.recording_id.slice(0, 8)}… (rec)`
+  if (row.client_run_id) return `${row.client_run_id.slice(0, 8)}… (run)`
+  return `${row.id.slice(0, 8)}…`
+}
+
+function DiffColumn({ label, text }: { label: string; text?: string | null }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] font-semibold text-fg-4 uppercase tracking-wider mb-1.5">{label}</div>
+      <div className="text-[12px] leading-relaxed whitespace-pre-wrap break-words font-mono bg-surface-3 rounded-lg p-3 min-h-[4rem] border border-border-light">
+        {text?.trim() ? text : '—'}
+      </div>
+    </div>
+  )
+}
+
+function PromptProfileCard({ memory }: { memory: TelemetryUserMemory }) {
+  const [showServerProfile, setShowServerProfile] = useState(false)
+  const latest = memory.prompt_profile_latest
+  const server = memory.server_learned_profile
+  const serverDiffers =
+    latest &&
+    server &&
+    server.profile_markdown.trim() &&
+    latest.profile_markdown.trim() !== server.profile_markdown.trim()
+
+  const copyMarkdown = async () => {
+    if (!latest?.profile_markdown) return
+    try {
+      await navigator.clipboard.writeText(latest.profile_markdown)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return (
+    <div className="card p-4 mb-4">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <SectionLabel>Prompt profile (last used in polish)</SectionLabel>
+          <p className="text-[11px] text-fg-4 mt-1">
+            Sanitized markdown injected into the voice polish system prompt on the most recent server
+            runtime session.
+          </p>
+        </div>
+        {latest?.profile_markdown ? (
+          <button
+            type="button"
+            onClick={copyMarkdown}
+            className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-border text-fg-3 hover:text-fg shrink-0"
+          >
+            Copy
+          </button>
+        ) : null}
+      </div>
+      {!latest || latest.profile_source === 'none' || !latest.profile_markdown.trim() ? (
+        <p className="text-[12px] text-fg-4">
+          No prompt profile recorded yet. Run a server-runtime dictation with a signed-in desktop
+          client that sends <span className="font-mono">client_profile_markdown</span>.
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            <span className="text-[10px] px-2 py-0.5 rounded bg-info-bg text-info font-mono">
+              {latest.profile_source}
+            </span>
+            <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-3 tabular-nums">
+              {latest.profile_chars} chars
+            </span>
+            {latest.client_profile_version != null ? (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-3 tabular-nums">
+                v{latest.client_profile_version}
+              </span>
+            ) : null}
+            <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-3 font-mono truncate max-w-[12rem]">
+              {latest.profile_hash.slice(0, 12)}…
+            </span>
+            <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-3">
+              {new Date(latest.updated_at).toLocaleString()}
+            </span>
+            {latest.last_run_id ? (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-3 font-mono">
+                run {latest.last_run_id.slice(0, 8)}…
+              </span>
+            ) : null}
+          </div>
+          <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words font-mono bg-surface-3 rounded-lg p-3 border border-border-light max-h-[28rem] overflow-auto">
+            {latest.profile_markdown}
+          </pre>
+        </>
+      )}
+      {serverDiffers ? (
+        <div className="mt-4 pt-4 border-t border-border-light">
+          <button
+            type="button"
+            onClick={() => setShowServerProfile(v => !v)}
+            className="text-[11px] text-warn hover:underline bg-transparent border-0 cursor-pointer p-0"
+          >
+            {showServerProfile ? 'Hide' : 'Show'} server learned profile (differs from last prompt
+            snapshot)
+          </button>
+          {showServerProfile ? (
+            <div className="mt-2">
+              <div className="flex flex-wrap gap-1.5 mb-2 text-[10px] text-fg-4">
+                <span>status: {server.status}</span>
+                <span>v{server.version}</span>
+                <span>{new Date(server.updated_at).toLocaleString()}</span>
+              </div>
+              <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words font-mono bg-surface-3 rounded-lg p-3 border border-border-light max-h-[20rem] overflow-auto">
+                {server.profile_markdown.trim() || '—'}
+              </pre>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function TelemetryUserPage() {
   const { accountId } = useParams<{ accountId: string }>()
   const { org } = useAuth()
@@ -53,15 +186,29 @@ export function TelemetryUserPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const days = Number(searchParams.get('days') || '30')
   const modeFilter = searchParams.get('mode') || 'all'
+  const tabParam = searchParams.get('tab')
+  const initialTab =
+    tabParam === 'memory' ? 'memory' : tabParam === 'dictation' ? 'dictation' : 'telemetry'
 
   const [profile, setProfile] = useState<TelemetryUserProfile | null>(null)
   const [runs, setRuns] = useState<TelemetryRun[]>([])
   const [runsTotal, setRunsTotal] = useState(0)
   const [runsOffset, setRunsOffset] = useState(0)
   const [expandedRun, setExpandedRun] = useState<string | null>(null)
-  const [innerTab, setInnerTab] = useState<'telemetry' | 'memory'>('telemetry')
+  const [innerTab, setInnerTab] = useState<'telemetry' | 'memory' | 'dictation'>(initialTab)
   const [memory, setMemory] = useState<TelemetryUserMemory | null>(null)
   const [memoryLoading, setMemoryLoading] = useState(false)
+  const [dictationItems, setDictationItems] = useState<DictationListItem[]>([])
+  const [dictationTotal, setDictationTotal] = useState(0)
+  const [dictationSummary, setDictationSummary] = useState<ObservabilitySummary | null>(null)
+  const [dictationLoading, setDictationLoading] = useState(false)
+  const [selectedDictationKey, setSelectedDictationKey] = useState<string | null>(null)
+  const [dictationDetail, setDictationDetail] = useState<{
+    item: DictationDetailItem
+    alias_events: AliasLearnEvent[]
+  } | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState('')
   const [loading, setLoading] = useState(true)
   const [runsLoading, setRunsLoading] = useState(false)
   const [error, setError] = useState('')
@@ -112,6 +259,68 @@ export function TelemetryUserPage() {
       .catch(() => setMemory(null))
       .finally(() => setMemoryLoading(false))
   }, [orgId, accountId, innerTab])
+
+  useEffect(() => {
+    if (!orgId || !accountId || innerTab !== 'dictation') return
+    setDictationLoading(true)
+    const params = new URLSearchParams({
+      days: String(days),
+      limit: '50',
+      account_id: accountId,
+    })
+    Promise.all([
+      apiJson<{ items: DictationListItem[]; total: number }>(
+        `/v1/orgs/${orgId}/observability/dictation?${params}`,
+      ),
+      apiJson<ObservabilitySummary>(`/v1/orgs/${orgId}/observability/summary?days=${days}`),
+    ])
+      .then(([list, summary]) => {
+        setDictationItems(list.items || [])
+        setDictationTotal(list.total || 0)
+        setDictationSummary(summary)
+      })
+      .catch(() => {
+        setDictationItems([])
+        setDictationTotal(0)
+        setDictationSummary(null)
+      })
+      .finally(() => setDictationLoading(false))
+  }, [orgId, accountId, innerTab, days])
+
+  useEffect(() => {
+    if (!orgId || !accountId || !selectedDictationKey) {
+      setDictationDetail(null)
+      setDetailError('')
+      return
+    }
+    setDetailLoading(true)
+    setDetailError('')
+    apiJson<{ item: DictationDetailItem; alias_events: AliasLearnEvent[] }>(
+      `/v1/orgs/${orgId}/observability/dictation/${encodeURIComponent(selectedDictationKey)}?account_id=${accountId}`,
+    )
+      .then(data => {
+        setDictationDetail(data)
+        setDetailError('')
+      })
+      .catch(e => {
+        setDictationDetail(null)
+        setDetailError(e instanceof Error ? e.message : 'Failed to load dictation detail')
+      })
+      .finally(() => setDetailLoading(false))
+  }, [orgId, accountId, selectedDictationKey])
+
+  const switchTab = (tab: 'telemetry' | 'memory' | 'dictation') => {
+    setInnerTab(tab)
+    const p = new URLSearchParams(searchParams)
+    if (tab === 'telemetry') p.delete('tab')
+    else p.set('tab', tab)
+    setSearchParams(p)
+  }
+
+  const openDictation = (recordingId: string) => {
+    setSelectedDictationKey(recordingId)
+    switchTab('dictation')
+  }
 
   const loadMoreRuns = () => {
     if (!orgId || !accountId || runsLoading) return
@@ -195,23 +404,181 @@ export function TelemetryUserPage() {
       </div>
 
       <div className="flex gap-2 mb-4">
-        {(['telemetry', 'memory'] as const).map(tab => (
+        {(
+          [
+            ['telemetry', 'Telemetry'],
+            ['memory', 'Vocab & memory'],
+            ['dictation', 'Dictation'],
+          ] as const
+        ).map(([tab, label]) => (
           <button
             key={tab}
             type="button"
-            onClick={() => setInnerTab(tab)}
+            onClick={() => switchTab(tab)}
             className={`text-[12px] font-medium px-3 py-1.5 rounded-lg border transition-colors ${
               innerTab === tab
                 ? 'border-accent bg-accent-light text-accent'
                 : 'border-border bg-surface-2 text-fg-3 hover:text-fg'
             }`}
           >
-            {tab === 'telemetry' ? 'Telemetry' : 'Vocab & memory'}
+            {label}
           </button>
         ))}
       </div>
 
-      {innerTab === 'memory' ? (
+      {innerTab === 'dictation' ? (
+        dictationLoading ? (
+          <Loading />
+        ) : (
+          <>
+            <div className="grid grid-cols-5 gap-3 mb-4">
+              <TelemetryStatCard
+                label="Dictations"
+                value={String(dictationSummary?.dictation_count ?? dictationTotal)}
+                sub={`${days}d window`}
+              />
+              <TelemetryStatCard
+                label="Edits logged"
+                value={String(dictationSummary?.edits_detected ?? 0)}
+                sub="with classify feedback"
+              />
+              <TelemetryStatCard
+                label="STT-error edits"
+                value={String(dictationSummary?.stt_error_edits ?? 0)}
+                sub={pct((dictationSummary?.classify_stt_error_rate ?? 0) * 100)}
+              />
+              <TelemetryStatCard
+                label="Aliases learned"
+                value={String(dictationSummary?.aliases_learned ?? 0)}
+                sub="org-wide 30d"
+              />
+              <TelemetryStatCard label="Listed" value={String(dictationItems.length)} sub="rows below" />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="card !p-0 overflow-hidden">
+                <div className="px-5 py-3 border-b border-border">
+                  <SectionLabel>Dictation runs</SectionLabel>
+                </div>
+                <table className="w-full">
+                  <thead>
+                    <tr>
+                      {['When', 'recording_id', 'App', 'Words', 'Edit', ''].map(h => (
+                        <th
+                          key={h}
+                          className="text-[10px] font-medium text-fg-4 text-left px-4 py-2 border-b border-border uppercase"
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dictationItems.map(row => {
+                      const rowKey = dictationRowKey(row)
+                      return (
+                      <tr
+                        key={row.id}
+                        className={`cursor-pointer hover:bg-surface-4/30 ${
+                          selectedDictationKey === rowKey ? 'bg-accent-light/40' : ''
+                        }`}
+                        onClick={() => setSelectedDictationKey(rowKey)}
+                      >
+                        <td className="text-[11px] px-4 py-2 border-b border-border-light">
+                          {new Date(row.created_at).toLocaleString()}
+                        </td>
+                        <td className="text-[11px] font-mono px-4 py-2 border-b border-border-light truncate max-w-[8rem]">
+                          {dictationRowLabel(row)}
+                        </td>
+                        <td className="text-[11px] px-4 py-2 border-b border-border-light truncate max-w-[6rem]">
+                          {row.target_app || '—'}
+                        </td>
+                        <td className="text-[12px] tabular-nums px-4 py-2 border-b border-border-light">
+                          {row.word_count ?? '—'}
+                        </td>
+                        <td className="text-[11px] px-4 py-2 border-b border-border-light">
+                          {row.edit_bucket || (row.has_edit_feedback ? 'edited' : '—')}
+                        </td>
+                        <td className="text-[11px] px-4 py-2 border-b border-border-light text-fg-4">
+                          {ms(row.total_ms ?? null)}
+                        </td>
+                      </tr>
+                    )})}
+                    {!dictationItems.length && (
+                      <tr>
+                        <td colSpan={6} className="text-[12px] text-fg-4 px-4 py-4">
+                          No dictation history synced yet. Signed-in desktop sessions enqueue plaintext
+                          asynchronously.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="card p-4">
+                <SectionLabel>Detail</SectionLabel>
+                {!selectedDictationKey ? (
+                  <p className="text-[12px] text-fg-4">Select a row to inspect transcript stages and edits.</p>
+                ) : detailLoading ? (
+                  <Loading />
+                ) : detailError ? (
+                  <p className="text-[12px] text-live">{detailError}</p>
+                ) : !dictationDetail ? (
+                  <p className="text-[12px] text-fg-4">Detail not found for this recording.</p>
+                ) : (
+                  <>
+                    <div className="text-[11px] text-fg-4 mb-3 font-mono">{selectedDictationKey}</div>
+                    <div className="grid grid-cols-1 gap-3 mb-4">
+                      <DiffColumn label="Raw STT" text={dictationDetail.item.raw_transcript} />
+                      <DiffColumn label="Transcript" text={dictationDetail.item.transcript} />
+                      <DiffColumn label="Polished" text={dictationDetail.item.polished_output} />
+                      <DiffColumn label="User kept" text={dictationDetail.item.final_text} />
+                    </div>
+                    {dictationDetail.item.edit_feedback_json &&
+                    Object.keys(dictationDetail.item.edit_feedback_json).length > 0 ? (
+                      <div className="mb-4">
+                        <SectionLabel>Edit feedback</SectionLabel>
+                        <div className="text-[11px] space-y-1">
+                          {Array.isArray(dictationDetail.item.edit_feedback_json.changes) &&
+                            (
+                              dictationDetail.item.edit_feedback_json.changes as {
+                                type?: string
+                                from?: string
+                                to?: string
+                              }[]
+                            ).map((ch, i) => (
+                              <div key={i} className="font-mono bg-surface-3 rounded px-2 py-1">
+                                <span className="text-fg-4">{ch.type || 'change'}</span>{' '}
+                                <span className="text-live">{ch.from}</span> →{' '}
+                                <span className="text-ok">{ch.to}</span>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {dictationDetail.alias_events.length > 0 && (
+                      <div>
+                        <SectionLabel>Alias learn timeline</SectionLabel>
+                        <div className="text-[11px] space-y-1">
+                          {dictationDetail.alias_events.map(ev => (
+                            <div key={ev.id} className="flex justify-between gap-2 font-mono">
+                              <span>
+                                {ev.heard} → {ev.correct}
+                              </span>
+                              <span className="text-fg-4 shrink-0">{ev.source}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </>
+        )
+      ) : innerTab === 'memory' ? (
         memoryLoading ? (
           <Loading />
         ) : !memory ? (
@@ -228,6 +595,92 @@ export function TelemetryUserPage() {
                 </p>
               </div>
             )}
+            <PromptProfileCard memory={memory} />
+            <div className="card p-4 mb-4">
+              <SectionLabel>Memory KPIs</SectionLabel>
+              <CountGrid
+                items={[
+                  ['Aliases', memory.aliases.length],
+                  ['Vocab terms', memory.vocab_terms.length],
+                  ['Edit policies', memory.edit_policies.length],
+                  ['Hygiene pending', memory.hygiene.pending_review ? 1 : 0],
+                  ['Audit entries', memory.audit_log.length],
+                ]}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div className="card !p-0 overflow-hidden">
+                <div className="px-5 py-3 border-b border-border">
+                  <SectionLabel>Vocab terms</SectionLabel>
+                </div>
+                <table className="w-full">
+                  <thead>
+                    <tr>
+                      {['Term', 'Type', 'Weight', 'Hits', 'Status'].map(h => (
+                        <th
+                          key={h}
+                          className="text-[10px] font-medium text-fg-4 text-left px-4 py-2 border-b border-border uppercase"
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {memory.vocab_terms.map((v, i) => (
+                      <tr key={i}>
+                        <td className="text-[12px] px-4 py-2 border-b border-border-light font-mono">{v.term}</td>
+                        <td className="text-[11px] px-4 py-2 border-b border-border-light">{v.term_type}</td>
+                        <td className="text-[12px] tabular-nums px-4 py-2 border-b border-border-light">{v.weight}</td>
+                        <td className="text-[12px] tabular-nums px-4 py-2 border-b border-border-light">{v.positive_count}</td>
+                        <td className="text-[11px] px-4 py-2 border-b border-border-light">{v.status}</td>
+                      </tr>
+                    ))}
+                    {!memory.vocab_terms.length && (
+                      <tr>
+                        <td colSpan={5} className="text-[12px] text-fg-4 px-4 py-3">No vocab terms.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="card !p-0 overflow-hidden">
+                <div className="px-5 py-3 border-b border-border">
+                  <SectionLabel>Edit policies</SectionLabel>
+                </div>
+                <table className="w-full">
+                  <thead>
+                    <tr>
+                      {['Variant', 'Correct', 'Type', '+', '−', 'Status'].map(h => (
+                        <th
+                          key={h}
+                          className="text-[10px] font-medium text-fg-4 text-left px-4 py-2 border-b border-border uppercase"
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {memory.edit_policies.map((p, i) => (
+                      <tr key={i}>
+                        <td className="text-[12px] px-4 py-2 border-b border-border-light font-mono">{p.variant_form}</td>
+                        <td className="text-[12px] px-4 py-2 border-b border-border-light font-mono">{p.correct_form}</td>
+                        <td className="text-[11px] px-4 py-2 border-b border-border-light">{p.edit_type}</td>
+                        <td className="text-[12px] tabular-nums px-4 py-2 border-b border-border-light">{p.positive_count}</td>
+                        <td className="text-[12px] tabular-nums px-4 py-2 border-b border-border-light">{p.negative_count}</td>
+                        <td className="text-[11px] px-4 py-2 border-b border-border-light">{p.status}</td>
+                      </tr>
+                    ))}
+                    {!memory.edit_policies.length && (
+                      <tr>
+                        <td colSpan={6} className="text-[12px] text-fg-4 px-4 py-3">No edit policies.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div className="card !p-0 overflow-hidden">
                 <div className="px-5 py-3 border-b border-border">
@@ -679,7 +1132,7 @@ export function TelemetryUserPage() {
                   {open && (
                     <tr>
                       <td colSpan={11} className="p-0 border-b border-border-light">
-                        <RunDetailPanel run={run} />
+                        <RunDetailPanel run={run} onOpenDictation={openDictation} />
                       </td>
                     </tr>
                   )}

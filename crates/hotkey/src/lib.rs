@@ -27,6 +27,9 @@ pub enum HudShortcutAction {
     ResetPosition,
     /// ⇧⌘Space — toggle message-polish mode for normal dictation.
     ToggleMessagePolishMode,
+    /// ⌃⌥R (macOS) / Ctrl+Left-Alt+R (Windows) — re-run the last dictation from its
+    /// saved audio (full STT + polish) and paste the result.
+    RetryLastFromAudio,
 }
 
 #[cfg(target_os = "macos")]
@@ -82,6 +85,7 @@ mod imp {
 
         // macOS virtual key codes for special keys
         pub const KC_F: i64 = 3;
+        pub const KC_R: i64 = 15;
         pub const KC_SLASH: i64 = 44;
         pub const KC_PERIOD: i64 = 47;
         pub const KC_SPACE: i64 = 49;
@@ -256,6 +260,17 @@ mod imp {
         let alt = (flags & ffi::K_CG_FLAG_ALT) != 0;
         let ctrl = (flags & ffi::K_CG_FLAG_CONTROL) != 0;
 
+        // Retry-last-from-audio uses Ctrl+Option+R (NOT Cmd+Shift) so it never
+        // collides with browser hard-reload / Safari Reader (⇧⌘R). Same callback
+        // as the HUD shortcuts, just a different chord.
+        if ctrl && alt && !cmd && !shift && keycode == ffi::KC_R {
+            tracing::info!("[hotkey] ⌃⌥R → retry last dictation from audio");
+            if let Some(cb) = HUD_SHORTCUT_CB.get() {
+                cb(HudShortcutAction::RetryLastFromAudio);
+            }
+            return true;
+        }
+
         if !cmd || !shift || alt || ctrl {
             return false;
         }
@@ -421,6 +436,7 @@ mod imp {
     static DIVO_PRESS_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
     static DIVO_RELEASE_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
     static DIVO_CANCEL_CB: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+    const DIVO_HOTKEY_ACTIVE: bool = false;
     static DIVO_ENABLED: AtomicBool = AtomicBool::new(false);
     static DIVO_IS_DOWN: AtomicBool = AtomicBool::new(false);
     static DIVO_TAINTED: AtomicBool = AtomicBool::new(false);
@@ -449,22 +465,33 @@ mod imp {
         let _ = DIVO_PRESS_CB.set(on_press);
         let _ = DIVO_RELEASE_CB.set(on_release);
         let _ = DIVO_CANCEL_CB.set(on_cancel);
-        DIVO_ENABLED.store(true, Ordering::Relaxed);
-        tracing::info!("[hotkey] Divo Ctrl hold-to-talk registered");
+        DIVO_ENABLED.store(false, Ordering::Relaxed);
+        tracing::info!("[hotkey] Divo Ctrl hold-to-talk registered but disabled");
     }
 
     /// Enable/disable the Ctrl hold-to-talk Divo hotkey at runtime (e.g. when the
     /// signed-in user is not connected to an org that has Divo).
     pub fn set_divo_hotkey_enabled(enabled: bool) {
-        DIVO_ENABLED.store(enabled, Ordering::Relaxed);
-        tracing::info!("[hotkey] Divo Ctrl hotkey enabled={enabled}");
+        let active = DIVO_HOTKEY_ACTIVE && enabled;
+        DIVO_ENABLED.store(active, Ordering::Relaxed);
+        if !active {
+            DIVO_IS_DOWN.store(false, Ordering::SeqCst);
+            DIVO_TAINTED.store(false, Ordering::SeqCst);
+            DIVO_STARTED.store(false, Ordering::SeqCst);
+            DIVO_NEW_CHAT.store(false, Ordering::SeqCst);
+            DIVO_GEN.fetch_add(1, Ordering::SeqCst);
+        }
+        tracing::info!(
+            "[hotkey] Divo Ctrl hotkey enabled={active} requested={enabled} plugged_out={}",
+            !DIVO_HOTKEY_ACTIVE
+        );
     }
 
     /// Take (and clear) the "new chat" intent from the just-finished Ctrl hold.
     /// Returns true when the user pressed **N** while holding Control (Ctrl+N),
     /// meaning this turn should open a fresh Divo chat. Read once on release.
     pub fn divo_take_new_chat() -> bool {
-        DIVO_NEW_CHAT.swap(false, Ordering::SeqCst)
+        DIVO_HOTKEY_ACTIVE && DIVO_NEW_CHAT.swap(false, Ordering::SeqCst)
     }
 
     fn divo_is_control_keycode(kc: i64) -> bool {
@@ -947,9 +974,10 @@ pub fn register_hud_shortcut_callback(
 ) {
 }
 
-// Divo Ctrl hold-to-talk is macOS-only (CGEventTap). Stub it everywhere else so
-// the desktop crate compiles on Windows / Linux dev hosts.
-#[cfg(not(target_os = "macos"))]
+// Divo Ctrl hold-to-talk is implemented by the macOS CGEventTap and Windows
+// WH_KEYBOARD_LL backends. Stub it only on unsupported platforms so the desktop
+// crate still compiles on Linux dev hosts.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn register_divo_hotkey_callbacks(
     _on_press: std::sync::Arc<dyn Fn() + Send + Sync>,
     _on_release: std::sync::Arc<dyn Fn() + Send + Sync>,
@@ -957,10 +985,10 @@ pub fn register_divo_hotkey_callbacks(
 ) {
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn set_divo_hotkey_enabled(_enabled: bool) {}
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn divo_take_new_chat() -> bool {
     false
 }

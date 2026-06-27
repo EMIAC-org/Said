@@ -71,6 +71,7 @@ impl TranscriptResult {
             word_count: self.word_count,
             languages: self.languages.clone(),
             stt_mode: self.stt_mode.clone(),
+            origin: said_core::stt::TranscriptOrigin::DeepgramBatch,
         }
     }
 }
@@ -115,7 +116,7 @@ pub async fn transcribe(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        let preview = &body[..body.len().min(300)];
+        let preview = said_core::text::truncate_utf8(&body, 300);
         return Err(format!("Deepgram error {status}: {preview}"));
     }
 
@@ -212,7 +213,7 @@ pub async fn transcribe_any_format(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        let preview = &body[..body.len().min(300)];
+        let preview = said_core::text::truncate_utf8(&body, 300);
         return Err(format!("Deepgram error {status}: {preview}"));
     }
 

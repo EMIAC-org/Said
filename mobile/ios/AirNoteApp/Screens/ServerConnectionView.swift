@@ -97,11 +97,14 @@ struct ServerConnectionView: View {
     private var actionsSection: some View {
         Section {
             Button {
-                save()
+                Task { await saveValidated() }
             } label: {
-                Label("Use this server", systemImage: "checkmark.circle")
+                HStack(spacing: 8) {
+                    if checking { ProgressView().controlSize(.small) }
+                    Label(checking ? "Checking…" : "Use this server", systemImage: "checkmark.circle")
+                }
             }
-            .disabled(normalizedURL == nil)
+            .disabled(checking || normalizedURL == nil)
             Button(role: .destructive) {
                 reset()
             } label: {
@@ -193,8 +196,29 @@ struct ServerConnectionView: View {
         }
     }
 
-    private func save() {
+    /// Validate the server is actually reachable BEFORE pointing the app (and the
+    /// keyboard) at it. Saving a dead URL would sign the user out onto an
+    /// unreachable server with no way back — so we require a passing health check,
+    /// mirroring the desktop's validate-then-persist flow.
+    private func saveValidated() async {
         guard let base = normalizedURL else { return }
+        checking = true
+        defer { checking = false }
+        var request = URLRequest(url: base.appendingPathComponent("v1/health"))
+        request.timeoutInterval = 8
+        let healthy: Bool
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            healthy = code == 200 && (body?["ok"] as? Bool) == true
+        } catch {
+            healthy = false
+        }
+        guard healthy else {
+            status = .failed("Couldn't reach \(base.host ?? "that server"). Check the URL and your connection before saving.")
+            return
+        }
         SharedStore.customGatewayURL = base.absoluteString
         SharedStore.rememberGatewayURL(base.absoluteString)
         recents = SharedStore.recentGatewayURLs

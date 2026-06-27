@@ -13,18 +13,18 @@
 @layer base {
   /* ── DARK (default) — Cursor-style near-black + periwinkle accent ───── */
   :root {
-    --background:           240 6% 6%;         /* near-black floor with a hint of warmth */
-    --foreground:           240 6% 92%;
-    --card:                 240 5% 10%;
+    --background:           240 8% 2.5%;       /* punchy black app chrome */
+    --foreground:           240 6% 93%;
+    --card:                 240 5% 10.5%;
     --card-foreground:      240 6% 92%;
     --popover:              240 6% 12%;
     --popover-foreground:   240 6% 92%;
 
-    --primary:              226 80% 78%;       /* soft periwinkle — single brand accent */
+    --primary:              226 92% 79%;       /* crisp periwinkle — single brand accent */
     --primary-foreground:   240 8% 8%;
 
-    --accent-violet:        226 80% 78%;       /* alias to primary — drop violet noise */
-    --accent-violet-soft:   226 80% 78% / 0.14;
+    --accent-violet:        226 92% 79%;       /* alias to primary — drop violet noise */
+    --accent-violet-soft:   226 92% 79% / 0.16;
 
     --secondary:            240 5% 16%;
     --secondary-foreground: 240 6% 88%;
@@ -37,7 +37,7 @@
     --destructive:          354 80% 62%;
     --destructive-foreground: 0 0% 98%;
 
-    --border:               240 5% 16%;
+    --border:               240 5% 18%;
     --input:                240 5% 12%;
     --ring:                 226 80% 78%;
     --radius:               12px;              /* slightly tighter — Cursor uses 8-12 */
@@ -46,18 +46,18 @@
 
     /* ── Surface hierarchy — Cursor-grade near-blacks, tuned via
        the live glass control panel (.context/said-glass-control.html). */
-    --surface-1:            240 5% 3%;         /* page floor / sidebar rail */
-    --surface-2:            240 5% 4.5%;       /* the mat */
-    --surface-3:            240 5% 7.5%;       /* primary card surface */
-    --surface-4:            240 5% 13%;        /* chips / icon backplates */
-    --surface-hover:        240 5% 11%;
+    --surface-1:            235 8% 6.5%;       /* sidebar rail */
+    --surface-2:            240 7% 3.5%;       /* outer mat / gutter */
+    --surface-3:            240 5% 9.5%;       /* primary content surface */
+    --surface-4:            240 5% 15%;        /* chips / icon backplates */
+    --surface-hover:        240 5% 13%;
 
-    /* ── Glass tokens — macOS-style deep blur, hairline inset borders ─ */
-    --glass-bg:             240 5% 10% / 0.62;
-    --glass-bg-strong:      240 5% 12% / 0.78;
-    --glass-stroke:         0 0% 100% / 0.06;
-    --glass-stroke-strong:  0 0% 100% / 0.09;
-    --glass-highlight:      0 0% 100% / 0.04;
+    /* ── Surface tokens — nearly opaque now that the main window is native. */
+    --glass-bg:             240 5% 10% / 0.96;
+    --glass-bg-strong:      240 5% 9.5% / 0.985;
+    --glass-stroke:         0 0% 100% / 0.075;
+    --glass-stroke-strong:  0 0% 100% / 0.12;
+    --glass-highlight:      0 0% 100% / 0.055;
 
     /* ── Pill active (pure white pill on near-black — Cursor pattern) ── */
     --pill-active-bg:       0 0% 98%;
@@ -93,12 +93,10 @@
     --shadow-pop:
       0 30px 80px hsl(0 0% 0% / 0.65);
 
-    /* Ambient wallpaper bleed — faint periwinkle wash visible only at the
-       edges of the window. Drives the subtle "glass over wallpaper" feel
-       even though the app fills the whole window. */
+    /* Ambient wash — visible as depth inside the app, not as wallpaper bleed. */
     --mesh-bg:
-      radial-gradient(60% 50% at 10% 0%,  hsl(226 80% 60% / 0.06) 0%, transparent 55%),
-      radial-gradient(50% 50% at 100% 100%, hsl(220 60% 50% / 0.05) 0%, transparent 60%);
+      radial-gradient(60% 50% at 10% 0%,  hsl(226 90% 62% / 0.022) 0%, transparent 55%),
+      radial-gradient(50% 50% at 100% 100%, hsl(220 70% 54% / 0.018) 0%, transparent 60%);
 
     --sidebar-width:        220px;
     --topbar-height:        48px;
@@ -193,16 +191,13 @@
 
   html, body {
     height: 100%;
-    background: transparent;
+    background: hsl(var(--background));
     color: hsl(var(--foreground));
-    transition: color 0.25s ease;
+    transition: background-color 0.25s ease, color 0.25s ease;
   }
 
-  /* Deep near-black overlay + faint ambient wash on top of the native
-     macOS vibrancy. The vibrancy provides the live blur of the desktop
-     wallpaper; this overlay tints it down to a Cursor-grade near-black
-     so the wallpaper is suggested, not seen.
-     Values tuned via .context/said-glass-control.html. */
+  /* Solid app floor with a faint ambient wash. Floating statusbar windows
+     disable this below so their transparent overlay behavior is unchanged. */
   body::before {
     content: "";
     position: fixed;
@@ -215,7 +210,7 @@
   }
 
   :root {
-    --body-overlay: hsl(240 5% 2% / 0.81);
+    --body-overlay: hsl(240 8% 2.5% / 1);
   }
   [data-theme="light"] {
     --body-overlay: hsl(220 22% 93% / 0.99);
@@ -228,9 +223,14 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: geometricPrecision;
-    letter-spacing: -0.005em;
+    letter-spacing: 0;
     overflow: hidden;
     user-select: none;
+  }
+
+  html:not(.statusbar-mode) #app {
+    min-height: 100%;
+    background: hsl(var(--background));
   }
 
   .tabular-nums {
@@ -279,15 +279,14 @@
             app-region: no-drag;
   }
 
-  /* ── Glass surface utilities — macOS-style deep blur + hairline ─────
-     .glass        : default panel — translucent, blurred
+  /* ── Surface utilities — solid dark panels with a light blur fallback ─
+     .glass        : default panel — mostly opaque
      .glass-strong : content-heavy (modals, popovers, dropdowns)
-     Both use backdrop-filter blur 28-32px with saturate boost so the
-     ambient wallpaper bleed (--mesh-bg) shows through tastefully. */
+     Blur is intentionally subtle because the app window itself is opaque. */
   .glass {
     background: hsl(var(--glass-bg));
-    backdrop-filter: blur(30px) saturate(180%);
-    -webkit-backdrop-filter: blur(30px) saturate(180%);
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
     box-shadow:
       inset 0 0 0 1px hsl(var(--glass-stroke)),
       inset 0 1px 0 hsl(0 0% 100% / 0.04),
@@ -295,8 +294,8 @@
   }
   .glass-strong {
     background: hsl(var(--glass-bg-strong));
-    backdrop-filter: blur(36px) saturate(200%);
-    -webkit-backdrop-filter: blur(36px) saturate(200%);
+    backdrop-filter: blur(14px) saturate(125%);
+    -webkit-backdrop-filter: blur(14px) saturate(125%);
     box-shadow:
       inset 0 0 0 1px hsl(var(--glass-stroke-strong)),
       inset 0 1px 0 hsl(0 0% 100% / 0.05),
@@ -349,6 +348,41 @@
   [data-theme="light"] .panel {
     box-shadow: none;
     border: 1px solid hsl(var(--border));
+  }
+  /* Main content mat (App.tsx) — elevated surface behind routed views */
+  .content-mat {
+    background: hsl(var(--surface-3));
+    border: 1px solid hsl(var(--glass-stroke-strong));
+    border-radius: 16px;
+    /* Inset highlight only — outer shadow is clipped by the app shell */
+    box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.055);
+  }
+  [data-theme="light"] .content-mat {
+    border: 1px solid hsl(var(--border));
+    /* No outer drop shadow — parent overflow clips it into a harsh dark edge */
+    box-shadow: none;
+  }
+
+  /* Settings modal — portaled to body so shadow isn't clipped by app shell */
+  .settings-modal-backdrop {
+    background: hsl(var(--foreground) / 0.22);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    animation: fadeIn 0.18s ease-out;
+  }
+  .settings-modal-dialog {
+    width: min(1000px, 94vw);
+    height: min(680px, 92vh);
+    background: hsl(var(--surface-2));
+    border-radius: 20px;
+    box-shadow: var(--shadow-pop);
+    border: 1px solid hsl(var(--glass-stroke));
+  }
+  [data-theme="light"] .settings-modal-dialog {
+    border: 1px solid hsl(var(--border));
+    box-shadow:
+      0 0 0 1px hsl(0 0% 100% / 0.65) inset,
+      0 24px 64px hsl(220 16% 50% / 0.14);
   }
   /* Dark mode override — drop the visible border, restore inset highlight */
   :root:not([data-theme="light"]) .panel,
@@ -631,43 +665,82 @@
   }
   .onb-brand {
     position: relative;
-    /* Dense near-black canvas. Faint periwinkle radial wash on top so the
-       brand half still feels alive, but the base is decisively dark. */
+    isolation: isolate;
+    /* Layered aurora over a decisively dark base — periwinkle bleed top-left
+       and a cooler violet bloom bottom-right give the panel real depth. */
     background:
-      radial-gradient(80% 60% at 30% 30%, hsl(226 80% 60% / 0.12), transparent 55%),
-      radial-gradient(60% 50% at 80% 80%, hsl(220 60% 50% / 0.08), transparent 60%),
-      linear-gradient(180deg, hsl(240 6% 4% / 0.86) 0%, hsl(240 6% 6% / 0.88) 100%);
+      radial-gradient(120% 85% at 16% 6%,  hsl(230 72% 34% / 0.40) 0%, transparent 52%),
+      radial-gradient(95% 80% at 90% 104%, hsl(256 64% 42% / 0.26) 0%, transparent 58%),
+      radial-gradient(60% 50% at 50% 46%,  hsl(226 84% 56% / 0.10) 0%, transparent 72%),
+      linear-gradient(168deg, hsl(240 13% 7.5%) 0%, hsl(240 15% 4.5%) 52%, hsl(240 18% 3%) 100%);
     backdrop-filter: blur(40px) saturate(180%);
     -webkit-backdrop-filter: blur(40px) saturate(180%);
-    border-right: 1px solid hsl(0 0% 100% / 0.04);
+    border-right: 1px solid hsl(0 0% 100% / 0.06);
     display: flex;
     flex-direction: column;
-    padding: 28px 36px;
+    padding: 32px 40px;
     overflow: hidden;
   }
-  .onb-brand::after {
-    /* faint horizontal scanline texture for depth */
+  /* soft top-down vignette for depth */
+  .onb-brand::before {
     content: "";
-    position: absolute; inset: 0;
-    background: repeating-linear-gradient(0deg, transparent 0, transparent 3px,
-                  hsl(0 0% 100% / 0.012) 3px, hsl(0 0% 100% / 0.012) 4px);
-    pointer-events: none;
-    mix-blend-mode: overlay;
+    position: absolute; inset: 0; z-index: 0; pointer-events: none;
+    background: radial-gradient(135% 105% at 50% -10%, transparent 50%, hsl(240 40% 2% / 0.6) 100%);
   }
-  .onb-brand-mark {
-    width: 108px; height: 108px;
-    border-radius: 26px;
-    position: relative;
-    display: grid; place-items: center;
-    background:
-      radial-gradient(circle at 50% 30%, hsl(226 80% 78% / 0.10), transparent 60%),
-      linear-gradient(160deg, hsl(240 6% 14%) 0%, hsl(240 6% 7%) 100%);
-    box-shadow:
-      0 24px 60px hsl(0 0% 0% / 0.55),
-      inset 0 0 0 1px hsl(0 0% 100% / 0.07),
-      inset 0 1px 0 hsl(0 0% 100% / 0.04);
-    color: hsl(0 0% 96%);
+  /* fine film grain — premium texture, replaces the old scanline */
+  .onb-brand::after {
+    content: "";
+    position: absolute; inset: 0; z-index: 0; pointer-events: none;
+    opacity: 0.4; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
+  .onb-brand > * { position: relative; z-index: 1; }
+
+  /* Corner brand lockup */
+  .onb-brand-lockup { display: inline-flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; color: hsl(var(--foreground) / 0.92); }
+  .onb-brand-lockup .mk {
+    width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 8px;
+    color: hsl(224 95% 82%);
+    background: linear-gradient(150deg, hsl(240 8% 16% / 0.9), hsl(240 10% 9% / 0.9));
+    box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.08), 0 2px 8px hsl(0 0% 0% / 0.4);
+  }
+
+  /* Centre stack — animated waveform hero + value headline */
+  .onb-brand-center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30px; text-align: center; }
+  .onb-wave-wrap { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; }
+  .onb-wave-halo {
+    position: absolute; width: 360px; height: 300px; border-radius: 50%; z-index: 0; pointer-events: none;
+    background: radial-gradient(circle, hsl(226 90% 60% / 0.16) 0%, transparent 62%); filter: blur(8px);
+  }
+  .onb-wave {
+    position: relative; display: flex; align-items: center; justify-content: center; gap: 3px;
+    height: 120px; width: 100%; max-width: 320px;
+    filter: drop-shadow(0 8px 30px hsl(226 92% 60% / 0.34));
+  }
+  .onb-wave-bar { width: 3.5px; height: 8px; border-radius: 999px; background: linear-gradient(to top, hsl(226 78% 60% / 0.45) 0%, hsl(223 96% 82%) 100%); }
+
+  .onb-brand-headline { font-size: 21px; font-weight: 500; letter-spacing: -0.02em; line-height: 1.45; color: hsl(var(--foreground) / 0.95); max-width: 300px; margin: 0; }
+
+  .onb-brand-foot { padding-top: 20px; border-top: 1px solid hsl(0 0% 100% / 0.07); }
+  .onb-brand-kicker { display: inline-flex; align-items: center; gap: 7px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.18em; margin-bottom: 9px; color: hsl(224 80% 78% / 0.92); }
+  .onb-brand-kicker::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: hsl(224 90% 76%); box-shadow: 0 0 8px hsl(224 90% 70% / 0.8); }
+  .onb-brand-quote { font-size: 13px; line-height: 1.6; color: hsl(var(--foreground) / 0.74); margin: 0; }
+
+  /* ── Onboarding "Try it" live-dictation step ──────────────────────── */
+  .onb-try-field {
+    width: 100%; min-height: 104px; border-radius: 12px; padding: 14px 16px;
+    background: hsl(0 0% 0% / 0.28); color: hsl(var(--foreground));
+    box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke));
+    font-size: 14px; line-height: 1.55; font-family: inherit; resize: none;
+    transition: box-shadow 0.18s ease, background 0.18s ease;
+  }
+  .onb-try-field::placeholder { color: hsl(var(--muted-foreground) / 0.5); }
+  .onb-try-field:focus { outline: none; background: hsl(0 0% 0% / 0.34); box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.4), 0 0 0 3px hsl(var(--primary) / 0.08); }
+  .onb-try-field.live { box-shadow: inset 0 0 0 1px hsl(354 80% 60% / 0.5), 0 0 0 3px hsl(354 80% 60% / 0.1); }
+  .onb-try-ready { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+  .onb-try-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; padding: 4px 9px; border-radius: 999px; color: hsl(140 60% 70%); background: hsl(140 60% 50% / 0.1); box-shadow: inset 0 0 0 1px hsl(140 60% 50% / 0.2); }
+  .onb-try-hint { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: hsl(var(--muted-foreground)); margin-top: 12px; }
+  .onb-try-kbd { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; padding: 2px 7px; border-radius: 6px; color: hsl(var(--foreground)); background: hsl(0 0% 100% / 0.06); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong)); }
   .onb-form {
     position: relative;
     /* Dense near-black form canvas — readable, sits one notch lighter than
@@ -679,6 +752,73 @@
     flex-direction: column;
     padding: 28px 56px;
     overflow-y: auto;
+  }
+
+  .onb-stepnav {
+    display: flex;
+    gap: 4px;
+    width: 100%;
+    max-width: 440px;
+    margin: 0 auto;
+    padding-top: 4px;
+  }
+  .onb-stepnav-pill {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 6px 2px 5px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: hsl(var(--muted-foreground) / 0.55);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    line-height: 1.1;
+    transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+  }
+  .onb-stepnav-pill:disabled {
+    cursor: default;
+  }
+  .onb-stepnav-clickable {
+    cursor: pointer;
+    color: hsl(var(--muted-foreground) / 0.85);
+  }
+  .onb-stepnav-clickable:hover {
+    background: hsl(0 0% 100% / 0.04);
+    border-color: hsl(var(--glass-stroke));
+    color: hsl(var(--foreground) / 0.9);
+  }
+  .onb-stepnav-current {
+    color: hsl(var(--primary));
+    background: hsl(var(--primary) / 0.08);
+    border-color: hsl(var(--primary) / 0.25);
+  }
+  .onb-stepnav-done {
+    color: hsl(140 55% 58% / 0.9);
+  }
+  .onb-stepnav-locked {
+    opacity: 0.45;
+  }
+  .onb-stepnav-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.7;
+  }
+  .onb-stepnav-check {
+    flex-shrink: 0;
+  }
+  .onb-stepnav-label {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: center;
   }
 
   /* Compact list rows used in onboarding (permissions, hotkey) */
@@ -1893,6 +2033,39 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   font-weight: 600;
 }
 
+.sb-recovered-body {
+  flex: 0 0 auto;
+  margin-bottom: 7px;
+}
+
+.sb-recovered-text {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: hsl(var(--muted) / 0.54);
+  color: hsl(var(--foreground) / 0.9);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow: inset 0 0 0 1px hsl(var(--foreground) / 0.055);
+}
+
+.sb-recovered-text::-webkit-scrollbar {
+  width: 5px;
+}
+
+.sb-recovered-text::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sb-recovered-text::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: hsl(var(--foreground) / 0.14);
+}
+
 .sb-survey-em {
   color: hsl(var(--primary));
   font-weight: 600;
@@ -1961,11 +2134,24 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   gap: 6px;
 }
 
+.sb-survey-controlbar--actions {
+  justify-content: flex-start;
+}
+
 .sb-survey-controlbar .sb-survey-label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 240px;
+  min-width: 0;
+  max-width: none;
+}
+
+.sb-survey-controlbar--actions .sb-survey-label {
+  flex: 1 1 auto;
+}
+
+.sb-survey-controlbar .sb-survey-icon-btn {
+  flex: 0 0 22px;
 }
 
 .sb-survey-transcript {
@@ -2066,7 +2252,14 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   font-size: 12px;
   font-weight: 500;
   color: hsl(var(--muted-foreground));
+  min-width: 0;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sb-survey-label > span:last-child {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }

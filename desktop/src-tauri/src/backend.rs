@@ -123,6 +123,10 @@ pub fn spawn() -> Result<BackendHandle, String> {
         .env(
             "GEMINI_API_KEY",
             std::env::var("GEMINI_API_KEY").unwrap_or_default(),
+        )
+        .env(
+            "DEEPINFRA_API_KEY",
+            std::env::var("DEEPINFRA_API_KEY").unwrap_or_default(),
         );
 
     #[cfg(unix)]

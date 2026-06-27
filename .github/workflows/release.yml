@@ -167,7 +167,7 @@ jobs:
         shell: bash
         timeout-minutes: 10
         run: |
-          cargo build -p said-backend --release --target ${{ matrix.target }}
+          cargo build -p said-backend --release --target ${{ matrix.target }} --features local-stt,metal
           mkdir -p desktop/src-tauri/binaries
           cp "target/${{ matrix.target }}/release/airnote-backend" \
             "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}"
@@ -310,7 +310,7 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          cargo build -p said-backend --release --target ${{ matrix.target }}
+          cargo build -p said-backend --release --target ${{ matrix.target }} --features local-stt
           New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
           Copy-Item `
             "target/${{ matrix.target }}/release/airnote-backend.exe" `

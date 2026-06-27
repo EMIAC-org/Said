@@ -28,55 +28,55 @@ export const metadata: Metadata = {
 };
 
 const latest = {
-  version: "2.4.0",
-  date: "Jun 18, 2026",
-  title: "Learning, review card, and light-mode polish",
+  version: "2.4.1",
+  date: "Jun 27, 2026",
+  title: "Mac and Windows stable refresh",
   intro:
-    "AirNote 2.4.0 fixes the recent learning-review regression, keeps actionable review cards visible, routes server polishing through the safer smart path, and refreshes the desktop colors for light mode.",
+    "AirNote 2.4.1 refreshes the stable desktop release for macOS and Windows. Detailed release notes will be expanded after final QA.",
   sections: [
     {
-      id: "learning-pipeline",
-      eyebrow: "#Learning",
-      title: "Single correction learning is restored",
-      icon: ShieldCheck,
+      id: "desktop-refresh",
+      eyebrow: "#Desktop",
+      title: "Stable desktop artifacts refreshed",
+      icon: ArrowDownToLine,
       body: [
-        "Server-side review candidates no longer block the existing safe auto-learn path when the edit is one clear STT correction.",
-        "Corrections such as product names, tools, and short jargon terms can again pass through the local single-change validation and alias-safety gates.",
+        "The stable Mac and Windows download links now point at the 2.4.1 release artifacts.",
+        "The updater manifests are published per platform so macOS and Windows can move independently without overwriting each other.",
       ],
       bullets: [
-        "Restores the safe single-change learning path",
-        "Keeps ambiguous multi-candidate edits in review",
-        "Preserves validation, alias-safety, and lexicon invalidation",
+        "Mac DMG for Apple Silicon",
+        "Windows NSIS setup installer",
+        "Per-platform updater manifests",
       ],
     },
     {
-      id: "review-card",
-      eyebrow: "#Review Card",
-      title: "Review prompts stay visible",
+      id: "windows-updater",
+      eyebrow: "#Windows",
+      title: "Windows update discovery remains manifest-driven",
       icon: Bell,
       body: [
-        "The status-bar state machine now preserves interactive review and confirmation prompts through idle resyncs.",
-        "Review cards are treated as actionable prompts, so they are not hidden by passive word-learned notification settings.",
+        "Windows clients check the VM-hosted Windows manifest and download the signed setup executable listed there.",
+        "Manual update checks remain available from Settings > About.",
       ],
       bullets: [
-        "Prevents review cards from flashing and disappearing",
-        "Stops paste auto-hide from overwriting action prompts",
-        "Keeps passive notification preferences separate from review actions",
+        "Automatic daily update check",
+        "Manual Settings > About check",
+        "Status-bar restart prompt after download",
       ],
     },
     {
-      id: "desktop-polish",
-      eyebrow: "#Desktop Polish",
-      title: "Light mode and runtime routing are cleaner",
-      icon: Sun,
+      id: "server-credentials",
+      eyebrow: "#Server",
+      title: "Runtime credentials are aligned for production",
+      icon: ShieldCheck,
       body: [
-        "The desktop UI uses clearer light-mode surfaces and token-based colors across the pages that looked washed out or mismatched.",
-        "Server runtime requests route through smart-mode output so users on older fast-mode selections avoid degraded polishing while the server runtime is being unified.",
+        "The production control-plane has the runtime keys required by the current polish and transcription paths.",
+        "Future deploys propagate those keys through the deployment workflow instead of relying on manual VM state.",
       ],
       bullets: [
-        "Better light-mode contrast and hierarchy",
-        "Meetings and Divo colors no longer depend on hardcoded dark fills",
-        "Fast and smart selections use the safer smart server route",
+        "Cerebras polish key",
+        "DeepSeek message-polish key",
+        "Managed Deepgram key pool",
       ],
     },
   ],
@@ -114,10 +114,19 @@ const noteGroups = [
 
 const releaseDownloads = [
   {
+    version: "2.4.1",
+    date: "Jun 27, 2026",
+    title: "Latest stable",
+    downloads: [
+      { platform: "Mac", label: "Mac DMG", href: downloads.mac.latestDmg },
+      { platform: "Windows", label: "Windows setup", href: downloads.windows.latestSetup },
+    ],
+  },
+  {
     version: "2.4.0",
     date: "Jun 18, 2026",
-    title: "Latest stable",
-    downloads: [{ platform: "Mac", label: "Mac DMG", href: downloads.mac.latestDmg }],
+    title: "Learning, review card, and light-mode polish",
+    downloads: [],
   },
   {
     version: "2.3.9",

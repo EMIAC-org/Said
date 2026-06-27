@@ -75,6 +75,17 @@ mod imp {
             /// kCFBooleanTrue — the canonical CF true value.
             /// Declared as a static pointer so we can pass it to AX set functions.
             pub static kCFBooleanTrue: *const c_void;
+            pub static kCFTypeDictionaryKeyCallBacks: c_void;
+            pub static kCFTypeDictionaryValueCallBacks: c_void;
+
+            pub fn CFDictionaryCreate(
+                allocator: *const c_void,
+                keys: *const *const c_void,
+                values: *const *const c_void,
+                num_values: isize,
+                key_callbacks: *const c_void,
+                value_callbacks: *const c_void,
+            ) -> *mut c_void;
 
             // ── CFNumber / CFArray (for diagnostics) ──────────────────────────
             pub fn CFNumberGetValue(
@@ -113,6 +124,9 @@ mod imp {
                 out: *mut *mut c_void,
             ) -> i32;
             pub fn AXValueCreate(the_type: u32, value_ptr: *const c_void) -> *mut c_void;
+
+            pub fn CGPreflightListenEventAccess() -> bool;
+            pub fn CGRequestListenEventAccess() -> bool;
         }
     }
 
@@ -162,6 +176,11 @@ mod imp {
     /// Copy an AX attribute value. Returns an owned CF object (caller must CFRelease).
     unsafe fn ax_attr(element: *const c_void, attr: &str) -> Option<*mut c_void> {
         let key = unsafe { cf_str(attr) };
+        // cf_str returns null if CFString allocation fails (OOM). CFRelease(null)
+        // is undefined behavior, and the AX call needs a valid key — bail out.
+        if key.is_null() {
+            return None;
+        }
         let mut value: *mut c_void = std::ptr::null_mut();
         let err = unsafe { ffi::AXUIElementCopyAttributeValue(element, key, &mut value) };
         unsafe { ffi::CFRelease(key) };
@@ -175,6 +194,12 @@ mod imp {
     /// Set an AX boolean attribute on an element (returns the AX error code).
     unsafe fn ax_set_bool(element: *const c_void, attr: &str) -> i32 {
         let key = unsafe { cf_str(attr) };
+        // cf_str returns null if CFString allocation fails (OOM). CFRelease(null)
+        // is undefined behavior — return a non-zero (failure) AX code instead.
+        // Callers only treat 0 as success, so -1 reads as a benign failure.
+        if key.is_null() {
+            return -1;
+        }
         // SAFETY: kCFBooleanTrue is a valid CFTypeRef (CFBooleanRef is toll-free bridged)
         let err = unsafe { ffi::AXUIElementSetAttributeValue(element, key, ffi::kCFBooleanTrue) };
         unsafe { ffi::CFRelease(key) };
@@ -331,19 +356,22 @@ mod imp {
                 }
             };
 
-            if let Some(val_cf) = ax_attr(el as *const _, "AXValue") {
-                let result = cfstring_to_rust(val_cf as *const _);
+            // Read AXValue, releasing each owned ref exactly once. Releasing
+            // el/app inside the block *and* falling through to the tail release
+            // used to double-free `el`/`app` whenever AXValue existed but was
+            // not a CFString (cfstring_to_rust → None) — a CoreFoundation
+            // over-release that crashes in CFRelease.
+            let result = if let Some(val_cf) = ax_attr(el as *const _, "AXValue") {
+                let r = cfstring_to_rust(val_cf as *const _);
                 ffi::CFRelease(val_cf);
-                ffi::CFRelease(el);
-                ffi::CFRelease(app);
-                if result.is_some() {
-                    return result;
-                }
-            }
+                r
+            } else {
+                None
+            };
 
             ffi::CFRelease(el);
             ffi::CFRelease(app);
-            None
+            result
         }
     }
 
@@ -378,15 +406,21 @@ mod imp {
             };
 
             // ── Step 1: try AXValue directly ──────────────────────────────────
+            // Release each owned ref exactly once and never use `app` after it
+            // is released. The old code released el/app inside this block then
+            // fell through, double-freeing them (and using app after free) when
+            // AXValue was present but not a CFString.
             if let Some(val_cf) = ax_attr(el as *const _, "AXValue") {
                 let result = cfstring_to_rust(val_cf as *const _);
                 ffi::CFRelease(val_cf);
-                ffi::CFRelease(el);
-                ffi::CFRelease(app);
                 if result.is_some() {
+                    ffi::CFRelease(el);
+                    ffi::CFRelease(app);
                     return result;
                 }
             }
+            // Done with el; app stays alive for the steps below.
+            ffi::CFRelease(el);
 
             // ── Step 2: unlock Chrome / Electron AX tree, retry AXValue ──────
             // Chrome: AXEnhancedUserInterface (what VoiceOver sets on activation)
@@ -398,7 +432,6 @@ mod imp {
             thread::sleep(Duration::from_millis(200));
 
             // Re-fetch the focused element — the tree may have rebuilt.
-            ffi::CFRelease(el);
             let el2 = match ax_attr(app as *const _, "AXFocusedUIElement") {
                 Some(e) => e,
                 None => {
@@ -410,9 +443,9 @@ mod imp {
             if let Some(val_cf) = ax_attr(el2 as *const _, "AXValue") {
                 let result = cfstring_to_rust(val_cf as *const _);
                 ffi::CFRelease(val_cf);
-                ffi::CFRelease(el2);
-                ffi::CFRelease(app);
                 if result.is_some() {
+                    ffi::CFRelease(el2);
+                    ffi::CFRelease(app);
                     return result;
                 }
             }
@@ -477,19 +510,23 @@ mod imp {
                 }
             };
 
-            if let Some(val_cf) = ax_attr(el as *const _, "AXValue") {
-                let result = cfstring_to_rust(val_cf as *const _);
+            // Read AXValue, releasing each owned ref exactly once. Releasing
+            // el/app inside the block *and* falling through to the tail release
+            // used to double-free `el`/`app` whenever AXValue existed but was
+            // not a CFString (cfstring_to_rust → None) — a CoreFoundation
+            // over-release that crashes in CFRelease. This is the edit-watch's
+            // hot read path, so the bad AXValue type is hit routinely.
+            let result = if let Some(val_cf) = ax_attr(el as *const _, "AXValue") {
+                let r = cfstring_to_rust(val_cf as *const _);
                 ffi::CFRelease(val_cf);
-                ffi::CFRelease(el);
-                ffi::CFRelease(app);
-                if result.is_some() {
-                    return result;
-                }
-            }
+                r
+            } else {
+                None
+            };
 
             ffi::CFRelease(el);
             ffi::CFRelease(app);
-            None
+            result
         }
     }
 
@@ -522,20 +559,24 @@ mod imp {
                 }
             };
 
+            // Release each owned ref exactly once and never use `app` after it
+            // is released — same double-free/use-after-free fix as the system-
+            // wide path above (triggered when AXValue isn't a CFString).
             if let Some(val_cf) = ax_attr(el as *const _, "AXValue") {
                 let result = cfstring_to_rust(val_cf as *const _);
                 ffi::CFRelease(val_cf);
-                ffi::CFRelease(el);
-                ffi::CFRelease(app);
                 if result.is_some() {
+                    ffi::CFRelease(el);
+                    ffi::CFRelease(app);
                     return result;
                 }
             }
+            // Done with el; app stays alive for the steps below.
+            ffi::CFRelease(el);
 
             let _unlocked = ax_enable_ui(app as *const _);
             thread::sleep(Duration::from_millis(200));
 
-            ffi::CFRelease(el);
             let el2 = match ax_attr(app as *const _, "AXFocusedUIElement") {
                 Some(e) => e,
                 None => {
@@ -547,9 +588,9 @@ mod imp {
             if let Some(val_cf) = ax_attr(el2 as *const _, "AXValue") {
                 let result = cfstring_to_rust(val_cf as *const _);
                 ffi::CFRelease(val_cf);
-                ffi::CFRelease(el2);
-                ffi::CFRelease(app);
                 if result.is_some() {
+                    ffi::CFRelease(el2);
+                    ffi::CFRelease(app);
                     return result;
                 }
             }
@@ -1202,6 +1243,11 @@ mod imp {
         let limit = n.min(128);
         for i in 0..limit {
             let child = unsafe { ffi::CFArrayGetValueAtIndex(children as *const _, i) };
+            // Some AX providers (Electron/Chromium) can return null elements in
+            // the children array; recursing into one segfaults. Skip them.
+            if child.is_null() {
+                continue;
+            }
             unsafe { collect_all_text(child, depth + 1, max_depth, out) };
         }
         unsafe { ffi::CFRelease(children) };
@@ -1232,24 +1278,48 @@ mod imp {
         r
     }
 
-    /// Ensure AirNote appears in the Accessibility list and open the correct pane.
-    ///
-    /// Calling `AXIsProcessTrustedWithOptions(null)` triggers macOS to add AirNote
-    /// to the Privacy & Security → Accessibility list even before the user has
-    /// granted access.  We then immediately open that pane so the user can
-    /// toggle it on in one step.
+    /// Ensure AirNote appears in the Accessibility list and ask macOS to prompt.
     pub fn request_permission() {
         unsafe {
-            ffi::AXIsProcessTrustedWithOptions(std::ptr::null());
+            let key = ffi::CFStringCreateWithCString(
+                std::ptr::null(),
+                c"AXTrustedCheckOptionPrompt".as_ptr(),
+                CF_UTF8,
+            );
+            if key.is_null() {
+                ffi::AXIsProcessTrustedWithOptions(std::ptr::null());
+            } else {
+                let keys = [key as *const c_void];
+                let values = [ffi::kCFBooleanTrue];
+                let options = ffi::CFDictionaryCreate(
+                    std::ptr::null(),
+                    keys.as_ptr(),
+                    values.as_ptr(),
+                    1,
+                    &ffi::kCFTypeDictionaryKeyCallBacks as *const _ as *const c_void,
+                    &ffi::kCFTypeDictionaryValueCallBacks as *const _ as *const c_void,
+                );
+                if options.is_null() {
+                    ffi::AXIsProcessTrustedWithOptions(std::ptr::null());
+                } else {
+                    ffi::AXIsProcessTrustedWithOptions(options);
+                    ffi::CFRelease(options);
+                }
+                ffi::CFRelease(key);
+            }
         }
         let _ = std::process::Command::new("open")
             .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
             .spawn();
     }
 
-    /// Open System Settings → Privacy & Security → Input Monitoring.
-    /// This is where Caps Lock hotkey permission (CGEventTap) is granted.
+    /// Ask macOS for Input Monitoring, then open the matching System Settings pane.
     pub fn request_input_monitoring() {
+        unsafe {
+            if !ffi::CGPreflightListenEventAccess() {
+                ffi::CGRequestListenEventAccess();
+            }
+        }
         let _ = std::process::Command::new("open")
             .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
             .spawn();

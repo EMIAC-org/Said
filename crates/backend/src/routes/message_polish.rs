@@ -13,6 +13,8 @@ pub const MESSAGE_POLISH_SIGNIN_ERROR: &str = "Polish My Message requires AirNot
 struct ServerMessagePolishRequest {
     text: String,
     client_run_id: Option<String>,
+    /// "polish" (⌥1) or "to_english" (⌥2). The server swaps the prompt directive.
+    mode: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +35,7 @@ pub async fn run_server_message_polish(
     user_id: &str,
     text: &str,
     client_run_id: Option<&str>,
+    mode: &str,
 ) -> Result<(PolishResult, String), String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -64,6 +67,7 @@ pub async fn run_server_message_polish(
             .filter(|s| !s.trim().is_empty())
             .map(str::to_string)
             .or_else(|| Some(Uuid::new_v4().to_string())),
+        mode: mode.to_string(),
     };
 
     let url = format!(
@@ -91,7 +95,7 @@ pub async fn run_server_message_polish(
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
             "server message polish returned {status}: {}",
-            &body[..body.len().min(240)]
+            said_core::text::truncate_utf8(&body, 240)
         ));
     }
 

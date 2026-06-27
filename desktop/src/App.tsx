@@ -4,6 +4,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { InviteTeamModal } from "@/components/InviteTeamModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { OnboardingFlow } from "@/components/OnboardingFlow";
+import { loadOnboardingProgress } from "@/lib/onboardingProgress";
 import { Topbar } from "@/components/Topbar";
 import { DashboardView } from "@/components/views/DashboardView";
 import { HistoryView } from "@/components/views/HistoryView";
@@ -28,9 +29,9 @@ import {
   sendNotification,
   requestInputMonitoring,
   requestMicrophone,
+  requestScreenRecording,
   submitEditFeedback,
   onVocabToast,
-  onDictationRecovered,
   divoSetCredentials,
   deleteVocabularyTerm,
   checkNotificationPermission,
@@ -60,6 +61,12 @@ import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
+interface SwiftModelStatus {
+  installed: boolean;
+  size_bytes: number;
+  path: string;
+}
+
 export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "meetings" | "divo" | "settings" | "live-meeting";
 const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "meetings", "divo", "settings", "live-meeting"];
 type SettingsSectionId =
@@ -67,10 +74,9 @@ type SettingsSectionId =
   | "writing"
   | "hotkeys"
   | "models"
-  | "meeting"
+  | "developer"
   | "notifications"
   | "permissions"
-  | "api-keys"
   | "enterprise"
   | "debug"
   | "about";
@@ -206,6 +212,7 @@ export default function App() {
       return false;
     }
   });
+  const [swiftModelInstalled, setSwiftModelInstalled] = useState<boolean | null>(null);
   // ── Retry toast ───────────────────────────────────────────────────────────
   const [retryToast, setRetryToast] = useState<{ message: string; audioId: string } | null>(null);
 
@@ -219,10 +226,6 @@ export default function App() {
 
   // ── Download success toast ────────────────────────────────────────────────
   const [downloadToast, setDownloadToast] = useState<{ path: string } | null>(null);
-
-  // ── Crash-recovered dictation (re-transcribed on launch) ──────────────────
-  const [recoveredText, setRecoveredText] = useState<string | null>(null);
-  const [recoveredCopied, setRecoveredCopied] = useState(false);
 
   // ── Pending edits ─────────────────────────────────────────────────────────
   const [pendingEdits, setPendingEdits] = useState<PendingEdit[]>([]);
@@ -293,6 +296,25 @@ export default function App() {
       });
     refreshHistory();
   }, [refreshHistory]);
+
+  useEffect(() => {
+    if (!snapshot?.platform) return;
+    if (snapshot.platform !== "macos") {
+      setSwiftModelInstalled(true);
+      return;
+    }
+    let alive = true;
+    invoke<SwiftModelStatus>("dictation_model_status")
+      .then((status) => {
+        if (alive) setSwiftModelInstalled(status.installed);
+      })
+      .catch(() => {
+        if (alive) setSwiftModelInstalled(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [snapshot?.platform]);
 
   useEffect(() => {
     let alive = true;
@@ -417,6 +439,21 @@ export default function App() {
     setDownloadToast({ path });
   }, []);
 
+  // Safety net for a stuck "transcribing"/"polishing" banner. The banner clears
+  // only on an idle/done/error event; if one is ever missed (e.g. a quick Divo
+  // Ctrl tap whose cancel teardown didn't reach the webview), force-clear it so
+  // the UI can never wedge. The timer resets on every status/token change, so it
+  // never fires during an active stream — only after activity has truly stopped.
+  useEffect(() => {
+    if (!statusPhase) return;
+    const t = setTimeout(() => {
+      setStatusPhase("");
+      setTokenBuf("");
+      setBusy(false);
+    }, 30_000);
+    return () => clearTimeout(t);
+  }, [statusPhase, tokenBuf]);
+
   // ── Real-time Tauri event subscriptions ────────────────────────────────────
   useEffect(() => {
     // State changes pushed from Rust (hotkey recording, processing, done)
@@ -448,17 +485,24 @@ export default function App() {
     });
 
     // Voice error → show retry toast
-    const unsubError = onVoiceError((msg, audioId, errorCode) => {
-      setRetryToast({ message: msg, audioId: audioId ?? "" });
+    const unsubError = onVoiceError((msg, audioId, errorCode, payload) => {
+      const retryMessage =
+        payload?.owned_by_airnote && audioId
+          ? "Audio saved. Processing failed."
+          : msg;
+      setRetryToast({ message: retryMessage, audioId: audioId ?? "" });
       setBusy(false);
       setSnapshot((p) => (p ? { ...p, state: "idle" } : p));
       setStatusPhase("");
       setTokenBuf("");
       if (errorCode === "missing_api_keys") {
+        // Keys are bundled into the build now, so this only fires if the app
+        // was built without them — a packaging issue, not something the user
+        // can fix in Settings (there's no key UI anymore).
         setRetryToast(null);
-        setErrorBanner("API keys required — open Settings to add them.");
-        setSettingsSection("api-keys");
-        setSettingsOpen(true);
+        setErrorBanner(
+          "Speech/polish service keys are missing from this build. Please reinstall the latest AirNote.",
+        );
       }
     });
 
@@ -502,15 +546,13 @@ export default function App() {
     // manual add via the Vocabulary panel, and star toggles.
     const unsubVocabToast = onVocabToast(setVocabToast);
 
-    // Crash recovery — a dictation lost to a previous crash was re-transcribed.
-    const unsubRecovered = onDictationRecovered((text) => {
-      setRecoveredCopied(false);
-      setRecoveredText(text);
-    });
-
     // Tray menu → navigate to Settings
-    const unsubNav = onNavSettings(() => {
-      setSettingsSection("models");
+    const unsubNav = onNavSettings((section) => {
+      setSettingsSection(
+        section && ["appearance", "writing", "hotkeys", "models", "meeting", "developer", "notifications", "permissions", "enterprise", "debug", "about"].includes(section)
+          ? (section as SettingsSectionId)
+          : "models",
+      );
       setSettingsOpen(true);
     });
 
@@ -524,12 +566,16 @@ export default function App() {
       unsubEdit();
       unsubPending();
       unsubVocabToast();
-      unsubRecovered();
     };
   }, [refreshHistory]);
 
   // ── Periodic snapshot poll — picks up Accessibility/Input Monitoring grants ──
-  // 5 s is fast enough — permission changes require a user trip to System Settings.
+  // 60 s (was 5 s): live state already arrives via the `app-state` push event and
+  // a window-focus refresh (below), so this only needs to catch OS-permission
+  // changes — which require a manual System Settings trip and are rare. At 5 s
+  // each get_snapshot is an ipc:// request (+ a CORS preflight = 2 WebView2
+  // connections); if responses ever lag they accumulate Pending and saturate the
+  // ~6-connection pool, which is what wedged End-meeting. 60 s keeps the pool clear.
   useEffect(() => {
     const interval = setInterval(async () => {
       if (busy) return;
@@ -538,7 +584,7 @@ export default function App() {
       } catch {
         // silently ignore
       }
-    }, 5000);
+    }, 60000);
     return () => clearInterval(interval);
   }, [busy, refreshSnapshot]);
 
@@ -619,6 +665,24 @@ export default function App() {
     }
   }, [refreshPermissionsSoon]);
 
+  // ── Screen Recording (meeting system-audio capture) ───────────────────────
+  const handleScreenRecording = useCallback(async () => {
+    setErrorBanner("");
+    try {
+      await requestScreenRecording();
+      // macOS often only reflects a fresh grant after a delay/relaunch; re-read.
+      setTimeout(async () => {
+        try {
+          const next = await invoke("get_snapshot");
+          setSnapshot(next);
+        } catch { /* ignore */ }
+      }, 1000);
+      refreshPermissionsSoon();
+    } catch (err: unknown) {
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    }
+  }, [refreshPermissionsSoon]);
+
   const handleOnboardingFinish = useCallback(() => {
     setOnboardingComplete(true);
     try {
@@ -659,17 +723,16 @@ export default function App() {
       }
     : null;
 
-  // ── Live status / token overlay for DashboardView ─────────────────────────
-  // We pass these as extra props; DashboardView can render a streaming preview.
-  const liveText = statusPhase === "polishing" ? tokenBuf : "";
   const corePermissionsReady =
     !!snapshot?.microphone_granted &&
     !!snapshot?.accessibility_granted &&
     !!snapshot?.input_monitoring_granted;
 
   const needsEnterprise = enterpriseGate === "required";
-  const needsSetup = !corePermissionsReady || !onboardingComplete;
-  const workspaceOnly = needsEnterprise && onboardingComplete && corePermissionsReady;
+  const swiftSetupRequired = snapshot?.platform === "macos" && swiftModelInstalled !== true;
+  const needsSetup = !corePermissionsReady || !onboardingComplete || swiftSetupRequired;
+  const workspaceOnly =
+    needsEnterprise && onboardingComplete && corePermissionsReady && !swiftSetupRequired;
 
   if (needsEnterprise || needsSetup) {
     return (
@@ -677,6 +740,9 @@ export default function App() {
         snapshot={snapshotWithHistory}
         workspaceOnly={workspaceOnly}
         enterpriseRequired={needsEnterprise}
+        initialProgress={loadOnboardingProgress()}
+        requireLocalModelSetup={swiftSetupRequired}
+        onLocalModelReady={() => setSwiftModelInstalled(true)}
         onEnterpriseConnected={handleEnterpriseConnected}
         onMicrophone={handleMicrophone}
         onAccessibility={handleAccessibility}
@@ -690,19 +756,93 @@ export default function App() {
     return <SetupLoader status={setupStatus} />;
   }
 
+  const liveMeetingActive = activeView === "live-meeting" && !!liveMeetingId;
+
   /* ── Render ─────────────────────────────────────────────────────────────── */
   return (
     <div className="flex h-screen w-screen overflow-hidden">
 
-      {/* ── Sidebar — full height left column ────────── */}
-      <Sidebar
-        snapshot={snapshotWithHistory}
-        activeView={activeView}
-        onViewChange={handleViewChange}
-        busy={busy}
-        performanceMonitorEnabled={performanceMonitorEnabled}
-        onOpenInvite={() => setInviteOpen(true)}
-      />
+      {liveMeetingActive ? (
+        <div className="min-w-0 flex-1">
+          <LiveMeetingView
+            meetingId={liveMeetingId}
+            onBack={() => setActiveView("meetings")}
+            onEnded={(id) => {
+              // Just hand the just-ended meeting to the Meetings page and switch to
+              // it. The actual stop is fired by LiveMeetingView.handleLeave (the
+              // `meeting/request-stop` event + the stop_session invoke, both of which
+              // reach Rust now that the pill IPC deadlock is fixed). No deferred stop
+              // needed here — that was a debugging backstop for the old deadlock.
+              setFocusMeetingId(id);
+              setActiveView("meetings");
+            }}
+          />
+        </div>
+      ) : (
+        <>
+          {/* ── Sidebar — full height left column ────────── */}
+          <Sidebar
+            snapshot={snapshotWithHistory}
+            activeView={activeView}
+            onViewChange={handleViewChange}
+            busy={busy}
+            performanceMonitorEnabled={performanceMonitorEnabled}
+            onOpenInvite={() => setInviteOpen(true)}
+          />
+
+          {/* ── Right column: topbar + content ───────────── */}
+          <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+
+            <Topbar
+              snapshot={snapshotWithHistory}
+              theme={theme}
+              toggleTheme={toggleTheme}
+              onEnterpriseDisconnect={handleEnterpriseDisconnect}
+            />
+
+            {/* ── The "mat" — solid elevated content surface ─────── */}
+            <main className="flex-1 min-h-0 p-3 pt-2">
+              <div className="content-mat h-full overflow-hidden">
+                {activeView === "dashboard" && (
+                  <DashboardView
+                    snapshot={snapshotWithHistory}
+                    busy={busy}
+                    onToggle={handleToggle}
+                    onAccessibility={handleAccessibility}
+                    onNavigate={handleViewChange}
+                    pendingEdits={pendingEdits}
+                    onDownloadSuccess={handleDownloadSuccess}
+                    refreshKey={historyRefreshKey}
+                    onResolvePending={async (id, action) => {
+                      await resolvePendingEdit(id, action);
+                      setPendingEdits((prev) => prev.filter((e) => e.id !== id));
+                    }}
+                  />
+                )}
+                {activeView === "history"    && <HistoryView onDownloadSuccess={handleDownloadSuccess} refreshKey={historyRefreshKey} />}
+                {activeView === "vocabulary" && <VocabularyView />}
+                {activeView === "insights"   && <InsightsView snapshot={snapshotWithHistory} />}
+                {activeView === "meetings"   && (
+                  <MeetingsView
+                    focusMeetingId={focusMeetingId}
+                    onFocusConsumed={() => setFocusMeetingId(null)}
+                    onOpenWorkspaces={() => {
+                      setSettingsSection("enterprise");
+                      setSettingsOpen(true);
+                    }}
+                    onJoinMeeting={(id) => {
+                      setLiveMeetingId(id);
+                      setActiveView("live-meeting");
+                    }}
+                  />
+                )}
+                {activeView === "divo" && <DivoView platform={snapshot?.platform} />}
+                {/* Settings is now a modal — opened via setSettingsOpen */}
+              </div>
+            </main>
+          </div>
+        </>
+      )}
 
       {/* ── Invite team modal (overlays everything) ────── */}
       <InviteTeamModal open={inviteOpen} onClose={() => setInviteOpen(false)} />
@@ -715,93 +855,12 @@ export default function App() {
         onAccessibility={handleAccessibility}
         onInputMonitoring={handleInputMonitoring}
         onMicrophone={handleMicrophone}
+        onScreenRecording={handleScreenRecording}
         performanceMonitorEnabled={performanceMonitorEnabled}
         onPerformanceMonitorChange={setPerformanceMonitor}
         onEnterpriseDisconnect={handleEnterpriseDisconnect}
         initialSection={settingsSection}
       />
-
-      {/* ── Right column: topbar + content ───────────── */}
-      <div className="flex flex-col flex-1 overflow-hidden min-w-0">
-
-        <Topbar
-          snapshot={snapshotWithHistory}
-          theme={theme}
-          toggleTheme={toggleTheme}
-          onEnterpriseDisconnect={handleEnterpriseDisconnect}
-        />
-
-        {/* ── The "mat" — elevated content surface ───────
-            Dense near-black, mostly opaque so the content area reads as
-            solid. Values tuned via the live glass control panel at
-            .context/said-glass-control.html. */}
-        <main className="flex-1 overflow-hidden p-3 pt-2">
-          <div
-            className="h-full rounded-2xl overflow-hidden"
-            style={{
-              background: "hsl(var(--glass-bg-strong))",
-              backdropFilter: "blur(40px) saturate(190%)",
-              WebkitBackdropFilter: "blur(40px) saturate(190%)",
-              boxShadow: "var(--shadow-glass)",
-            }}
-          >
-            {activeView === "dashboard" && (
-              <DashboardView
-                snapshot={snapshotWithHistory}
-                busy={busy}
-                onToggle={handleToggle}
-                onAccessibility={handleAccessibility}
-                onNavigate={handleViewChange}
-                statusPhase={statusPhase}
-                liveText={liveText}
-                pendingEdits={pendingEdits}
-                onDownloadSuccess={handleDownloadSuccess}
-                refreshKey={historyRefreshKey}
-                onResolvePending={async (id, action) => {
-                  await resolvePendingEdit(id, action);
-                  setPendingEdits((prev) => prev.filter((e) => e.id !== id));
-                }}
-              />
-            )}
-            {activeView === "history"    && <HistoryView onDownloadSuccess={handleDownloadSuccess} refreshKey={historyRefreshKey} />}
-            {activeView === "vocabulary" && <VocabularyView />}
-            {activeView === "insights"   && <InsightsView snapshot={snapshotWithHistory} />}
-            {activeView === "meetings"   && (
-              <MeetingsView
-                focusMeetingId={focusMeetingId}
-                onFocusConsumed={() => setFocusMeetingId(null)}
-                onConfigureModels={() => {
-                  setSettingsSection("meeting");
-                  setSettingsOpen(true);
-                }}
-                onOpenWorkspaces={() => {
-                  setSettingsSection("enterprise");
-                  setSettingsOpen(true);
-                }}
-                onJoinMeeting={(id) => {
-                  setLiveMeetingId(id);
-                  setActiveView("live-meeting");
-                }}
-              />
-            )}
-            {activeView === "live-meeting" && liveMeetingId && (
-              <LiveMeetingView
-                meetingId={liveMeetingId}
-                onBack={() => setActiveView("meetings")}
-                onEnded={(id) => {
-                  // Hand the just-ended meeting to the Meetings page and switch
-                  // to it. Processing continues in the background; the Meetings
-                  // detail polls and renders the live stage progress.
-                  setFocusMeetingId(id);
-                  setActiveView("meetings");
-                }}
-              />
-            )}
-            {activeView === "divo" && <DivoView />}
-            {/* Settings is now a modal — opened via setSettingsOpen */}
-          </div>
-        </main>
-      </div>
 
       {/* ── Retry toast (bottom-center) ──────────────── */}
       {retryToast && (
@@ -887,69 +946,6 @@ export default function App() {
           >
             <X size={14} />
           </button>
-        </div>
-      )}
-
-      {/* ── Recovered dictation (after a crash) ───────── */}
-      {recoveredText && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center p-6"
-          style={{ background: "hsl(0 0% 0% / 0.55)" }}
-        >
-          <div
-            className="w-full max-w-lg rounded-2xl p-5 flex flex-col gap-4"
-            style={{
-              background: "hsl(240 10% 8% / 0.98)",
-              border: "1px solid hsl(240 8% 24%)",
-              boxShadow: "0 24px 64px hsl(0 0% 0% / 0.5)",
-            }}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-[15px] font-semibold" style={{ color: "hsl(240 10% 96%)" }}>
-                  Recovered your last dictation
-                </h2>
-                <p className="text-[12px] mt-1" style={{ color: "hsl(240 6% 64%)" }}>
-                  AirNote closed unexpectedly while you were speaking. Here's what you said:
-                </p>
-              </div>
-              <button
-                onClick={() => setRecoveredText(null)}
-                className="flex-shrink-0 transition-colors opacity-60 hover:opacity-100"
-                style={{ color: "hsl(240 10% 96%)" }}
-                aria-label="Dismiss"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <div
-              className="rounded-xl px-4 py-3 text-[13px] leading-relaxed max-h-64 overflow-y-auto whitespace-pre-wrap"
-              style={{ background: "hsl(240 10% 12%)", color: "hsl(240 10% 92%)" }}
-            >
-              {recoveredText}
-            </div>
-            <div className="flex items-center justify-end gap-2">
-              <button
-                onClick={() => setRecoveredText(null)}
-                className="rounded-lg px-3 py-2 text-[13px] no-drag transition-colors"
-                style={{ color: "hsl(240 6% 70%)" }}
-              >
-                Dismiss
-              </button>
-              <button
-                onClick={() => {
-                  navigator.clipboard
-                    .writeText(recoveredText)
-                    .then(() => setRecoveredCopied(true))
-                    .catch((err) => setErrorBanner(err instanceof Error ? err.message : String(err)));
-                }}
-                className="rounded-lg px-4 py-2 text-[13px] font-medium no-drag transition-colors"
-                style={{ background: "hsl(255 80% 62%)", color: "white" }}
-              >
-                {recoveredCopied ? "Copied ✓" : "Copy text"}
-              </button>
-            </div>
-          </div>
         </div>
       )}
 

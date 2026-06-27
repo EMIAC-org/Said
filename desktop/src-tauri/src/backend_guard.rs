@@ -171,10 +171,100 @@ fn terminate_pid(pid: u32, graceful_for: Duration) {
             let _ = libc::kill(pid, libc::SIGKILL);
         }
     }
+
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(windows_taskkill_args(pid, false))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        let deadline = Instant::now() + graceful_for;
+        while Instant::now() < deadline {
+            if !pid_is_alive(pid) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        let _ = std::process::Command::new("taskkill")
+            .args(windows_taskkill_args(pid, true))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
 }
 
 #[cfg(unix)]
 fn pid_is_alive(pid: libc::pid_t) -> bool {
     let rc = unsafe { libc::kill(pid, 0) };
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> bool {
+    let sys = System::new_with_specifics(
+        RefreshKind::new()
+            .with_processes(ProcessRefreshKind::new().with_exe(UpdateKind::OnlyIfNotSet)),
+    );
+    sys.process(Pid::from_u32(pid)).is_some()
+}
+
+#[cfg(any(windows, test))]
+fn windows_taskkill_args(pid: u32, force: bool) -> Vec<String> {
+    let mut args = vec!["/PID".to_string(), pid.to_string(), "/T".to_string()];
+    if force {
+        args.push("/F".to_string());
+    }
+    args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_name_matches_windows_exe_names() {
+        assert!(is_backend_name("airnote-backend"));
+        assert!(is_backend_name("airnote-backend.exe"));
+        assert!(is_backend_name("said-backend.exe"));
+        assert!(!is_backend_name("not-airnote-backend.exe"));
+    }
+
+    #[test]
+    fn exe_name_matches_current_and_legacy_backend_names() {
+        assert!(exe_name_matches(Path::new("airnote-backend.exe")));
+        assert!(exe_name_matches(Path::new("said-backend")));
+        assert!(!exe_name_matches(Path::new("airnote-helper.exe")));
+    }
+
+    #[test]
+    fn should_reap_current_parent_or_target_dir_backend() {
+        let current_parent = Path::new("/Applications/AirNote.app/Contents/MacOS");
+        assert!(should_reap_process(
+            Path::new("/Applications/AirNote.app/Contents/MacOS/airnote-backend"),
+            Some(current_parent),
+        ));
+        assert!(should_reap_process(
+            Path::new("/repo/target/debug/airnote-backend"),
+            Some(current_parent),
+        ));
+        assert!(!should_reap_process(
+            Path::new("/tmp/other/airnote-backend"),
+            Some(current_parent),
+        ));
+    }
+
+    #[test]
+    fn windows_taskkill_args_adds_force_only_when_requested() {
+        assert_eq!(
+            windows_taskkill_args(4242, false),
+            vec!["/PID", "4242", "/T"]
+        );
+        assert_eq!(
+            windows_taskkill_args(4242, true),
+            vec!["/PID", "4242", "/T", "/F"]
+        );
+    }
 }

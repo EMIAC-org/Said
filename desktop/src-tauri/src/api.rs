@@ -8,7 +8,7 @@ use reqwest::Client;
 use said_core::deepgram::{BiasPackage, TranscriptMeta};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::backend::BackendEndpoint;
 
@@ -44,7 +44,9 @@ pub struct Preferences {
     pub groq_api_key: Option<String>,
     #[serde(default)]
     pub cerebras_api_key: Option<String>,
-    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
+    #[serde(default)]
+    pub deepinfra_api_key: Option<String>,
+    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     #[serde(default = "default_llm_provider")]
     pub llm_provider: String,
     /// STT routing: "deepgram"
@@ -57,7 +59,8 @@ fn default_llm_provider() -> String {
 }
 
 fn default_stt_provider() -> String {
-    "deepgram".to_string()
+    // Native, Python-free on-device whisper.cpp is the default.
+    "whisper_local".to_string()
 }
 
 fn default_learning_enabled() -> bool {
@@ -101,7 +104,9 @@ pub struct PrefsUpdate {
     pub groq_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cerebras_api_key: Option<Option<String>>,
-    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "cerebras" | "openai_codex"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deepinfra_api_key: Option<Option<String>>,
+    /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_provider: Option<String>,
     /// STT routing: "deepgram"
@@ -178,6 +183,46 @@ pub struct PolishLatency {
     pub total: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProblemTranscribeResponse {
+    pub transcript: String,
+    pub source: String,
+    pub confidence: f64,
+    pub word_count: usize,
+    pub latency_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProblemSolveRequest {
+    pub transcript: String,
+    pub context_mode: String,
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+    pub project_context: Option<String>,
+    pub screen_context: Option<String>,
+    pub client_run_id: Option<String>,
+    pub platform: Option<String>,
+    pub app_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProblemSolveResponse {
+    pub run_id: String,
+    pub output: String,
+    pub model_used: String,
+    pub prompt_version: String,
+    pub latency_ms: ProblemSolveLatency,
+    pub context_mode: String,
+    pub project_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProblemSolveLatency {
+    pub prompt: i64,
+    pub model: i64,
+    pub total: i64,
+}
+
 // ── SSE event enum ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -192,8 +237,12 @@ pub enum PolishEvent {
     Done(PolishDone),
     Error {
         message: String,
+        run_id: Option<String>,
         audio_id: Option<String>,
         error_code: Option<String>,
+        retryable: Option<bool>,
+        owned_by_airnote: Option<bool>,
+        diagnostic: Option<String>,
     },
 }
 
@@ -202,7 +251,7 @@ fn http_error_event(
     status: reqwest::StatusCode,
     body: &str,
 ) -> (String, Option<String>) {
-    let preview = &body[..body.len().min(300)];
+    let preview = said_core::text::truncate_utf8(&body, 300);
     if let Ok(val) = serde_json::from_str::<Value>(body) {
         let error_code = val
             .get("error_code")
@@ -235,6 +284,8 @@ fn redact_pref_key_fields(raw: &str) -> String {
         "deepgram_api_key",
         "gemini_api_key",
         "groq_api_key",
+        "cerebras_api_key",
+        "deepinfra_api_key",
     ] {
         if let Some(slot) = value.get_mut(field) {
             *slot = match slot {
@@ -269,6 +320,39 @@ where
 {
     let url = format!("{}/v1/voice/polish", ep.url);
     let client = Client::new();
+    let request_start = std::time::Instant::now();
+    let wav_bytes = wav_data.len();
+    let pre_transcript_chars = pre_transcript
+        .as_ref()
+        .map(|t| t.chars().count())
+        .unwrap_or(0);
+    let pre_transcript_words = pre_transcript
+        .as_ref()
+        .map(|t| t.split_whitespace().count())
+        .unwrap_or(0);
+    let has_pre_transcript = pre_transcript.is_some();
+    let has_pre_transcript_meta = pre_transcript_meta.is_some();
+    let screen_context_chars = screen_context
+        .as_ref()
+        .map(|s| s.chars().take(500).count())
+        .unwrap_or(0);
+    let has_repair_mode = repair_mode.is_some();
+    let has_target_app = target_app.is_some();
+    let client_run_id_label = client_run_id.as_deref().unwrap_or("none").to_string();
+
+    info!(
+        "[api] voice/polish request start run_id={} wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} pre_meta={} message_polish={} repair_mode={} screen_context_chars={} target_app_present={}",
+        client_run_id_label,
+        wav_bytes,
+        has_pre_transcript,
+        pre_transcript_chars,
+        pre_transcript_words,
+        has_pre_transcript_meta,
+        message_polish_mode,
+        has_repair_mode,
+        screen_context_chars,
+        has_target_app,
+    );
 
     let mut form = reqwest::multipart::Form::new();
     if !wav_data.is_empty() {
@@ -318,20 +402,128 @@ where
         .send()
         .await
         .map_err(|e| format!("voice polish request failed: {e}"))?;
+    let response_headers_ms = request_start.elapsed().as_millis();
+    info!(
+        "[api] voice/polish response headers run_id={} status={} after={}ms pre_transcript_present={} wav_bytes={}",
+        client_run_id_label,
+        resp.status(),
+        response_headers_ms,
+        has_pre_transcript,
+        wav_bytes,
+    );
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         let (message, error_code) = http_error_event("voice/polish", status, &body);
+        let parsed = serde_json::from_str::<Value>(&body).ok();
         on_event(PolishEvent::Error {
             message: message.clone(),
-            audio_id: None,
+            run_id: parsed
+                .as_ref()
+                .and_then(|v| v.get("run_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            audio_id: parsed
+                .as_ref()
+                .and_then(|v| v.get("audio_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
             error_code,
+            retryable: parsed
+                .as_ref()
+                .and_then(|v| v.get("retryable"))
+                .and_then(Value::as_bool),
+            owned_by_airnote: parsed
+                .as_ref()
+                .and_then(|v| v.get("owned_by_airnote"))
+                .and_then(Value::as_bool),
+            diagnostic: Some(body),
         });
         return Err(message);
     }
 
     consume_sse(resp.bytes_stream(), on_event).await
+}
+
+pub async fn transcribe_problem_audio(
+    ep: &BackendEndpoint,
+    wav_data: Vec<u8>,
+    client_run_id: Option<String>,
+    pre_transcript: Option<String>,
+    pre_transcript_meta: Option<TranscriptMeta>,
+) -> Result<ProblemTranscribeResponse, String> {
+    let url = format!("{}/v1/problem/transcribe", ep.url);
+    let client = Client::new();
+    let mut form = reqwest::multipart::Form::new();
+    if !wav_data.is_empty() {
+        form = form.part(
+            "audio",
+            reqwest::multipart::Part::bytes(wav_data)
+                .file_name("problem-recording.wav")
+                .mime_str("audio/wav")
+                .map_err(|e| format!("mime error: {e}"))?,
+        );
+    }
+    if let Some(run_id) = client_run_id {
+        form = form.text("client_run_id", run_id);
+    }
+    if let Some(transcript) = pre_transcript {
+        form = form.text("pre_transcript", transcript);
+    }
+    if let Some(meta) = pre_transcript_meta {
+        form = form.text(
+            "pre_transcript_meta",
+            serde_json::to_string(&meta).map_err(|e| format!("encode transcript meta: {e}"))?,
+        );
+    }
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .multipart(form)
+        .timeout(std::time::Duration::from_secs(90))
+        .send()
+        .await
+        .map_err(|e| format!("problem transcribe request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let (message, _error_code) = http_error_event("problem/transcribe", status, &body);
+        return Err(message);
+    }
+
+    resp.json::<ProblemTranscribeResponse>()
+        .await
+        .map_err(|e| format!("problem transcribe response parse failed: {e}"))
+}
+
+pub async fn solve_problem(
+    ep: &BackendEndpoint,
+    req: ProblemSolveRequest,
+) -> Result<ProblemSolveResponse, String> {
+    let url = format!("{}/v1/problem/solve", ep.url);
+    let client = Client::new();
+    let resp = client
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&req)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| format!("problem solve request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let (message, _error_code) = http_error_event("problem/solve", status, &body);
+        return Err(message);
+    }
+
+    resp.json::<ProblemSolveResponse>()
+        .await
+        .map_err(|e| format!("problem solve response parse failed: {e}"))
 }
 
 pub async fn stream_text_polish<F>(
@@ -368,8 +560,12 @@ where
         let (message, error_code) = http_error_event("text/polish", status, &body);
         on_event(PolishEvent::Error {
             message: message.clone(),
+            run_id: None,
             audio_id: None,
             error_code,
+            retryable: None,
+            owned_by_airnote: None,
+            diagnostic: Some(body),
         });
         return Err(message);
     }
@@ -410,7 +606,7 @@ where
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
             "text/refine-last error {status}: {}",
-            &body[..body.len().min(300)]
+            said_core::text::truncate_utf8(&body, 300)
         ));
     }
 
@@ -458,7 +654,7 @@ where
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
             "voice/repair error {status}: {}",
-            &body[..body.len().min(300)]
+            said_core::text::truncate_utf8(&body, 300)
         ));
     }
 
@@ -474,6 +670,7 @@ where
 {
     let mut buf = String::new();
     let mut done_event: Option<PolishDone> = None;
+    let mut last_error: Option<String> = None;
     // Track the most recently seen `event:` line so we can dispatch correctly
     let mut event_name = String::new();
 
@@ -504,11 +701,19 @@ where
                 continue;
             }
 
-            parse_and_dispatch(data, &event_name, &mut on_event, &mut done_event);
+            parse_and_dispatch(
+                data,
+                &event_name,
+                &mut on_event,
+                &mut done_event,
+                &mut last_error,
+            );
         }
     }
 
-    done_event.ok_or_else(|| "SSE stream ended without a `done` event".into())
+    done_event.ok_or_else(|| {
+        last_error.unwrap_or_else(|| "SSE stream ended without a `done` event".into())
+    })
 }
 
 fn parse_and_dispatch(
@@ -516,6 +721,7 @@ fn parse_and_dispatch(
     event_name: &str,
     on_event: &mut impl FnMut(PolishEvent),
     done_event: &mut Option<PolishDone>,
+    last_error: &mut Option<String>,
 ) {
     let Ok(val) = serde_json::from_str::<Value>(data) else {
         warn!("[api] unparseable SSE data: {data:?}");
@@ -552,18 +758,8 @@ fn parse_and_dispatch(
         }
         "error" => {
             if let Some(msg) = val.get("message").and_then(Value::as_str) {
-                let audio_id = val
-                    .get("audio_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                on_event(PolishEvent::Error {
-                    message: msg.to_string(),
-                    audio_id,
-                    error_code: val
-                        .get("error_code")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                });
+                *last_error = Some(msg.to_string());
+                on_event(parse_error_event(&val, msg));
             }
         }
         // Key-sniff fallback (handles backends that omit the `event:` line)
@@ -587,20 +783,34 @@ fn parse_and_dispatch(
                     *done_event = Some(done);
                 }
             } else if let Some(msg) = val.get("message").and_then(Value::as_str) {
-                let audio_id = val
-                    .get("audio_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                on_event(PolishEvent::Error {
-                    message: msg.to_string(),
-                    audio_id,
-                    error_code: val
-                        .get("error_code")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                });
+                *last_error = Some(msg.to_string());
+                on_event(parse_error_event(&val, msg));
             }
         }
+    }
+}
+
+fn parse_error_event(val: &Value, msg: &str) -> PolishEvent {
+    PolishEvent::Error {
+        message: msg.to_string(),
+        run_id: val
+            .get("run_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        audio_id: val
+            .get("audio_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        error_code: val
+            .get("error_code")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        retryable: val.get("retryable").and_then(Value::as_bool),
+        owned_by_airnote: val.get("owned_by_airnote").and_then(Value::as_bool),
+        diagnostic: val
+            .get("diagnostic")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }
 }
 
@@ -690,9 +900,41 @@ pub async fn patch_preferences(
     serde_json::from_str::<Preferences>(&text).map_err(|e| {
         format!(
             "parse prefs failed: {e} — raw: {}",
-            &text[..text.len().min(200)]
+            said_core::text::truncate_utf8(&text, 200)
         )
     })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolishModelEntry {
+    pub key: String,
+    pub label: String,
+    pub provider: String,
+    pub model_id: String,
+    pub beta_only: bool,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListPolishModelsResponse {
+    pub models: Vec<PolishModelEntry>,
+    pub selected_model: String,
+}
+
+pub async fn list_polish_models(
+    ep: &BackendEndpoint,
+    beta: bool,
+) -> Result<ListPolishModelsResponse, String> {
+    let url = format!("{}/v1/polish/models?beta={}", ep.url, beta);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("list polish models failed: {e}"))?
+        .json::<ListPolishModelsResponse>()
+        .await
+        .map_err(|e| format!("parse polish models failed: {e}"))
 }
 
 pub async fn get_voice_prompt(ep: &BackendEndpoint) -> Result<PromptTemplateResponse, String> {
@@ -777,7 +1019,7 @@ pub async fn test_voice_prompt(
     serde_json::from_str::<PromptTestResponse>(&text).map_err(|e| {
         format!(
             "parse voice prompt test failed: {e} — raw: {}",
-            &text[..text.len().min(200)]
+            said_core::text::truncate_utf8(&text, 200)
         )
     })
 }
@@ -795,6 +1037,92 @@ pub async fn get_history(ep: &BackendEndpoint, limit: i64) -> Result<Vec<Recordi
         .json::<Vec<Recording>>()
         .await
         .map_err(|e| format!("parse history failed: {e}"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceRun {
+    pub run_id: String,
+    pub audio_id: Option<String>,
+    pub mode: String,
+    pub target_app: Option<String>,
+    pub status: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub retryable: bool,
+    pub owned_by_airnote: bool,
+    pub attempt_count: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LatestFailedVoiceRunResponse {
+    run: Option<VoiceRun>,
+}
+
+pub async fn latest_failed_voice_run(ep: &BackendEndpoint) -> Result<Option<VoiceRun>, String> {
+    let url = format!("{}/v1/voice-runs/latest-failed", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("latest failed voice run failed: {e}"))?
+        .json::<LatestFailedVoiceRunResponse>()
+        .await
+        .map(|res| res.run)
+        .map_err(|e| format!("parse latest failed voice run failed: {e}"))
+}
+
+pub async fn mark_voice_run_failed(
+    ep: &BackendEndpoint,
+    run_id: &str,
+    error_code: &str,
+    message: &str,
+    retryable: bool,
+    owned_by_airnote: bool,
+) -> Result<Option<VoiceRun>, String> {
+    let url = format!("{}/v1/voice-runs/{run_id}/failed", ep.url);
+    let resp = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::json!({
+            "error_code": error_code,
+            "message": message,
+            "retryable": retryable,
+            "owned_by_airnote": owned_by_airnote,
+            "diagnostic": {
+                "error_code": error_code,
+                "message": message,
+                "owned_by_airnote": owned_by_airnote,
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("mark voice run failed request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    latest_failed_voice_run(ep).await
+}
+
+pub async fn mark_voice_run_paste(
+    ep: &BackendEndpoint,
+    run_id: &str,
+    paste_success: bool,
+) -> Result<(), String> {
+    let url = format!("{}/v1/voice-runs/{run_id}/paste", ep.url);
+    let resp = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::json!({ "paste_success": paste_success }))
+        .send()
+        .await
+        .map_err(|e| format!("mark voice paste request failed: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("mark voice paste failed: {}", resp.status()))
+    }
 }
 
 // ── Cloud auth (calls the cloud control plane directly) ───────────────────────
@@ -857,8 +1185,6 @@ pub struct RuntimeLiveConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeNotificationConfig {
-    pub connected: bool,
-    pub server_url: Option<String>,
     pub notifications_ws_url: Option<String>,
 }
 
@@ -1176,7 +1502,7 @@ fn extract_error(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|v| v["error"].as_str().map(str::to_string))
-        .unwrap_or_else(|| body[..body.len().min(200)].to_string())
+        .unwrap_or_else(|| said_core::text::truncate_utf8(&body, 200).to_string())
 }
 
 // ── Edit feedback ─────────────────────────────────────────────────────────────
@@ -1360,9 +1686,11 @@ pub async fn classify_edit(
     user_kept: &str,
     capture_method: &str,
     capture_meta: CaptureMeta,
+    client_run_id: Option<&str>,
+    prior_text: Option<&str>,
 ) -> Result<ClassifyEditResponse, String> {
     let url = format!("{}/v1/classify-edit", ep.url);
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "recording_id":        recording_id,
         "ai_output":           ai_output,
         "user_kept":           user_kept,
@@ -1371,6 +1699,15 @@ pub async fn classify_edit(
         "app_switched":        capture_meta.app_switched,
         "matches_clipboard":   capture_meta.matches_clipboard,
     });
+    if let Some(run_id) = client_run_id.map(str::trim).filter(|s| !s.is_empty()) {
+        body["client_run_id"] = serde_json::Value::String(run_id.to_string());
+    }
+    // The pre-dictation field baseline. When the user dictated into a field that
+    // already had text, this lets the backend scope the edit-diff to OUR output
+    // and ignore the surrounding context. Empty/None → field was empty.
+    if let Some(prior) = prior_text.filter(|s| !s.is_empty()) {
+        body["prior_text"] = serde_json::Value::String(prior.to_string());
+    }
     Client::new()
         .post(&url)
         .header("Authorization", ep.bearer())
@@ -1443,6 +1780,20 @@ pub struct VocabRow {
 pub struct VocabListResponse {
     pub terms: Vec<VocabRow>,
     pub total: i64,
+}
+
+async fn json_or_error(resp: reqwest::Response, label: &str) -> Result<Value, String> {
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("{label} error {status}: {}", extract_error(&text)));
+    }
+    serde_json::from_str::<Value>(&text).map_err(|e| {
+        format!(
+            "parse {label} failed: {e} — raw: {}",
+            said_core::text::truncate_utf8(&text, 240)
+        )
+    })
 }
 
 /// Full vocab list with metadata, for the management view.

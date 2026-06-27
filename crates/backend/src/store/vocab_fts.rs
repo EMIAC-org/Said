@@ -22,6 +22,10 @@ use super::DbPool;
 /// call after every `vocabulary::upsert`. Replaces any prior FTS row for
 /// the same (user_id, term) so example_context updates are reflected.
 pub fn upsert(pool: &DbPool, user_id: &str, term: &str, example_context: Option<&str>) {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write("vocab_fts", "upsert", "vocab_fts::upsert");
+        return;
+    }
     let Ok(conn) = pool.get() else {
         return;
     };
@@ -109,6 +113,14 @@ pub fn search(pool: &DbPool, user_id: &str, query: &str, k: usize) -> Vec<String
 /// startup: we delete+insert each term row so older users gain BM25 support
 /// even if their vocabulary predates the FTS migration or missed a write.
 pub fn backfill_from_vocabulary(pool: &DbPool) -> usize {
+    if !crate::legacy_learning::legacy_learning_writes_allowed() {
+        crate::legacy_learning::skip_legacy_write(
+            "vocab_fts",
+            "backfill_from_vocabulary",
+            "vocab_fts::backfill_from_vocabulary",
+        );
+        return 0;
+    }
     let Ok(conn) = pool.get() else {
         return 0;
     };

@@ -10,6 +10,9 @@
 /target
 **/target/
 
+# Generated Tauri sidecars
+desktop/src-tauri/binaries/whisper-cli-*
+
 # Node / frontend dependencies
 desktop/node_modules/
 **/node_modules/
@@ -51,3 +54,12 @@ models/*.bin
 
 # Local STT benchmark HF weights (ephemeral; purged after compare)
 tools/stt-compare/.hf-cache/
+tools/stt-compare/.last_compare.json
+tools/stt-compare/.local_stt_benchmark.json
+
+# Reference repo (read-only design reference; not part of the build)
+/boring.notch/
+
+# Native notch HUD sidecar (Swift) — build output + staged sidecar binary
+desktop/notch-sidecar/.build/
+desktop/src-tauri/binaries/airnote-notch-*

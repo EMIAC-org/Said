@@ -161,7 +161,44 @@ pub fn diff(transcript: &str, polish: &str, user_kept: &str) -> Vec<Hunk> {
         positional_align,
     );
 
-    hunks
+    split_aligned_substitutions(hunks)
+}
+
+/// Split a contiguous equal-count substitution blob into one hunk per changed
+/// token, so high replacement counts are each identified individually rather
+/// than collapsed into one unlearnable multi-word blob.
+///
+/// Only fires when the polish and kept windows have the SAME token count (> 1):
+/// that's an unambiguous 1:1 positional rewrite (e.g. "a b c" → "x y z" → three
+/// swaps). Windows of differing length (true phrase rewrites like a whole-
+/// sentence replacement) are left intact.
+fn split_aligned_substitutions(hunks: Vec<Hunk>) -> Vec<Hunk> {
+    let mut out = Vec::with_capacity(hunks.len());
+    for h in hunks {
+        let p: Vec<&str> = h.polish_window.split_whitespace().collect();
+        let k: Vec<&str> = h.kept_window.split_whitespace().collect();
+        let t: Vec<&str> = h.transcript_window.split_whitespace().collect();
+        if p.len() > 1 && p.len() == k.len() {
+            let t_aligned = t.len() == p.len();
+            for i in 0..p.len() {
+                if p[i] == k[i] {
+                    continue; // token unchanged inside the blob
+                }
+                out.push(Hunk {
+                    transcript_window: if t_aligned {
+                        t[i].to_string()
+                    } else {
+                        String::new()
+                    },
+                    polish_window: p[i].to_string(),
+                    kept_window: k[i].to_string(),
+                });
+            }
+        } else {
+            out.push(h);
+        }
+    }
+    out
 }
 
 /// Diff operation in the polish→user_kept rewrite.
@@ -237,6 +274,37 @@ mod tests {
             "I use n8n daily",
         );
         assert_eq!(hunks[0].transcript_window, "written");
+    }
+
+    #[test]
+    fn aligned_multiword_substitution_splits_per_token() {
+        // High replacement count: a contiguous N:N rewrite must yield one hunk
+        // per changed word, so each swap is identified instead of one blob.
+        let hunks = diff(
+            "the quick brown fox",
+            "the quick brown fox",
+            "the slow red cat",
+        );
+        assert_eq!(hunks.len(), 3, "expected per-word hunks, got: {hunks:?}");
+        assert_eq!(hunks[0].polish_window, "quick");
+        assert_eq!(hunks[0].kept_window, "slow");
+        assert_eq!(hunks[1].polish_window, "brown");
+        assert_eq!(hunks[1].kept_window, "red");
+        assert_eq!(hunks[2].polish_window, "fox");
+        assert_eq!(hunks[2].kept_window, "cat");
+    }
+
+    #[test]
+    fn unequal_length_replacement_stays_one_hunk() {
+        // A true phrase rewrite (different token counts) must NOT be split into
+        // bogus per-word swaps — it stays one graceful change.
+        let hunks = diff(
+            "let us meet tomorrow",
+            "let us meet tomorrow",
+            "cancel it now",
+        );
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].kept_window, "cancel it now");
     }
 
     #[test]

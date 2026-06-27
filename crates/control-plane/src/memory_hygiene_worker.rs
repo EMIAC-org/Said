@@ -20,10 +20,17 @@ pub fn start_memory_hygiene_worker(db: PgPool) {
             tick_count += 1;
             let nightly = tick_count % 288 == 0; // ~24h at 5m ticks
 
+            let mut conn = match db.acquire().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    warn!("[memory-hygiene-worker] lock connection failed: {e}");
+                    continue;
+                }
+            };
             let lock: Result<bool, sqlx::Error> = sqlx::query_scalar(
                 "SELECT pg_try_advisory_lock(hashtext('airnote_memory_hygiene'))",
             )
-            .fetch_one(&db)
+            .fetch_one(&mut *conn)
             .await;
 
             match lock {
@@ -34,7 +41,7 @@ pub fn start_memory_hygiene_worker(db: PgPool) {
                     let _ = sqlx::query(
                         "SELECT pg_advisory_unlock(hashtext('airnote_memory_hygiene'))",
                     )
-                    .execute(&db)
+                    .execute(&mut *conn)
                     .await;
                 }
                 Ok(false) => info!("[memory-hygiene-worker] skipped; lock held elsewhere"),
@@ -45,6 +52,9 @@ pub fn start_memory_hygiene_worker(db: PgPool) {
 }
 
 async fn run_hygiene_tick(db: &PgPool, nightly_sweep: bool) -> Result<(), String> {
+    if crate::legacy_personal_memory::audit_only_personal_mutations() {
+        return Ok(());
+    }
     let mut accounts = memory_hygiene::fetch_dirty_accounts(db, BATCH_LIMIT)
         .await
         .map_err(|e| e.to_string())?;

@@ -1,13 +1,35 @@
 import { useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { listHistory, downloadRecordingAudio, getRecordingAudioBytes } from "@/lib/invoke";
-import { Copy, Download, Check, Play, Square } from "lucide-react";
+import { listHistory, downloadRecordingAudio, getRecordingAudioBytes, openExternal } from "@/lib/invoke";
+import { cn } from "@/lib/utils";
+import { Copy, Download, Check, Play, Square, BookOpen, ExternalLink } from "lucide-react";
 import type { AppSnapshot, Recording } from "@/types";
 
 interface Props {
   snapshot:      AppSnapshot | null;
-  statusPhase?:  string;
-  liveText?:     string;
+}
+
+const GUIDE_URL = "https://airnote.emiactech.com/guide";
+
+// Persist that the user has opened the guide so the dashboard prompt is shown
+// only until they've read it once. Mirrors the localStorage pattern used by
+// onboarding/enterprise state.
+const GUIDE_SEEN_KEY = "said:guide-opened";
+
+function guideWasOpened(): boolean {
+  try {
+    return localStorage.getItem(GUIDE_SEEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markGuideOpened(): void {
+  try {
+    localStorage.setItem(GUIDE_SEEN_KEY, "1");
+  } catch {
+    /* localStorage unavailable — prompt simply reappears next session */
+  }
 }
 
 /**
@@ -17,8 +39,9 @@ interface Props {
  * then sectioned blocks: At a glance / Activity / Latest.
  * Calm reading mode rather than analytics console.
  */
-export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
+export function EditorialDashboard({ snapshot }: Props) {
   const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [guideOpened, setGuideOpened] = useState(guideWasOpened);
   const history = snapshot?.history ?? [];
 
   useEffect(() => {
@@ -67,37 +90,6 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
     <ScrollArea className="h-full">
       <div className="mx-auto" style={{ maxWidth: "min(720px, 100%)", padding: "24px 28px 40px" }}>
 
-        {/* Live polish strip — only when in flight */}
-        {(statusPhase || liveText) && (
-          <div
-            className="rounded-xl mb-7 px-5 py-4 relative overflow-hidden"
-            style={{
-              background:
-                "radial-gradient(80% 60% at 0% 0%, hsl(var(--primary) / 0.10), transparent 60%), hsl(var(--surface-3))",
-              boxShadow: "inset 0 0 0 1px hsl(var(--glass-stroke-strong))",
-            }}
-          >
-            <div className="flex items-center gap-2 mb-2">
-              <span
-                className="w-2 h-2 rounded-full animate-pulse"
-                style={{ background: "hsl(var(--primary))", boxShadow: "0 0 10px hsl(var(--primary))" }}
-              />
-              <span
-                className="text-[10px] font-bold uppercase tracking-[0.14em]"
-                style={{ color: "hsl(var(--primary))" }}
-              >
-                {statusPhase === "transcribing" ? "Transcribing audio" : "Polishing with LLM"}
-              </span>
-            </div>
-            {liveText && (
-              <p className="text-[14px] leading-relaxed" style={{ color: "hsl(var(--foreground))" }}>
-                {liveText}
-                <span className="caret-blink" />
-              </p>
-            )}
-          </div>
-        )}
-
         {/* Hero — personalised headline */}
         <div className="mb-7">
           <p
@@ -136,6 +128,15 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
               )}
           </p>
         </div>
+
+        {!guideOpened && (
+          <GuidePrompt
+            onOpen={() => {
+              markGuideOpened();
+              setGuideOpened(true);
+            }}
+          />
+        )}
 
         {/* At a glance — 3-column row, hairline separators */}
         <Section label="At a glance">
@@ -209,6 +210,71 @@ export function EditorialDashboard({ snapshot, statusPhase, liveText }: Props) {
 }
 
 // ── Tiny presentational primitives (file-local) ───────────────────────────────
+
+function GuidePrompt({ onOpen }: { onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        onOpen();
+        void openExternal(GUIDE_URL);
+      }}
+      className="group w-full mb-7 text-left"
+      style={{
+        display: "grid",
+        gridTemplateColumns: "36px minmax(0, 1fr) auto",
+        alignItems: "center",
+        gap: 12,
+        padding: "12px 0",
+        borderTop: "1px solid hsl(var(--border))",
+        borderBottom: "1px solid hsl(var(--border))",
+      }}
+      title="Open AirNote guide and shortcuts"
+    >
+      <span
+        className="grid place-items-center"
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 8,
+          background: "hsl(var(--primary) / 0.10)",
+          color: "hsl(var(--primary))",
+        }}
+      >
+        <BookOpen size={18} />
+      </span>
+      <span className="min-w-0">
+        <span
+          className="block"
+          style={{
+            fontSize: 13,
+            fontWeight: 650,
+            color: "hsl(var(--foreground))",
+          }}
+        >
+          New here? Open the guide.
+        </span>
+        <span
+          className="block truncate"
+          style={{
+            marginTop: 2,
+            fontSize: 12,
+            color: "hsl(var(--muted-foreground))",
+          }}
+        >
+          Shortcuts, dictation, retry, polish mode, and status pill placement.
+        </span>
+      </span>
+      <span
+        className="inline-flex items-center gap-1 text-[12px] font-semibold"
+        style={{ color: "hsl(var(--primary))" }}
+      >
+        Open
+        <ExternalLink size={13} />
+      </span>
+    </button>
+  );
+}
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -348,9 +414,11 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
     setDownloading(false);
   };
 
+  const keepActionsVisible = playing || copied || downloading;
+
   return (
     <div
-      className="group flex items-start gap-3 py-3"
+      className="group/row flex items-start gap-3 py-3"
       style={{ borderBottom: "1px solid hsl(var(--border))" }}
     >
       <div className="flex-1 min-w-0">
@@ -380,7 +448,15 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
           )}
         </div>
       </div>
-      <div className="flex items-center gap-1 opacity-100 pt-0.5">
+      <div
+        className={cn(
+          "flex items-center gap-1 pt-0.5 transition-opacity duration-150",
+          "opacity-0 pointer-events-none",
+          "group-hover/row:opacity-100 group-hover/row:pointer-events-auto",
+          "group-focus-within/row:opacity-100 group-focus-within/row:pointer-events-auto",
+          keepActionsVisible && "opacity-100 pointer-events-auto",
+        )}
+      >
         {hasAudio && (
           <button
             onClick={handlePlay}

@@ -39,7 +39,7 @@ pub fn log_dir() -> PathBuf {
 /// retention-managed audio snippets). Created on first write by callers.
 ///
 /// - macOS: `~/Library/Application Support/VoicePolish`
-/// - Windows: `%APPDATA%\VoicePolish`
+/// - Windows: `%LOCALAPPDATA%\VoicePolish` (uses `data_local_dir`, NOT `%APPDATA%`)
 /// - Linux: `$XDG_DATA_HOME/VoicePolish` (or `~/.local/share/VoicePolish`)
 pub fn data_dir() -> PathBuf {
     dirs::data_local_dir()
@@ -54,9 +54,32 @@ pub fn default_db_path() -> PathBuf {
 }
 
 /// Path to the local whisper.cpp ggml model file for offline STT.
-/// `<data_dir>/models/ggml-tiny.bin`
+/// Oriserve Whisper-Hindi2Hinglish-Swift, converted to fp16 GGML (148 MB):
+/// faithful to the PyTorch model, runs on all Macs with no Python dependency.
+/// `<data_dir>/models/ggml-oriserve-hinglish-fp16.bin`
 pub fn whisper_model_path() -> PathBuf {
-    data_dir().join("models").join("ggml-tiny.bin")
+    data_dir()
+        .join("models")
+        .join("ggml-oriserve-hinglish-fp16.bin")
+}
+
+/// Silero VAD ggml model for whisper.cpp built-in voice-activity detection.
+/// Shared with the Meetings pipeline. When present, the live dictation path
+/// gates whisper on detected speech to suppress silence/noise hallucination.
+/// `<data_dir>/models/ggml-silero-v5.1.2.bin`
+pub fn silero_vad_model_path() -> PathBuf {
+    data_dir().join("models").join("ggml-silero-v5.1.2.bin")
+}
+
+/// Directory for the Oriserve Swift HF model weights (downloaded on demand).
+/// `<data_dir>/models/oriserve-swift/`
+pub fn swift_model_dir() -> PathBuf {
+    data_dir().join("models").join("oriserve-swift")
+}
+
+/// Marker file indicating the Swift model download completed.
+pub fn swift_model_weights_path() -> PathBuf {
+    swift_model_dir().join("model.safetensors")
 }
 
 /// Stable anonymous device ID. Generated once on first call and persisted to

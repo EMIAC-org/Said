@@ -1621,6 +1621,47 @@ pub async fn user_memory(
 
     let (memory_dirty_at, last_hygiene_at, hygiene_version) = hygiene.unwrap_or((None, None, 1));
 
+    let prompt_profile_latest: Option<(
+        String,
+        String,
+        i32,
+        String,
+        Option<i64>,
+        Option<Uuid>,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
+        "SELECT profile_source, profile_markdown, profile_chars, profile_hash,
+                client_profile_version, last_run_id, updated_at
+           FROM runtime_prompt_profile_latest
+          WHERE account_id = $1 AND org_scope = $2",
+    )
+    .bind(account_id)
+    .bind(org_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let prompt_profile_latest = if prompt_profile_latest.is_some() {
+        prompt_profile_latest
+    } else {
+        sqlx::query_as(
+            "SELECT profile_source, profile_markdown, profile_chars, profile_hash,
+                    client_profile_version, last_run_id, updated_at
+               FROM runtime_prompt_profile_latest
+              WHERE account_id = $1 AND org_scope = $2",
+        )
+        .bind(account_id)
+        .bind(crate::profile::alias_safety::global_org_scope())
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+
+    let server_learned_profile =
+        crate::profile::store::get_profile_with_fallback(&state.db, account_id, org_id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
     Ok(Json(json!({
         "hygiene": {
             "memory_dirty_at": memory_dirty_at,
@@ -1670,6 +1711,25 @@ pub async fn user_memory(
                 "model": model,
             })
         }).collect::<Vec<_>>(),
+        "prompt_profile_latest": prompt_profile_latest.map(|(source, markdown, chars, hash, version, run_id, updated_at)| {
+            json!({
+                "profile_source": source,
+                "profile_markdown": markdown,
+                "profile_chars": chars,
+                "profile_hash": hash,
+                "client_profile_version": version,
+                "last_run_id": run_id,
+                "updated_at": updated_at,
+            })
+        }),
+        "server_learned_profile": server_learned_profile.map(|row| {
+            json!({
+                "profile_markdown": row.profile_markdown,
+                "version": row.version,
+                "status": row.status,
+                "updated_at": row.updated_at,
+            })
+        }),
     })))
 }
 

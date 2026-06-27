@@ -172,12 +172,21 @@ pub async fn sync_settings(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+fn normalize_runtime_selected_model(selected_model: String) -> String {
+    said_core::polish::model::validate_polish_model_key(&selected_model)
+}
+
+fn validate_runtime_selected_model(selected_model: &str) -> bool {
+    said_core::polish::model::catalog_spec(selected_model).is_some()
+}
+
 fn validate_patch(req: &PatchSettingsRequest) -> Result<(), (StatusCode, Json<Value>)> {
     if let Some(m) = &req.selected_model {
-        if !["fast", "smart"].contains(&m.as_str()) {
+        let m = normalize_runtime_selected_model(m.clone());
+        if !validate_runtime_selected_model(&m) {
             return Err(json_err(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                "selected_model must be 'fast' or 'smart'",
+                "selected_model must be a known polish catalog key",
             ));
         }
     }
@@ -238,9 +247,10 @@ async fn apply_and_write(
     let had_notif = req.notification_prefs.is_some();
     let had_privacy = req.privacy_prefs.is_some();
 
-    let selected_model = req
-        .selected_model
-        .unwrap_or_else(|| current.selected_model.clone());
+    let selected_model = normalize_runtime_selected_model(
+        req.selected_model
+            .unwrap_or_else(|| current.selected_model.clone()),
+    );
     let output_language = req
         .output_language
         .unwrap_or_else(|| current.output_language.clone());
@@ -437,4 +447,54 @@ fn db_err(e: sqlx::Error) -> (StatusCode, Json<Value>) {
 
 fn json_err(status: StatusCode, msg: &str) -> (StatusCode, Json<Value>) {
     (status, Json(json!({"error": msg})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_runtime_selected_model;
+
+    #[test]
+    fn normalizes_smart_model_aliases_to_cerebras_gpt_oss() {
+        assert_eq!(
+            normalize_runtime_selected_model("smart".into()),
+            "cerebras-gpt-oss"
+        );
+        assert_eq!(
+            normalize_runtime_selected_model("maverick".into()),
+            "cerebras-gpt-oss"
+        );
+        assert_eq!(
+            normalize_runtime_selected_model(
+                "meta-llama/llama-4-maverick-17b-128e-instruct".into()
+            ),
+            "cerebras-gpt-oss"
+        );
+        assert_eq!(
+            normalize_runtime_selected_model("meta-llama/llama-4-scout-17b-16e-instruct".into()),
+            "groq-scout"
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_beta_catalog_keys() {
+        assert_eq!(normalize_runtime_selected_model("phi4".into()), "phi4");
+        assert_eq!(
+            normalize_runtime_selected_model("groq-70b".into()),
+            "groq-70b"
+        );
+        assert_eq!(
+            normalize_runtime_selected_model("cerebras-gpt-oss".into()),
+            "cerebras-gpt-oss"
+        );
+    }
+
+    #[test]
+    fn normalizes_fast_model_aliases_to_fast() {
+        assert_eq!(normalize_runtime_selected_model("fast".into()), "fast");
+        assert_eq!(
+            normalize_runtime_selected_model("llama-3.1-8b-instant".into()),
+            "fast"
+        );
+        assert_eq!(normalize_runtime_selected_model("deepseek".into()), "fast");
+    }
 }

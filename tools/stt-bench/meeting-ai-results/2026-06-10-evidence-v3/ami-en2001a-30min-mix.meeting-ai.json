@@ -1,0 +1,84 @@
+{
+  "case": "ami-en2001a-30min-mix",
+  "transcript_path": "tools/stt-bench/public-meetings/ami-en2001a-30min/airnote-final-sortformer.current.mix-headset.first30min.transcript.txt",
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "draft_latency_ms": 13269,
+  "verify_latency_ms": 6325,
+  "filtered_mom": {
+    "summary": "The team discussed Steve's feedback, which emphasized avoiding duplication of effort and prioritizing a working prototype by week six. They debated the data structure for the browser, considering whether to store importance measures at the word or utterance level, ultimately leaning toward utterance-level storage for simplicity and better skimming. The conversation covered how to handle the meeting series view, with ideas ranging from loading all data into memory to creating a virtual meeting structure if memory constraints are an issue. They also discussed integrating offline-calculated data with the NightXML framework, using its event model for synchronization, and handling search via an SQL database that feeds timestamps back to the NightXML manager. The team identified key data elements needed: utterances with weights, speaker information, topic segments, and timestamps, and planned to investigate NightXML's capabilities further.",
+    "action_items": [
+      {
+        "title": "Investigate NightXML code to understand data representation and compatibility",
+        "assignee": null,
+        "due": null,
+        "evidence": "we then actually need to, well, go back first of all and look at night XML to see how far that which we want is compatible with that which night XML offers us"
+      },
+      {
+        "title": "Ask Jonathan about NightXML lazy loading and memory issues",
+        "assignee": "Speaker 1",
+        "due": null,
+        "evidence": "I'll probably ask Jonathan about it."
+      }
+    ],
+    "decisions": [
+      {
+        "text": "Search functionality will use an SQL database and feed timestamps back to NightXML",
+        "evidence": "the searching leaves the whole framework, goes to the SQL database, and basically then gets just a time marker for where that is"
+      }
+    ]
+  },
+  "raw_counts": {
+    "draft_actions": 4,
+    "draft_decisions": 3,
+    "verified_actions": 2,
+    "verified_decisions": 1,
+    "filtered_actions": 2,
+    "filtered_decisions": 1
+  },
+  "chat": [
+    {
+      "question": "What was the main topic of this meeting?",
+      "answer": "The main topic of this meeting was settling on the data structure for the meeting browser, specifically deciding what data to store and how to represent it (e.g., at the utterance vs. word level) to support features like skimming, search, and the meeting series view, while considering integration with the NightXML framework.",
+      "latency_ms": 3807
+    },
+    {
+      "question": "What concrete decisions were explicitly made? If none, say none.",
+      "answer": "Based on the provided transcript and the meeting intelligence, the only explicit decision captured is:\n\n- **Search functionality will use an SQL database and feed timestamps back to NightXML** (evidence: \"the searching leaves the whole framework, goes to the SQL database, and basically then gets just a time marker for where that is\").",
+      "latency_ms": 2444
+    },
+    {
+      "question": "List only explicit action items or follow-ups, with owners only if the transcript gives them.",
+      "answer": "Based on the transcript, the explicit action items or follow-ups are:\n\n- Investigate NightXML code to understand data representation and compatibility (no owner specified).\n- Ask Jonathan about NightXML lazy loading and memory issues (owner: Speaker 1).",
+      "latency_ms": 2155
+    },
+    {
+      "question": "What important unresolved questions or risks remain?",
+      "answer": "Based on the transcript, the following unresolved questions and risks are present:\n\n- **Memory constraints for loading the entire meeting series**: The team is uncertain whether loading all utterance data for a whole meeting series into memory is feasible. Speaker 1 notes that NightXML fails when loading all data and that 50–100 MB in RAM is \"quite big\" [18:25–18:46]. This remains an open question, with Speaker 1 planning to ask Jonathan about lazy loading and memory issues [20:09–20:13].\n\n- **Compatibility with NightXML**: The team has not yet investigated whether their desired data structure (utterances with weights, speakers, topic segments, timestamps) is compatible with NightXML’s representation. Speaker 1 states they need to \"look at night XML to see how far that which we want is compatible with that which night XML offers us\" [01:54–01:58].\n\n- **Utterance-level vs. word-level storage**: While the team leans toward storing importance measures at the utterance level, the final decision is not fully resolved. Concerns remain about how to handle unimportant words within utterances and whether word-level timestamps can be aggregated to utterance-level timestamps [13:00–13:10, 14:51–15:28].\n\n- **Audio playback of selected utterances**: The feasibility of buffering and concatenating audio segments in memory for skimming is still uncertain. Speaker 3 suggests it \"might be like an hour or two's work,\" but no one has confirmed the capability of the audio player [15:58–16:30].\n\n- **Utterance IDs in NightXML**: There is confusion about whether utterances have unique IDs in the existing NightXML data. Speaker 2 and Speaker 4 indicate that only individual words have IDs, which could complicate linking external data to utterances [27:00–28:00].",
+      "latency_ms": 10438
+    },
+    {
+      "question": "Give a PM-ready brief with problem, approach, decisions, risks, and next steps. Mark uncertainty.",
+      "answer": "**Brief**\n\n**Problem**  \nThe team needs to settle on a data structure and integration plan for the meeting browser to deliver a working prototype by week six, while avoiding duplication of effort and staying compatible with the NightXML framework.\n\n**Approach**  \n- Prioritize a working prototype by integrating pre‑annotated data and simple baselines, focusing on the interface first.  \n- Store importance measures at the **utterance level** (not word level) to reduce memory, simplify audio skimming, and produce more coherent summaries.  \n- For the meeting‑series view, either load all utterance‑level data into memory (if feasible) or create a virtual meeting structure that treats meetings as segments and segments as utterances, reusing the same display logic.  \n- Use NightXML’s event model for synchronisation across display elements; search will leave the NightXML framework, query an SQL database, and feed timestamps back to the NightXML manager to trigger updates.  \n- Key data elements per utterance: weight/importance, speaker, topic segment, and timestamps.\n\n**Decisions**  \n- Search functionality will use an SQL database and feed timestamps back to NightXML (explicit decision from meeting intelligence).\n\n**Risks & Uncertainties**  \n- **Memory feasibility**: It is unclear whether loading all utterance data for a 70‑hour meeting series into NightXML will work; the team has seen out‑of‑memory errors with the full project load. Lazy loading may help, but this needs verification.  \n- **NightXML compatibility**: The team has not yet examined the NightXML code to confirm how data representation, utterance IDs, and lazy loading work.  \n- **Utterance‑level storage**: The impact of averaging word‑level importance to utterance level (e.g., handling stop words) is not fully resolved; a threshold or pre‑filtering may be needed.  \n- **Audio skimming**: Building an in‑memory audio concatenation class is assumed to be straightforward (“an hour or two’s work”), but this has not been prototyped.\n\n**Next Steps**  \n1. **Investigate NightXML** – examine the code to understand data representation, utterance IDs, and lazy‑loading capabilities.  \n2. **Ask Jonathan** (Speaker 1) about NightXML lazy loading and memory issues.  \n3. **Define utterance‑level data format** – agree on the exact fields (utterance ID, weight, speaker, topic segment, timestamps) and how they map to NightXML files.  \n4. **Prototype the interface** – wire together pre‑annotated data and baseline components to have a working demo by week six.",
+      "latency_ms": 14645
+    }
+  ],
+  "judge": {
+    "latency_ms": 7165,
+    "result": {
+      "summary_accuracy": 8,
+      "summary_coverage": 8,
+      "action_precision": 7,
+      "decision_precision": 9,
+      "chat_grounding": 8,
+      "overall": 8,
+      "issues": [
+        "MoM summary is accurate but omits the explicit discussion about the prototype deadline being week six and the decision to prioritize the interface.",
+        "Action item 'Investigate NightXML code' has no assignee in the MoM, which is correct per the transcript, but the MoM could note it was a general team task.",
+        "Chat answer for 'What important unresolved questions or risks remain?' correctly identifies risks but invents 'Speaker 1 notes that NightXML fails when loading all data'—the transcript says 'we do get an error message with the project if we load everything', not specifically NightXML failing.",
+        "Chat answer for 'Give a PM-ready brief' invents 'the team has seen out-of-memory errors with the full project load'—the transcript only mentions an error message, not specifically out-of-memory.",
+        "Chat answer for 'What concrete decisions were explicitly made?' correctly identifies the SQL decision but fails to mention the implicit consensus to store importance at utterance level, which was a key discussion outcome."
+      ]
+    }
+  }
+}
