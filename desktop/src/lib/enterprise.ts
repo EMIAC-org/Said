@@ -5,15 +5,90 @@ const RECENT_WORKSPACES_KEY = "said:enterprise-recent-urls";
 const DEVICE_ID_FALLBACK_KEY = "said:enterprise-device-id";
 const MAX_RECENT_WORKSPACES = 5;
 
-/** Default AirNote cloud server for personal (non-org) accounts. */
-export const DEFAULT_CLOUD_SERVER_URL = "https://airnote.emiactech.com";
+const SERVER_URL_MODE_KEY = "said:server-url-mode";
+const SERVER_URL_OVERRIDE_KEY = "said:server-url-override";
+
+/** Built-in default AirNote cloud server. Overridable at BUILD time via the
+ *  VITE_AIRNOTE_SERVER_URL env var, and at RUNTIME via the Settings override. */
+export const DEFAULT_CLOUD_SERVER_URL =
+  (import.meta.env.VITE_AIRNOTE_SERVER_URL as string | undefined)?.trim() ||
+  "https://airnote.emiactech.com";
+
+export type ServerUrlMode = "default" | "custom";
+
+/** Override mode — "default" (prod AirNote) or "custom" (user-pasted URL). */
+export function getServerUrlMode(): ServerUrlMode {
+  try {
+    return localStorage.getItem(SERVER_URL_MODE_KEY) === "custom" ? "custom" : "default";
+  } catch {
+    return "default";
+  }
+}
+
+/** The user-pasted custom server URL (may be empty). */
+export function getServerUrlOverride(): string {
+  try {
+    return localStorage.getItem(SERVER_URL_OVERRIDE_KEY)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** The server URL the app should talk to right now (default prod or override).
+ *  This governs the control-plane AND, via the persisted connection, the local
+ *  backend's polish forwarding (it reads enterprise_server_url). */
+export function getActiveServerUrl(): string {
+  const override = getServerUrlOverride();
+  if (getServerUrlMode() === "custom" && override) return normalizeServerUrl(override);
+  return DEFAULT_CLOUD_SERVER_URL;
+}
+
+function persistServerUrlConfig(mode: ServerUrlMode, customUrl?: string): void {
+  try {
+    localStorage.setItem(SERVER_URL_MODE_KEY, mode);
+    if (typeof customUrl === "string") {
+      localStorage.setItem(SERVER_URL_OVERRIDE_KEY, normalizeServerUrl(customUrl));
+    }
+  } catch {
+    // ignore quota errors
+  }
+}
+
+/** Apply a new server-URL config and repoint the existing connection + the local
+ *  backend's polish forwarding at it. Returns the resolved active URL; the caller
+ *  reloads the app so every cached endpoint picks up the change. If the current
+ *  token isn't valid on the new server, the next auth check marks it expired and
+ *  the user reconnects there. */
+export async function applyServerUrlConfig(
+  mode: ServerUrlMode,
+  customUrl?: string,
+): Promise<string> {
+  persistServerUrlConfig(mode, customUrl);
+  const active = getActiveServerUrl();
+  const conn = getConnection();
+  if (conn && normalizeServerUrl(conn.serverUrl) !== normalizeServerUrl(active)) {
+    saveConnection({ ...conn, serverUrl: active });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("store_enterprise_auth", {
+        token: conn.jwt,
+        email: conn.email,
+        serverUrl: active,
+        orgName: conn.orgName ?? null,
+      });
+    } catch {
+      // non-fatal — the UI reload still reroutes frontend calls
+    }
+  }
+  return active;
+}
 
 export type OnboardingAuthMode = "personal" | "workspace";
 
 /** Personal email on the cloud server vs org workspace (Lark or custom URL). */
 export function deriveAuthMode(conn: EnterpriseConnection): OnboardingAuthMode {
   const isCloud =
-    normalizeServerUrl(conn.serverUrl) === normalizeServerUrl(DEFAULT_CLOUD_SERVER_URL);
+    normalizeServerUrl(conn.serverUrl) === normalizeServerUrl(getActiveServerUrl());
   if (conn.authSource === "email" && isCloud) return "personal";
   return "workspace";
 }

@@ -76,6 +76,109 @@ function DiffColumn({ label, text }: { label: string; text?: string | null }) {
   )
 }
 
+function PromptProfileCard({ memory }: { memory: TelemetryUserMemory }) {
+  const [showServerProfile, setShowServerProfile] = useState(false)
+  const latest = memory.prompt_profile_latest
+  const server = memory.server_learned_profile
+  const serverDiffers =
+    latest &&
+    server &&
+    server.profile_markdown.trim() &&
+    latest.profile_markdown.trim() !== server.profile_markdown.trim()
+
+  const copyMarkdown = async () => {
+    if (!latest?.profile_markdown) return
+    try {
+      await navigator.clipboard.writeText(latest.profile_markdown)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return (
+    <div className="card p-4 mb-4">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <SectionLabel>Prompt profile (last used in polish)</SectionLabel>
+          <p className="text-[11px] text-fg-4 mt-1">
+            Sanitized markdown injected into the voice polish system prompt on the most recent server
+            runtime session.
+          </p>
+        </div>
+        {latest?.profile_markdown ? (
+          <button
+            type="button"
+            onClick={copyMarkdown}
+            className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-border text-fg-3 hover:text-fg shrink-0"
+          >
+            Copy
+          </button>
+        ) : null}
+      </div>
+      {!latest || latest.profile_source === 'none' || !latest.profile_markdown.trim() ? (
+        <p className="text-[12px] text-fg-4">
+          No prompt profile recorded yet. Run a server-runtime dictation with a signed-in desktop
+          client that sends <span className="font-mono">client_profile_markdown</span>.
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            <span className="text-[10px] px-2 py-0.5 rounded bg-info-bg text-info font-mono">
+              {latest.profile_source}
+            </span>
+            <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-3 tabular-nums">
+              {latest.profile_chars} chars
+            </span>
+            {latest.client_profile_version != null ? (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-3 tabular-nums">
+                v{latest.client_profile_version}
+              </span>
+            ) : null}
+            <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-3 font-mono truncate max-w-[12rem]">
+              {latest.profile_hash.slice(0, 12)}…
+            </span>
+            <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-3">
+              {new Date(latest.updated_at).toLocaleString()}
+            </span>
+            {latest.last_run_id ? (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-3 font-mono">
+                run {latest.last_run_id.slice(0, 8)}…
+              </span>
+            ) : null}
+          </div>
+          <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words font-mono bg-surface-3 rounded-lg p-3 border border-border-light max-h-[28rem] overflow-auto">
+            {latest.profile_markdown}
+          </pre>
+        </>
+      )}
+      {serverDiffers ? (
+        <div className="mt-4 pt-4 border-t border-border-light">
+          <button
+            type="button"
+            onClick={() => setShowServerProfile(v => !v)}
+            className="text-[11px] text-warn hover:underline bg-transparent border-0 cursor-pointer p-0"
+          >
+            {showServerProfile ? 'Hide' : 'Show'} server learned profile (differs from last prompt
+            snapshot)
+          </button>
+          {showServerProfile ? (
+            <div className="mt-2">
+              <div className="flex flex-wrap gap-1.5 mb-2 text-[10px] text-fg-4">
+                <span>status: {server.status}</span>
+                <span>v{server.version}</span>
+                <span>{new Date(server.updated_at).toLocaleString()}</span>
+              </div>
+              <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words font-mono bg-surface-3 rounded-lg p-3 border border-border-light max-h-[20rem] overflow-auto">
+                {server.profile_markdown.trim() || '—'}
+              </pre>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function TelemetryUserPage() {
   const { accountId } = useParams<{ accountId: string }>()
   const { org } = useAuth()
@@ -492,6 +595,7 @@ export function TelemetryUserPage() {
                 </p>
               </div>
             )}
+            <PromptProfileCard memory={memory} />
             <div className="card p-4 mb-4">
               <SectionLabel>Memory KPIs</SectionLabel>
               <CountGrid

@@ -3383,7 +3383,7 @@ async fn patch_preferences(
     if let Some(ref provider) = update.stt_provider {
         if said_core::stt::is_swift_local(provider) && !swift_model::is_installed() {
             return Err(
-                "Download the Swift Hinglish model before enabling local speech recognition"
+                "Download the local speech model before enabling local speech recognition"
                     .to_string(),
             );
         }
@@ -3393,7 +3393,7 @@ async fn patch_preferences(
             && !meeting_engine::dictation_whisper_model_installed()
         {
             return Err(
-                "Download the Turbo Q5 model before enabling offline whisper speech recognition"
+                "Download the on-device speech model before enabling local speech recognition"
                     .to_string(),
             );
         }
@@ -3401,7 +3401,7 @@ async fn patch_preferences(
     #[cfg(not(target_os = "macos"))]
     if let Some(ref provider) = update.stt_provider {
         if said_core::stt::is_swift_local(provider) {
-            return Err("Local Swift STT is only available on macOS".to_string());
+            return Err("This local speech engine is only available on macOS".to_string());
         }
     }
     let ep = get_endpoint(&backend)?;

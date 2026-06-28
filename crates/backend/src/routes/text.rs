@@ -85,7 +85,15 @@ pub async fn polish(
         return axum::http::StatusCode::BAD_REQUEST.into_response();
     }
 
-    if body.tone_override.as_deref() == Some("message_polish") {
+    // ⌥1 "Polish My Message" and ⌥2 "Convert to English" both run on the server
+    // via DeepSeek (one hardened prompt, two modes). Anything else stays on the
+    // local polish path.
+    let server_helper_mode = match body.tone_override.as_deref() {
+        Some("message_polish") => Some("polish"),
+        Some("professional") => Some("to_english"),
+        _ => None,
+    };
+    if let Some(mode) = server_helper_mode {
         if !crate::store::users::has_enterprise_auth(&state.pool, &state.default_user_id) {
             return (
                 StatusCode::FORBIDDEN,
@@ -95,7 +103,7 @@ pub async fn polish(
             )
                 .into_response();
         }
-        return polish_message_polish_server(state, body).await;
+        return polish_message_polish_server(state, body, mode).await;
     }
 
     let user_id = state.default_user_id.as_str().to_string();
@@ -448,7 +456,12 @@ pub async fn polish(
         .into_response()
 }
 
-async fn polish_message_polish_server(state: AppState, body: TextPolishBody) -> Response {
+async fn polish_message_polish_server(
+    state: AppState,
+    body: TextPolishBody,
+    mode: &str,
+) -> Response {
+    let mode = mode.to_string();
     let user_id = state.default_user_id.as_str().to_string();
     let pool = state.pool.clone();
     let transcript = body.text.clone();
@@ -467,6 +480,7 @@ async fn polish_message_polish_server(state: AppState, body: TextPolishBody) -> 
             &user_id,
             &transcript,
             None,
+            &mode,
         ).await {
             Ok((llm_result, model_used)) => {
                 let total_ms = total_start.elapsed().as_millis() as i64;

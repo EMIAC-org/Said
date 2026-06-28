@@ -93,38 +93,32 @@ body {
 }
 .onb-brand {
   position: relative;
+  isolation: isolate;
   background:
-    radial-gradient(80% 60% at 30% 30%, hsl(226 80% 60% / 0.12), transparent 55%),
-    radial-gradient(60% 50% at 80% 80%, hsl(220 60% 50% / 0.08), transparent 60%),
-    linear-gradient(180deg, hsl(240 6% 4% / 0.86) 0%, hsl(240 6% 6% / 0.88) 100%);
-  border-right: 1px solid hsl(0 0% 100% / 0.04);
+    radial-gradient(120% 85% at 16% 6%,  hsl(230 72% 34% / 0.40) 0%, transparent 52%),
+    radial-gradient(95% 80% at 90% 104%, hsl(256 64% 42% / 0.26) 0%, transparent 58%),
+    radial-gradient(60% 50% at 50% 46%,  hsl(226 84% 56% / 0.10) 0%, transparent 72%),
+    linear-gradient(168deg, hsl(240 13% 7.5%) 0%, hsl(240 15% 4.5%) 52%, hsl(240 18% 3%) 100%);
+  border-right: 1px solid hsl(0 0% 100% / 0.06);
   display: flex;
   flex-direction: column;
-  padding: 28px 36px;
+  padding: 34px 42px;
   overflow: hidden;
 }
+/* soft top-down vignette for depth */
+.onb-brand::before {
+  content: "";
+  position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background: radial-gradient(135% 105% at 50% -10%, transparent 50%, hsl(240 40% 2% / 0.6) 100%);
+}
+/* fine film grain — premium texture, replaces the cheap scanline */
 .onb-brand::after {
   content: "";
-  position: absolute; inset: 0;
-  background: repeating-linear-gradient(0deg, transparent 0, transparent 3px,
-                hsl(0 0% 100% / 0.012) 3px, hsl(0 0% 100% / 0.012) 4px);
-  pointer-events: none;
-  mix-blend-mode: overlay;
+  position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  opacity: 0.4; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
 }
-.onb-brand-mark {
-  width: 108px; height: 108px;
-  border-radius: 26px;
-  position: relative;
-  display: grid; place-items: center;
-  background:
-    radial-gradient(circle at 50% 30%, hsl(226 80% 78% / 0.10), transparent 60%),
-    linear-gradient(160deg, hsl(240 6% 14%) 0%, hsl(240 6% 7%) 100%);
-  box-shadow:
-    0 24px 60px hsl(0 0% 0% / 0.55),
-    inset 0 0 0 1px hsl(0 0% 100% / 0.07),
-    inset 0 1px 0 hsl(0 0% 100% / 0.04);
-  color: hsl(0 0% 96%);
-}
+.onb-brand > * { position: relative; z-index: 1; }
 .onb-form {
   position: relative;
   background: hsl(240 5% 6% / 0.84);
@@ -135,14 +129,43 @@ body {
 }
 
 /* Brand panel inner (was inline styles in OnboardingShell.tsx) */
-.brand-top { position: relative; z-index: 1; display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 500; color: hsl(var(--foreground)); }
-.brand-top .mk { width: 18px; height: 18px; display: inline-grid; place-items: center; color: hsl(var(--foreground)); }
-.brand-center { position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; text-align: center; }
-.brand-name { font-size: 44px; font-weight: 500; letter-spacing: -0.035em; line-height: 1; color: hsl(var(--foreground)); }
-.brand-tagline { font-size: 13.5px; color: hsl(var(--muted-foreground)); line-height: 1.55; max-width: 280px; margin: 12px auto 0; }
-.brand-foot { position: relative; z-index: 1; padding-top: 16px; border-top: 1px solid hsl(var(--border)); }
-.brand-kicker { display: block; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 6px; color: hsl(var(--muted-foreground)); }
-.brand-quote { font-size: 12.5px; font-style: italic; line-height: 1.6; color: hsl(var(--foreground) / 0.85); margin: 0; }
+/* Quiet corner brand lockup */
+.brand-top { display: inline-flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; color: hsl(var(--foreground) / 0.92); }
+.brand-top .mk {
+  width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 8px;
+  color: hsl(224 95% 82%);
+  background: linear-gradient(150deg, hsl(240 8% 16% / 0.9), hsl(240 10% 9% / 0.9));
+  box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.08), 0 2px 8px hsl(0 0% 0% / 0.4);
+}
+
+.brand-center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30px; text-align: center; }
+
+/* ── Voice waveform hero — the centrepiece, replaces the boxed icon ── */
+.brand-wave {
+  display: flex; align-items: center; justify-content: center; gap: 3px;
+  height: 128px; width: 100%; max-width: 320px;
+  filter: drop-shadow(0 8px 30px hsl(226 92% 60% / 0.34));
+}
+.brand-wave .bar {
+  width: 3.5px; border-radius: 999px;
+  background: linear-gradient(to top, hsl(226 78% 60% / 0.45) 0%, hsl(223 96% 82%) 100%);
+}
+.brand-halo {
+  position: absolute; width: 360px; height: 360px; border-radius: 50%; z-index: 0; pointer-events: none;
+  background: radial-gradient(circle, hsl(226 90% 60% / 0.16) 0%, transparent 62%);
+  filter: blur(8px);
+}
+
+.brand-headline {
+  font-size: 21px; font-weight: 500; letter-spacing: -0.02em; line-height: 1.45;
+  color: hsl(var(--foreground) / 0.95); max-width: 312px; margin: 0; text-wrap: balance;
+}
+
+/* Refined pull-quote footer */
+.brand-foot { padding-top: 22px; border-top: 1px solid hsl(0 0% 100% / 0.07); }
+.brand-kicker { display: inline-flex; align-items: center; gap: 7px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.18em; margin-bottom: 9px; color: hsl(224 80% 78% / 0.92); }
+.brand-kicker::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: hsl(224 90% 76%); box-shadow: 0 0 8px hsl(224 90% 70% / 0.8); }
+.brand-quote { font-size: 13.5px; font-style: normal; line-height: 1.62; color: hsl(var(--foreground) / 0.74); margin: 0; max-width: 380px; }
 
 /* Form panel inner */
 .form-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; min-height: 36px; }
@@ -267,6 +290,20 @@ body {
 .divider { display: flex; align-items: center; gap: 12px; margin: 4px 0; }
 .divider .line { height: 1px; flex: 1; background: hsl(var(--border)); }
 .divider .or { font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: hsl(var(--muted-foreground)); }
+
+/* Field label (e.g. "Server URL") */
+.field-label { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: hsl(var(--foreground)); margin: 0 0 8px; }
+.field-label i { color: hsl(var(--muted-foreground)); }
+
+/* De-noised OAuth status — one compact line, not a wall of text */
+.lark-status { display: flex; gap: 10px; align-items: flex-start; padding: 11px 13px; border-radius: 10px; background: hsl(210 50% 12% / 0.5); box-shadow: inset 0 0 0 1px hsl(210 60% 60% / 0.14); }
+.lark-status .spin { color: hsl(210 80% 74%); flex-shrink: 0; margin-top: 1px; animation: spin 1s linear infinite; }
+.ls-title { margin: 0; font-size: 12.5px; font-weight: 600; color: hsl(210 75% 82%); }
+.ls-sub { margin: 3px 0 0; font-size: 11.5px; line-height: 1.5; color: hsl(210 25% 72% / 0.8); }
+.ls-sub a { color: inherit; text-decoration: underline; cursor: pointer; }
+.link-muted { background: none; border: none; font-family: inherit; cursor: pointer; font-size: 11.5px; color: hsl(var(--muted-foreground)); padding: 0; transition: color .12s; }
+.link-muted:hover { color: hsl(var(--foreground)); }
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -308,6 +345,23 @@ function brandMark(size) {
   return tpl.outerHTML;
 }
 
+// Frozen voice-waveform: bars under a smooth bell envelope with per-bar detail,
+// so it reads as a real spoken utterance rather than a static equalizer.
+function brandWave() {
+  const N = 56, minH = 7, maxH = 116;
+  let bars = "";
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1);
+    const env = Math.pow(Math.sin(Math.PI * t), 0.62);                 // fuller bell
+    const raw = Math.sin(i * 2.3) + 0.6 * Math.sin(i * 0.8 + 1.3) + 0.45 * Math.sin(i * 5.7 + 0.5);
+    const detail = 0.42 + 0.58 * ((raw + 2.05) / 4.1);                 // normalize ~0..1
+    let h = minH + (maxH - minH) * env * detail;
+    h = Math.max(minH, Math.min(maxH, h));
+    bars += `<span class="bar" style="height:${h.toFixed(1)}px"></span>`;
+  }
+  return `<div class="brand-wave">${bars}</div>`;
+}
+
 // stepnav: statuses keyed by step id → "done" | "current" | "pending"
 function stepnav(statuses) {
   return `<nav class="onb-stepnav" aria-label="Onboarding steps">${STEPS.map((s) => {
@@ -326,13 +380,13 @@ function shell({ stepIndex, eyebrow, title, subtitle, brandTagline, brandKicker,
   return `
   <div class="onb-split">
     <div class="onb-brand">
-      <div class="brand-top"><span class="mk">${brandMark(18)}</span>AirNote</div>
+      <div class="brand-top"><span class="mk">${brandMark(15)}</span>AirNote</div>
       <div class="brand-center">
-        <span class="onb-brand-mark">${brandMark(64)}</span>
-        <div>
-          <div class="brand-name">AirNote</div>
-          <p class="brand-tagline">${brandTagline}</p>
+        <div style="position:relative;display:flex;align-items:center;justify-content:center;width:100%">
+          <span class="brand-halo"></span>
+          ${brandWave()}
         </div>
+        <p class="brand-headline">${brandTagline}</p>
       </div>
       <div class="brand-foot">
         <span class="brand-kicker">${brandKicker}</span>
@@ -351,7 +405,6 @@ function shell({ stepIndex, eyebrow, title, subtitle, brandTagline, brandKicker,
         ${body}
       </div>
       <div class="form-foot">
-        ${stepnav(statuses)}
         <div class="bottom-note-row"><span>${bottomNote ?? `Step ${stepIndex + 1} of 5`}</span></div>
       </div>
     </div>
@@ -408,22 +461,30 @@ const accountPersonalBody = `
   </div>`;
 
 const accountWorkspaceBody = `
-  <div class="mt-7 flex flex-col gap-3">
-    <div class="flex items-center gap-2">
-      <input class="input" type="url" placeholder="http://localhost:3100" style="flex:1;font-size:12px" />
-      <button class="btn-primary" style="flex-shrink:0">Connect</button>
+  <div class="mt-7 flex flex-col gap-4">
+    <div>
+      <label class="field-label"><i data-lucide="link" style="width:13px;height:13px"></i> Server URL</label>
+      <input class="input" type="url" value="https://airnote-dev.103.180.163.41.sslip.io" />
     </div>
-    <div class="panel" style="padding:24px 20px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:16px;background:hsl(0 0% 100% / 0.025)">
-      <div style="width:46px;height:46px;border-radius:12px;background:hsl(var(--surface-4));display:grid;place-items:center;color:hsl(var(--primary))">
-        <i data-lucide="link" style="width:22px;height:22px"></i>
+
+    <!-- Single primary action: connect + Lark sign-in folded into one button -->
+    <button class="w-full" style="border-radius:10px;padding:11px 16px;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:10px;background:#fff;color:#1a1a1a;border:none;cursor:pointer;font-family:inherit;box-shadow:0 6px 18px -8px rgba(0,0,0,0.55)">
+      <i data-lucide="link" style="width:17px;height:17px"></i> Continue with Lark
+    </button>
+
+    <!-- Waiting state, de-noised: one compact status line + inline reopen -->
+    <div class="lark-status">
+      <i data-lucide="loader-2" class="spin" style="width:15px;height:15px"></i>
+      <div>
+        <p class="ls-title">Waiting for browser sign-in…</p>
+        <p class="ls-sub">Finish in your browser — we&rsquo;ll connect automatically. <a>Reopen</a></p>
       </div>
-      <div style="display:flex;flex-direction:column;gap:4px">
-        <p style="font-size:14px;font-weight:600;color:hsl(var(--foreground));margin:0">Sign in with Lark</p>
-        <p style="font-size:12px;color:hsl(var(--muted-foreground));line-height:1.5;max-width:260px;margin:0">Use your organization&rsquo;s Lark account. We&rsquo;ll open Lark in your browser and connect automatically.</p>
-      </div>
-      <button class="w-full" style="border-radius:12px;padding:10px 16px;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:10px;background:#fff;color:#1a1a1a;border:none;cursor:pointer;font-family:inherit;box-shadow:0 6px 18px -8px rgba(0,0,0,0.55)">
-        <i data-lucide="link" style="width:18px;height:18px"></i> Continue with Lark
-      </button>
+    </div>
+
+    <!-- One muted secondary row replaces 4 competing links -->
+    <div class="flex items-center justify-between" style="margin-top:2px">
+      <button class="link-muted">Cancel</button>
+      <button class="link-muted">Sign in with email instead</button>
     </div>
   </div>`;
 
@@ -511,7 +572,7 @@ const screens = [
     tag: "Step 2b", note: "Account — connect workspace (enterprise / Lark)",
     cfg: {
       stepIndex: 1, eyebrow: "Workspace", title: "Connect your workspace.",
-      subtitle: "Enter your organization's server URL, then sign in. For teams on a self-hosted AirNote server.",
+      subtitle: "Enter your organization's server URL and sign in with Lark.",
       brandTagline: "Enterprise AirNote runs on your organization's server — your data stays in your workspace.",
       brandKicker: "Workspace sign-in",
       brandQuote: "One workspace login, then every device knows who you are.",

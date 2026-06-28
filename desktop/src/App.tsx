@@ -61,12 +61,6 @@ import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
-interface SwiftModelStatus {
-  installed: boolean;
-  size_bytes: number;
-  path: string;
-}
-
 export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "meetings" | "divo" | "settings" | "live-meeting";
 const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "meetings", "divo", "settings", "live-meeting"];
 type SettingsSectionId =
@@ -212,7 +206,6 @@ export default function App() {
       return false;
     }
   });
-  const [swiftModelInstalled, setSwiftModelInstalled] = useState<boolean | null>(null);
   // ── Retry toast ───────────────────────────────────────────────────────────
   const [retryToast, setRetryToast] = useState<{ message: string; audioId: string } | null>(null);
 
@@ -296,25 +289,6 @@ export default function App() {
       });
     refreshHistory();
   }, [refreshHistory]);
-
-  useEffect(() => {
-    if (!snapshot?.platform) return;
-    if (snapshot.platform !== "macos") {
-      setSwiftModelInstalled(true);
-      return;
-    }
-    let alive = true;
-    invoke<SwiftModelStatus>("dictation_model_status")
-      .then((status) => {
-        if (alive) setSwiftModelInstalled(status.installed);
-      })
-      .catch(() => {
-        if (alive) setSwiftModelInstalled(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [snapshot?.platform]);
 
   useEffect(() => {
     let alive = true;
@@ -725,14 +699,14 @@ export default function App() {
 
   const corePermissionsReady =
     !!snapshot?.microphone_granted &&
-    !!snapshot?.accessibility_granted &&
-    !!snapshot?.input_monitoring_granted;
+    (snapshot.platform === "windows" ||
+      (!!snapshot?.accessibility_granted && !!snapshot?.input_monitoring_granted));
 
   const needsEnterprise = enterpriseGate === "required";
-  const swiftSetupRequired = snapshot?.platform === "macos" && swiftModelInstalled !== true;
-  const needsSetup = !corePermissionsReady || !onboardingComplete || swiftSetupRequired;
+  const localModelSetupRequired = false;
+  const needsSetup = !corePermissionsReady || !onboardingComplete || localModelSetupRequired;
   const workspaceOnly =
-    needsEnterprise && onboardingComplete && corePermissionsReady && !swiftSetupRequired;
+    needsEnterprise && onboardingComplete && corePermissionsReady && !localModelSetupRequired;
 
   if (needsEnterprise || needsSetup) {
     return (
@@ -741,8 +715,7 @@ export default function App() {
         workspaceOnly={workspaceOnly}
         enterpriseRequired={needsEnterprise}
         initialProgress={loadOnboardingProgress()}
-        requireLocalModelSetup={swiftSetupRequired}
-        onLocalModelReady={() => setSwiftModelInstalled(true)}
+        requireLocalModelSetup={localModelSetupRequired}
         onEnterpriseConnected={handleEnterpriseConnected}
         onMicrophone={handleMicrophone}
         onAccessibility={handleAccessibility}

@@ -227,6 +227,10 @@ pub struct MessagePolishRequest {
     pub text: String,
     #[serde(default)]
     pub client_run_id: Option<String>,
+    /// Which helper is asking: "polish" (⌥1, default) or "to_english" (⌥2).
+    /// Both run on DeepSeek; the mode only swaps the prompt directive.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -287,6 +291,8 @@ pub struct VoicePolishRequest {
     pub client_run_id: Option<String>,
     #[serde(default)]
     pub client_profile_markdown: Option<String>,
+    #[serde(default)]
+    pub client_profile_version: Option<i64>,
     /// Optional per-request tone override (e.g. the iOS keyboard "rewrite selection"
     /// picks a tone per tap). When present it wins over the account's saved tone_preset;
     /// when absent — every existing caller — behavior is byte-for-byte unchanged.
@@ -2978,32 +2984,15 @@ pub async fn voice_wav(
 // DeepSeek base-url + model are read once at startup into AppState
 // (deepseek_base_url / deepseek_message_polish_model).
 
+// The message-polish prompt now lives in `crate::message_helpers` (single
+// source of truth, shared by ⌥1/⌥2 and the voice "Polish mode"). These thin
+// wrappers keep the voice path on `Polish` mode.
 fn build_message_polish_system_prompt() -> String {
-    "You are a stateless text processing utility. Your sole function is to transform input text into a professional English format.\n\n\
-     Execution Rules:\n\n\
-     No Dialogue: Do NOT answer questions. Do NOT ask for context. Do NOT provide \"Introduction Mode\" unless the input is specifically \"Hello\" or \"Who are you?\".\n\n\
-     Handle Questions as Data: If the user provides a question (e.g., \"What went wrong?\"), do NOT answer it. Instead, rephrase it into a formal professional inquiry (e.g., \"Please provide a detailed explanation regarding the cause of the discrepancy.\").\n\n\
-     Translation: Automatically detect Hindi/Hinglish and translate to English before rephrasing.\n\n\
-     Tone: Always use a clear, polite, and professional tone.\n\n\
-     Readable Formatting: Make the output ready to send to another person. Do NOT return a long wall of text when the message contains multiple ideas.\n\n\
-     Paragraphing: For outputs longer than about 45 words, split into short paragraphs of 1-3 sentences each. Put a blank line between paragraphs.\n\n\
-     Lists: If the input contains multiple action items, issues, requirements, or questions, use concise bullet points. Do not use bullets for a simple one-topic message.\n\n\
-     Preserve Structure: Preserve meaningful line breaks from the input when they help readability, but clean them up professionally.\n\n\
-     Short Messages: If the input is short and naturally one idea, keep it as a single polished paragraph.\n\n\
-     Output Format (Strict): Return ONLY the final rephrased text, including useful paragraph breaks or bullets when appropriate.\n\n\
-     No quotation marks.\n\n\
-     No introductory phrases (e.g., \"Here is the rephrased version\").\n\n\
-     No conversational filler.\n\n\
-     Input-to-Output Examples:\n\n\
-     Input: \"What went wrong and why\"\n\n\
-     Output: Could you please provide a detailed explanation regarding the root cause of these issues?\n\n\
-     Input: \"kaam kab tak khatam hoga?\"\n\n\
-     Output: Could you please provide an estimated timeline for the completion of the task?"
-        .to_string()
+    crate::message_helpers::build_system_prompt(crate::message_helpers::HelperMode::Polish)
 }
 
 fn build_message_polish_user_message(text: &str) -> String {
-    text.to_string()
+    crate::message_helpers::build_user_message(crate::message_helpers::HelperMode::Polish, text)
 }
 
 fn scrub_message_polish_output(output: &str) -> String {
@@ -3306,9 +3295,10 @@ pub async fn message_polish(
     )
     .await?;
 
+    let mode = crate::message_helpers::HelperMode::parse(req.mode.as_deref());
     let prompt_start = Instant::now();
-    let system_prompt = build_message_polish_system_prompt();
-    let user_message = build_message_polish_user_message(text);
+    let system_prompt = crate::message_helpers::build_system_prompt(mode);
+    let user_message = crate::message_helpers::build_user_message(mode, text);
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
 
     let model = deepseek_message_polish_model(&state);
@@ -3363,7 +3353,7 @@ pub async fn message_polish(
         run_id: run_id.to_string(),
         output,
         model_used: model,
-        prompt_version: "message-polish-deepseek-2026-06-09".to_string(),
+        prompt_version: format!("message-helper-{}-deepseek-2026-06-27", mode.as_str()),
         latency_ms: RuntimeLatency {
             prompt: prompt_ms,
             model: model_ms,
@@ -3894,6 +3884,11 @@ async fn execute_voice_polish(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let profile_snapshot = crate::prompt_profile_telemetry::snapshot_from_raw(profile_md);
+    let prompt_built_meta = crate::prompt_profile_telemetry::prompt_built_metadata(
+        &profile_snapshot,
+        req.client_profile_version,
+    );
 
     let (system_prompt, user_message) = if is_rewrite {
         (
@@ -3945,15 +3940,15 @@ async fn execute_voice_polish(
         } else {
             "voice_polish"
         },
-        profile_version: None,
-        profile_status: if profile_md.is_some() {
+        profile_version: req.client_profile_version,
+        profile_status: if profile_snapshot.profile_chars > 0 {
             "client_local"
         } else {
             "missing"
         },
         profile_cache_hit: false,
-        profile_chars: profile_md.map(|p| p.chars().count()).unwrap_or(0),
-        profile_injected: !is_rewrite && profile_md.is_some(),
+        profile_chars: profile_snapshot.profile_chars,
+        profile_injected: !is_rewrite && profile_snapshot.profile_chars > 0,
         transcript_chars: transcript.chars().count(),
         user_message: &user_message,
         system_prompt: &system_prompt,
@@ -3963,6 +3958,7 @@ async fn execute_voice_polish(
     {
         // Telemetry only — fire-and-forget so it never gates the model call (#4).
         let bg = state.clone();
+        let meta = prompt_built_meta.clone();
         tokio::spawn(async move {
             let _ = insert_stage_event(
                 &bg,
@@ -3971,7 +3967,7 @@ async fn execute_voice_polish(
                 "ok",
                 Some(prompt_ms),
                 None,
-                json!({"prompt_version": said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION}),
+                meta,
             )
             .await;
         });
@@ -4139,6 +4135,9 @@ async fn execute_voice_polish(
         let bg_account_id = user.account_id;
         let bg_model = model.to_string();
         let org_id_for_history = tenant_ctx.active_org_id;
+        let org_scope_for_profile = crate::profile::resolve_org_scope(&tenant_ctx);
+        let bg_profile_snapshot = profile_snapshot;
+        let bg_client_profile_version = req.client_profile_version;
         tokio::spawn(async move {
             if let Some(ref credential) = bg_credential {
                 let _ = update_credential_used(&bg_state, credential.credential_id).await;
@@ -4158,6 +4157,22 @@ async fn execute_voice_polish(
                 let _ =
                     insert_stage_event(&bg_state, run_id, name, "ok", latency_ms, None, payload)
                         .await;
+            }
+            if let Err(err) = crate::prompt_profile_telemetry::upsert_latest(
+                &bg_state.db,
+                bg_account_id,
+                org_scope_for_profile,
+                run_id,
+                &bg_profile_snapshot,
+                bg_client_profile_version,
+            )
+            .await
+            {
+                tracing::warn!(
+                    "[runtime] prompt profile telemetry upsert failed account={} run_id={}: {err}",
+                    bg_account_id,
+                    run_id,
+                );
             }
             let _ = mark_runtime_session(&bg_state, run_id, "completed", None).await;
             crate::routes::runtime_history::write_history_from_runtime(

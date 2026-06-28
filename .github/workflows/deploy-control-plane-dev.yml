@@ -89,6 +89,9 @@ jobs:
           test -n "${{ secrets.DEPLOY_USER }}" || (echo "DEPLOY_USER is missing" && exit 1)
           test -n "${{ secrets.DEPLOY_SSH_KEY }}" || (echo "DEPLOY_SSH_KEY is missing" && exit 1)
           test -n "${{ secrets.CEREBRAS_API_KEY }}" || (echo "CEREBRAS_API_KEY is missing" && exit 1)
+          test -n "${{ secrets.DEEPSEEK_API_KEY }}" || (echo "DEEPSEEK_API_KEY is missing" && exit 1)
+          test -n "${{ secrets.OPENAI_API_KEY }}" || (echo "OPENAI_API_KEY is missing" && exit 1)
+          test -n "${{ secrets.DEEPINFRA_API_KEY }}" || (echo "DEEPINFRA_API_KEY is missing" && exit 1)
           test -n "${{ secrets.DEEPGRAM_API_KEY_1 }}" || (echo "DEEPGRAM_API_KEY_1 is missing" && exit 1)
 
       - name: Configure SSH
@@ -103,6 +106,9 @@ jobs:
         shell: bash
         env:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
           DEEPGRAM_API_KEY_1: ${{ secrets.DEEPGRAM_API_KEY_1 }}
           DEEPGRAM_API_KEY_2: ${{ secrets.DEEPGRAM_API_KEY_2 }}
           DEEPGRAM_API_KEY_3: ${{ secrets.DEEPGRAM_API_KEY_3 }}
@@ -111,6 +117,9 @@ jobs:
             docker-compose.yml docker-compose.dev.yml Caddyfile README.md .env.example
           {
             printf 'CEREBRAS_API_KEY=%s\n' "$CEREBRAS_API_KEY"
+            printf 'DEEPSEEK_API_KEY=%s\n' "$DEEPSEEK_API_KEY"
+            printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
+            printf 'DEEPINFRA_API_KEY=%s\n' "$DEEPINFRA_API_KEY"
             printf 'DEEPGRAM_API_KEY_1=%s\n' "$DEEPGRAM_API_KEY_1"
             printf 'DEEPGRAM_API_KEY_2=%s\n' "$DEEPGRAM_API_KEY_2"
             printf 'DEEPGRAM_API_KEY_3=%s\n' "$DEEPGRAM_API_KEY_3"
@@ -201,6 +210,15 @@ jobs:
           docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -q "^CEREBRAS_API_KEY=." \
             || (echo "CEREBRAS_API_KEY was not propagated into the dev control-plane container" && exit 1)
+          docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -q "^DEEPSEEK_API_KEY=." \
+            || (echo "DEEPSEEK_API_KEY was not propagated into the dev control-plane container" && exit 1)
+          docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -q "^OPENAI_API_KEY=." \
+            || (echo "OPENAI_API_KEY was not propagated into the dev control-plane container" && exit 1)
+          docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -q "^DEEPINFRA_API_KEY=." \
+            || (echo "DEEPINFRA_API_KEY was not propagated into the dev control-plane container" && exit 1)
           docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -q "^DEEPGRAM_API_KEY_1=." \
             || (echo "DEEPGRAM_API_KEY_1 was not propagated into the dev control-plane container" && exit 1)

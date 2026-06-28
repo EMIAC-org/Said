@@ -175,7 +175,7 @@ fn emit(app: &AppHandle, received: u64, total: u64, status: &str, error: Option<
 
 fn http_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
-        .user_agent("AirNote/2.4.0 (+https://airnote.emiactech.com; swift-stt-model-download)")
+        .user_agent("AirNote/2.4.1 (+https://airnote.emiactech.com; swift-stt-model-download)")
         .redirect(reqwest::redirect::Policy::limited(10))
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(600))

@@ -1,6 +1,7 @@
 import React from "react";
-import { ArrowLeft, Check } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
+import { BrandWave } from "@/components/BrandWave";
 
 export interface OnboardingStepNavItem {
   id: string;
@@ -20,11 +21,6 @@ export function OnboardingShell({
   topRight,
   bottomNote,
   onBack,
-  steps,
-  currentStepIndex,
-  maxReachableIndex,
-  stepStatus,
-  onStepSelect,
   children,
 }: {
   step: number;
@@ -57,62 +53,19 @@ export function OnboardingShell({
       />
 
       <div className="onb-brand">
-        <div className="relative z-10 flex items-center gap-2 text-[12.5px] font-medium" style={{ color: "hsl(var(--foreground))" }}>
-          <span style={{ width: 18, height: 18, display: "inline-grid", placeItems: "center", color: "hsl(var(--foreground))" }}>
-            <BrandMark size={18} />
-          </span>
+        <div className="onb-brand-lockup">
+          <span className="mk"><BrandMark size={15} /></span>
           AirNote
         </div>
 
-        <div className="relative z-10 flex-1 flex flex-col items-center justify-center gap-6 text-center">
-          <span className="onb-brand-mark">
-            <BrandMark size={64} />
-          </span>
-          <div>
-            <div
-              style={{
-                fontSize: 44,
-                fontWeight: 500,
-                letterSpacing: "-0.035em",
-                lineHeight: 1,
-                color: "hsl(var(--foreground))",
-              }}
-            >
-              AirNote
-            </div>
-            <p
-              style={{
-                fontSize: 13.5,
-                color: "hsl(var(--muted-foreground))",
-                lineHeight: 1.55,
-                maxWidth: 280,
-                margin: "12px auto 0",
-              }}
-            >
-              {brandTagline}
-            </p>
-          </div>
+        <div className="onb-brand-center">
+          <BrandWave />
+          <p className="onb-brand-headline">{brandTagline}</p>
         </div>
 
-        <div
-          className="relative z-10 pt-4"
-          style={{
-            borderTop: "1px solid hsl(var(--border))",
-            color: "hsl(var(--muted-foreground) / 0.85)",
-          }}
-        >
-          <span
-            className="block text-[10.5px] font-semibold uppercase tracking-[0.14em] mb-1.5"
-            style={{ color: "hsl(var(--muted-foreground))" }}
-          >
-            {brandKicker}
-          </span>
-          <p
-            className="text-[12.5px] italic leading-relaxed"
-            style={{ color: "hsl(var(--foreground) / 0.85)" }}
-          >
-            “{brandQuote}”
-          </p>
+        <div className="onb-brand-foot">
+          <span className="onb-brand-kicker">{brandKicker}</span>
+          <p className="onb-brand-quote">“{brandQuote}”</p>
         </div>
       </div>
 
@@ -186,36 +139,6 @@ export function OnboardingShell({
         </div>
 
         <div className="flex flex-col gap-2 flex-shrink-0">
-          {steps && steps.length > 0 && (
-            <nav className="onb-stepnav" aria-label="Onboarding steps">
-              {steps.map((item) => {
-                const status = stepStatus?.[item.id] ?? "pending";
-                const reachable =
-                  typeof maxReachableIndex === "number" && item.index <= maxReachableIndex;
-                const isCurrent =
-                  typeof currentStepIndex === "number" && item.index === currentStepIndex;
-                const clickable = reachable && !isCurrent && !!onStepSelect;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={`onb-stepnav-pill onb-stepnav-${status}${clickable ? " onb-stepnav-clickable" : ""}${!reachable ? " onb-stepnav-locked" : ""}`}
-                    disabled={!clickable}
-                    onClick={() => clickable && onStepSelect?.(item.index)}
-                    aria-current={isCurrent ? "step" : undefined}
-                    title={item.label}
-                  >
-                    {status === "done" ? (
-                      <Check size={10} strokeWidth={2.5} className="onb-stepnav-check" />
-                    ) : (
-                      <span className="onb-stepnav-dot" />
-                    )}
-                    <span className="onb-stepnav-label">{item.label}</span>
-                  </button>
-                );
-              })}
-            </nav>
-          )}
           <div className="flex items-center justify-end" style={{ minHeight: 24 }}>
             <span className="text-[11px]" style={{ color: "hsl(var(--muted-foreground) / 0.6)" }}>
               {bottomNote ?? `Step ${step + 1} of ${totalSteps}`}

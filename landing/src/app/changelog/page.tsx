@@ -28,55 +28,55 @@ export const metadata: Metadata = {
 };
 
 const latest = {
-  version: "2.4.0",
-  date: "Jun 18, 2026",
-  title: "Learning, review card, and light-mode polish",
+  version: "2.4.1",
+  date: "Jun 27, 2026",
+  title: "Faster, better, cleaner dictation",
   intro:
-    "AirNote 2.4.0 fixes the recent learning-review regression, keeps actionable review cards visible, routes server polishing through the safer smart path, and refreshes the desktop colors for light mode.",
+    "AirNote 2.4.1 is the current stable desktop release for macOS and Windows, focused on faster polish, cleaner local-model setup, and more reliable updates.",
   sections: [
     {
-      id: "learning-pipeline",
-      eyebrow: "#Learning",
-      title: "Single correction learning is restored",
-      icon: ShieldCheck,
+      id: "faster",
+      eyebrow: "#Faster",
+      title: "Faster dictation handoff",
+      icon: ArrowDownToLine,
       body: [
-        "Server-side review candidates no longer block the existing safe auto-learn path when the edit is one clear STT correction.",
-        "Corrections such as product names, tools, and short jargon terms can again pass through the local single-change validation and alias-safety gates.",
+        "Dictation now moves through capture, local transcription, polish, and paste with fewer avoidable waits.",
+        "The app keeps the fast status feedback path while the final text lands through the more reliable completed-output path.",
       ],
       bullets: [
-        "Restores the safe single-change learning path",
-        "Keeps ambiguous multi-candidate edits in review",
-        "Preserves validation, alias-safety, and lexicon invalidation",
+        "Lower post-recording wait",
+        "Cleaner polish handoff",
+        "Better retry state tracking",
       ],
     },
     {
-      id: "review-card",
-      eyebrow: "#Review Card",
-      title: "Review prompts stay visible",
+      id: "better",
+      eyebrow: "#Better",
+      title: "Better local model behavior",
       icon: Bell,
       body: [
-        "The status-bar state machine now preserves interactive review and confirmation prompts through idle resyncs.",
-        "Review cards are treated as actionable prompts, so they are not hidden by passive word-learned notification settings.",
+        "The local speech model path is treated as a first-class setup path, with clearer download and readiness checks.",
+        "Windows and macOS ship from separate update manifests so one platform release no longer disturbs the other.",
       ],
       bullets: [
-        "Prevents review cards from flashing and disappearing",
-        "Stops paste auto-hide from overwriting action prompts",
-        "Keeps passive notification preferences separate from review actions",
+        "Current Mac DMG",
+        "Current Windows setup",
+        "Per-platform updater manifests",
       ],
     },
     {
-      id: "desktop-polish",
-      eyebrow: "#Desktop Polish",
-      title: "Light mode and runtime routing are cleaner",
-      icon: Sun,
+      id: "cleaner",
+      eyebrow: "#Cleaner",
+      title: "Cleaner recovery and update UX",
+      icon: ShieldCheck,
       body: [
-        "The desktop UI uses clearer light-mode surfaces and token-based colors across the pages that looked washed out or mismatched.",
-        "Server runtime requests route through smart-mode output so users on older fast-mode selections avoid degraded polishing while the server runtime is being unified.",
+        "Failure states now keep more useful local context, so users can retry recent audio instead of speaking again.",
+        "The update flow keeps automatic checks and the manual Settings > About check pointed at the current stable release.",
       ],
       bullets: [
-        "Better light-mode contrast and hierarchy",
-        "Meetings and Divo colors no longer depend on hardcoded dark fills",
-        "Fast and smart selections use the safer smart server route",
+        "Saved failed audio",
+        "Status-bar recovery card",
+        "Current 2.4.1 downloads only",
       ],
     },
   ],
@@ -84,69 +84,42 @@ const latest = {
 
 const noteGroups = [
   {
-    title: "Learning",
+    title: "Faster",
     count: 3,
     items: [
-      "Restored auto-learning for one clear STT correction after the server raw-judge path returns one candidate.",
-      "Kept multi-candidate and ambiguous learning edits in review instead of auto-persisting them.",
-      "Preserved centralized validation, alias-safety checks, lexicon invalidation, and retrain scheduling.",
+      "Reduced avoidable delay between recording release and final polish.",
+      "Kept live status feedback fast while final insertion uses completed output.",
+      "Improved retry bookkeeping so failed runs can be recovered quickly.",
     ],
   },
   {
-    title: "Review UI",
+    title: "Better",
     count: 3,
     items: [
-      "Preserved review, confirmation, error, and paste/manual-paste HUD states through idle status-bar resyncs.",
-      "Separated actionable review cards from the passive Word learned notification toggle.",
-      "Stopped paste auto-hide timers from clearing review and confirmation prompts.",
+      "Aligned production runtime credentials for the current polish and transcription paths.",
+      "Kept macOS and Windows updater manifests independent per platform.",
+      "Improved local-model setup and readiness checks for desktop installs.",
     ],
   },
   {
-    title: "Verification",
+    title: "Cleaner",
     count: 3,
     items: [
-      "Validated the full repository gate with just check before merging to main.",
-      "Built, signed, notarized, stapled, and Gatekeeper-verified the Apple Silicon DMG.",
-      "Published the Darwin updater manifest while leaving the Windows updater manifest untouched.",
+      "Published the signed, notarized, stapled Apple Silicon DMG.",
+      "Updated the landing and changelog download links to the current stable version.",
+      "Removed stale historical download buttons so users only see supported artifacts.",
     ],
   },
 ];
 
 const releaseDownloads = [
   {
-    version: "2.4.0",
-    date: "Jun 18, 2026",
+    version: "2.4.1",
+    date: "Jun 27, 2026",
     title: "Latest stable",
-    downloads: [{ platform: "Mac", label: "Mac DMG", href: downloads.mac.latestDmg }],
-  },
-  {
-    version: "2.3.9",
-    date: "Jun 17, 2026",
-    title: "Crash-hardened desktop runtime",
-    downloads: [],
-  },
-  {
-    version: "2.3.8",
-    date: "Jun 17, 2026",
-    title: "Cleaner stream shutdown",
-    downloads: [],
-  },
-  {
-    version: "2.3.7",
-    date: "Jun 15, 2026",
-    title: "Bluetooth-safe dictation",
-    downloads: [],
-  },
-  {
-    version: "2.3.6",
-    date: "Jun 2026",
-    title: "Windows stable setup",
     downloads: [
-      {
-        platform: "Windows",
-        label: "Windows setup",
-        href: "https://airnote.emiactech.com/releases/2.3.6/AirNote_2.3.6_x64-setup.exe",
-      },
+      { platform: "Mac", label: "Mac DMG", href: downloads.mac.latestDmg },
+      { platform: "Windows", label: "Windows setup", href: downloads.windows.latestSetup },
     ],
   },
 ];
@@ -642,7 +615,7 @@ export default function ChangelogPage() {
                 href="#downloads"
                 className="inline-flex h-11 items-center rounded-full border border-white/10 bg-black/20 px-5 text-sm font-medium text-white/75 backdrop-blur-md transition-colors hover:bg-white/8 hover:text-white"
               >
-                Previous versions
+                Mac + Windows downloads
               </a>
               <a
                 href="/guide"
@@ -721,7 +694,7 @@ export default function ChangelogPage() {
               <Headphones className="h-4 w-4" />
               #Downloads
             </div>
-            <h2 className="text-3xl font-semibold tracking-tight text-white">Stable downloads</h2>
+            <h2 className="text-3xl font-semibold tracking-tight text-white">Current stable downloads</h2>
             <div className="mt-7 divide-y divide-white/10 rounded-2xl border border-white/10 bg-white/[0.035]">
               {releaseDownloads.map((release) => (
                 <div key={release.version} className="grid gap-4 p-5 md:grid-cols-[1fr_auto] md:items-center">
@@ -735,22 +708,16 @@ export default function ChangelogPage() {
                     <p className="mt-3 text-sm text-white/62">{release.title}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {release.downloads.length > 0 ? (
-                      release.downloads.map((download) => (
-                        <a
-                          key={download.href}
-                          href={download.href}
-                          className="inline-flex h-10 items-center gap-2 rounded-full border border-white/10 bg-black/20 px-4 text-sm font-medium text-white/78 transition-colors hover:bg-white/10 hover:text-white"
-                        >
-                          <DownloadIcon platform={download.platform} />
-                          {download.label}
-                        </a>
-                      ))
-                    ) : (
-                      <span className="inline-flex h-10 items-center rounded-full border border-white/10 bg-black/20 px-4 text-sm font-medium text-white/45">
-                        Archived artifact unavailable
-                      </span>
-                    )}
+                    {release.downloads.map((download) => (
+                      <a
+                        key={download.href}
+                        href={download.href}
+                        className="inline-flex h-10 items-center gap-2 rounded-full border border-white/10 bg-black/20 px-4 text-sm font-medium text-white/78 transition-colors hover:bg-white/10 hover:text-white"
+                      >
+                        <DownloadIcon platform={download.platform} />
+                        {download.label}
+                      </a>
+                    ))}
                   </div>
                 </div>
               ))}

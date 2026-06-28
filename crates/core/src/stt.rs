@@ -298,16 +298,14 @@ pub const DEEPGRAM_ENV_KEY_CANDIDATES: &[&str] = &[
 pub const BUNDLED_DEEPGRAM_API_KEY: Option<&str> = option_env!("DEEPGRAM_API_KEY");
 
 /// Resolve the Deepgram key: runtime env (dev/server) → build-time bundled key
-/// (shipped app). `pref_key` is accepted for call-site stability, but users no
-/// longer supply a Deepgram key — it is always provided by the build/env.
+/// (shipped app) → legacy saved preference. Users no longer supply a Deepgram
+/// key, so old/stale preference values must not override the managed key.
 pub fn resolve_deepgram_api_key(pref_key: Option<&str>) -> Option<String> {
-    non_empty_opt(pref_key)
-        .or_else(|| {
-            DEEPGRAM_ENV_KEY_CANDIDATES
-                .iter()
-                .find_map(|key| non_empty_opt(std::env::var(key).ok().as_deref()))
-        })
+    DEEPGRAM_ENV_KEY_CANDIDATES
+        .iter()
+        .find_map(|key| non_empty_opt(std::env::var(key).ok().as_deref()))
         .or_else(|| non_empty_opt(BUNDLED_DEEPGRAM_API_KEY))
+        .or_else(|| non_empty_opt(pref_key))
 }
 
 /// How audio reached STT for this run (`ws_prewarm`, `http_batch`).

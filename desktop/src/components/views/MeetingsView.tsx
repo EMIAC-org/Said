@@ -1211,6 +1211,11 @@ export function MeetingsView({
   const [meetingAi, setMeetingAi] = useState<MeetingIntelligenceResult | null>(null);
   const [meetingAiLoading, setMeetingAiLoading] = useState(false);
   const [meetingAiError, setMeetingAiError] = useState<string | null>(null);
+  const [reanalyzeContextOpen, setReanalyzeContextOpen] = useState(false);
+  const [reanalyzeContext, setReanalyzeContext] = useState("");
+  const [reanalyzeContextError, setReanalyzeContextError] = useState<string | null>(null);
+  const reanalyzeRequestSeqRef = useRef(0);
+  const reanalyzeActiveMeetingRef = useRef<string | null>(null);
   const [artifacts, setArtifacts] = useState<MeetingCachedArtifacts | null>(null);
   const [artifactsLoading, setArtifactsLoading] = useState(false);
   const [completedActions, setCompletedActions] = useState<Set<string>>(new Set());
@@ -1234,6 +1239,7 @@ export function MeetingsView({
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [audioRate, setAudioRate] = useState(1);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
 
   const fetchMeetings = useCallback(async (opts?: { background?: boolean }) => {
     // Background refreshes (interval polls) never toggle the spinner — they
@@ -1328,7 +1334,32 @@ export function MeetingsView({
     }
   }, [downloadingModel, refreshHasModel]);
 
+  const ensureScreenRecordingReady = useCallback(async () => {
+    try {
+      const granted = await invoke<boolean>("screen_recording_granted");
+      if (granted) return true;
+
+      // Raises the macOS prompt the first time and opens the Screen Recording
+      // pane; macOS usually only honors a fresh grant after a relaunch.
+      const requested = await invoke<boolean>("request_screen_recording");
+      if (requested) return true;
+
+      setError(
+        "AirNote needs Screen Recording permission to capture meeting audio. Enable it in System Settings → Privacy & Security → Screen Recording, then reopen AirNote and try again.",
+      );
+      return false;
+    } catch (err) {
+      console.warn("[meeting] screen recording permission check failed:", err);
+      setError(
+        "AirNote could not verify Screen Recording permission. Enable it in System Settings → Privacy & Security → Screen Recording, then reopen AirNote and try again.",
+      );
+      return false;
+    }
+  }, []);
+
   const startNewLocalMeeting = useCallback(async () => {
+    if (!(await ensureScreenRecordingReady())) return;
+
     setCreating(true);
     setError("");
     try {
@@ -1341,7 +1372,7 @@ export function MeetingsView({
     } finally {
       setCreating(false);
     }
-  }, [onJoinMeeting]);
+  }, [ensureScreenRecordingReady, onJoinMeeting]);
 
   const findRunningProcessingMeeting = useCallback(async (): Promise<ProcessingStartWarning | null> => {
     for (const meeting of meetings) {
@@ -1370,20 +1401,7 @@ export function MeetingsView({
     // (ScreenCaptureKit). Check it FIRST and prompt if missing — never start
     // capture and surprise the user with the macOS dialog mid-meeting. (No-op on
     // platforms without this permission; the command returns true there.)
-    try {
-      const granted = await invoke<boolean>("screen_recording_granted");
-      if (!granted) {
-        // Raises the macOS prompt the first time and opens the Screen Recording
-        // pane; macOS usually only honors a fresh grant after a relaunch.
-        await invoke<boolean>("request_screen_recording");
-        setError(
-          "AirNote needs Screen Recording permission to capture meeting audio. Enable it in System Settings → Privacy & Security → Screen Recording, then reopen AirNote and try again.",
-        );
-        return;
-      }
-    } catch {
-      /* permission probe failed — fall through; capture surfaces its own error */
-    }
+    if (!(await ensureScreenRecordingReady())) return;
 
     if (hasModel === false) {
       void downloadMeetingModel();
@@ -1411,7 +1429,13 @@ export function MeetingsView({
     }
 
     await startNewLocalMeeting();
-  }, [downloadMeetingModel, findRunningProcessingMeeting, hasModel, startNewLocalMeeting]);
+  }, [
+    downloadMeetingModel,
+    ensureScreenRecordingReady,
+    findRunningProcessingMeeting,
+    hasModel,
+    startNewLocalMeeting,
+  ]);
 
   const handlePauseProcessingAndStart = useCallback(async () => {
     const warning = processingStartWarning;
@@ -1517,6 +1541,7 @@ export function MeetingsView({
   const selectedMeeting = selectedMeetingId
     ? sortedMeetings.find((meeting) => meeting.id === selectedMeetingId) ?? null
     : null;
+  selectedIdRef.current = selectedMeeting?.id ?? null;
 
   // Keep selectedMeetingId authoritative: pick the first meeting when nothing is
   // selected, and re-point it if the current selection was hidden/deleted/filtered
@@ -1817,25 +1842,53 @@ export function MeetingsView({
     await navigator.clipboard.writeText(text);
   }, [artifacts?.transcript]);
 
-  const handleReanalyze = useCallback(async () => {
+  const runMeetingAnalysis = useCallback(async (context?: string) => {
     if (!selectedMeeting || meetingAiLoading) return;
+    const meetingId = selectedMeeting.id;
+    if (reanalyzeActiveMeetingRef.current === meetingId) return;
+    reanalyzeActiveMeetingRef.current = meetingId;
+    const requestSeq = reanalyzeRequestSeqRef.current + 1;
+    reanalyzeRequestSeqRef.current = requestSeq;
     setMeetingAiLoading(true);
     setMeetingAiError(null);
+    setReanalyzeContextError(null);
     try {
       const result = await invoke<MeetingIntelligenceResult>("meeting_engine_generate_intelligence", {
-        meetingId: selectedMeeting.id,
+        meetingId,
+        userContext: context?.trim() || null,
       });
+      if (reanalyzeRequestSeqRef.current !== requestSeq || selectedIdRef.current !== meetingId) {
+        return;
+      }
       setMeetingAi(result);
+      setReanalyzeContextOpen(false);
+      setReanalyzeContext("");
       await refreshOverviews();
     } catch (err) {
-      setMeetingAiError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      if (reanalyzeRequestSeqRef.current !== requestSeq || selectedIdRef.current !== meetingId) {
+        return;
+      }
+      setMeetingAiError(message);
+      setReanalyzeContextError(message);
     } finally {
-      setMeetingAiLoading(false);
+      if (reanalyzeActiveMeetingRef.current === meetingId) {
+        reanalyzeActiveMeetingRef.current = null;
+      }
+      if (reanalyzeRequestSeqRef.current === requestSeq && selectedIdRef.current === meetingId) {
+        setMeetingAiLoading(false);
+      }
     }
   }, [selectedMeeting, meetingAiLoading, refreshOverviews]);
 
-  const selectedIdRef = useRef<string | null>(null);
-  selectedIdRef.current = selectedMeeting?.id ?? null;
+  const handleReanalyze = useCallback(() => {
+    setReanalyzeContextOpen(true);
+    setReanalyzeContextError(null);
+  }, []);
+
+  const handleSubmitReanalysisContext = useCallback(() => {
+    void runMeetingAnalysis(reanalyzeContext);
+  }, [reanalyzeContext, runMeetingAnalysis]);
 
   const handleRetranscribe = useCallback(async () => {
     if (!selectedMeeting || retranscribing || procStatus?.running) return;
@@ -2775,11 +2828,15 @@ export function MeetingsView({
                           : meetingAiLoading
                             ? "Analyzing…"
                             : meetingAi?.summary
-                              ? "Reanalyse"
+                              ? "Reanalyze with context"
                               : "Generate"
                       }
                       disabled={meetingAiLoading || Boolean(procStatus?.running)}
-                      onClick={handleReanalyze}
+                      onClick={
+                        meetingAi?.summary
+                          ? handleReanalyze
+                          : () => void runMeetingAnalysis("")
+                      }
                     />
                     <CopyButton label="Copy" disabled={!meetingAi?.summary} onCopy={copySummary} />
                     {(() => {
@@ -2839,6 +2896,78 @@ export function MeetingsView({
                         Reconnect Lark
                       </button>
                     ) : null}
+                  </div>
+                ) : null}
+                {reanalyzeContextOpen ? (
+                  <div
+                    className="mb-5 rounded-xl p-4"
+                    style={{
+                      background: "hsl(var(--surface-3))",
+                      border: "1px solid hsl(var(--border))",
+                    }}
+                  >
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div>
+                        <h4 className="text-[13px] font-bold text-foreground">Reanalyze with context</h4>
+                        <p className="mt-1 max-w-[78ch] text-[12px] leading-5 text-muted-foreground">
+                          Add speaker names, company/product names, acronyms, meeting purpose, or points to emphasize/ignore.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setReanalyzeContextOpen(false)}
+                        className="rounded-md px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        Close
+                      </button>
+                    </div>
+                    <textarea
+                      value={reanalyzeContext}
+                      onChange={(event) => {
+                        setReanalyzeContext(event.currentTarget.value);
+                        setReanalyzeContextError(null);
+                      }}
+                      disabled={meetingAiLoading}
+                      rows={5}
+                      maxLength={2400}
+                      placeholder="Example: Speaker 1 is Abhishek, Speaker 2 is Sujeet. Emiac and MACOBS are company/product names. Emphasize deployment risks and ignore casual small talk."
+                      className="min-h-[120px] w-full resize-y rounded-lg bg-transparent px-3.5 py-3 text-[13px] leading-6 text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-60"
+                      style={{ border: "1px solid hsl(var(--border))" }}
+                    />
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-[11px] text-muted-foreground">
+                        {meetingAiLoading
+                          ? "Regeneration is running. You can switch tabs; AirNote will keep it going."
+                          : `${reanalyzeContext.length}/2400`}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        {reanalyzeContextError ? (
+                          <span className="max-w-[42ch] truncate text-[11px]" style={{ color: "hsl(354 85% 75%)" }}>
+                            {reanalyzeContextError}
+                          </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          disabled={meetingAiLoading}
+                          onClick={handleSubmitReanalysisContext}
+                          className="rounded-lg px-3.5 py-2 text-[12px] font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                          style={{
+                            background: "hsl(var(--primary))",
+                            color: "hsl(var(--primary-foreground))",
+                          }}
+                        >
+                          {meetingAiLoading ? (
+                            <span className="flex items-center gap-2">
+                              <Loader2 size={13} className="animate-spin" /> Reanalyzing…
+                            </span>
+                          ) : reanalyzeContext.trim() ? (
+                            "Submit context"
+                          ) : (
+                            "Run without context"
+                          )}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 ) : null}
                 {meetingAiLoading ? (
