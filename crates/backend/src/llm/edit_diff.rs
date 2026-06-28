@@ -14,13 +14,13 @@
 //!   3. Walk the LCS to produce a list of `Hunk`s — each hunk is one
 //!      contiguous run of "polish had X, user kept Y" (where either side
 //!      may be empty for pure insertions/deletions).
-//!   4. For each hunk, locate the corresponding window in the transcript
-//!      by aligning the hunk's polish-side token positions against the
-//!      transcript's tokens.  We use a simple positional align — if the
-//!      transcript and polish have the same token count, position N in one
-//!      maps to position N in the other.  Otherwise we record the
-//!      transcript window as the full transcript (the LLM will
-//!      disambiguate).
+//!   4. For each hunk, recover the corresponding transcript window by locating
+//!      the hunk's polish-side tokens as a UNIQUE contiguous run inside the
+//!      transcript (per-hunk, content-based — see `find_unique_window`). This
+//!      replaced an older single global token-count alignment that blanked the
+//!      window for the whole utterance whenever one unrelated edit changed the
+//!      total token count. Pure insertions, and absent or ambiguous runs, leave
+//!      the window empty rather than guess.
 //!
 //! Output is a `Vec<Hunk>` ready to hand to the classifier as the fixed
 //! evidence set.  The LLM may only help interpret complex edits; it cannot
@@ -86,32 +86,28 @@ pub fn diff(transcript: &str, polish: &str, user_kept: &str) -> Vec<Hunk> {
     }
     ops.reverse();
 
-    // ── 3. Coalesce consecutive non-equal ops into hunks; track polish offset
-    //      so we can pick the corresponding transcript window. ───────────────
-    let positional_align = t_tokens.len() == p_tokens.len();
+    // ── 3. Coalesce consecutive non-equal ops into hunks. Each hunk's transcript
+    //      window is recovered PER-HUNK by content (find_unique_window), not by a
+    //      single global token-count flag — so one unrelated count-changing edit
+    //      elsewhere in the utterance can no longer blank a clean 1:1 alias hunk's
+    //      transcript evidence (the audit's empty-window defect). ───────────────
     let mut hunks: Vec<Hunk> = Vec::new();
-    let mut polish_offset = 0_usize;
     let mut current_polish: Vec<String> = Vec::new();
     let mut current_kept: Vec<String> = Vec::new();
-    let mut hunk_polish_start = 0_usize;
 
     let flush = |hunks: &mut Vec<Hunk>,
                  current_polish: &mut Vec<String>,
                  current_kept: &mut Vec<String>,
-                 hunk_polish_start: usize,
-                 polish_offset: usize,
-                 t_tokens: &[&str],
-                 positional_align: bool| {
+                 t_tokens: &[&str]| {
         if current_polish.is_empty() && current_kept.is_empty() {
             return;
         }
         let polish_window = current_polish.join(" ");
         let kept_window = current_kept.join(" ");
-        let transcript_window = if positional_align {
-            t_tokens[hunk_polish_start..polish_offset].join(" ")
-        } else {
-            String::new() // unaligned — let the LLM see it as missing
-        };
+        // Find this hunk's polish tokens as a unique contiguous run in the
+        // transcript. Empty for pure insertions (no polish window) or when the
+        // run is absent/ambiguous — never invents text outside the transcript.
+        let transcript_window = find_unique_window(t_tokens, current_polish);
         hunks.push(Hunk {
             transcript_window,
             polish_window,
@@ -128,25 +124,13 @@ pub fn diff(transcript: &str, polish: &str, user_kept: &str) -> Vec<Hunk> {
                     &mut hunks,
                     &mut current_polish,
                     &mut current_kept,
-                    hunk_polish_start,
-                    polish_offset,
                     &t_tokens,
-                    positional_align,
                 );
-                polish_offset += 1;
-                hunk_polish_start = polish_offset;
             }
             Op::Delete(p) => {
-                if current_polish.is_empty() && current_kept.is_empty() {
-                    hunk_polish_start = polish_offset;
-                }
                 current_polish.push(p.clone());
-                polish_offset += 1;
             }
             Op::Insert(k) => {
-                if current_polish.is_empty() && current_kept.is_empty() {
-                    hunk_polish_start = polish_offset;
-                }
                 current_kept.push(k.clone());
             }
         }
@@ -155,13 +139,33 @@ pub fn diff(transcript: &str, polish: &str, user_kept: &str) -> Vec<Hunk> {
         &mut hunks,
         &mut current_polish,
         &mut current_kept,
-        hunk_polish_start,
-        polish_offset,
         &t_tokens,
-        positional_align,
     );
 
     split_aligned_substitutions(hunks)
+}
+
+/// Locate `polish` as a unique contiguous (ASCII-case-insensitive) run inside the
+/// transcript tokens `t` and return it joined by spaces. Returns "" if `polish`
+/// is empty (a pure insertion), absent, or occurs more than once (ambiguous) — so
+/// it only ever FILLS a window that positional alignment would have wrongly
+/// blanked, and never returns text outside `t` (preserving the evidence-bound
+/// invariant that makes hallucinated candidates unreachable by construction).
+fn find_unique_window(t: &[&str], polish: &[String]) -> String {
+    let n = polish.len();
+    if n == 0 || t.len() < n {
+        return String::new();
+    }
+    let mut found: Option<usize> = None;
+    for start in 0..=(t.len() - n) {
+        if (0..n).all(|k| t[start + k].eq_ignore_ascii_case(&polish[k])) {
+            if found.is_some() {
+                return String::new(); // ambiguous — leave empty rather than guess
+            }
+            found = Some(start);
+        }
+    }
+    found.map(|s| t[s..s + n].join(" ")).unwrap_or_default()
 }
 
 /// Split a contiguous equal-count substitution blob into one hunk per changed
@@ -322,5 +326,171 @@ mod tests {
             assert!(!h.kept_window.contains("का"));
             assert!(!h.kept_window.contains("ज़रा"));
         }
+    }
+}
+
+/// Real-world Hinglish dictation-edit corpus (built from the user's screenshot +
+/// realistic STT/polish/style cases). Asserts the REAL edit_diff::diff output and
+/// the promotion-gate common-word gate, so transcript-window recovery and the
+/// no-learn safety net are locked against regressions.
+#[cfg(test)]
+mod fixture_corpus_tests {
+    use crate::llm::{edit_diff, promotion_gate};
+
+    fn one_changed_hunk(t: &str, p: &str, k: &str) -> edit_diff::Hunk {
+        let hunks = edit_diff::diff(t, p, k);
+        assert_eq!(
+            hunks.len(),
+            1,
+            "expected one hunk for {p:?} -> {k:?}, got {hunks:?}"
+        );
+        hunks.into_iter().next().unwrap()
+    }
+
+    // FIXTURE 1 — the screenshot. A phrase rephrase that must NOT learn an alias.
+    #[test]
+    fn fixture1_screenshot_phrase_rewrite_is_style_preference_no_alias() {
+        let transcript = "Bhai windows vaala to yah rahe hain koi dekhana padega. Mere ko to kuchh samajh nahin aa raha. Yah jo windows hai na yah kaaphi puraana hai mere hisaab se to ismen to nahin hi chal raha hai. Aur kyonki keys ka conflict hai. Device yahaan par Mac hai aur software windows hai to vo keys ka conflict ke kaaran kuchh dikkat aa raha hai mere hisaab se.";
+        let polish = "Bhai, windows vaala to yah rahe hain, koi dekhna padega. Mere ko to kuchh samajh nahin aa raha. Yah jo windows hai na, kaafi purana hai mere hisaab se, ismein to nahin hi chal raha hai. Aur kyunki keys ka conflict hai. Device yahaan par Mac hai aur software Windows hai, to vo keys ka conflict ke kaaran kuchh dikkat aa raha hai mere hisaab se.";
+        let kept = "Bhai, windows vaala to tujhe hi dekhna padega. Mere ko to kuchh samajh nahin aa raha. Yah jo windows hai na, kaafi purana hai mere hisaab se, ismein to nahin hi chal raha hai. Aur kyunki keys ka conflict hai. Device yahaan par Mac hai aur software Windows hai, to vo keys ka conflict ke kaaran kuchh dikkat aa raha hai mere hisaab se.";
+        let h = one_changed_hunk(transcript, polish, kept);
+        assert_eq!(h.polish_window, "yah rahe hain, koi");
+        assert_eq!(h.kept_window, "tujhe hi");
+        // The ORIGINAL phrase is all-common -> classify resolves to StylePreference
+        // (no alias). The corrected form is now ALSO covered by the deny-list (tu-
+        // family added), giving defense-in-depth.
+        assert!(promotion_gate::is_common_word(&h.polish_window));
+        assert!(promotion_gate::is_common_word(&h.kept_window));
+        // 4 -> 2 unequal length => not split into per-token swaps => one hunk.
+        assert_ne!(
+            h.polish_window.split_whitespace().count(),
+            h.kept_window.split_whitespace().count()
+        );
+    }
+
+    #[test]
+    fn fixture2_deepgram_two_to_one_collapse_is_learnable_alias() {
+        let h = one_changed_hunk(
+            "hum log deep gram use karte hain streaming ke liye",
+            "Hum log deep gram use karte hain streaming ke liye.",
+            "Hum log Deepgram use karte hain streaming ke liye.",
+        );
+        assert_eq!(h.polish_window, "deep gram");
+        assert_eq!(h.kept_window, "Deepgram");
+        assert_eq!(h.transcript_window, "deep gram");
+        assert!(!promotion_gate::is_common_word(&h.kept_window));
+    }
+
+    #[test]
+    fn fixture3_supabase_two_to_one_collapse() {
+        let h = one_changed_hunk(
+            "saara data super base mein store hota hai",
+            "Saara data super base mein store hota hai.",
+            "Saara data Supabase mein store hota hai.",
+        );
+        assert_eq!(h.polish_window, "super base");
+        assert_eq!(h.kept_window, "Supabase");
+        assert_eq!(h.transcript_window, "super base");
+    }
+
+    #[test]
+    fn fixture4_n8n_canonical_alias() {
+        let h = one_changed_hunk(
+            "automation ke liye main n 10 use karta hoon",
+            "Automation ke liye main n 10 use karta hoon",
+            "Automation ke liye main n8n use karta hoon",
+        );
+        assert_eq!(h.polish_window, "n 10");
+        assert_eq!(h.kept_window, "n8n");
+        assert_eq!(h.transcript_window, "n 10");
+        assert!(!promotion_gate::is_numeric_junk(&h.kept_window));
+        assert!(!promotion_gate::is_common_word(&h.kept_window));
+    }
+
+    #[test]
+    fn fixture11_identical_after_norm_yields_no_hunk() {
+        let hunks = edit_diff::diff(
+            "toh kal milte hain office mein",
+            "Toh kal milte hain office mein.",
+            "Toh kal milte hain office mein.",
+        );
+        assert!(hunks.is_empty());
+    }
+
+    #[test]
+    fn fixture12_casing_only_tweaks_are_not_real_word_changes() {
+        let hunks = edit_diff::diff(
+            "mac par windows ka conflict aa raha hai",
+            "mac par windows ka conflict aa raha hai.",
+            "Mac par Windows ka conflict aa raha hai.",
+        );
+        for h in &hunks {
+            assert_eq!(
+                h.polish_window.to_ascii_lowercase(),
+                h.kept_window.to_ascii_lowercase(),
+                "casing-only hunk: {h:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fixture13_multibrand_separates_into_two_hunks() {
+        let hunks = edit_diff::diff(
+            "hum vector ko super base aur n 10 dono mein test karenge",
+            "Hum vector ko super base aur n 10 dono mein test karenge.",
+            "Hum vector ko Supabase aur n8n dono mein test karenge.",
+        );
+        assert_eq!(hunks.len(), 2, "separated by 'aur': {hunks:?}");
+        assert!(hunks.iter().any(|h| h.kept_window == "Supabase"));
+        assert!(hunks.iter().any(|h| h.kept_window == "n8n"));
+    }
+
+    #[test]
+    fn fixture14_long_sentence_single_brand_fix_keeps_transcript_window() {
+        // transcript==polish in token count here, so this passed even before the
+        // per-hunk fix — keep it as a positive control.
+        let h = one_changed_hunk(
+            "aaj ke sprint mein humein dictation pipeline ke andar deep gram wali streaming latency ko theek karna hai warna release slip ho jayega",
+            "Aaj ke sprint mein humein dictation pipeline ke andar deep gram wali streaming latency ko theek karna hai, warna release slip ho jayega.",
+            "Aaj ke sprint mein humein dictation pipeline ke andar Deepgram wali streaming latency ko theek karna hai, warna release slip ho jayega.",
+        );
+        assert_eq!(h.kept_window, "Deepgram");
+        assert_eq!(h.transcript_window, "deep gram");
+    }
+
+    #[test]
+    fn fixture16_inserted_email_prefix_is_pure_insertion() {
+        let hunks = edit_diff::diff(
+            "anish ko mail kar dena report ke baare mein",
+            "Anish ko mail kar dena report ke baare mein.",
+            "anish@gmail.com Anish ko mail kar dena report ke baare mein.",
+        );
+        assert!(
+            hunks
+                .iter()
+                .any(|h| h.polish_window.trim().is_empty()
+                    && h.kept_window.contains("anish@gmail.com")),
+            "expected pure-insertion hunk: {hunks:?}"
+        );
+    }
+
+    // The per-hunk-alignment fix in action: an unrelated early token-count change
+    // (polish drops the repeated "yaar") used to blank the transcript window for
+    // the WHOLE utterance (global positional_align=false). With per-hunk content
+    // lookup, the clean "deep gram" alias hunk keeps its transcript evidence.
+    #[test]
+    fn fixture17_per_hunk_alignment_recovers_clean_alias_window() {
+        let transcript = "yaar yeh kaam bahut zyada important hai aur humein deep gram wali latency theek karni hai";
+        let polish =
+            "Yeh kaam bahut zyada important hai aur humein deep gram wali latency theek karni hai.";
+        let kept =
+            "Yeh kaam bahut zyada important hai aur humein Deepgram wali latency theek karni hai.";
+        let hunks = edit_diff::diff(transcript, polish, kept);
+        let h = hunks
+            .iter()
+            .find(|h| h.kept_window == "Deepgram")
+            .expect("alias hunk");
+        // FIXED: previously "" (blanked by the global flag); now recovered.
+        assert_eq!(h.transcript_window, "deep gram");
     }
 }
