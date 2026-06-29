@@ -45,7 +45,17 @@ if ((Test-Path $Header) -and (Test-Path $Glslc)) {
   }
 
   Step "Install Vulkan SDK $Version"
-  $proc = Start-Process -FilePath $Installer -ArgumentList "/S" -Wait -PassThru
+  # LunarG's installer is built with the Qt Installer Framework, NOT NSIS, so it
+  # does not understand "/S" - it silently ignores the flag and opens the
+  # interactive GUI, which hangs forever on a headless CI runner. Use QtIFW's
+  # unattended flags instead, and cap the wait so any future GUI-hang fails fast
+  # rather than stalling the job until the workflow timeout.
+  $installArgs = @("--accept-licenses", "--default-answer", "--confirm-command", "install")
+  $proc = Start-Process -FilePath $Installer -ArgumentList $installArgs -PassThru
+  if (-not $proc.WaitForExit(900000)) {
+    try { $proc.Kill() } catch {}
+    Fail "Vulkan SDK installer timed out (>15 min) - likely waiting on a GUI prompt; verify the unattended flags."
+  }
   if ($proc.ExitCode -ne 0) {
     Fail "Vulkan SDK installer exited with $($proc.ExitCode)"
   }

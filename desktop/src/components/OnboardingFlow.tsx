@@ -58,6 +58,8 @@ interface Props {
   requireLocalModelSetup?: boolean;
   /** Called once the local dictation model is installed. */
   onLocalModelReady?: () => void;
+  /** Called once an existing user has handled the one-time local model setup prompt. */
+  onLocalModelSetupComplete?: () => void;
 }
 
 // The one on-device dictation model (Oriserve Hinglish GGML, ~148 MB). The Silero
@@ -127,6 +129,7 @@ export function OnboardingFlow({
   initialProgress = null,
   requireLocalModelSetup = false,
   onLocalModelReady,
+  onLocalModelSetupComplete,
 }: Props) {
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [keySaving, setKeySaving] = useState(false);
@@ -164,8 +167,6 @@ export function OnboardingFlow({
   const accGranted = snapshot?.accessibility_granted ?? false;
   const imGranted = snapshot?.input_monitoring_granted ?? false;
   const isWindows = snapshot?.platform === "windows";
-  const isMac = snapshot?.platform === "macos";
-
   const [step, setStep] = useState<Step>(() => progress.currentStep);
 
   const visibleStepIds = useMemo(() => visibleStepsFor(), []);
@@ -358,7 +359,7 @@ export function OnboardingFlow({
   );
 
   useEffect(() => {
-    if (!requireLocalModelSetup || workspaceOnly || !isMac || dictationModelInstalled) return;
+    if (!requireLocalModelSetup || workspaceOnly || dictationModelInstalled) return;
     if (step === "keys" && progress.stepStatus.keys !== "done") return;
     const updated = applyProgress({
       currentStep: "keys",
@@ -368,7 +369,6 @@ export function OnboardingFlow({
     setStep(updated.currentStep);
   }, [
     applyProgress,
-    isMac,
     progress.maxStepIndex,
     progress.stepStatus,
     requireLocalModelSetup,
@@ -377,6 +377,13 @@ export function OnboardingFlow({
     workspaceOnly,
     visStepIndex,
   ]);
+
+  const completeLocalModelSetupPrompt = useCallback(() => {
+    if (!requireLocalModelSetup) return false;
+    clearOnboardingProgress();
+    onLocalModelSetupComplete?.();
+    return true;
+  }, [onLocalModelSetupComplete, requireLocalModelSetup]);
 
   const maxReachableIndex = workspaceOnly
     ? totalSteps - 1
@@ -455,6 +462,7 @@ export function OnboardingFlow({
         throw new Error("AirNote could not save cloud speech recognition.");
       }
       setPrefs(updated);
+      if (completeLocalModelSetupPrompt()) return;
       advanceToNextUndone(completedThroughCurrentStep());
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -462,7 +470,7 @@ export function OnboardingFlow({
     } finally {
       setKeySaving(false);
     }
-  }, [advanceToNextUndone, completedThroughCurrentStep]);
+  }, [advanceToNextUndone, completedThroughCurrentStep, completeLocalModelSetupPrompt]);
 
   const chooseLocalEngine = useCallback(async () => {
     if (!dictationModelInstalled) {
@@ -481,6 +489,7 @@ export function OnboardingFlow({
       }
       setPrefs(updated);
       onLocalModelReady?.();
+      if (completeLocalModelSetupPrompt()) return;
       advanceToNextUndone(completedThroughCurrentStep());
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -488,7 +497,13 @@ export function OnboardingFlow({
     } finally {
       setKeySaving(false);
     }
-  }, [advanceToNextUndone, completedThroughCurrentStep, dictationModelInstalled, onLocalModelReady]);
+  }, [
+    advanceToNextUndone,
+    completedThroughCurrentStep,
+    completeLocalModelSetupPrompt,
+    dictationModelInstalled,
+    onLocalModelReady,
+  ]);
 
   const handleDictationDownload = useCallback(async () => {
     setDictationBusy(true);
