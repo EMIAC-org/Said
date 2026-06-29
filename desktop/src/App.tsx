@@ -34,6 +34,7 @@ import {
   onVocabToast,
   divoSetCredentials,
   deleteVocabularyTerm,
+  getPreferences,
   checkNotificationPermission,
   revealDownloadedFile,
   getMigrationStatus,
@@ -63,6 +64,7 @@ import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } f
 
 export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "meetings" | "divo" | "settings" | "live-meeting";
 const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "meetings", "divo", "settings", "live-meeting"];
+const LOCAL_MODEL_SETUP_DONE_KEY = "said:local-model-setup-v1-done";
 type SettingsSectionId =
   | "appearance"
   | "writing"
@@ -74,6 +76,12 @@ type SettingsSectionId =
   | "enterprise"
   | "debug"
   | "about";
+
+interface DictationModelStatus {
+  installed: boolean;
+  size_bytes: number;
+  path: string;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -206,6 +214,7 @@ export default function App() {
       return false;
     }
   });
+  const [localModelSetupRequired, setLocalModelSetupRequired] = useState(false);
   // ── Retry toast ───────────────────────────────────────────────────────────
   const [retryToast, setRetryToast] = useState<{ message: string; audioId: string } | null>(null);
 
@@ -385,6 +394,63 @@ export default function App() {
     setSettingsOpen(false);
     setEnterpriseGate("required");
   }, []);
+
+  const markLocalModelSetupDone = useCallback(() => {
+    try {
+      localStorage.setItem(LOCAL_MODEL_SETUP_DONE_KEY, "true");
+    } catch {
+      // Storage failure should not trap the user in onboarding for this session.
+    }
+    setLocalModelSetupRequired(false);
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+
+    const shouldPromptForLocalModel = async () => {
+      if (!onboardingComplete || enterpriseGate !== "connected" || !snapshot?.platform) {
+        return false;
+      }
+      try {
+        if (localStorage.getItem(LOCAL_MODEL_SETUP_DONE_KEY) === "true") {
+          return false;
+        }
+      } catch {
+        // If storage is unavailable, keep this as a best-effort session prompt.
+      }
+
+      const [prefs, model] = await Promise.all([
+        getPreferences(),
+        invoke<DictationModelStatus>("dictation_model_status").catch(() => null),
+      ]);
+      if (!prefs || !model) {
+        return false;
+      }
+      if (model.installed) {
+        try {
+          localStorage.setItem(LOCAL_MODEL_SETUP_DONE_KEY, "true");
+        } catch {
+          // Best effort; installed users still should not be prompted this session.
+        }
+        return false;
+      }
+
+      const provider = (prefs.stt_provider ?? "").trim().toLowerCase();
+      return provider === "" || provider === "whisper_local" || provider === "swift_local";
+    };
+
+    shouldPromptForLocalModel()
+      .then((required) => {
+        if (alive) setLocalModelSetupRequired(required);
+      })
+      .catch(() => {
+        if (alive) setLocalModelSetupRequired(false);
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [enterpriseGate, onboardingComplete, snapshot?.platform]);
 
   // Push the control-plane URL + session token to Rust so the Ctrl hold-to-talk
   // Divo hotkey activates (and de-activates on disconnect). Re-runs whenever the
@@ -703,7 +769,6 @@ export default function App() {
       (!!snapshot?.accessibility_granted && !!snapshot?.input_monitoring_granted));
 
   const needsEnterprise = enterpriseGate === "required";
-  const localModelSetupRequired = false;
   const needsSetup = !corePermissionsReady || !onboardingComplete || localModelSetupRequired;
   const workspaceOnly =
     needsEnterprise && onboardingComplete && corePermissionsReady && !localModelSetupRequired;
@@ -721,6 +786,7 @@ export default function App() {
         onAccessibility={handleAccessibility}
         onInputMonitoring={handleInputMonitoring}
         onFinish={handleOnboardingFinish}
+        onLocalModelSetupComplete={markLocalModelSetupDone}
       />
     );
   }
