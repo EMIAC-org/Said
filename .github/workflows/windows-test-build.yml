@@ -54,19 +54,14 @@ jobs:
           npm install --package-lock-only --ignore-scripts
           npm ci
 
-      - name: Install Vulkan SDK
-        shell: pwsh
-        run: pwsh scripts/install-vulkan-sdk-windows.ps1
-
       - name: Build AirNote.exe + NSIS installer
         shell: pwsh
         env:
-          AIRNOTE_WHISPER_GPU: vulkan
-          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY_1 || secrets.DEEPGRAM_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pwsh scripts/build-windows.ps1 -RequireInstaller -RequireWhisper
+        run: pwsh scripts/build-windows.ps1 -RequireInstaller
 
       - name: Stage installer
         shell: pwsh

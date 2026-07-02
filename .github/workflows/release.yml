@@ -129,11 +129,6 @@ jobs:
           npm install --package-lock-only --ignore-scripts
           npm ci
 
-      - name: Install Vulkan SDK (Windows)
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: pwsh scripts/install-vulkan-sdk-windows.ps1
-
       # ── macOS: import signing certificate into CI keychain ────────────────
       - name: Import Apple codesign certificate
         if: matrix.platform == 'darwin'
@@ -319,7 +314,6 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         env:
-          AIRNOTE_WHISPER_GPU: vulkan
           DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY_1 || secrets.DEEPGRAM_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
