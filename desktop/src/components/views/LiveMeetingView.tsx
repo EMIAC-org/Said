@@ -968,7 +968,6 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
     try {
       const result = await invoke<MeetingIntelligenceResult>("meeting_engine_generate_intelligence", {
         meetingId,
-        userContext: null,
       });
       applyMeetingIntelligenceResult(result);
     } catch (e) {
