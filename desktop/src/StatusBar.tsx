@@ -175,6 +175,13 @@ type VoiceErrorPayload = {
   auto_hide_ms?: number;
 };
 
+type VoiceStatusPayload = {
+  phase: string;
+  transcript?: string | null;
+  run_id?: string | null;
+  recording_id?: string | null;
+};
+
 type PillKind = BarState["kind"];
 
 function isActionPromptKind(kind: PillKind): boolean {
@@ -347,8 +354,31 @@ export default function StatusBar() {
   const barTargets = useRef<number[]>(new Array(15).fill(0));
   const lastResizeRef = useRef<{ width: number; height: number } | null>(null);
   const barKindRef = useRef<BarState["kind"]>("idle");
+  const currentRunIdRef = useRef<string | null>(null);
   const [, forceFrame] = useState(0);
   const [win] = useState(() => getCurrentWindow());
+  const normalizeRunId = (value?: string | null): string | null => {
+    const trimmed = value?.trim();
+    return trimmed && trimmed.length > 0 ? trimmed : null;
+  };
+  const setCurrentRunId = (runId: string | null) => {
+    if (currentRunIdRef.current !== runId) {
+      currentRunIdRef.current = runId;
+      setLiveTranscript("");
+    }
+  };
+  const clearRunTranscript = () => {
+    currentRunIdRef.current = null;
+    setLiveTranscript("");
+  };
+  const isStaleTerminalRun = (runId: string | null): boolean => {
+    const current = currentRunIdRef.current;
+    if (runId) {
+      if (current && current !== runId) return true;
+      return !current && barKindRef.current === "idle";
+    }
+    return current !== null;
+  };
   const presentStatusBar = (reason: string) => {
     invoke("present_status_bar", { reason }).catch((err) => {
       console.warn("[status-bar] native present failed", err);
@@ -716,19 +746,23 @@ export default function StatusBar() {
   const applyActiveSnapshot = (snap: AppSnapshot, source: string) => {
     console.info("[status-bar] snapshot resync", source, snap.state);
     setPolishModeEnabled(Boolean(snap.message_polish_mode));
+    const runId = normalizeRunId(snap.recording_id);
     if (snap.state === "recording") {
+      setCurrentRunId(runId);
       setBar((prev) =>
         prev.kind === "recording"
           ? prev
           : { kind: "recording", startMs: Date.now() },
       );
     } else if (snap.state === "processing") {
+      if (runId) setCurrentRunId(runId);
       setBar((prev) =>
         prev.kind === "processing"
           ? prev
           : { kind: "processing", phase: "stt" },
       );
     } else if (snap.state === "idle") {
+      clearRunTranscript();
       if (restorePinnedUpdate(`auto-update-ready-${source}-idle`)) return;
       setBar((prev) => {
         if (keepsHudOverIdle(prev.kind)) return prev;
@@ -789,10 +823,11 @@ export default function StatusBar() {
       const { state } = e.payload;
       console.info("[status-bar] app-state event", state);
       setPolishModeEnabled(Boolean(e.payload.message_polish_mode));
+      const runId = normalizeRunId(e.payload.recording_id);
       if (state === "recording") {
+        setCurrentRunId(runId);
         if (barKindRef.current !== "recording") {
           if (doneTimer.current) clearTimeout(doneTimer.current);
-          setLiveTranscript("");
           setAudioLevel(0);
           playSound("chimeUp");
           barKindRef.current = "recording";
@@ -803,6 +838,7 @@ export default function StatusBar() {
             : { kind: "recording", startMs: Date.now() }
         ));
       } else if (state === "processing") {
+        if (runId) setCurrentRunId(runId);
         setBar((prev) =>
           prev.kind === "recording"
             ? { kind: "processing", phase: "stt" }
@@ -812,9 +848,11 @@ export default function StatusBar() {
         if (doneTimer.current) clearTimeout(doneTimer.current);
         doneTimer.current = setTimeout(() => {
           if (restorePinnedUpdate("auto-update-ready-after-processing-timeout")) return;
+          clearRunTranscript();
           setBar((prev) => prev.kind === "processing" ? { kind: "idle" } : prev);
         }, 15000);
       } else if (state === "idle") {
+        clearRunTranscript();
         if (restorePinnedUpdate("auto-update-ready-idle")) return;
         setBar((prev) => {
           if (keepsHudOverIdle(prev.kind)) return prev;
@@ -827,9 +865,20 @@ export default function StatusBar() {
     }).catch((err) => console.warn("[status-bar] app-state subscribe failed", err));
 
     // ── Sub-phase label updates ────────────────────────────────────────────
-    listen<{ phase: string; transcript?: string }>("voice-status", (e) => {
+    listen<VoiceStatusPayload>("voice-status", (e) => {
       const { phase, transcript } = e.payload;
       console.info("[status-bar] voice-status event", phase);
+      const runId = normalizeRunId(e.payload.run_id ?? e.payload.recording_id);
+      const currentRunId = currentRunIdRef.current;
+      if (runId) {
+        if (currentRunId && currentRunId !== runId) return;
+        if (!currentRunId) {
+          if (barKindRef.current !== "recording" && barKindRef.current !== "processing") return;
+          currentRunIdRef.current = runId;
+        }
+      } else if (currentRunId || barKindRef.current === "idle") {
+        return;
+      }
       if (transcript?.trim()) setLiveTranscript(transcript.trim());
       setBar((prev) => {
         if (prev.kind === "recording" && phase === "live_stt") {
@@ -855,8 +904,11 @@ export default function StatusBar() {
     }).catch((err) => console.warn("[status-bar] voice-level subscribe failed", err));
 
     // ── Success: brief flash then hide ──────────────────────────────────────
-    listen("voice-done", () => {
+    listen<{ run_id?: string | null }>("voice-done", (e) => {
+      const runId = normalizeRunId(e.payload?.run_id);
+      if (isStaleTerminalRun(runId)) return;
       console.info("[status-bar] voice-done event");
+      clearRunTranscript();
       if (restorePinnedUpdate("auto-update-ready-after-done")) return;
       if (doneTimer.current) clearTimeout(doneTimer.current);
       setBar({ kind: "done" });
@@ -868,8 +920,11 @@ export default function StatusBar() {
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] voice-done subscribe failed", err));
 
-    listen<{ status: "pasted" | "manual_paste"; message?: string }>("voice-output", (e) => {
+    listen<{ status: "pasted" | "manual_paste"; message?: string; run_id?: string | null }>("voice-output", (e) => {
+      const runId = normalizeRunId(e.payload.run_id);
+      if (isStaleTerminalRun(runId)) return;
       console.info("[status-bar] voice-output event", e.payload);
+      clearRunTranscript();
       if (restorePinnedUpdate("auto-update-ready-after-output")) return;
       if (doneTimer.current) clearTimeout(doneTimer.current);
       playSound("whoosh");
@@ -927,6 +982,8 @@ export default function StatusBar() {
     // ── Error: show message + optional retry ──────────────────────────────
     listen<VoiceErrorPayload>("voice-error", (e) => {
       const { message, run_id, audio_id, auto_hide_ms, raw_error, error_code, diagnostic } = e.payload;
+      const runId = normalizeRunId(run_id);
+      if (runId && isStaleTerminalRun(runId)) return;
       console.error("[status-bar] voice-error event", {
         message,
         raw_error,
@@ -934,6 +991,7 @@ export default function StatusBar() {
         diagnostic,
         hasAudioId: Boolean(audio_id),
       });
+      clearRunTranscript();
       if (doneTimer.current) clearTimeout(doneTimer.current);
       if (!notifEnabled("error")) return;
       presentStatusBar("voice-error");

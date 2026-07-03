@@ -179,9 +179,10 @@ def polish_transcript(
     transcript: str,
     system_prompt: str,
     route: dict[str, Any] | None = None,
+    user_message: str | None = None,
 ) -> tuple[str, float, dict]:
     route = route or resolve_polish_route()
-    user_message = build_user_message(transcript)
+    user_message = user_message or build_user_message(transcript)
     est_tokens = max(len(transcript) // 4, 64)
     max_tokens = min(est_tokens * 2 + 256, 8192)
 
@@ -230,10 +231,11 @@ def polish_try(
     transcript: str,
     system_prompt: str,
     route: dict[str, Any],
+    user_message: str | None = None,
 ) -> dict[str, Any]:
     """Polish one route; return {ok, polished?, polish_s?, error?} for parallel runners."""
     try:
-        polished, polish_s, _ = polish_transcript(transcript, system_prompt, route)
+        polished, polish_s, _ = polish_transcript(transcript, system_prompt, route, user_message=user_message)
         return {"ok": True, "polished": polished, "polish_s": polish_s, "error": None}
     except Exception as exc:
         return {"ok": False, "polished": "", "polish_s": None, "error": str(exc)}

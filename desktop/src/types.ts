@@ -32,6 +32,7 @@ export interface HistoryItem {
 
 export interface AppSnapshot {
   state: AppState;
+  recording_id?: string | null;
   platform: string;
   current_mode: string;
   current_mode_label: string;
@@ -216,6 +217,7 @@ export interface BackendEndpoint {
 /** Streaming result from a polish operation */
 export interface PolishDone {
   recording_id:  string;
+  run_id?:       string | null;
   transcript:    string;
   polished:      string;
   model_used:    string;

@@ -666,12 +666,12 @@ export function onVoiceToken(
 
 /** Listen for status updates (transcribing / polishing). */
 export function onVoiceStatus(
-  handler: (phase: string, transcript?: string) => void
+  handler: (phase: string, transcript?: string, runId?: string | null) => void
 ): Unsubscribe {
   if (!isTauriRuntime()) return () => {};
   let unsub: Unsubscribe = () => {};
-  listen<{ phase: string; transcript?: string }>("voice-status", (e) =>
-    handler(e.payload.phase, e.payload.transcript)
+  listen<{ phase: string; transcript?: string; run_id?: string | null; recording_id?: string | null }>("voice-status", (e) =>
+    handler(e.payload.phase, e.payload.transcript, e.payload.run_id ?? e.payload.recording_id ?? null)
   ).then((fn) => { unsub = fn; });
   return () => unsub();
 }

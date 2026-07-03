@@ -61,6 +61,7 @@ impl DesktopApp {
     pub fn snapshot(&self) -> AppSnapshot {
         AppSnapshot {
             state: self.state.as_str().to_string(),
+            recording_id: None,
             platform: std::env::consts::OS.to_string(),
             current_mode: "mini",
             current_mode_label: "Fast (gpt-5.4-mini)",

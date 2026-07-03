@@ -13,7 +13,7 @@ mod echo_gate;
 mod enterprise_oauth;
 mod meeting_engine;
 mod notch_sidecar;
-mod whisper_dictation_stream; // Turbo Q5 live partials during dictation // native Swift notch-HUD sidecar (append-only, AIRNOTE_NOTCH_SIDECAR)
+mod whisper_dictation_stream; // crash-recovery PCM tap during on-device dictation (batch-only STT)
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
 mod recovery; // crash-safe dictation audio capture + relaunch recovery
@@ -1064,12 +1064,11 @@ fn spawn_dictation_live_partial_listener(
                 );
                 last_logged = transcript.clone();
             }
-            let _ = app.emit(
-                "voice-status",
-                serde_json::json!({
-                    "phase": "live_stt",
-                    "transcript": transcript,
-                }),
+            emit_voice_status(
+                &app,
+                "live_stt",
+                Some(transcript.as_str()),
+                Some(&recording_id),
             );
         }
     });
@@ -1448,6 +1447,7 @@ struct StatusBarInteractive(AtomicBool);
 struct RecordingSessionState {
     generation: AtomicU64,
     active_id: Mutex<Option<String>>,
+    processing_id: Mutex<Option<String>>,
 }
 
 impl RecordingSessionState {
@@ -1457,6 +1457,9 @@ impl RecordingSessionState {
         if let Ok(mut guard) = self.active_id.lock() {
             *guard = Some(id.clone());
         }
+        if let Ok(mut guard) = self.processing_id.lock() {
+            *guard = None;
+        }
         tracing::info!("[record] session begin id={id} generation={generation}");
         (generation, id)
     }
@@ -1464,6 +1467,9 @@ impl RecordingSessionState {
     fn end(&self) -> Option<(u64, String)> {
         let generation = self.generation.load(Ordering::SeqCst);
         let id = self.active_id.lock().ok()?.take()?;
+        if let Ok(mut guard) = self.processing_id.lock() {
+            *guard = Some(id.clone());
+        }
         tracing::info!("[record] session end id={id} generation={generation}");
         Some((generation, id))
     }
@@ -1473,6 +1479,19 @@ impl RecordingSessionState {
         let id = self.active_id.lock().ok()?.clone()?;
         Some((generation, id))
     }
+
+    fn id_for_snapshot_state(&self, state: &str) -> Option<String> {
+        match state {
+            "recording" => self.active_id.lock().ok()?.clone(),
+            "processing" => self
+                .processing_id
+                .lock()
+                .ok()
+                .and_then(|id| id.clone())
+                .or_else(|| self.active_id.lock().ok()?.clone()),
+            _ => None,
+        }
+    }
 }
 
 impl Default for RecordingSessionState {
@@ -1480,8 +1499,47 @@ impl Default for RecordingSessionState {
         Self {
             generation: AtomicU64::new(0),
             active_id: Mutex::new(None),
+            processing_id: Mutex::new(None),
         }
     }
+}
+
+fn snapshot_for_ui(app: &tauri::AppHandle, snap: &AppSnapshot) -> AppSnapshot {
+    let mut snap = snap.clone();
+    snap.recording_id = app
+        .try_state::<RecordingSessionState>()
+        .and_then(|session| session.id_for_snapshot_state(&snap.state));
+    snap
+}
+
+fn emit_app_state(app: &tauri::AppHandle, snap: &AppSnapshot) {
+    let ui_snap = snapshot_for_ui(app, snap);
+    let _ = app.emit("app-state", &ui_snap);
+}
+
+fn emit_voice_status(
+    app: &tauri::AppHandle,
+    phase: &str,
+    transcript: Option<&str>,
+    run_id: Option<&str>,
+) {
+    let _ = app.emit(
+        "voice-status",
+        serde_json::json!({
+            "phase": phase,
+            "transcript": transcript,
+            "run_id": run_id,
+            "recording_id": run_id,
+        }),
+    );
+}
+
+fn emit_voice_done(app: &tauri::AppHandle, done: &api::PolishDone, run_id: Option<&str>) {
+    let mut payload = serde_json::to_value(done).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("run_id".to_string(), serde_json::json!(run_id));
+    }
+    let _ = app.emit("voice-done", payload);
 }
 
 fn status_bar_persistent_hold(app: &tauri::AppHandle) -> bool {
@@ -2599,7 +2657,7 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
                     done.polished.split_whitespace().count()
                 );
                 // Emit tokens to the UI for live preview if the window is visible
-                let _ = app_clone.emit("voice-done", &done);
+                emit_voice_done(&app_clone, &done, None);
                 // Selected-text transform must reliably replace the active
                 // selection. Direct Unicode typing has no success signal from
                 // macOS, so this explicit command keeps the proven paste path.
@@ -2859,7 +2917,7 @@ fn tray_set_output_language(app: &tauri::AppHandle, lang: &str) {
 fn bootstrap(state: State<'_, SharedApp>, app: tauri::AppHandle) -> Result<AppSnapshot, String> {
     let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
     sync_tray(&app, &snap);
-    Ok(snap)
+    Ok(snapshot_for_ui(&app, &snap))
 }
 
 // SYNC (deliberately): a sync Tauri command returns its response synchronously in
@@ -2869,8 +2927,9 @@ fn bootstrap(state: State<'_, SharedApp>, app: tauri::AppHandle) -> Result<AppSn
 // requests saturated the ~6-connection pool so NO new invoke (incl. End-meeting's
 // stop_session) could dispatch. Keep this sync; it's a quick mutex read.
 #[tauri::command]
-fn get_snapshot(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
-    Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+fn get_snapshot(state: State<'_, SharedApp>, app: tauri::AppHandle) -> Result<AppSnapshot, String> {
+    let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+    Ok(snapshot_for_ui(&app, &snap))
 }
 
 /// Fault injection for resilience testing. Inert unless `AIRNOTE_CHAOS=1` is set
@@ -3552,25 +3611,37 @@ fn set_mode(
     // Model switching removed — always uses gpt-5.4-mini.
     let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
     sync_tray(&app, &snap);
-    Ok(snap)
+    Ok(snapshot_for_ui(&app, &snap))
 }
 
 #[tauri::command]
-fn request_accessibility(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
+fn request_accessibility(
+    state: State<'_, SharedApp>,
+    app: tauri::AppHandle,
+) -> Result<AppSnapshot, String> {
     paster::request_permission();
-    Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+    let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+    Ok(snapshot_for_ui(&app, &snap))
 }
 
 #[tauri::command]
-fn request_input_monitoring(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
+fn request_input_monitoring(
+    state: State<'_, SharedApp>,
+    app: tauri::AppHandle,
+) -> Result<AppSnapshot, String> {
     paster::request_input_monitoring();
-    Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+    let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+    Ok(snapshot_for_ui(&app, &snap))
 }
 
 #[tauri::command]
-fn request_microphone(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
+fn request_microphone(
+    state: State<'_, SharedApp>,
+    app: tauri::AppHandle,
+) -> Result<AppSnapshot, String> {
     permissions::request_microphone();
-    Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+    let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+    Ok(snapshot_for_ui(&app, &snap))
 }
 
 /// Whether Screen Recording is already granted (no prompt). Used to gate meeting
@@ -3621,15 +3692,18 @@ fn toggle_recording(
     match current_state {
         desktop::AppState::Idle => {
             do_start_recording(&state.0, &app);
-            Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+            let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+            Ok(snapshot_for_ui(&app, &snap))
         }
         desktop::AppState::Recording => {
             do_finish_recording(Arc::clone(&state.0), app.clone(), Arc::clone(&backend.0));
-            Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+            let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+            Ok(snapshot_for_ui(&app, &snap))
         }
         desktop::AppState::Processing => {
             // Already in flight — return current snapshot, don't do anything
-            Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+            let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+            Ok(snapshot_for_ui(&app, &snap))
         }
     }
 }
@@ -3903,7 +3977,7 @@ fn cancel_processing_run(app: &tauri::AppHandle, reason: &'static str) {
     tracing::info!("[record] processing run abandoned, reset to idle (reason={reason})");
     diag::breadcrumb(format!("cancel_processing:{reason}"));
     sync_tray(app, &snap);
-    let _ = app.emit("app-state", &snap);
+    emit_app_state(app, &snap);
     sync_status_bar(app, "idle");
 }
 
@@ -3942,7 +4016,7 @@ fn heal_stuck_state(app: &tauri::AppHandle, reason: &'static str) {
     );
 
     sync_tray(app, &snap);
-    let _ = app.emit("app-state", &snap);
+    emit_app_state(app, &snap);
     sync_status_bar(app, "idle");
 
     // The dictation's audio is still on disk (the pipeline never reached cleanup).
@@ -4352,7 +4426,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             tracing::info!("[record] started — state={}", snap.state);
             diag::breadcrumb("start:recording");
             sync_tray(app, &snap);
-            let _ = app.emit("app-state", &snap);
+            emit_app_state(app, &snap);
             if app
                 .try_state::<LongDictationState>()
                 .map(|s| s.pending_lock.swap(false, Ordering::SeqCst))
@@ -4568,11 +4642,6 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             .try_state::<RecordingSessionState>()
             .and_then(|s| s.current().map(|(_, id)| id))
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let stt_language = app
-            .try_state::<HotPathCache>()
-            .and_then(|hot| hot.0.try_read().ok().map(|guard| guard.language.clone()))
-            .filter(|lang| !lang.is_empty())
-            .unwrap_or_else(|| "hi".to_string());
 
         if use_whisper_local_stt(app) && !is_meeting_capture {
             if !meeting_engine::silero_vad_model_installed() {
@@ -4588,27 +4657,17 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 });
             }
             tracing::info!(
-                "[stt] provider={stt_provider} — live whisper.cpp partials during recording"
+                "[stt] provider={stt_provider} — batch-only whisper.cpp on release (no live partials)"
             );
-            let (live_partial_tx, live_partial_rx) =
-                tokio::sync::mpsc::unbounded_channel::<String>();
+            // Clear any stale live partial so the status bar doesn't show one; the
+            // on-device whisper.cpp pass is batch-only (runs once, on release). We
+            // still tap the PCM into the crash-recovery session while recording.
             if let Some(state) = app.try_state::<SwiftLivePartialState>() {
                 if let Ok(mut latest) = state.0.lock() {
                     *latest = None;
                 }
             }
-            spawn_dictation_live_partial_listener(
-                app.clone(),
-                recording_id.clone(),
-                live_partial_rx,
-                "whisper_live",
-            );
-            whisper_dictation_stream::spawn_live_whisper_bridge(
-                recording_id,
-                chunk_recv,
-                stt_language,
-                live_partial_tx,
-            );
+            whisper_dictation_stream::spawn_dictation_recovery_drain(recording_id, chunk_recv);
             return;
         }
 
@@ -4838,7 +4897,7 @@ fn do_cancel_recording(
     // banner only on an idle app-state event, so this must reach the UI even if a
     // later call (tray/status) fails — a missed idle event is exactly what strands
     // the banner and the menu-bar mic indicator after a quick-tap cancel.
-    let _ = app.emit("app-state", &snap);
+    emit_app_state(&app, &snap);
     sync_tray(&app, &snap);
     emit_meeting_stt_status(&app);
 
@@ -4927,14 +4986,14 @@ fn do_finish_recording(
                 request_swift_bridge_stop(&app, client_run_id.as_deref(), "finish_begin_stop");
             }
             sync_tray(&app, &snap);
-            let _ = app.emit("app-state", &snap);
+            emit_app_state(&app, &snap);
             (stop_rx, was_too_short)
         }
         Err(BeginStopError::Short(snap)) => {
             recovery::clear();
             sync_tray(&app, &snap);
             emit_short_recording_error(&app);
-            let _ = app.emit("app-state", &snap);
+            emit_app_state(&app, &snap);
             return;
         }
         Err(BeginStopError::Failed(snap)) => {
@@ -4947,7 +5006,7 @@ fn do_finish_recording(
                     "audio_id": null,
                 }),
             );
-            let _ = app.emit("app-state", &snap);
+            emit_app_state(&app, &snap);
             return;
         }
     };
@@ -4999,7 +5058,7 @@ fn do_finish_recording(
                     }),
                 );
             }
-            let _ = app.emit("app-state", &snap);
+            emit_app_state(&app, &snap);
             emit_meeting_stt_status(&app);
             return;
         }
@@ -5259,7 +5318,7 @@ fn do_finish_recording(
                 emit_voice_error_quiet(&app2, &e);
             }
             sync_tray(&app2, &snap);
-            let _ = app2.emit("app-state", &snap);
+            emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
             recovery::clear();
             return;
@@ -5334,7 +5393,7 @@ fn do_finish_recording(
                 }
             };
             sync_tray(&app2, &snap);
-            let _ = app2.emit("app-state", &snap);
+            emit_app_state(&app2, &snap);
 
             // Default routing for the staged turn: Ctrl+N forces a new chat;
             // otherwise we continue the active thread if there is one (the HUD lets
@@ -5446,7 +5505,7 @@ fn do_finish_recording(
                 emit_voice_error_quiet(&app2, &e);
             }
             sync_tray(&app2, &snap);
-            let _ = app2.emit("app-state", &snap);
+            emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
 
             // Auto-restart recording for continuous meeting capture
@@ -5518,7 +5577,7 @@ fn do_finish_recording(
                 emit_voice_error_quiet(&app2, &e);
             }
             sync_tray(&app2, &snap);
-            let _ = app2.emit("app-state", &snap);
+            emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
         }
         // Dictation delivered (or surfaced as an error to the user) — the captured
@@ -5685,10 +5744,7 @@ async fn run_problem_command(
         lock.clone().ok_or("backend not started")?
     };
 
-    let _ = app.emit(
-        "voice-status",
-        serde_json::json!({"phase": "problem_transcribing"}),
-    );
+    emit_voice_status(app, "problem_transcribing", None, client_run_id.as_deref());
     let pre_text = pre_transcript.as_ref().map(|t| t.transcript.clone());
     let pre_meta = pre_transcript.as_ref().map(|t| t.meta.clone());
     let transcribed =
@@ -5713,6 +5769,7 @@ async fn run_problem_command(
 
     match context_match.outcome.as_str() {
         "ambiguous" => {
+            let event_run_id = client_run_id.clone();
             if let Some(pending) = app.try_state::<PendingProblemState>() {
                 if let Ok(mut slot) = pending.0.lock() {
                     *slot = Some(PendingProblemCommand {
@@ -5730,6 +5787,7 @@ async fn run_problem_command(
                 serde_json::json!({
                     "status": "manual_paste",
                     "message": "Ambiguous Project Match",
+                    "run_id": event_run_id.as_deref(),
                 }),
             );
             Ok(ProblemCommandOutcome::Ambiguous { transcript })
@@ -5787,9 +5845,11 @@ async fn solve_problem_with_project(
         lock.clone().ok_or("backend not started")?
     };
 
-    let _ = app.emit(
-        "voice-status",
-        serde_json::json!({"phase": "problem_solving", "transcript": &transcript}),
+    emit_voice_status(
+        app,
+        "problem_solving",
+        Some(transcript.as_str()),
+        client_run_id.as_deref(),
     );
 
     let context_mode = if project.is_some() {
@@ -5809,6 +5869,7 @@ async fn solve_problem_with_project(
         app_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
     };
 
+    let event_run_id = req.client_run_id.clone();
     let response = api::solve_problem(&ep, req).await?;
     let pasted = paste_problem_output(app, &response.output, edit_target_pid).await;
     let _ = app.emit(
@@ -5816,6 +5877,7 @@ async fn solve_problem_with_project(
         serde_json::json!({
             "status": if pasted { "pasted" } else { "manual_paste" },
             "message": if pasted { "Pasted" } else { "Ready to Paste" },
+            "run_id": event_run_id.as_deref(),
         }),
     );
     Ok((response, pasted))
@@ -5959,6 +6021,7 @@ async fn run_voice_polish_sse(
     };
     let error_target_app = target_app.clone();
     let error_client_run_id = client_run_id.clone();
+    let event_client_run_id = client_run_id.clone();
     let error_already_emitted = Arc::new(AtomicBool::new(false));
     let error_already_emitted_for_events = Arc::clone(&error_already_emitted);
 
@@ -6077,16 +6140,32 @@ async fn run_voice_polish_sse(
                 }
             }
             api::PolishEvent::Status { phase, transcript } => {
+                if app_clone
+                    .try_state::<RecordingSessionState>()
+                    .map(|s| s.generation.load(Ordering::SeqCst) != run_generation)
+                    .unwrap_or(false)
+                {
+                    return;
+                }
                 tracing::info!(
                     "[pipeline] status: phase={phase} transcript={}",
                     transcript.as_deref().unwrap_or("—")
                 );
-                let _ = app_clone.emit(
-                    "voice-status",
-                    serde_json::json!({ "phase": phase, "transcript": transcript }),
+                emit_voice_status(
+                    &app_clone,
+                    phase,
+                    transcript.as_deref(),
+                    event_client_run_id.as_deref(),
                 );
             }
             api::PolishEvent::Done(done) => {
+                if app_clone
+                    .try_state::<RecordingSessionState>()
+                    .map(|s| s.generation.load(Ordering::SeqCst) != run_generation)
+                    .unwrap_or(false)
+                {
+                    return;
+                }
                 tracing::info!(
                     "[pipeline] ✓ done: {} chars, model={}, latency: stt={}ms embed={}ms polish={}ms total={}ms",
                     done.polished.len(),
@@ -6109,7 +6188,7 @@ async fn run_voice_polish_sse(
                 tracing::info!("[pipeline] polished text: \"{preview}{suffix}\"");
                 // For Divo turns the Divo bridge drives the HUD — don't flash "Done".
                 if !is_divo {
-                    let _ = app_clone.emit("voice-done", done);
+                    emit_voice_done(&app_clone, done, event_client_run_id.as_deref());
                 }
             }
             api::PolishEvent::Error {
@@ -6400,6 +6479,7 @@ async fn run_voice_polish_sse(
             serde_json::json!({
                 "status": output_status,
                 "message": output_message,
+                "run_id": client_run_id.as_deref(),
             }),
         );
     }
@@ -6483,13 +6563,10 @@ async fn run_voice_repair_sse(
             let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
         }
         api::PolishEvent::Status { phase, transcript } => {
-            let _ = app_clone.emit(
-                "voice-status",
-                serde_json::json!({ "phase": phase, "transcript": transcript }),
-            );
+            emit_voice_status(&app_clone, phase, transcript.as_deref(), None);
         }
         api::PolishEvent::Done(done) => {
-            let _ = app_clone.emit("voice-done", done);
+            emit_voice_done(&app_clone, done, None);
         }
         api::PolishEvent::Error {
             message,
@@ -6551,13 +6628,10 @@ async fn run_text_refine_sse(
             let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
         }
         api::PolishEvent::Status { phase, transcript } => {
-            let _ = app_clone.emit(
-                "voice-status",
-                serde_json::json!({ "phase": phase, "transcript": transcript }),
-            );
+            emit_voice_status(&app_clone, phase, transcript.as_deref(), None);
         }
         api::PolishEvent::Done(done) => {
-            let _ = app_clone.emit("voice-done", done);
+            emit_voice_done(&app_clone, done, None);
         }
         api::PolishEvent::Error {
             message,
@@ -6718,7 +6792,7 @@ fn run_fast_voice_repair(app: tauri::AppHandle, action: LastVoiceAction) {
             }
         };
         sync_tray(&app2, &snap);
-        let _ = app2.emit("app-state", &snap);
+        emit_app_state(&app2, &snap);
     });
 }
 
@@ -6763,7 +6837,7 @@ fn run_refine_last_transform(app: tauri::AppHandle, action: LastTextTransformAct
             }
         };
         sync_tray(&app2, &snap);
-        let _ = app2.emit("app-state", &snap);
+        emit_app_state(&app2, &snap);
     });
 }
 
@@ -7218,7 +7292,7 @@ fn retry_recording_spawn(
             }
         };
         sync_tray(&app2, &snap);
-        let _ = app2.emit("app-state", &snap);
+        emit_app_state(&app2, &snap);
     });
 
     Ok(())

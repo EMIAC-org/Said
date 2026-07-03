@@ -110,9 +110,11 @@ pub struct ProcessSummary {
 }
 
 /// Full state snapshot sent to the Tauri frontend on every command.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct AppSnapshot {
     pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_id: Option<String>,
     pub platform: String,
     pub current_mode: &'static str,
     pub current_mode_label: &'static str,

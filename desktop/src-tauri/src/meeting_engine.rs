@@ -12999,6 +12999,14 @@ const WHISPER_MODEL_CATALOG: &[(&str, &str, u64)] = &[
         "https://huggingface.co/anish2305/airnote-hinglish-stt-ggml/resolve/main/ggml-oriserve-hinglish-fp16.bin",
         148_000_000,
     ),
+    // Whisper-Hindi2Hinglish-Apex (large-v3-turbo, q8_0 GGML, ~834 MB). Parallel
+    // on-device dictation model, also romanized Hinglish. Listed here so it's a
+    // supported/downloadable name and isn't cleaned up as a stray ggml file.
+    (
+        "ggml-apex-hinglish-q8_0.bin",
+        "https://huggingface.co/Marquestra/Whisper-Hindi2Hinglish-Apex-GGML/resolve/main/ggml-apex-hinglish-q8_0.bin",
+        874_188_075,
+    ),
 ];
 
 /// Silero VAD ggml model for whisper.cpp `--vad` (speech-only segments).
@@ -13773,6 +13781,17 @@ fn transcribe_dictation_summary(
     }
     let mut config = resolve_whisper_cpp_config()?;
     config.language = dictation_whisper_language(pref_language);
+    // Parallel on-device model: prefer Apex (large-v3-turbo Hinglish, q8_0) for
+    // dictation when it's installed. Set AIRNOTE_DICTATION_MODEL=oriserve to force
+    // the Swift/Oriserve model instead. Meetings are unaffected (they resolve the
+    // model separately and keep using Oriserve).
+    let apex_model = said_core::paths::apex_model_path();
+    let force_oriserve = std::env::var("AIRNOTE_DICTATION_MODEL")
+        .map(|v| v.trim().eq_ignore_ascii_case("oriserve"))
+        .unwrap_or(false);
+    if apex_model.is_file() && !force_oriserve {
+        config.model = apex_model;
+    }
     let paths = transcript_paths_for_wav(&summary.path);
     let done = transcribe_with_whisper_cpp_for(
         summary,
@@ -14379,7 +14398,13 @@ fn whisper_model_candidate_names() -> Vec<&'static str> {
     // meeting model — no fallback. If it isn't installed the engine has no model
     // and the Meetings view surfaces the download banner. The model is Hindi-only,
     // so the meeting language is forced to `hi` (see meeting_track_config).
-    vec!["ggml-oriserve-hinglish-fp16.bin"]
+    // Apex is listed after Oriserve so, when both are present, Oriserve stays the
+    // default the resolver finds; dictation overrides to Apex explicitly. When only
+    // Apex is installed, the resolver still finds a usable model instead of erroring.
+    vec![
+        "ggml-oriserve-hinglish-fp16.bin",
+        "ggml-apex-hinglish-q8_0.bin",
+    ]
 }
 
 fn is_supported_meeting_whisper_model_name(name: &str) -> bool {
@@ -16873,13 +16898,15 @@ mod tests {
     }
 
     #[test]
-    fn meeting_whisper_defaults_are_oriserve_only() {
+    fn meeting_whisper_defaults_oriserve_then_apex() {
         let candidates = default_whisper_model_candidates(Path::new("/tmp/airnote-test-data"));
 
-        // Meetings use the on-device Oriserve model only (same as dictation, forced
-        // to `hi`). No fallback — a missing model surfaces the download banner.
-        assert_eq!(candidates.len(), 1);
+        // Oriserve stays the default the resolver finds first; Apex is the parallel
+        // on-device dictation model, listed after it so it's still found when only
+        // Apex is installed. A missing model surfaces the download banner.
+        assert_eq!(candidates.len(), 2);
         assert!(candidates[0].ends_with("models/ggml-oriserve-hinglish-fp16.bin"));
+        assert!(candidates[1].ends_with("models/ggml-apex-hinglish-q8_0.bin"));
     }
 
     #[test]
@@ -16936,16 +16963,17 @@ mod tests {
     }
 
     #[test]
-    fn meeting_whisper_catalog_is_oriserve_only() {
+    fn meeting_whisper_catalog_is_oriserve_and_apex() {
         let names = WHISPER_MODEL_CATALOG
             .iter()
             .map(|(name, _, _)| *name)
             .collect::<std::collections::HashSet<_>>();
 
-        // Exactly one selectable model — Oriserve. Q5/medium/etc. are gone, so
-        // they're treated as legacy and never auto-selected.
-        assert_eq!(names.len(), 1);
+        // Two selectable on-device models — Oriserve (default) and Apex (parallel).
+        // Legacy Q5/medium/etc. are gone, so they're never auto-selected.
+        assert_eq!(names.len(), 2);
         assert!(names.contains("ggml-oriserve-hinglish-fp16.bin"));
+        assert!(names.contains("ggml-apex-hinglish-q8_0.bin"));
         assert!(!names.contains("ggml-large-v3-turbo-q5_0.bin"));
     }
 

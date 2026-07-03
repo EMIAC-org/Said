@@ -12,6 +12,13 @@ matrix_runs/*
 !matrix_runs/.gitkeep
 user_profiles/*
 !user_profiles/.gitkeep
+corpus/
+!corpus/.gitkeep
+whisper_hinglish_eval/
+.venv-nemotron/
+**/*.bin
+**/hf-cache/
+**/.hf-cache/
 __pycache__/
 *.pyc
 

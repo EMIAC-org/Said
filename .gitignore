@@ -10,6 +10,16 @@
 /target
 **/target/
 
+# Large local trees — keep out of git add / Conductor checkpoints (multi-GB)
+/voicetypr/
+/lab/whisper_hinglish_eval/
+/lab/.venv-nemotron/
+/lab/**/*.bin
+/lab/**/hf-cache/
+/lab/**/.hf-cache/
+**/ggml-*.bin
+**/*.ggml
+
 # Generated Tauri sidecars
 desktop/src-tauri/binaries/whisper-cli-*
 
