@@ -14,7 +14,6 @@ pub mod pending_edits;
 pub mod pending_promotions;
 pub mod prefs;
 pub mod profile_summary;
-pub mod prompt_templates;
 pub mod server_migration;
 pub mod server_settings;
 pub mod stt_replacements;
@@ -84,6 +83,8 @@ const MIGRATION_050: &str = include_str!("migrations/050_local_profile_summary.s
 const MIGRATION_051: &str = include_str!("migrations/051_observability_outbox.sql");
 const MIGRATION_052: &str = include_str!("migrations/052_voice_runs.sql");
 const MIGRATION_053: &str = include_str!("migrations/053_retire_swift_local_stt.sql");
+const MIGRATION_054: &str = include_str!("migrations/054_recording_trace_json.sql");
+const MIGRATION_055: &str = include_str!("migrations/055_drop_prompt_templates.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -563,6 +564,22 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 53")
             .expect("failed to set user_version to 53");
     }
+
+    if version < 54 {
+        info!("running migration 054_recording_trace_json");
+        conn.execute_batch(MIGRATION_054)
+            .expect("migration 054 failed");
+        conn.execute_batch("PRAGMA user_version = 54")
+            .expect("failed to set user_version to 54");
+    }
+
+    if version < 55 {
+        info!("running migration 055_drop_prompt_templates");
+        conn.execute_batch(MIGRATION_055)
+            .expect("migration 055 failed");
+        conn.execute_batch("PRAGMA user_version = 55")
+            .expect("failed to set user_version to 55");
+    }
 }
 
 /// Idempotent repairs for partial migration states (e.g. user_version bumped without ALTER).
@@ -677,6 +694,7 @@ fn repair_schema_gaps(pool: &DbPool) {
         "deepinfra_api_key",
         "deepinfra_api_key TEXT",
     );
+    add_column_if_missing(&conn, "recordings", "trace_json", "trace_json TEXT");
 }
 
 /// Return the default database path. Delegates to `paths::default_db_path()`
@@ -815,7 +833,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 53);
+        assert_eq!(version, 54);
 
         for table in [
             "tier2_policy_weights",

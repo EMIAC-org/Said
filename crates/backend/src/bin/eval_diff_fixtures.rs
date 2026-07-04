@@ -381,6 +381,7 @@ async fn main() {
                 raw_transcript: Some(fx.transcript),
                 local_corrected_transcript: Some(fx.ai_output),
                 polished_output: Some(fx.ai_output),
+                trace_json: None,
             },
         );
 

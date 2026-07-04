@@ -158,6 +158,7 @@ fn server_row_to_recording(row: RuntimeHistoryItem, user_id: &str) -> Recording 
         raw_transcript: row.raw_transcript,
         local_corrected_transcript: row.local_corrected_transcript,
         polished_output: row.polished_output,
+        trace_json: None,
     }
 }
 

@@ -58,6 +58,8 @@ pub struct DictationUpsertPayload {
     pub platform: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dictation_trace_json: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +69,8 @@ pub struct DictationPatchPayload {
     pub final_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edit_feedback_json: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dictation_trace_json: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +133,9 @@ pub fn after_recording_insert(
         device_id: extras.device_id.clone(),
         platform: extras.platform.clone(),
         app_version: extras.app_version.clone(),
+        dictation_trace_json: rec
+            .trace_json
+            .and_then(|s| serde_json::from_str::<Value>(s).ok()),
     };
     let _ = enqueue_dictation_upsert(pool, user_id, payload);
 }

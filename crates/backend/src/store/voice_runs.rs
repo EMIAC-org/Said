@@ -386,6 +386,7 @@ mod tests {
                 raw_transcript: Some("hello"),
                 local_corrected_transcript: None,
                 polished_output: Some("hello"),
+                trace_json: None,
             },
         )
         .unwrap();

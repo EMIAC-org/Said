@@ -3269,49 +3269,6 @@ async fn list_polish_models(
     api::list_polish_models(&ep, beta).await
 }
 
-#[tauri::command]
-async fn get_voice_prompt(
-    backend: State<'_, BackendState>,
-) -> Result<api::PromptTemplateResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::get_voice_prompt(&ep).await
-}
-
-#[tauri::command]
-async fn save_voice_prompt_draft(
-    backend: State<'_, BackendState>,
-    draft_body: String,
-) -> Result<api::PromptTemplateResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::save_voice_prompt_draft(&ep, draft_body).await
-}
-
-#[tauri::command]
-async fn apply_voice_prompt_draft(
-    backend: State<'_, BackendState>,
-) -> Result<api::PromptTemplateResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::apply_voice_prompt_draft(&ep).await
-}
-
-#[tauri::command]
-async fn reset_voice_prompt(
-    backend: State<'_, BackendState>,
-) -> Result<api::PromptTemplateResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::reset_voice_prompt(&ep).await
-}
-
-#[tauri::command]
-async fn test_voice_prompt(
-    backend: State<'_, BackendState>,
-    transcript: String,
-    draft_body: Option<String>,
-) -> Result<api::PromptTestResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::test_voice_prompt(&ep, transcript, draft_body).await
-}
-
 #[derive(serde::Serialize)]
 struct SttRuntimeInfo {
     provider: String,
@@ -5759,6 +5716,7 @@ async fn recover_transcribe(ep: &BackendEndpoint, wav: Vec<u8>) -> Result<api::P
         None,
         None,
         None,
+        None,
         false,
         |_event: api::PolishEvent| {},
     )
@@ -6280,6 +6238,41 @@ async fn run_voice_polish_sse(
     let had_ws_pretranscript = pre_transcript.is_some();
     let wav_len = wav.len();
     let target_app_for_telemetry = target_app.clone();
+    let mut initial_trace = said_core::dictation_trace::DictationTrace::default();
+    initial_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+        stage: "desktop.pipeline.handoff",
+        component: "desktop",
+        function: "run_voice_polish_sse",
+        output: pre_transcript.as_ref().map(|t| t.transcript.as_str()),
+        reason: Some("desktop handing audio/transcript candidate to backend"),
+        risk: Some("desktop_transcript_selection"),
+        metadata: serde_json::json!({
+            "run_id": client_run_id.as_deref(),
+            "path": pipeline_path,
+            "wav_bytes": wav_len,
+            "pre_transcript_present": pre_transcript.is_some(),
+            "pre_transcript_chars": pre_transcript_chars,
+            "pre_transcript_words": pre_transcript_words,
+            "message_polish": message_polish_mode,
+            "repair_mode": repair_mode.is_some(),
+            "screen_context_chars": screen_context.as_ref().map(|s| s.chars().count()).unwrap_or(0),
+        }),
+        ..Default::default()
+    });
+    initial_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+        stage: "desktop.field.initial_snapshot",
+        component: "desktop",
+        function: "paster::read_focused_value_fast",
+        output: initial_field_text.as_deref(),
+        reason: Some("field text before live typing/reconcile"),
+        risk: Some("paste_context"),
+        metadata: serde_json::json!({
+            "readable": initial_field_text.as_ref().is_some_and(|s| !s.is_empty()),
+            "suppress_local": suppress_local,
+        }),
+        ..Default::default()
+    });
+    let initial_trace_json = Some(initial_trace.into_value());
     let done_result = if let Some(transcript) = pre_transcript {
         tracing::info!(
             "[pipeline] fast path: sending WAV + WS transcript to backend (backend should skip HTTP STT unless rescue is triggered)"
@@ -6289,6 +6282,7 @@ async fn run_voice_polish_sse(
             wav,
             target_app,
             client_run_id.clone(),
+            initial_trace_json.clone(),
             Some(transcript.transcript),
             Some(transcript.meta),
             repair_mode,
@@ -6303,6 +6297,7 @@ async fn run_voice_polish_sse(
             wav,
             target_app,
             client_run_id.clone(),
+            initial_trace_json,
             None,
             None,
             repair_mode,
@@ -6529,6 +6524,63 @@ async fn run_voice_polish_sse(
                 "run_id": client_run_id.as_deref(),
             }),
         );
+    }
+
+    if !is_divo {
+        let typed_snapshot_for_trace = typed_text
+            .lock()
+            .map(|text| text.clone())
+            .unwrap_or_default();
+        let mut paste_trace = said_core::dictation_trace::DictationTrace::default();
+        paste_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "desktop.live_typed_snapshot",
+            component: "desktop",
+            function: "paster::type_text",
+            output: (!typed_snapshot_for_trace.is_empty())
+                .then_some(typed_snapshot_for_trace.as_str()),
+            reason: Some("tokens typed before final done reconciliation"),
+            risk: Some("live_typing"),
+            metadata: serde_json::json!({
+                "typed_tokens": n_typed,
+                "failed_tokens": n_failed,
+                "typed_any": !typed_snapshot_for_trace.is_empty(),
+                "message_polish": message_polish_mode,
+                "suppress_local": suppress_local,
+                "superseded": superseded,
+            }),
+            ..Default::default()
+        });
+        paste_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "desktop.final_reconcile",
+            component: "desktop",
+            function: "paster::reconcile_current_recording_or_insert",
+            input: (!typed_snapshot_for_trace.is_empty())
+                .then_some(typed_snapshot_for_trace.as_str()),
+            output: Some(done.polished.as_str()),
+            reason: Some("desktop ensured final polished text is in focused field"),
+            risk: Some("paste_reconcile"),
+            metadata: serde_json::json!({
+                "output_pasted": output_pasted,
+                "used_clipboard_fallback": used_clipboard_fallback,
+                "output_status": output_status,
+                "initial_field_readable": initial_field_text.as_ref().is_some_and(|s| !s.is_empty()),
+            }),
+            ..Default::default()
+        });
+        paste_trace.set_summary_field("paste_success", serde_json::json!(output_pasted));
+        paste_trace.set_summary_field("output_status", serde_json::json!(output_status));
+        let trace_ep = ep.clone();
+        let trace_recording_id = done.recording_id.clone();
+        let trace_value = paste_trace.into_value();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) =
+                api::patch_dictation_trace(&trace_ep, &trace_recording_id, trace_value).await
+            {
+                tracing::warn!(
+                    "[observability] dictation paste trace patch failed recording_id={trace_recording_id}: {e}"
+                );
+            }
+        });
     }
 
     if let Some(run_id) = client_run_id.as_deref() {
@@ -9036,6 +9088,27 @@ async fn watch_for_edit(
             app_switched: app_switched_during_capture,
             matches_clipboard: false,
         };
+        let mut edit_trace = said_core::dictation_trace::DictationTrace::default();
+        edit_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "edit_watch.capture",
+            component: "desktop",
+            function: "watch_for_edit",
+            input: Some(&polished),
+            output: Some(&user_kept),
+            reason: Some("focused-field value captured after paste"),
+            risk: Some("edit_capture"),
+            metadata: serde_json::json!({
+                "capture_method": capture_method,
+                "time_since_paste_ms": capture_meta.time_since_paste_ms,
+                "app_switched": capture_meta.app_switched,
+                "matches_clipboard": capture_meta.matches_clipboard,
+                "post_paste_readable": !post_paste.is_empty(),
+                "saw_user_edit": saw_user_edit,
+                "initial_pid": initial_pid,
+                "final_front_pid": final_front_pid,
+            }),
+            ..Default::default()
+        });
         match api::classify_edit(
             ep,
             &recording_id,
@@ -9045,6 +9118,7 @@ async fn watch_for_edit(
             capture_meta,
             client_run_id.as_deref(),
             pre_paste_text.as_deref(),
+            Some(edit_trace.into_value()),
         )
         .await
         {
@@ -10948,11 +11022,6 @@ fn main() {
             swift_model::swift_stt_download_model,
             swift_model::swift_stt_cancel_download,
             swift_model::swift_stt_delete_model,
-            get_voice_prompt,
-            save_voice_prompt_draft,
-            apply_voice_prompt_draft,
-            reset_voice_prompt,
-            test_voice_prompt,
             patch_preferences,
             get_history,
             submit_edit_feedback,

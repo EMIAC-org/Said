@@ -15,7 +15,7 @@ import { RuntimePage } from './pages/RuntimePage'
 import { TelemetryPage } from './pages/TelemetryPage'
 import { TelemetryUsersPage } from './pages/TelemetryUsersPage'
 import { TelemetryUserPage } from './pages/TelemetryUserPage'
-import { RuntimeUserPage } from './pages/RuntimeUserPage'
+import { DictationsPage } from './pages/DictationsPage'
 import { BugsPage } from './pages/BugsPage'
 import { DiagnosticsPage } from './pages/DiagnosticsPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -43,10 +43,10 @@ createRoot(document.getElementById('app')!).render(
               <Route path="team" element={<TeamPage />} />
               <Route path="desktop" element={<DesktopPage />} />
               <Route path="runtime" element={<RuntimePage />} />
+              <Route path="dictations" element={<DictationsPage />} />
               <Route path="telemetry" element={<TelemetryPage />} />
               <Route path="telemetry/users" element={<TelemetryUsersPage />} />
               <Route path="telemetry/users/:accountId" element={<TelemetryUserPage />} />
-              <Route path="runtime/users/:id" element={<RuntimeUserPage />} />
               <Route path="vocabulary" element={<VocabularyPage />} />
               <Route path="bugs" element={<BugsPage />} />
               <Route path="diagnostics" element={<DiagnosticsPage />} />

@@ -83,9 +83,9 @@ export function TelemetryPage() {
     <>
       <div className="mb-4 flex items-end justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-[15px] font-semibold text-fg">Desktop Telemetry</h1>
+          <h1 className="text-[15px] font-semibold text-fg">Analytics</h1>
           <p className="text-[12px] text-fg-4 mt-1">
-            Per-run analytics plus org dictation observability (admin plaintext inspector).
+            Per-run usage &amp; quality aggregates. For the raw STT → polish pipeline, see Dictations.
           </p>
         </div>
         <select

@@ -136,25 +136,6 @@ export interface ListPolishModelsResponse {
   selected_model: string;
 }
 
-export interface PromptTemplateResponse {
-  kind: string;
-  title: string;
-  base_version: string;
-  active_body: string;
-  draft_body: string | null;
-  default_body: string;
-  updated_at: number;
-  applied_at: number | null;
-  has_draft: boolean;
-  active_is_default: boolean;
-}
-
-export interface PromptTestResponse {
-  output: string;
-  model_used: string;
-  latency_ms: number;
-}
-
 export interface ProcessPerf {
   pid: number;
   name: string;
@@ -270,4 +251,3 @@ export interface PendingEditsResponse {
   edits: PendingEdit[];
   total: number;
 }
-

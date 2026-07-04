@@ -27,6 +27,7 @@ pub struct Recording {
     pub raw_transcript: Option<String>,
     pub local_corrected_transcript: Option<String>,
     pub polished_output: Option<String>,
+    pub trace_json: Option<String>,
 }
 
 pub struct InsertRecording<'a> {
@@ -48,6 +49,7 @@ pub struct InsertRecording<'a> {
     pub raw_transcript: Option<&'a str>,
     pub local_corrected_transcript: Option<&'a str>,
     pub polished_output: Option<&'a str>,
+    pub trace_json: Option<&'a str>,
 }
 
 pub fn insert_recording(pool: &DbPool, rec: InsertRecording<'_>) -> Option<()> {
@@ -56,8 +58,8 @@ pub fn insert_recording(pool: &DbPool, rec: InsertRecording<'_>) -> Option<()> {
         "INSERT INTO recordings
          (id, user_id, timestamp_ms, transcript, polished, word_count, recording_seconds,
           model_used, confidence, transcribe_ms, embed_ms, polish_ms, target_app, source, audio_id,
-          enriched_transcript, raw_transcript, local_corrected_transcript, polished_output)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+          enriched_transcript, raw_transcript, local_corrected_transcript, polished_output, trace_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
         params![
             rec.id,
             rec.user_id,
@@ -78,6 +80,7 @@ pub fn insert_recording(pool: &DbPool, rec: InsertRecording<'_>) -> Option<()> {
             rec.raw_transcript,
             rec.local_corrected_transcript,
             rec.polished_output,
+            rec.trace_json,
         ],
     )
     .ok()?;
@@ -107,13 +110,14 @@ fn row_to_recording(row: &rusqlite::Row<'_>) -> rusqlite::Result<Recording> {
         raw_transcript: row.get(18)?,
         local_corrected_transcript: row.get(19)?,
         polished_output: row.get(20)?,
+        trace_json: row.get(21)?,
     })
 }
 
 const SELECT_COLS: &str = "id, user_id, timestamp_ms, transcript, polished, final_text,
      word_count, recording_seconds, model_used, confidence,
      transcribe_ms, embed_ms, polish_ms, target_app, edit_count, source, audio_id,
-     enriched_transcript, raw_transcript, local_corrected_transcript, polished_output";
+     enriched_transcript, raw_transcript, local_corrected_transcript, polished_output, trace_json";
 
 pub fn list_recordings(
     pool: &DbPool,
@@ -140,7 +144,13 @@ pub fn list_recordings(
         .unwrap_or_default()
 }
 
-/// Delete recordings older than 1 day. Called on a background timer.
+/// Delete recordings older than 1 day.
+///
+/// Best-effort retention only. Driven by the 6 h sweep in `main.rs`, whose
+/// interval resets on every backend restart — so in normal per-session use
+/// (backend up for minutes, not hours) this rarely fires and recordings
+/// effectively persist. Do not rely on it as a guaranteed retention bound;
+/// anything that needs durable history should live in its own table.
 pub fn cleanup_old_recordings(pool: &DbPool) {
     let conn = match pool.get() {
         Ok(c) => c,
@@ -183,6 +193,32 @@ pub fn set_recording_audio_id(pool: &DbPool, id: &str, audio_id: &str) -> Option
     .ok()
     .filter(|n| *n > 0)?;
     Some(())
+}
+
+pub fn merge_recording_trace(
+    pool: &DbPool,
+    id: &str,
+    trace: &serde_json::Value,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT trace_json FROM recordings WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .ok();
+    let existing_value = existing
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+    let merged =
+        said_core::dictation_trace::merge_trace_values(existing_value.as_ref(), Some(trace));
+    conn.execute(
+        "UPDATE recordings SET trace_json = ?1 WHERE id = ?2",
+        params![merged.to_string(), id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Load recent (raw_transcript, final_text) pairs where the user corrected

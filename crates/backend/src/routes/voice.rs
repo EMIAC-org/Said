@@ -363,8 +363,7 @@ use crate::{
     llm::{
         openai_codex,
         prompt::{
-            VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE, VocabEntry,
-            build_user_message_with_hints, build_voice_repair_system_prompt,
+            VocabEntry, build_user_message_with_hints, build_voice_repair_system_prompt,
             build_voice_repair_user_message, default_voice_prompt_template,
             render_voice_system_prompt_template_with_profile,
             resolved_vocab_terms_to_entries_with_aliases,
@@ -376,9 +375,9 @@ use crate::{
         vocab_resolver,
     },
     store::{
-        company_vocab, email_memory,
+        company_vocab,
         history::{InsertRecording, insert_recording},
-        openai_oauth, prompt_templates, stt_replacements,
+        openai_oauth, stt_replacements,
         vectors::retrieve_similar,
         vocab_embeddings, vocabulary,
     },
@@ -409,6 +408,7 @@ struct VoicePolishInput {
     screen_context: Option<String>,
     message_polish_mode: bool,
     client_run_id: Option<String>,
+    client_trace_json: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -522,6 +522,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
     let mut screen_context: Option<String> = None;
     let mut message_polish_mode = false;
     let mut client_run_id: Option<String> = None;
+    let mut client_trace_json: Option<serde_json::Value> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name() {
@@ -567,6 +568,13 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             Some("client_run_id") => {
                 client_run_id = field.text().await.ok().filter(|s| !s.trim().is_empty());
             }
+            Some("client_trace_json") => {
+                client_trace_json = field
+                    .text()
+                    .await
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+            }
             _ => {}
         }
     }
@@ -608,6 +616,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             screen_context,
             message_polish_mode,
             client_run_id,
+            client_trace_json,
         },
     )
     .await
@@ -642,6 +651,7 @@ pub async fn polish_transcript(
             screen_context: None,
             message_polish_mode: false,
             client_run_id: None,
+            client_trace_json: None,
         },
     )
     .await
@@ -1027,20 +1037,13 @@ pub async fn repair_transcript(
             };
         }
 
-        // Content guard: if the LLM dropped more than half the words,
-        // fall back to the cleaned transcript.
         let repair_transcript_wc = transcript.split_whitespace().count();
-        let repair_polished_wc   = llm_result.polished.split_whitespace().count();
+        let repair_polished_wc = llm_result.polished.split_whitespace().count();
         if repair_transcript_wc > 4 && repair_polished_wc < repair_transcript_wc / 2 {
-            let mut cleaned = strip_confidence_markers(&transcript);
-            if enforce_roman_hinglish && script::contains_devanagari(&cleaned) {
-                cleaned = script::enforce_roman_hinglish(&cleaned);
-            }
             warn!(
-                "[voice-repair] polish dropped too much content: transcript={} words → polished={} words — falling back to cleaned transcript",
+                "[voice-repair] short repair output observed but preserved: transcript={} words → polished={} words",
                 repair_transcript_wc, repair_polished_wc,
             );
-            llm_result.polished = cleaned;
         }
 
         let total_ms = total_start.elapsed().as_millis() as i64;
@@ -1074,6 +1077,7 @@ pub async fn repair_transcript(
                     raw_transcript: Some(&t2),
                     local_corrected_transcript: Some(&t2),
                     polished_output: Some(&p2),
+                    trace_json: None,
                 };
                 crate::observability::after_recording_insert(
                     &pool2,
@@ -1946,7 +1950,25 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         screen_context,
         message_polish_mode,
         client_run_id,
+        client_trace_json,
     } = input;
+    let mut dictation_trace =
+        said_core::dictation_trace::parse_trace_value(client_trace_json.as_ref())
+            .unwrap_or_default();
+    dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+        stage: "backend.voice.input",
+        component: "backend",
+        function: "routes::voice::polish_with_input",
+        metadata: json!({
+            "wav_bytes": wav_data.len(),
+            "pre_transcript_present": pre_transcript.is_some(),
+            "message_polish": message_polish_mode,
+            "repair_mode": repair_mode.is_some(),
+            "screen_context_chars": screen_context.as_ref().map(|s| s.chars().count()).unwrap_or(0),
+            "client_run_id": client_run_id.as_deref(),
+        }),
+        ..Default::default()
+    });
 
     // Allow empty WAV when the caller supplied a pre_transcript (P5 / WS path).
     if wav_data.is_empty() && pre_transcript.is_none() {
@@ -2327,6 +2349,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             raw_transcript: Some(&t2),
                             local_corrected_transcript: None,
                             polished_output: Some(&p2),
+                            trace_json: None,
                         };
                         crate::observability::after_recording_insert(
                             &pool2,
@@ -2474,6 +2497,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             raw_transcript: Some(&t2),
                             local_corrected_transcript: None,
                             polished_output: Some(&p2),
+                            trace_json: None,
                         };
                         crate::observability::after_recording_insert(
                             &pool2,
@@ -2713,6 +2737,24 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 }
             }
         };
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "stt.selected_transcript",
+            component: "backend",
+            function: "routes::voice::maybe_rescue_transcript",
+            output: Some(&stt_transcript_raw),
+            duration_ms: Some(transcribe_ms),
+            reason: Some("transcript selected for polish"),
+            risk: Some("stt_selection"),
+            metadata: json!({
+                "provider": stt_provider.as_str(),
+                "plan": format!("{:?}", plan),
+                "pre_origin": format!("{:?}", pre_origin),
+                "using_pre_transcript": use_inbound,
+                "confidence": stt_confidence,
+                "audio_seconds": audio_seconds,
+            }),
+            ..Default::default()
+        });
 
         // Pre-LLM: number normalization + tier2 EVIDENCE COLLECTION (read-only).
         // Tier2 does NOT modify the transcript — it only identifies which tokens
@@ -2731,6 +2773,17 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     stt_transcript_raw, numeric_t
                 );
             }
+            dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+                stage: "pre_llm.number_format",
+                component: "backend",
+                function: "number_format::apply",
+                input: Some(&stt_transcript_raw),
+                output: Some(&numeric_t),
+                reason: Some("normalize spoken numbers before prompt"),
+                risk: Some("pre_model_mutation"),
+                metadata: json!({}),
+                ..Default::default()
+            });
             let evidence = tokio::task::spawn_blocking(move || {
                 crate::tier2::collect_evidence_with_store(
                     &pool_t,
@@ -2863,6 +2916,20 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 (resolved.transcript, entries)
             }
         };
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "vocab.resolve_for_prompt",
+            component: "backend",
+            function: "vocab_resolver::resolve_for_prompt",
+            input: Some(&stt_transcript),
+            output: Some(&resolved_transcript),
+            reason: Some("select memory/vocabulary candidates for prompt"),
+            risk: Some("prompt_context_bias"),
+            metadata: json!({
+                "selected_terms": vocab_entries.len(),
+                "terms": vocab_entries.iter().take(20).map(|v| v.term.clone()).collect::<Vec<_>>(),
+            }),
+            ..Default::default()
+        });
         let client_profile_summary = {
             let pool_profile = pool.clone();
             let uid_profile = user_id.clone();
@@ -2899,26 +2966,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             low_conf_ref,
         );
 
-        let default_prompt_body = default_voice_prompt_template();
-        let prompt_body = {
-            let pool_p = pool.clone();
-            let uid_p = user_id.clone();
-            let body_p = default_prompt_body.clone();
-            tokio::task::spawn_blocking(move || {
-                prompt_templates::active_body_or_default(
-                    &pool_p,
-                    &uid_p,
-                    prompt_templates::DefaultPrompt {
-                        kind: VOICE_PROMPT_KIND,
-                        title: VOICE_PROMPT_TITLE,
-                        base_version: VOICE_PROMPT_BASE_VERSION,
-                        body: &body_p,
-                    },
-                )
-            })
-            .await
-            .unwrap_or(default_prompt_body)
-        };
+        let prompt_body = default_voice_prompt_template();
         let relevant_corrections = crate::store::corrections::filter_relevant(
             &word_corrections, &resolved_transcript, 2, 10,
         );
@@ -2930,6 +2978,23 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             &vocab_entries,
             client_profile_markdown,
         );
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "prompt.build",
+            component: "backend",
+            function: "render_voice_system_prompt_template_with_profile",
+            input: Some(&resolved_transcript),
+            output: Some(&base_system_prompt),
+            reason: Some("system prompt rendered with profile, memory, and examples"),
+            risk: Some("prompt_context_bias"),
+            metadata: json!({
+                "profile_version": client_profile_version,
+                "profile_chars": client_profile_markdown.map(|p| p.chars().count()).unwrap_or(0),
+                "rag_examples": rag_examples.len(),
+                "corrections": relevant_corrections.len(),
+                "vocab_entries": vocab_entries.len(),
+            }),
+            ..Default::default()
+        });
 
         // Inject dynamic few-shot correction examples from user's history.
         // These teach the LLM by pattern — far more effective for small models
@@ -3009,6 +3074,21 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         } else {
             base_system_prompt
         };
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "prompt.final",
+            component: "backend",
+            function: "routes::voice::system_prompt",
+            input: Some(&resolved_transcript),
+            output: Some(&system_prompt),
+            reason: Some("final system prompt sent to polish model"),
+            risk: Some("prompt_context_bias"),
+            metadata: json!({
+                "prompt_chars": system_prompt.chars().count(),
+                "screen_context": screen_context.as_ref().is_some_and(|s| !s.trim().is_empty()),
+                "repair_mode": repair_mode.as_deref(),
+            }),
+            ..Default::default()
+        });
 
         // ── STEP 5: LLM polish ───────────────────────────────────────────────────
         let enforce_roman_hinglish = prefs.output_language == "hinglish";
@@ -3367,10 +3447,27 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             (llm_result, actual_model_used, stream_filter)
         };
 
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "llm.raw_output",
+            component: "backend",
+            function: "polish_dispatch::stream_polish_routed",
+            input: Some(&resolved_transcript),
+            output: Some(&llm_result.polished),
+            duration_ms: Some(llm_result.polish_ms as i64),
+            reason: Some("raw model output before deterministic post-processing"),
+            risk: Some("model_output"),
+            metadata: json!({
+                "model": actual_model_used.as_str(),
+                "stream_safety_live_disabled": stream_filter.live_disabled(),
+                "stream_safety_unsafe": stream_filter.saw_unsafe_content(),
+            }),
+        });
+
         // Defensive scrub: the LLM is told NOT to emit [word?XX%] confidence
         // markers, but occasionally leaks them anyway (sometimes malformed,
         // e.g. "[main60%]" with no '?'). Strip any survivors before this
         // text reaches the user, the paste path, or the DB.
+        let before_confidence_strip = llm_result.polished.clone();
         let scrubbed = strip_confidence_markers(&llm_result.polished);
         if scrubbed != llm_result.polished {
             warn!(
@@ -3379,7 +3476,19 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             );
             llm_result.polished = scrubbed;
         }
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "post_llm.strip_confidence_markers",
+            component: "backend",
+            function: "routes::voice::strip_confidence_markers",
+            input: Some(&before_confidence_strip),
+            output: Some(&llm_result.polished),
+            reason: Some("remove leaked confidence markers"),
+            risk: Some("post_model_mutation"),
+            metadata: json!({}),
+            ..Default::default()
+        });
 
+        let before_stream_scrub = llm_result.polished.clone();
         let scrubbed = scrub_polished_output(
             &llm_result.polished,
             &resolved_transcript,
@@ -3393,7 +3502,21 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             );
             llm_result.polished = scrubbed;
         }
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "post_llm.scrub_polished_output",
+            component: "backend",
+            function: "stream_safety::scrub_polished_output",
+            input: Some(&before_stream_scrub),
+            output: Some(&llm_result.polished),
+            reason: Some("remove prompt/transcript leakage"),
+            risk: Some("post_model_mutation"),
+            metadata: json!({
+                "saw_unsafe_content": stream_filter.saw_unsafe_content(),
+            }),
+            ..Default::default()
+        });
 
+        let before_devanagari_recovery = llm_result.polished.clone();
         if enforce_roman_hinglish && script::contains_devanagari(&llm_result.polished) {
             let romanized = match crate::llm::devanagari_recovery::recover(
                 &http_client, &groq_key_for_recovery, &llm_result.polished,
@@ -3425,8 +3548,22 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 }
             }
         };
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "post_llm.devanagari_recovery",
+            component: "backend",
+            function: "devanagari_recovery::recover",
+            input: Some(&before_devanagari_recovery),
+            output: Some(&llm_result.polished),
+            reason: Some("preserve roman Hinglish output mode"),
+            risk: Some("post_model_mutation"),
+            metadata: json!({
+                "enforce_roman_hinglish": enforce_roman_hinglish,
+            }),
+            ..Default::default()
+        });
 
         // Defense: strip any non-Latin script hallucinations (katakana, CJK, etc)
+        let before_non_latin_strip = llm_result.polished.clone();
         if enforce_roman_hinglish {
             let stripped = script::strip_non_latin_scripts(&llm_result.polished);
             if stripped != llm_result.polished {
@@ -3438,73 +3575,108 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 llm_result.polished = stripped;
             }
         }
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "post_llm.strip_non_latin",
+            component: "backend",
+            function: "script::strip_non_latin_scripts",
+            input: Some(&before_non_latin_strip),
+            output: Some(&llm_result.polished),
+            reason: Some("remove non-Latin script hallucinations"),
+            risk: Some("post_model_mutation"),
+            metadata: json!({ "enforce_roman_hinglish": enforce_roman_hinglish }),
+            ..Default::default()
+        });
 
         let llm_ms   = llm_start.elapsed().as_millis() as i64;
         let total_ms = total_start.elapsed().as_millis() as i64;
 
-        // Content guard: if the LLM dropped more than half the transcript
-        // words, fall back to the cleaned transcript (markers stripped).
-        // Runs BEFORE format_recover so that email folding (which
-        // intentionally collapses many words into one) doesn't trip it.
+        // Content guard used to fall back to the transcript when the model
+        // output had fewer than half the source words. That breaks structured
+        // dictation: correct emails, URLs, numbered lists, and cleanup often
+        // compress many spoken tokens. Keep this stage as trace-only so beta
+        // monitoring can still flag short outputs without mutating them.
         let transcript_wc = resolved_transcript.split_whitespace().count();
-        let polished_wc   = llm_result.polished.split_whitespace().count();
-        if transcript_wc > 4 && polished_wc < transcript_wc / 2 {
-            let mut cleaned = strip_confidence_markers(&resolved_transcript);
-            if enforce_roman_hinglish && script::contains_devanagari(&cleaned) {
-                cleaned = script::enforce_roman_hinglish(&cleaned);
-            }
-            warn!(
-                "[voice] polish dropped too much content: transcript={} words → polished={} words — falling back to cleaned transcript",
-                transcript_wc, polished_wc,
-            );
-            llm_result.polished = cleaned;
-        }
+        let polished_wc = llm_result.polished.split_whitespace().count();
+        let before_content_guard = llm_result.polished.clone();
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "post_llm.content_drop_guard",
+            component: "backend",
+            function: "routes::voice::content_drop_guard",
+            input: Some(&before_content_guard),
+            output: Some(&llm_result.polished),
+            reason: Some("trace-only: short model output is monitored, not overwritten"),
+            risk: Some("post_model_observer"),
+            metadata: json!({
+                "disabled": true,
+                "transcript_words": transcript_wc,
+                "polished_words_before": polished_wc,
+                "would_have_triggered": transcript_wc > 4 && polished_wc < transcript_wc / 2,
+            }),
+            ..Default::default()
+        });
 
-        let numeric_final = crate::number_format::apply(&llm_result.polished);
-        if numeric_final != llm_result.polished {
-            info!(
-                "[voice] deterministic number format after LLM: {:?} → {:?}",
-                llm_result.polished, numeric_final
-            );
-            llm_result.polished = numeric_final;
-        }
+        // The formatter prompt is now responsible for numbers, emails, and
+        // aliases. These deterministic post-LLM mutators were too context-blind:
+        // they could rewrite correct model output into the wrong final paste.
+        let before_number_final = llm_result.polished.clone();
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "post_llm.number_format",
+            component: "backend",
+            function: "number_format::apply",
+            input: Some(&before_number_final),
+            output: Some(&llm_result.polished),
+            reason: Some("disabled: preserve model-formatted numbers"),
+            risk: Some("post_model_observer"),
+            metadata: json!({ "disabled": true }),
+            ..Default::default()
+        });
 
-        let email_candidates = email_memory::load_candidates(&pool, &user_id);
-        let (email_final, email_recoveries) =
-            crate::llm::format_recover::recover_emails_with_candidates(
-                &llm_result.polished,
-                &email_candidates,
-            );
-        if email_final != llm_result.polished {
-            info!(
-                "[voice] deterministic email format after LLM: {} recovery/replacement(s)",
-                email_recoveries.len()
-            );
-            llm_result.polished = email_final;
-        }
+        let before_email_recover = llm_result.polished.clone();
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "post_llm.email_recover",
+            component: "backend",
+            function: "format_recover::recover_emails_with_candidates",
+            input: Some(&before_email_recover),
+            output: Some(&llm_result.polished),
+            reason: Some("disabled: preserve model-formatted emails"),
+            risk: Some("post_model_observer"),
+            metadata: json!({ "disabled": true }),
+            ..Default::default()
+        });
 
-        // Final exact-alias resolver. This is intentionally narrower than the
-        // old global fuzzy Tier2 pass: only approved exact aliases/edit-safe
-        // rows can fire here, including cached company bucket aliases.
-        let exact_final = stt_replacements::apply_exact_safe(&llm_result.polished, &stt_replacement_rules);
-        if exact_final.text != llm_result.polished {
-            info!(
-                "[voice] final exact alias resolver: {} replacement(s)",
-                exact_final.matches.len()
-            );
-            llm_result.polished = exact_final.text;
-        }
+        let before_exact_alias = llm_result.polished.clone();
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "post_llm.exact_alias_resolver",
+            component: "backend",
+            function: "stt_replacements::apply_exact_safe",
+            input: Some(&before_exact_alias),
+            output: Some(&llm_result.polished),
+            reason: Some("disabled: aliases are prompt evidence, not final rewrite rules"),
+            risk: Some("post_model_observer"),
+            metadata: json!({ "disabled": true }),
+            ..Default::default()
+        });
 
-        // Post-LLM number/email/exact-alias changes are reconciled by the desktop against
-        // the current recording's streamed text. No STREAM_RESET_SENTINEL is
-        // needed for deterministic formatter-only changes because the desktop
-        // patches only this recording span after `done`.
+        // Desktop reconciliation now only patches safety-cleaned model output
+        // against any live-streamed tokens for the current recording.
 
         let word_count = llm_result.polished.split_whitespace().count() as i64;
         info!("[timing] LLM={}ms (TTFT inside) | total={}ms ← STT={}ms embed={}ms rag={}ms llm={}ms",
             llm_ms, total_ms, transcribe_ms, embed_ms, rag_ms, llm_ms);
 
         let recording_id = Uuid::new_v4().to_string();
+        let post_llm_mutations = dictation_trace
+            .stages
+            .iter()
+            .filter(|stage| {
+                stage.changed && stage.risk.as_deref() == Some("post_model_mutation")
+            })
+            .count();
+        dictation_trace.set_summary_field("model", json!(actual_model_used.as_str()));
+        dictation_trace.set_summary_field("recording_id", json!(recording_id.as_str()));
+        dictation_trace.set_summary_field("post_llm_mutation_count", json!(post_llm_mutations));
+        dictation_trace.set_summary_field("final_output_chars", json!(llm_result.polished.chars().count()));
+        let trace_json_string = serde_json::to_string(&dictation_trace).ok();
 
         // 7. Persist recording before emitting `done`, so the UI refresh that
         // follows the done event can see both the row and its audio_id.
@@ -3525,6 +3697,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let raw2    = stt_transcript_raw.clone();
             let local2  = llm_result.polished.clone();
             let crid2   = client_run_id.clone();
+            let trace2  = trace_json_string.clone();
             let inserted = tokio::task::spawn_blocking(move || {
                 let rec = InsertRecording {
                     id: &id2, user_id: &uid2,
@@ -3542,6 +3715,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     raw_transcript: Some(&raw2),
                     local_corrected_transcript: Some(&local2),
                     polished_output: Some(&p2),
+                    trace_json: trace2.as_deref(),
                 };
                 crate::observability::after_recording_insert(
                     &pool2,

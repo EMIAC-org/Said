@@ -6,13 +6,10 @@ import { useAuth } from '../hooks/useAuth'
 import { Avatar } from '../components/Avatar'
 import { TelemetryStatCard } from '../components/telemetry/TelemetryStatCard'
 import { RunDetailPanel } from '../components/telemetry/RunDetailPanel'
+import { DictationInspector } from '../components/telemetry/DictationInspector'
 import { pct, ms } from '../components/telemetry/format'
 import { Loading, ErrorBox } from '../components/States'
 import type {
-  AliasLearnEvent,
-  DictationDetailItem,
-  DictationListItem,
-  ObservabilitySummary,
   TelemetryRun,
   TelemetryUserMemory,
   TelemetryUserProfile,
@@ -50,28 +47,6 @@ function CountGrid({ items }: { items: [string, number][] }) {
           <div className="text-fg font-semibold tabular-nums mt-0.5">{v}</div>
         </div>
       ))}
-    </div>
-  )
-}
-
-function dictationRowKey(row: DictationListItem): string {
-  // Always use the Postgres history row id — guaranteed to match list + detail.
-  return row.id
-}
-
-function dictationRowLabel(row: DictationListItem): string {
-  if (row.recording_id) return `${row.recording_id.slice(0, 8)}… (rec)`
-  if (row.client_run_id) return `${row.client_run_id.slice(0, 8)}… (run)`
-  return `${row.id.slice(0, 8)}…`
-}
-
-function DiffColumn({ label, text }: { label: string; text?: string | null }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-[10px] font-semibold text-fg-4 uppercase tracking-wider mb-1.5">{label}</div>
-      <div className="text-[12px] leading-relaxed whitespace-pre-wrap break-words font-mono bg-surface-3 rounded-lg p-3 min-h-[4rem] border border-border-light">
-        {text?.trim() ? text : '—'}
-      </div>
     </div>
   )
 }
@@ -198,17 +173,7 @@ export function TelemetryUserPage() {
   const [innerTab, setInnerTab] = useState<'telemetry' | 'memory' | 'dictation'>(initialTab)
   const [memory, setMemory] = useState<TelemetryUserMemory | null>(null)
   const [memoryLoading, setMemoryLoading] = useState(false)
-  const [dictationItems, setDictationItems] = useState<DictationListItem[]>([])
-  const [dictationTotal, setDictationTotal] = useState(0)
-  const [dictationSummary, setDictationSummary] = useState<ObservabilitySummary | null>(null)
-  const [dictationLoading, setDictationLoading] = useState(false)
-  const [selectedDictationKey, setSelectedDictationKey] = useState<string | null>(null)
-  const [dictationDetail, setDictationDetail] = useState<{
-    item: DictationDetailItem
-    alias_events: AliasLearnEvent[]
-  } | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState('')
+  const [dictationFocusKey, setDictationFocusKey] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [runsLoading, setRunsLoading] = useState(false)
   const [error, setError] = useState('')
@@ -260,55 +225,6 @@ export function TelemetryUserPage() {
       .finally(() => setMemoryLoading(false))
   }, [orgId, accountId, innerTab])
 
-  useEffect(() => {
-    if (!orgId || !accountId || innerTab !== 'dictation') return
-    setDictationLoading(true)
-    const params = new URLSearchParams({
-      days: String(days),
-      limit: '50',
-      account_id: accountId,
-    })
-    Promise.all([
-      apiJson<{ items: DictationListItem[]; total: number }>(
-        `/v1/orgs/${orgId}/observability/dictation?${params}`,
-      ),
-      apiJson<ObservabilitySummary>(`/v1/orgs/${orgId}/observability/summary?days=${days}`),
-    ])
-      .then(([list, summary]) => {
-        setDictationItems(list.items || [])
-        setDictationTotal(list.total || 0)
-        setDictationSummary(summary)
-      })
-      .catch(() => {
-        setDictationItems([])
-        setDictationTotal(0)
-        setDictationSummary(null)
-      })
-      .finally(() => setDictationLoading(false))
-  }, [orgId, accountId, innerTab, days])
-
-  useEffect(() => {
-    if (!orgId || !accountId || !selectedDictationKey) {
-      setDictationDetail(null)
-      setDetailError('')
-      return
-    }
-    setDetailLoading(true)
-    setDetailError('')
-    apiJson<{ item: DictationDetailItem; alias_events: AliasLearnEvent[] }>(
-      `/v1/orgs/${orgId}/observability/dictation/${encodeURIComponent(selectedDictationKey)}?account_id=${accountId}`,
-    )
-      .then(data => {
-        setDictationDetail(data)
-        setDetailError('')
-      })
-      .catch(e => {
-        setDictationDetail(null)
-        setDetailError(e instanceof Error ? e.message : 'Failed to load dictation detail')
-      })
-      .finally(() => setDetailLoading(false))
-  }, [orgId, accountId, selectedDictationKey])
-
   const switchTab = (tab: 'telemetry' | 'memory' | 'dictation') => {
     setInnerTab(tab)
     const p = new URLSearchParams(searchParams)
@@ -318,7 +234,7 @@ export function TelemetryUserPage() {
   }
 
   const openDictation = (recordingId: string) => {
-    setSelectedDictationKey(recordingId)
+    setDictationFocusKey(recordingId)
     switchTab('dictation')
   }
 
@@ -427,157 +343,14 @@ export function TelemetryUserPage() {
       </div>
 
       {innerTab === 'dictation' ? (
-        dictationLoading ? (
-          <Loading />
-        ) : (
-          <>
-            <div className="grid grid-cols-5 gap-3 mb-4">
-              <TelemetryStatCard
-                label="Dictations"
-                value={String(dictationSummary?.dictation_count ?? dictationTotal)}
-                sub={`${days}d window`}
-              />
-              <TelemetryStatCard
-                label="Edits logged"
-                value={String(dictationSummary?.edits_detected ?? 0)}
-                sub="with classify feedback"
-              />
-              <TelemetryStatCard
-                label="STT-error edits"
-                value={String(dictationSummary?.stt_error_edits ?? 0)}
-                sub={pct((dictationSummary?.classify_stt_error_rate ?? 0) * 100)}
-              />
-              <TelemetryStatCard
-                label="Aliases learned"
-                value={String(dictationSummary?.aliases_learned ?? 0)}
-                sub="org-wide 30d"
-              />
-              <TelemetryStatCard label="Listed" value={String(dictationItems.length)} sub="rows below" />
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <div className="card !p-0 overflow-hidden">
-                <div className="px-5 py-3 border-b border-border">
-                  <SectionLabel>Dictation runs</SectionLabel>
-                </div>
-                <table className="w-full">
-                  <thead>
-                    <tr>
-                      {['When', 'recording_id', 'App', 'Words', 'Edit', ''].map(h => (
-                        <th
-                          key={h}
-                          className="text-[10px] font-medium text-fg-4 text-left px-4 py-2 border-b border-border uppercase"
-                        >
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {dictationItems.map(row => {
-                      const rowKey = dictationRowKey(row)
-                      return (
-                      <tr
-                        key={row.id}
-                        className={`cursor-pointer hover:bg-surface-4/30 ${
-                          selectedDictationKey === rowKey ? 'bg-accent-light/40' : ''
-                        }`}
-                        onClick={() => setSelectedDictationKey(rowKey)}
-                      >
-                        <td className="text-[11px] px-4 py-2 border-b border-border-light">
-                          {new Date(row.created_at).toLocaleString()}
-                        </td>
-                        <td className="text-[11px] font-mono px-4 py-2 border-b border-border-light truncate max-w-[8rem]">
-                          {dictationRowLabel(row)}
-                        </td>
-                        <td className="text-[11px] px-4 py-2 border-b border-border-light truncate max-w-[6rem]">
-                          {row.target_app || '—'}
-                        </td>
-                        <td className="text-[12px] tabular-nums px-4 py-2 border-b border-border-light">
-                          {row.word_count ?? '—'}
-                        </td>
-                        <td className="text-[11px] px-4 py-2 border-b border-border-light">
-                          {row.edit_bucket || (row.has_edit_feedback ? 'edited' : '—')}
-                        </td>
-                        <td className="text-[11px] px-4 py-2 border-b border-border-light text-fg-4">
-                          {ms(row.total_ms ?? null)}
-                        </td>
-                      </tr>
-                    )})}
-                    {!dictationItems.length && (
-                      <tr>
-                        <td colSpan={6} className="text-[12px] text-fg-4 px-4 py-4">
-                          No dictation history synced yet. Signed-in desktop sessions enqueue plaintext
-                          asynchronously.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="card p-4">
-                <SectionLabel>Detail</SectionLabel>
-                {!selectedDictationKey ? (
-                  <p className="text-[12px] text-fg-4">Select a row to inspect transcript stages and edits.</p>
-                ) : detailLoading ? (
-                  <Loading />
-                ) : detailError ? (
-                  <p className="text-[12px] text-live">{detailError}</p>
-                ) : !dictationDetail ? (
-                  <p className="text-[12px] text-fg-4">Detail not found for this recording.</p>
-                ) : (
-                  <>
-                    <div className="text-[11px] text-fg-4 mb-3 font-mono">{selectedDictationKey}</div>
-                    <div className="grid grid-cols-1 gap-3 mb-4">
-                      <DiffColumn label="Raw STT" text={dictationDetail.item.raw_transcript} />
-                      <DiffColumn label="Transcript" text={dictationDetail.item.transcript} />
-                      <DiffColumn label="Polished" text={dictationDetail.item.polished_output} />
-                      <DiffColumn label="User kept" text={dictationDetail.item.final_text} />
-                    </div>
-                    {dictationDetail.item.edit_feedback_json &&
-                    Object.keys(dictationDetail.item.edit_feedback_json).length > 0 ? (
-                      <div className="mb-4">
-                        <SectionLabel>Edit feedback</SectionLabel>
-                        <div className="text-[11px] space-y-1">
-                          {Array.isArray(dictationDetail.item.edit_feedback_json.changes) &&
-                            (
-                              dictationDetail.item.edit_feedback_json.changes as {
-                                type?: string
-                                from?: string
-                                to?: string
-                              }[]
-                            ).map((ch, i) => (
-                              <div key={i} className="font-mono bg-surface-3 rounded px-2 py-1">
-                                <span className="text-fg-4">{ch.type || 'change'}</span>{' '}
-                                <span className="text-live">{ch.from}</span> →{' '}
-                                <span className="text-ok">{ch.to}</span>
-                              </div>
-                            ))}
-                        </div>
-                      </div>
-                    ) : null}
-                    {dictationDetail.alias_events.length > 0 && (
-                      <div>
-                        <SectionLabel>Alias learn timeline</SectionLabel>
-                        <div className="text-[11px] space-y-1">
-                          {dictationDetail.alias_events.map(ev => (
-                            <div key={ev.id} className="flex justify-between gap-2 font-mono">
-                              <span>
-                                {ev.heard} → {ev.correct}
-                              </span>
-                              <span className="text-fg-4 shrink-0">{ev.source}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          </>
-        )
+        orgId && accountId ? (
+          <DictationInspector
+            orgId={orgId}
+            accountId={accountId}
+            days={days}
+            focusKey={dictationFocusKey}
+          />
+        ) : null
       ) : innerTab === 'memory' ? (
         memoryLoading ? (
           <Loading />

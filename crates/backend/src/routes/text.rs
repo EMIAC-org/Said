@@ -415,6 +415,7 @@ pub async fn polish(
                     raw_transcript: Some(&t2),
                     local_corrected_transcript: Some(&t2),
                     polished_output: Some(&p2),
+                    trace_json: None,
                 });
             });
         }
@@ -515,6 +516,7 @@ async fn polish_message_polish_server(
                         raw_transcript: None,
                         local_corrected_transcript: None,
                         polished_output: Some(&p2),
+                        trace_json: None,
                     });
                 });
 
@@ -691,6 +693,7 @@ pub async fn refine_last(
                     raw_transcript: Some(&t2),
                     local_corrected_transcript: Some(&t2),
                     polished_output: Some(&p2),
+                    trace_json: None,
                 });
             });
         }

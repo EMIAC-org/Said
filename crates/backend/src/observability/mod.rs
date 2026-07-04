@@ -15,12 +15,14 @@ use serde_json::{Value, json};
 
 pub struct ClassifyObservabilityInput<'a> {
     pub recording_id: &'a str,
+    pub ai_output: &'a str,
     pub user_kept: &'a str,
     pub capture_method: &'a str,
     pub overall_class: &'a str,
     pub changes: &'a [AnalyzedChange],
     pub review_candidates: &'a [Value],
     pub promoted_terms: &'a [String],
+    pub edit_trace_json: Option<&'a Value>,
 }
 
 pub fn observability_extras(client_run_id: Option<&str>) -> RecordingObservabilityExtras {
@@ -68,6 +70,29 @@ pub fn schedule_classify_observability(state: &AppState, input: ClassifyObservab
         "promoted_aliases": promoted_aliases,
         "promoted_terms": input.promoted_terms,
     });
+    let mut trace =
+        said_core::dictation_trace::parse_trace_value(input.edit_trace_json).unwrap_or_default();
+    trace.add_stage(said_core::dictation_trace::TraceStageInput {
+        stage: "classify.result",
+        component: "backend",
+        function: "routes::classify::classify_inner",
+        input: Some(input.ai_output),
+        output: Some(input.user_kept),
+        reason: Some("edit-watch payload classified for learning"),
+        risk: Some("learning_classification"),
+        metadata: json!({
+            "class": input.overall_class,
+            "capture_method": input.capture_method,
+            "change_count": input.changes.len(),
+            "review_candidates": input.review_candidates.len(),
+            "promoted_terms": input.promoted_terms,
+        }),
+        ..Default::default()
+    });
+    trace.set_summary_field("classify", json!(input.overall_class));
+    trace.set_summary_field("learning_change_count", json!(input.changes.len()));
+    trace.set_summary_field("learning_promoted_terms", json!(input.promoted_terms));
+    let trace_value = (!trace.is_empty()).then(|| trace.into_value());
 
     let pool = state.pool.clone();
     let user_id = state.default_user_id.clone();
@@ -94,6 +119,7 @@ pub fn schedule_classify_observability(state: &AppState, input: ClassifyObservab
             recording_id,
             final_text: Some(user_kept),
             edit_feedback_json: Some(feedback),
+            dictation_trace_json: trace_value,
         };
         if let Err(e) = enqueue_dictation_patch(&pool, &user_id, patch) {
             tracing::warn!("[observability] classify patch enqueue failed: {e}");

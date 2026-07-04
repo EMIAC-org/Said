@@ -69,6 +69,8 @@ pub struct ClassifyBody {
     /// edits to it. Empty/None → field was empty, `user_kept` is used as-is.
     #[serde(default)]
     pub prior_text: Option<String>,
+    #[serde(default)]
+    pub edit_trace_json: Option<serde_json::Value>,
 }
 
 /// Strip the pre-existing field text so the edit diff sees only our output.
@@ -1182,12 +1184,14 @@ async fn classify_inner(
         &state,
         crate::observability::ClassifyObservabilityInput {
             recording_id: &body.recording_id,
+            ai_output: &body.ai_output,
             user_kept: &body.user_kept,
             capture_method: &body.capture_method,
             overall_class: &analyzer_output.overall_class,
             changes: &analyzer_output.changes,
             review_candidates: &review_json,
             promoted_terms: &promoted_terms,
+            edit_trace_json: body.edit_trace_json.as_ref(),
         },
     );
 

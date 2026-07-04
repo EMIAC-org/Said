@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod deepgram;
+pub mod dictation_trace;
 pub mod paths;
 pub mod polish;
 pub mod prefs;

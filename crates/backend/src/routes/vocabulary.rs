@@ -214,7 +214,8 @@ pub async fn list_aliases(State(state): State<AppState>) -> Json<AliasesResponse
     let aliases = rows
         .into_iter()
         .map(|r| AliasRow {
-            active: r.review_status == ReviewStatus::Approved && r.export_tier != ExportTier::Blocked,
+            active: r.review_status == ReviewStatus::Approved
+                && r.export_tier != ExportTier::Blocked,
             correct_form: r.correct_form,
             transcript_form: r.transcript_form,
             use_count: r.use_count,

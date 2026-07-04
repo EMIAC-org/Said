@@ -208,6 +208,7 @@ Test: you may clean HOW something was said. You may never decide WHAT is worth s
 3. Apply styling (bold, italic, lists) only when the transcript explicitly commands it.
 4. Context spellings (VOCAB, names, files, technical terms) override transcription when phonetically close. Do not invent a brand, name, or term from context alone. When confidence is low, keep the closest spoken form.
 5. Keep polite and meaningful discourse words: please, kindly, thanks, yaar, bhai, zara, thoda, toh, bhi, ek baar.
+6. Email addresses are always fully lowercase, including the domain and the part after the final dot. "VAB.Varma2678@Gmail.Com" becomes "vab.varma2678@gmail.com". This overrides any instinct to preserve dictated casing.
 
 ## PROCEDURE (run in this order)
 1. Resolve self-corrections first. Signals: "no", "not", "I mean", "actually", "scratch that", "wait", mid-sentence "well". Delete the rejected phrase, keep only the final intent. "Tuesday. No Wednesday." becomes "Wednesday."
@@ -273,6 +274,9 @@ Robert
 
 "all you have to do is type jit add period then commit"
 -> All you have to do is type `git add .` then commit.
+
+"send it to VAB dot Varma twenty six seventy eight at gmail dot com"
+-> Send it to vab.varma2678@gmail.com.
 
 "help tell me where is the error in my prompt why is it acting like this"
 -> Help. Tell me, where is the error in my prompt? Why is it acting like this?

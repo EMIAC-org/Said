@@ -557,26 +557,7 @@ pub async fn trace(
 
     // ── STAGE 4: Build prompt ───────────────────────────────────────────────────
     let user_message = build_user_message(&resolved_transcript, &prefs.output_language);
-    let default_prompt_body = default_voice_prompt_template();
-    let prompt_body = {
-        let pool_p = pool.clone();
-        let uid_p = user_id.clone();
-        let body_p = default_prompt_body.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::store::prompt_templates::active_body_or_default(
-                &pool_p,
-                &uid_p,
-                crate::store::prompt_templates::DefaultPrompt {
-                    kind: crate::llm::prompt::VOICE_PROMPT_KIND,
-                    title: crate::llm::prompt::VOICE_PROMPT_TITLE,
-                    base_version: crate::llm::prompt::VOICE_PROMPT_BASE_VERSION,
-                    body: &body_p,
-                },
-            )
-        })
-        .await
-        .unwrap_or(default_prompt_body)
-    };
+    let prompt_body = default_voice_prompt_template();
     let system_prompt = render_voice_system_prompt_template(
         &prompt_body,
         &prefs,

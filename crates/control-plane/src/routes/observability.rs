@@ -121,6 +121,7 @@ pub struct DictationDetailItem {
     pub polish_ms: Option<i64>,
     pub target_app: Option<String>,
     pub edit_feedback_json: Value,
+    pub dictation_trace_json: Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub edit_bucket: Option<String>,
@@ -269,6 +270,7 @@ pub async fn get_org_dictation_detail(
             h.polish_ms,
             h.target_app,
             h.edit_feedback_json,
+            h.dictation_trace_json,
             h.created_at,
             h.updated_at,
             r.edit_bucket,
@@ -472,12 +474,14 @@ pub struct DictationUpsertRequest {
     pub device_id: Option<String>,
     pub platform: Option<String>,
     pub app_version: Option<String>,
+    pub dictation_trace_json: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DictationPatchRequest {
     pub final_text: Option<String>,
     pub edit_feedback_json: Option<Value>,
+    pub dictation_trace_json: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -538,6 +542,7 @@ async fn apply_dictation_update(
             device_id = COALESCE($18, device_id),
             platform = COALESCE($19, platform),
             app_version = COALESCE($20, app_version),
+            dictation_trace_json = COALESCE($21, dictation_trace_json),
             updated_at = now()
          {DICTATION_UPDATE_WHERE}"
     ))
@@ -561,6 +566,7 @@ async fn apply_dictation_update(
     .bind(req.device_id.as_deref())
     .bind(req.platform.as_deref())
     .bind(req.app_version.as_deref())
+    .bind(req.dictation_trace_json.as_ref())
     .execute(db)
     .await?
     .rows_affected();
@@ -616,8 +622,8 @@ async fn upsert_dictation_row(
              raw_transcript, transcript, local_corrected_transcript,
              polished_output, final_text, model_used,
              word_count, recording_seconds,
-             transcribe_ms, embed_ms, polish_ms, target_app)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+             transcribe_ms, embed_ms, polish_ms, target_app, dictation_trace_json)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
          ON CONFLICT DO NOTHING",
     )
     .bind(account_id)
@@ -640,6 +646,7 @@ async fn upsert_dictation_row(
     .bind(req.embed_ms)
     .bind(req.polish_ms)
     .bind(req.target_app.as_deref())
+    .bind(req.dictation_trace_json.as_ref())
     .execute(db)
     .await?
     .rows_affected();
@@ -693,10 +700,30 @@ pub async fn patch_dictation(
     Json(req): Json<DictationPatchRequest>,
 ) -> Result<Json<IngestOk>, (StatusCode, Json<Value>)> {
     let recording_id = recording_id.trim().to_string();
+    let merged_trace = if let Some(incoming) = req.dictation_trace_json.as_ref() {
+        let existing: Option<Value> = sqlx::query_scalar(
+            "SELECT dictation_trace_json
+               FROM runtime_history_items
+              WHERE account_id = $1 AND recording_id = $2 AND deleted_at IS NULL
+              LIMIT 1",
+        )
+        .bind(user.account_id)
+        .bind(&recording_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| herr("database error"))?;
+        Some(said_core::dictation_trace::merge_trace_values(
+            existing.as_ref(),
+            Some(incoming),
+        ))
+    } else {
+        None
+    };
     let n = sqlx::query(
         "UPDATE runtime_history_items SET
             final_text = COALESCE($3, final_text),
             edit_feedback_json = COALESCE($4, edit_feedback_json),
+            dictation_trace_json = COALESCE($5, dictation_trace_json),
             updated_at = now()
          WHERE account_id = $1 AND recording_id = $2 AND deleted_at IS NULL",
     )
@@ -704,6 +731,7 @@ pub async fn patch_dictation(
     .bind(&recording_id)
     .bind(req.final_text.as_deref())
     .bind(req.edit_feedback_json.as_ref())
+    .bind(merged_trace.as_ref())
     .execute(&state.db)
     .await
     .map_err(|_| herr("database error"))?
@@ -715,10 +743,14 @@ pub async fn patch_dictation(
             .map_err(|_| json_err(StatusCode::FORBIDDEN, "forbidden"))?;
         let empty = Value::Object(Default::default());
         let feedback = req.edit_feedback_json.as_ref().unwrap_or(&empty);
+        let trace = merged_trace
+            .as_ref()
+            .or(req.dictation_trace_json.as_ref())
+            .unwrap_or(&empty);
         sqlx::query(
             "INSERT INTO runtime_history_items
-                (account_id, org_id, recording_id, source, final_text, edit_feedback_json)
-             VALUES ($1, $2, $3, 'desktop_voice', $4, $5)
+                (account_id, org_id, recording_id, source, final_text, edit_feedback_json, dictation_trace_json)
+             VALUES ($1, $2, $3, 'desktop_voice', $4, $5, $6)
              ON CONFLICT DO NOTHING",
         )
         .bind(user.account_id)
@@ -726,6 +758,7 @@ pub async fn patch_dictation(
         .bind(&recording_id)
         .bind(req.final_text.as_deref())
         .bind(feedback)
+        .bind(trace)
         .execute(&state.db)
         .await
         .map_err(|e| {

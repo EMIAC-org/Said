@@ -115,27 +115,6 @@ pub struct PrefsUpdate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PromptTemplateResponse {
-    pub kind: String,
-    pub title: String,
-    pub base_version: String,
-    pub active_body: String,
-    pub draft_body: Option<String>,
-    pub default_body: String,
-    pub updated_at: i64,
-    pub applied_at: Option<i64>,
-    pub has_draft: bool,
-    pub active_is_default: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PromptTestResponse {
-    pub output: String,
-    pub model_used: String,
-    pub latency_ms: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recording {
     pub id: String,
     pub timestamp_ms: i64,
@@ -308,6 +287,7 @@ pub async fn stream_voice_polish<F>(
     wav_data: Vec<u8>,
     target_app: Option<String>,
     client_run_id: Option<String>,
+    client_trace_json: Option<Value>,
     pre_transcript: Option<String>,
     pre_transcript_meta: Option<TranscriptMeta>,
     repair_mode: Option<String>,
@@ -369,6 +349,9 @@ where
     }
     if let Some(client_run_id) = client_run_id {
         form = form.text("client_run_id", client_run_id);
+    }
+    if let Some(trace) = client_trace_json {
+        form = form.text("client_trace_json", trace.to_string());
     }
     // P5: forward pre-transcribed text so backend can skip Deepgram HTTP call
     if let Some(transcript) = pre_transcript {
@@ -444,6 +427,30 @@ where
     }
 
     consume_sse(resp.bytes_stream(), on_event).await
+}
+
+pub async fn patch_dictation_trace(
+    ep: &BackendEndpoint,
+    recording_id: &str,
+    dictation_trace_json: Value,
+) -> Result<(), String> {
+    let url = format!(
+        "{}/v1/observability/dictation/{}/trace",
+        ep.url, recording_id
+    );
+    let resp = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::json!({ "dictation_trace_json": dictation_trace_json }))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("patch dictation trace failed: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("patch dictation trace HTTP {}", resp.status()))
+    }
 }
 
 pub async fn transcribe_problem_audio(
@@ -935,93 +942,6 @@ pub async fn list_polish_models(
         .json::<ListPolishModelsResponse>()
         .await
         .map_err(|e| format!("parse polish models failed: {e}"))
-}
-
-pub async fn get_voice_prompt(ep: &BackendEndpoint) -> Result<PromptTemplateResponse, String> {
-    let url = format!("{}/v1/prompts/voice", ep.url);
-    Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("get voice prompt failed: {e}"))?
-        .json::<PromptTemplateResponse>()
-        .await
-        .map_err(|e| format!("parse voice prompt failed: {e}"))
-}
-
-pub async fn save_voice_prompt_draft(
-    ep: &BackendEndpoint,
-    draft_body: String,
-) -> Result<PromptTemplateResponse, String> {
-    let url = format!("{}/v1/prompts/voice/draft", ep.url);
-    Client::new()
-        .patch(&url)
-        .header("Authorization", ep.bearer())
-        .json(&serde_json::json!({ "draft_body": draft_body }))
-        .send()
-        .await
-        .map_err(|e| format!("save voice prompt draft failed: {e}"))?
-        .json::<PromptTemplateResponse>()
-        .await
-        .map_err(|e| format!("parse voice prompt failed: {e}"))
-}
-
-pub async fn apply_voice_prompt_draft(
-    ep: &BackendEndpoint,
-) -> Result<PromptTemplateResponse, String> {
-    let url = format!("{}/v1/prompts/voice/apply", ep.url);
-    Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("apply voice prompt failed: {e}"))?
-        .json::<PromptTemplateResponse>()
-        .await
-        .map_err(|e| format!("parse voice prompt failed: {e}"))
-}
-
-pub async fn reset_voice_prompt(ep: &BackendEndpoint) -> Result<PromptTemplateResponse, String> {
-    let url = format!("{}/v1/prompts/voice/reset", ep.url);
-    Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("reset voice prompt failed: {e}"))?
-        .json::<PromptTemplateResponse>()
-        .await
-        .map_err(|e| format!("parse voice prompt failed: {e}"))
-}
-
-pub async fn test_voice_prompt(
-    ep: &BackendEndpoint,
-    transcript: String,
-    draft_body: Option<String>,
-) -> Result<PromptTestResponse, String> {
-    let url = format!("{}/v1/prompts/voice/test", ep.url);
-    let resp = Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .json(&serde_json::json!({
-            "transcript": transcript,
-            "draft_body": draft_body,
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("test voice prompt failed: {e}"))?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(extract_error(&text));
-    }
-    serde_json::from_str::<PromptTestResponse>(&text).map_err(|e| {
-        format!(
-            "parse voice prompt test failed: {e} — raw: {}",
-            said_core::text::truncate_utf8(&text, 200)
-        )
-    })
 }
 
 // ── History ───────────────────────────────────────────────────────────────────
@@ -1688,6 +1608,7 @@ pub async fn classify_edit(
     capture_meta: CaptureMeta,
     client_run_id: Option<&str>,
     prior_text: Option<&str>,
+    edit_trace_json: Option<Value>,
 ) -> Result<ClassifyEditResponse, String> {
     let url = format!("{}/v1/classify-edit", ep.url);
     let mut body = serde_json::json!({
@@ -1707,6 +1628,9 @@ pub async fn classify_edit(
     // and ignore the surrounding context. Empty/None → field was empty.
     if let Some(prior) = prior_text.filter(|s| !s.is_empty()) {
         body["prior_text"] = serde_json::Value::String(prior.to_string());
+    }
+    if let Some(trace) = edit_trace_json {
+        body["edit_trace_json"] = trace;
     }
     Client::new()
         .post(&url)

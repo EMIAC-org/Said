@@ -6,7 +6,15 @@
 //! - transcript-only polish probe retained for latency testing
 //! - WebSocket audio runtime MVP: client audio -> Deepgram -> server polish
 //!
-//! This module intentionally does not persist raw transcript/audio by default.
+//! Persistence, stated precisely (this exact wording matters — a vague version
+//! of it previously read as "the server keeps no transcripts", which is FALSE):
+//!   - Raw AUDIO is never persisted server-side.
+//!   - Transcript / polished / edited TEXT for signed-in users IS persisted, in
+//!     table `runtime_history_items`, via the history-sync path in the sibling
+//!     module `runtime_history.rs` (POST /v1/runtime/history/sync) and via
+//!     `routes/observability.rs`. It is NOT written inline in the polish
+//!     handlers below — so do not conclude from the absence of an INSERT here
+//!     that transcripts aren't stored. They are. Grep `runtime_history_items`.
 
 use std::{
     convert::Infallible,

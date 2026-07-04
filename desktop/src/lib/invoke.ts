@@ -13,8 +13,6 @@ import type {
   Preferences,
   PrefsUpdate,
   SttRuntimeInfo,
-  PromptTemplateResponse,
-  PromptTestResponse,
   Recording,
 } from "../types";
 
@@ -343,90 +341,6 @@ export async function openaiDisconnect(): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-export async function getVoicePrompt(): Promise<PromptTemplateResponse | null> {
-  if (!isTauriRuntime()) {
-    const defaultBody = [
-      "CLEANING RULES:",
-      "- Remove English fillers and stutters.",
-      "- Politeness words are spoken content: keep please, kindly, thanks, can you, could you.",
-      "- Do NOT summarize, answer, add, or remove content words.",
-      "",
-      "STYLE PREFERENCE:",
-      "{{persona}}",
-      "{{tone}}",
-    ].join("\n");
-    return {
-      kind: "voice_system",
-      title: "Voice cleaning system prompt",
-      base_version: "mock",
-      active_body: defaultBody,
-      draft_body: null,
-      default_body: defaultBody,
-      updated_at: Date.now(),
-      applied_at: Date.now(),
-      has_draft: false,
-      active_is_default: true,
-    };
-  }
-  try {
-    return await tauriInvoke<PromptTemplateResponse>("get_voice_prompt");
-  } catch {
-    return null;
-  }
-}
-
-export async function saveVoicePromptDraft(
-  draftBody: string
-): Promise<PromptTemplateResponse | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<PromptTemplateResponse>("save_voice_prompt_draft", {
-      draftBody,
-    });
-  } catch {
-    return null;
-  }
-}
-
-export async function applyVoicePromptDraft(): Promise<PromptTemplateResponse | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<PromptTemplateResponse>("apply_voice_prompt_draft");
-  } catch {
-    return null;
-  }
-}
-
-export async function resetVoicePrompt(): Promise<PromptTemplateResponse | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<PromptTemplateResponse>("reset_voice_prompt");
-  } catch {
-    return null;
-  }
-}
-
-export async function testVoicePrompt(
-  transcript: string,
-  draftBody: string
-): Promise<PromptTestResponse | null> {
-  if (!isTauriRuntime()) {
-    return {
-      output: transcript.replace(/\s+please[.!?]?$/i, ", please."),
-      model_used: "mock",
-      latency_ms: 240,
-    };
-  }
-  try {
-    return await tauriInvoke<PromptTestResponse>("test_voice_prompt", {
-      transcript,
-      draftBody,
-    });
-  } catch {
-    return null;
   }
 }
 
