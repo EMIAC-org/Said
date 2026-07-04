@@ -77,9 +77,14 @@ async function downloadRecordingAudio(recording: Recording): Promise<string | nu
   return await saveRecordingAudio(recording.id, audioFilename(recording));
 }
 
-/** The "original" (pre-polish) text — enriched STT if present, else raw transcript. */
+/** The raw/pre-polish text. Prefer true raw STT so debugging can always inspect it. */
 function originalText(r: Recording): string {
-  return (r.enriched_transcript ?? r.transcript ?? "").trim();
+  return (r.raw_transcript ?? r.enriched_transcript ?? r.transcript ?? "").trim();
+}
+
+function originalLabel(r: Recording): string {
+  if ((r.raw_transcript ?? "").trim()) return "Raw STT";
+  return r.enriched_transcript ? "Original (with confidence)" : "Original transcript";
 }
 
 /** Group rows by calendar day, newest bucket first (preserves ids for actions). */
@@ -397,7 +402,8 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
   }, [fullText, isLong, expanded]);
 
   const orig = originalText(recording);
-  const hasOriginal = orig.length > 0 && orig !== fullText;
+  const hasRawStt = Boolean((recording.raw_transcript ?? "").trim());
+  const hasOriginal = orig.length > 0 && (hasRawStt || orig !== fullText);
   const source = formatSourceApp(recording.target_app);
   const model = formatModel(recording.model_used);
   const duration = formatDuration(recording.recording_seconds);
@@ -465,7 +471,7 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
           <div className="mt-2 px-3 py-2 rounded-lg" style={{ background: "hsl(var(--surface-4))" }}>
             <div className="flex items-center justify-between mb-1">
               <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                Original {recording.enriched_transcript ? "(with confidence)" : "transcript"}
+                {originalLabel(recording)}
               </span>
               <button onClick={handleCopyTranscript} className="text-[10px] flex items-center gap-1 transition-colors"
                 style={{ color: copied === "transcript" ? "hsl(var(--chip-lime-fg))" : "hsl(var(--muted-foreground))" }}>
@@ -488,7 +494,7 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
             <>
               <span className="opacity-40">·</span>
               <button onClick={() => setShowOriginal((v) => !v)} className="font-medium transition-colors" style={{ color: "hsl(var(--chip-lime-fg))" }}>
-                {showOriginal ? "Hide original" : "Show original"}
+                {showOriginal ? "Hide raw STT" : hasRawStt ? "Show raw STT" : "Show original"}
               </button>
             </>
           )}
